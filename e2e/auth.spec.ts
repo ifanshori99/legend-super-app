@@ -5,14 +5,16 @@ test("anonymous visitors cannot access the protected app", async ({
   page,
   request,
 }) => {
-  await page.goto("/app");
+  await page.goto("/notes");
   await expect(page).toHaveURL(/\/sign-in$/);
   await expect(
     page.getByRole("heading", { name: "Welcome back" }),
   ).toBeVisible();
-  // The root has no page: anonymous visitors land on sign-in.
-  await page.goto("/");
+  // Work areas send anonymous visitors to sign-in; the brand home stays open.
+  await page.goto("/kelola");
   await expect(page).toHaveURL(/\/sign-in$/);
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/$/);
   const session = await request.get(`${API_URL}/api/auth/get-session`);
   expect(await session.json()).toBeNull();
 });
@@ -31,19 +33,19 @@ test("signup, persisted session, signout, rejected password, and signin work acr
   await page
     .getByRole("button", { name: "Create account", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("button", { name: "Sign out", exact: true }),
   ).toBeVisible();
   // A full reload is rendered by the web server, which reads the session
   // from the API with the browser's cookie.
   await page.reload();
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("button", { name: "Sign out", exact: true }),
   ).toBeVisible();
   await page.goto("/");
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/$/);
   const cookies = await context.cookies(API_URL);
   expect(
     cookies.some(
@@ -51,10 +53,10 @@ test("signup, persisted session, signout, rejected password, and signin work acr
     ),
   ).toBe(true);
   await page.goto("/sign-in");
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/$/);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/sign-in$/);
-  await page.goto("/app");
+  await page.goto("/notes");
   await expect(page).toHaveURL(/\/sign-in$/);
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill("incorrect-password");
@@ -64,7 +66,7 @@ test("signup, persisted session, signout, rejected password, and signin work acr
   ).toContainText("Check your email and password");
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(/\/app$/);
+  await expect(page).toHaveURL(/\/$/);
   expect(errors).toEqual([]);
 });
 

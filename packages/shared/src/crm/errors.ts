@@ -1,0 +1,51 @@
+// CRM and loyalty error codes, declared next to the schemas (docs/plan/
+// contracts.md D-CORE-4). The UI maps `code` to catalog text; `message` is the
+// safe Indonesian fallback the API returns. HTTP status is chosen by the
+// route from the code (see crmErrorHttpStatus); codes are stable once shipped.
+
+import { z } from "../core/index.ts";
+
+export const crmErrorHttpStatus = {
+  /** Redemption needs more points than the balance (LOY-03). */
+  POINTS_INSUFFICIENT: 409,
+  /** Reward stock is exhausted (LOY-03). */
+  REWARD_OUT_OF_STOCK: 409,
+  REWARD_EXPIRED: 409,
+  REDEMPTION_LIMIT_REACHED: 409,
+  /** Voucher unknown, expired, already redeemed or not for this customer. */
+  VOUCHER_INVALID: 422,
+  PROMO_BUDGET_EXHAUSTED: 409,
+  PROMO_QUOTA_EXHAUSTED: 409,
+  /** LOY-04: the customer never consented to marketing. */
+  MARKETING_CONSENT_REQUIRED: 403,
+  /** Membership needs a verified WhatsApp number and loyalty consent. */
+  MEMBERSHIP_NOT_ACTIVE: 403,
+  CUSTOMER_NOT_FOUND: 404,
+  CAMPAIGN_NOT_SCHEDULABLE: 409,
+} as const satisfies Record<string, number>;
+
+export type CrmErrorCode = keyof typeof crmErrorHttpStatus;
+export const CRM_ERROR_CODES = Object.keys(
+  crmErrorHttpStatus,
+) as CrmErrorCode[];
+
+export const crmErrorCodeSchema = z.enum(
+  CRM_ERROR_CODES as [CrmErrorCode, ...CrmErrorCode[]],
+);
+
+/** Safe Indonesian fallback messages, one per code. */
+export const crmErrorMessages: Record<CrmErrorCode, string> = {
+  POINTS_INSUFFICIENT: "Poin Anda belum cukup untuk penukaran ini.",
+  REWARD_OUT_OF_STOCK: "Stok hadiah sudah habis.",
+  REWARD_EXPIRED: "Hadiah ini sudah tidak berlaku.",
+  REDEMPTION_LIMIT_REACHED: "Batas penukaran untuk hadiah ini sudah tercapai.",
+  VOUCHER_INVALID: "Kode voucher tidak valid atau sudah tidak berlaku.",
+  PROMO_BUDGET_EXHAUSTED: "Anggaran promo sudah habis.",
+  PROMO_QUOTA_EXHAUSTED: "Kuota promo sudah habis.",
+  MARKETING_CONSENT_REQUIRED:
+    "Pelanggan ini tidak memberikan persetujuan pemasaran.",
+  MEMBERSHIP_NOT_ACTIVE:
+    "Keanggotaan aktif setelah nomor WhatsApp terverifikasi dan persetujuan program diberikan.",
+  CUSTOMER_NOT_FOUND: "Pelanggan tidak ditemukan.",
+  CAMPAIGN_NOT_SCHEDULABLE: "Kampanye tidak dapat dijadwalkan pada status ini.",
+};
