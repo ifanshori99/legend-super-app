@@ -5,7 +5,19 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { qrCartMessages } from "./qr-cart.ts";
+import { qrMenuMessages } from "./qr-menu.ts";
+import { qrOrdersMessages } from "./qr-orders.ts";
+import { qrRecoveryMessages } from "./qr-recovery.ts";
+
 export const id = {
+  // QR order journey (PRD §3 F10), one file per part so parallel beads never
+  // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
+  // (legend-woz), qrRecovery (legend-tz1).
+  qrMenu: qrMenuMessages,
+  qrCart: qrCartMessages,
+  qrOrders: qrOrdersMessages,
+  qrRecovery: qrRecoveryMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -208,6 +220,8 @@ export const id = {
       menu: "Menu",
       orders: "Pesanan",
       member: "Member",
+      facility: "Fasilitas",
+      wifi: "Wi-Fi",
       account: "Akun",
     },
     management: {
@@ -243,6 +257,113 @@ export const id = {
   layout: {
     offlineRegion: "Status koneksi",
     themeToggle: "Ganti tema",
+  },
+  // Customer payment pages (bead legend-2w5, PRD §3.13 F13). The screen never
+  // marks itself paid from a gateway redirect (PAY-02).
+  payment: {
+    title: "Pembayaran",
+    back: "Kembali",
+    billTitle: "Rincian tagihan",
+    reference: "Tagihan {reference}",
+    tableContext: "{table} · {pax} tamu",
+    subtotal: "Subtotal",
+    discount: "Diskon",
+    serviceCharge: "Service charge",
+    tax: "Pajak",
+    rounding: "Pembulatan",
+    total: "Total tagihan",
+    paid: "Sudah dibayar",
+    outstanding: "Sisa tagihan",
+    taxExclusiveHint:
+      "Harga menu belum termasuk service charge dan pajak; keduanya ditambahkan di tagihan ini.",
+    chooseTitle: "Pilih metode pembayaran",
+    chooseHint:
+      "Nominal dan status lunas ditentukan oleh sistem pembayaran, bukan oleh halaman ini.",
+    methodLegend: "Metode pembayaran",
+    methodQris: "QRIS",
+    methodQrisHint: "Pindai sekali dengan aplikasi bank atau e-wallet apa pun.",
+    methodVa: "Virtual Account",
+    methodVaHint: "Transfer dari m-banking ke Virtual Account bank pilihanmu.",
+    methodBankTransfer: "Transfer bank",
+    methodBankTransferHint:
+      "Transfer ke rekening outlet dengan kode unik, dikonfirmasi otomatis.",
+    methodUnavailable: "Sementara tidak tersedia",
+    bankLabel: "Bank",
+    bankPlaceholder: "Pilih bank",
+    continue: "Lanjutkan pembayaran",
+    pendingTitle: "Selesaikan pembayaran",
+    statusPending: "Menunggu pembayaran",
+    expiresIn: "Berlaku {time}",
+    expiresInLong: "Kode pembayaran berlaku {time} lagi",
+    qrisTitle: "Pindai kode QRIS",
+    qrisHint:
+      "Buka aplikasi bank atau e-wallet, pilih bayar QRIS, lalu pindai kode ini.",
+    amount: "Nominal",
+    refreshingCode: "Memperbarui kode…",
+    vaTitleWithBank: "Nomor Virtual Account {bank}",
+    vaHint:
+      "Gunakan nomor ini hanya untuk tagihan ini. Nominal harus sama persis.",
+    vaStep1: "Buka aplikasi bank dan pilih menu Transfer.",
+    vaStep2: "Pilih Virtual Account, lalu masukkan nomor di atas.",
+    vaStep3:
+      "Masukkan nominal tepat seperti di atas, lalu selesaikan transfer.",
+    transferTitle: "Rekening tujuan",
+    transferHint:
+      "Nominal sudah termasuk kode unik. Transfer tepat sebesar ini, jangan dibulatkan.",
+    accountNumber: "Nomor rekening",
+    accountHolder: "Atas nama",
+    uniqueCode: "Kode unik",
+    transferTotal: "Nominal transfer",
+    copy: "Salin",
+    copied: "Tersalin",
+    copyValue: "Salin {label}",
+    copyFailed: "Tidak bisa menyalin otomatis. Salin manual dari teks di atas.",
+    checkingAuto: "Status diperiksa otomatis tiap beberapa detik.",
+    changeMethod: "Ganti metode",
+    changeMethodTitle: "Ganti metode pembayaran?",
+    changeMethodBody:
+      "Kode {method} sebelumnya masih bisa dibayar sampai kedaluwarsa. Jangan membayar keduanya.",
+    changeMethodConfirm: "Ganti metode",
+    changeMethodCancel: "Tetap di sini",
+    expiredTitle: "Kode pembayaran kedaluwarsa",
+    expiredHint: "Buat kode baru untuk melanjutkan. Tagihan belum berubah.",
+    failedTitle: "Pembayaran gagal",
+    failedHint:
+      "Tidak ada dana yang tercatat. Coba lagi atau pilih metode lain.",
+    retry: "Coba lagi",
+    newCode: "Buat kode baru",
+    paidTitle: "Pembayaran berhasil",
+    paidHint:
+      "Terima kasih. Pembayaran sudah dikonfirmasi oleh sistem pembayaran.",
+    paidLate:
+      "Pembayaran diterima setelah kode kedaluwarsa, jadi kasir akan menindaklanjuti.",
+    paidAtLabel: "Waktu pembayaran",
+    refundedHint:
+      "Pembayaran ini sudah dikembalikan. Hubungi kasir bila ada pertanyaan.",
+    finish: "Selesai",
+    gatewayDownTitle: "Pembayaran online sedang gangguan",
+    gatewayDownHint:
+      "Bayar di kasir: tunai, kartu debit/kredit, atau QRIS lewat EDC bank. Supervisor akan membantu.",
+    payAtCashier: "Beri tahu kasir",
+    payAtCashierDone:
+      "Kasir sudah menerima permintaanmu. Tunjukkan tagihan {reference} di kasir.",
+    unavailableTitle: "Metode pembayaran online tidak tersedia",
+    unavailableHint: "Bayar di kasir atau coba lagi nanti.",
+    emptyTitle: "Tidak ada yang perlu dibayar",
+    emptyHint:
+      "Tagihan ini sudah lunas atau belum memiliki nominal untuk dibayar.",
+    offlineTitle: "Tidak ada koneksi internet",
+    offlineHint:
+      "Pembayaran yang sudah dikirim tetap diproses oleh sistem pembayaran. Sambungkan internet, lalu periksa status lagi.",
+    checkAgain: "Periksa status",
+    loadFailedTitle: "Tagihan tidak dapat dimuat",
+    linkNotFound: "Tautan pembayaran tidak ditemukan",
+    linkNotFoundHint: "Minta tautan baru dari kasir atau dari pesananmu.",
+    alreadyPaid: "Tagihan ini sudah lunas.",
+    methodInvalid:
+      "Metode atau bank yang dipilih belum tersedia. Pilih yang lain.",
+    actionFailed: "Permintaan belum bisa diproses. Coba lagi.",
+    secureNote: "Jangan bagikan kode pembayaran ini ke siapa pun.",
   },
   gate: {
     forbiddenTitle: "Anda belum punya akses ke area ini",
@@ -395,6 +516,350 @@ export const id = {
     errorTitle: "Pickup display tidak dapat dimuat",
     errorHint: "Periksa koneksi ke edge node, lalu coba lagi.",
     loading: "Memuat pickup display…",
+  },
+  // Akses Fasilitas (WS-09, PRD §3 F22/F23/F42, alur S/T/U/V/Z). Layar
+  // pelanggan: pemesanan shower dari QR fasilitas, tiket akses, Fasilitas
+  // Saya, dan halaman langganan.
+  facility: {
+    steps: {
+      label: "Langkah pemesanan",
+      login: "Masuk",
+      schedule: "Jadwal",
+      extras: "Tambahan",
+      pay: "Bayar",
+    },
+    entry: {
+      title: "Shower Room",
+      hint: "Pesan bilik, bayar, lalu buka pintu dengan QR atau PIN di tiket.",
+    },
+    login: {
+      title: "Masuk dengan WhatsApp",
+      hint: "Tiket terikat ke nomor WhatsApp-mu, jadi bisa dibuka lagi dari Fasilitas Saya.",
+      start: "Masuk lewat WhatsApp",
+      restart: "Minta kode baru",
+      codeLabel: "Kode masuk",
+      expiresAt: "Kode berlaku sampai {time}, sekali pakai.",
+      openWhatsApp: "Buka WhatsApp",
+      sendHint:
+        "Kirim pesan yang sudah terisi tanpa mengubahnya. Halaman ini lanjut sendiri setelah pesanmu diterima.",
+      qrLabel: "QR untuk membuka WhatsApp",
+      qrHint:
+        "Di komputer? Pindai QR ini dengan ponsel untuk membuka WhatsApp dengan pesan yang sudah terisi.",
+      waiting: "Menunggu pesan WhatsApp-mu…",
+      sent: "Saya sudah mengirim",
+      cancel: "Batal",
+      expiredTitle: "Kode sudah tidak berlaku",
+      expiredHint:
+        "Kode masuk hanya berlaku 5 menit dan sekali pakai. Minta kode baru untuk melanjutkan.",
+      mockHint:
+        "Mode mock: login selesai sendiri beberapa detik setelah kode muncul.",
+    },
+    schedule: {
+      title: "Pilih area dan waktu",
+      areaLabel: "Area",
+      areaHint:
+        "Pilihan area hanya dicatat pada tiket ini, bukan di profil pelanggan.",
+      timingLabel: "Waktu kunjungan",
+      dayLabel: "Hari",
+      dayToday: "Hari ini",
+      dayTomorrow: "Besok",
+      now: "Masuk sekarang",
+      nowAvailable: "{count} bilik siap",
+      nowUnavailable: "Belum ada bilik kosong",
+      waitEstimate: "Estimasi tunggu {minutes} menit",
+      waitEstimateNow: "Bilik siap sekarang",
+      queueLength: "{count} tamu menunggu",
+      slot: "Pilih slot",
+      slotHint: "Sesi {minutes} menit, jeda bersih {cleaning} menit.",
+      noSlots: "Tidak ada slot tersisa untuk area ini.",
+      noSlotsHint: "Coba area lain, atau kembali lagi besok.",
+      blockedUnits: "{count} bilik tidak dapat dipesan.",
+      blockedHint:
+        "Bilik yang tidak tersedia sedang dipakai, dibersihkan, atau dalam perawatan.",
+      noAreas: "Belum ada area yang bisa dipesan",
+      noAreasHint:
+        "Fasilitas belum membuka area untuk saat ini. Coba lagi sebentar lagi atau tanya staf di pintu.",
+      joinQueue: "Masuk antrean",
+      joinedTitle: "Kamu masuk antrean",
+      joinedBody: "Kami kabari di ponsel begitu ada bilik yang siap.",
+      joinedAt: "Antre sejak {time}",
+      queueStatus: {
+        waiting: "Menunggu",
+        notified: "Bilik siap",
+        converted: "Sudah jadi tiket",
+        expired: "Antrean berakhir",
+      },
+      leaveQueue: "Keluar antrean",
+      queueLeft: "Kamu keluar dari antrean.",
+    },
+    extras: {
+      title: "Produk dan tambahan",
+      productLabel: "Produk",
+      productSessions: "{count} sesi",
+      addonsLabel: "Tambahan",
+      addonsHint: "Tambahan dibayar bersama tiket.",
+      noAddons: "Belum ada tambahan yang aktif.",
+      addonsUnavailable: "Tambahan sedang tidak tersedia.",
+      subtotal: "Subtotal",
+      taxNote:
+        "Harga belum termasuk pajak dan service charge; keduanya ditambahkan saat pembayaran.",
+      redeem: "Pakai kuota langganan",
+      redeemHint: "Sisa {remaining} dari {perPeriod} sesi periode ini.",
+      redeemUnavailable: "Kuota langganan belum dapat dipakai.",
+      sourceLabel: "Cara dapat akses",
+      payable: "Dibayar sekarang",
+      payNow: "Bayar sekarang",
+      useQuota: "Pakai kuota",
+      pay: "Bayar tiket",
+      issueWithQuota: "Pakai kuota & terbitkan tiket",
+      payHint:
+        "Bayar dengan QRIS. Tiket terbit setelah pembayaran terverifikasi.",
+      breakfastNote:
+        "Paket sarapan: pesanan ditahan dan dikirim ke dapur sebelum sesi berakhir.",
+    },
+    review: {
+      title: "Periksa pesanan",
+      area: "Area",
+      timing: "Waktu",
+      product: "Produk",
+      addons: "Tambahan",
+      total: "Total dibayar",
+      redeemTotal: "Tanpa biaya tambahan",
+      sourceSubscription: "Kuota langganan",
+      sourcePurchase: "Pembayaran QRIS",
+      pay: "Bayar dengan QRIS",
+      issueTicket: "Terbitkan tiket",
+      paying: "Memproses pembayaran…",
+      mockPayNote: "Mode mock: pembayaran diterima langsung dan tiket terbit.",
+      change: "Ubah pesanan",
+      noAddons: "Tanpa tambahan",
+    },
+    issued: {
+      title: "Tiket terbit",
+      hint: "Tunjukkan QR atau PIN di pintu bilik. Tiket juga tersimpan di Fasilitas Saya.",
+      openTicket: "Buka tiket",
+      toFacilities: "Ke Fasilitas Saya",
+    },
+    ticket: {
+      title: "Tiket akses",
+      area: "Area",
+      unit: "Bilik",
+      pinLabel: "PIN pintu",
+      credentialTitle: "QR dan PIN pintu",
+      pinHint: "Ketik 6 angka ini di kunci bilik bila QR tidak terbaca.",
+      qrHint: "Pindai QR di pintu bilik, atau ketik PIN 6 digit di kuncinya.",
+      qrLabel: "QR tiket bilik {unit}",
+      window: "Berlaku {from}–{until}",
+      windowOpens: "Pintu terbuka mulai {from}",
+      credentialMissingTitle: "QR dan PIN tidak ada di perangkat ini",
+      credentialMissingBody:
+        "QR dan PIN hanya ditampilkan di perangkat yang memesan tiket. Buka tiket dari perangkat itu, atau minta bantuan attendant di pintu.",
+      session: "Sesi",
+      remaining: "Sisa sesi",
+      startedAt: "Mulai {time}",
+      endsAt: "Berakhir {time}",
+      overtime: "Kelebihan waktu {minutes} menit",
+      overtimeFee: "Biaya kelebihan waktu {amount}",
+      overtimeGrace: "Toleransi {minutes} menit sebelum biaya berlaku.",
+      reminderTitle: "Sesi berakhir dalam 5 menit",
+      reminderBody:
+        "Selesaikan persiapanmu. Kelebihan waktu dicatat sesuai kebijakan fasilitas.",
+      offlineTitle: "Internet terputus",
+      offlineBody:
+        "Tiket ini tetap berlaku: lock memeriksa PIN secara lokal tanpa internet.",
+      status: {
+        pendingPayment: "Menunggu pembayaran",
+        issued: "Siap dipakai",
+        inUse: "Sedang dipakai",
+        completed: "Selesai",
+        noShow: "Hangus",
+        cancelled: "Dibatalkan",
+        refunded: "Dikembalikan",
+      },
+      schedule: "{date}, {from}–{until}",
+      cancel: "Batalkan tiket",
+      cancelTitle: "Batalkan tiket ini?",
+      cancelBody:
+        "Pengembalian mengikuti kebijakan fasilitas: hak akses dikembalikan, refund penuh, refund sebagian, atau hangus.",
+      cancelConfirm: "Ya, batalkan",
+      cancelReason: "Dibatalkan oleh pelanggan",
+      cancelledToast: "Tiket dibatalkan",
+      cancelledWithFee: "Dibatalkan, biaya {fee} tidak dikembalikan",
+      backToList: "Ke Fasilitas Saya",
+    },
+    list: {
+      title: "Fasilitas Saya",
+      intro: "Tiket aktif, riwayat, dan langganan fasilitasmu.",
+      tickets: "Tiket",
+      emptyTickets: "Belum ada tiket fasilitas",
+      emptyTicketsHint:
+        "Pindai QR di pintu area shower untuk memesan tiket pertamamu.",
+      subscriptionLabel: "Langganan",
+      noSubscription: "Belum berlangganan",
+      noSubscriptionHint: "Kuota sesi bulanan tersedia lewat paket langganan.",
+      seePlans: "Lihat paket",
+      quota: "{used} dari {perPeriod} sesi terpakai",
+      openTicket: "Lihat tiket",
+      bookAgain: "Pesan lagi",
+      viewSubscription: "Kelola langganan",
+      activeTicket: "Tiket aktif",
+      history: "Riwayat",
+    },
+    subscription: {
+      title: "Langganan Shower",
+      intro:
+        "Kuota sesi bulanan dengan tagihan berulang. Sisa kuota tidak berpindah ke periode berikutnya.",
+      currentTitle: "Langganan aktif",
+      quotaLabel: "Kuota periode ini",
+      quotaValue: "{remaining} sesi tersisa",
+      period: "Periode {start}–{end}",
+      perDay: "Maksimal {count} sesi per hari",
+      price: "Harga",
+      perMonth: "per bulan",
+      perYear: "per tahun",
+      quotaPerPeriod: "{count} sesi per periode",
+      invoices: "Tagihan",
+      invoicePeriod: "{start}–{end}",
+      invoiceStatus: {
+        pending: "Menunggu pembayaran",
+        paid: "Lunas",
+        expired: "Kedaluwarsa",
+        failed: "Gagal",
+        refunded: "Dikembalikan",
+      },
+      openInvoice: "Buka pembayaran",
+      invoiceLinkNote:
+        "Tautan pembayaran juga dikirim lewat WhatsApp dan email.",
+      reason: {
+        ok: "Kuota siap dipakai.",
+        past_due_within_grace:
+          "Tagihan belum lunas. Kuota masih bisa dipakai sampai masa tenggang berakhir.",
+        past_due_grace_expired:
+          "Masa tenggang berakhir. Bayar tagihan untuk memakai kuota lagi.",
+        quota_exhausted: "Kuota periode ini habis.",
+        paused: "Langganan sedang dijeda.",
+        suspended: "Langganan ditangguhkan.",
+        cancelled: "Langganan sudah berhenti.",
+      },
+      pause: "Jeda langganan",
+      resume: "Lanjutkan langganan",
+      cancel: "Berhenti berlangganan",
+      pauseTitle: "Jeda langganan?",
+      pauseBody:
+        "Kuota tidak berkurang selama dijeda. Kamu bisa melanjutkan kapan saja.",
+      resumeBody: "Kuota periode ini aktif lagi setelah dilanjutkan.",
+      cancelTitle: "Berhenti berlangganan?",
+      cancelBody:
+        "Sisa kuota tidak dapat dipakai setelah langganan berhenti, dan tagihan berikutnya dibatalkan.",
+      confirmPause: "Ya, jeda",
+      confirmResume: "Ya, lanjutkan",
+      confirmCancel: "Ya, berhenti",
+      updated: "Langganan diperbarui.",
+      plans: "Paket tersedia",
+      choose: "Pilih paket",
+      startTitle: "Mulai {plan}?",
+      startBody:
+        "Tagihan pertama {amount} dibayar sekarang. Kuota {quota} sesi langsung tersedia.",
+      start: "Bayar dan aktifkan",
+      starting: "Memproses…",
+      started: "Langganan aktif.",
+      noPlans: "Belum ada paket langganan untuk fasilitas ini.",
+      noPlansHint:
+        "Daftar paket dibuka oleh pengelola fasilitas. Coba lagi nanti atau tanya staf di outlet.",
+      noFacility: "Buka halaman ini dari Fasilitas Saya untuk memilih paket.",
+      backToFacilities: "Ke Fasilitas Saya",
+      status: {
+        active: "Aktif",
+        pastDue: "Tagihan tertunda",
+        suspended: "Ditangguhkan",
+        paused: "Dijeda",
+        cancelled: "Berhenti",
+      },
+    },
+  },
+  // Wi-Fi tamu dan produk WFC (PRD v1.7 §3 Kelompok C "Wi-Fi Tamu & WFC",
+  // §4 Alur X, FAC-11..FAC-13). Angka di layar selalu berasal dari kebijakan
+  // zona (wifi_policies), bukan dari teks ini.
+  wifi: {
+    title: "Wi-Fi Tamu",
+    intro:
+      "Kuota gratis setiap hari, otomatis bertambah dari pesanan yang lunas.",
+    loading: "Memuat kuota Wi-Fi…",
+    zoneUnknownTitle: "Zona Wi-Fi belum dipilih",
+    zoneUnknownHint:
+      "Pindai QR di meja atau stiker Wi-Fi untuk membuka portal dengan zona yang benar.",
+    loginTitle: "Masuk dengan WhatsApp",
+    loginHint:
+      "Wi-Fi tamu terikat ke akun pelanggan lewat WhatsApp. Maksimal {devices} perangkat per akun.",
+    loginAction: "Masuk dengan WhatsApp",
+    connectTitle: "Sambungkan Wi-Fi",
+    connectHint:
+      "Perangkat ini akan memakai kuota gratis hari ini. Sambungan tidak pernah diputus saat kuota habis.",
+    connectAction: "Sambungkan Wi-Fi",
+    connectPending: "Menyambungkan…",
+    connectError: "Wi-Fi belum tersambung. Coba lagi sebentar lagi.",
+    deviceLimitError:
+      "Akun ini sudah memakai {devices} perangkat. Putuskan salah satu perangkat, lalu sambungkan lagi.",
+    quotaLabel: "Sisa kuota hari ini",
+    quotaUsed: "{used} dari {quota} menit terpakai",
+    quotaNote: "Kuota diperbarui otomatis setiap 30 detik dari pesanan lunas.",
+    speedFull: "Kecepatan penuh",
+    speedFullHint: "Kecepatan penuh selama kuota tersedia.",
+    speedBase: "Kecepatan dasar",
+    speedBaseHint:
+      "Koneksi turun ke kecepatan dasar dan tetap tersambung, tidak diputus.",
+    reminderTitle: "Kuota hampir habis",
+    reminderHint: "Sisa {minutes}. Tambah 1 jam dengan memesan minuman.",
+    spentTitle: "Kuota habis",
+    spentHint:
+      "Tambah 1 jam dengan memesan minuman; kuota bertambah otomatis setelah pesanan lunas.",
+    addHour: "Tambah 1 jam",
+    ruleFree: "{minutes} gratis setiap hari di luar jam ramai",
+    rulePeak: "Jam ramai: {minutes} gratis · {windows}",
+    ruleSpend:
+      "Setiap belanja {amount} menambah {minutes}, otomatis setelah lunas",
+    ruleTier: "Bonus tier: {tiers}",
+    ruleDevices: "Maksimal {devices} perangkat per akun",
+    tierValue: "{tier} {minutes}",
+    orderAction: "Pesan makanan & minuman",
+    orderHint:
+      "Halaman pesanan dan pembayaran tetap terbuka tanpa login Wi-Fi.",
+    drinksTitle: "Tambah 1 jam",
+    drinksHint:
+      "Setiap belanja {amount} yang lunas menambah {minutes} secara otomatis dalam 1 menit, tanpa login ulang.",
+    drinksOpenMenu: "Buka menu meja",
+    drinksNoTable:
+      "Pindai QR di meja Anda untuk membuka menu dan memesan minuman.",
+    drinksClose: "Nanti saja",
+    wfcTitle: "Bekerja seharian di Zona WFC?",
+    wfcHint:
+      "Produk WFC memakai slot, hak akses, dan langganan yang sama dengan fasilitas lain.",
+    wfcDayPass: "Day pass WFC",
+    wfcDayPassHint:
+      "Termasuk minuman, Wi-Fi cepat sepanjang hari, dan jaminan kursi di Zona WFC.",
+    wfcSeat: "Reservasi kursi WFC",
+    wfcSeatHint: "Pesan kursi di Zona WFC per slot.",
+    wfcPlanAmount: "{sessions} sesi per {interval}",
+    wfcPlanEmpty: "Belum ada paket langganan yang aktif.",
+    wfcCta: "Lihat & pesan produk WFC",
+    wfcNoFacility: "Pindai QR Zona WFC untuk melihat harga dan memesan.",
+    intervalMonth: "bulan",
+    intervalYear: "tahun",
+    hoursMinutes: "{hours} jam {minutes} menit",
+    hours: "{hours} jam",
+    minutes: "{minutes} menit",
+    daysShort: {
+      sun: "Min",
+      mon: "Sen",
+      tue: "Sel",
+      wed: "Rab",
+      thu: "Kam",
+      fri: "Jum",
+      sat: "Sab",
+    },
+    dayRange: "{from}–{to}",
+    peakRange: "{start}–{end}",
+    peakWindow: "{days} {times}",
   },
   // Kamus istilah (PRD §3 F4 "Teks & Kamus Istilah"): istilah yang boleh
   // diganti tenant lewat text_overrides tanpa deploy. Kuncinya terdaftar di

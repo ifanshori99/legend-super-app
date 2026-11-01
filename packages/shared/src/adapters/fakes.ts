@@ -27,6 +27,7 @@ import {
   scopedReferenceSchema,
   storageLookupSchema,
   storageRequestSchema,
+  storageSignedLookupSchema,
   wifiRequestSchema,
   wifiResultSchema,
 } from "./providers.ts";
@@ -57,6 +58,7 @@ import type {
   ScopedReference,
   StorageLookup,
   StorageRequest,
+  StorageSignedLookup,
   WifiProvider,
   WifiRequest,
   WifiResult,
@@ -345,17 +347,44 @@ export class FakeLockProvider implements LockProvider {
 
 export class FakeObjectStorage implements ObjectStorage {
   private objects = new Map<string, StorageRequest>();
+  private key(v: StorageLookup) {
+    return keyOf(v.tenantId, v.outletId, v.visibility ?? "private", v.key);
+  }
   /** `put` overwrites the object at the key; `reference` only labels the write. */
   async put(c: ScopedTenantContext, input: StorageRequest) {
     const v = accept(c, storageRequestSchema, input);
-    this.objects.set(keyOf(v.tenantId, v.outletId, v.key), v);
+    const content =
+      typeof v.content === "string" ? v.content : new Uint8Array(v.content);
+    this.objects.set(this.key(v), { ...v, content });
     return accepted(v.reference);
   }
   async get(c: ScopedTenantContext, input: StorageLookup) {
     const v = accept(c, storageLookupSchema, input);
-    const result = this.objects.get(keyOf(v.tenantId, v.outletId, v.key));
+    const result = this.objects.get(this.key(v));
     if (!result) throw notFound("Objek");
-    return storageRequestSchema.parse(result);
+    return {
+      ...result,
+      content:
+        typeof result.content === "string"
+          ? result.content
+          : new Uint8Array(result.content),
+    };
+  }
+  async delete(c: ScopedTenantContext, input: StorageLookup) {
+    const v = accept(c, storageLookupSchema, input);
+    this.objects.delete(this.key(v));
+  }
+  async signedGetUrl(c: ScopedTenantContext, input: StorageSignedLookup) {
+    const v = accept(c, storageSignedLookupSchema, input);
+    if (v.visibility === "public")
+      throw new TypeError("Private object required");
+    return `https://storage.invalid/private/${encodeURIComponent(this.key(v))}?expires=${v.expiresInSeconds}`;
+  }
+  async publicUrl(c: ScopedTenantContext, input: StorageLookup) {
+    const v = accept(c, storageLookupSchema, input);
+    if (v.visibility !== "public")
+      throw new TypeError("Public object required");
+    return `https://storage.invalid/public/${encodeURIComponent(this.key(v))}`;
   }
 }
 

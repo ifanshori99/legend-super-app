@@ -94,7 +94,11 @@ describe("HTTP plumbing", () => {
     const response = await request(app).get("/nope");
     expect(response.status).toBe(404);
     expect(response.body).toEqual({
-      error: { code: "NOT_FOUND", message: "Route not found." },
+      error: {
+        code: "NOT_FOUND",
+        message: "Route not found.",
+        requestId: response.headers["x-request-id"],
+      },
     });
   });
 });

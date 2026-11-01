@@ -7,6 +7,7 @@ import { orgRouter } from "./org.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
+import { createNotificationRouter } from "./notification.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 export const apiRouter = Router();
@@ -22,3 +23,5 @@ apiRouter.use("/org", orgRouter);
 apiRouter.use("/tenant", platformBrandRouter);
 // Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.
 apiRouter.use("/internal", internalRouter);
+// Fail closed until production tenant membership and role resolvers are wired.
+apiRouter.use("/notifications", createNotificationRouter());
