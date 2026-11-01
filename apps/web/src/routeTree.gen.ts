@@ -32,6 +32,7 @@ import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/memb
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
@@ -142,6 +143,11 @@ const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   path: '/kelola/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaNotifikasiRoute = KelolaKelolaNotifikasiRouteImport.update({
+  id: '/kelola/notifikasi',
+  path: '/kelola/notifikasi',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
   id: '/kds/',
   path: '/kds/',
@@ -179,6 +185,7 @@ export interface FileRoutesByFullPath {
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
+  '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -197,6 +204,7 @@ export interface FileRoutesByTo {
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
+  '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -228,6 +236,7 @@ export interface FileRoutesById {
   '/_public/': typeof PublicIndexRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRoute
+  '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -249,6 +258,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/f/$facility'
     | '/t/$token'
+    | '/kelola/notifikasi'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -267,6 +277,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/f/$facility'
     | '/t/$token'
+    | '/kelola/notifikasi'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -297,6 +308,7 @@ export interface FileRouteTypes {
     | '/_public/'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
+    | '/_kelola/kelola/notifikasi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -485,6 +497,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/notifikasi': {
+      id: '/_kelola/kelola/notifikasi'
+      path: '/kelola/notifikasi'
+      fullPath: '/kelola/notifikasi'
+      preLoaderRoute: typeof KelolaKelolaNotifikasiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kitchen/kds/': {
       id: '/_kitchen/kds/'
       path: '/kds'
@@ -576,10 +595,12 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 )
 
 interface KelolaRouteChildren {
+  KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
+  KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
 }
 
