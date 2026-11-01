@@ -313,9 +313,17 @@ describe("Caddy on-demand TLS ask", () => {
 
     // Local development: no configured secret means the host check alone runs.
     const open = express();
-    open.get("/ask", tlsAskGuard(undefined), (_req, res) =>
+    open.get("/ask", tlsAskGuard(undefined, false), (_req, res) =>
       res.status(200).end(),
     );
     expect((await request(open).get("/ask")).status).toBe(200);
+
+    // Production without the secret fails closed instead of answering anyone.
+    const unconfigured = express();
+    unconfigured.get("/ask", tlsAskGuard(undefined, true), (_req, res) =>
+      res.status(200).end(),
+    );
+    unconfigured.use(errorHandler);
+    expect((await request(unconfigured).get("/ask")).status).toBe(403);
   });
 });

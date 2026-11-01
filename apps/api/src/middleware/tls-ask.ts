@@ -6,15 +6,24 @@
 // The ask request comes from the reverse proxy, not a browser: there is no
 // Origin to check. When TLS_ASK_TOKEN is configured Caddy must send it as
 // X-Tls-Ask-Token, so a client cannot use the endpoint as a certificate-issue
-// oracle; without the variable (local development) the host check alone runs.
+// oracle; without the variable only a non-production runtime (local
+// development) runs the host check alone. Production without the variable
+// fails closed: no certificate is issued until the secret is configured.
 import { timingSafeEqual } from "node:crypto";
 import type { RequestHandler } from "express";
 import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
 
-export function tlsAskGuard(configured = env.TLS_ASK_TOKEN): RequestHandler {
+export function tlsAskGuard(
+  configured = env.TLS_ASK_TOKEN,
+  production = env.NODE_ENV === "production",
+): RequestHandler {
   return (req, _res, next) => {
-    if (!configured) return next();
+    if (!configured) {
+      if (production)
+        throw new HttpError(403, "FORBIDDEN", "TLS ask is not configured.");
+      return next();
+    }
     const supplied = Buffer.from(req.get("x-tls-ask-token") ?? "");
     const expected = Buffer.from(configured);
     if (
