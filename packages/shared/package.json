@@ -10,7 +10,9 @@
     "./types": "./src/types/api.ts",
     "./site": "./src/site.ts",
     "./theme": "./src/theme/index.ts",
-    "./i18n": "./src/i18n/index.ts"
+    "./i18n": "./src/i18n/index.ts",
+    "./core": "./src/core/index.ts",
+    "./core/server": "./src/core/server.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
