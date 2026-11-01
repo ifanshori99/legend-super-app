@@ -33,6 +33,7 @@ import {
   returnPathSchema,
   staffPinPattern,
 } from "./schemas.ts";
+import { isStrongStaffPin } from "./machines.ts";
 
 // ------------------------------------------------------------ sign-in flow
 
@@ -117,7 +118,10 @@ export const staffPinParamsSchema = z.strictObject({
 
 /** An outlet manager or supervisor sets or resets a staff pin (device.registry.manage). */
 export const setStaffPinSchema = clientInputSchema({
-  pin: staffPinInputSchema,
+  // A new pin must not be one a stranger tries first (assertStrongStaffPin).
+  pin: staffPinInputSchema.refine(isStrongStaffPin, {
+    message: "Pin terlalu mudah ditebak (angka sama atau berurutan).",
+  }),
 });
 export type SetStaffPinInput = z.infer<typeof setStaffPinSchema>;
 

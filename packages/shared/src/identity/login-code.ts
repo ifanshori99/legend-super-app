@@ -23,6 +23,22 @@ export const LOGIN_CODE_ENTROPY_BITS = LOGIN_CODE_LENGTH * 5;
 /** Canonical code: exactly the alphabet, uppercase. */
 export const LOGIN_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{8}$/;
 
+/**
+ * A fresh login code from the platform CSPRNG (Web Crypto `getRandomValues`,
+ * available in browsers and Node). The alphabet has exactly 32 symbols, so
+ * `byte & 31` is uniform: 8 symbols = 40 bits (AUTH-01). Never use
+ * `Math.random` for a code. `random` is injectable for tests only.
+ */
+export function generateLoginCode(
+  random: (bytes: Uint8Array) => Uint8Array = (bytes) =>
+    globalThis.crypto.getRandomValues(bytes),
+): string {
+  const bytes = random(new Uint8Array(LOGIN_CODE_LENGTH));
+  let code = "";
+  for (const byte of bytes) code += LOGIN_CODE_ALPHABET[byte & 31];
+  return code;
+}
+
 /** Symbols a person may type for a digit; Crockford decoding. */
 const CONFUSABLE: Record<string, string> = { O: "0", I: "1", L: "1" };
 

@@ -12,6 +12,7 @@ export * from "./ids.ts";
 export * from "./errors.ts";
 export * from "./limits.ts";
 export * from "./login-code.ts";
+export * from "./digest.ts";
 export * from "./schemas.ts";
 export * from "./machines.ts";
 export * from "./inputs.ts";

@@ -460,7 +460,10 @@ test("guest contact is a keyed digest, never a bare SHA-256 of the phone", async
   const { createHash } = await import("node:crypto");
   assert.notEqual(createHash("sha256").update(phone).digest("hex"), digest);
   await assert.rejects(() => rsv.hashGuestContact(phone, "short"), TypeError);
-  await assert.rejects(() => rsv.hashGuestContact("+62 812-3456-7890", secret));
+  // One normalizer: local and formatted forms hash like the 628… form.
+  assert.equal(await rsv.hashGuestContact("+62 812-3456-7890", secret), digest);
+  assert.equal(await rsv.hashGuestContact("081234567890", secret), digest);
+  await assert.rejects(() => rsv.hashGuestContact("not a phone", secret));
   // The digest stays write-only: no event payload carries it.
   for (const event of Object.values(rsv.reservationEventFixtures))
     assert.equal(

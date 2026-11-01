@@ -85,14 +85,20 @@ export function isLoginChallengeExpired(
 }
 
 /**
- * AUTH-01: pending, unexpired, and the same browser that asked. Throws the
- * identity error the login screen maps; the code itself is matched by the
- * server against the stored digest, never here.
+ * AUTH-01: pending and unexpired. Throws the identity error the login screen
+ * maps; the code itself is matched by the server against the stored digest,
+ * never here.
  *
- * The browser binding applies to the WhatsApp code (typed back into the
- * browser that asked) and to the Google state. An email magic link is
- * deliberately exempt: the guest clicks it in whichever browser the mail app
- * opens, so the single-use token is the proof, not the original browser.
+ * Browser binding, per channel:
+ * - `google`: the callback lands in a browser, so the binding (OAuth
+ *   state cookie) is checked here, at completion.
+ * - `whatsapp_inbound`: completion happens in the KirimDev webhook, which has
+ *   no browser, so `browserBindingMatches` is ignored here. The binding is
+ *   enforced when the polling browser collects the session
+ *   (`claimLoginChallengeSession`) — the code alone never yields a session.
+ * - `email_magic_link`: deliberately exempt. The guest clicks the link in
+ *   whichever browser the mail app opens; the single-use 256-bit token is the
+ *   proof and the session is set in that browser.
  */
 export function assertChallengeCompletable(input: {
   readonly challenge: LoginChallenge;
@@ -103,11 +109,29 @@ export function assertChallengeCompletable(input: {
     throw new IdentityError("CHALLENGE_NOT_PENDING");
   if (isLoginChallengeExpired(input.challenge, input.now))
     throw new IdentityError("CHALLENGE_EXPIRED");
-  if (
-    input.challenge.channel !== "email_magic_link" &&
-    !input.browserBindingMatches
-  )
+  if (input.challenge.channel === "google" && !input.browserBindingMatches)
     throw new IdentityError("CHALLENGE_BROWSER_MISMATCH");
+}
+
+/**
+ * AUTH-01 single use + browser binding for the WhatsApp code: the session of a
+ * completed challenge is handed out once, and only to the browser holding the
+ * binding cookie set when the challenge was created. A poll before completion
+ * just shows `pending`; the service must not call this for it. Email and
+ * Google set the session in their own completion request.
+ */
+export function assertLoginChallengeSessionClaimable(input: {
+  readonly challenge: LoginChallenge;
+  readonly browserBindingMatches: boolean;
+  /** True once a session was issued for this challenge (stored server-side). */
+  readonly sessionAlreadyIssued: boolean;
+}): void {
+  if (input.challenge.channel !== "whatsapp_inbound")
+    throw new IdentityError("CHALLENGE_NOT_PENDING");
+  if (!input.browserBindingMatches)
+    throw new IdentityError("CHALLENGE_BROWSER_MISMATCH");
+  if (input.challenge.status !== "completed" || input.sessionAlreadyIssued)
+    throw new IdentityError("CHALLENGE_NOT_PENDING");
 }
 
 /**
@@ -542,6 +566,13 @@ export function isApprovalRequestExpired(
 export function assertApprovalRequestDecidable(input: {
   readonly request: ApprovalRequest;
   readonly decidedBy: UserId;
+  /**
+   * Approvers of the earlier levels of the same chain (§6 approval_policies
+   * requires_distinct_actor): HR then Finance are two people. Passed even when
+   * access.assertApprovalDecisionAllowed already ran, so this lifecycle step
+   * fails closed on its own.
+   */
+  readonly priorApproverIds: readonly UserId[];
   readonly now: Date;
 }): void {
   if (input.request.status !== "pending")
@@ -550,6 +581,12 @@ export function assertApprovalRequestDecidable(input: {
     throw new IdentityError("APPROVAL_REQUEST_EXPIRED");
   if (input.decidedBy.toLowerCase() === input.request.requestedBy.toLowerCase())
     throw new AccessError("APPROVER_IS_REQUESTER");
+  if (
+    input.priorApproverIds.some(
+      (id) => id.toLowerCase() === input.decidedBy.toLowerCase(),
+    )
+  )
+    throw new AccessError("APPROVER_ALREADY_DECIDED");
 }
 
 /**
@@ -560,6 +597,7 @@ export function recordApprovalDecision(input: {
   readonly request: ApprovalRequest;
   readonly decision: "approved" | "rejected";
   readonly decidedBy: UserId;
+  readonly priorApproverIds: readonly UserId[];
   readonly reason: string;
   readonly now: Date;
 }): ApprovalRequest {

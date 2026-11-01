@@ -101,10 +101,49 @@ describe("login code and message (AUTH-01)", () => {
       identity.IdentityError,
       "CHALLENGE_NOT_PENDING",
     );
+    // The WhatsApp code completes in the webhook (no browser); the binding is
+    // enforced when the polling browser collects the session, exactly once.
+    const viaWebhook = identity.completeLoginChallenge({
+      challenge: pending,
+      browserBindingMatches: false,
+      matchedUserId: fx.usersByKey.sari.id,
+      completedAt: now,
+    });
+    assert.equal(viaWebhook.status, "completed");
+    throwsCode(
+      () =>
+        identity.assertLoginChallengeSessionClaimable({
+          challenge: viaWebhook,
+          browserBindingMatches: false,
+          sessionAlreadyIssued: false,
+        }),
+      identity.IdentityError,
+      "CHALLENGE_BROWSER_MISMATCH",
+    );
+    identity.assertLoginChallengeSessionClaimable({
+      challenge: viaWebhook,
+      browserBindingMatches: true,
+      sessionAlreadyIssued: false,
+    });
+    for (const [challenge, issued] of [
+      [viaWebhook, true],
+      [pending, false],
+    ])
+      throwsCode(
+        () =>
+          identity.assertLoginChallengeSessionClaimable({
+            challenge,
+            browserBindingMatches: true,
+            sessionAlreadyIssued: issued,
+          }),
+        identity.IdentityError,
+        "CHALLENGE_NOT_PENDING",
+      );
+    // Google completes in the browser, so its state binding is checked there.
     throwsCode(
       () =>
         identity.completeLoginChallenge({
-          challenge: pending,
+          challenge: { ...pending, channel: "google" },
           browserBindingMatches: false,
           matchedUserId: fx.usersByKey.sari.id,
           completedAt: now,
@@ -542,6 +581,7 @@ describe("approval requests and matrix (§3 F7, AUTH-06)", () => {
     throwsCode(
       () =>
         identity.recordApprovalDecision({
+          priorApproverIds: [],
           request,
           decision: "approved",
           decidedBy: request.requestedBy,
@@ -552,6 +592,7 @@ describe("approval requests and matrix (§3 F7, AUTH-06)", () => {
       "APPROVER_IS_REQUESTER",
     );
     const decided = identity.recordApprovalDecision({
+      priorApproverIds: [],
       request,
       decision: "approved",
       decidedBy: fx.usersByKey.supervisor.id,
@@ -560,6 +601,20 @@ describe("approval requests and matrix (§3 F7, AUTH-06)", () => {
     });
     assert.equal(decided.status, "approved");
     assert.equal(decided.decidedBy, fx.usersByKey.supervisor.id);
+    // A later level of the same chain needs a different person.
+    throwsCode(
+      () =>
+        identity.recordApprovalDecision({
+          priorApproverIds: [fx.usersByKey.supervisor.id],
+          request,
+          decision: "approved",
+          decidedBy: fx.usersByKey.supervisor.id,
+          reason: "Saya setujui lagi.",
+          now,
+        }),
+      access.AccessError,
+      "APPROVER_ALREADY_DECIDED",
+    );
     assert.equal(decided.decidedAt, iso(now));
     assert.ok(identity.approvalRequestSchema.parse(decided));
 
@@ -637,6 +692,7 @@ describe("approval requests and matrix (§3 F7, AUTH-06)", () => {
     throwsCode(
       () =>
         identity.recordApprovalDecision({
+          priorApproverIds: [],
           request: pending,
           decision: "approved",
           decidedBy: fx.usersByKey.supervisor.id,
@@ -649,6 +705,7 @@ describe("approval requests and matrix (§3 F7, AUTH-06)", () => {
     throwsCode(
       () =>
         identity.recordApprovalDecision({
+          priorApproverIds: [],
           request: requestById(fx.approvalRequests[4].id),
           decision: "rejected",
           decidedBy: fx.usersByKey.owner.id,
@@ -846,4 +903,45 @@ describe("fixtures and endpoints", () => {
       "Sari@Gmail.com",
     );
   });
+});
+
+test("AUTH-01 login codes come from the CSPRNG and every WhatsApp digest uses one normalizer", async () => {
+  const code = identity.generateLoginCode();
+  assert.match(code, identity.LOGIN_CODE_PATTERN);
+  assert.equal(identity.normalizeLoginCode(code), code);
+  // byte & 31 maps every byte onto the 32-symbol alphabet.
+  assert.equal(
+    identity.generateLoginCode((bytes) => bytes.fill(255)),
+    "ZZZZZZZZ",
+  );
+  assert.equal(
+    identity.generateLoginCode((bytes) => bytes.fill(0)),
+    "00000000",
+  );
+  const secret = "identity-digest-secret-0001";
+  const digest = await identity.whatsAppNumberDigest("6281234567890", secret);
+  assert.match(digest, /^[0-9a-f]{64}$/);
+  for (const form of ["081234567890", "+62 812-3456-7890", "(0812) 3456 7890"])
+    assert.equal(await identity.whatsAppNumberDigest(form, secret), digest);
+  await assert.rejects(
+    () => identity.whatsAppNumberDigest("6281234567890", "short"),
+    TypeError,
+  );
+  await assert.rejects(
+    () => identity.whatsAppNumberDigest("abc", secret),
+    RangeError,
+  );
+});
+
+test("§3 F6 setting a staff pin refuses an easily guessed pin; verifying still takes any 6 digits", () => {
+  for (const pin of ["000000", "123456", "654321"])
+    assert.equal(identity.setStaffPinSchema.safeParse({ pin }).success, false);
+  assert.equal(
+    identity.setStaffPinSchema.safeParse({ pin: "582914" }).success,
+    true,
+  );
+  assert.equal(
+    identity.verifyStaffPinSchema.safeParse({ pin: "123456" }).success,
+    true,
+  );
 });
