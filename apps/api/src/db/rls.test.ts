@@ -51,7 +51,13 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // migration enables RLS with an open SELECT policy and a tenant-checked
     // write policy (INSERT/UPDATE/DELETE), and does not FORCE it so the
     // migration owner can repair rows. Proven by the test below.
-    const allowlist = ["public.tenant_domains"];
+    //
+    // public.payment_link_tokens: the guest holds a payment link token and has
+    // no tenant context yet (PRD §3.13, TEN-02). The row is only a SHA-256 token
+    // hash plus tenant/outlet/link ids — never an amount or guest data — so
+    // SELECT is open while writes stay tenant-checked (migration 0015). Its
+    // tenant table, payment_links, keeps the full restrictive policy.
+    const allowlist = ["public.tenant_domains", "public.payment_link_tokens"];
     const result = await pool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_attribute a
