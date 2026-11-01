@@ -20,13 +20,14 @@ export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
   "WS-01":
     "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated",
-  "WS-02": "device.registered device.revoked print_job.created",
+  "WS-02":
+    "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored",
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.updated cashier_shift.opened cashier_shift.closed",
   "WS-05":
-    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent",
+    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported",
   "WS-06":
     "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded",
   "WS-07":
