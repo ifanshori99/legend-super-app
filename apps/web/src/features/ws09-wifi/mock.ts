@@ -110,19 +110,31 @@ async function deviceDigest(fingerprint: string): Promise<string> {
 function applySpend(sameDaySpendIdr: number) {
   const state = store.get();
   const spend = Math.max(state.sameDaySpendIdr, sameDaySpendIdr);
-  const sessions = state.sessions.map((session) =>
+  const sessions = recomputeSessions(state, spend);
+  store.set({ ...state, sameDaySpendIdr: spend, sessions });
+  return sessions;
+}
+
+/**
+ * Recompute every active session from the day's spend the mock already holds.
+ * FAC-12: the spend comes from the mock's settled-payment state
+ * (`wifiMockControl.pay`), never from the refresh request body.
+ */
+function recomputeSessions(
+  state: WifiMockState,
+  sameDaySpendIdr: number,
+): WifiSession[] {
+  return state.sessions.map((session) =>
     session.endedAt === null
       ? deriveTier({
           ...session,
           quotaMinutes: dailyQuotaMinutes(policyOf(session), {
             isPeak: false,
-            sameDaySpendIdr: spend,
+            sameDaySpendIdr,
           }),
         })
       : session,
   );
-  store.set({ ...state, sameDaySpendIdr: spend, sessions });
-  return sessions;
 }
 
 /**
@@ -209,13 +221,15 @@ registerMock(startWifiSession, async ({ body }) => {
   return { data: quotaView(session) };
 });
 
-registerMock(refreshWifiQuota, ({ body }) => {
-  const active = store
-    .get()
-    .sessions.find((session) => session.endedAt === null);
+// FAC-12: the request body is empty (the mock runtime validates it), and the
+// spend is the one the mock's settled payments already recorded.
+registerMock(refreshWifiQuota, () => {
+  const state = store.get();
+  const active = state.sessions.find((session) => session.endedAt === null);
   if (!active)
     throw new ApiError(409, "CONFLICT", "Belum ada sesi Wi-Fi yang aktif.");
-  const sessions = applySpend(body.sameDaySpendIdr);
+  const sessions = recomputeSessions(state, state.sameDaySpendIdr);
+  store.set({ ...state, sessions });
   const updated = sessions.find((session) => session.id === active.id);
   return { data: quotaView(updated ?? active) };
 });

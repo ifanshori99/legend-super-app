@@ -306,7 +306,11 @@ export const getCurrentWifiSession = defineEndpoint({
   response: dataResponseSchema(wifiQuotaViewSchema.nullable()),
 });
 
-/** Recompute the daily allowance after a payment lands (FAC-12, <= 1 minute). */
+/**
+ * Recompute the daily allowance after a payment lands (FAC-12, <= 1 minute).
+ * The server recomputes spend from the account's settled payments; the body
+ * schema is a strict empty object so a client cannot supply its own spend.
+ */
 export const refreshWifiQuota = defineEndpoint({
   method: "POST",
   path: "/api/wifi/sessions/current/refresh",
