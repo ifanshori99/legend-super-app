@@ -37,8 +37,10 @@ export const MESSAGE_KEYS: readonly MessageKey[] = (() => {
 })();
 
 /** True for a key of the catalog; used to reject typo'd tenant overrides. */
+const messageKeySet: ReadonlySet<string> = new Set(MESSAGE_KEYS);
+
 export function isMessageKey(value: string): value is MessageKey {
-  return (MESSAGE_KEYS as readonly string[]).includes(value);
+  return messageKeySet.has(value);
 }
 
 /** Flat tenant overrides, e.g. { "nav.customer.menu": "Daftar Menu" }. */

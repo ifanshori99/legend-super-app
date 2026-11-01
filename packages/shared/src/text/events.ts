@@ -4,7 +4,7 @@
 // `<aggregate>.<past_verb>`; ids are ULIDs in the shared envelope.
 
 import { z } from "../core/index.ts";
-import { eventCatalogEntrySchema } from "../events/catalog.ts";
+import { defineDomainEvent } from "../events/define.ts";
 import { catalogKeySchema, textLocaleSchema } from "./schemas.ts";
 
 export const textOverrideUpdatedPayloadSchema = z.strictObject({
@@ -23,12 +23,10 @@ export const TEXT_EVENT_PAYLOADS = {
   "text_override.updated": textOverrideUpdatedPayloadSchema,
 } as const;
 
-export const textEventCatalog = ["text_override.updated"].map((name) =>
-  eventCatalogEntrySchema.parse({
-    name,
-    aggregateType: name.split(".")[0],
-    version: 1,
-    payloadSchemaRef: `${name}.v1`,
-    workstream: "WS-00",
-  }),
-);
+/** Catalog-bound definition (contracts.md "One catalog, typed payloads"). */
+export const textOverrideUpdatedEvent = defineDomainEvent({
+  name: "text_override.updated",
+  payload: textOverrideUpdatedPayloadSchema,
+});
+
+export const textEventCatalog = [textOverrideUpdatedEvent.entry];

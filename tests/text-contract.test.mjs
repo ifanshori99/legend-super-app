@@ -148,6 +148,10 @@ test("text overrides have a WS-00 event and a strict payload", () => {
   assert.ok(
     events.eventCatalog.some((entry) => entry.name === "text_override.updated"),
   );
+  assert.equal(
+    text.textOverrideUpdatedEvent.payloadSchemaRef,
+    "text_override.updated.v1",
+  );
   const payload = text.TEXT_EVENT_PAYLOADS["text_override.updated"];
   assert.ok(
     payload.parse({
