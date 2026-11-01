@@ -69,38 +69,40 @@ export function CustomerShell({
         </div>
       </Main>
 
-      <nav
-        aria-label={t("shell.mainNav")}
-        className="shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
-      >
-        <ul
-          className="mx-auto grid w-full max-w-2xl"
-          style={{
-            gridTemplateColumns: `repeat(${nav.length}, minmax(0, 1fr))`,
-          }}
+      {nav.length > 1 && (
+        <nav
+          aria-label={t("shell.mainNav")}
+          className="shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
         >
-          {nav.map(({ label, href, icon: Icon, current, count }) => (
-            <li key={label}>
-              <LinkComponent
-                href={href}
-                aria-current={current ? "page" : undefined}
-                className={cn(
-                  "relative flex min-h-16 flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors hover:text-foreground",
-                  current && "font-semibold text-primary hover:text-primary",
-                )}
-              >
-                <Icon className="size-6" aria-hidden="true" />
-                {label}
-                {count !== undefined && count > 0 && (
-                  <span className="absolute top-2 left-1/2 ml-2 min-w-5 rounded-full bg-primary px-1.5 text-center text-xs leading-5 font-semibold text-primary-foreground tabular">
-                    {count}
-                  </span>
-                )}
-              </LinkComponent>
-            </li>
-          ))}
-        </ul>
-      </nav>
+          <ul
+            className="mx-auto grid w-full max-w-2xl"
+            style={{
+              gridTemplateColumns: `repeat(${nav.length}, minmax(0, 1fr))`,
+            }}
+          >
+            {nav.map(({ label, href, icon: Icon, current, count }) => (
+              <li key={label}>
+                <LinkComponent
+                  href={href}
+                  aria-current={current ? "page" : undefined}
+                  className={cn(
+                    "relative flex min-h-16 flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors hover:text-foreground",
+                    current && "font-semibold text-primary hover:text-primary",
+                  )}
+                >
+                  <Icon className="size-6" aria-hidden="true" />
+                  {label}
+                  {count !== undefined && count > 0 && (
+                    <span className="absolute top-2 left-1/2 ml-2 min-w-5 rounded-full bg-primary px-1.5 text-center text-xs leading-5 font-semibold text-primary-foreground tabular">
+                      {count}
+                    </span>
+                  )}
+                </LinkComponent>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
     </ThemeScope>
   );
 }

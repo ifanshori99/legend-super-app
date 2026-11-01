@@ -215,3 +215,21 @@ test("both web entry points import the startup validation", () => {
     /plugins: \["\.\/server\/plugins\/deployment-env\.ts"\]/,
   );
 });
+
+test("a mock-mode web build refuses to start outside development", () => {
+  for (const mode of ["staging", "production"]) {
+    const result = loadWebEnv({ DEPLOYMENT_MODE: mode, VITE_API_MOCK: "true" });
+    assert.equal(result.status, 1, mode);
+    assert.match(result.stderr, /VITE_API_MOCK: mock mode is only allowed/);
+  }
+  const dev = loadWebEnv({
+    DEPLOYMENT_MODE: "development",
+    VITE_API_MOCK: "true",
+  });
+  assert.equal(dev.status, 0, dev.stderr);
+});
+
+test("every web page defaults to Cache-Control private, no-store", () => {
+  const start = readFileSync(resolve(root, "apps/web/src/start.ts"), "utf8");
+  assert.match(start, /"Cache-Control": "private, no-store"/);
+});

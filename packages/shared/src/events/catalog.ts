@@ -35,7 +35,7 @@ export const eventCatalogEntrySchema = z
 export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
   "WS-01":
-    "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed",
+    "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.granted support_access.ended config_import.completed usage_limit.reached",
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
@@ -53,7 +53,7 @@ const namesByWorkstream = {
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
-    "employee.updated attendance.recorded payroll_run.completed payslip.created",
+    "employee.updated attendance.logged shift.published leave.approved payroll_run.completed payslip.created",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
