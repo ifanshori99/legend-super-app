@@ -37,7 +37,8 @@
     "./delivery": "./src/delivery/index.ts",
     "./website": "./src/website/index.ts",
     "./hris": "./src/hris/index.ts",
-    "./platform": "./src/platform/index.ts"
+    "./platform": "./src/platform/index.ts",
+    "./dashboard": "./src/dashboard/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
