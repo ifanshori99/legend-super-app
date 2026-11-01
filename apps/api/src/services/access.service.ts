@@ -412,6 +412,38 @@ export async function updateCustomRole(
         : normalizeCustomRolePermissions(nextPermissions, {
             mfaRequested: input.mfaRequired,
           }).mfaRequired;
+    const added = nextPermissions.filter(
+      (code) => !current.permissions.includes(code),
+    );
+    const removed = current.permissions.filter(
+      (code) => !nextPermissions.includes(code),
+    );
+    // PRD §3.7 Pemberian Role: "pengguna tidak dapat menaikkan hak dirinya
+    // sendiri". Editing a role the actor holds (now or from a future
+    // valid_from) would raise their own rights without a grant, so adding a
+    // permission or dropping the MFA requirement on such a role is refused.
+    if (added.length > 0 || (current.mfaRequired && !nextMfa)) {
+      const [held] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, context.tenant.tenantId),
+            eq(roleAssignments.userId, actorUserId),
+            eq(roleAssignments.roleId, roleId),
+            or(
+              isNull(roleAssignments.validUntil),
+              gt(roleAssignments.validUntil, now),
+            ),
+          ),
+        )
+        .limit(1);
+      if (held)
+        throw new AccessError(
+          "SELF_ELEVATION_FORBIDDEN",
+          "Anda tidak dapat menambah hak pada role yang Anda pegang sendiri.",
+        );
+    }
     const previous = {
       name: current.name,
       permissions: current.permissions,
@@ -438,12 +470,6 @@ export async function updateCustomRole(
         throw new HttpError(409, "CONFLICT", "That role name is taken.");
       throw error;
     }
-    const added = nextPermissions.filter(
-      (code) => !current.permissions.includes(code),
-    );
-    const removed = current.permissions.filter(
-      (code) => !nextPermissions.includes(code),
-    );
     await appendAccessEvent(tx, context, roleUpdatedEvent, {
       aggregateId: row.id,
       actorUserId,
@@ -714,6 +740,18 @@ export async function endRoleAssignment(
         422,
         "VALIDATION_ERROR",
         "validUntil must be after validFrom.",
+      );
+    // "End" only shortens. Moving valid_until later would extend a temporary
+    // assignment or re-activate an ended one (incl. the actor's own) without
+    // the grant rules (re-auth, no self-elevation; PRD §3.7 Pemberian Role).
+    if (
+      current.validUntil !== null &&
+      validUntil.getTime() > current.validUntil.getTime()
+    )
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "An assignment can only be shortened; grant a new one to extend it.",
       );
     const [row] = await tx
       .update(roleAssignments)

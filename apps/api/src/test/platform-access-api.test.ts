@@ -275,6 +275,91 @@ describe("§3.7 role templates and custom roles", () => {
   });
 });
 
+describe("§3.7 no self-elevation through role edits or assignment ends", () => {
+  it("§3.7 refuses adding rights to a role the editor holds; others may", async () => {
+    const owner1 = await signedIn("Role Owner");
+    await assign(owner1.userId, "owner");
+    const created = await owner1.client
+      .post("/api/access/roles")
+      .set(originHeader)
+      .send({
+        name: `Role editor ${unique()}`,
+        permissions: ["access.role.view", "access.role.manage"],
+        allowedScopeTypes: ["tenant"],
+      });
+    expect(created.status).toBe(201);
+    const roleId = created.body.data.id as string;
+    createdRoleIds.push(roleId);
+
+    const editor = await signedIn("Role Editor");
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $4)`,
+      [seededTenantId, editor.userId, roleId, owner1.userId],
+    );
+
+    const elevate = await editor.client
+      .patch(`/api/access/roles/${roleId}`)
+      .set(originHeader)
+      .send({
+        permissions: ["access.role.view", "access.role.manage", "payroll.view"],
+      });
+    expect(elevate.status).toBe(403);
+    expect(elevate.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
+    const rename = await editor.client
+      .patch(`/api/access/roles/${roleId}`)
+      .set(originHeader)
+      .send({ name: `Role editor renamed ${unique()}` });
+    expect(rename.status).toBe(200);
+
+    const byOwner = await owner1.client
+      .patch(`/api/access/roles/${roleId}`)
+      .set(originHeader)
+      .send({
+        permissions: [
+          "access.role.view",
+          "access.role.manage",
+          "audit.log.view",
+        ],
+      });
+    expect(byOwner.status).toBe(200);
+    expect(byOwner.body.data.permissions).toContain("audit.log.view");
+  });
+
+  it("§3.7 ending an assignment never extends or re-activates it", async () => {
+    const grantor = await signedIn("End Grantor");
+    await assign(grantor.userId, "owner");
+    const grantee = await signedIn("End Grantee");
+    const now = new Date();
+    const assignment = await grantRoleAssignment(
+      scopedContext(),
+      grantRoleSchema.parse({
+        userId: grantee.userId,
+        roleId: await roleIdOf("supervisor"),
+        scope: { type: "outlet", id: bandung },
+        validFrom: new Date(now.getTime() - 3_600_000).toISOString(),
+        validUntil: new Date(now.getTime() - 1_800_000).toISOString(),
+      }),
+      {
+        actorUserId: grantor.userId,
+        reauthenticatedAt: now,
+        mfaVerified: true,
+      },
+    );
+    const revive = await grantor.client
+      .post(`/api/access/role-assignments/${assignment.id}/end`)
+      .set(originHeader)
+      .send({
+        validUntil: new Date(now.getTime() + 86_400_000).toISOString(),
+        reason: "Coba aktifkan lagi.",
+      });
+    expect(revive.status).toBe(422);
+    const access = await grantee.client.get("/api/me/access");
+    expect(access.body.data.permissions).toEqual([]);
+  });
+});
+
 describe("§3.7 Pemberian Role", () => {
   it("§3.7 blocks self-grant and requires a recent re-authentication", async () => {
     const grantor = await signedIn("Grantor");
