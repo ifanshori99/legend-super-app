@@ -39,7 +39,7 @@ const namesByWorkstream = {
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created",
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed",
   "WS-05":
