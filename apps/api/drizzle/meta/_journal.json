@@ -36,6 +36,13 @@
       "when": 1793544723891,
       "tag": "0004_brave_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793545509308,
+      "tag": "0005_outbox_replay_guard",
+      "breakpoints": true
     }
   ]
 }

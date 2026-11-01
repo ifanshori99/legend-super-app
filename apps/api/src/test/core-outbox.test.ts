@@ -214,4 +214,54 @@ describe("transactional domain event outbox", () => {
       expect(audit.rows).toEqual([{ generation: 1, reason: "Operator retry" }]);
     });
   });
+  it("enforces audited replay and monotonic generations in the database", async () => {
+    const third = {
+      ...row,
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FC0",
+      event: {
+        ...event,
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+        aggregateId: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+        sequence: 1,
+      },
+    };
+    await withTenant(database, context(tenantA), async (tx) =>
+      appendOutbox(tx, context(tenantA), third),
+    );
+    const enqueue = async () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    expect(await relayOutbox(database, context(tenantA), enqueue)).toBe(1);
+    await markOutboxDead(database, context(tenantA), {
+      outboxId: third.id,
+      generation: 0,
+    });
+    const id = sql`(SELECT id FROM domain_event_outbox WHERE event->>'id' = ${third.event.id})`;
+    // A direct requeue without an operator replay audit record is refused.
+    await expect(
+      withTenant(database, context(tenantA), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_generation = 1, dispatch_job_id = NULL, dead_lettered_at = NULL WHERE id = ${id}`,
+        ),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      withTenant(database, context(tenantA), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_job_id = NULL, dead_lettered_at = NULL WHERE id = ${id}`,
+        ),
+      ),
+    ).rejects.toThrow();
+    await replayOutbox(database, context(tenantA), {
+      outboxId: third.id,
+      actor: { type: "user", id: "33333333-3333-4333-8333-333333333333" },
+      reason: "Operator retry",
+      authorize: async () => true,
+    });
+    await expect(
+      withTenant(database, context(tenantA), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_outbox SET dispatch_generation = 0 WHERE id = ${id}`,
+        ),
+      ),
+    ).rejects.toThrow();
+  });
 });

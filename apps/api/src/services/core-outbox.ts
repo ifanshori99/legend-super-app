@@ -266,6 +266,9 @@ export async function consumeOutbox(
     await tx.execute(
       sql`UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now(), lease_owner = NULL, lease_until = NULL, attempts = attempts + 1 WHERE id = ${String(row.id)}::uuid`,
     );
+    // The next sequence of this aggregate is claimable now; wake the relay on
+    // commit instead of waiting for the next scheduled sweep.
+    await tx.execute(sql`SELECT pg_notify('legend_outbox_wakeup', '')`);
     return true;
   });
 }
