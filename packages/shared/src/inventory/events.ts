@@ -17,10 +17,8 @@ import {
   uuidSchema,
   z,
 } from "../core/index.ts";
-import {
-  eventCatalogEntrySchema,
-  eventEnvelopeSchema,
-} from "../events/index.ts";
+import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import {
   inventoryItemIdSchema,
   recipeIdSchema,
@@ -37,16 +35,6 @@ export const inventoryEventNames = [
   "recipe.cost_changed",
 ] as const;
 export type InventoryEventName = (typeof inventoryEventNames)[number];
-
-export const inventoryEventCatalogEntries = inventoryEventNames.map((name) =>
-  eventCatalogEntrySchema.parse({
-    name,
-    aggregateType: name.split(".")[0],
-    version: 1,
-    payloadSchemaRef: `${name}.v1`,
-    workstream: "WS-06",
-  }),
-);
 
 /** The ledger row that caused the event; quantity is signed (D-CORE ledger). */
 export const stockMovedEventPayloadSchema = z.strictObject({
@@ -98,15 +86,47 @@ export type RecipeCostChangedEventPayload = z.infer<
   typeof recipeCostChangedEventPayloadSchema
 >;
 
-/** Envelope narrowed to this domain's event names (same pattern as payment). */
-export const inventoryEventSchema = eventEnvelopeSchema.refine((event) =>
-  (inventoryEventNames as readonly string[]).includes(event.name),
-);
-export type InventoryEvent = z.infer<typeof inventoryEventSchema>;
-
 /** Payload schema per event name, for the outbox writer and consumers. */
 export const inventoryEventPayloadSchemas = {
   "stock.moved": stockMovedEventPayloadSchema,
   "stock.critical": stockCriticalEventPayloadSchema,
   "recipe.cost_changed": recipeCostChangedEventPayloadSchema,
 } as const;
+
+/**
+ * Catalog-bound definitions (contracts.md "One catalog, typed payloads"):
+ * defineDomainEvent throws at module load for an uncatalogued name, and each
+ * `envelopeSchema` validates name, version, schema ref and payload together.
+ */
+export const inventoryEvents = Object.fromEntries(
+  inventoryEventNames.map((name) => [
+    name,
+    defineDomainEvent({
+      name,
+      payload: inventoryEventPayloadSchemas[name] as z.ZodType<
+        Record<string, unknown>
+      >,
+    }),
+  ]),
+) as Record<InventoryEventName, ReturnType<typeof defineDomainEvent>>;
+
+export const inventoryEventCatalogEntries: readonly EventCatalogEntry[] =
+  inventoryEventNames.map((name) => inventoryEvents[name].entry);
+
+/** Envelope whose name and payload belong to this domain. */
+export const inventoryEventSchema = eventEnvelopeSchema
+  .refine(
+    (event) => (inventoryEventNames as readonly string[]).includes(event.name),
+    { path: ["name"], message: "Not an inventory event" },
+  )
+  .refine(
+    (event) =>
+      inventoryEvents[
+        event.name as InventoryEventName
+      ]?.envelopeSchema.safeParse(event).success === true,
+    {
+      path: ["payload"],
+      message: "Event does not match its catalogued schema",
+    },
+  );
+export type InventoryEvent = EventEnvelope;

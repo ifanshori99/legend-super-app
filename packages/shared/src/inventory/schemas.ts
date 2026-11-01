@@ -16,12 +16,11 @@
 //   (`transitionStockCount` + `assertStockCountApproval`).
 // - INV-04: an ingredient cost change updates the theoretical menu HPP; the
 //   `recipe.cost_changed` event carries the new cost.
-// - INV-05: receipts and production write the quantity actually accepted
-//   (`production_in`); partial goods receipt stays in the purchasing contract
-//   (WS-06 purchasing bead legend-ejk).
+// - INV-05 (partial Goods Receipt posts the quantity actually received) is a
+//   purchasing rule and belongs to the purchasing contract (bead legend-ejk);
+//   this contract only provides the `receipt` movement it writes.
 
 import {
-  addIdr,
   basisPointsSchema,
   brandIdSchema,
   businessDateSchema,
@@ -32,13 +31,11 @@ import {
   idr,
   idrSchema,
   isoDateTimeSchema,
-  multiplyDecimal4,
   outletIdSchema,
   parseDecimal4,
   tenantIdSchema,
   ulidIdSchema,
   ulidSchema,
-  unitCostOf,
   userIdSchema,
   uuidIdSchema,
   uuidSchema,
@@ -377,6 +374,28 @@ export const stockLedgerEntrySchema = z
         path: ["quantity"],
         message: `${entry.movementType} must be negative (stock out)`,
       });
+    // `return` takes its direction from the document: a purchase return sends
+    // stock back to the supplier (out), a restocked sales return comes in.
+    if (
+      entry.movementType === "return" &&
+      entry.sourceType === "purchase_return" &&
+      quantity > 0n
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["quantity"],
+        message: "A purchase return must be negative (stock out)",
+      });
+    if (
+      entry.movementType === "return" &&
+      entry.sourceType === "order" &&
+      quantity < 0n
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["quantity"],
+        message: "A sales return must be positive (stock in)",
+      });
     if (!STOCK_MOVEMENT_SOURCES[entry.movementType].includes(entry.sourceType))
       context.addIssue({
         code: "custom",
@@ -432,9 +451,15 @@ export function applyStockMovement(
       quantity: formatDecimal4(nextQuantity),
       avgCostIdr: balance.avgCostIdr,
     };
-  // A negative balance can be replenished exactly to zero; no cost remains.
-  if (nextQuantity === 0n)
-    return { quantity: formatDecimal4(0n), avgCostIdr: formatDecimal4(0n) };
+  // Nothing (or less than nothing, after real-time sale deduction ran ahead of
+  // a receipt) is on hand: the old average values no stock, so the inflow's
+  // cost becomes the average. Weighting a negative quantity would distort the
+  // average and can even turn it negative (review legend-p38).
+  if (currentQuantity <= 0n)
+    return {
+      quantity: formatDecimal4(nextQuantity),
+      avgCostIdr: movement.unitCostIdr,
+    };
   const value =
     currentQuantity * parseDecimal4(balance.avgCostIdr) +
     delta * parseDecimal4(movement.unitCostIdr);
@@ -500,9 +525,8 @@ export function stockBalanceValueIdr(
 
 /**
  * Converts a quantity between two units of one item, walking the stored
- * conversion graph in both directions (BFS, multiply factors). Throws
- * `UOM_CONVERSION_MISSING` when no path exists. Reciprocal factors are rounded
- * to NUMERIC(14,4), so keep conversion chains short where precision matters.
+ * conversion graph in both directions (BFS, exact rational factors, one
+ * rounding at the end). Throws `UOM_CONVERSION_MISSING` when no path exists.
  */
 export function convertQuantity(
   quantity: Decimal4,
@@ -512,37 +536,52 @@ export function convertQuantity(
   mode: RoundingMode = "half_up",
 ): Decimal4 {
   if (fromUomId === toUomId) return quantity;
-  const graph = new Map<string, { to: string; factor: Decimal4 }[]>();
-  const addEdge = (from: string, to: string, factor: Decimal4): void => {
+  // Each edge multiplies by `numerator / denominator` (both NUMERIC(14,4)
+  // scaled); the reverse edge swaps them, so 1 / factor is never rounded and
+  // the whole chain rounds once (6000 ml in a 12000 ml carton is 0.5000, not
+  // 6000 x 0.0001 = 0.6000).
+  type Edge = { to: string; numerator: bigint; denominator: bigint };
+  const graph = new Map<string, Edge[]>();
+  const addEdge = (from: string, edge: Edge): void => {
     const edges = graph.get(from) ?? [];
-    edges.push({ to, factor });
+    edges.push(edge);
     graph.set(from, edges);
   };
   for (const conversion of conversions) {
-    addEdge(conversion.fromUomId, conversion.toUomId, conversion.factor);
-    addEdge(
-      conversion.toUomId,
-      conversion.fromUomId,
-      formatDecimal4(
-        divideRounded(100_000_000n, parseDecimal4(conversion.factor), mode),
-      ),
-    );
+    const factor = parseDecimal4(conversion.factor);
+    addEdge(conversion.fromUomId, {
+      to: conversion.toUomId,
+      numerator: factor,
+      denominator: 10_000n,
+    });
+    addEdge(conversion.toUomId, {
+      to: conversion.fromUomId,
+      numerator: 10_000n,
+      denominator: factor,
+    });
   }
   const visited = new Set([fromUomId]);
-  const queue: { uomId: string; factor: Decimal4 }[] = [
-    { uomId: fromUomId, factor: formatDecimal4(10_000n) },
+  const queue: { uomId: string; numerator: bigint; denominator: bigint }[] = [
+    { uomId: fromUomId, numerator: 1n, denominator: 1n },
   ];
   while (queue.length > 0) {
     const current = queue.shift();
     if (!current) break;
     if (current.uomId === toUomId)
-      return multiplyDecimal4(quantity, current.factor, mode);
+      return formatDecimal4(
+        divideRounded(
+          parseDecimal4(quantity) * current.numerator,
+          current.denominator,
+          mode,
+        ),
+      );
     for (const edge of graph.get(current.uomId) ?? []) {
       if (visited.has(edge.to)) continue;
       visited.add(edge.to);
       queue.push({
         uomId: edge.to,
-        factor: multiplyDecimal4(current.factor, edge.factor, mode),
+        numerator: current.numerator * edge.numerator,
+        denominator: current.denominator * edge.denominator,
       });
     }
   }
@@ -930,24 +969,34 @@ export function recipeLineCostIdr(
   },
   mode: RoundingMode,
 ): Idr {
+  return idr(
+    Number(divideRounded(recipeLineCostScaled(input, mode), 10_000n, mode)),
+  );
+}
+
+/**
+ * Line cost at NUMERIC(14,4) scale (rupiah x 10^4). One rounding step:
+ * rounding the quantity first would lose precision (18 g + 2% waste is
+ * 18.36 g, which would round to 18.4 g), and recipes sum these unrounded so a
+ * cheap line (2 g sugar at Rp 0.30/g) is not rounded away before it reaches
+ * `theoreticalCostIdr` (NUMERIC(14,4), PRD §6.E).
+ */
+function recipeLineCostScaled(
+  input: { baseQuantity: Decimal4; unitCostIdr: Decimal4; wastePctBp: number },
+  mode: RoundingMode,
+): bigint {
   if (
     !Number.isInteger(input.wastePctBp) ||
     input.wastePctBp < 0 ||
     input.wastePctBp > 10_000
   )
     throw new RangeError(`Invalid waste percentage: ${input.wastePctBp}`);
-  // One rounding step: rounding the quantity first would lose precision at
-  // NUMERIC(14,4) (18 g + 2% waste is 18.36 g, which would round to 18.4 g).
-  return idr(
-    Number(
-      divideRounded(
-        parseDecimal4(input.baseQuantity) *
-          parseDecimal4(input.unitCostIdr) *
-          (10_000n + BigInt(input.wastePctBp)),
-        1_000_000_000_000n,
-        mode,
-      ),
-    ),
+  return divideRounded(
+    parseDecimal4(input.baseQuantity) *
+      parseDecimal4(input.unitCostIdr) *
+      (10_000n + BigInt(input.wastePctBp)),
+    100_000_000n,
+    mode,
   );
 }
 
@@ -987,6 +1036,7 @@ export function theoreticalRecipeCost(
     book.items.map((item) => [item.id, item]),
   );
   const costs = new Map<string, RecipeCost>();
+  const scaledTotals = new Map<string, bigint>();
   const visiting = new Set<string>();
 
   const conversionsFor = (inventoryItemId: string): UomConversion[] =>
@@ -1006,7 +1056,8 @@ export function theoreticalRecipeCost(
     if (!recipe)
       throw new InventoryError("RECIPE_NOT_FOUND", `Recipe ${id} not found`);
     visiting.add(id);
-    let total = idr(0);
+    // Rupiah x 10^4: lines are summed unrounded, rounded once below.
+    let total = 0n;
     try {
       for (const line of book.recipeLines) {
         if (line.recipeId !== id) continue;
@@ -1030,16 +1081,13 @@ export function theoreticalRecipeCost(
             conversionsFor(item.id),
             mode,
           );
-          total = addIdr(
-            total,
-            recipeLineCostIdr(
-              {
-                baseQuantity,
-                unitCostIdr: unitCost,
-                wastePctBp: line.wastePctBp,
-              },
-              mode,
-            ),
+          total += recipeLineCostScaled(
+            {
+              baseQuantity,
+              unitCostIdr: unitCost,
+              wastePctBp: line.wastePctBp,
+            },
+            mode,
           );
           continue;
         }
@@ -1060,7 +1108,8 @@ export function theoreticalRecipeCost(
             "RECIPE_COMPONENT_MISSING",
             `Nested recipe ${nestedRecipe.id} outputs missing item ${nestedRecipe.outputItemId}`,
           );
-        const nested = costOf(nestedRecipe.id);
+        costOf(nestedRecipe.id);
+        const nestedScaled = scaledTotals.get(nestedRecipe.id) ?? 0n;
         const outputConversions = conversionsFor(outputItem.id);
         const producedBase = convertQuantity(
           nestedRecipe.yieldQuantity,
@@ -1080,23 +1129,29 @@ export function theoreticalRecipeCost(
           throw new RangeError(
             `Nested recipe ${nestedRecipe.id} yields no output`,
           );
-        const lineCost = divideRounded(
-          BigInt(nested.totalCostIdr) *
+        total += divideRounded(
+          nestedScaled *
             parseDecimal4(consumedBase) *
             (10_000n + BigInt(line.wastePctBp)),
           parseDecimal4(producedBase) * 10_000n,
           mode,
         );
-        total = addIdr(total, idr(Number(lineCost)));
       }
     } finally {
       visiting.delete(id);
     }
     const cost: RecipeCost = {
       recipeId: recipe.id,
-      totalCostIdr: total,
-      unitCostIdr: unitCostOf(total, recipe.yieldQuantity, mode),
+      totalCostIdr: idr(Number(divideRounded(total, 10_000n, mode))),
+      unitCostIdr: formatDecimal4(
+        divideRounded(
+          total * 10_000n,
+          parseDecimal4(recipe.yieldQuantity),
+          mode,
+        ),
+      ),
     };
+    scaledTotals.set(id, total);
     costs.set(id, cost);
     return cost;
   };
@@ -1262,7 +1317,7 @@ export type ProductionOrderAction = z.infer<typeof productionOrderActionSchema>;
 /**
  * A batch of a semi-finished recipe. Completion writes `production_out` rows
  * for every component and one `production_in` row at `costIdr / actualQty`
- * (INV-02, INV-05). `costIdr` is whole rupiah for the batch (D-CORE-2).
+ * (PRD §17 "Produksi Batch"). `costIdr` is whole rupiah for the batch (D-CORE-2).
  */
 export const productionOrderSchema = z
   .strictObject({

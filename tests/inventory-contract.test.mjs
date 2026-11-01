@@ -1,6 +1,8 @@
 // Inventory, recipe and HPP contract tests (bead legend-p38).
 // PRD v1.7 §16 (Inventori & Gudang), §17 (Resep, Produksi & HPP), §6.E.
-// Acceptance criteria: INV-01..INV-05 (contract level), TEN-02/TEN-03 for the
+// Acceptance criteria: INV-01 (bead), plus INV-02..INV-04 at contract level;
+// INV-05 (partial Goods Receipt) is tested in the purchasing contract
+// (legend-ejk). TEN-02/TEN-03 for the
 // endpoint input schemas.
 
 import assert from "node:assert/strict";
@@ -179,13 +181,67 @@ test("INV-01 ledger sign and source pair rules reject illegal rows (PRD §6.E st
   const purchaseReturn = fixtures.ledger.find(
     (entry) => entry.sourceType === "purchase_return",
   );
+  assert.ok(parseDecimal4(purchaseReturn.quantity) < 0n);
   assert.equal(
     inventory.stockLedgerEntrySchema.safeParse({
       ...purchaseReturn,
       quantity: "1.0000",
     }).success,
+    false,
+    "a purchase return is stock out",
+  );
+  const order = fixtures.ledger.find((entry) => entry.sourceType === "order");
+  assert.equal(
+    inventory.stockLedgerEntrySchema.safeParse({
+      ...purchaseReturn,
+      sourceType: "order",
+      sourceId: order.sourceId,
+      quantity: "1.0000",
+    }).success,
     true,
     "a restocked sales return is stock in",
+  );
+  assert.equal(
+    inventory.stockLedgerEntrySchema.safeParse({
+      ...purchaseReturn,
+      sourceType: "order",
+      sourceId: order.sourceId,
+      quantity: "-1.0000",
+    }).success,
+    false,
+    "a sales return cannot take stock out",
+  );
+});
+
+test("INV-01 moving-average cost folds hand-computed rows, including negative on-hand (PRD §16 Metode Biaya)", () => {
+  const apply = (balance, quantity, unitCostIdr) =>
+    inventory.applyStockMovement(
+      balance,
+      { quantity: decimal4(quantity), unitCostIdr: decimal4(unitCostIdr) },
+      "half_up",
+    );
+  // 10 @ 100 + 5 @ 130 = 1650 / 15 = 110.0000
+  let balance = apply(
+    { quantity: "10.0000", avgCostIdr: "100.0000" },
+    "5.0000",
+    "130.0000",
+  );
+  assert.deepEqual(balance, { quantity: "15.0000", avgCostIdr: "110.0000" });
+  // An outflow keeps the average.
+  balance = apply(balance, "-4.0000", "110.0000");
+  assert.deepEqual(balance, { quantity: "11.0000", avgCostIdr: "110.0000" });
+  // 11 @ 110 + 2 @ 100 = 1410 / 13 = 108.461538... -> 108.4615 (half_up)
+  balance = apply(balance, "2.0000", "100.0000");
+  assert.deepEqual(balance, { quantity: "13.0000", avgCostIdr: "108.4615" });
+  // Real-time deduction ran ahead of the receipt: -2 on hand. Weighting the
+  // negative quantity would give (-200 + 30) / 1 = -170; the inflow cost wins.
+  assert.deepEqual(
+    apply({ quantity: "-2.0000", avgCostIdr: "100.0000" }, "3.0000", "10.0000"),
+    { quantity: "1.0000", avgCostIdr: "10.0000" },
+  );
+  assert.deepEqual(
+    apply({ quantity: "-2.0000", avgCostIdr: "100.0000" }, "2.0000", "90.0000"),
+    { quantity: "0.0000", avgCostIdr: "90.0000" },
   );
 });
 
@@ -247,6 +303,27 @@ test("INV-02 UOM conversions walk both directions and short chains (PRD §16 Ite
     (error) =>
       error instanceof inventory.InventoryError &&
       error.code === "UOM_CONVERSION_MISSING",
+  );
+
+  // The reverse edge divides by the factor instead of rounding 1 / factor:
+  // 6000 ml of a 12000 ml carton is 0.5 carton (1/12000 would round to 0.0001
+  // and give 0.6000).
+  const carton = inventory.uomConversionSchema.parse({
+    id: "00000000-0000-4000-8000-0000000000b9",
+    tenantId: fixtures.items[0].tenantId,
+    inventoryItemId: coffee.id,
+    fromUomId: "00000000-0000-4000-8000-0000000000a9",
+    toUomId: uomId("ml"),
+    factor: "12000.0000",
+  });
+  assert.equal(
+    inventory.convertQuantity(
+      decimal4("6000.0000"),
+      uomId("ml"),
+      "00000000-0000-4000-8000-0000000000a9",
+      [carton],
+    ),
+    "0.5000",
   );
 
   const tenantId = fixtures.items[0].tenantId;
@@ -407,6 +484,48 @@ test("INV-02 nested recipes cost every line and INV-04 follows ingredient cost (
   );
 });
 
+test("INV-02 recipe lines are summed at NUMERIC(14,4) and rounded once (PRD §6.E theoretical_cost_idr)", () => {
+  const coffee = itemByName("Kopi Arabika Gayo");
+  const kopiSusu = recipeByName("Kopi Susu Aren");
+  const recipe = inventory.recipeSchema.parse({
+    ...kopiSusu,
+    id: "00000000-0000-4000-8000-0000000000e1",
+    name: "Precision",
+    outputItemId: null,
+    yieldQuantity: "2.0000",
+    yieldUomId: uomId("pcs"),
+    theoreticalCostIdr: "0.0000",
+  });
+  // Three 1 g lines at Rp 0.3333/g with 2% waste: each is 0.339966 rupiah,
+  // which whole-rupiah line rounding would turn into 0. Summed at 4 dp:
+  // 3 x 0.3400 = 1.0200 total, 0.5100 per yield unit (2 portions).
+  const lines = [1, 2, 3].map((n) =>
+    inventory.recipeLineSchema.parse({
+      id: `00000000-0000-4000-8000-0000000000f${n}`,
+      tenantId: kopiSusu.tenantId,
+      recipeId: recipe.id,
+      componentType: "item",
+      componentId: coffee.id,
+      quantity: "1.0000",
+      uomId: coffee.baseUomId,
+      wastePctBp: 200,
+    }),
+  );
+  const cost = inventory.theoreticalRecipeCost(
+    {
+      recipes: [recipe],
+      recipeLines: lines,
+      items: fixtures.items,
+      conversions: [],
+      unitCosts: new Map([[coffee.id, "0.3333"]]),
+    },
+    recipe.id,
+    "half_up",
+  );
+  assert.equal(cost.unitCostIdr, "0.5100");
+  assert.equal(cost.totalCostIdr, 1);
+});
+
 test("INV-03 stock counts approve and post only through the state machine (PRD §16 Stok Opname)", () => {
   assert.equal(inventory.transitionStockCount("draft", "start"), "counting");
   assert.equal(
@@ -505,7 +624,7 @@ test("INV-04 menu HPP rows carry a coherent cost and gross margin (PRD §17 HPP 
   );
 });
 
-test("INV-05 completed production posts the actual output and its cost (PRD §17 Produksi Batch)", () => {
+test("PRD §17 Produksi Batch: completed production posts the actual output and its cost", () => {
   assert.equal(
     inventory.transitionProductionOrder("draft", "start"),
     "in_progress",
@@ -731,13 +850,34 @@ test("WS-06 inventory events are registered once and their payloads validate (PR
   );
 
   const kopi = recipeByName("Kopi Susu Aren");
-  const envelope = inventory.inventoryEventSchema.parse({
+  const stockMoved = {
     ...events.eventFixture,
     name: "stock.moved",
     aggregateType: "stock",
     payloadSchemaRef: "stock.moved.v1",
-  });
+    payload: {
+      ledgerEntryId: receipt.id,
+      inventoryItemId: receipt.inventoryItemId,
+      locationId: receipt.locationId,
+      movementType: receipt.movementType,
+      quantity: receipt.quantity,
+      unitCostIdr: receipt.unitCostIdr,
+      batchId: receipt.batchId,
+      sourceType: receipt.sourceType,
+      sourceId: receipt.sourceId,
+      occurredAt: receipt.occurredAt,
+    },
+  };
+  const envelope = inventory.inventoryEventSchema.parse(stockMoved);
   assert.equal(envelope.name, "stock.moved");
+  assert.equal(
+    inventory.inventoryEventSchema.safeParse({
+      ...stockMoved,
+      payload: events.eventFixture.payload,
+    }).success,
+    false,
+    "the envelope validates the catalogued payload (defineDomainEvent)",
+  );
   assert.equal(
     inventory.inventoryEventSchema.safeParse({
       ...events.eventFixture,
@@ -819,6 +959,28 @@ test("inventory endpoints are unique and write inputs reject tenant fields (TEN-
       idempotencyKey: "fixture-production-0001",
     }).success,
     true,
+  );
+
+  const wasteInput = {
+    outletId,
+    locationId: fixtures.locations[0].id,
+    targetType: "inventory_item",
+    targetId: item.id,
+    quantity: "1.0000",
+    reason: "spoiled",
+    idempotencyKey: "fixture-waste-0001",
+  };
+  assert.equal(
+    inventory.createWasteLogInputSchema.safeParse(wasteInput).success,
+    true,
+  );
+  assert.equal(
+    inventory.createWasteLogInputSchema.safeParse({
+      ...wasteInput,
+      valueIdr: 0,
+    }).success,
+    false,
+    "the server values waste at moving-average cost; the client cannot",
   );
 
   assert.equal(

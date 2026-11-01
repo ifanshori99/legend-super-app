@@ -31,7 +31,6 @@ import {
   menuCostSchema,
   menuEngineeringRowSchema,
   nonnegativeDecimal4Schema,
-  nonnegativeIdrSchema,
   parLevelSchema,
   positiveDecimal4Schema,
   productionOrderActionSchema,
@@ -217,8 +216,8 @@ export const createWasteLogInputSchema = clientInputSchema({
   quantity: positiveDecimal4Schema,
   reason: wasteReasonSchema,
   mediaId: uuidSchema.nullable().optional(),
-  /** Server computes the loss when omitted. */
-  valueIdr: nonnegativeIdrSchema.optional(),
+  // No `valueIdr`: the loss value is quantity x the server's moving-average
+  // cost (PRD §16 "nilai kerugian"); a client-supplied value is rejected.
   occurredAt: isoDateTimeSchema.optional(),
   note: z.string().max(300).nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
