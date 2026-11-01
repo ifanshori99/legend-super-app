@@ -144,6 +144,14 @@ The customer screens of `/t/[token]` need read models the WS-03 contract beads (
 
 Guest endpoints (`/api/table-sessions/…`) are called with `Authorization: Bearer <sessionToken>` from `openOrJoinTableSession` (`lib/api/credentials.ts`).
 
+## Table operations (`@starter/shared/qr-order`, `table-operations.ts`, bead `legend-7ko`, contract scope of `legend-1dg3`)
+
+- **Board status (PRD §3.9 Papan Status).** `tableBoardStatus` derives the six PRD floor states plus `awaiting_confirmation` (open-bill session not yet confirmed) and `inactive` from one `TableLiveStatus` row; the board never stores its own status.
+- **ORD-10.** `canApplyTableStatusAction` refuses emptying a table (`mark_available`, `mark_dirty`, `deactivate`) while a session is bound to it; the session itself closes only through `closeTableSession` (settled bill or waiter confirmation). `hasActiveSession` is derived on the server.
+- **Move / merge / move items.** A session moves only to an empty table in a zone with the same payment mode (the mode is snapshotted at open). Merge = one shared bill (approved for launch): the source session closes `voided`, its orders, guests and table join the target. Link mode (two bills, service-only) and the table-operation events are `legend-1nmh`.
+- **Paid share lock (decision C2).** A session with any paid amount (`paidIdr > 0`, server-derived) cannot be merged, give or receive moved items, or be re-split (`SPLIT_LOCKED`); unpaid splits of a changed session are dropped because they no longer sum.
+- **RBAC.** Live operations need `floor.table.operate` (tenant admin, GM, outlet manager, supervisor, cashier, waiter; PRD §3.9 Keamanan Sesi "dikonfirmasi waiter atau kasir", ORD-10). Floor layout editing stays `floor.table.manage`.
+
 ## Identity & access (`@starter/shared/identity`, bead `legend-7sz`)
 
 Code: `packages/shared/src/identity`. Tests: `tests/identity-contract.test.mjs`. PRD §3 F6/F7, §6 B, flow §4 C and R, AUTH-01..07.
