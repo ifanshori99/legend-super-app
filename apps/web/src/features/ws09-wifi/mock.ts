@@ -43,12 +43,15 @@ const seed = cafeLegendWifiSessions[0];
 type WifiMockState = {
   sessions: WifiSession[];
   sameDaySpendIdr: number;
+  /** True once the guest pressed "Sambungkan Wi-Fi" in this page load. */
+  connected: boolean;
 };
 
 const store = createMockStore<WifiMockState>(() => ({
   sessions: [seed],
   // The fixture session carries 2 free hours + 3 hours from Rp90.000 of spend.
   sameDaySpendIdr: 90_000,
+  connected: false,
 }));
 
 function policyForZone(zoneId: string): WifiPolicy {
@@ -161,21 +164,30 @@ registerMock(getWifiPolicyForZone, ({ query }) => ({
 }));
 
 registerMock(getCurrentWifiSession, ({ scenario }) => {
-  if (scenario === "empty") return { data: null };
+  // `?mock=empty` shows "not connected" until the guest connects; after that
+  // the session exists like in any other scenario.
+  if (scenario === "empty" && !store.get().connected) return { data: null };
   const active = store
     .get()
     .sessions.find((session) => session.endedAt === null);
   return { data: active ? quotaView(active) : null };
 });
 
-registerMock(startWifiSession, async ({ body }) => {
+registerMock(startWifiSession, async ({ body, scenario }) => {
   const policy = policyForZone(body.zoneId);
-  const state = store.get();
+  // `?mock=empty` means a guest with no session yet: the fixture's running
+  // session is not theirs, so connecting starts a fresh one (0 minutes used).
+  const base = store.get();
+  const state =
+    scenario === "empty" && !base.connected ? { ...base, sessions: [] } : base;
   const digest = await deviceDigest(body.deviceFingerprint);
   const existing = state.sessions.find(
     (session) => session.deviceHash === digest,
   );
-  if (existing) return { data: quotaView(existing) };
+  if (existing) {
+    store.set({ ...state, connected: true });
+    return { data: quotaView(existing) };
+  }
 
   const activeDevices = state.sessions.filter(
     (session) => session.endedAt === null,
@@ -205,6 +217,7 @@ registerMock(startWifiSession, async ({ body }) => {
   store.set({
     ...state,
     sessions: [...state.sessions, session],
+    connected: true,
   });
   return { data: quotaView(session) };
 });
