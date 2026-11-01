@@ -56,7 +56,7 @@ describe("transactional domain event outbox", () => {
       expect(result.rows).toHaveLength(0);
     });
   });
-  it("isolates tenant rows and rejects a mismatched event tenant", async () => {
+  it("TEN-01 TEN-02 isolates tenant rows and rejects a mismatched event tenant", async () => {
     await withTenant(database, context(tenantA), async (tx) => {
       await appendOutbox(tx, context(tenantA), row);
     });

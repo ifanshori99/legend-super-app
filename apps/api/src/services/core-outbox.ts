@@ -1,14 +1,23 @@
+import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
   ulidToUuid,
   uuidSchema,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { eventEnvelopeSchema, outboxRowSchema } from "@starter/shared/events";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import {
+  eventActorSchema,
+  eventEnvelopeSchema,
+  outboxRowSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
 import type * as schema from "../db/schema";
 import { domainEventOutbox } from "../db/schema/core-events";
+import { withTenant } from "../db/tenant";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -60,6 +69,14 @@ export async function appendOutbox(
   });
 }
 
+/** drizzle expands a JS array into separate parameters; pass one Postgres
+ * array literal instead. Outlet IDs are schema-validated UUIDs. */
+function outletArray(context: ScopedTenantContext) {
+  return context.outletScope.kind === "tenant"
+    ? "{}"
+    : `{${context.outletScope.outletIds.join(",")}}`;
+}
+
 export type GapRequest = {
   destination: string;
   aggregateType: string;
@@ -79,16 +96,12 @@ export async function relayOutbox(
   }) => Promise<string>,
   requestMissing: (gap: GapRequest) => Promise<void> = async () => {},
 ) {
-  const { withTenant } = await import("../db/tenant");
-  const { sql } = await import("drizzle-orm");
-  const { uuidToUlid } = await import("@starter/shared/core");
-  const { randomUUID } = await import("node:crypto");
   const token = randomUUID();
   const rows = await withTenant(database, context, async (tx) => {
     const outletFilter =
       context.outletScope.kind === "tenant"
         ? sql`TRUE`
-        : sql`outlet_id = ANY(${[...context.outletScope.outletIds]}::uuid[])`;
+        : sql`outlet_id = ANY(${outletArray(context)}::uuid[])`;
     const result = await tx.execute(
       sql`UPDATE domain_event_outbox SET dispatch_lease_token = ${token}::uuid, dispatch_lease_until = now() + interval '60 seconds' WHERE id IN (SELECT id FROM domain_event_outbox o WHERE dispatch_state = 'ready' AND status <> 'delivered' AND available_at <= now() AND (dispatch_lease_until IS NULL OR dispatch_lease_until < now()) AND ${outletFilter} AND sequence = COALESCE((SELECT last_sequence FROM domain_event_offsets x WHERE x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id), 0) + 1 ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id, dispatch_generation`,
     );
@@ -98,7 +111,7 @@ export async function relayOutbox(
     const outletFilter =
       context.outletScope.kind === "tenant"
         ? sql`TRUE`
-        : sql`o.outlet_id = ANY(${[...context.outletScope.outletIds]}::uuid[])`;
+        : sql`o.outlet_id = ANY(${outletArray(context)}::uuid[])`;
     const result = await tx.execute(
       sql`SELECT DISTINCT o.destination, o.aggregate_type, o.event->>'aggregateId' AS aggregate_id, COALESCE(x.last_sequence, 0) + 1 AS missing_sequence FROM domain_event_outbox o LEFT JOIN domain_event_offsets x ON x.tenant_id = o.tenant_id AND x.consumer = o.destination AND x.aggregate_type = o.aggregate_type AND x.aggregate_id = o.aggregate_id WHERE ${outletFilter} AND o.status <> 'delivered' AND o.sequence > COALESCE(x.last_sequence, 0) + 1 AND NOT EXISTS (SELECT 1 FROM domain_event_outbox p WHERE p.tenant_id = o.tenant_id AND p.destination = o.destination AND p.aggregate_type = o.aggregate_type AND p.aggregate_id = o.aggregate_id AND p.sequence = COALESCE(x.last_sequence, 0) + 1) LIMIT 100`,
     );
@@ -139,8 +152,6 @@ export async function markOutboxDead(
   assertTrustedScopedContext(context);
   if (context.outletScope.kind !== "tenant")
     throw new Error("Worker requires tenant scope");
-  const { withTenant } = await import("../db/tenant");
-  const { sql } = await import("drizzle-orm");
   await withTenant(database, context, async (tx) => {
     await tx.execute(
       sql`UPDATE domain_event_outbox SET dispatch_state = 'dead', dead_lettered_at = now(), dispatch_lease_token = NULL, dispatch_lease_until = NULL WHERE id = ${ulidToUuid(input.outboxId)}::uuid AND dispatch_generation = ${input.generation} AND dispatch_state IN ('ready', 'queued') AND status <> 'delivered'`,
@@ -156,14 +167,9 @@ export async function replayOutbox(
     outboxId: string;
     actor: unknown;
     reason: string;
-    authorize: (
-      event: import("@starter/shared/events").EventEnvelope,
-    ) => Promise<boolean>;
+    authorize: (event: EventEnvelope) => Promise<boolean>;
   },
 ) {
-  const { withTenant } = await import("../db/tenant");
-  const { sql } = await import("drizzle-orm");
-  const { eventActorSchema } = await import("@starter/shared/events");
   const actor = eventActorSchema.parse(input.actor);
   if (
     actor.type !== "user" ||
@@ -206,18 +212,14 @@ export async function consumeOutbox(
   input: {
     outboxId: string;
     generation?: number;
-    authorize: (
-      event: import("@starter/shared/events").EventEnvelope,
-    ) => Promise<boolean>;
+    authorize: (event: EventEnvelope) => Promise<boolean>;
     deliver: (
-      event: import("@starter/shared/events").EventEnvelope,
+      event: EventEnvelope,
       idempotencyKey: string,
       tx: Transaction,
     ) => Promise<void>;
   },
 ) {
-  const { withTenant } = await import("../db/tenant");
-  const { sql } = await import("drizzle-orm");
   return withTenant(database, context, async (tx) => {
     const result = await tx.execute(
       sql`SELECT * FROM domain_event_outbox WHERE id = ${ulidToUuid(input.outboxId)}::uuid FOR UPDATE`,
