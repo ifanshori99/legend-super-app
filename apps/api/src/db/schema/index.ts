@@ -14,3 +14,4 @@ export * from "./platform-integrations";
 export * from "./platform-themes";
 export * from "./platform-support";
 export * from "./core-audit";
+export * from "./core-storage";
