@@ -1,0 +1,527 @@
+// Inventory endpoint contracts (bead legend-p38). The web app's typed client
+// and mock mode, and later the API route validation, read these objects (see
+// docs/frontend.md, "Typed endpoints and mock mode"); paths live under
+// /api/inventory so they cannot collide with another domain.
+//
+// Tenant comes from the domain or token, never the body (TEN-02). Outlet ids
+// in a query or write ARE client input: the server checks them against the
+// caller's outlet scope (TEN-03). Lists use cursor pagination (D-CORE-5);
+// writes that create documents carry an idempotency key.
+
+import {
+  basisPointsSchema,
+  brandIdSchema,
+  businessDateSchema,
+  clientInputSchema,
+  cursorPageQuerySchema,
+  cursorPageSchema,
+  dataResponseSchema,
+  idempotencyKeySchema,
+  isoDateTimeSchema,
+  outletIdSchema,
+  parseDecimal4,
+  uuidSchema,
+  z,
+} from "../core/index.ts";
+import { defineEndpoint } from "../api/index.ts";
+import {
+  inventoryItemIdSchema,
+  inventoryItemSchema,
+  inventoryItemTypeSchema,
+  menuCostSchema,
+  menuEngineeringRowSchema,
+  nonnegativeDecimal4Schema,
+  nonnegativeIdrSchema,
+  parLevelSchema,
+  positiveDecimal4Schema,
+  productionOrderActionSchema,
+  productionOrderSchema,
+  productionOrderStatusSchema,
+  recipeComponentTypeSchema,
+  recipeCoverageRowSchema,
+  recipeDetailSchema,
+  recipeIdSchema,
+  recipeSchema,
+  stockBatchSchema,
+  stockBalanceSchema,
+  stockCountActionSchema,
+  stockCountDetailSchema,
+  stockCountIdSchema,
+  stockCountLineIdSchema,
+  stockCountLineSchema,
+  stockCountSchema,
+  stockCountStatusSchema,
+  stockCountTypeSchema,
+  stockLedgerEntrySchema,
+  stockLocationIdSchema,
+  stockLocationSchema,
+  stockMovementTypeSchema,
+  productionOrderIdSchema,
+  uomConversionSchema,
+  uomIdSchema,
+  uomSchema,
+  wasteLogSchema,
+  wasteReasonSchema,
+  wasteTargetTypeSchema,
+  foodCostComparisonSchema,
+} from "./schemas.ts";
+
+// ---- List queries ---------------------------------------------------------
+
+export const inventoryItemListQuerySchema = cursorPageQuerySchema.extend({
+  category: z.string().min(1).max(50).optional(),
+  type: inventoryItemTypeSchema.optional(),
+});
+
+export const stockLocationListQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+});
+
+export const stockLedgerQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  inventoryItemId: inventoryItemIdSchema.optional(),
+  movementType: stockMovementTypeSchema.optional(),
+  /** Business dates in the outlet time zone (D-CORE-6). */
+  fromDate: businessDateSchema.optional(),
+  toDate: businessDateSchema.optional(),
+});
+
+export const stockBalanceQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  inventoryItemId: inventoryItemIdSchema.optional(),
+});
+
+export const stockBatchQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  inventoryItemId: inventoryItemIdSchema.optional(),
+  /** Expiring on or before this business date, for the expiry dashboard. */
+  expiresOnOrBefore: businessDateSchema.optional(),
+});
+
+export const parLevelQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  inventoryItemId: inventoryItemIdSchema.optional(),
+});
+
+export const stockCountQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  status: stockCountStatusSchema.optional(),
+  type: stockCountTypeSchema.optional(),
+});
+
+export const wasteLogQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema.optional(),
+  reason: wasteReasonSchema.optional(),
+  fromDate: businessDateSchema.optional(),
+  toDate: businessDateSchema.optional(),
+});
+
+export const recipeQuerySchema = cursorPageQuerySchema.extend({
+  brandId: brandIdSchema.optional(),
+  outputItemId: inventoryItemIdSchema.optional(),
+});
+
+export const productionOrderQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  recipeId: recipeIdSchema.optional(),
+  status: productionOrderStatusSchema.optional(),
+});
+
+export const menuCostQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  menuItemId: uuidSchema.optional(),
+});
+
+export const foodCostQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  fromDate: businessDateSchema,
+  toDate: businessDateSchema,
+});
+
+export const menuEngineeringQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  fromDate: businessDateSchema,
+  toDate: businessDateSchema,
+});
+
+export const recipeCoverageQuerySchema = cursorPageQuerySchema.extend({
+  brandId: brandIdSchema.optional(),
+});
+
+// ---- Write inputs ---------------------------------------------------------
+
+export const createInventoryItemInputSchema = clientInputSchema({
+  name: z.string().min(1).max(150),
+  category: z.string().min(1).max(50),
+  type: inventoryItemTypeSchema,
+  baseUomId: uomIdSchema,
+  isPerishable: z.boolean(),
+  parMin: nonnegativeDecimal4Schema.nullable().optional(),
+  parMax: nonnegativeDecimal4Schema.nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+}).refine(
+  (item) =>
+    item.parMin === null ||
+    item.parMin === undefined ||
+    item.parMax === null ||
+    item.parMax === undefined ||
+    parseDecimal4(item.parMax) >= parseDecimal4(item.parMin),
+  { path: ["parMax"], message: "parMax must be at least parMin" },
+);
+
+export const updateInventoryItemInputSchema = clientInputSchema({
+  name: z.string().min(1).max(150).optional(),
+  category: z.string().min(1).max(50).optional(),
+  isPerishable: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  parMin: nonnegativeDecimal4Schema.nullable().optional(),
+  parMax: nonnegativeDecimal4Schema.nullable().optional(),
+  /** Optimistic concurrency (CORE PRECONDITION_FAILED on a stale value). */
+  expectedUpdatedAt: isoDateTimeSchema,
+});
+
+export const createStockCountInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema,
+  type: stockCountTypeSchema,
+  /** PRD §16 "hitung buta": the counter does not see `systemQty`. */
+  blind: z.boolean(),
+  businessDate: businessDateSchema,
+  /** Cycle counts may narrow the item set; a full count snapshots all items. */
+  inventoryItemIds: z.array(inventoryItemIdSchema).min(1).optional(),
+  note: z.string().max(300).nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const updateStockCountLineInputSchema = clientInputSchema({
+  countedQty: nonnegativeDecimal4Schema,
+});
+
+export const transitionStockCountInputSchema = clientInputSchema({
+  action: stockCountActionSchema,
+  note: z.string().max(300).nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const createWasteLogInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema,
+  targetType: wasteTargetTypeSchema,
+  targetId: uuidSchema,
+  quantity: positiveDecimal4Schema,
+  reason: wasteReasonSchema,
+  mediaId: uuidSchema.nullable().optional(),
+  /** Server computes the loss when omitted. */
+  valueIdr: nonnegativeIdrSchema.optional(),
+  occurredAt: isoDateTimeSchema.optional(),
+  note: z.string().max(300).nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const createProductionOrderInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  recipeId: recipeIdSchema,
+  plannedQty: positiveDecimal4Schema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const transitionProductionOrderInputSchema = clientInputSchema({
+  action: productionOrderActionSchema,
+  actualQty: positiveDecimal4Schema.optional(),
+  idempotencyKey: idempotencyKeySchema,
+}).refine(
+  (input) => input.action !== "complete" || input.actualQty !== undefined,
+  {
+    path: ["actualQty"],
+    message: "Completing a batch needs its actual output",
+  },
+);
+
+export const recipeLineInputSchema = z.strictObject({
+  componentType: recipeComponentTypeSchema,
+  componentId: uuidSchema,
+  quantity: positiveDecimal4Schema,
+  uomId: uomIdSchema,
+  wastePctBp: basisPointsSchema,
+});
+
+export const createRecipeInputSchema = clientInputSchema({
+  brandId: brandIdSchema,
+  name: z.string().min(1).max(150),
+  /** Null for a menu recipe; set for a semi-finished recipe. */
+  outputItemId: inventoryItemIdSchema.nullable().optional(),
+  yieldQuantity: positiveDecimal4Schema,
+  yieldUomId: uomIdSchema,
+  lines: z.array(recipeLineInputSchema).min(1),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/** Editing a recipe creates the next version; old versions stay readable. */
+export const createRecipeVersionInputSchema = clientInputSchema({
+  name: z.string().min(1).max(150).optional(),
+  yieldQuantity: positiveDecimal4Schema.optional(),
+  yieldUomId: uomIdSchema.optional(),
+  lines: z.array(recipeLineInputSchema).min(1),
+  changeNote: z.string().max(300).optional(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+// ---- Read endpoints -------------------------------------------------------
+
+export const listInventoryItems = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/items",
+  query: inventoryItemListQuerySchema,
+  response: cursorPageSchema(inventoryItemSchema),
+});
+
+export const getInventoryItem = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/items/:itemId",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  response: dataResponseSchema(inventoryItemSchema),
+});
+
+export const listUoms = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/uoms",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(uomSchema),
+});
+
+export const listUomConversions = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/items/:itemId/uom-conversions",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  response: dataResponseSchema(z.array(uomConversionSchema)),
+});
+
+export const listStockLocations = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/locations",
+  query: stockLocationListQuerySchema,
+  response: cursorPageSchema(stockLocationSchema),
+});
+
+export const listStockLedger = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/stock-ledger",
+  query: stockLedgerQuerySchema,
+  response: cursorPageSchema(stockLedgerEntrySchema),
+});
+
+export const listStockBalances = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/balances",
+  query: stockBalanceQuerySchema,
+  response: cursorPageSchema(stockBalanceSchema),
+});
+
+export const listStockBatches = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/batches",
+  query: stockBatchQuerySchema,
+  response: cursorPageSchema(stockBatchSchema),
+});
+
+export const listParLevels = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/par-levels",
+  query: parLevelQuerySchema,
+  response: cursorPageSchema(parLevelSchema),
+});
+
+export const listStockCounts = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/stock-counts",
+  query: stockCountQuerySchema,
+  response: cursorPageSchema(stockCountSchema),
+});
+
+export const getStockCount = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/stock-counts/:stockCountId",
+  params: z.strictObject({ stockCountId: stockCountIdSchema }),
+  response: dataResponseSchema(stockCountDetailSchema),
+});
+
+export const listWasteLogs = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/waste-logs",
+  query: wasteLogQuerySchema,
+  response: cursorPageSchema(wasteLogSchema),
+});
+
+export const listRecipes = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/recipes",
+  query: recipeQuerySchema,
+  response: cursorPageSchema(recipeSchema),
+});
+
+export const getRecipe = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/recipes/:recipeId",
+  params: z.strictObject({ recipeId: recipeIdSchema }),
+  response: dataResponseSchema(recipeDetailSchema),
+});
+
+export const listProductionOrders = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/production-orders",
+  query: productionOrderQuerySchema,
+  response: cursorPageSchema(productionOrderSchema),
+});
+
+export const listMenuCosts = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/menu-costs",
+  query: menuCostQuerySchema,
+  response: cursorPageSchema(menuCostSchema),
+});
+
+export const listFoodCostComparisons = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/food-cost",
+  query: foodCostQuerySchema,
+  response: cursorPageSchema(foodCostComparisonSchema),
+});
+
+export const listMenuEngineering = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/menu-engineering",
+  query: menuEngineeringQuerySchema,
+  response: cursorPageSchema(menuEngineeringRowSchema),
+});
+
+export const listRecipeCoverage = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/recipe-coverage",
+  query: recipeCoverageQuerySchema,
+  response: cursorPageSchema(recipeCoverageRowSchema),
+});
+
+// ---- Write endpoints ------------------------------------------------------
+
+export const createInventoryItem = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/items",
+  body: createInventoryItemInputSchema,
+  response: dataResponseSchema(inventoryItemSchema),
+});
+
+export const updateInventoryItem = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/items/:itemId",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  body: updateInventoryItemInputSchema,
+  response: dataResponseSchema(inventoryItemSchema),
+});
+
+export const createStockCount = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/stock-counts",
+  body: createStockCountInputSchema,
+  response: dataResponseSchema(stockCountDetailSchema),
+});
+
+export const updateStockCountLine = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/stock-counts/:stockCountId/lines/:lineId",
+  params: z.strictObject({
+    stockCountId: stockCountIdSchema,
+    lineId: stockCountLineIdSchema,
+  }),
+  body: updateStockCountLineInputSchema,
+  response: dataResponseSchema(stockCountLineSchema),
+});
+
+export const postStockCountTransition = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/stock-counts/:stockCountId/transitions",
+  params: z.strictObject({ stockCountId: stockCountIdSchema }),
+  body: transitionStockCountInputSchema,
+  response: dataResponseSchema(stockCountSchema),
+});
+
+export const createWasteLog = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/waste-logs",
+  body: createWasteLogInputSchema,
+  response: dataResponseSchema(wasteLogSchema),
+});
+
+export const createProductionOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/production-orders",
+  body: createProductionOrderInputSchema,
+  response: dataResponseSchema(productionOrderSchema),
+});
+
+export const postProductionOrderTransition = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/production-orders/:productionOrderId/transitions",
+  params: z.strictObject({
+    productionOrderId: productionOrderIdSchema,
+  }),
+  body: transitionProductionOrderInputSchema,
+  response: dataResponseSchema(productionOrderSchema),
+});
+
+export const createRecipe = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/recipes",
+  body: createRecipeInputSchema,
+  response: dataResponseSchema(recipeDetailSchema),
+});
+
+export const createRecipeVersion = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/recipes/:recipeId/versions",
+  params: z.strictObject({ recipeId: recipeIdSchema }),
+  body: createRecipeVersionInputSchema,
+  response: dataResponseSchema(recipeDetailSchema),
+});
+
+/**
+ * Every inventory endpoint in one list, for API route registration, FE mock
+ * discovery and contract tests: ids are unique and paths live under
+ * /api/inventory.
+ */
+export const inventoryEndpoints = [
+  listInventoryItems,
+  getInventoryItem,
+  listUoms,
+  listUomConversions,
+  listStockLocations,
+  listStockLedger,
+  listStockBalances,
+  listStockBatches,
+  listParLevels,
+  listStockCounts,
+  getStockCount,
+  listWasteLogs,
+  listRecipes,
+  getRecipe,
+  listProductionOrders,
+  listMenuCosts,
+  listFoodCostComparisons,
+  listMenuEngineering,
+  listRecipeCoverage,
+  createInventoryItem,
+  updateInventoryItem,
+  createStockCount,
+  updateStockCountLine,
+  postStockCountTransition,
+  createWasteLog,
+  createProductionOrder,
+  postProductionOrderTransition,
+  createRecipe,
+  createRecipeVersion,
+] as const;
