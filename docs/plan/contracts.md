@@ -144,6 +144,12 @@ The customer screens of `/t/[token]` need read models the WS-03 contract beads (
 
 Guest endpoints (`/api/table-sessions/…`) are called with `Authorization: Bearer <sessionToken>` from `openOrJoinTableSession` (`lib/api/credentials.ts`).
 
+## Floor editor (`@starter/shared/qr-order`, bead `legend-th7`, PRD §3 F9)
+
+- **Writes.** Zone and table CRUD plus one-request layout save live under `/api/floor/*` and resolve the outlet from the staff session (TEN-02); they need `floor.table.manage`. A zone with tables or a table with an open session is refused (409).
+- **Table status.** The editor only switches a table on or off (`available` ⇄ `inactive`); occupied/reserved/dirty are live states owned by the board's ORD-10 guard (`updateTableStatus`, bead `legend-7ko`), so an attribute edit never empties a table in use.
+- **Table QR (coordinator decision).** `issueTableQr` returns the table's current token and never rotates: the server stores the token sealed (encrypted at rest, hash for lookup) and re-renders it on reprint. Only `rotateTableQr` ("Ganti QR", audited) rotates, after which the old sticker is refused (ORD-04). QR rendering is being standardized on `uqr` (`legend-9fmm`); `qrcode.react` in `qr-label.tsx` is to be migrated.
+
 ## Identity & access (`@starter/shared/identity`, bead `legend-7sz`)
 
 Code: `packages/shared/src/identity`. Tests: `tests/identity-contract.test.mjs`. PRD §3 F6/F7, §6 B, flow §4 C and R, AUTH-01..07.

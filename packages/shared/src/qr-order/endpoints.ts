@@ -273,10 +273,28 @@ export const saveFloorLayout = defineEndpoint({
   response: dataResponseSchema(z.array(tableSchema)),
 });
 
-/** Generate (or reprint) the signed permanent QR of a table. */
+/**
+ * The table's current signed permanent QR, for printing and reprinting.
+ * Never rotates (coordinator decision, legend-th7 review): the server keeps
+ * the token sealed (encrypted at rest, only its hash is used for lookup) and
+ * re-renders it, so printing a whole floor never invalidates stickers already
+ * on tables. Issues the first token when the table has none.
+ */
 export const issueTableQr = defineEndpoint({
   method: "POST",
   path: "/api/tables/:tableId/qr",
+  params: z.strictObject({ tableId: tableIdSchema }),
+  response: dataResponseSchema(tableQrSchema),
+});
+
+/**
+ * "Ganti QR": the only action that rotates a table's token (lost or copied
+ * sticker). The old token is refused from then on (ORD-04); needs
+ * floor.table.manage and is audited. Returns the new QR to print.
+ */
+export const rotateTableQr = defineEndpoint({
+  method: "POST",
+  path: "/api/tables/:tableId/qr/rotate",
   params: z.strictObject({ tableId: tableIdSchema }),
   response: dataResponseSchema(tableQrSchema),
 });

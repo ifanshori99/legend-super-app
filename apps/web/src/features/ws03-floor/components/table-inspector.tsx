@@ -70,13 +70,16 @@ function TableInspectorBody({
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState<ApiError | null>(null);
 
+  // Only the on/off switch is sent: an occupied, reserved or dirty table keeps
+  // its live state when the manager edits its code or capacity (ORD-10).
+  const activeChanged = active !== (table.status !== "inactive");
   const status = active ? "available" : "inactive";
   const attributesChanged =
     code !== table.code ||
     Number(capacity) !== table.capacity ||
     type !== table.type ||
     zoneId !== table.zoneId ||
-    status !== table.status;
+    activeChanged;
 
   const save = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -86,7 +89,7 @@ function TableInspectorBody({
       capacity: Number(capacity),
       type,
       zoneId,
-      status,
+      ...(activeChanged ? { status } : {}),
     });
     if (!parsed.success) {
       setErrors(fieldErrors(parsed.error));

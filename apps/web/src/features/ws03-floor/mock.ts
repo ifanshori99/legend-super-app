@@ -16,6 +16,7 @@ import {
   floorZoneSchema,
   getCurrentFloor,
   issueTableQr,
+  rotateTableQr,
   saveFloorLayout,
   tableQrSchema,
   tableSchema,
@@ -191,6 +192,15 @@ registerMock(updateTable, ({ params, body }) => {
   const current = tableOf(params.tableId);
   if (body.zoneId !== undefined) zoneOf(body.zoneId);
   if (body.code !== undefined) assertUniqueCode(body.code, current.id);
+  // The editor only activates or deactivates; live states stay on the board.
+  if (body.status === "available" && current.status !== "inactive")
+    conflict("Meja ini sudah aktif.");
+  if (body.status === "inactive") {
+    if (rowOf(current.id).session || current.status !== "available")
+      conflict(
+        "Meja yang sedang dipakai tidak bisa dinonaktifkan. Kosongkan dulu (ORD-10).",
+      );
+  }
   const table = tableSchema.parse({
     ...current,
     ...(body.zoneId === undefined ? {} : { zoneId: body.zoneId }),
@@ -265,14 +275,33 @@ function mockSignature(seed: string): string {
 const base64Url = (value: string) =>
   btoa(value).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 
-registerMock(issueTableQr, ({ params }) => {
-  const table = tableOf(params.tableId);
-  const token = `v1.${base64Url(`1:${table.id}:qr-2026-11`)}.${mockSignature(table.id)}`;
-  const qr: TableQr = tableQrSchema.parse({
-    tableId: table.id,
+// Stored QR per table: reprint returns it unchanged, only "Ganti QR" rotates.
+const issuedQr = new Map<string, { qr: TableQr; generation: number }>();
+
+function mintQr(tableId: string, generation: number): TableQr {
+  const seed = `${tableId}:${generation}`;
+  const token = `v1.${base64Url(`${generation}:${tableId}:qr-2026-11`)}.${mockSignature(seed)}`;
+  return tableQrSchema.parse({
+    tableId,
     token,
     url: `https://legend.example/t/${token}`,
     issuedAt: now(),
   });
+}
+
+registerMock(issueTableQr, ({ params }) => {
+  const table = tableOf(params.tableId);
+  const stored = issuedQr.get(table.id);
+  if (stored) return { data: stored.qr };
+  const qr = mintQr(table.id, 1);
+  issuedQr.set(table.id, { qr, generation: 1 });
+  return { data: qr };
+});
+
+registerMock(rotateTableQr, ({ params }) => {
+  const table = tableOf(params.tableId);
+  const generation = (issuedQr.get(table.id)?.generation ?? 0) + 1;
+  const qr = mintQr(table.id, generation);
+  issuedQr.set(table.id, { qr, generation });
   return { data: qr };
 });

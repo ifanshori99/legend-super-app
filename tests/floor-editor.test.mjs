@@ -301,3 +301,44 @@ test("F9 the QR sheet search matches the table number", () => {
   assert.equal(matchesTableQuery(table, "  "), true);
   assert.equal(matchesTableQuery(table, "zzz"), false);
 });
+
+test("ORD-10 the floor editor only switches a table on or off, never a live state", () => {
+  const tableId = qr.cafeLegendQrOrderFixtures.floorBoard.tables[0].table.id;
+  for (const status of ["available", "inactive"])
+    assert.equal(
+      qr.updateTable.body.safeParse({ status }).success,
+      true,
+      status,
+    );
+  // Emptying or occupying a table goes through updateTableStatus (ORD-10).
+  for (const status of ["occupied", "reserved", "dirty"]) {
+    assert.equal(qr.updateTable.body.safeParse({ status }).success, false);
+    assert.equal(
+      qr.createTable.body.safeParse({
+        zoneId: qr.cafeLegendQrOrderFixtures.floorBoard.zones[0].id,
+        code: "Z9",
+        capacity: 2,
+        type: "regular",
+        layout: {
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 40,
+          rotation: 0,
+          shape: "rect",
+        },
+        status,
+      }).success,
+      false,
+    );
+  }
+  assert.ok(tableId);
+});
+
+test("ORD-04 reprinting a table QR never rotates it; only Ganti QR does", () => {
+  assert.equal(qr.issueTableQr.method, "POST");
+  assert.equal(qr.rotateTableQr.method, "POST");
+  assert.equal(qr.rotateTableQr.path, "/api/tables/:tableId/qr/rotate");
+  assert.notEqual(qr.issueTableQr.path, qr.rotateTableQr.path);
+  assert.equal(qr.rotateTableQr.body, undefined);
+});

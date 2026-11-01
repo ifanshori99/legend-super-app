@@ -208,13 +208,23 @@ export const updateFloorZoneInputSchema = clientInputSchema({
   { message: "Send at least one field to change", path: ["name"] },
 );
 
+/**
+ * The floor editor only switches a table on or off. Every other floor state
+ * (occupied, reserved, dirty) belongs to the live board and its ORD-10 guard
+ * (`updateTableStatus`), so an attribute edit can never empty a table in use.
+ * The server applies `available` only to an inactive table (activate) and
+ * `inactive` only to an available table without a session (deactivate).
+ */
+export const EDITOR_TABLE_STATUSES = ["available", "inactive"] as const;
+export const editorTableStatusSchema = z.enum(EDITOR_TABLE_STATUSES);
+
 export const createTableInputSchema = clientInputSchema({
   zoneId: floorZoneIdSchema,
   code: tableCodeSchema,
   capacity: z.number().int().min(1).max(50),
   type: tableTypeSchema,
   layout: tableLayoutSchema,
-  status: tableStatusSchema.default("available"),
+  status: editorTableStatusSchema.default("available"),
 });
 
 export const updateTableInputSchema = clientInputSchema({
@@ -223,7 +233,7 @@ export const updateTableInputSchema = clientInputSchema({
   capacity: z.number().int().min(1).max(50).optional(),
   type: tableTypeSchema.optional(),
   layout: tableLayoutSchema.optional(),
-  status: tableStatusSchema.optional(),
+  status: editorTableStatusSchema.optional(),
 }).refine(
   (value) => Object.values(value).some((field) => field !== undefined),
   { message: "Send at least one field to change", path: ["code"] },

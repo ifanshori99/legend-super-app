@@ -7,28 +7,28 @@ Vite dev server. Screens: `/kelola/meja` (floor editor) and `/kelola/meja/qr`
 
 ## Floor editor — `/kelola/meja`
 
-| File                          | What it shows                                                        |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `meja-390-light.png`          | Phone, light: zone filter, plan, table inspector, zone list           |
-| `meja-390-dark.png`           | Phone, dark                                                          |
-| `meja-1440-light.png`         | Desktop, light: plan + inspector side by side, zone table below       |
-| `meja-1440-dark.png`          | Desktop, dark                                                        |
-| `meja-inspector-390-light.png` | Phone: selected table — position, size, shape, number, zone, status  |
-| `meja-zona-390-light.png`     | Phone: zone list (pay mode, service charge, minimum spend, hours)     |
-| `meja-dirty-1440-light.png`   | Unsaved plan changes banner + primary "Simpan denah"                  |
-| `zona-form-1440-light.png`    | Zone settings dialog: pay mode, service charge, min spend, hours      |
-| `zona-form-390-dark.png`      | Zone settings as a bottom sheet on a phone (sticky footer)            |
-| `tambah-meja-1440-light.png`  | Add-table dialog with the suggested number and free-slot placement    |
-| `hapus-zona-1440-light.png`   | Delete-zone confirmation refuses a zone that still holds tables (409) |
+| File                           | What it shows                                                         |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `meja-390-light.png`           | Phone, light: zone filter, plan, table inspector, zone list           |
+| `meja-390-dark.png`            | Phone, dark                                                           |
+| `meja-1440-light.png`          | Desktop, light: plan + inspector side by side, zone table below       |
+| `meja-1440-dark.png`           | Desktop, dark                                                         |
+| `meja-inspector-390-light.png` | Phone: selected table — position, size, shape, number, zone, status   |
+| `meja-zona-390-light.png`      | Phone: zone list (pay mode, service charge, minimum spend, hours)     |
+| `meja-dirty-1440-light.png`    | Unsaved plan changes banner + primary "Simpan denah"                  |
+| `zona-form-1440-light.png`     | Zone settings dialog: pay mode, service charge, min spend, hours      |
+| `zona-form-390-dark.png`       | Zone settings as a bottom sheet on a phone (sticky footer)            |
+| `tambah-meja-1440-light.png`   | Add-table dialog with the suggested number and free-slot placement    |
+| `hapus-zona-1440-light.png`    | Delete-zone confirmation refuses a zone that still holds tables (409) |
 
 ## QR labels — `/kelola/meja/qr`
 
-| File                       | What it shows                                                     |
-| -------------------------- | ----------------------------------------------------------------- |
-| `qr-390-light.png`         | Phone, light: table list with search, zone filter, selection       |
-| `qr-1440-light.png`        | Desktop, light                                                    |
-| `qr-labels-390-dark.png`   | Issued labels on a phone in dark mode: QR, number, zone, URL       |
-| `qr-print-preview-390.png` | `@media print` preview: only the label sheet, forced light theme   |
+| File                       | What it shows                                                    |
+| -------------------------- | ---------------------------------------------------------------- |
+| `qr-390-light.png`         | Phone, light: table list with search, zone filter, selection     |
+| `qr-1440-light.png`        | Desktop, light                                                   |
+| `qr-labels-390-dark.png`   | Issued labels on a phone in dark mode: QR, number, zone, URL     |
+| `qr-print-preview-390.png` | `@media print` preview: only the label sheet, forced light theme |
 
 ## Empty and error states
 
