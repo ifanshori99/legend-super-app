@@ -2,10 +2,10 @@
 // t("namespace.key", { var }) with a key from the catalog. Tenants may
 // override any key (PRD §7 "Katalog teks ... dengan override per tenant").
 
-import { id } from "./messages/id";
+import { id } from "./messages/id.ts";
 
 export { id as messagesId };
-export * from "./format";
+export * from "./format.ts";
 
 type Widen<T> = T extends string ? string : { [K in keyof T]: Widen<T[K]> };
 
@@ -20,6 +20,26 @@ type Leaves<T, P extends string = ""> = {
 
 /** Every valid catalog key, e.g. "common.save" or "orderStatus.ready". */
 export type MessageKey = Leaves<typeof id>;
+
+/** The same keys at runtime, for schemas and contract tests (never UI text). */
+export const MESSAGE_KEYS: readonly MessageKey[] = (() => {
+  const keys: string[] = [];
+  (function walk(node: unknown, prefix: string): void {
+    if (typeof node === "string") {
+      keys.push(prefix.slice(0, -1));
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    for (const [key, value] of Object.entries(node))
+      walk(value, `${prefix}${key}.`);
+  })(id, "");
+  return keys as MessageKey[];
+})();
+
+/** True for a key of the catalog; used to reject typo'd tenant overrides. */
+export function isMessageKey(value: string): value is MessageKey {
+  return (MESSAGE_KEYS as readonly string[]).includes(value);
+}
 
 /** Flat tenant overrides, e.g. { "nav.customer.menu": "Daftar Menu" }. */
 export type MessageOverrides = Partial<Record<MessageKey, string>>;

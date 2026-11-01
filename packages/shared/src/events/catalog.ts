@@ -42,7 +42,7 @@ const namesByWorkstream = {
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
     "checklist.completed checklist.reminded equipment_service.reminded prep_list.created",
-  "WS-00": "document.generated",
+  "WS-00": "document.generated text_override.updated",
 } as const;
 export const eventCatalog: readonly EventCatalogEntry[] = Object.entries(
   namesByWorkstream,
