@@ -40,6 +40,9 @@ import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as CustomerMemberFasilitasIndexRouteImport } from './routes/_customer/member.fasilitas.index'
+import { Route as CustomerMemberFasilitasTicketIdRouteImport } from './routes/_customer/member.fasilitas.$ticketId'
+import { Route as CustomerMemberFasilitasLanggananRouteImport } from './routes/_customer/member.fasilitas.langganan'
 import { Route as CustomerTTokenIndexRouteImport } from './routes/_customer/t.$token.index'
 import { Route as CustomerTTokenBillRouteImport } from './routes/_customer/t.$token.bill'
 import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$token.cart'
@@ -201,6 +204,24 @@ const ShareholderShareholderIndexRoute =
     path: '/shareholder/',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const CustomerMemberFasilitasIndexRoute =
+  CustomerMemberFasilitasIndexRouteImport.update({
+    id: '/fasilitas/',
+    path: '/fasilitas/',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
+const CustomerMemberFasilitasTicketIdRoute =
+  CustomerMemberFasilitasTicketIdRouteImport.update({
+    id: '/fasilitas/$ticketId',
+    path: '/fasilitas/$ticketId',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
+const CustomerMemberFasilitasLanggananRoute =
+  CustomerMemberFasilitasLanggananRouteImport.update({
+    id: '/fasilitas/langganan',
+    path: '/fasilitas/langganan',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
 const CustomerTTokenIndexRoute = CustomerTTokenIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -302,6 +323,8 @@ export interface FileRoutesByFullPath {
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
   '/t/$token/bill': typeof CustomerTTokenBillRoute
   '/t/$token/cart': typeof CustomerTTokenCartRoute
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
@@ -313,6 +336,7 @@ export interface FileRoutesByFullPath {
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -337,6 +361,8 @@ export interface FileRoutesByTo {
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
+  '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
   '/t/$token/bill': typeof CustomerTTokenBillRoute
   '/t/$token/cart': typeof CustomerTTokenCartRoute
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
@@ -348,6 +374,7 @@ export interface FileRoutesByTo {
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -386,6 +413,8 @@ export interface FileRoutesById {
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/_customer/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/_customer/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
   '/_customer/t/$token/bill': typeof CustomerTTokenBillRoute
   '/_customer/t/$token/cart': typeof CustomerTTokenCartRoute
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
@@ -397,6 +426,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/_kelola/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
@@ -425,6 +455,8 @@ export interface FileRouteTypes {
     | '/owner/'
     | '/platform/'
     | '/shareholder/'
+    | '/member/fasilitas/$ticketId'
+    | '/member/fasilitas/langganan'
     | '/t/$token/bill'
     | '/t/$token/cart'
     | '/t/$token/checkout'
@@ -436,6 +468,7 @@ export interface FileRouteTypes {
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/member/fasilitas/'
     | '/t/$token/'
     | '/kelola/menu/'
     | '/t/$token/issue/$issueId'
@@ -460,6 +493,8 @@ export interface FileRouteTypes {
     | '/owner'
     | '/platform'
     | '/shareholder'
+    | '/member/fasilitas/$ticketId'
+    | '/member/fasilitas/langganan'
     | '/t/$token/bill'
     | '/t/$token/cart'
     | '/t/$token/checkout'
@@ -471,6 +506,7 @@ export interface FileRouteTypes {
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/member/fasilitas'
     | '/t/$token'
     | '/kelola/menu'
     | '/t/$token/issue/$issueId'
@@ -508,6 +544,8 @@ export interface FileRouteTypes {
     | '/_owner/owner/'
     | '/_platform/platform/'
     | '/_shareholder/shareholder/'
+    | '/_customer/member/fasilitas/$ticketId'
+    | '/_customer/member/fasilitas/langganan'
     | '/_customer/t/$token/bill'
     | '/_customer/t/$token/cart'
     | '/_customer/t/$token/checkout'
@@ -519,6 +557,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/menu/ketersediaan'
     | '/_kelola/kelola/menu/paket'
     | '/_kelola/kelola/menu/stasiun'
+    | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_kelola/kelola/menu/'
     | '/_customer/t/$token/issue/$issueId'
@@ -759,6 +798,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
       parentRoute: typeof ShareholderRoute
     }
+    '/_customer/member/fasilitas/': {
+      id: '/_customer/member/fasilitas/'
+      path: '/fasilitas'
+      fullPath: '/member/fasilitas/'
+      preLoaderRoute: typeof CustomerMemberFasilitasIndexRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/fasilitas/$ticketId': {
+      id: '/_customer/member/fasilitas/$ticketId'
+      path: '/fasilitas/$ticketId'
+      fullPath: '/member/fasilitas/$ticketId'
+      preLoaderRoute: typeof CustomerMemberFasilitasTicketIdRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/fasilitas/langganan': {
+      id: '/_customer/member/fasilitas/langganan'
+      path: '/fasilitas/langganan'
+      fullPath: '/member/fasilitas/langganan'
+      preLoaderRoute: typeof CustomerMemberFasilitasLanggananRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
     '/_customer/t/$token/': {
       id: '/_customer/t/$token/'
       path: '/'
@@ -881,10 +941,16 @@ const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
 interface CustomerMemberRouteChildren {
   CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
+  CustomerMemberFasilitasTicketIdRoute: typeof CustomerMemberFasilitasTicketIdRoute
+  CustomerMemberFasilitasLanggananRoute: typeof CustomerMemberFasilitasLanggananRoute
+  CustomerMemberFasilitasIndexRoute: typeof CustomerMemberFasilitasIndexRoute
 }
 
 const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
   CustomerMemberIndexRoute: CustomerMemberIndexRoute,
+  CustomerMemberFasilitasTicketIdRoute: CustomerMemberFasilitasTicketIdRoute,
+  CustomerMemberFasilitasLanggananRoute: CustomerMemberFasilitasLanggananRoute,
+  CustomerMemberFasilitasIndexRoute: CustomerMemberFasilitasIndexRoute,
 }
 
 const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
