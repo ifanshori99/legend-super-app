@@ -467,11 +467,43 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
       resolution: null,
       voucherId: null,
       approvedBy: null,
-      costIdr: 0,
       tenantId: fixtures.tickets[0].tenantId,
     }).success,
     false,
   );
+  const validIssueInput = {
+    orderItemId: fixtures.orderIssues[0].orderItemId,
+    type: "remake",
+    reason: "quality",
+    reasonNote: "Kopi terlalu pahit",
+    stationId: null,
+    employeeId: fixtures.orderIssues[0].employeeId,
+    resolution: null,
+    voucherId: null,
+    approvedBy: null,
+  };
+  assert.equal(
+    kitchen.reportOrderIssue.body.safeParse(validIssueInput).success,
+    true,
+  );
+  // KDS-07: ingredient cost is computed by the API, never client input.
+  assert.equal(
+    kitchen.reportOrderIssue.body.safeParse({ ...validIssueInput, costIdr: 0 })
+      .success,
+    false,
+  );
+  // KDS-07 / R25: the input enforces the same rules as the stored record.
+  for (const [patch, label] of [
+    [{ employeeId: null }, "remake without staff member"],
+    [{ resolution: "voucher" }, "voucher resolution without voucher"],
+    [{ resolution: "manual_refund" }, "manual refund without approval"],
+  ])
+    assert.equal(
+      kitchen.reportOrderIssue.body.safeParse({ ...validIssueInput, ...patch })
+        .success,
+      false,
+      label,
+    );
   assert.equal(
     kitchen.estimateServingTime.query.safeParse({ channel: "dine_in" }).success,
     true,

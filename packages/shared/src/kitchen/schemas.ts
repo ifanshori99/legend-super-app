@@ -717,20 +717,51 @@ export const orderIssueSchema = z
     },
   );
 
-export const createOrderIssueInputSchema = z.strictObject({
-  orderItemId: orderItemIdSchema,
-  type: orderIssueTypeSchema,
-  reason: orderIssueReasonSchema,
-  reasonNote: z.string().min(1).max(500),
-  stationId: stationIdSchema.nullable(),
-  employeeId: userIdSchema.nullable(),
-  resolution: orderIssueResolutionSchema.nullable(),
-  voucherId: uuidSchema.nullable(),
-  approvedBy: userIdSchema.nullable(),
-  costIdr: idrSchema.refine((amount) => amount >= 0, {
-    message: "Ingredient cost cannot be negative",
-  }),
-});
+/**
+ * What the POS/KDS submits. `costIdr` is NOT client input: the API computes
+ * the ingredient cost from the recipe/BOM at the time of the issue (KDS-07
+ * "biaya bahan"), so a client cannot under-report it. The same cross-field
+ * rules as the stored record apply, so the FE form fails before the request.
+ * `approvedBy` names the supervisor who approved a manual refund (R25); the API
+ * must verify that approval server-side (approval flow / supervisor PIN) and
+ * reject an unverified id — the field alone is never proof of approval.
+ */
+export const createOrderIssueInputSchema = z
+  .strictObject({
+    orderItemId: orderItemIdSchema,
+    type: orderIssueTypeSchema,
+    reason: orderIssueReasonSchema,
+    reasonNote: z.string().min(1).max(500),
+    stationId: stationIdSchema.nullable(),
+    employeeId: userIdSchema.nullable(),
+    resolution: orderIssueResolutionSchema.nullable(),
+    voucherId: uuidSchema.nullable(),
+    approvedBy: userIdSchema.nullable(),
+  })
+  .refine(
+    (issue) =>
+      issue.resolution !== "manual_refund" || issue.approvedBy !== null,
+    {
+      path: ["approvedBy"],
+      message: "A manual refund requires supervisor approval (R25)",
+    },
+  )
+  .refine(
+    (issue) => issue.resolution !== "voucher" || issue.voucherId !== null,
+    {
+      path: ["voucherId"],
+      message: "A voucher resolution records the voucher",
+    },
+  )
+  .refine(
+    (issue) =>
+      (issue.type !== "remake" && issue.type !== "comp") ||
+      issue.employeeId !== null,
+    {
+      path: ["employeeId"],
+      message: "A remake or comp records the staff member (KDS-07)",
+    },
+  );
 
 /* ------------------------------------------------------------- KDS board */
 
