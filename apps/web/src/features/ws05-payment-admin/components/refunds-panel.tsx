@@ -1,0 +1,415 @@
+// Refund queue and creation (PRD §3 F13 "Refund"): a refund can be full or
+// partial and always waits for supervisor approval before money moves. The
+// server checks the amount against the paid amount; the form only proposes it.
+import * as React from "react";
+import { Plus } from "lucide-react";
+import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
+import { DataTableShell } from "@/components/ui/data-table-shell";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/feedback-state";
+import { FormField } from "@/components/ui/form-field";
+import { Input } from "@/components/ui/input";
+import { Money } from "@/components/ui/money";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { StatusPill } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/toast";
+import type {
+  RefundStatus,
+  RefundView,
+  RefundablePayment,
+} from "@starter/shared/payment/admin";
+import { formatRupiah } from "@starter/shared/i18n";
+import { idr } from "@starter/shared/core";
+import {
+  canApproveRefund,
+  filterRefunds,
+  formatMoment,
+  methodLabelKey,
+  refundLabelKey,
+  refundTone,
+} from "../format";
+import {
+  useApproveRefund,
+  useCreateRefund,
+  useRefundablePayments,
+  useRefunds,
+} from "../hooks";
+
+const ALL = "all";
+
+export function RefundsPanel() {
+  const t = useT();
+  const refunds = useRefunds();
+  const [status, setStatus] = React.useState<RefundStatus | "all">(ALL);
+  const [creating, setCreating] = React.useState(false);
+  const [approving, setApproving] = React.useState<RefundView | null>(null);
+  const rows = filterRefunds(refunds.data?.data ?? [], status);
+  const total = refunds.data?.data.length ?? 0;
+  const state = refunds.isPending
+    ? "loading"
+    : refunds.isError
+      ? "error"
+      : total === 0
+        ? "empty"
+        : "ready";
+
+  return (
+    <>
+      <DataTableShell
+        title={t("paymentAdmin.refunds.title")}
+        description={t("paymentAdmin.refunds.hint")}
+        state={state}
+        rowCount={rows.length}
+        noResults={total > 0 && rows.length === 0}
+        onRetry={() => void refunds.refetch()}
+        actions={
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Select
+              value={status}
+              onValueChange={(value) =>
+                setStatus(value as RefundStatus | "all")
+              }
+            >
+              <SelectTrigger
+                className="w-full sm:w-52"
+                aria-label={t("paymentAdmin.refunds.filter")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>
+                  {t("paymentAdmin.refunds.allStatuses")}
+                </SelectItem>
+                {(["pending", "approved", "completed", "failed"] as const).map(
+                  (entry) => (
+                    <SelectItem key={entry} value={entry}>
+                      {t(refundLabelKey(entry))}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectContent>
+            </Select>
+            <Button type="button" size="sm" onClick={() => setCreating(true)}>
+              <Plus aria-hidden="true" />
+              {t("paymentAdmin.refunds.create")}
+            </Button>
+          </div>
+        }
+        empty={{
+          title: t("paymentAdmin.refunds.emptyTitle"),
+          description: t("paymentAdmin.refunds.emptyHint"),
+          action: (
+            <Button type="button" size="sm" onClick={() => setCreating(true)}>
+              <Plus aria-hidden="true" />
+              {t("paymentAdmin.refunds.create")}
+            </Button>
+          ),
+        }}
+      >
+        <ul className="divide-y divide-border">
+          {rows.map((refund) => (
+            <li
+              key={refund.id}
+              className="flex flex-col gap-3 p-card sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="grid min-w-0 gap-0.5">
+                <p className="font-semibold tabular">
+                  {refund.paymentReference}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {t(methodLabelKey(refund.method))} ·{" "}
+                  {formatMoment(refund.createdAt)} · {refund.requestedByName}
+                </p>
+                <p className="max-w-2xl truncate text-sm text-muted-foreground">
+                  {refund.reason}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+                <div className="text-right">
+                  <Money amount={refund.amountIdr} />
+                  <p className="text-sm text-muted-foreground">
+                    / {formatRupiah(refund.paidAmountIdr)}
+                  </p>
+                </div>
+                <StatusPill status={refundTone(refund.status)}>
+                  {t(refundLabelKey(refund.status))}
+                </StatusPill>
+                {canApproveRefund(refund) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setApproving(refund)}
+                  >
+                    {t("paymentAdmin.refunds.approve")}
+                  </Button>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    {refund.approvedByName ?? ""}
+                  </span>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </DataTableShell>
+
+      {creating && <CreateRefundDialog onClose={() => setCreating(false)} />}
+      {approving && (
+        <ApproveRefundDialog
+          refund={approving}
+          onClose={() => setApproving(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function CreateRefundDialog({ onClose }: { onClose: () => void }) {
+  const t = useT();
+  const toast = useToast();
+  const payments = useRefundablePayments();
+  const create = useCreateRefund();
+  const options = payments.data?.data.payments ?? [];
+  const [paymentId, setPaymentId] = React.useState<string>("");
+  const selected = options.find(
+    (payment) => payment.paymentIntentId === paymentId,
+  );
+  const [amount, setAmount] = React.useState("");
+  const [reason, setReason] = React.useState("");
+  const [note, setNote] = React.useState("");
+  const [errors, setErrors] = React.useState<
+    Record<string, string | undefined>
+  >({});
+
+  const choosePayment = (nextId: string) => {
+    setPaymentId(nextId);
+    const payment = options.find((entry) => entry.paymentIntentId === nextId);
+    setAmount(payment ? String(payment.refundableAmountIdr) : "");
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const next: Record<string, string | undefined> = {};
+    if (!selected) next.paymentId = t("paymentAdmin.refunds.paymentRequired");
+    if (reason.trim() === "")
+      next.reason = t("paymentAdmin.refunds.reasonRequired");
+    const amountIdr = Number(amount);
+    if (
+      selected &&
+      (!Number.isInteger(amountIdr) ||
+        amountIdr <= 0 ||
+        amountIdr > selected.refundableAmountIdr)
+    )
+      next.amount = t("paymentAdmin.refunds.overAmount");
+    setErrors(next);
+    if (!selected || Object.keys(next).length > 0) return;
+    create.mutate(
+      {
+        paymentIntentId: selected.paymentIntentId,
+        amountIdr: idr(amountIdr),
+        reason: reason.trim(),
+        ...(note.trim() === "" ? {} : { note: note.trim() }),
+      },
+      {
+        onSuccess: () => {
+          toast({ title: t("paymentAdmin.refunds.created") });
+          onClose();
+        },
+        onError: (error) => setErrors({ form: error.message }),
+      },
+    );
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("paymentAdmin.refunds.create")}</DialogTitle>
+          <DialogDescription>
+            {t("paymentAdmin.refunds.hint")}
+          </DialogDescription>
+        </DialogHeader>
+        {payments.isPending ? (
+          <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+        ) : options.length === 0 ? (
+          <EmptyState
+            title={t("paymentAdmin.refunds.emptyTitle")}
+            description={t("paymentAdmin.refunds.noRefundable")}
+          />
+        ) : (
+          <form className="grid gap-4" onSubmit={submit} noValidate>
+            <FormField
+              label={t("paymentAdmin.refunds.payment")}
+              required
+              error={errors.paymentId}
+            >
+              <Select value={paymentId} onValueChange={choosePayment}>
+                <SelectTrigger aria-label={t("paymentAdmin.refunds.payment")}>
+                  <SelectValue
+                    placeholder={t("paymentAdmin.refunds.paymentPlaceholder")}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {options.map((payment: RefundablePayment) => (
+                    <SelectItem
+                      key={payment.paymentIntentId}
+                      value={payment.paymentIntentId}
+                    >
+                      {payment.reference} · {t(methodLabelKey(payment.method))}{" "}
+                      · {formatRupiah(payment.refundableAmountIdr)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+            <FormField
+              label={t("paymentAdmin.refunds.amount")}
+              required
+              error={errors.amount}
+              hint={
+                selected
+                  ? t("paymentAdmin.refunds.max", {
+                      amount: formatRupiah(selected.refundableAmountIdr),
+                    })
+                  : undefined
+              }
+            >
+              <Input
+                inputMode="numeric"
+                value={amount}
+                onChange={(event) =>
+                  setAmount(event.target.value.replace(/[^\d]/g, ""))
+                }
+              />
+            </FormField>
+            <FormField
+              label={t("paymentAdmin.refunds.reason")}
+              required
+              error={errors.reason}
+            >
+              <Input
+                value={reason}
+                placeholder={t("paymentAdmin.refunds.reasonPlaceholder")}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </FormField>
+            <FormField label={t("paymentAdmin.refunds.note")}>
+              <Textarea
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                rows={2}
+              />
+            </FormField>
+            {errors.form && (
+              <p
+                role="alert"
+                className="text-sm leading-5 font-medium text-danger"
+              >
+                {errors.form}
+              </p>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onClose}>
+                {t("common.cancel")}
+              </Button>
+              <Button type="submit" loading={create.isPending}>
+                {t("paymentAdmin.refunds.submit")}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+        {options.length === 0 && (
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.close")}
+            </Button>
+          </DialogFooter>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ApproveRefundDialog({
+  refund,
+  onClose,
+}: {
+  refund: RefundView;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const approve = useApproveRefund();
+  const [note, setNote] = React.useState("");
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    approve.mutate(
+      {
+        refundId: refund.id,
+        body: note.trim() === "" ? {} : { note: note.trim() },
+      },
+      {
+        onSuccess: () => {
+          toast({
+            title: t("paymentAdmin.refunds.approved", {
+              reference: refund.paymentReference,
+            }),
+          });
+          onClose();
+        },
+        onError: (error) => toast({ title: error.message, tone: "danger" }),
+      },
+    );
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("paymentAdmin.refunds.approveTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("paymentAdmin.refunds.approveBody", {
+              amount: formatRupiah(refund.amountIdr),
+              method: t(methodLabelKey(refund.method)),
+              reference: refund.paymentReference,
+            })}
+          </DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-4" onSubmit={submit}>
+          <FormField label={t("paymentAdmin.refunds.approveNote")}>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              rows={2}
+            />
+          </FormField>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" loading={approve.isPending}>
+              {t("paymentAdmin.refunds.approve")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
