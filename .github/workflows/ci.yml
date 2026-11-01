@@ -42,6 +42,9 @@ jobs:
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
+      # Mock-mode FE specs: a Vite dev server with VITE_API_MOCK=true, no
+      # database (bead legend-n2sp). Uses the browser installed above.
+      - run: pnpm test:e2e:mock
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

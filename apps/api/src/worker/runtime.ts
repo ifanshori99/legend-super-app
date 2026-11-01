@@ -39,6 +39,7 @@ type Boss = {
       retryDelay: number;
       retryBackoff: boolean;
       retryDelayMax: number;
+      expireInSeconds: number;
       deadLetter: string;
     },
   ): Promise<string | null>;
@@ -67,6 +68,11 @@ export function createWorkerRuntime<Context>(options: {
       retryDelay: 5,
       retryBackoff: true,
       retryDelayMax: 300,
+      // A vanished worker must not own the job for pg-boss's 900s default;
+      // delivery is one transaction (with its provider call) and consumers
+      // dedupe by event id, so 120s is safe and keeps the outbox queued lease
+      // (20 min) above pg-boss's whole retry window.
+      expireInSeconds: 120,
       deadLetter: OUTBOX_DEAD_LETTER_QUEUE,
     });
     return id;

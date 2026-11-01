@@ -19,6 +19,7 @@
     "./payment": "./src/payment/index.ts",
     "./edge": "./src/edge/index.ts",
     "./adapters": "./src/adapters/index.ts",
+    "./storage": "./src/storage/index.ts",
     "./api": "./src/api/index.ts",
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
@@ -32,12 +33,15 @@
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",
+    "./pos": "./src/pos/index.ts",
     "./identity": "./src/identity/index.ts",
     "./reservation": "./src/reservation/index.ts",
     "./delivery": "./src/delivery/index.ts",
     "./website": "./src/website/index.ts",
     "./hris": "./src/hris/index.ts",
-    "./platform": "./src/platform/index.ts"
+    "./platform": "./src/platform/index.ts",
+    "./dashboard": "./src/dashboard/index.ts",
+    "./operations": "./src/operations/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

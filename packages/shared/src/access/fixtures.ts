@@ -253,6 +253,7 @@ const approvalPolicies: ApprovalPolicy[] = approvalMatrixSchema.parse(
 );
 
 const org: OrgIndex = {
+  brands: [{ id: brand.id }],
   outlets: outlets.map((outlet) => ({
     id: outlet.id,
     brandId: outlet.brandId,
@@ -260,11 +261,13 @@ const org: OrgIndex = {
   stations: stations.map(({ id, outletId }) => ({ id, outletId })),
 };
 
-const roleGrants: RoleGrant[] = roles.map(
-  ({ id, permissions, mfaRequired }) => ({
+// templateKey lets assertCanGrantRole recognise tenant top authority.
+const roleGrants: (RoleGrant & { templateKey: string | null })[] = roles.map(
+  ({ id, permissions, mfaRequired, templateKey }) => ({
     id,
     permissions,
     mfaRequired,
+    templateKey,
   }),
 );
 

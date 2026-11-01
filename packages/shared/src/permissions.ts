@@ -12,6 +12,24 @@ import { adminAc, defaultStatements } from "better-auth/plugins/admin/access";
 export const statement = {
   ...defaultStatements,
   notes: ["read-any", "delete-any"],
+  // Panel Platform (PRD §3 F4, Super Admin). Codes mirror the platform.*
+  // entries of the Legend permission catalog (@starter/shared/access).
+  platform: [
+    "tenant-manage",
+    "package-manage",
+    "support-access-request",
+    "health-view",
+  ],
+  // Tenant organisation settings (PRD §3 F4, Admin Tenant). Codes mirror the
+  // org.* catalog entries; the RBAC engine (legend-4f9) replaces this
+  // bootstrap source with stored role_assignments.
+  org: [
+    "structure-manage",
+    "settings-manage",
+    "integration-manage",
+    "theme-manage",
+    "config-export",
+  ],
 } as const;
 
 export const ac = createAccessControl(statement);

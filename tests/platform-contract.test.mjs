@@ -31,6 +31,7 @@ test("Cafe Legend platform fixtures parse against their schemas", () => {
   for (const row of fx.integrations)
     platform.tenantIntegrationSchema.parse(row);
   for (const row of fx.themes) platform.tenantThemeSchema.parse(row);
+  platform.brandContextSchema.parse(fx.brandContext);
   for (const row of fx.supportGrants)
     platform.supportAccessGrantSchema.parse(row);
   for (const row of fx.platformAdmins) platform.platformAdminSchema.parse(row);
@@ -653,6 +654,71 @@ test("TEN-02 hostnames resolve to the tenant only when verified and active", () 
   );
 });
 
+test("TEN-08 whitelabel brand context carries the tenant brand, never the platform", () => {
+  const context = platform.brandContextSchema.parse(fx.brandContext);
+  assert.deepEqual(Object.keys(context).sort(), [
+    "brand",
+    "enabledModules",
+    "theme",
+  ]);
+  assert.deepEqual(Object.keys(context.brand).sort(), [
+    "id",
+    "logoMediaId",
+    "name",
+    "slug",
+  ]);
+  assert.equal(context.brand.id, fx.brand.id);
+  assert.equal(context.brand.name, fx.brand.name);
+  // The active Tenant Theme is what SSR draws with.
+  assert.equal(context.theme.fontFamily, fx.themes[0].fontFamily);
+  assert.equal(context.theme.corners, fx.themes[0].corners);
+  // TEN-05: the same flag set the API gates on, not a copy maintained by the UI.
+  assert.ok(context.enabledModules.includes("pos"));
+  assert.equal(
+    JSON.stringify(context).toLowerCase().includes("platform"),
+    false,
+  );
+});
+
+test("TEN-02 device token is opaque, versioned and strictly parsed", () => {
+  const token = `dv1.${"a".repeat(40)}.${"b".repeat(43)}`;
+  assert.ok(platform.deviceTokenSchema.safeParse(token).success);
+  for (const bad of [
+    `dv2.${"a".repeat(40)}.${"b".repeat(43)}`,
+    `dv1..${"b".repeat(43)}`,
+    "dv1.short.short",
+    "not-a-token",
+  ])
+    assert.equal(platform.deviceTokenSchema.safeParse(bad).success, false, bad);
+
+  const payload = {
+    version: 1,
+    tenantId: fx.tenant.id,
+    brandId: fx.brand.id,
+    deviceId: fx.brand.id,
+    expiresAt: 1_800_000_000,
+  };
+  platform.deviceTokenPayloadSchema.parse(payload);
+  assert.equal(
+    platform.deviceTokenPayloadSchema.safeParse({ ...payload, version: 2 })
+      .success,
+    false,
+  );
+  assert.equal(
+    platform.deviceTokenPayloadSchema.safeParse({
+      ...payload,
+      tenantId: undefined,
+    }).success,
+    false,
+  );
+  assert.equal(
+    platform.deviceTokenPayloadSchema.safeParse({ ...payload, extra: true })
+      .success,
+    false,
+  );
+  assert.equal(platform.DEVICE_TOKEN_HEADER, "x-device-token");
+});
+
 test("integration credentials are write-only and never in config, events or logs", () => {
   for (const row of fx.integrations) {
     assert.equal(JSON.stringify(row).includes("credentials_encrypted"), false);
@@ -801,4 +867,33 @@ test("platform error codes map to HTTP statuses", () => {
     assert.equal(error.status, platform.platformErrorHttpStatus[code]);
     assert.ok(error.message.length > 0);
   }
+});
+
+test("TEN-05 malformed whole flag document disables modules and providers", () => {
+  assert.equal(
+    platform.isModuleEnabled(
+      { modules: ["pos"], integrationProviders: "bad" },
+      "pos",
+    ),
+    false,
+  );
+  assert.equal(
+    platform.isIntegrationProviderAvailable(
+      { modules: "bad", integrationProviders: ["kirimdev"] },
+      "kirimdev",
+    ),
+    false,
+  );
+});
+
+test("TEN-04 invalid support access intent fails closed", () => {
+  assert.throws(() =>
+    platform.assertSupportAccess(fx.supportGrants, {
+      tenantId: fx.tenant.id,
+      superAdminUserId: fx.superAdmin.id,
+      dataClass: "financial",
+      intent: "delete",
+      now: fx.now,
+    }),
+  );
 });

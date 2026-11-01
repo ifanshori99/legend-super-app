@@ -57,6 +57,16 @@ const schema = z
     BETTER_AUTH_SECRET: z
       .string()
       .min(32, "Run pnpm run setup to generate a secret."),
+    // AES-256-GCM key for write-only data (integration credentials, NPWP):
+    // base64 of exactly 32 bytes. Development falls back to a scrypt of
+    // BETTER_AUTH_SECRET; production must set it (lib/secrets.ts).
+    DATA_ENCRYPTION_KEY: z
+      .string()
+      .refine(
+        (value) => Buffer.from(value, "base64").length === 32,
+        "Use base64 of 32 bytes.",
+      )
+      .optional(),
     BETTER_AUTH_URL: origin(
       "Use the API's origin, e.g. http://localhost:4000.",
     ).default("http://localhost:4000"),
@@ -95,6 +105,9 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Shared secret Caddy sends with its on-demand TLS ask (X-Tls-Ask-Token).
+    // Unset in local development; set it wherever a public proxy calls the ask.
+    TLS_ASK_TOKEN: z.string().min(16).max(200).optional(),
   })
   .refine(
     (values) =>

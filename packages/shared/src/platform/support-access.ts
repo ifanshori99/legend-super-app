@@ -146,6 +146,7 @@ export function assertSupportAccess(
   },
 ): SupportAccessGrant | null {
   dataClassSchema.parse(request.dataClass);
+  z.enum(["read", "write"]).parse(request.intent);
   const grant = findActiveSupportGrant(grants, request, request.now);
   if (!requiresSupportAccess(request.dataClass) && request.intent === "read")
     return grant;

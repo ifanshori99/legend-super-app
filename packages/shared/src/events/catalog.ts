@@ -41,7 +41,7 @@ const namesByWorkstream = {
   "WS-03":
     "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created",
   "WS-04":
-    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed",
+    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded",
   "WS-05":
     "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
@@ -57,7 +57,7 @@ const namesByWorkstream = {
   "WS-11": "metrics.aggregated report.generated",
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
-    "checklist.completed checklist.reminded equipment_service.reminded prep_list.created",
+    "checklist.completed checklist.reminded equipment_service.reminded prep_list.created checklist.missed checklist.failed temperature.out_of_range equipment.broken",
   // Adapter layer (packages/shared/src/adapters). Emitted by the services that
   // wrap a provider, never by a provider itself. A webhook that fails signature
   // verification has no trusted tenant yet, so it is logged (gateway_webhook_events,

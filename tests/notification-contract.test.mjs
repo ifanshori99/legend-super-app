@@ -336,6 +336,29 @@ test("TEN-02 endpoints refuse tenant/user fields and unsafe push endpoints", () 
     assert.ok(endpoint.path.startsWith("/api/notifications"));
 });
 
+test("legend-w3v VAPID public key is served per tenant at runtime, nullable when off", () => {
+  const key = n.getPushPublicKey.response;
+  assert.equal(n.getPushPublicKey.method, "GET");
+  assert.ok(n.notificationEndpoints.includes(n.getPushPublicKey));
+  assert.equal(
+    key.safeParse({ data: { vapidPublicKey: f.pushPublicKey } }).success,
+    true,
+  );
+  assert.equal(key.safeParse({ data: { vapidPublicKey: null } }).success, true);
+  for (const bad of ["", "short", `${f.pushPublicKey}=`, "a b".repeat(30)])
+    assert.equal(
+      key.safeParse({ data: { vapidPublicKey: bad } }).success,
+      false,
+    );
+  // The private half or any tenant field never rides along.
+  assert.equal(
+    key.safeParse({
+      data: { vapidPublicKey: f.pushPublicKey, privateKey: "x" },
+    }).success,
+    false,
+  );
+});
+
 test("F12 notification events are registered on WS-05 and carry no message text", () => {
   for (const event of n.NOTIFICATION_EVENTS)
     assert.equal(eventCatalogByName.get(event.name)?.workstream, "WS-05");
@@ -383,4 +406,15 @@ test("F12 notification events are registered on WS-05 and carry no message text"
     type: "notification",
     notification: f.notifications[0],
   });
+});
+
+test("F12 template links reject browser-normalized external hosts", () => {
+  for (const link of ["/\\evil.example", "/\n/evil.example"]) {
+    assert.equal(
+      n.notificationTemplateSchema.safeParse({ ...f.templates[0], link })
+        .success,
+      false,
+    );
+    assert.throws(() => n.renderTemplate({ title: "t", body: "b", link }, {}));
+  }
 });
