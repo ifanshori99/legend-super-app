@@ -13,6 +13,8 @@ import { limitAuthBody } from "./middleware/body";
 import { developmentTenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { apiRouter } from "./routes";
+import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 
@@ -33,7 +35,12 @@ function originalUrl(req: IncomingMessage) {
 
 export function createApp({
   logger = defaultLogger,
-}: { logger?: Logger } = {}) {
+  whatsappWebhookSecrets,
+}: {
+  logger?: Logger;
+  /** Test seam; production reads KIRIM_WEBHOOK_SECRET. */
+  whatsappWebhookSecrets?: readonly string[];
+} = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxySetting());
@@ -96,10 +103,45 @@ export function createApp({
     next();
   });
 
+  // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
+  // session to resolve a tenant from, and it must run before Better Auth's
+  // catch-all because the identity contract puts it under /api/auth/*.
+  //
+  // Tenant resolution: the production mount is the domain resolver of
+  // legend-1je (not merged yet). Until it lands, the same development-only
+  // fallback the rest of the API uses mints the seeded tenant for this path;
+  // in production the guard below disables it and the route answers
+  // TENANT_NOT_FOUND instead of guessing a tenant (TEN-02).
+  const developmentTenant = developmentTenantContext({
+    enabled:
+      env.DEPLOYMENT_MODE === "development" &&
+      env.NODE_ENV !== "production" &&
+      env.DATA_CLASSIFICATION === "synthetic",
+    // Public path: there is no session to gate on, so gate on nothing.
+    hasSession: async () => true,
+    lookup: async () => {
+      const result = await pool.query<{ id: string }>(
+        "SELECT id FROM tenants ORDER BY created_at, id LIMIT 1",
+      );
+      const row = result.rows[0];
+      return row ? { tenantId: row.id, brandId: null } : null;
+    },
+  });
+  app.use("/api/auth/login-challenges", developmentTenant);
+  app.use("/api/auth/login-challenges", identityLoginChallengeRouter);
+
   // Better Auth owns /api/auth/*: sign-up, sign-in, session, sign-out, admin.
   // It reads the raw body itself, so no JSON parser may run before it, and
   // limitAuthBody caps that body's size first.
   app.all("/api/auth/*splat", limitAuthBody, toNodeHandler(auth));
+
+  // Provider webhooks are server-to-server: no session, no Origin, no tenant
+  // middleware. The tenant comes from the receiving number after the signature
+  // verifies (AUTH-02). Mounted before /api so nothing parses the body first.
+  app.use(
+    "/api/webhooks/whatsapp",
+    createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
+  );
 
   // Better Auth owns its routes above. Existing public and global starter routes
   // remain accessible; tenant-aware services must require a minted context.

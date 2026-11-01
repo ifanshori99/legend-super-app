@@ -105,6 +105,24 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Keyed-digest secret for contact values (WhatsApp numbers, emails) that
+    // must link across modules — identity rows, reservations, CRM (AUTH-01/07).
+    // Optional so existing deployments start; it falls back to
+    // BETTER_AUTH_SECRET, and production should set a dedicated value so a
+    // Better Auth secret rotation does not orphan every contact digest.
+    CONTACT_HASH_SECRET: z.string().min(16).optional(),
+    // KirimDev webhook signing secrets (AUTH-02). Comma-separated while a
+    // secret rotates: any listed secret may sign. Without it the WhatsApp
+    // webhook answers 503 and processes nothing.
+    KIRIM_WEBHOOK_SECRET: z
+      .string()
+      .optional()
+      .transform((value) =>
+        (value ?? "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
   })
   .refine(
     (values) =>
