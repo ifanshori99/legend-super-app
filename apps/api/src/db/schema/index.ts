@@ -15,3 +15,4 @@ export * from "./platform-themes";
 export * from "./platform-support";
 export * from "./core-audit";
 export * from "./core-storage";
+export * from "./notification";

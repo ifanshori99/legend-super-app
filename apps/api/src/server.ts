@@ -3,6 +3,10 @@ import { createApp } from "./app";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
+import {
+  attachNotificationRealtime,
+  listenNotificationWakeups,
+} from "./services/notification-realtime.ts";
 
 const app = createApp();
 
@@ -28,6 +32,18 @@ const server = app.listen(env.PORT, env.HOST, async (error) => {
   );
 });
 
+// Until the tenant membership and scoped role resolvers are wired, realtime
+// subscriptions deny by default. Wakeups contain IDs only and follow commit.
+const realtime = attachNotificationRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+});
+const stopWakeups = listenNotificationWakeups(pool, realtime.dispatch).catch(
+  (error: unknown) => {
+    logger.error({ err: error }, "Notification wakeup listener unavailable");
+    return async () => {};
+  },
+);
+
 // Graceful shutdown. `pnpm dev` (tsx watch) restarts on every file change;
 // closing the server and the pool here frees the port and the PostgreSQL
 // connections immediately, so reloads never hit EADDRINUSE or leak sessions.
@@ -41,6 +57,10 @@ async function shutdown(signal: string) {
     process.exit(1);
   }, 5000);
   force.unref();
+  await realtime.close();
+  await (
+    await stopWakeups
+  )();
   server.closeIdleConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await pool.end().catch(() => {});
