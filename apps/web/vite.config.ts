@@ -24,6 +24,12 @@ export default defineConfig(({ command, mode }) => {
     envDir,
     resolve: { tsconfigPaths: true },
     server: { port, strictPort: true },
+    // True only while `vite dev` serves the app. Builds always report false,
+    // which keeps pino's worker-thread transport (pino-pretty) out of the
+    // bundled server: thread-stream uses `__dirname`, which does not exist in
+    // Nitro's ES module output. NODE_ENV is not used because Vite inlines
+    // whatever value built the bundle. See apps/web/src/lib/logger.server.ts.
+    define: { __WEB_DEV_SERVER__: JSON.stringify(command === "serve") },
     // node-server emits .output/server/index.mjs, a portable Node server that
     // honors PORT and HOST. The Dockerfile ships only that folder.
     nitro: {
