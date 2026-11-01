@@ -51,7 +51,14 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // migration enables RLS with an open SELECT policy and a tenant-checked
     // write policy (INSERT/UPDATE/DELETE), and does not FORCE it so the
     // migration owner can repair rows. Proven by the test below.
-    const allowlist = ["public.tenant_domains"];
+    //
+    // public.session: authentication also runs BEFORE a tenant context exists
+    // (the session cookie is what resolves the caller), so the device list and
+    // the revoke path read this global §6 B table outside a tenant transaction;
+    // tenant_id is nullable and only records the tenant of a tenant-bound
+    // login. RLS would make a signed-in user's own sessions unreadable. See
+    // identity-session-api.test.ts for the global-read proof.
+    const allowlist = ["public.tenant_domains", "public.session"];
     const result = await pool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_attribute a
