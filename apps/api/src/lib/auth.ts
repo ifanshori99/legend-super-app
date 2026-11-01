@@ -47,6 +47,12 @@ export const auth = betterAuth({
   },
   advanced: {
     cookiePrefix: siteConfig.id,
+    // PRD §6: every id is a UUID, and org rows store the acting user's id next
+    // to uuid tenant/brand/outlet ids. Better Auth's default id is a
+    // 32-character random string, so generate UUIDs. A function (not the
+    // "uuid" preset) is required: with the preset, a Postgres text id column
+    // counts as "supports UUIDs" and Better Auth skips generation entirely.
+    database: { generateId: () => crypto.randomUUID() },
     // Rate limits and session IPs use the address Express resolved, never a
     // client-supplied X-Forwarded-For.
     ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
