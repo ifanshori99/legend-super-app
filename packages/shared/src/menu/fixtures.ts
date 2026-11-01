@@ -1,0 +1,135 @@
+import { cafeLegendFixtures } from "../core/index.ts";
+import { menuFixtureSchema } from "./schemas.ts";
+import type { MenuItem } from "./schemas.ts";
+
+// Illustrative mock catalog; not the owner's confirmed menu or prices.
+const { tenant, brand, outlets } = cafeLegendFixtures;
+const id = (n: number) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const base = (n: number) => ({ id: id(n), tenantId: tenant.id });
+const groups = [
+  [
+    "Kopi",
+    "Espresso|Americano|Cappuccino|Cafe Latte|Kopi Susu Aren|Flat White|Mocha|Caramel Latte|Vanilla Latte|Cold Brew|Kopi Tubruk|Vietnam Drip|Affogato|Piccolo|Long Black",
+  ],
+  [
+    "Nonkopi",
+    "Cokelat Panas|Es Cokelat|Matcha Latte|Taro Latte|Red Velvet Latte|Teh Tarik|Lemon Tea|Lychee Tea|Peach Tea|Thai Tea|Air Mineral|Jus Jeruk|Jus Alpukat|Jus Mangga|Soda Leci",
+  ],
+  [
+    "Dapur",
+    "Nasi Goreng Kampung|Nasi Goreng Ayam|Mie Goreng Jawa|Mie Kuah|Ayam Sambal Matah|Ayam Geprek|Rice Bowl Teriyaki|Soto Ayam|Sup Buntut|Sate Ayam|Pasta Aglio Olio|Pasta Carbonara|Burger Sapi|Kentang Goreng|Salad Sayur",
+  ],
+  [
+    "Pastry",
+    "Croissant Mentega|Croissant Cokelat|Roti Bakar Cokelat|Roti Bakar Keju|Banana Bread|Brownies|Cheesecake|Tiramisu|Donat Gula|Donat Cokelat|Muffin Pisang|Muffin Cokelat|Kue Wortel|Cookies Cokelat|Pie Apel",
+  ],
+] as const;
+const categories = groups.map(([name], i) => ({
+  ...base(100 + i),
+  brandId: brand.id,
+  name,
+  parentId: null,
+  sortOrder: i,
+}));
+const stations = groups.map(([name], i) => ({
+  ...base(200 + i),
+  outletId: outlets[0].id,
+  name,
+  type: ["coffee_bar", "beverage_bar", "hot_kitchen", "pastry"][i],
+  printerDeviceId: null,
+  targetSeconds: 600,
+}));
+const items: MenuItem[] = groups.flatMap(([, names], group) =>
+  names.split("|").map((name, i) => ({
+    ...base(1000 + group * 100 + i),
+    brandId: brand.id,
+    categoryId: categories[group].id,
+    name,
+    description: `Pilihan ${name} khas Cafe Legend`,
+    type: "single" as const,
+    stationId: stations[group].id,
+    course: group < 2 ? "drink" : group === 2 ? "main" : "dessert",
+    recipeId: null,
+    taxRuleId: null,
+    labels: [],
+    allergens: [],
+    mediaId: null,
+    isActive: true,
+    sortOrder: i,
+  })),
+);
+const comboItem = {
+  ...items[0],
+  ...base(2000),
+  name: "Paket Kopi dan Croissant",
+  type: "combo" as const,
+};
+items.push(comboItem);
+const priceList = {
+  ...base(3000),
+  outletId: outlets[0].id,
+  channel: "dine_in" as const,
+  effectiveFrom: "2026-11-01",
+};
+export const cafeLegendMenuFixtures = menuFixtureSchema.parse({
+  categories,
+  stations,
+  items,
+  variants: [
+    { ...base(4000), menuItemId: items[0].id, name: "Panas", recipeId: null },
+  ],
+  modifierGroups: [
+    { ...base(4100), name: "Tingkat gula", minSelect: 1, maxSelect: 1 },
+  ],
+  modifiers: [
+    {
+      ...base(4200),
+      groupId: id(4100),
+      name: "Normal",
+      priceIdr: 0,
+      recipeId: null,
+      stationId: stations[0].id,
+    },
+  ],
+  combos: [
+    {
+      ...base(4300),
+      comboItemId: comboItem.id,
+      components: [
+        { menuItemId: items[0].id, options: [], revenueAllocationBp: 6000 },
+        { menuItemId: items[45].id, options: [], revenueAllocationBp: 4000 },
+      ],
+    },
+  ],
+  priceLists: [priceList],
+  priceListItems: items.map((item, i) => ({
+    ...base(5000 + i),
+    priceListId: priceList.id,
+    itemId: item.id,
+    variantId: null,
+    priceIdr: 20000 + (i % 10) * 3000,
+  })),
+  availability: items.map((item, i) => ({
+    ...base(6000 + i),
+    outletId: outlets[0].id,
+    menuItemId: item.id,
+    schedule: [],
+    dailyLimit: null,
+    soldOutUntil: null,
+    status: "available",
+  })),
+  importRows: [
+    {
+      category: "Kopi",
+      name: "Espresso",
+      description: "Espresso",
+      type: "single",
+      priceIdr: 20000,
+      station: "Kopi",
+      course: "drink",
+      labels: [],
+      allergens: [],
+    },
+  ],
+});
