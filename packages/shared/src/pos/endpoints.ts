@@ -1,0 +1,558 @@
+// POS endpoint contracts (bead legend-4yp). The web app's typed client and mock
+// mode read these objects, and the API validates with the same ones
+// (docs/frontend.md "Typed endpoints and mock mode"; PRD v1.7 §3 "Kontrak
+// Bersama"). Outlet scoping comes from the verified session/device, never from
+// the body (TEN-02): outletId appears only in the path, every request schema is
+// built with clientInputSchema, and no request carries a price, a total, an
+// expected cash figure or a variance — the server computes those (ORD-03).
+//
+// Screens these endpoints serve: cashier main screen (legend-59v), payment
+// panel (legend-5w6), discount/void/refund + receipts (legend-2fo), cashier
+// shift + end-of-day (legend-iqi), customer display (legend-azt), captain order
+// (legend-76t).
+
+import {
+  z,
+  clientInputSchema,
+  cursorPageQuerySchema,
+  cursorPageSchema,
+  dataResponseSchema,
+  businessDateSchema,
+  outletIdSchema,
+  userIdSchema,
+  uuidSchema,
+  idempotencyKeySchema,
+} from "../core/index.ts";
+import { defineEndpoint } from "../api/endpoint.ts";
+import { tableSessionIdSchema } from "../qr-order/schemas.ts";
+import {
+  cashMovementTypeSchema,
+  closeBusinessDayInputSchema,
+  closePosShiftInputSchema,
+  customerDisplayPairingSchema,
+  customerDisplayStateSchema,
+  discountReasonSchema,
+  endOfDayRecapSchema,
+  invoiceDocumentSchema,
+  openPosShiftInputSchema,
+  orderChannelSchema,
+  orderItemIdSchema,
+  orderIdSchema,
+  pairCustomerDisplayInputSchema,
+  posApprovalPolicySchema,
+  posCashMovementSchema,
+  posDiscountIdSchema,
+  posDiscountKindSchema,
+  posDiscountSourceSchema,
+  posOrderActionSchema,
+  posOrderDetailSchema,
+  posOrderEventSchema,
+  posOrderStatusSchema,
+  posOrderSummarySchema,
+  posReceiptIdSchema,
+  posReceiptIssueResultSchema,
+  posRefundSchema,
+  posShiftIdSchema,
+  posShiftReportSchema,
+  posShiftSchema,
+  posTenderMethodSchema,
+  posTenderResultSchema,
+  posVoidSchema,
+  receiptDeliveryChannelSchema,
+  receiptDocumentSchema,
+  receiptLinkSchema,
+  receiptNumberSchema,
+  recordCashMovementInputSchema,
+  refundReasonSchema,
+  serviceTypeSchema,
+  voidReasonSchema,
+} from "./schemas.ts";
+
+const outletParams = z.strictObject({ outletId: outletIdSchema });
+const orderParams = z.strictObject({
+  outletId: outletIdSchema,
+  orderId: orderIdSchema,
+});
+const orderItemParams = z.strictObject({
+  outletId: outletIdSchema,
+  orderId: orderIdSchema,
+  itemId: orderItemIdSchema,
+});
+const shiftParams = z.strictObject({
+  outletId: outletIdSchema,
+  shiftId: posShiftIdSchema,
+});
+const receiptParams = z.strictObject({
+  outletId: outletIdSchema,
+  receiptId: posReceiptIdSchema,
+});
+
+/** Stale-screen guard: the caller states the status it believes the order has. */
+const expectedStatus = {
+  expectedStatus: posOrderStatusSchema,
+  idempotencyKey: idempotencyKeySchema,
+};
+
+const orderLineInputSchema = z.strictObject({
+  menuItemId: uuidSchema,
+  variantId: uuidSchema.nullable().optional(),
+  modifierIds: z.array(uuidSchema).max(20),
+  quantity: z.number().int().min(1).max(99),
+  note: z.string().max(200).nullable().optional(),
+  /** F8 hold & fire: the course this line belongs to. */
+  course: z.string().min(1).max(20).nullable().optional(),
+});
+
+// ---- Orders ---------------------------------------------------------------
+
+export const listPosOrders = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders",
+  params: outletParams,
+  query: cursorPageQuerySchema.extend({
+    status: posOrderStatusSchema.optional(),
+    channel: orderChannelSchema.optional(),
+    serviceType: serviceTypeSchema.optional(),
+    shiftId: posShiftIdSchema.optional(),
+    deviceId: uuidSchema.optional(),
+  }),
+  response: cursorPageSchema(posOrderSummarySchema),
+});
+
+/** The cashier screen: lines, tenders, discounts and the receipt. */
+export const getPosOrder = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders/:orderId",
+  params: orderParams,
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/**
+ * Create a POS/captain order. The client sends menu ids, quantities,
+ * modifiers and notes only: prices, totals, tax and service charge are computed
+ * by the API from the channel price list and the tenant's tax configuration
+ * (ORD-03). `holdItems` starts every line held for F8 hold & fire.
+ */
+export const createPosOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders",
+  params: outletParams,
+  body: clientInputSchema({
+    channel: orderChannelSchema,
+    serviceType: serviceTypeSchema,
+    tableSessionId: tableSessionIdSchema.nullable().optional(),
+    customerProfileId: uuidSchema.nullable().optional(),
+    externalRef: z.string().min(1).max(100).nullable().optional(),
+    items: z.array(orderLineInputSchema).min(1).max(99),
+    holdItems: z.boolean().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** draft → awaiting_payment; the order is now on the shift and payable. */
+export const submitPosOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/submit",
+  params: orderParams,
+  body: clientInputSchema(expectedStatus),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/**
+ * F8 hold & fire: release held items to the kitchen, by item or by course
+ * ("Item dapat ditahan dan dikirim per course sesuai ritme makan").
+ */
+export const firePosOrderItems = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/fire",
+  params: orderParams,
+  body: clientInputSchema({
+    itemIds: z.array(orderItemIdSchema).min(1).max(99).optional(),
+    course: z.string().min(1).max(20).optional(),
+    ...expectedStatus,
+  }).refine(
+    (value) => (value.itemIds === undefined) !== (value.course === undefined),
+    { message: "Fire either explicit items or one course", path: ["itemIds"] },
+  ),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** awaiting_payment/sent → completed, once served and settled. */
+export const completePosOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/complete",
+  params: orderParams,
+  body: clientInputSchema(expectedStatus),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/**
+ * POS-02: void an order that is not final (draft, awaiting payment or sent).
+ * A completed sale is corrected through `voidPosOrderCorrection` instead.
+ */
+export const voidPosOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/void",
+  params: orderParams,
+  body: clientInputSchema({
+    reason: voidReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    approvedBy: userIdSchema,
+    approvalRequestId: uuidSchema,
+    ...expectedStatus,
+  }),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** POS-02: void one line; the approval is verified server-side. */
+export const voidPosOrderItem = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/items/:itemId/void",
+  params: orderItemParams,
+  body: clientInputSchema({
+    reason: voidReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    approvedBy: userIdSchema,
+    approvalRequestId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** The append-only order log for one order (§6 order_events). */
+export const listPosOrderEvents = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/events",
+  params: orderParams,
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(posOrderEventSchema),
+});
+
+// ---- Payment panel --------------------------------------------------------
+
+/**
+ * Add one tender. The body has no amount: cash sends what the customer handed
+ * over (`receivedIdr`) and the API applies `min(received, remaining)` and
+ * computes change; every other method settles the remaining balance. Payment
+ * confirmation itself comes from WS-05 (verified webhook / EDC adapter).
+ */
+export const addPosTender = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/tenders",
+  params: orderParams,
+  body: clientInputSchema({
+    method: posTenderMethodSchema,
+    receivedIdr: z.number().int().positive().optional(),
+    reference: z.string().min(1).max(100).nullable().optional(),
+    edcTransactionId: uuidSchema.nullable().optional(),
+    pointsUsed: z
+      .number()
+      .int()
+      .positive()
+      .max(1_000_000)
+      .nullable()
+      .optional(),
+    ...expectedStatus,
+  }).refine(
+    (value) =>
+      value.method === "cash"
+        ? value.receivedIdr !== undefined
+        : value.receivedIdr === undefined,
+    {
+      message: "Only a cash tender sends receivedIdr",
+      path: ["receivedIdr"],
+    },
+  ),
+  response: dataResponseSchema(posTenderResultSchema),
+});
+
+/** POS-02: a manual discount above the tenant threshold needs approval. */
+export const applyPosDiscount = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/discounts",
+  params: orderParams,
+  body: clientInputSchema({
+    source: posDiscountSourceSchema,
+    kind: posDiscountKindSchema,
+    percentBp: z.number().int().min(1).max(10_000).optional(),
+    promoCode: z
+      .string()
+      .min(3)
+      .max(40)
+      .regex(/^[A-Z0-9-]+$/)
+      .optional(),
+    voucherCode: z.string().min(6).max(40).optional(),
+    reason: discountReasonSchema,
+    reasonNote: z.string().min(4).max(500).nullable().optional(),
+    approvedBy: userIdSchema.optional(),
+    approvalRequestId: uuidSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+  })
+    .refine(
+      (value) => value.kind === "amount" || value.percentBp !== undefined,
+      { message: "A percent discount sends percentBp", path: ["percentBp"] },
+    )
+    .refine(
+      (value) =>
+        value.source !== "manual" || (value.reasonNote ?? "").length >= 4,
+      {
+        message: "A manual discount records its written reason (POS-02)",
+        path: ["reasonNote"],
+      },
+    )
+    .refine(
+      (value) =>
+        (value.approvedBy === undefined) ===
+        (value.approvalRequestId === undefined),
+      {
+        message: "Approval carries both the approver and the request id",
+        path: ["approvalRequestId"],
+      },
+    )
+    .refine(
+      (value) => value.source !== "promo" || value.promoCode !== undefined,
+      { message: "A promo discount sends its promo code", path: ["promoCode"] },
+    )
+    .refine(
+      (value) => value.source !== "voucher" || value.voucherCode !== undefined,
+      {
+        message: "A voucher discount sends its voucher code",
+        path: ["voucherCode"],
+      },
+    ),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** POS-04: linked void of a completed sale; the receipt number is kept. */
+export const voidPosOrderCorrection = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/corrections/void",
+  params: orderParams,
+  body: clientInputSchema({
+    reason: voidReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    approvedBy: userIdSchema,
+    approvalRequestId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posVoidSchema),
+});
+
+/**
+ * POS-02/POS-04: refund against a paid sale. The cashier states how much to
+ * refund; the API validates it against what is still refundable and splits it
+ * back over the original tender methods (`refundAllocation`).
+ */
+export const refundPosOrder = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/corrections/refund",
+  params: orderParams,
+  body: clientInputSchema({
+    amountIdr: z.number().int().positive(),
+    reason: refundReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    approvedBy: userIdSchema,
+    approvalRequestId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posRefundSchema),
+});
+
+/** Remove a discount line (before settlement only). */
+export const removePosDiscount = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/discounts/:discountId",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    orderId: orderIdSchema,
+    discountId: posDiscountIdSchema,
+  }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(posOrderDetailSchema),
+});
+
+/** The approval threshold the cashier screen shows before asking a supervisor. */
+export const getPosApprovalPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/policy",
+  params: outletParams,
+  response: dataResponseSchema(posApprovalPolicySchema),
+});
+
+// ---- Cashier shift (POS-03) ----------------------------------------------
+
+/** §4 E: the cashier opens the shift with the drawer's opening float. */
+export const openPosShift = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts",
+  params: outletParams,
+  body: openPosShiftInputSchema,
+  response: dataResponseSchema(posShiftSchema),
+});
+
+export const listPosShifts = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts",
+  params: outletParams,
+  query: cursorPageQuerySchema.extend({
+    businessDate: businessDateSchema.optional(),
+    deviceId: uuidSchema.optional(),
+  }),
+  response: cursorPageSchema(posShiftSchema),
+});
+
+/** Shift report: the shift, its cash movements and any receipt gaps (POS-06). */
+export const getPosShift = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId",
+  params: shiftParams,
+  response: dataResponseSchema(posShiftReportSchema),
+});
+
+/** POS-03: blind count + supervisor approval; the variance is locked after. */
+export const closePosShift = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/close",
+  params: shiftParams,
+  body: closePosShiftInputSchema,
+  response: dataResponseSchema(posShiftSchema),
+});
+
+/** "kas masuk dan keluar dengan alasan" (F8 Shift Kasir). */
+export const recordPosCashMovement = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/cash-movements",
+  params: shiftParams,
+  body: recordCashMovementInputSchema,
+  response: dataResponseSchema(posCashMovementSchema),
+});
+
+/** Read side of the same sheet, for the printed shift report. */
+export const listPosCashMovements = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/cash-movements",
+  params: shiftParams,
+  query: cursorPageQuerySchema.extend({
+    type: cashMovementTypeSchema.optional(),
+  }),
+  response: cursorPageSchema(posCashMovementSchema),
+});
+
+// ---- End of day (F8 "Tutup Hari") ----------------------------------------
+
+export const getEndOfDayRecap = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/day",
+  params: outletParams,
+  query: z.strictObject({ businessDate: businessDateSchema }),
+  response: dataResponseSchema(endOfDayRecapSchema),
+});
+
+/** Close the day: recap, optional stock deduction, sync to accounting. */
+export const closePosDay = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/day/close",
+  params: outletParams,
+  body: closeBusinessDayInputSchema,
+  response: dataResponseSchema(endOfDayRecapSchema),
+});
+
+// ---- Receipts and documents (POS-06, POS-07) -----------------------------
+
+/**
+ * Issue (or reprint) the receipt for an order: the API allocates the next
+ * device number from `receipt_sequences` inside the same transaction as the
+ * order, then renders/queues the requested deliveries. A void keeps the number.
+ */
+export const issuePosReceipt = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/receipts",
+  params: orderParams,
+  body: clientInputSchema({
+    /** Defaults to printing once; `link` adds the e-receipt URL. */
+    deliveries: z.array(receiptDeliveryChannelSchema).min(1).max(3).optional(),
+    email: z.string().email().max(200).optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posReceiptIssueResultSchema),
+});
+
+/** POS-07: the rendered receipt/kuitansi (print template and e-receipt page). */
+export const getPosReceiptDocument = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/receipts/:receiptId",
+  params: receiptParams,
+  response: dataResponseSchema(receiptDocumentSchema),
+});
+
+export const getPosReceiptByNumber = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/receipts/by-number/:number",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    number: receiptNumberSchema,
+  }),
+  response: dataResponseSchema(posReceiptIssueResultSchema),
+});
+
+/** E-receipt link/QR; the raw token is returned once and never stored. */
+export const createPosReceiptLink = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/receipts/:receiptId/link",
+  params: receiptParams,
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(receiptLinkSchema),
+});
+
+/** F8 "Invoice dapat dibuat untuk event dan pemesanan korporat". */
+export const createPosInvoice = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/invoices",
+  params: orderParams,
+  body: clientInputSchema({
+    billedTo: z.strictObject({
+      name: z.string().min(1).max(150),
+      address: z.string().min(10).max(300),
+      npwp: z.string().min(15).max(25).nullable().optional(),
+    }),
+    dueDate: businessDateSchema,
+    notes: z.string().min(4).max(500).nullable().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(invoiceDocumentSchema),
+});
+
+/** Convenience for the payment panel's method picker state. */
+export const getPosOrderActionAvailability = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/actions",
+  params: orderParams,
+  response: dataResponseSchema(
+    z.strictObject({
+      allowed: z.array(posOrderActionSchema),
+      canSettle: z.boolean(),
+      canCorrect: z.boolean(),
+    }),
+  ),
+});
+
+// ---- Customer display (F8 "Customer Display") ---------------------------
+
+/** What the paired second screen shows (items, total, dynamic QRIS). */
+export const getCustomerDisplayState = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/customer-display",
+  params: outletParams,
+  query: z.strictObject({ terminalDeviceId: uuidSchema.optional() }),
+  response: dataResponseSchema(customerDisplayStateSchema),
+});
+
+/** Pair a display to a terminal with the six-digit code on the screen. */
+export const pairCustomerDisplay = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/customer-display/pair",
+  params: outletParams,
+  body: pairCustomerDisplayInputSchema,
+  response: dataResponseSchema(customerDisplayPairingSchema),
+});
