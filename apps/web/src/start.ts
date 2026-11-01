@@ -20,6 +20,11 @@ const SECURITY_HEADERS: Record<string, string> = {
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
+  // Every SSR page embeds the visitor's session and access context, so no
+  // shared cache (Cloudflare, a proxy) may store it. A route that is safe to
+  // cache sets its own Cache-Control (PRD §5 "Peta situs" lists the dynamic,
+  // authorized and no-store pages).
+  "Cache-Control": "private, no-store",
   ...(process.env.NODE_ENV === "production"
     ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" }
     : {}),

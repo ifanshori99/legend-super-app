@@ -156,8 +156,30 @@ The table is data in `lib/areas/definitions.ts` (tested by `tests/areas.test.mjs
    export default nav;
    ```
 
-4. **Text** goes in `packages/shared/src/i18n/messages/id.ts`; add only your own keys.
-5. **Replace the placeholder**: each area's `*.index.tsx` renders `AreaIndexPage` (an honest empty state). The bead that owns the area's landing screen replaces it.
+4. **Page guard** (only when the page needs more than the area's permission, e.g. `/kelola/inventori` needs `inventory.stock.view`): add it in the page's own `beforeLoad`, using the same evaluator as the area. Never rely on `anyPermission` in `nav.ts` for this.
+
+   ```ts
+   import { notFound } from "@tanstack/react-router";
+   import { evaluateGuard } from "@/lib/areas/guard";
+
+   export const Route = createFileRoute("/_kelola/kelola/inventori")({
+     beforeLoad: ({ context }) => {
+       const gate = evaluateGuard(
+         {
+           kind: "permission",
+           surface: "dashboard",
+           anyOf: ["inventory.stock.view"],
+         },
+         context.access,
+       );
+       if (gate.status !== "allowed") throw notFound();
+     },
+     component: InventoryPage,
+   });
+   ```
+
+5. **Text** goes in `packages/shared/src/i18n/messages/id.ts`; add only your own keys.
+6. **Replace the placeholder**: each area's `*.index.tsx` renders `AreaIndexPage` (an honest empty state). The bead that owns the area's landing screen replaces it.
 
 ### Guards, MFA and the access context
 
@@ -173,7 +195,8 @@ document.cookie = "legend-mock-role=cashier; path=/"; // then reload
 
 - **Offline banner slot**: `OfflineBannerSlot` (`components/layout/`) sits above every page's content; bead `legend-diq` fills it. Operations screens also show the connection badge in the shell header.
 - **Theme toggle** in every shell header (kitchen is always dark).
-- **noindex** on every area except `public` (PRD §5 "Diindeks: Tidak"); `/t/*` and `/f/*` also send `Cache-Control: private, no-store`.
+- **noindex** on every area except `public` (PRD §5 "Diindeks: Tidak"). Every page response defaults to `Cache-Control: private, no-store` (`start.ts`), because SSR HTML embeds the visitor's session; a route that is safe to cache sets its own header.
+- **Mock mode is dev-only**: a web build with `VITE_API_MOCK=true` refuses to boot unless `DEPLOYMENT_MODE=development` (`lib/env.server.ts`).
 - **PWA**: `public/manifest.webmanifest` is a stub linked from `/member/*` and `/karyawan/*`; the per-brand manifest comes from a worker later (PRD §5).
 - **Brand name** in headers is the catalog's `app.defaultBrand` until tenant config supplies the real one (D43); the outlet name and time zone in the operations header wait for the outlet-context bead.
 

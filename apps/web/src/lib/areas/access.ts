@@ -32,7 +32,11 @@ export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
   mfaVerified: false,
 });
 
-/** A signed-in account whose Legend permissions are not known: fails closed. */
+/**
+ * A signed-in account whose Legend permissions are not known: fails closed.
+ * MFA is assumed required and unverified until the API says otherwise, the
+ * same default as `authorize()` (an unknown role requires MFA).
+ */
 export function accessFromSession(
   session: { user: object } | null | undefined,
 ): AreaAccess {
@@ -40,7 +44,7 @@ export function accessFromSession(
   return {
     authenticated: true,
     permissions: [],
-    mfaRequired: false,
+    mfaRequired: true,
     mfaVerified: false,
   };
 }

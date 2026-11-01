@@ -213,10 +213,16 @@ describe("FE-AREA-05 role templates reach only their areas (deny by default)", (
   test("a signed-in account without known permissions fails closed", () => {
     const access = accessLib.accessFromSession({ user: { id: "u1" } });
     assert.equal(access.authenticated, true);
+    // AUTH-05 fails closed too: MFA required and not verified until the API says so.
+    assert.equal(access.mfaRequired, true);
+    assert.equal(access.mfaVerified, false);
     for (const area of defs.AREA_LIST.filter(
       (a) => a.guard.kind === "permission",
     ))
-      assert.equal(open(area.key, access), "forbidden", area.key);
+      assert.ok(
+        ["forbidden", "mfa_required"].includes(open(area.key, access)),
+        area.key,
+      );
   });
   test("reachableWorkAreas lists exactly what the guard allows", () => {
     assert.deepEqual(
