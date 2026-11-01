@@ -261,11 +261,13 @@ const org: OrgIndex = {
   stations: stations.map(({ id, outletId }) => ({ id, outletId })),
 };
 
-const roleGrants: RoleGrant[] = roles.map(
-  ({ id, permissions, mfaRequired }) => ({
+// templateKey lets assertCanGrantRole recognise tenant top authority.
+const roleGrants: (RoleGrant & { templateKey: string | null })[] = roles.map(
+  ({ id, permissions, mfaRequired, templateKey }) => ({
     id,
     permissions,
     mfaRequired,
+    templateKey,
   }),
 );
 

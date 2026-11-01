@@ -13,6 +13,7 @@ import {
 import { permissionsRequireMfa, type RoleTemplate } from "./roles.ts";
 import {
   assertAuthorized,
+  isAssignmentActive,
   type AccessPrincipal,
   type AccessTarget,
   type AssignmentScope,
@@ -26,6 +27,26 @@ import {
  * (tenant-configurable later through WS-01 identity settings).
  */
 export const ROLE_GRANT_REAUTH_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Tenant top-authority templates (coordinator decision, legend-cyu.10): an
+ * active tenant-scoped Owner or Admin Tenant assignment, with MFA verified and
+ * a re-auth within ROLE_GRANT_REAUTH_MAX_AGE_MS, may grant any tenant-level
+ * (non-platform) role inside its tenant without holding every delegated
+ * permission (so Admin Tenant can assign Finance). Everyone else must hold
+ * every permission they delegate, which keeps reciprocal escalation impossible.
+ * The `owner` template itself is never reachable through this path: only a
+ * grantor who already holds all of Owner's permissions can create an Owner,
+ * so two Admin Tenants cannot promote each other to Owner.
+ */
+export const ROLE_GRANT_TOP_AUTHORITY_TEMPLATES = Object.freeze([
+  "owner",
+  "tenant_admin",
+] as const);
+const TOP_AUTHORITY_EXCLUDED_TARGETS: readonly string[] = ["owner"];
+
+/** A grantor's role as the API loaded it; templateKey null = custom role. */
+export type GrantorRole = RoleGrant & { readonly templateKey?: string | null };
 
 /** The role being granted, as the API loaded it. */
 export type GrantableRole = RoleGrant & {
@@ -51,7 +72,7 @@ function targetOf(scope: AssignmentScope): AccessTarget {
  */
 export function assertCanGrantRole(input: {
   readonly grantor: AccessPrincipal;
-  readonly grantorRoles: readonly RoleGrant[];
+  readonly grantorRoles: readonly GrantorRole[];
   readonly grantorMfaVerified: boolean;
   /** Last successful re-authentication of the grantor's session, or null. */
   readonly grantorReauthenticatedAt: Date | null;
@@ -72,6 +93,14 @@ export function assertCanGrantRole(input: {
     throw new AccessError("ROLE_NOT_ASSIGNABLE");
   if (!input.role.allowedScopeTypes.includes(input.scope.type))
     throw new AccessError("ROLE_SCOPE_NOT_ALLOWED");
+  if (
+    input.role.permissions.some(
+      (permission) =>
+        !isPermissionCode(permission) ||
+        permissionHasTag(permission, "platform"),
+    )
+  )
+    throw new AccessError("ROLE_NOT_ASSIGNABLE");
   const authorization = {
     principal: input.grantor,
     roles: input.grantorRoles,
@@ -83,9 +112,49 @@ export function assertCanGrantRole(input: {
     mfaVerified: input.grantorMfaVerified,
   };
   const assignmentId = assertAuthorized(authorization);
+  const topAuthority = topAuthorityAssignment(input);
+  if (topAuthority !== null) return topAuthority;
   for (const permission of input.role.permissions)
     assertAuthorized({ ...authorization, permission });
   return assignmentId;
+}
+
+/**
+ * The grantor's active tenant-scoped Owner/Admin Tenant assignment that may
+ * use the top-authority path for this grant, or null. Requires a verified
+ * second factor regardless of the role's own MFA flag.
+ */
+function topAuthorityAssignment(input: {
+  readonly grantor: AccessPrincipal;
+  readonly grantorRoles: readonly GrantorRole[];
+  readonly grantorMfaVerified: boolean;
+  readonly role: GrantableRole;
+  readonly now: Date;
+}): RoleAssignmentId | null {
+  if (input.grantorMfaVerified !== true) return null;
+  if (
+    input.role.templateKey !== null &&
+    TOP_AUTHORITY_EXCLUDED_TARGETS.includes(input.role.templateKey)
+  )
+    return null;
+  const top: readonly string[] = ROLE_GRANT_TOP_AUTHORITY_TEMPLATES;
+  const byId = new Map(
+    input.grantorRoles.map((role) => [role.id.toLowerCase(), role] as const),
+  );
+  const tenantId = input.grantor.tenantId.toLowerCase();
+  const userId = input.grantor.userId.toLowerCase();
+  for (const row of input.grantor.assignments) {
+    if (row.scope.type !== "tenant") continue;
+    if (row.tenantId.toLowerCase() !== tenantId) continue;
+    if (row.userId.toLowerCase() !== userId) continue;
+    if (!isAssignmentActive(row, input.now)) continue;
+    const role = byId.get(row.roleId.toLowerCase());
+    if (!role || typeof role.templateKey !== "string") continue;
+    if (!top.includes(role.templateKey)) continue;
+    if (!role.permissions.includes("access.role.assign")) continue;
+    return row.id;
+  }
+  return null;
 }
 
 /**

@@ -73,7 +73,10 @@ function localSecondsOfDay(now: Date, timeZone: string): number {
 /**
  * If `now` falls inside the quiet window (start inclusive, end exclusive,
  * windows may cross midnight), returns the instant the window ends; else null.
- * Indonesian zones have no DST; elsewhere a DST jump can shift it by an hour.
+ * Indonesian zones (Asia/Jakarta, Asia/Makassar, Asia/Jayapura) have no DST,
+ * so wall-clock arithmetic is exact for every Legend outlet. A zone with DST
+ * could see the end shift by an hour; supporting one needs a zoned-instant
+ * computation first (bead legend-ahgg, low priority).
  */
 export function quietHoursEnd(
   quietHours: QuietHours | null,
