@@ -161,3 +161,22 @@ Built in: authenticated and origin-checked API routes, ownership filtered in SQL
 Account emails are not verified by the base. Add an email provider for verification and password recovery when needed.
 
 References: [Better Auth Express integration](https://better-auth.com/docs/integrations/express), [Better Auth cookies](https://better-auth.com/docs/concepts/cookies), [TanStack Start hosting](https://tanstack.com/start/latest/docs/framework/react/hosting), [Turborepo Docker guide](https://turborepo.com/docs/guides/tools/docker), [node-postgres pooling](https://node-postgres.com/features/pooling).
+
+## CI quality checks
+
+The workflow runs these checks locally with `pnpm` after `pnpm install --frozen-lockfile`:
+
+```sh
+pnpm exec node --test scripts/ci/*.test.mjs
+pnpm exec node scripts/ci/tenant-hardcode.mjs
+pnpm exec node scripts/ci/color.mjs
+pnpm exec node scripts/ci/pending.mjs
+pnpm audit --audit-level high
+pnpm audit --audit-level critical
+pnpm check
+pnpm build
+```
+
+The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The isolation harness accepts an adapter for two authenticated tenants; its in-memory tests verify the harness only, not application isolation.
+
+Lighthouse for `/menu` and `/t/*` and real tenant isolation remain explicit placeholders until the routes and modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
