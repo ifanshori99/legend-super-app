@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { noStore } from "../middleware/no-store";
+import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
 import { healthRouter } from "./health.routes";
+import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
@@ -23,5 +25,8 @@ apiRouter.use("/org", orgRouter);
 apiRouter.use("/tenant", platformBrandRouter);
 // Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.
 apiRouter.use("/internal", internalRouter);
+// RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
+apiRouter.use("/access", accessRouter);
+apiRouter.use("/me", meRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());

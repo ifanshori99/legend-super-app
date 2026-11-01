@@ -41,19 +41,6 @@ export const roles = {
   admin: ac.newRole({
     ...adminAc.statements,
     notes: ["read-any", "delete-any"],
-    platform: [
-      "tenant-manage",
-      "package-manage",
-      "support-access-request",
-      "health-view",
-    ],
-    org: [
-      "structure-manage",
-      "settings-manage",
-      "integration-manage",
-      "theme-manage",
-      "config-export",
-    ],
   }),
 } as const;
 

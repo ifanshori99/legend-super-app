@@ -1089,3 +1089,52 @@ describe("AUTH-06 role grants: tenant top authority vs delegated permissions", (
     );
   });
 });
+
+describe("legend-t4y7 GET /api/me/access contract", () => {
+  test("returns effective permission codes plus the AUTH-05 flags", () => {
+    assert.equal(access.getMyAccess.id, "GET /api/me/access");
+    const view = access.myAccessViewSchema.parse({
+      permissions: ["org.structure.manage", "access.role.assign"],
+      mfaRequired: true,
+      mfaVerified: false,
+    });
+    assert.deepEqual(view.permissions, [
+      "org.structure.manage",
+      "access.role.assign",
+    ]);
+    // Platform codes are never part of a tenant view.
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        permissions: ["platform.tenant.manage"],
+        mfaRequired: true,
+        mfaVerified: true,
+      }).success,
+      false,
+    );
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        permissions: [],
+        mfaRequired: false,
+      }).success,
+      false,
+    );
+  });
+
+  test("RBAC writes use catalogued, versioned envelopes", () => {
+    for (const definition of [
+      access.roleCreatedEvent,
+      access.roleUpdatedEvent,
+      access.roleAssignmentGrantedEvent,
+      access.roleAssignmentEndedEvent,
+      access.approvalPolicyChangedEvent,
+    ]) {
+      assert.equal(definition.version, 1);
+      assert.equal(definition.payloadSchemaRef, `${definition.name}.v1`);
+      assert.equal(definition.entry.name, definition.name);
+      assert.equal(
+        definition.entry.aggregateType,
+        definition.name.split(".")[0],
+      );
+    }
+  });
+});
