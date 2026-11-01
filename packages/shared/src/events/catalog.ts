@@ -39,17 +39,17 @@ const namesByWorkstream = {
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created",
   "WS-04":
-    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.updated cashier_shift.opened cashier_shift.closed",
+    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed",
   "WS-05":
-    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported",
+    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
-    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded",
+    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded stock.moved stock.critical recipe.cost_changed",
   "WS-07":
     "journal.posted fiscal_period.closed fiscal_period.reopened distribution.completed",
   "WS-08":
-    "customer.created loyalty_points.earned loyalty_points.expired loyalty_tier.evaluated reservation.created reservation.cancelled delivery_order.received",
+    "customer.created reservation.created reservation.cancelled delivery_order.received points.earned points.reversed points.redeemed points.expired tier.changed",
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
@@ -62,8 +62,9 @@ const namesByWorkstream = {
   // wrap a provider, never by a provider itself. A webhook that fails signature
   // verification has no trusted tenant yet, so it is logged (gateway_webhook_events,
   // PRD §6), not published as a tenant event.
+  // Text contract (packages/shared/src/text): one event per term override change.
   "WS-00":
-    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed",
+    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed text_override.updated",
 } as const;
 export const eventCatalog: readonly EventCatalogEntry[] = Object.freeze(
   Object.entries(namesByWorkstream).flatMap(([workstream, names]) =>
