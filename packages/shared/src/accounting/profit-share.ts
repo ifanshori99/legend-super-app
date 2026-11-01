@@ -540,8 +540,10 @@ export function transitionShareAllocationVersion<
  * Rounding, explicitly (contracts.md D-CORE-2):
  * - reserve = half-up of net profit × reserveBp;
  * - distributable = net profit − reserve;
- * - each line's gross = `allocateIdr` (largest remainder; ties go to the
- *   earlier allocation row), so the gross parts sum to distributable exactly;
+ * - each line's gross = `allocateIdr` (largest remainder) over the allocations
+ *   sorted by `shareholderId`, so the gross parts sum to distributable exactly
+ *   and a tie on the remainder goes to the lowest shareholder id — never to
+ *   whatever order the database returned the rows in;
  * - tax = half-up of gross × taxWithholdingBp, net = gross − tax.
  * A caller never rounds: the same code runs in the API, the FE mock and tests.
  */
@@ -692,11 +694,22 @@ function buildCalculationLines(
 ): DistributionCalculationLine[] {
   assertUniqueShareholders(allocations);
   assertShareAllocationsSum(allocations);
+  // Canonical order: the remainder tie-break must not depend on row order.
+  const ordered = [...allocations].sort((a, b) =>
+    a.shareholderId < b.shareholderId ? -1 : 1,
+  );
   const grossParts = allocateIdr(
     amountIdr,
-    allocations.map((row) => row.shareBp),
+    ordered.map((row) => row.shareBp),
   );
-  return allocations.map((row, index) => {
+  // A share too small to receive a whole rupiah would make a zero line; the
+  // schema refuses it, so report it as a domain error instead of a parse error.
+  if (grossParts.some((part) => part === 0))
+    throw new AccountingError(
+      "NOTHING_TO_DISTRIBUTE",
+      "Jumlah terlalu kecil: setiap pemegang saham harus menerima minimal Rp1.",
+    );
+  return ordered.map((row, index) => {
     const grossIdr = grossParts[index];
     const taxWithheldIdr = applyBasisPoints(
       grossIdr,
@@ -1115,7 +1128,42 @@ export function assertAdjustmentTarget(
     throw new AccountingError("ADJUSTMENT_TARGET_INVALID");
 }
 
-/** PRD silent; the safe default: one regular run per closed period. */
+/**
+ * Hard rule (coordinator decision, 1 Nov 2026; PRD silent): one regular run per
+ * profit entity and closed period. Corrections are adjustment runs. The BE
+ * backs this with a partial unique index on (tenant_id, profit_entity_id,
+ * fiscal_period_id) WHERE type = 'regular' AND status <> 'cancelled'.
+ */
+/**
+ * SH-04: an adjustment corrects one run with that run's split: same profit
+ * entity, same share version and the same shareholder → share list.
+ */
+export function assertAdjustmentMatchesTarget(
+  original: Pick<DistributionRun, "profitEntityId" | "shareVersion" | "lines">,
+  adjustment: {
+    profitEntityId: string;
+    shareVersion: number;
+    lines: readonly Pick<DistributionLine, "shareholderId" | "shareBp">[];
+  },
+): void {
+  const key = (
+    lines: readonly Pick<DistributionLine, "shareholderId" | "shareBp">[],
+  ) =>
+    lines
+      .map((line) => `${line.shareholderId}:${line.shareBp}`)
+      .sort()
+      .join(",");
+  if (
+    original.profitEntityId !== adjustment.profitEntityId ||
+    original.shareVersion !== adjustment.shareVersion ||
+    key(original.lines) !== key(adjustment.lines)
+  )
+    throw new AccountingError(
+      "ADJUSTMENT_TARGET_INVALID",
+      "Penyesuaian harus memakai entitas dan porsi distribusi yang dikoreksi.",
+    );
+}
+
 export function assertNoDuplicateRegularRun(
   runs: readonly Pick<
     DistributionRun,

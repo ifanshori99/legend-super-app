@@ -278,8 +278,11 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     "Pembayaran distribusi bagi hasil",
     `${AUTO} (distribusi dividen); §3.37 Siklus Distribusi`,
     [
+      // Gross comes out of retained earnings; only the net leaves the bank and
+      // the withheld tax is owed to the tax office until it is remitted.
       ["retained_earnings", "debit", "distributedIdr"],
-      ["bank", "credit", "distributedIdr"],
+      ["bank", "credit", "paidNetIdr"],
+      ["dividend_tax_payable", "credit", "taxWithheldIdr"],
     ],
   ),
   rule(

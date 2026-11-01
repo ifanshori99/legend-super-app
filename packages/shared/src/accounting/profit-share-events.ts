@@ -2,9 +2,8 @@
 // legend-cq2). Payloads are JSON only; amounts are whole rupiah. The WS-07
 // auto-journal rule for `distribution.completed` (posting-rules.ts) books
 // `distributedIdr`, the gross amount taken from retained earnings:
-// `paidNetIdr` goes to shareholder bank accounts and `taxWithheldIdr` is
-// payable to the tax office (the tax-payable credit belongs to the auto-journal
-// bead legend-905j; this payload carries the split it needs).
+// `paidNetIdr` is credited to the bank and `taxWithheldIdr` to
+// `dividend_tax_payable` (Utang PPh Dividen) until it is remitted.
 import { z } from "zod";
 import { idrSchema, isoDateTimeSchema, userIdSchema } from "../core/index.ts";
 import { defineDomainEvent } from "../events/define.ts";
@@ -59,20 +58,29 @@ export const distributionPaidEvent = defineDomainEvent({
 /** Every line is paid and the automatic journal is posted (§4 P step 4). */
 export const distributionCompletedEvent = defineDomainEvent({
   name: "distribution.completed",
-  payload: z.strictObject({
-    distributionRunId: distributionRunIdSchema,
-    profitEntityId: profitEntityIdSchema,
-    fiscalPeriodId: fiscalPeriodIdSchema,
-    period: periodKeySchema,
-    type: distributionRunTypeSchema,
-    /** Gross amount debited from retained earnings (posting-rules amount key). */
-    distributedIdr: idrSchema,
-    taxWithheldIdr: idrSchema,
-    paidNetIdr: idrSchema,
-    shareholderCount: countSchema,
-    journalEntryId: journalEntryIdSchema.nullable(),
-    completedAt: isoDateTimeSchema,
-  }),
+  payload: z
+    .strictObject({
+      distributionRunId: distributionRunIdSchema,
+      profitEntityId: profitEntityIdSchema,
+      fiscalPeriodId: fiscalPeriodIdSchema,
+      period: periodKeySchema,
+      type: distributionRunTypeSchema,
+      /** Gross amount debited from retained earnings (posting-rules amount key). */
+      distributedIdr: idrSchema,
+      taxWithheldIdr: idrSchema,
+      paidNetIdr: idrSchema,
+      shareholderCount: countSchema,
+      journalEntryId: journalEntryIdSchema.nullable(),
+      completedAt: isoDateTimeSchema,
+    })
+    .refine(
+      (payload) =>
+        payload.distributedIdr === payload.taxWithheldIdr + payload.paidNetIdr,
+      {
+        path: ["distributedIdr"],
+        message: "distributedIdr must equal taxWithheldIdr + paidNetIdr",
+      },
+    ),
 });
 
 export const PROFIT_SHARE_EVENTS = {

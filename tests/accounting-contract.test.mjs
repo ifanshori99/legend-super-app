@@ -1457,6 +1457,96 @@ describe("SH-04 approved distributions freeze and corrections use adjustments", 
   const oct = pf.runs.october;
   const adjustment = pf.runs.adjustment;
 
+  test("SH-04 an adjustment keeps the corrected run's entity, version and split", () => {
+    acc.assertAdjustmentMatchesTarget(sep, adjustment);
+    throwsCode(
+      () =>
+        acc.assertAdjustmentMatchesTarget(sep, {
+          ...adjustment,
+          shareVersion: adjustment.shareVersion + 1,
+        }),
+      "ADJUSTMENT_TARGET_INVALID",
+    );
+    throwsCode(
+      () =>
+        acc.assertAdjustmentMatchesTarget(sep, {
+          ...adjustment,
+          lines: adjustment.lines.slice(1),
+        }),
+      "ADJUSTMENT_TARGET_INVALID",
+    );
+  });
+
+  test("§3.37 the remainder tie-break does not depend on allocation row order", () => {
+    const base = {
+      profitEntityId: sep.profitEntityId,
+      fiscalPeriodId: sep.fiscalPeriodId,
+      period: sep.period,
+      periodStatus: "closed",
+      periodNetProfitIdr: 1_000_001,
+      policy: { ...legalEntityEntity.policy, reserveBp: 0 },
+      allocations: [
+        { shareholderId: sep.lines[0].shareholderId, shareBp: 5_000 },
+        { shareholderId: sep.lines[1].shareholderId, shareBp: 5_000 },
+      ],
+    };
+    const forward = acc.calculateDistribution(base);
+    const reversed = acc.calculateDistribution({
+      ...base,
+      allocations: [...base.allocations].reverse(),
+    });
+    assert.deepEqual(forward.lines, reversed.lines);
+    assert.equal(forward.totalGrossIdr, 1_000_001);
+    // A share too small for a whole rupiah is a domain error, not a parse error.
+    throwsCode(
+      () => acc.calculateDistribution({ ...base, periodNetProfitIdr: 1 }),
+      "NOTHING_TO_DISTRIBUTE",
+    );
+  });
+
+  test("§3.37 the dividend journal credits bank with net and tax payable with the withholding", () => {
+    const map = acc.accountMapFor(fx.accountMappings, fx.legalEntity.id);
+    const rule = acc.resolvePostingRule(acc.defaultPostingRules, {
+      eventName: "distribution.completed",
+    });
+    assert.ok(sep.totalTaxWithheldIdr > 0);
+    const lines = acc.buildJournalLinesFromRule(
+      rule,
+      {
+        distributedIdr: sep.totalGrossIdr,
+        paidNetIdr: sep.totalNetIdr,
+        taxWithheldIdr: sep.totalTaxWithheldIdr,
+      },
+      map,
+      { outletId: null },
+    );
+    assert.equal(lines.length, 3);
+    const credits = lines
+      .filter((l) => l.creditIdr > 0)
+      .map((l) => l.creditIdr);
+    assert.deepEqual(
+      credits.sort((a, b) => a - b),
+      [sep.totalTaxWithheldIdr, sep.totalNetIdr].sort((a, b) => a - b),
+    );
+    // The completed event refuses a split that does not add up.
+    assert.equal(
+      acc.distributionCompletedEvent.payloadSchema.safeParse({
+        distributionRunId: sep.id,
+        profitEntityId: sep.profitEntityId,
+        fiscalPeriodId: sep.fiscalPeriodId,
+        period: sep.period,
+        type: sep.type,
+        distributedIdr: sep.totalGrossIdr,
+        taxWithheldIdr: sep.totalTaxWithheldIdr,
+        paidNetIdr: sep.totalGrossIdr,
+        shareholderCount: sep.lines.length,
+        journalEntryId: null,
+        completedAt: sep.paidAt,
+      }).success,
+      false,
+    );
+  });
+
   test("SH-04 a regular distribution runs from a closed period only", () => {
     const input = {
       profitEntityId: legalEntityEntity.id,
