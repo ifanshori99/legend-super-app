@@ -6,3 +6,5 @@ export * from "./verification";
 export * from "./notes";
 
 export * from "./core-events";
+
+export * from "./notification";
