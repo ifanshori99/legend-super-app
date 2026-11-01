@@ -511,8 +511,8 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   assert.equal(
     kitchen.getServingTimeSummary.query.safeParse({
       group: "station",
-      from: "2026-11-02",
-      to: "2026-11-01",
+      startDate: "2026-11-02",
+      endDate: "2026-11-01",
     }).success,
     false,
     "the period ends on or after it starts",

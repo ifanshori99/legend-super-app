@@ -16,10 +16,7 @@ import {
   uuidIdSchema,
   isoDateTimeSchema,
 } from "../core/index.ts";
-import {
-  eventCatalogEntrySchema,
-  eventEnvelopeSchema,
-} from "../events/index.ts";
+import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import { stationPacingSchema } from "./schemas.ts";
 
@@ -85,7 +82,10 @@ export const kitchenEventNames = [
 ] as const;
 export type KitchenEventName = (typeof kitchenEventNames)[number];
 
-export const kitchenEventPayloads: Record<KitchenEventName, z.ZodType> = {
+export const kitchenEventPayloads: Record<
+  KitchenEventName,
+  z.ZodType<Record<string, unknown>>
+> = {
   "kitchen_ticket.created": kitchenTicketCreatedPayloadSchema,
   "kitchen_ticket.started": kitchenTicketStartedPayloadSchema,
   "kitchen_ticket.bumped": kitchenTicketBumpedPayloadSchema,
@@ -94,16 +94,20 @@ export const kitchenEventPayloads: Record<KitchenEventName, z.ZodType> = {
   "pacing.updated": pacingUpdatedPayloadSchema,
 };
 
+/**
+ * Catalog-bound definitions (contracts.md "One catalog, typed payloads"):
+ * defineDomainEvent throws at module load if a name is not catalogued, and
+ * each `envelopeSchema` validates name, version, schema ref and payload.
+ */
+export const kitchenEvents = Object.fromEntries(
+  kitchenEventNames.map((name) => [
+    name,
+    defineDomainEvent({ name, payload: kitchenEventPayloads[name] }),
+  ]),
+) as Record<KitchenEventName, ReturnType<typeof defineDomainEvent>>;
+
 export const kitchenEventCatalog: readonly EventCatalogEntry[] =
-  kitchenEventNames.map((name) =>
-    eventCatalogEntrySchema.parse({
-      name,
-      aggregateType: name.split(".")[0],
-      version: 1,
-      payloadSchemaRef: `${name}.v1`,
-      workstream: "WS-04",
-    }),
-  );
+  kitchenEventNames.map((name) => kitchenEvents[name].entry);
 
 /** Envelope whose name and payload belong to this domain. */
 export const kitchenEventSchema = eventEnvelopeSchema
@@ -113,10 +117,13 @@ export const kitchenEventSchema = eventEnvelopeSchema
   )
   .refine(
     (event) =>
-      kitchenEventPayloads[event.name as KitchenEventName]?.safeParse(
-        event.payload,
+      kitchenEvents[event.name as KitchenEventName]?.envelopeSchema.safeParse(
+        event,
       ).success === true,
-    { path: ["payload"], message: "Event payload does not match its schema" },
+    {
+      path: ["payload"],
+      message: "Event does not match its catalogued schema",
+    },
   );
 
 export type KitchenEvent = EventEnvelope;

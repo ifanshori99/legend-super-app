@@ -211,10 +211,11 @@ export const getServingTimeSummary = defineEndpoint({
   params: outletParams,
   query: clientInputSchema({
     group: servingTimeGroupSchema,
-    from: businessDateSchema,
-    to: businessDateSchema,
-  }).refine((query) => query.from <= query.to, {
-    path: ["to"],
+    // Same period keys as every report route (metrics METRIC_REPORT_QUERY_KEYS).
+    startDate: businessDateSchema,
+    endDate: businessDateSchema,
+  }).refine((query) => query.startDate <= query.endDate, {
+    path: ["endDate"],
     message: "The period ends on or after it starts",
   }),
   response: dataResponseSchema(z.array(servingTimeSummarySchema)),
