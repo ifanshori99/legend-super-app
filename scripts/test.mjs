@@ -121,7 +121,9 @@ try {
     // The Playwright servers run these builds with NODE_ENV=production, so
     // build them the same way. Vite inlines NODE_ENV: a test-env build would
     // ship development React and a server that prints test-mode logs.
-    // VITE_API_URL is also inlined, so build against the test API.
+    // VITE_API_URL is also inlined, so build against the test API. turbo.json
+    // hashes NODE_ENV and VITE_* for the build task (legend-mlb6), so this
+    // build never replays a cached bundle made in another mode.
     await run(pnpmCommand(), ["run", "build"], {
       ...testEnv,
       NODE_ENV: "production",
