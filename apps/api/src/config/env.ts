@@ -97,6 +97,17 @@ const schema = z
   })
   .refine(
     (values) =>
+      values.DEPLOYMENT_MODE === "development" ||
+      Boolean(values.APP_DATABASE_URL),
+    {
+      path: ["APP_DATABASE_URL"],
+      // TEN-02: the API must run as the restricted, RLS-bound login, never the owner.
+      message:
+        "Set APP_DATABASE_URL to the restricted application login outside development.",
+    },
+  )
+  .refine(
+    (values) =>
       values.DEPLOYMENT_MODE === "production" ||
       values.DATA_CLASSIFICATION === "synthetic",
     {
