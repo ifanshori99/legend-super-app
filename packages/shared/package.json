@@ -31,7 +31,8 @@
     "./qr-order": "./src/qr-order/index.ts",
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
-    "./accounting": "./src/accounting/index.ts"
+    "./accounting": "./src/accounting/index.ts",
+    "./platform": "./src/platform/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
