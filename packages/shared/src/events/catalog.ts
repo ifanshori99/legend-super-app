@@ -1,20 +1,36 @@
 import { z } from "../core/index.ts";
-import { eventNameSchema } from "./schemas.ts";
+import {
+  aggregateTypeSchema,
+  eventNameSchema,
+  payloadSchemaRefOf,
+} from "./schemas.ts";
 
 /** Proposed v1 names, to be owned and refined by each workstream. Payload
  * references are stable identifiers, not a claim the domain schemas exist yet. */
 export const eventCatalogEntrySchema = z
   .object({
     name: eventNameSchema,
-    aggregateType: z.string().min(1),
+    aggregateType: aggregateTypeSchema,
     version: z.number().int().positive().safe(),
     payloadSchemaRef: z.string().min(1).max(255),
     workstream: z.string().regex(/^WS-\d{2}$/),
   })
   .strict()
-  .refine((entry) => entry.name.split(".")[0] === entry.aggregateType, {
-    path: ["name"],
-    message: "Event name must match aggregate type",
+  .superRefine((entry, ctx) => {
+    if (entry.name.split(".")[0] !== entry.aggregateType)
+      ctx.addIssue({
+        code: "custom",
+        path: ["name"],
+        message: "Event name must match aggregate type",
+      });
+    if (
+      entry.payloadSchemaRef !== payloadSchemaRefOf(entry.name, entry.version)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["payloadSchemaRef"],
+        message: "payloadSchemaRef must be <name>.v<version>",
+      });
   });
 export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
@@ -25,7 +41,7 @@ const namesByWorkstream = {
   "WS-03":
     "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored",
   "WS-04":
-    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.updated cashier_shift.opened cashier_shift.closed",
+    "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed",
   "WS-05":
     "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported",
   "WS-06":
@@ -42,18 +58,31 @@ const namesByWorkstream = {
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
     "checklist.completed checklist.reminded equipment_service.reminded prep_list.created",
-  "WS-00": "document.generated text_override.updated",
+  // Adapter layer (packages/shared/src/adapters). Emitted by the services that
+  // wrap a provider, never by a provider itself. A webhook that fails signature
+  // verification has no trusted tenant yet, so it is logged (gateway_webhook_events,
+  // PRD §6), not published as a tenant event.
+  // Text contract (packages/shared/src/text): one event per term override change.
+  "WS-00":
+    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed text_override.updated",
 } as const;
-export const eventCatalog: readonly EventCatalogEntry[] = Object.entries(
-  namesByWorkstream,
-).flatMap(([workstream, names]) =>
-  names.split(" ").map((name) =>
-    eventCatalogEntrySchema.parse({
-      name,
-      aggregateType: name.split(".")[0],
-      version: 1,
-      payloadSchemaRef: `${name}.v1`,
-      workstream,
-    }),
+export const eventCatalog: readonly EventCatalogEntry[] = Object.freeze(
+  Object.entries(namesByWorkstream).flatMap(([workstream, names]) =>
+    names.split(" ").map((name) =>
+      Object.freeze(
+        eventCatalogEntrySchema.parse({
+          name,
+          aggregateType: name.split(".")[0],
+          version: 1,
+          payloadSchemaRef: payloadSchemaRefOf(name, 1),
+          workstream,
+        }),
+      ),
+    ),
   ),
 );
+const catalogByName: ReadonlyMap<string, EventCatalogEntry> = new Map(
+  eventCatalog.map((entry) => [entry.name, entry]),
+);
+/** Lookup by event name (`order.paid`). */
+export const eventCatalogByName = catalogByName;

@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  DEPLOYMENT_POLICY_MESSAGE,
+  assertDataImportAllowed as assertSharedDataImportAllowed,
+  deploymentEnvShape,
+  deploymentPolicyCheck,
+} from "@starter/shared/env";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -29,14 +35,9 @@ const postgresUrl = z.url().refine((value) => {
 
 const schema = z
   .object({
-    DEPLOYMENT_MODE: z
-      .enum(["development", "staging", "production"])
-      .default("development"),
-    EDGE_MODE: z
-      .enum(["true", "false"])
-      .default("false")
-      .transform((value) => value === "true"),
-    DATA_CLASSIFICATION: z.enum(["synthetic", "real"]).default("synthetic"),
+    // Deployment mode, edge topology, and data classification are shared with
+    // the web, worker, and edge runtimes (@starter/shared/env).
+    ...deploymentEnvShape,
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
@@ -95,15 +96,10 @@ const schema = z
       .optional()
       .transform((value) => value === "true" || value === "1"),
   })
-  .refine(
-    (values) =>
-      values.DEPLOYMENT_MODE === "production" ||
-      values.DATA_CLASSIFICATION === "synthetic",
-    {
-      path: ["DATA_CLASSIFICATION"],
-      message: "Only synthetic data is permitted outside production.",
-    },
-  );
+  .refine(deploymentPolicyCheck, {
+    path: ["DATA_CLASSIFICATION"],
+    message: DEPLOYMENT_POLICY_MESSAGE,
+  });
 
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
@@ -146,9 +142,7 @@ export function trustProxySetting(value = env.TRUST_PROXY) {
 }
 
 // Importers must classify each input explicitly before persisting any records.
+// The rule itself is shared with every other runtime (@starter/shared/env).
 export function assertDataImportAllowed(classification: unknown): void {
-  const dataType = z.enum(["synthetic", "real"]).parse(classification);
-  if (dataType === "real" && env.DEPLOYMENT_MODE !== "production") {
-    throw new Error("Real data imports are only permitted in production.");
-  }
+  assertSharedDataImportAllowed(env, classification);
 }

@@ -11,6 +11,7 @@
     "./site": "./src/site.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
+    "./env": "./src/env/index.ts",
     "./core": "./src/core/index.ts",
     "./core/server": "./src/core/server.ts",
     "./events": "./src/events/index.ts",
@@ -21,6 +22,8 @@
     "./api": "./src/api/index.ts",
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
+    "./metrics": "./src/metrics/index.ts",
+    "./kitchen": "./src/kitchen/index.ts",
     "./text": "./src/text/index.ts"
   },
   "scripts": {
