@@ -1,25 +1,32 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useT } from "@/components/i18n";
-import { EmptyState } from "@/components/ui/feedback-state";
-import { QrCode } from "lucide-react";
+import { createTranslator } from "@starter/shared/i18n";
+import { FacilityBookingScreen } from "@/features/facility/components/booking-screen";
 
-// "/f/[facility]" — facility QR entry, e.g. shower room (PRD §5: dynamic SSR,
-// availability never cached, noindex via the customer area).
+// "/f/[facility]" — the facility QR entry, e.g. the shower room (PRD §5:
+// dynamic SSR, availability never cached; noindex via the customer area). The
+// segment is what the QR at the door encodes; the API resolves it to one
+// facility and tenant (TEN-02), so the page never trusts it for anything else.
+// The resolve endpoint does not exist yet (follow-up bead), so the fixtures use
+// the facility id itself.
+const t = createTranslator();
+
 export const Route = createFileRoute("/_customer/f/$facility")({
   headers: () => ({ "Cache-Control": "private, no-store" }),
-  component: FacilityEntry,
+  head: () => ({
+    meta: [
+      {
+        title: t("app.titleTemplate", {
+          page: t("facility.entry.title"),
+          brand: t("app.defaultBrand"),
+        }),
+      },
+      { name: "robots", content: "noindex" },
+    ],
+  }),
+  component: FacilityEntryPage,
 });
 
-function FacilityEntry() {
-  const t = useT();
-  return (
-    <section>
-      <h1 className="sr-only">{t("area.customer.facilityTitle")}</h1>
-      <EmptyState
-        icon={QrCode}
-        title={t("area.customer.facilityTitle")}
-        description={t("area.customer.facilityHint")}
-      />
-    </section>
-  );
+function FacilityEntryPage() {
+  const { facility } = Route.useParams();
+  return <FacilityBookingScreen facilityId={facility} />;
 }

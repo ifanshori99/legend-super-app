@@ -37,6 +37,9 @@ import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as CustomerMemberFasilitasIndexRouteImport } from './routes/_customer/member.fasilitas.index'
+import { Route as CustomerMemberFasilitasTicketIdRouteImport } from './routes/_customer/member.fasilitas.$ticketId'
+import { Route as CustomerMemberFasilitasLanggananRouteImport } from './routes/_customer/member.fasilitas.langganan'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -168,6 +171,24 @@ const ShareholderShareholderIndexRoute =
     path: '/shareholder/',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const CustomerMemberFasilitasIndexRoute =
+  CustomerMemberFasilitasIndexRouteImport.update({
+    id: '/fasilitas/',
+    path: '/fasilitas/',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
+const CustomerMemberFasilitasTicketIdRoute =
+  CustomerMemberFasilitasTicketIdRouteImport.update({
+    id: '/fasilitas/$ticketId',
+    path: '/fasilitas/$ticketId',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
+const CustomerMemberFasilitasLanggananRoute =
+  CustomerMemberFasilitasLanggananRouteImport.update({
+    id: '/fasilitas/langganan',
+    path: '/fasilitas/langganan',
+    getParentRoute: () => CustomerMemberRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -187,6 +208,9 @@ export interface FileRoutesByFullPath {
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
+  '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -205,6 +229,9 @@ export interface FileRoutesByTo {
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
+  '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
+  '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -236,6 +263,9 @@ export interface FileRoutesById {
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/_customer/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
+  '/_customer/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
+  '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -257,6 +287,9 @@ export interface FileRouteTypes {
     | '/owner/'
     | '/platform/'
     | '/shareholder/'
+    | '/member/fasilitas/$ticketId'
+    | '/member/fasilitas/langganan'
+    | '/member/fasilitas/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -275,6 +308,9 @@ export interface FileRouteTypes {
     | '/owner'
     | '/platform'
     | '/shareholder'
+    | '/member/fasilitas/$ticketId'
+    | '/member/fasilitas/langganan'
+    | '/member/fasilitas'
   id:
     | '__root__'
     | '/_auth'
@@ -305,6 +341,9 @@ export interface FileRouteTypes {
     | '/_owner/owner/'
     | '/_platform/platform/'
     | '/_shareholder/shareholder/'
+    | '/_customer/member/fasilitas/$ticketId'
+    | '/_customer/member/fasilitas/langganan'
+    | '/_customer/member/fasilitas/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -520,6 +559,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
       parentRoute: typeof ShareholderRoute
     }
+    '/_customer/member/fasilitas/': {
+      id: '/_customer/member/fasilitas/'
+      path: '/fasilitas'
+      fullPath: '/member/fasilitas/'
+      preLoaderRoute: typeof CustomerMemberFasilitasIndexRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/fasilitas/$ticketId': {
+      id: '/_customer/member/fasilitas/$ticketId'
+      path: '/fasilitas/$ticketId'
+      fullPath: '/member/fasilitas/$ticketId'
+      preLoaderRoute: typeof CustomerMemberFasilitasTicketIdRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/fasilitas/langganan': {
+      id: '/_customer/member/fasilitas/langganan'
+      path: '/fasilitas/langganan'
+      fullPath: '/member/fasilitas/langganan'
+      preLoaderRoute: typeof CustomerMemberFasilitasLanggananRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
   }
 }
 
@@ -537,10 +597,16 @@ const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
 interface CustomerMemberRouteChildren {
   CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
+  CustomerMemberFasilitasTicketIdRoute: typeof CustomerMemberFasilitasTicketIdRoute
+  CustomerMemberFasilitasLanggananRoute: typeof CustomerMemberFasilitasLanggananRoute
+  CustomerMemberFasilitasIndexRoute: typeof CustomerMemberFasilitasIndexRoute
 }
 
 const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
   CustomerMemberIndexRoute: CustomerMemberIndexRoute,
+  CustomerMemberFasilitasTicketIdRoute: CustomerMemberFasilitasTicketIdRoute,
+  CustomerMemberFasilitasLanggananRoute: CustomerMemberFasilitasLanggananRoute,
+  CustomerMemberFasilitasIndexRoute: CustomerMemberFasilitasIndexRoute,
 }
 
 const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
