@@ -194,7 +194,7 @@ export const id = {
     searchPlaceholder: "Cari…",
   },
   // Denah & Meja (PRD §3 F9): zona, penempatan meja, dan stiker QR permanen.
-  floor: {
+  floorEditor: {
     title: "Denah & Meja",
     description:
       "Atur zona beserta mode bayar dan jamnya, taruh meja di denah, lalu siapkan QR permanen.",

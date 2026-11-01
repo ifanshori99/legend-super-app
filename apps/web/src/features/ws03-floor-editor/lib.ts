@@ -25,13 +25,13 @@ export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 
 /** Short day names by contract day number: 0 = Sunday. */
 export const DAY_LABEL_KEYS: readonly MessageKey[] = [
-  "floor.day.sun",
-  "floor.day.mon",
-  "floor.day.tue",
-  "floor.day.wed",
-  "floor.day.thu",
-  "floor.day.fri",
-  "floor.day.sat",
+  "floorEditor.day.sun",
+  "floorEditor.day.mon",
+  "floorEditor.day.tue",
+  "floorEditor.day.wed",
+  "floorEditor.day.thu",
+  "floorEditor.day.fri",
+  "floorEditor.day.sat",
 ];
 
 export function clampNumber(value: number, min: number, max: number): number {

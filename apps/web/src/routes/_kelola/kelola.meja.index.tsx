@@ -13,7 +13,7 @@ export const Route = createFileRoute("/_kelola/kelola/meja/")({
     meta: [
       {
         title: t("app.titleTemplate", {
-          page: t("floor.title"),
+          page: t("floorEditor.title"),
           brand: t("app.defaultBrand"),
         }),
       },

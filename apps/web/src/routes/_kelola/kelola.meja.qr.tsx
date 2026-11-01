@@ -14,7 +14,7 @@ export const Route = createFileRoute("/_kelola/kelola/meja/qr")({
     meta: [
       {
         title: t("app.titleTemplate", {
-          page: t("floor.qrTitle"),
+          page: t("floorEditor.qrTitle"),
           brand: t("app.defaultBrand"),
         }),
       },

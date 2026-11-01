@@ -114,7 +114,7 @@ function TableFormBody({
     createTable.mutate(parsed.data, {
       onSuccess: ({ data: table }) => {
         toast({
-          title: t("floor.tableAdded", { code: table.code }),
+          title: t("floorEditor.tableAdded", { code: table.code }),
           tone: "success",
         });
         onClose();
@@ -127,11 +127,17 @@ function TableFormBody({
     <DialogContent>
       <form className="grid gap-4" onSubmit={submit} noValidate>
         <DialogHeader>
-          <DialogTitle>{t("floor.tableAddTitle")}</DialogTitle>
-          <DialogDescription>{t("floor.tableFreeSpot")}</DialogDescription>
+          <DialogTitle>{t("floorEditor.tableAddTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("floorEditor.tableFreeSpot")}
+          </DialogDescription>
         </DialogHeader>
 
-        <FormField label={t("floor.tableZone")} error={errors.zoneId} required>
+        <FormField
+          label={t("floorEditor.tableZone")}
+          error={errors.zoneId}
+          required
+        >
           <Select
             value={zoneId}
             onValueChange={(value) => {
@@ -154,8 +160,8 @@ function TableFormBody({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField
-            label={t("floor.tableCode")}
-            hint={t("floor.tableCodeHint")}
+            label={t("floorEditor.tableCode")}
+            hint={t("floorEditor.tableCodeHint")}
             error={errors.code}
             required
           >
@@ -166,7 +172,7 @@ function TableFormBody({
             />
           </FormField>
           <FormField
-            label={t("floor.tableCapacity")}
+            label={t("floorEditor.tableCapacity")}
             error={errors.capacity}
             required
           >
@@ -181,7 +187,11 @@ function TableFormBody({
           </FormField>
         </div>
 
-        <FormField label={t("floor.tableType")} error={errors.type} required>
+        <FormField
+          label={t("floorEditor.tableType")}
+          error={errors.type}
+          required
+        >
           <Select
             value={type}
             onValueChange={(value) => setType(tableTypeSchema.parse(value))}
@@ -192,7 +202,7 @@ function TableFormBody({
             <SelectContent>
               {TABLE_TYPES.map((entry) => (
                 <SelectItem key={entry} value={entry}>
-                  {t(`floor.type.${entry}`)}
+                  {t(`floorEditor.type.${entry}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -200,20 +210,22 @@ function TableFormBody({
         </FormField>
 
         <div className="grid gap-1.5">
-          <span className="text-sm font-semibold">{t("floor.tableShape")}</span>
+          <span className="text-sm font-semibold">
+            {t("floorEditor.tableShape")}
+          </span>
           <SegmentedControl
-            label={t("floor.tableShape")}
+            label={t("floorEditor.tableShape")}
             value={shape}
             onValueChange={setShape}
             options={[
-              { value: "rect", label: t("floor.shape.rect") },
-              { value: "round", label: t("floor.shape.round") },
+              { value: "rect", label: t("floorEditor.shape.rect") },
+              { value: "round", label: t("floorEditor.shape.round") },
             ]}
           />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <FormField label={t("floor.tableWidth")} error={errors.layout}>
+          <FormField label={t("floorEditor.tableWidth")} error={errors.layout}>
             <Input
               type="number"
               inputMode="numeric"
@@ -224,7 +236,7 @@ function TableFormBody({
               onChange={(event) => setWidth(event.target.value)}
             />
           </FormField>
-          <FormField label={t("floor.tableHeight")}>
+          <FormField label={t("floorEditor.tableHeight")}>
             <Input
               type="number"
               inputMode="numeric"
@@ -251,7 +263,7 @@ function TableFormBody({
             {t("common.cancel")}
           </Button>
           <Button type="submit" loading={createTable.isPending}>
-            {t("floor.tableAdd")}
+            {t("floorEditor.tableAdd")}
           </Button>
         </DialogFooter>
       </form>

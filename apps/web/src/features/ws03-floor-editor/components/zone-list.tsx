@@ -50,8 +50,8 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
   const hoursLabel = (zone: FloorZone) =>
     describeZoneHours(zone.hours, {
       days: dayLabels,
-      everyDay: t("floor.hoursEveryDay"),
-      more: t("floor.hoursMore"),
+      everyDay: t("floorEditor.hoursEveryDay"),
+      more: t("floorEditor.hoursMore"),
     });
 
   const confirmDelete = () => {
@@ -59,7 +59,7 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
     setDeleteError(null);
     deleteZone.mutate(deleting.id, {
       onSuccess: () => {
-        toast({ title: t("floor.formDeleted"), tone: "success" });
+        toast({ title: t("floorEditor.formDeleted"), tone: "success" });
         setDeleting(null);
       },
       onError: (error: Error) => setDeleteError(error as ApiError),
@@ -69,24 +69,24 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
   return (
     <>
       <DataTableShell
-        title={t("floor.zonesTitle")}
+        title={t("floorEditor.zonesTitle")}
         state={state}
         onRetry={onRetry}
         rowCount={state === "ready" ? zones.length : undefined}
         empty={{
-          title: t("floor.zonesEmptyTitle"),
-          description: t("floor.zonesEmptyHint"),
+          title: t("floorEditor.zonesEmptyTitle"),
+          description: t("floorEditor.zonesEmptyHint"),
           action: (
             <Button variant="outline" size="sm" onClick={onCreate}>
               <Plus aria-hidden="true" />
-              {t("floor.addZone")}
+              {t("floorEditor.addZone")}
             </Button>
           ),
         }}
         actions={
           <Button variant="outline" size="sm" onClick={onCreate}>
             <Plus aria-hidden="true" />
-            {t("floor.addZone")}
+            {t("floorEditor.addZone")}
           </Button>
         }
         loadingRows={4}
@@ -94,18 +94,18 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
         <TableView>
           <TableHeader>
             <TableRow>
-              <TableHead>{t("floor.zonesTitle")}</TableHead>
+              <TableHead>{t("floorEditor.zonesTitle")}</TableHead>
               <TableHead className="hidden md:table-cell">
-                {t("floor.formPaymentMode")}
+                {t("floorEditor.formPaymentMode")}
               </TableHead>
               <TableHead numeric className="hidden md:table-cell">
-                {t("floor.serviceCharge")}
+                {t("floorEditor.serviceCharge")}
               </TableHead>
               <TableHead numeric className="hidden md:table-cell">
-                {t("floor.minSpend")}
+                {t("floorEditor.minSpend")}
               </TableHead>
               <TableHead className="hidden lg:table-cell">
-                {t("floor.formHours")}
+                {t("floorEditor.formHours")}
               </TableHead>
               <TableHead numeric>{t("terms.table")}</TableHead>
               <TableHead className="text-right">
@@ -130,16 +130,16 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
                           }
                         >
                           {zone.status === "active"
-                            ? t("floor.zoneActive")
-                            : t("floor.zoneInactive")}
+                            ? t("floorEditor.zoneActive")
+                            : t("floorEditor.zoneInactive")}
                         </Badge>
                       </div>
                       {/* Phones: the wide columns fold into this line. */}
                       <p className="text-xs leading-4 text-muted-foreground md:hidden">
                         {[
                           zone.paymentMode === "pay_first"
-                            ? t("floor.payFirst")
-                            : t("floor.openBill"),
+                            ? t("floorEditor.payFirst")
+                            : t("floorEditor.openBill"),
                           `${zone.serviceChargeBp / 100}%`,
                           hoursLabel(zone),
                         ].join(" · ")}
@@ -148,15 +148,15 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
                     {zone.paymentMode === "pay_first"
-                      ? t("floor.payFirst")
-                      : t("floor.openBill")}
+                      ? t("floorEditor.payFirst")
+                      : t("floorEditor.openBill")}
                   </TableCell>
                   <TableCell numeric className="hidden md:table-cell">
                     {zone.serviceChargeBp / 100}%
                   </TableCell>
                   <TableCell numeric className="hidden md:table-cell">
                     {zone.minimumSpendIdr === 0 ? (
-                      t("floor.noMinSpend")
+                      t("floorEditor.noMinSpend")
                     ) : (
                       <Money amount={zone.minimumSpendIdr} size="sm" />
                     )}
@@ -171,7 +171,7 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
                         type="button"
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={t("floor.edit", { name: zone.name })}
+                        aria-label={t("floorEditor.edit", { name: zone.name })}
                         onClick={() => onEdit(zone)}
                       >
                         <Pencil aria-hidden="true" />
@@ -180,7 +180,9 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
                         type="button"
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={t("floor.delete", { name: zone.name })}
+                        aria-label={t("floorEditor.delete", {
+                          name: zone.name,
+                        })}
                         onClick={() => {
                           setDeleteError(null);
                           setDeleting(zone);
@@ -200,9 +202,9 @@ function ZoneList({ zones, tables, state, onRetry, onCreate, onEdit }: Props) {
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
-        title={t("floor.deleteTitle", { name: deleting?.name ?? "" })}
-        description={t("floor.deleteBody")}
-        confirmLabel={t("floor.deleteConfirm")}
+        title={t("floorEditor.deleteTitle", { name: deleting?.name ?? "" })}
+        description={t("floorEditor.deleteBody")}
+        confirmLabel={t("floorEditor.deleteConfirm")}
         pending={deleteZone.isPending}
         error={deleteError}
         onConfirm={confirmDelete}

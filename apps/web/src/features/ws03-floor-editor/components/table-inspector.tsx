@@ -100,7 +100,7 @@ function TableInspectorBody({
       { tableId: table.id, body: parsed.data },
       {
         onSuccess: () =>
-          toast({ title: t("floor.tableSaved"), tone: "success" }),
+          toast({ title: t("floorEditor.tableSaved"), tone: "success" }),
         onError: (error: Error) => setFormError(error as ApiError),
       },
     );
@@ -110,7 +110,7 @@ function TableInspectorBody({
     setDeleteError(null);
     deleteTable.mutate(table.id, {
       onSuccess: () => {
-        toast({ title: t("floor.tableDeleted"), tone: "success" });
+        toast({ title: t("floorEditor.tableDeleted"), tone: "success" });
         setConfirmingDelete(false);
         onDeleted();
       },
@@ -137,18 +137,18 @@ function TableInspectorBody({
             id="floor-inspector-title"
             className="text-base leading-6 font-semibold"
           >
-            {t("floor.tableTitle", { code: table.code })}
+            {t("floorEditor.tableTitle", { code: table.code })}
           </h2>
           <p className="text-sm leading-5 text-muted-foreground">
-            {t(`floor.tableState.${table.status}`)} ·{" "}
-            {t("floor.planSeats", { count: table.capacity })}
+            {t(`floorEditor.tableState.${table.status}`)} ·{" "}
+            {t("floorEditor.planSeats", { count: table.capacity })}
           </p>
         </div>
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
-          aria-label={t("floor.tableDelete")}
+          aria-label={t("floorEditor.tableDelete")}
           onClick={() => setConfirmingDelete(true)}
         >
           <Trash2 aria-hidden="true" />
@@ -157,7 +157,9 @@ function TableInspectorBody({
 
       <div className="grid gap-3 border-t pt-4">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">{t("floor.tablePosition")}</h3>
+          <h3 className="text-sm font-semibold">
+            {t("floorEditor.tablePosition")}
+          </h3>
           <Button
             type="button"
             variant="outline"
@@ -165,7 +167,7 @@ function TableInspectorBody({
             onClick={() => onLayoutChange(rotateLayout(layout))}
           >
             <RotateCw aria-hidden="true" />
-            {t("floor.tableRotate")}
+            {t("floorEditor.tableRotate")}
           </Button>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -191,7 +193,7 @@ function TableInspectorBody({
               onChange={setLayoutField("y")}
             />
           </FormField>
-          <FormField label={t("floor.tableWidth")} required>
+          <FormField label={t("floorEditor.tableWidth")} required>
             <Input
               type="number"
               inputMode="numeric"
@@ -202,7 +204,7 @@ function TableInspectorBody({
               onChange={setLayoutField("width")}
             />
           </FormField>
-          <FormField label={t("floor.tableHeight")} required>
+          <FormField label={t("floorEditor.tableHeight")} required>
             <Input
               type="number"
               inputMode="numeric"
@@ -215,28 +217,30 @@ function TableInspectorBody({
           </FormField>
         </div>
         <div className="grid gap-1.5">
-          <span className="text-sm font-semibold">{t("floor.tableShape")}</span>
+          <span className="text-sm font-semibold">
+            {t("floorEditor.tableShape")}
+          </span>
           <SegmentedControl
-            label={t("floor.tableShape")}
+            label={t("floorEditor.tableShape")}
             value={layout.shape}
             onValueChange={(shape) => onLayoutChange({ ...layout, shape })}
             options={[
-              { value: "rect", label: t("floor.shape.rect") },
-              { value: "round", label: t("floor.shape.round") },
+              { value: "rect", label: t("floorEditor.shape.rect") },
+              { value: "round", label: t("floorEditor.shape.round") },
             ]}
           />
         </div>
         {dirty && (
           <p className="text-sm leading-5 font-medium text-warning">
-            {t("floor.tableDirty")}
+            {t("floorEditor.tableDirty")}
           </p>
         )}
       </div>
 
       <form className="grid gap-4 border-t pt-4" onSubmit={save} noValidate>
         <FormField
-          label={t("floor.tableCode")}
-          hint={t("floor.tableCodeHint")}
+          label={t("floorEditor.tableCode")}
+          hint={t("floorEditor.tableCodeHint")}
           error={errors.code}
           required
         >
@@ -248,7 +252,7 @@ function TableInspectorBody({
         </FormField>
         <div className="grid gap-4 sm:grid-cols-2">
           <FormField
-            label={t("floor.tableCapacity")}
+            label={t("floorEditor.tableCapacity")}
             error={errors.capacity}
             required
           >
@@ -261,7 +265,11 @@ function TableInspectorBody({
               onChange={(event) => setCapacity(event.target.value)}
             />
           </FormField>
-          <FormField label={t("floor.tableType")} error={errors.type} required>
+          <FormField
+            label={t("floorEditor.tableType")}
+            error={errors.type}
+            required
+          >
             <Select
               value={type}
               onValueChange={(value) => setType(tableTypeSchema.parse(value))}
@@ -272,14 +280,18 @@ function TableInspectorBody({
               <SelectContent>
                 {TABLE_TYPES.map((entry) => (
                   <SelectItem key={entry} value={entry}>
-                    {t(`floor.type.${entry}`)}
+                    {t(`floorEditor.type.${entry}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </FormField>
         </div>
-        <FormField label={t("floor.tableZone")} error={errors.zoneId} required>
+        <FormField
+          label={t("floorEditor.tableZone")}
+          error={errors.zoneId}
+          required
+        >
           <Select value={zoneId} onValueChange={setZoneId}>
             <SelectTrigger>
               <SelectValue />
@@ -301,11 +313,11 @@ function TableInspectorBody({
               onCheckedChange={setActive}
             />
             <label htmlFor="table-active" className="text-sm font-medium">
-              {t("floor.tableActiveSwitch")}
+              {t("floorEditor.tableActiveSwitch")}
             </label>
           </div>
           <p className="text-sm leading-5 text-muted-foreground">
-            {t("floor.tableActiveHint")}
+            {t("floorEditor.tableActiveHint")}
           </p>
         </div>
 
@@ -323,16 +335,16 @@ function TableInspectorBody({
           loading={updateTable.isPending}
           disabled={!attributesChanged}
         >
-          {t("floor.tableSave")}
+          {t("floorEditor.tableSave")}
         </Button>
       </form>
 
       <ConfirmDialog
         open={confirmingDelete}
         onOpenChange={setConfirmingDelete}
-        title={t("floor.tableDeleteTitle", { code: table.code })}
-        description={t("floor.tableDeleteBody")}
-        confirmLabel={t("floor.tableDeleteConfirm")}
+        title={t("floorEditor.tableDeleteTitle", { code: table.code })}
+        description={t("floorEditor.tableDeleteBody")}
+        confirmLabel={t("floorEditor.tableDeleteConfirm")}
         pending={deleteTable.isPending}
         error={deleteError}
         onConfirm={remove}
@@ -350,7 +362,7 @@ function TableInspector({ table, ...rest }: Props) {
           <MousePointerClick className="size-icon" aria-hidden="true" />
         </span>
         <p className="text-sm leading-5 text-muted-foreground">
-          {t("floor.tableSelectHint")}
+          {t("floorEditor.tableSelectHint")}
         </p>
       </section>
     );

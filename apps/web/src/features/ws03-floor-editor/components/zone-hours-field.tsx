@@ -31,9 +31,11 @@ function ZoneHoursField({ value, onChange, error, idPrefix = "hours" }: Props) {
       className="grid gap-2"
       aria-describedby={error ? errorId : undefined}
     >
-      <legend className="text-sm font-semibold">{t("floor.formHours")}</legend>
+      <legend className="text-sm font-semibold">
+        {t("floorEditor.formHours")}
+      </legend>
       <p className="text-sm leading-5 text-muted-foreground">
-        {t("floor.formHoursHint")}
+        {t("floorEditor.formHoursHint")}
       </p>
       <div className="grid gap-1.5">
         {WEEK_ORDER.map((day) => {
@@ -59,7 +61,7 @@ function ZoneHoursField({ value, onChange, error, idPrefix = "hours" }: Props) {
               <div className="flex min-w-0 items-center gap-1.5">
                 <Input
                   type="time"
-                  aria-label={`${t("floor.hoursFrom")} ${label}`}
+                  aria-label={`${t("floorEditor.hoursFrom")} ${label}`}
                   aria-describedby={error ? errorId : undefined}
                   className="h-control-sm min-w-0 flex-1 px-2"
                   disabled={!entry.open}
@@ -73,7 +75,7 @@ function ZoneHoursField({ value, onChange, error, idPrefix = "hours" }: Props) {
                 </span>
                 <Input
                   type="time"
-                  aria-label={`${t("floor.hoursTo")} ${label}`}
+                  aria-label={`${t("floorEditor.hoursTo")} ${label}`}
                   aria-describedby={error ? errorId : undefined}
                   className="h-control-sm min-w-0 flex-1 px-2"
                   disabled={!entry.open}

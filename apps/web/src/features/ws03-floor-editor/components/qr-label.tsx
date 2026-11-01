@@ -28,21 +28,21 @@ function QrLabel({ qr, table, zone, brand }: Props) {
           size={104}
           level="M"
           marginSize={2}
-          title={t("floor.tableTitle", { code: table.code })}
+          title={t("floorEditor.tableTitle", { code: table.code })}
           className="shrink-0"
         />
         {/* min width keeps the text readable: it wraps under the QR instead
             of squeezing one character per line on a narrow label */}
         <div className="grid min-w-[8rem] flex-1 gap-0.5">
           <p className="text-lg leading-6 font-semibold tabular">
-            {t("floor.tableTitle", { code: table.code })}
+            {t("floorEditor.tableTitle", { code: table.code })}
           </p>
           {zone && (
             <p className="text-sm leading-5 text-muted-foreground">
               {zone.name}
             </p>
           )}
-          <p className="text-xs leading-4">{t("floor.qrLabelScan")}</p>
+          <p className="text-xs leading-4">{t("floorEditor.qrLabelScan")}</p>
           <p className="text-xs leading-4 break-all text-muted-foreground">
             {qr.url}
           </p>

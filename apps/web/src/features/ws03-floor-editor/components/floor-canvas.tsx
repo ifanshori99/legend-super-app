@@ -106,13 +106,13 @@ function FloorCanvas({
         {tables.length === 0 && (
           <div className="absolute inset-0 grid place-items-center">
             <EmptyState
-              title={t("floor.planEmptyTitle")}
-              description={t("floor.planEmptyHint")}
+              title={t("floorEditor.planEmptyTitle")}
+              description={t("floorEditor.planEmptyHint")}
               action={
                 onAddTable && (
                   <Button variant="outline" size="sm" onClick={onAddTable}>
                     <Plus aria-hidden="true" />
-                    {t("floor.addTable")}
+                    {t("floorEditor.addTable")}
                   </Button>
                 )
               }
@@ -130,10 +130,10 @@ function FloorCanvas({
               type="button"
               aria-pressed={selected}
               aria-label={[
-                t("floor.tableTitle", { code: table.code }),
-                t("floor.planSeats", { count: table.capacity }),
+                t("floorEditor.tableTitle", { code: table.code }),
+                t("floorEditor.planSeats", { count: table.capacity }),
                 zone?.name,
-                inactive ? t("floor.planInactive") : undefined,
+                inactive ? t("floorEditor.planInactive") : undefined,
               ]
                 .filter(Boolean)
                 .join(" · ")}

@@ -93,7 +93,7 @@ function QrPage() {
 
   const issue = async (tableIds: string[]) => {
     if (tableIds.length === 0) {
-      toast({ title: t("floor.qrNothingSelected"), tone: "info" });
+      toast({ title: t("floorEditor.qrNothingSelected"), tone: "info" });
       return;
     }
     try {
@@ -103,7 +103,7 @@ function QrPage() {
         next[tableId] = (await issueQr.mutateAsync(tableId)).data;
       setLabels((current) => ({ ...current, ...next }));
       toast({
-        title: t("floor.qrIssued", {
+        title: t("floorEditor.qrIssued", {
           code: tableIds
             .map((id) => tables.find((table) => table.id === id)?.code ?? "")
             .join(", "),
@@ -125,16 +125,16 @@ function QrPage() {
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h2 className="text-2xl font-semibold">{t("floor.qrTitle")}</h2>
+          <h2 className="text-2xl font-semibold">{t("floorEditor.qrTitle")}</h2>
           <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
-            {t("floor.qrDescription")}
+            {t("floorEditor.qrDescription")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
             <Link to="/kelola/meja">
               <LayoutGrid aria-hidden="true" />
-              {t("floor.title")}
+              {t("floorEditor.title")}
             </Link>
           </Button>
           <Button
@@ -145,14 +145,14 @@ function QrPage() {
           >
             <QrCode aria-hidden="true" />
             {selectedIds.length > 0
-              ? t("floor.qrIssueSelected", { count: selectedIds.length })
-              : t("floor.qrIssue")}
+              ? t("floorEditor.qrIssueSelected", { count: selectedIds.length })
+              : t("floorEditor.qrIssue")}
           </Button>
         </div>
       </header>
 
       <p className="rounded-lg bg-info-subtle px-3 py-2 text-sm leading-5 font-medium text-info">
-        {t("floor.qrHint")}
+        {t("floorEditor.qrHint")}
       </p>
 
       {floor.isError && (
@@ -166,7 +166,7 @@ function QrPage() {
 
       {!floor.isError && (
         <DataTableShell
-          title={t("floor.qrTableTitle")}
+          title={t("floorEditor.qrTableTitle")}
           state={state}
           onRetry={() => void floor.refetch()}
           search={{
@@ -176,18 +176,18 @@ function QrPage() {
           }}
           rowCount={state === "ready" ? rows.length : undefined}
           empty={{
-            title: t("floor.qrEmptyTitle"),
-            description: t("floor.qrEmptyHint"),
+            title: t("floorEditor.qrEmptyTitle"),
+            description: t("floorEditor.qrEmptyHint"),
             action: (
               <Button asChild variant="outline" size="sm">
-                <Link to="/kelola/meja">{t("floor.addTable")}</Link>
+                <Link to="/kelola/meja">{t("floorEditor.addTable")}</Link>
               </Button>
             ),
           }}
           actions={
             <div
               role="group"
-              aria-label={t("floor.zonesTitle")}
+              aria-label={t("floorEditor.zonesTitle")}
               className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]"
             >
               <Button
@@ -196,7 +196,7 @@ function QrPage() {
                 aria-pressed={activeZoneId === null}
                 onClick={() => setZoneFilter(null)}
               >
-                {t("floor.planAllZones")}
+                {t("floorEditor.planAllZones")}
               </Button>
               {zones.map((zone) => (
                 <Button
@@ -220,18 +220,18 @@ function QrPage() {
                   <Checkbox
                     checked={allVisibleSelected}
                     onCheckedChange={toggleAll}
-                    aria-label={t("floor.qrSelectAll")}
+                    aria-label={t("floorEditor.qrSelectAll")}
                   />
                 </TableHead>
-                <TableHead>{t("floor.tableCode")}</TableHead>
+                <TableHead>{t("floorEditor.tableCode")}</TableHead>
                 <TableHead className="hidden md:table-cell">
-                  {t("floor.tableZone")}
+                  {t("floorEditor.tableZone")}
                 </TableHead>
                 <TableHead numeric className="hidden md:table-cell">
-                  {t("floor.tableCapacity")}
+                  {t("floorEditor.tableCapacity")}
                 </TableHead>
                 <TableHead className="hidden lg:table-cell">
-                  {t("floor.tableType")}
+                  {t("floorEditor.tableType")}
                 </TableHead>
                 <TableHead className="text-right">
                   <span className="sr-only">{t("common.more")}</span>
@@ -248,7 +248,9 @@ function QrPage() {
                     <Checkbox
                       checked={selectedIds.includes(table.id)}
                       onCheckedChange={() => toggle(table.id)}
-                      aria-label={t("floor.qrSelect", { code: table.code })}
+                      aria-label={t("floorEditor.qrSelect", {
+                        code: table.code,
+                      })}
                     />
                   </TableCell>
                   <TableCell>
@@ -260,7 +262,7 @@ function QrPage() {
                       <span className="text-xs leading-4 text-muted-foreground md:hidden">
                         {[
                           zoneName(table.zoneId),
-                          t("floor.planSeats", { count: table.capacity }),
+                          t("floorEditor.planSeats", { count: table.capacity }),
                         ].join(" · ")}
                       </span>
                     </div>
@@ -272,7 +274,7 @@ function QrPage() {
                     {table.capacity}
                   </TableCell>
                   <TableCell className="hidden lg:table-cell">
-                    {t(`floor.type.${table.type}`)}
+                    {t(`floorEditor.type.${table.type}`)}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -283,8 +285,8 @@ function QrPage() {
                       onClick={() => void issue([table.id])}
                     >
                       {labels[table.id]
-                        ? t("floor.qrReissue")
-                        : t("floor.qrIssue")}
+                        ? t("floorEditor.qrReissue")
+                        : t("floorEditor.qrIssue")}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -297,8 +299,8 @@ function QrPage() {
       {state === "ready" && issued.length === 0 && (
         <div className="rounded-xl border-(length:--border-w) bg-card">
           <EmptyState
-            title={t("floor.qrPreviewEmptyTitle")}
-            description={t("floor.qrPreviewEmptyHint")}
+            title={t("floorEditor.qrPreviewEmptyTitle")}
+            description={t("floorEditor.qrPreviewEmptyHint")}
           />
         </div>
       )}
@@ -310,11 +312,11 @@ function QrPage() {
         >
           <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
             <h2 id="floor-labels-title" className="text-xl font-semibold">
-              {t("floor.qrPreviewTitle")}
+              {t("floorEditor.qrPreviewTitle")}
             </h2>
             <Button onClick={() => window.print()}>
               <Printer aria-hidden="true" />
-              {t("floor.qrPrint")}
+              {t("floorEditor.qrPrint")}
             </Button>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">

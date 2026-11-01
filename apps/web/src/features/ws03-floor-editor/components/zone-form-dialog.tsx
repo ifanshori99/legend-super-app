@@ -84,10 +84,12 @@ function ZoneFormBody({
     setFormError(null);
     const percent = Number(serviceCharge.replace(",", "."));
     if (!Number.isFinite(percent)) {
-      setErrors({ serviceChargeBp: t("floor.formPercentInvalid") });
+      setErrors({ serviceChargeBp: t("floorEditor.formPercentInvalid") });
       return;
     }
-    setHoursError(hasOpenDay(days) ? undefined : t("floor.formHoursRequired"));
+    setHoursError(
+      hasOpenDay(days) ? undefined : t("floorEditor.formHoursRequired"),
+    );
     const payload = {
       name: name.trim(),
       paymentMode,
@@ -100,7 +102,9 @@ function ZoneFormBody({
     const done = {
       onSuccess: () => {
         toast({
-          title: zone ? t("floor.formSaved") : t("floor.formCreated"),
+          title: zone
+            ? t("floorEditor.formSaved")
+            : t("floorEditor.formCreated"),
           tone: "success" as const,
         });
         onClose();
@@ -135,17 +139,21 @@ function ZoneFormBody({
       >
         <DialogHeader>
           <DialogTitle>
-            {zone ? t("floor.editZoneTitle") : t("floor.newZoneTitle")}
+            {zone
+              ? t("floorEditor.editZoneTitle")
+              : t("floorEditor.newZoneTitle")}
           </DialogTitle>
-          <DialogDescription>{t("floor.formZoneIntro")}</DialogDescription>
+          <DialogDescription>
+            {t("floorEditor.formZoneIntro")}
+          </DialogDescription>
         </DialogHeader>
 
         {/* The hours editor is tall; only the fields scroll, so "Simpan zona"
             never drops below the fold on a phone or a short window. */}
         <div className="grid min-h-0 flex-1 content-start gap-4 overflow-y-auto pr-1">
           <FormField
-            label={t("floor.formName")}
-            hint={t("floor.formNameHint")}
+            label={t("floorEditor.formName")}
+            hint={t("floorEditor.formNameHint")}
             error={errors.name}
             required
           >
@@ -158,26 +166,26 @@ function ZoneFormBody({
 
           <div className="grid gap-1.5">
             <span className="text-sm font-semibold">
-              {t("floor.formPaymentMode")}
+              {t("floorEditor.formPaymentMode")}
             </span>
             <SegmentedControl
-              label={t("floor.formPaymentMode")}
+              label={t("floorEditor.formPaymentMode")}
               value={paymentMode}
               onValueChange={setPaymentMode}
               options={[
-                { value: "pay_first", label: t("floor.payFirst") },
-                { value: "open_bill", label: t("floor.openBill") },
+                { value: "pay_first", label: t("floorEditor.payFirst") },
+                { value: "open_bill", label: t("floorEditor.openBill") },
               ]}
             />
             <p className="text-sm leading-5 text-muted-foreground">
-              {t("floor.formPaymentModeHint")}
+              {t("floorEditor.formPaymentModeHint")}
             </p>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
-              label={t("floor.formServiceCharge")}
-              hint={t("floor.formServiceChargeHint")}
+              label={t("floorEditor.formServiceCharge")}
+              hint={t("floorEditor.formServiceChargeHint")}
               error={errors.serviceChargeBp}
               required
             >
@@ -189,8 +197,8 @@ function ZoneFormBody({
               />
             </FormField>
             <FormField
-              label={t("floor.formMinSpend")}
-              hint={t("floor.formMinSpendHint")}
+              label={t("floorEditor.formMinSpend")}
+              hint={t("floorEditor.formMinSpendHint")}
               error={errors.minimumSpendIdr}
               required
             >
@@ -213,12 +221,12 @@ function ZoneFormBody({
                 onCheckedChange={setActive}
               />
               <label htmlFor="zone-active" className="text-sm font-medium">
-                {t("floor.formStatus")}
+                {t("floorEditor.formStatus")}
               </label>
             </div>
             <FormField
-              label={t("floor.formSortOrder")}
-              hint={t("floor.formSortOrderHint")}
+              label={t("floorEditor.formSortOrder")}
+              hint={t("floorEditor.formSortOrderHint")}
               error={errors.sortOrder}
               required
             >
@@ -248,7 +256,7 @@ function ZoneFormBody({
             {t("common.cancel")}
           </Button>
           <Button type="submit" loading={pending}>
-            {zone ? t("floor.formSave") : t("floor.formCreate")}
+            {zone ? t("floorEditor.formSave") : t("floorEditor.formCreate")}
           </Button>
         </DialogFooter>
       </form>

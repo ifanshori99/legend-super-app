@@ -77,7 +77,7 @@ function FloorEditorPage() {
     setDraft(tableId, next);
     setSelectedId(tableId);
     setAnnouncement(
-      t("floor.planMoved", {
+      t("floorEditor.planMoved", {
         code: table.code,
         x: Math.round(next.x),
         y: Math.round(next.y),
@@ -91,7 +91,7 @@ function FloorEditorPage() {
       { placements: changes },
       {
         onSuccess: () => {
-          toast({ title: t("floor.saved"), tone: "success" });
+          toast({ title: t("floorEditor.saved"), tone: "success" });
           setDrafts({});
         },
         onError: (error: Error) =>
@@ -112,13 +112,13 @@ function FloorEditorPage() {
         {/* The management shell's topbar already renders the page title as
             the document h1, so this screen only adds context and actions. */}
         <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
-          {t("floor.description")}
+          {t("floorEditor.description")}
         </p>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
             <Link to="/kelola/meja/qr">
               <QrCode aria-hidden="true" />
-              {t("floor.qrSheet")}
+              {t("floorEditor.qrSheet")}
             </Link>
           </Button>
           <Button
@@ -127,12 +127,12 @@ function FloorEditorPage() {
             onClick={() => setTableFormOpen(true)}
           >
             <Plus aria-hidden="true" />
-            {t("floor.addTable")}
+            {t("floorEditor.addTable")}
           </Button>
           {changes.length > 0 && (
             <Button loading={saveLayout.isPending} onClick={save}>
               <Save aria-hidden="true" />
-              {t("floor.saveLayout")}
+              {t("floorEditor.saveLayout")}
             </Button>
           )}
         </div>
@@ -157,12 +157,12 @@ function FloorEditorPage() {
       {floor.isSuccess && zones.length === 0 && (
         <div className="rounded-xl border-(length:--border-w) bg-card">
           <EmptyState
-            title={t("floor.zonesEmptyTitle")}
-            description={t("floor.zonesEmptyHint")}
+            title={t("floorEditor.zonesEmptyTitle")}
+            description={t("floorEditor.zonesEmptyHint")}
             action={
               <Button onClick={() => setZoneEditor({ open: true })}>
                 <Plus aria-hidden="true" />
-                {t("floor.addZone")}
+                {t("floorEditor.addZone")}
               </Button>
             }
           />
@@ -176,7 +176,7 @@ function FloorEditorPage() {
               role="status"
               className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-warning-subtle px-3 py-2 text-sm font-medium text-warning"
             >
-              <span>{t("floor.unsaved", { count: changes.length })}</span>
+              <span>{t("floorEditor.unsaved", { count: changes.length })}</span>
               <Button
                 variant="ghost"
                 size="sm"
@@ -184,7 +184,7 @@ function FloorEditorPage() {
                 disabled={saveLayout.isPending}
               >
                 <Undo2 aria-hidden="true" />
-                {t("floor.resetLayout")}
+                {t("floorEditor.resetLayout")}
               </Button>
             </div>
           )}
@@ -193,7 +193,7 @@ function FloorEditorPage() {
             <div className="grid min-w-0 content-start gap-3 self-start">
               <div
                 role="group"
-                aria-label={t("floor.zonesTitle")}
+                aria-label={t("floorEditor.zonesTitle")}
                 className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]"
               >
                 <Button
@@ -202,7 +202,7 @@ function FloorEditorPage() {
                   aria-pressed={activeZoneId === null}
                   onClick={() => setZoneFilter(null)}
                 >
-                  {t("floor.planAllZones")}
+                  {t("floorEditor.planAllZones")}
                 </Button>
                 {zones.map((zone) => (
                   <Button
@@ -217,7 +217,7 @@ function FloorEditorPage() {
                 ))}
               </div>
               <p className="text-sm leading-5 text-muted-foreground">
-                {t("floor.planHint")}
+                {t("floorEditor.planHint")}
               </p>
               <FloorCanvas
                 tables={visibleTables}
