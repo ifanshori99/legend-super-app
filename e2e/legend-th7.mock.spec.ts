@@ -206,12 +206,14 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     page,
     context,
   }) => {
-    // An outlet manager may read tables but not configure them (access roles).
+    // A supervisor may read and operate tables but not configure them (access
+    // roles). The outlet manager runs the floor plan since legend-2l6k, so it
+    // can no longer stand in for "view without manage".
     await page.goto(TABLES, NAV);
     await context.addCookies([
       {
         name: "legend-mock-role",
-        value: "outlet_manager",
+        value: "supervisor",
         url: new URL(page.url()).origin,
       },
     ]);
