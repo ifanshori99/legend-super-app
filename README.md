@@ -107,7 +107,7 @@ Tests require Docker even if your app uses a hosted database: they launch a uniq
 ## Customize and extend
 
 - Identity: `starter.config.json` (shared by both apps through `@starter/shared/site`).
-- Your first feature: replace the placeholder in `apps/web/src/routes/_protected/app.tsx`. `pnpm run doctor` reminds you until it is gone.
+- Your first feature: see "Where to put a new screen" in `docs/frontend.md` (route areas, feature folders, navigation).
 - Tables: `apps/api/src/db/schema/` (export from `index.ts`).
 - Roles: `packages/shared/src/permissions.ts`.
 - UI tokens: `apps/web/src/styles/globals.css`. Add primitives from `apps/web`: `npx shadcn@4.21.0 add dialog`.

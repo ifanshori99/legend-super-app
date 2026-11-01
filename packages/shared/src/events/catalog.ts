@@ -47,11 +47,11 @@ const namesByWorkstream = {
   "WS-06":
     "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded stock.moved stock.critical recipe.cost_changed",
   "WS-07":
-    "journal.posted fiscal_period.closed fiscal_period.reopened distribution.completed",
+    "journal.posted fiscal_period.closed fiscal_period.reopened distribution.completed bank_statement.imported cash_deposit.recorded cash_deposit.matched reconciliation_case.opened reconciliation_case.resolved depreciation_run.posted tax_report.exported",
   "WS-08":
     "customer.created reservation.created reservation.cancelled delivery_order.received points.earned points.reversed points.redeemed points.expired tier.changed",
   "WS-09":
-    "facility_entitlement.issued facility_entitlement.expired access_ticket.issued access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated",
+    "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
     "employee.updated attendance.recorded payroll_run.completed payslip.created",
   "WS-11": "metrics.aggregated report.generated",
