@@ -33,6 +33,47 @@ reads or writes the data; deployment and database access controls must also
 prevent bypassing the application. Setting `DATA_CLASSIFICATION=synthetic` does
 not make a production dump synthetic.
 
+## Startup validation
+
+Every runtime validates the three settings when its process starts, using one
+schema in `@starter/shared/env` (`packages/shared/src/env/index.ts`), so a
+service cannot run while disagreeing with the others about its data policy.
+The check prints the offending setting names and messages — never the values —
+and exits non-zero before the service accepts traffic.
+
+| Runtime | Where the check runs                                                             |
+| ------- | -------------------------------------------------------------------------------- |
+| API     | `apps/api/src/config/env.ts`, imported by the server entry                       |
+| Web     | `apps/web/src/server.ts` (TanStack Start server entry) → `src/lib/env.server.ts` |
+| Worker  | Not built yet: its entrypoint must call `assertDeploymentEnv` first              |
+| Edge    | Not built yet: its entrypoint must call `assertDeploymentEnv` first              |
+
+The web app needs a custom server entry for this: TanStack Start's default entry
+would only read the settings inside request handlers, after the port is already
+open. Keep `import "@/lib/env.server";` as the first import of
+`apps/web/src/server.ts`; `tests/deployment-env.test.mjs` fails if it is dropped.
+TanStack Start strips `.server.ts` modules from the browser bundle, so the check
+never reaches a client. `vite dev` loads the entry on the first server render,
+so a development server with invalid settings fails on its first request; the
+built server (`node .output/server/index.mjs`) fails at boot.
+
+A future worker or edge entrypoint repeats the same three lines:
+
+```ts
+import { assertDeploymentEnv } from "@starter/shared/env";
+
+// Before the loop or HTTP handler that serves work.
+const settings = assertDeploymentEnv(process.env);
+if (settings.EDGE_MODE) {
+  // Edge-only wiring: local database, device sync, offline queue.
+}
+```
+
+The module also exports `parseDeploymentEnv` (returns problems instead of
+throwing, for a doctor command or a health endpoint) and
+`assertDataImportAllowed` (the real-data import guard described above, already
+used by the API).
+
 ## Domains and cookies
 
 The browser calls the API directly with cookies, and the web server reads the same cookie during server rendering. Put both apps on subdomains of one site and share the cookie with `COOKIE_DOMAIN`:
