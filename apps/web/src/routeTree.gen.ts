@@ -58,6 +58,7 @@ import { Route as KelolaKelolaMenuKategoriRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaMenuKetersediaanRouteImport } from './routes/_kelola/kelola.menu.ketersediaan'
 import { Route as KelolaKelolaMenuPaketRouteImport } from './routes/_kelola/kelola.menu.paket'
 import { Route as KelolaKelolaMenuStasiunRouteImport } from './routes/_kelola/kelola.menu.stasiun'
+import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
 
@@ -301,6 +302,11 @@ const KelolaKelolaMenuStasiunRoute = KelolaKelolaMenuStasiunRouteImport.update({
   path: '/kelola/menu/stasiun',
   getParentRoute: () => KelolaRoute,
 } as any)
+const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
+  id: '/pos/meja/',
+  path: '/pos/meja/',
+  getParentRoute: () => OpsRoute,
+} as any)
 const CustomerTTokenIssueIssueIdRoute =
   CustomerTTokenIssueIssueIdRouteImport.update({
     id: '/issue/$issueId',
@@ -353,6 +359,7 @@ export interface FileRoutesByFullPath {
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -393,6 +400,7 @@ export interface FileRoutesByTo {
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
+  '/pos/meja': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -447,6 +455,7 @@ export interface FileRoutesById {
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -491,6 +500,7 @@ export interface FileRouteTypes {
     | '/member/fasilitas/'
     | '/t/$token/'
     | '/kelola/menu/'
+    | '/pos/meja/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
   fileRoutesByTo: FileRoutesByTo
@@ -531,6 +541,7 @@ export interface FileRouteTypes {
     | '/member/fasilitas'
     | '/t/$token'
     | '/kelola/menu'
+    | '/pos/meja'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
   id:
@@ -584,6 +595,7 @@ export interface FileRouteTypes {
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_kelola/kelola/menu/'
+    | '/_ops/pos/meja/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
   fileRoutesById: FileRoutesById
@@ -948,6 +960,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaMenuStasiunRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_ops/pos/meja/': {
+      id: '/_ops/pos/meja/'
+      path: '/pos/meja'
+      fullPath: '/pos/meja/'
+      preLoaderRoute: typeof OpsPosMejaIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_customer/t/$token/issue/$issueId': {
       id: '/_customer/t/$token/issue/$issueId'
       path: '/issue/$issueId'
@@ -1096,11 +1115,13 @@ const KitchenRouteWithChildren =
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
+  OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
+  OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
 }
 
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
