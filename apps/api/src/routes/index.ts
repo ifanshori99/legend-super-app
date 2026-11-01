@@ -3,6 +3,7 @@ import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
 import { healthRouter } from "./health.routes";
+import { inventoryRouter } from "./inventory.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
@@ -28,5 +29,7 @@ apiRouter.use("/internal", internalRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Inventory & warehouse (WS-06, bead legend-98t).
+apiRouter.use("/inventory", inventoryRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
