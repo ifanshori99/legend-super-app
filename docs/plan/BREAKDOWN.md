@@ -186,6 +186,11 @@ Not created (PRD [P2], exploratory): Franchise & Lisensi, Onboarding Tenant Self
 9. **100+ standard reports.** §3 F36 gives no list. Plan: the agent proposes a catalog in `c11metrics` for owner approval.
 10. **Tenant scoping of global tables.** `login_challenges` and `wa_inbound_messages` are global yet carry `tenant_id`. With a WhatsApp number per tenant, the webhook must resolve the tenant from the receiving number. Proposal: no RLS on these two tables, with service-layer scoping and a test.
 
+### Settled by owner/coordinator (2026-11-01)
+
+- **Menu price display.** Menu prices exclude tax and service charge; both are added at checkout on QR web and POS. Tenant default `tax_settings.prices_include_tax = false`; inclusive ("harga nett") is opt-in per tenant or rule (bead `legend-u6ia`).
+- **QR session token lifetime.** A guest session token lives at most 12 hours from the session open and never past the bill close; a rescan never extends it (bead `legend-u6ia`, PRD "Keamanan Sesi").
+
 ### Resolved by assumption (flag if wrong)
 
 - **Workstream numbering.** D34 and §7 say WS-01..WS-13, but the WS map also has WS-14 (Operasional Harian). Plan uses WS-00..WS-14.
