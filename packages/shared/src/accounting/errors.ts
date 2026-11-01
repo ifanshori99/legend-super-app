@@ -54,6 +54,26 @@ export const accountingErrorHttpStatus = {
   /** Tax type does not apply to this legal entity (PPN needs PKP status). */
   TAX_REPORT_NOT_APPLICABLE: 422,
   ASSET_ALREADY_DISPOSED: 409,
+  /** A share version must sum to exactly 10,000 bp before it can be submitted or approved (SH-03). */
+  SHARE_ALLOCATION_NOT_EXACT_100: 422,
+  /** One shareholder appears twice in a version (the shares would double-count). */
+  SHARE_ALLOCATION_DUPLICATE: 422,
+  /** A new version's effective date must advance past the approved version it replaces. */
+  SHARE_VERSION_EFFECTIVE_DATE_ORDER: 422,
+  /** The share version is not approved, so it cannot be used for a distribution (SH-03). */
+  SHARE_VERSION_NOT_APPROVED: 422,
+  /** No approved share version is in force on the requested date. */
+  SHARE_VERSION_NOT_EFFECTIVE: 422,
+  /** The closed period's profit is zero or negative: nothing to distribute (PRD §3.37). */
+  NOTHING_TO_DISTRIBUTE: 422,
+  /** An approved or paid distribution is frozen; corrections are adjustment runs with a reversing journal (SH-04). */
+  DISTRIBUTION_IMMUTABLE: 409,
+  /** A regular distribution already exists for this profit entity and closed period. */
+  DISTRIBUTION_ALREADY_EXISTS: 409,
+  /** The distribution line already has a payment recorded. */
+  DISTRIBUTION_LINE_ALREADY_PAID: 409,
+  /** An adjustment must target an approved or paid run and carry a reason (SH-04). */
+  ADJUSTMENT_TARGET_INVALID: 422,
 } as const satisfies Record<string, number>;
 
 export type AccountingErrorCode = keyof typeof accountingErrorHttpStatus;
@@ -93,6 +113,26 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   STATEMENT_VALUE_INVALID: "Nilai pada file mutasi tidak dapat dibaca.",
   TAX_REPORT_NOT_APPLICABLE: "Jenis pajak ini tidak berlaku untuk badan usaha.",
   ASSET_ALREADY_DISPOSED: "Aset sudah dilepas.",
+  SHARE_ALLOCATION_NOT_EXACT_100:
+    "Total porsi pemegang saham harus tepat 10.000 bp (100%).",
+  SHARE_ALLOCATION_DUPLICATE:
+    "Pemegang saham yang sama tercantum lebih dari sekali.",
+  SHARE_VERSION_EFFECTIVE_DATE_ORDER:
+    "Tanggal berlaku versi baru harus setelah versi yang disetujui sebelumnya.",
+  SHARE_VERSION_NOT_APPROVED:
+    "Versi porsi belum disetujui sehingga belum dapat dipakai.",
+  SHARE_VERSION_NOT_EFFECTIVE:
+    "Belum ada versi porsi yang berlaku pada tanggal tersebut.",
+  NOTHING_TO_DISTRIBUTE:
+    "Tidak ada laba yang dapat dibagikan pada periode ini.",
+  DISTRIBUTION_IMMUTABLE:
+    "Distribusi yang sudah disetujui tidak dapat diubah. Buat distribusi penyesuaian.",
+  DISTRIBUTION_ALREADY_EXISTS:
+    "Distribusi untuk periode ini sudah pernah dibuat.",
+  DISTRIBUTION_LINE_ALREADY_PAID:
+    "Pembayaran untuk pemegang saham ini sudah dicatat.",
+  ADJUSTMENT_TARGET_INVALID:
+    "Penyesuaian hanya untuk distribusi yang sudah disetujui dan wajib beralasan.",
 };
 
 export class AccountingError extends Error {

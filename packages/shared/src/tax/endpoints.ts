@@ -45,6 +45,9 @@ export const createTaxRuleInputSchema = clientInputSchema({
   outletId: outletIdSchema.nullable(),
   code: ruleCodeSchema,
   ...taxRuleFields,
+  /** Omitted = inherit the tenant/outlet `pricesIncludeTax` setting, so a new
+   * rule is exclusive unless the tenant opted into inclusive prices. */
+  priceIncludesTax: taxRuleFields.priceIncludesTax.optional(),
   effectiveFrom: businessDateSchema,
 });
 /** Draft edits only (TAX_RULE_IMMUTABLE otherwise). */
