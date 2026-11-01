@@ -809,6 +809,7 @@ const scanResult = qrScanResultSchema.parse({
   brand,
   session: sessions[0],
   sessionToken: "st_01JC0QRD4M5N6P7Q8R9S0T1V2W",
+  sessionTokenExpiresAt: "2026-11-01T09:10:00.000Z",
   menuUpdatedAt: "2026-11-01T05:00:00.000Z",
   soldOutItemIds: [],
   serverTime: "2026-11-01T05:10:00.000Z",

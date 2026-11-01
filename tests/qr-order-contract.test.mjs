@@ -587,13 +587,9 @@ test("events are registered in the WS-00 catalog and payloads validate", () => {
     paymentMode: "open_bill",
     status: "sent",
   });
-  qr.orderPaidPayloadSchema.parse({
-    orderId: f.orders[0].id,
-    sessionId: f.sessions[1].id,
-    amountIdr: 10_000,
-    method: "qris",
-    paidAt: "2026-11-01T05:00:00.000Z",
-  });
+  // order.paid is WS-04's event; this contract must not redefine it.
+  assert.equal(qr.orderPaidPayloadSchema, undefined);
+  assert.equal(qr.qrOrderEventNames.includes("order.paid"), false);
   const failed = {
     orderId: f.orders[0].id,
     orderItemId: f.orders[0].items[1].id,
@@ -736,6 +732,110 @@ test("ORD-03/ORD-04 composite views reject cross-session references", () => {
       session: null,
       openServiceRequestCount: 0,
       outstandingIdr: 1_000,
+    }).success,
+    false,
+  );
+});
+
+test("WS-03 owns order.placed (QR) via defineDomainEvent; order.submitted stays WS-04", () => {
+  const byName = new Map(eventCatalog.map((entry) => [entry.name, entry]));
+  assert.equal(byName.get("order.placed").workstream, "WS-03");
+  assert.equal(byName.get("order.submitted").workstream, "WS-04");
+  assert.equal(byName.get("order.paid").workstream, "WS-04");
+  for (const name of qr.qrOrderEventNames) {
+    const event = qr.qrOrderEvents[name];
+    assert.equal(event.name, name);
+    assert.equal(event.payloadSchemaRef, `${name}.v1`);
+    assert.equal(event.entry.workstream, "WS-03");
+  }
+  assert.deepEqual(
+    qr.qrOrderEventCatalogEntries.map((entry) => entry.name),
+    [...qr.qrOrderEventNames],
+  );
+});
+
+test("ORD-06 split sets sum per order or per session, never mixed", () => {
+  const bill = f.sessionBills[0];
+  // Fixture splits are per order (pay-first style checkout of one order).
+  assert.ok(bill.splits.every((split) => split.orderId !== null));
+  assert.equal(qr.sessionBillSchema.safeParse(bill).success, true);
+  // A session-level set alongside per-order splits is rejected.
+  const sessionLevel = bill.splits.map((split, index) => ({
+    ...split,
+    id: split.id.replace(/.$/, String(index + 5)),
+    orderId: null,
+  }));
+  assert.equal(
+    qr.sessionBillSchema.safeParse({
+      ...bill,
+      splits: [...bill.splits, ...sessionLevel],
+    }).success,
+    false,
+  );
+  // Session-level splits alone must sum to the bill total.
+  assert.equal(
+    qr.sessionBillSchema.safeParse({ ...bill, splits: sessionLevel }).success,
+    true,
+  );
+  // Duplicate share index in one set is rejected.
+  assert.equal(
+    qr.sessionBillSchema.safeParse({
+      ...bill,
+      splits: bill.splits.map((split) => ({ ...split, shareIndex: 0 })),
+    }).success,
+    false,
+  );
+  // Splits pointing at an order outside the bill are rejected.
+  assert.equal(
+    qr.sessionBillSchema.safeParse({
+      ...bill,
+      splits: bill.splits.map((split) => ({
+        ...split,
+        orderId: "01JC0QRZZZZZZZZZZZZZZZZZZZ",
+      })),
+    }).success,
+    false,
+  );
+  // Remainder: 100_001 over 3 parts places the extra rupiah on the first part.
+  const parts = qr.splitBill({ method: "equal", totalIdr: 100_001, parts: 3 });
+  assert.deepEqual(
+    parts.map((part) => part.amountIdr),
+    [33_334, 33_334, 33_333],
+  );
+});
+
+test("ORD-04 QR token ids are cross-checked against the host tenant and table row (TEN-02)", () => {
+  const payload = f.qrTokenPayload;
+  const table = f.tables.find((row) => row.id === payload.tableId);
+  assert.ok(table);
+  qr.assertQrTokenMatchesTable(payload, payload.tenantId, table);
+  const otherTenant = "0190b8c4-0000-7000-8000-00000000ffff";
+  for (const [tenant, row] of [
+    [otherTenant, table],
+    [payload.tenantId, null],
+    [payload.tenantId, { ...table, status: "inactive" }],
+    [payload.tenantId, { ...table, outletId: otherTenant }],
+    [payload.tenantId, { ...table, id: otherTenant }],
+  ]) {
+    assert.throws(
+      () => qr.assertQrTokenMatchesTable(payload, tenant, row),
+      (error) => error.code === "NOT_FOUND",
+    );
+  }
+  // The guest session token is opaque, expires, and never names a closed session.
+  const scan = f.scanResult;
+  assert.ok(scan, "scan fixture");
+  assert.equal(
+    qr.qrScanResultSchema.safeParse({
+      ...scan,
+      sessionToken: "v1.e30.not-opaque!",
+    }).success,
+    false,
+  );
+  assert.equal(
+    qr.qrScanResultSchema.safeParse({
+      ...scan,
+      sessionTokenExpiresAt: scan.serverTime,
     }).success,
     false,
   );

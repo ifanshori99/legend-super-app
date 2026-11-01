@@ -1,17 +1,20 @@
-// QR order domain events, registered in the WS-00 catalog
-// (packages/shared/src/events/catalog.ts).
+// QR order domain events, registered on the WS-03 line of the WS-00 catalog
+// (packages/shared/src/events/catalog.ts) and bound with defineDomainEvent
+// (contracts.md "One catalog, typed payloads").
 //
 // PRD v1.7 §6 event conventions: `<aggregate>.<past_verb>`, ULID event ids,
-// one version, payload schemas referenced by `<name>.v1`. `order.paid` is
-// catalogued by WS-04 (POS) because the order aggregate belongs there; this
-// module references it and declares a provisional payload for QR mocks until
-// the WS-04 contract lands.
+// one version, payload schemas referenced by `<name>.v1`.
+//
+// Coordinator decision (legend-6li review): `order.placed` is the QR-channel
+// event (WS-03, a guest placed the shared cart as an order); `order.submitted`
+// stays the POS / captain event owned by WS-04. Both are the same `order`
+// aggregate; consumers that want every new order subscribe to both.
+// `order.paid` is owned and defined by WS-04 (bead legend-4yp); QR consumers
+// use that definition, this module does not redefine its payload.
 
-import { z, idrSchema, isoDateTimeSchema } from "../core/index.ts";
-import {
-  eventCatalogEntrySchema,
-  eventEnvelopeSchema,
-} from "../events/index.ts";
+import { z, idrSchema } from "../core/index.ts";
+import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import {
   floorZoneIdSchema,
   orderIdSchema,
@@ -58,15 +61,6 @@ export const orderPlacedPayloadSchema = z.strictObject({
   status: z.enum(["awaiting_payment", "sent"]),
 });
 
-/** Provisional: the canonical `order.paid` payload is WS-04's (bead legend-4yp). */
-export const orderPaidPayloadSchema = z.strictObject({
-  orderId: orderIdSchema,
-  sessionId: tableSessionIdSchema.nullable(),
-  amountIdr: idrSchema.refine((value) => value > 0),
-  method: z.string().min(1).max(20),
-  paidAt: isoDateTimeSchema,
-});
-
 /** ORD-08: the guest is offered exactly these two resolutions. */
 export const itemFailedPayloadSchema = z.strictObject({
   orderId: orderIdSchema,
@@ -86,47 +80,61 @@ export const serviceRequestCreatedPayloadSchema = z.strictObject({
   reason: serviceRequestReasonSchema.nullable(),
 });
 
-/** Every event this contract emits or consumes. */
+/** Events owned and emitted by this contract (WS-03 catalog line). */
 export const qrOrderEventNames = [
   "table_session.opened",
   "table_session.closed",
   "order.placed",
-  "order.paid",
   "item.failed",
   "service_request.created",
 ] as const;
+export type QrOrderEventName = (typeof qrOrderEventNames)[number];
+/** Kept for compatibility: identical to qrOrderEventNames. */
+export const qrOrderOwnedEventNames = qrOrderEventNames;
 
-/** Events owned here; `order.paid` is owned by WS-04. */
-export const qrOrderOwnedEventNames = [
-  "table_session.opened",
-  "table_session.closed",
-  "order.placed",
-  "item.failed",
-  "service_request.created",
-] as const;
-
-export const qrOrderEventCatalogEntries = qrOrderOwnedEventNames.map((name) =>
-  eventCatalogEntrySchema.parse({
-    name,
-    aggregateType: name.split(".")[0],
-    version: 1,
-    payloadSchemaRef: `${name}.v1`,
-    workstream: "WS-03",
-  }),
-);
-
-export const qrOrderEventSchema = eventEnvelopeSchema.refine((event) =>
-  (qrOrderEventNames as readonly string[]).includes(event.name),
-);
-
-export const qrOrderEventPayloads = {
+export const qrOrderEventPayloads: Record<
+  QrOrderEventName,
+  z.ZodType<Record<string, unknown>>
+> = {
   "table_session.opened": tableSessionOpenedPayloadSchema,
   "table_session.closed": tableSessionClosedPayloadSchema,
   "order.placed": orderPlacedPayloadSchema,
-  "order.paid": orderPaidPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
-} as const;
+};
+
+/**
+ * Catalog-bound definitions: defineDomainEvent throws at module load if a
+ * name is not catalogued, and each `envelopeSchema` validates name, version,
+ * schema ref and payload together.
+ */
+export const qrOrderEvents = Object.fromEntries(
+  qrOrderEventNames.map((name) => [
+    name,
+    defineDomainEvent({ name, payload: qrOrderEventPayloads[name] }),
+  ]),
+) as Record<QrOrderEventName, ReturnType<typeof defineDomainEvent>>;
+
+export const qrOrderEventCatalogEntries: readonly EventCatalogEntry[] =
+  qrOrderEventNames.map((name) => qrOrderEvents[name].entry);
+
+/** Envelope whose name and payload belong to this domain. */
+export const qrOrderEventSchema = eventEnvelopeSchema
+  .refine(
+    (event) => (qrOrderEventNames as readonly string[]).includes(event.name),
+    { path: ["name"], message: "Not a QR order event" },
+  )
+  .refine(
+    (event) =>
+      qrOrderEvents[event.name as QrOrderEventName]?.envelopeSchema.safeParse(
+        event,
+      ).success === true,
+    {
+      path: ["payload"],
+      message: "Event does not match its catalogued schema",
+    },
+  );
+export type QrOrderEvent = EventEnvelope;
 
 export type TableSessionOpenedPayload = z.infer<
   typeof tableSessionOpenedPayloadSchema
@@ -135,7 +143,6 @@ export type TableSessionClosedPayload = z.infer<
   typeof tableSessionClosedPayloadSchema
 >;
 export type OrderPlacedPayload = z.infer<typeof orderPlacedPayloadSchema>;
-export type OrderPaidPayload = z.infer<typeof orderPaidPayloadSchema>;
 export type ItemFailedPayload = z.infer<typeof itemFailedPayloadSchema>;
 export type ServiceRequestCreatedPayload = z.infer<
   typeof serviceRequestCreatedPayloadSchema

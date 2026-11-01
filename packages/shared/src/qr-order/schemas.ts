@@ -32,8 +32,18 @@ import {
   idempotencyKeySchema,
   outletRefSchema,
   brandRefSchema,
+  CoreError,
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
+import type { PaymentStatus } from "../payment/index.ts";
+// Reuse the merged kitchen contract (legend-acz) for the order id and the
+// `order_issues` vocabularies instead of redefining them (AGENT_PLAYBOOK §2).
+import {
+  orderIdSchema,
+  orderIssueTypeSchema,
+  orderIssueResolutionSchema,
+} from "../kitchen/schemas.ts";
+export { orderIdSchema, orderIssueTypeSchema, orderIssueResolutionSchema };
 
 const name = z.string().min(1).max(150);
 const note = z.string().max(200);
@@ -60,8 +70,7 @@ export const serviceRequestIdSchema = uuidIdSchema<"ServiceRequestId">();
 export const orderIssueIdSchema = uuidIdSchema<"OrderIssueId">();
 export const apologyVoucherIdSchema = uuidIdSchema<"ApologyVoucherId">();
 export const tableReviewIdSchema = uuidIdSchema<"TableReviewId">();
-/** §6.C orders.id / order_items.id are ULID (PK). */
-export const orderIdSchema = ulidIdSchema<"OrderId">();
+/** §6.C order_items.id is ULID (PK); orders.id comes from the kitchen contract. */
 export const orderItemIdSchema = ulidIdSchema<"OrderItemId">();
 
 // ---- Floor zones and tables (§6.C floor_zones, tables) --------------------
@@ -164,6 +173,31 @@ export const qrTokenPayloadSchema = z.strictObject({
   issuedAt: isoDateTimeSchema,
 });
 export type QrTokenPayload = z.infer<typeof qrTokenPayloadSchema>;
+
+/**
+ * TEN-02 / ORD-04, fail closed. The ids inside a verified QR token are never
+ * trusted on their own. The server (1) resolves the tenant from the request
+ * host (TEN-02), (2) verifies the signature with that tenant's key `keyId`,
+ * (3) loads the table by `qr_token_hash` = SHA-256(token) inside that tenant,
+ * and (4) calls this check, so a token copied across tenants or outlets, a
+ * reissued (rotated) token or an inactive table is refused. Every failure is
+ * the same `NOT_FOUND`, so the response is not an oracle for valid ids.
+ */
+export function assertQrTokenMatchesTable(
+  payload: QrTokenPayload,
+  resolvedTenantId: string,
+  table: Pick<Table, "id" | "tenantId" | "outletId" | "status"> | null,
+): void {
+  if (
+    table === null ||
+    table.status === "inactive" ||
+    payload.tenantId !== resolvedTenantId ||
+    table.tenantId !== resolvedTenantId ||
+    payload.outletId !== table.outletId ||
+    payload.tableId !== table.id
+  )
+    throw new CoreError("NOT_FOUND", "QR meja tidak dikenali");
+}
 
 export const tableQrSchema = z.strictObject({
   tableId: tableIdSchema,
@@ -815,7 +849,8 @@ export function planQrOrderPlacement(input: {
 export function canFireQrOrder(input: {
   paymentMode: PaymentMode;
   orderStatus: QrOrderStatus;
-  paymentStatus: string;
+  /** WS-05 payment intent status; only `paid` (set from a verified webhook or gateway status check) fires. */
+  paymentStatus: PaymentStatus;
 }): boolean {
   if (input.paymentMode === "open_bill") return input.orderStatus === "sent";
   return (
@@ -1003,13 +1038,43 @@ export const sessionBillSchema = z
       "outstandingIdr must be the unpaid part of the total",
       totals.outstandingIdr !== Math.max(0, totals.totalIdr - totals.paidIdr),
     );
+    // ORD-06: a split set covers either the whole session bill (orderId
+    // null, open bill) or one order (pay-first checkout). Each set sums
+    // exactly to what it splits; the remainder rupiah is placed by
+    // allocateIdr/splitIdrEvenly (largest remainder, lowest index first).
     const liveSplits = bill.splits.filter((split) => split.status !== "voided");
+    const groups = new Map<string | null, typeof liveSplits>();
+    for (const split of liveSplits)
+      groups.set(split.orderId, [...(groups.get(split.orderId) ?? []), split]);
     add(
       ["splits"],
-      "ORD-06: non-voided splits must sum exactly to the bill total",
-      liveSplits.length > 0 &&
-        sum(liveSplits.map((split) => split.amountIdr)) !== totals.totalIdr,
+      "ORD-06: do not mix session-level and per-order splits",
+      groups.has(null) && groups.size > 1,
     );
+    for (const [orderId, parts] of groups) {
+      const target =
+        orderId === null
+          ? totals.totalIdr
+          : bill.orders.find((order) => order.id === orderId)?.totalIdr;
+      add(
+        ["splits"],
+        `ORD-06: split parts must sum exactly to the ${orderId === null ? "bill" : "order"} total`,
+        target === undefined ||
+          sum(parts.map((split) => split.amountIdr)) !== target,
+      );
+      add(
+        ["splits"],
+        "Split share indexes must be unique and use one method per set",
+        new Set(parts.map((split) => split.shareIndex)).size !== parts.length ||
+          new Set(parts.map((split) => split.method)).size !== 1,
+      );
+    }
+    for (const split of bill.splits)
+      add(
+        ["splits"],
+        "Every split must belong to the bill's session",
+        split.tableSessionId !== bill.sessionId,
+      );
   });
 export type SessionBill = z.infer<typeof sessionBillSchema>;
 
@@ -1181,21 +1246,10 @@ export const resolveServiceRequestInputSchema = clientInputSchema({
 
 // ---- Failed item recovery (§6.C order_issues, ORD-08, ORD-09) ------------
 
-export const ORDER_ISSUE_TYPES = [
-  "unfulfillable",
-  "remake",
-  "comp",
-  "complaint",
-] as const;
-export const orderIssueTypeSchema = z.enum(ORDER_ISSUE_TYPES);
+export const ORDER_ISSUE_TYPES = orderIssueTypeSchema.options;
 export type OrderIssueType = z.infer<typeof orderIssueTypeSchema>;
 
-export const ORDER_ISSUE_RESOLUTIONS = [
-  "swap",
-  "voucher",
-  "manual_refund",
-] as const;
-export const orderIssueResolutionSchema = z.enum(ORDER_ISSUE_RESOLUTIONS);
+export const ORDER_ISSUE_RESOLUTIONS = orderIssueResolutionSchema.options;
 export type OrderIssueResolution = z.infer<typeof orderIssueResolutionSchema>;
 
 /** ORD-08: the customer is offered only a replacement or voucher credit. */
@@ -1547,8 +1601,19 @@ export const qrScanResultSchema = z
     outlet: outletRefSchema,
     brand: brandRefSchema,
     session: tableSessionSchema,
-    /** Guest credential for this session; rotated when the session closes. */
-    sessionToken: z.string().min(20).max(256),
+    /**
+     * Opaque guest credential (random, base64url) for this session only. The
+     * server stores only its hash (`table_sessions.session_token_hash`), never
+     * derives tenant/outlet/table from it, and rotates it when the session
+     * closes (PRD "Keamanan Sesi", ORD-04).
+     */
+    sessionToken: z
+      .string()
+      .min(20)
+      .max(256)
+      .regex(/^[A-Za-z0-9_-]+$/, "Expected an opaque base64url token"),
+    /** Hard expiry; the client must rescan after it. Never later than close. */
+    sessionTokenExpiresAt: isoDateTimeSchema,
     menuUpdatedAt: isoDateTimeSchema,
     soldOutItemIds: z.array(uuidSchema),
     serverTime: isoDateTimeSchema,
@@ -1575,6 +1640,17 @@ export const qrScanResultSchema = z
       ["outlet", "id"],
       "The scan must resolve the table's outlet",
       scan.outlet.id !== scan.table.outletId,
+    );
+    add(
+      ["sessionTokenExpiresAt"],
+      "The session token must expire after the server time",
+      new Date(scan.sessionTokenExpiresAt).getTime() <=
+        new Date(scan.serverTime).getTime(),
+    );
+    add(
+      ["session", "status"],
+      "ORD-04: a scan never returns a closed or voided session",
+      scan.session.status === "closed" || scan.session.status === "voided",
     );
   });
 export type QrScanResult = z.infer<typeof qrScanResultSchema>;
