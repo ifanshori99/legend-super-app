@@ -75,6 +75,11 @@ export const menuItemAdminSchema = menuItemSchema.extend({
  * resizes before sending; the API stores the bytes through the WS-00 storage
  * adapter and answers a media id plus its public URL. A future presigned-PUT
  * transport may replace the body, not the response shape.
+ *
+ * NOTE (review legend-cyu.12): this body (up to ~800 KB base64) exceeds the
+ * API's single 100 kB JSON limit (apps/api/src/middleware/body.ts). The route
+ * that implements this endpoint must mount its own larger limit for this path
+ * only, or switch to the presigned-PUT transport — see the follow-up bead.
  */
 export const MENU_IMAGE_MAX_BYTES = 600_000;
 export const menuImageUploadInputSchema = clientInputSchema({
@@ -380,11 +385,22 @@ export const createModifierGroupInputSchema = clientInputSchema({
   message: "Jumlah maksimum tidak boleh kurang dari minimum",
 });
 
+// A partial update cannot see the stored side, so the API re-checks
+// min <= max against the merged row; when both arrive, reject here too.
 export const updateModifierGroupInputSchema = clientInputSchema({
   name: name.optional(),
   minSelect: z.number().int().nonnegative().max(50).optional(),
   maxSelect: z.number().int().nonnegative().max(50).optional(),
-});
+}).refine(
+  (value) =>
+    value.minSelect === undefined ||
+    value.maxSelect === undefined ||
+    value.minSelect <= value.maxSelect,
+  {
+    path: ["maxSelect"],
+    message: "Jumlah maksimum tidak boleh kurang dari minimum",
+  },
+);
 
 export const createModifierInputSchema = clientInputSchema({
   name,

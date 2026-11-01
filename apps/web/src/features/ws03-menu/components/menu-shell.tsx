@@ -2,7 +2,7 @@
 // between menu sections, and the content slot. Tabs are links, not Radix
 // tabs, because each section has its own URL (docs/frontend.md "Add a page").
 import type { ReactNode } from "react";
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -33,22 +33,29 @@ export type MenuSection = (typeof TABS)[number]["key"];
 
 export function MenuTabs({ active }: { active: MenuSection }) {
   const t = useT();
-  const { pathname } = useLocation();
   return (
     <nav
       aria-label={t("menu.title")}
       className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
     >
       {TABS.map((tab) => {
-        const current =
-          tab.key === active ||
-          (tab.key === "items"
-            ? pathname === tab.to || pathname.startsWith(`${tab.to}/`)
-            : pathname === tab.to);
+        // Each screen names its own section. A pathname prefix match marked
+        // "Item" current on every /kelola/menu/* page (review legend-cyu.12).
+        const current = tab.key === active;
         return (
           <Link
             key={tab.key}
             to={tab.to}
+            // On 390px the strip scrolls; keep the current tab in view.
+            ref={
+              current
+                ? (node: HTMLAnchorElement | null) =>
+                    node?.scrollIntoView?.({
+                      block: "nearest",
+                      inline: "nearest",
+                    })
+                : undefined
+            }
             aria-current={current ? "page" : undefined}
             className={cn(
               "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",

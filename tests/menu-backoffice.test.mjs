@@ -346,6 +346,18 @@ test("legend-xx9 · F8 Konten Menu: modifier groups enforce min <= max", () => {
     false,
   );
   assert.equal(
+    menu.updateModifierGroupInputSchema.safeParse({
+      minSelect: 3,
+      maxSelect: 2,
+    }).success,
+    false,
+    "an update that sends both bounds is checked too",
+  );
+  assert.equal(
+    menu.updateModifierGroupInputSchema.safeParse({ maxSelect: 2 }).success,
+    true,
+  );
+  assert.equal(
     menu.createModifierInputSchema.safeParse({ name: "Normal" }).success,
     true,
   );

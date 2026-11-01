@@ -49,6 +49,12 @@ test.describe("legend-xx9 · menu back office", () => {
     page,
   }) => {
     await page.goto("/kelola/menu/kategori?mock=normal", NAV);
+    // Exactly one section tab is current (review legend-cyu.12).
+    const current = page
+      .getByRole("navigation", { name: "Master menu" })
+      .locator('a[aria-current="page"]');
+    await expect(current).toHaveCount(1);
+    await expect(current).toHaveText("Kategori");
     await page.getByRole("button", { name: "Tambah kategori" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await page.getByLabel("Nama kategori").fill("Mocktail");
