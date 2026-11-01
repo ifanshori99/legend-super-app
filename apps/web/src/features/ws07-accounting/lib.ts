@@ -16,7 +16,6 @@ import {
   type AccountId,
   type AccountType,
   type JournalEntry,
-  type JournalEntrySummary,
   type JournalLineInput,
   type JournalSourceType,
   type ManualJournalStatus,
@@ -265,10 +264,6 @@ export function entryBalance(
     balanced: result.balanced,
     issues: result.issues,
   };
-}
-
-export function entryTotal(entry: JournalEntrySummary): number {
-  return entry.totalIdr;
 }
 
 /** Debit total of a line set; lines are balanced so this is the entry value. */

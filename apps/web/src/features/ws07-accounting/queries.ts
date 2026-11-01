@@ -9,7 +9,6 @@ import {
   fetchAccounts,
   fetchFiscalPeriods,
   fetchJournal,
-  fetchJournals,
   fetchLegalEntities,
   fetchManualJournal,
   fetchManualJournals,
@@ -86,25 +85,6 @@ export function fiscalPeriodsQuery(legalEntityId: string | undefined) {
     queryFn: ({ signal }) => fetchFiscalPeriods(legalEntityId ?? "", signal),
     enabled: Boolean(legalEntityId),
     staleTime: 60 * 1000,
-  });
-}
-
-export function journalsQuery(filters: JournalListFilters) {
-  return queryOptions({
-    queryKey: accountingKeys.journalList(filters),
-    queryFn: ({ signal }) =>
-      fetchJournals(
-        {
-          legalEntityId: filters.legalEntityId,
-          from: filters.from,
-          to: filters.to,
-          limit: JOURNAL_PAGE_SIZE,
-          ...(filters.sourceType ? { sourceType: filters.sourceType } : {}),
-          ...(filters.accountId ? { accountId: filters.accountId } : {}),
-        },
-        signal,
-      ),
-    enabled: Boolean(filters.legalEntityId && filters.from && filters.to),
   });
 }
 
