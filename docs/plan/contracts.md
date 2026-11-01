@@ -130,6 +130,18 @@ Code: `packages/shared/src/pos`. Tests: `tests/pos-contract.test.mjs`. PRD v1.7 
 - **End of day.** `endOfDayRecapSchema` is the F8 "Tutup Hari" report: per-device sales, voids (paid sales corrected), refunds, cash variance, tender rows (`captured − refunded = net`), channel rows and the accounting-sync marker, with the contract-level POS-05 identity `Σ net = sales − refunds − paid voids`. Stock deduction is a flag because the PRD makes it optional ("bila dipilih").
 - **Events (WS-04 catalog line).** `order.submitted`, `order.paid`, `order.voided`, `order.refunded` (the four the catalog already reserved for WS-04), `cashier_shift.opened`, `cashier_shift.closed`, plus two names this bead added: `day.closed` and `cash_movement.recorded`. All via `defineDomainEvent`; `order_events` rows (`posOrderEventSchema`) are the append-only sync log (§5) with a per-order sequence.
 - **Not in the contract.** Server pricing/tax computation (WS-05 tax contract, same path as the QR quote), payment capture (WS-05/EDC adapters), stock deduction (WS-06), approval inbox mechanics (WS-01), loyalty point valuation (WS-08). Endpoint handlers and RLS are the WS-04 BE beads (`legend-kk7`, `legend-…`), and the screens are the WS-04 FE beads.
+## QR order guest read models (`@starter/shared/qr-order`, `guest.ts`, beads `legend-2m4`/`legend-8sh`/`legend-woz`/`legend-tz1`)
+
+The customer screens of `/t/[token]` need read models the WS-03 contract beads (`legend-6li`, `legend-j85`) did not define. They live in `qr-order/guest.ts` with fixtures and are served by the FE mock until the backend bead (`legend-4jm`) implements and ratifies them:
+
+- `getQrMenu` `GET /api/qr/menu/:qrToken` (public, SSR): items with the channel price **excluding tax and service charge** (owner rule), variants (absolute price), modifier groups with min/max, labels, allergens, `photoUrl` (null until the media library has one), sold-out state, zone payment mode, zone hours (`orderingOpen`) and the tax/service rates for the price note.
+- `getMenuSuggestions` (AI-01): server-applied rules (margin, stock, hours); only orderable items.
+- `listSessionOrderIssues`: guest-safe failed-item view (no cost, no staff names); swap options carry a server-computed `differenceIdr` (ORD-03), voucher credit carries `valueIdr`. The guest never sees a refund (ORD-08).
+- `createGuestPayment` / `getGuestPayment`: target is one order (pay-first), one split share, or the whole bill; methods `qris`, `ewallet`; the client sends no amount; `paid` only from the verified gateway callback (ORD-02).
+- `getPointClaim` / `claimSessionPoints`: per-person point claim, 24 h after settlement; `requiresLogin` for anonymous guests.
+- `getOrderEtas`: per-order estimate from WS-04 pacing for the status screen (ORD-11 keeps the pre-checkout estimate in the quote).
+
+Guest endpoints (`/api/table-sessions/…`) are called with `Authorization: Bearer <sessionToken>` from `openOrJoinTableSession` (`lib/api/credentials.ts`).
 
 ## Identity & access (`@starter/shared/identity`, bead `legend-7sz`)
 

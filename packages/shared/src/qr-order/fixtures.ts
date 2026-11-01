@@ -468,7 +468,8 @@ const taxRuleId = id(7000);
 export const cafeLegendTaxRules: QuoteTaxRule[] = [
   {
     id: taxRuleId,
-    name: "PBJT Kota Bandung 10%",
+    // The rate is rendered from rateBp by the checkout ("{name} ({rate}%)").
+    name: "PBJT Kota Bandung",
     rateBp: 1000,
     appliesTo: "net_plus_service",
   },

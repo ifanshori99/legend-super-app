@@ -40,6 +40,12 @@ import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as CustomerTTokenIndexRouteImport } from './routes/_customer/t.$token.index'
+import { Route as CustomerTTokenBillRouteImport } from './routes/_customer/t.$token.bill'
+import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$token.cart'
+import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
+import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
+import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -47,6 +53,8 @@ import { Route as KelolaKelolaMenuKategoriRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaMenuKetersediaanRouteImport } from './routes/_kelola/kelola.menu.ketersediaan'
 import { Route as KelolaKelolaMenuPaketRouteImport } from './routes/_kelola/kelola.menu.paket'
 import { Route as KelolaKelolaMenuStasiunRouteImport } from './routes/_kelola/kelola.menu.stasiun'
+import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
+import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -193,6 +201,36 @@ const ShareholderShareholderIndexRoute =
     path: '/shareholder/',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const CustomerTTokenIndexRoute = CustomerTTokenIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
+const CustomerTTokenBillRoute = CustomerTTokenBillRouteImport.update({
+  id: '/bill',
+  path: '/bill',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
+const CustomerTTokenCartRoute = CustomerTTokenCartRouteImport.update({
+  id: '/cart',
+  path: '/cart',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
+const CustomerTTokenCheckoutRoute = CustomerTTokenCheckoutRouteImport.update({
+  id: '/checkout',
+  path: '/checkout',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
+const CustomerTTokenOrdersRoute = CustomerTTokenOrdersRouteImport.update({
+  id: '/orders',
+  path: '/orders',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
+const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => CustomerTTokenRoute,
+} as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -230,6 +268,18 @@ const KelolaKelolaMenuStasiunRoute = KelolaKelolaMenuStasiunRouteImport.update({
   path: '/kelola/menu/stasiun',
   getParentRoute: () => KelolaRoute,
 } as any)
+const CustomerTTokenIssueIssueIdRoute =
+  CustomerTTokenIssueIssueIdRouteImport.update({
+    id: '/issue/$issueId',
+    path: '/issue/$issueId',
+    getParentRoute: () => CustomerTTokenRoute,
+  } as any)
+const CustomerTTokenPayPaymentIdRoute =
+  CustomerTTokenPayPaymentIdRouteImport.update({
+    id: '/pay/$paymentId',
+    path: '/pay/$paymentId',
+    getParentRoute: () => CustomerTTokenRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -242,7 +292,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
-  '/t/$token': typeof CustomerTTokenRoute
+  '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -252,13 +302,21 @@ export interface FileRoutesByFullPath {
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/t/$token/bill': typeof CustomerTTokenBillRoute
+  '/t/$token/cart': typeof CustomerTTokenCartRoute
+  '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
+  '/t/$token/orders': typeof CustomerTTokenOrdersRoute
+  '/t/$token/review': typeof CustomerTTokenReviewRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/t/$token/': typeof CustomerTTokenIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -270,7 +328,6 @@ export interface FileRoutesByTo {
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
-  '/t/$token': typeof CustomerTTokenRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
@@ -280,13 +337,21 @@ export interface FileRoutesByTo {
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
+  '/t/$token/bill': typeof CustomerTTokenBillRoute
+  '/t/$token/cart': typeof CustomerTTokenCartRoute
+  '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
+  '/t/$token/orders': typeof CustomerTTokenOrdersRoute
+  '/t/$token/review': typeof CustomerTTokenReviewRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/t/$token': typeof CustomerTTokenIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
+  '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -311,7 +376,7 @@ export interface FileRoutesById {
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
-  '/_customer/t/$token': typeof CustomerTTokenRoute
+  '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -321,13 +386,21 @@ export interface FileRoutesById {
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/_customer/t/$token/bill': typeof CustomerTTokenBillRoute
+  '/_customer/t/$token/cart': typeof CustomerTTokenCartRoute
+  '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
+  '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
+  '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/_kelola/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/_kelola/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -352,13 +425,21 @@ export interface FileRouteTypes {
     | '/owner/'
     | '/platform/'
     | '/shareholder/'
+    | '/t/$token/bill'
+    | '/t/$token/cart'
+    | '/t/$token/checkout'
+    | '/t/$token/orders'
+    | '/t/$token/review'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/t/$token/'
     | '/kelola/menu/'
+    | '/t/$token/issue/$issueId'
+    | '/t/$token/pay/$paymentId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -370,7 +451,6 @@ export interface FileRouteTypes {
     | '/admin'
     | '/notes'
     | '/f/$facility'
-    | '/t/$token'
     | '/operasional/koneksi'
     | '/member'
     | '/karyawan'
@@ -380,13 +460,21 @@ export interface FileRouteTypes {
     | '/owner'
     | '/platform'
     | '/shareholder'
+    | '/t/$token/bill'
+    | '/t/$token/cart'
+    | '/t/$token/checkout'
+    | '/t/$token/orders'
+    | '/t/$token/review'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/t/$token'
     | '/kelola/menu'
+    | '/t/$token/issue/$issueId'
+    | '/t/$token/pay/$paymentId'
   id:
     | '__root__'
     | '/_auth'
@@ -420,13 +508,21 @@ export interface FileRouteTypes {
     | '/_owner/owner/'
     | '/_platform/platform/'
     | '/_shareholder/shareholder/'
+    | '/_customer/t/$token/bill'
+    | '/_customer/t/$token/cart'
+    | '/_customer/t/$token/checkout'
+    | '/_customer/t/$token/orders'
+    | '/_customer/t/$token/review'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
     | '/_kelola/kelola/menu/ketersediaan'
     | '/_kelola/kelola/menu/paket'
     | '/_kelola/kelola/menu/stasiun'
+    | '/_customer/t/$token/'
     | '/_kelola/kelola/menu/'
+    | '/_customer/t/$token/issue/$issueId'
+    | '/_customer/t/$token/pay/$paymentId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -663,6 +759,48 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
       parentRoute: typeof ShareholderRoute
     }
+    '/_customer/t/$token/': {
+      id: '/_customer/t/$token/'
+      path: '/'
+      fullPath: '/t/$token/'
+      preLoaderRoute: typeof CustomerTTokenIndexRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/bill': {
+      id: '/_customer/t/$token/bill'
+      path: '/bill'
+      fullPath: '/t/$token/bill'
+      preLoaderRoute: typeof CustomerTTokenBillRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/cart': {
+      id: '/_customer/t/$token/cart'
+      path: '/cart'
+      fullPath: '/t/$token/cart'
+      preLoaderRoute: typeof CustomerTTokenCartRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/checkout': {
+      id: '/_customer/t/$token/checkout'
+      path: '/checkout'
+      fullPath: '/t/$token/checkout'
+      preLoaderRoute: typeof CustomerTTokenCheckoutRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/orders': {
+      id: '/_customer/t/$token/orders'
+      path: '/orders'
+      fullPath: '/t/$token/orders'
+      preLoaderRoute: typeof CustomerTTokenOrdersRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/review': {
+      id: '/_customer/t/$token/review'
+      path: '/review'
+      fullPath: '/t/$token/review'
+      preLoaderRoute: typeof CustomerTTokenReviewRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
       path: '/kelola/menu'
@@ -712,6 +850,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaMenuStasiunRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_customer/t/$token/issue/$issueId': {
+      id: '/_customer/t/$token/issue/$issueId'
+      path: '/issue/$issueId'
+      fullPath: '/t/$token/issue/$issueId'
+      preLoaderRoute: typeof CustomerTTokenIssueIssueIdRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/pay/$paymentId': {
+      id: '/_customer/t/$token/pay/$paymentId'
+      path: '/pay/$paymentId'
+      fullPath: '/t/$token/pay/$paymentId'
+      preLoaderRoute: typeof CustomerTTokenPayPaymentIdRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
   }
 }
 
@@ -739,16 +891,42 @@ const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
   CustomerMemberRouteChildren,
 )
 
+interface CustomerTTokenRouteChildren {
+  CustomerTTokenBillRoute: typeof CustomerTTokenBillRoute
+  CustomerTTokenCartRoute: typeof CustomerTTokenCartRoute
+  CustomerTTokenCheckoutRoute: typeof CustomerTTokenCheckoutRoute
+  CustomerTTokenOrdersRoute: typeof CustomerTTokenOrdersRoute
+  CustomerTTokenReviewRoute: typeof CustomerTTokenReviewRoute
+  CustomerTTokenIndexRoute: typeof CustomerTTokenIndexRoute
+  CustomerTTokenIssueIssueIdRoute: typeof CustomerTTokenIssueIssueIdRoute
+  CustomerTTokenPayPaymentIdRoute: typeof CustomerTTokenPayPaymentIdRoute
+}
+
+const CustomerTTokenRouteChildren: CustomerTTokenRouteChildren = {
+  CustomerTTokenBillRoute: CustomerTTokenBillRoute,
+  CustomerTTokenCartRoute: CustomerTTokenCartRoute,
+  CustomerTTokenCheckoutRoute: CustomerTTokenCheckoutRoute,
+  CustomerTTokenOrdersRoute: CustomerTTokenOrdersRoute,
+  CustomerTTokenReviewRoute: CustomerTTokenReviewRoute,
+  CustomerTTokenIndexRoute: CustomerTTokenIndexRoute,
+  CustomerTTokenIssueIssueIdRoute: CustomerTTokenIssueIssueIdRoute,
+  CustomerTTokenPayPaymentIdRoute: CustomerTTokenPayPaymentIdRoute,
+}
+
+const CustomerTTokenRouteWithChildren = CustomerTTokenRoute._addFileChildren(
+  CustomerTTokenRouteChildren,
+)
+
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
-  CustomerTTokenRoute: typeof CustomerTTokenRoute
+  CustomerTTokenRoute: typeof CustomerTTokenRouteWithChildren
 }
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
-  CustomerTTokenRoute: CustomerTTokenRoute,
+  CustomerTTokenRoute: CustomerTTokenRouteWithChildren,
 }
 
 const CustomerRouteWithChildren = CustomerRoute._addFileChildren(
