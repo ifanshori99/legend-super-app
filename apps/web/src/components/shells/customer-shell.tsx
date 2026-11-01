@@ -69,6 +69,7 @@ export function CustomerShell({
         </div>
       </Main>
 
+      {nav.length > 1 && (
       <nav
         aria-label={t("shell.mainNav")}
         className="shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
@@ -101,6 +102,7 @@ export function CustomerShell({
           ))}
         </ul>
       </nav>
+      )}
     </ThemeScope>
   );
 }

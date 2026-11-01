@@ -11,19 +11,26 @@ import {
 import { siteConfig } from "@/config/site";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
+import { loadAreaAccess } from "@/lib/areas/load-access";
+import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
 import globalsCss from "@/styles/globals.css?url";
 
 export type RouterContext = {
   queryClient: QueryClient;
   session: Session | null;
+  /** What the visitor may reach; presentation only (see lib/areas). */
+  access: AreaAccess;
 };
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   // One session read per navigation (the API, via the auth middleware), shared
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
-  beforeLoad: async () => ({ session: await getSessionFn() }),
+  beforeLoad: async () => {
+    const session = await getSessionFn();
+    return { session, access: await loadAreaAccess(session) };
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },

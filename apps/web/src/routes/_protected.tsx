@@ -34,9 +34,6 @@ function ProtectedLayout() {
           <div className="flex flex-wrap items-center gap-6">
             <Brand />
             <nav aria-label="Main" className="flex gap-1">
-              <Link to="/app" className={navLink}>
-                App
-              </Link>
               <Link to="/notes" className={navLink}>
                 Notes
               </Link>

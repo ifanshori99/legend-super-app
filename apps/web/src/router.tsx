@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { ApiError } from "@/lib/api/client";
+import { ANONYMOUS_ACCESS } from "@/lib/areas/access";
 import { routeTree } from "./routeTree.gen";
 
 function Pending() {
@@ -35,7 +36,7 @@ export function getRouter() {
 
   const router = createRouter({
     routeTree,
-    context: { queryClient, session: null },
+    context: { queryClient, session: null, access: ANONYMOUS_ACCESS },
     scrollRestoration: true,
     defaultPreload: "intent",
     // Let TanStack Query decide freshness for preloaded data.

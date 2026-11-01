@@ -108,6 +108,84 @@ export const id = {
       settings: "Pengaturan",
     },
   },
+  app: {
+    // Shown until tenant config supplies the brand name (D43 whitelabel).
+    defaultBrand: "Legend",
+    titleTemplate: "{page} | {brand}",
+  },
+  auth: {
+    signIn: "Masuk",
+  },
+  layout: {
+    offlineRegion: "Status koneksi",
+    themeToggle: "Ganti tema",
+  },
+  gate: {
+    forbiddenTitle: "Anda belum punya akses ke area ini",
+    forbiddenHint:
+      "Minta Admin Tenant menambahkan peran yang sesuai, atau kembali ke beranda.",
+    mfaTitle: "Verifikasi dua langkah diperlukan",
+    mfaHint:
+      "Area ini hanya terbuka setelah verifikasi dua langkah selesai. Masuk ulang dan selesaikan verifikasi.",
+    backHome: "Kembali ke beranda",
+  },
+  area: {
+    reachable: "Area kerja Anda",
+    public: {
+      name: "Beranda",
+      emptyTitle: "Beranda brand belum diisi",
+      emptyHint:
+        "Beranda, menu online, dan reservasi tampil di sini setelah konten brand diatur.",
+    },
+    customer: {
+      name: "Member",
+      emptyTitle: "Area member belum berisi layar",
+      emptyHint: "Poin, voucher, dan riwayat kunjungan tampil di sini.",
+      qrTitle: "Sesi meja belum dapat dibuka",
+      qrHint: "Layar pesan lewat QR meja akan tampil di sini.",
+      facilityTitle: "Pemesanan fasilitas belum dapat dibuka",
+      facilityHint: "Pemesanan shower room dari QR fasilitas tampil di sini.",
+    },
+    ops: {
+      name: "Kasir & operasional",
+      emptyTitle: "Belum ada layar kasir",
+      emptyHint:
+        "POS, captain order, papan bilik, dan checklist operasional tampil di sini.",
+      outletUnset: "Outlet belum dipilih",
+    },
+    kitchen: {
+      name: "Dapur",
+      emptyTitle: "Belum ada layar dapur",
+      emptyHint: "KDS per stasiun, expo, dan pickup display tampil di sini.",
+    },
+    kelola: {
+      name: "Kelola",
+      emptyTitle: "Dasbor manajemen belum berisi laporan",
+      emptyHint:
+        "Kotak approval, laporan, dan pengaturan outlet tampil di sini.",
+    },
+    owner: {
+      name: "Owner",
+      emptyTitle: "Dasbor owner belum berisi data",
+      emptyHint: "Penjualan, biaya, dan kondisi bisnis tampil di sini.",
+    },
+    shareholder: {
+      name: "Shareholder",
+      emptyTitle: "Dasbor shareholder belum berisi data",
+      emptyHint:
+        "Kondisi bisnis dan bagi hasil pribadi tampil di sini setelah periode ditutup.",
+    },
+    karyawan: {
+      name: "Karyawan",
+      emptyTitle: "Belum ada layar karyawan",
+      emptyHint: "Absensi, jadwal, dan slip gaji tampil di sini.",
+    },
+    platform: {
+      name: "Platform",
+      emptyTitle: "Panel platform belum berisi tenant",
+      emptyHint: "Daftar tenant, paket, dan kesehatan sistem tampil di sini.",
+    },
+  },
   designSystem: {
     title: "Design System Platform",
     intro:

@@ -9,27 +9,77 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/_auth'
+import { Route as CustomerRouteImport } from './routes/_customer'
+import { Route as KaryawanRouteImport } from './routes/_karyawan'
+import { Route as KelolaRouteImport } from './routes/_kelola'
+import { Route as KitchenRouteImport } from './routes/_kitchen'
+import { Route as OpsRouteImport } from './routes/_ops'
+import { Route as OwnerRouteImport } from './routes/_owner'
+import { Route as PlatformRouteImport } from './routes/_platform'
 import { Route as ProtectedRouteImport } from './routes/_protected'
+import { Route as PublicRouteImport } from './routes/_public'
+import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
+import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
-import { Route as ProtectedAppRouteImport } from './routes/_protected/app'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
+import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
+import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
+import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
+import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
+import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
+import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
+import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
+import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
+import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CustomerRoute = CustomerRouteImport.update({
+  id: '/_customer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KaryawanRoute = KaryawanRouteImport.update({
+  id: '/_karyawan',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KelolaRoute = KelolaRouteImport.update({
+  id: '/_kelola',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KitchenRoute = KitchenRouteImport.update({
+  id: '/_kitchen',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OpsRoute = OpsRouteImport.update({
+  id: '/_ops',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OwnerRoute = OwnerRouteImport.update({
+  id: '/_owner',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlatformRoute = PlatformRouteImport.update({
+  id: '/_platform',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedRoute = ProtectedRouteImport.update({
   id: '/_protected',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PublicRoute = PublicRouteImport.update({
+  id: '/_public',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareholderRoute = ShareholderRouteImport.update({
+  id: '/_shareholder',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DesignSystemRoute = DesignSystemRouteImport.update({
@@ -47,14 +97,14 @@ const AuthSignUpRoute = AuthSignUpRouteImport.update({
   path: '/sign-up',
   getParentRoute: () => AuthRoute,
 } as any)
+const CustomerMemberRoute = CustomerMemberRouteImport.update({
+  id: '/member',
+  path: '/member',
+  getParentRoute: () => CustomerRoute,
+} as any)
 const ProtectedAdminRoute = ProtectedAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
-  getParentRoute: () => ProtectedRoute,
-} as any)
-const ProtectedAppRoute = ProtectedAppRouteImport.update({
-  id: '/app',
-  path: '/app',
   getParentRoute: () => ProtectedRoute,
 } as any)
 const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
@@ -62,36 +112,130 @@ const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
   path: '/notes',
   getParentRoute: () => ProtectedRoute,
 } as any)
+const PublicIndexRoute = PublicIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => PublicRoute,
+} as any)
+const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
+  id: '/f/$facility',
+  path: '/f/$facility',
+  getParentRoute: () => CustomerRoute,
+} as any)
+const CustomerMemberIndexRoute = CustomerMemberIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerTTokenRoute = CustomerTTokenRouteImport.update({
+  id: '/t/$token',
+  path: '/t/$token',
+  getParentRoute: () => CustomerRoute,
+} as any)
+const KaryawanKaryawanIndexRoute = KaryawanKaryawanIndexRouteImport.update({
+  id: '/karyawan/',
+  path: '/karyawan/',
+  getParentRoute: () => KaryawanRoute,
+} as any)
+const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
+  id: '/kelola/',
+  path: '/kelola/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
+  id: '/kds/',
+  path: '/kds/',
+  getParentRoute: () => KitchenRoute,
+} as any)
+const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
+  id: '/pos/',
+  path: '/pos/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OwnerOwnerIndexRoute = OwnerOwnerIndexRouteImport.update({
+  id: '/owner/',
+  path: '/owner/',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const PlatformPlatformIndexRoute = PlatformPlatformIndexRouteImport.update({
+  id: '/platform/',
+  path: '/platform/',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const ShareholderShareholderIndexRoute =
+  ShareholderShareholderIndexRouteImport.update({
+    id: '/shareholder/',
+    path: '/shareholder/',
+    getParentRoute: () => ShareholderRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
+  '/member': typeof CustomerMemberRouteWithChildren
   '/admin': typeof ProtectedAdminRoute
-  '/app': typeof ProtectedAppRoute
   '/notes': typeof ProtectedNotesRoute
+  '/f/$facility': typeof CustomerFFacilityRoute
+  '/t/$token': typeof CustomerTTokenRoute
+  '/member/': typeof CustomerMemberIndexRoute
+  '/karyawan/': typeof KaryawanKaryawanIndexRoute
+  '/kelola/': typeof KelolaKelolaIndexRoute
+  '/kds/': typeof KitchenKdsIndexRoute
+  '/pos/': typeof OpsPosIndexRoute
+  '/owner/': typeof OwnerOwnerIndexRoute
+  '/platform/': typeof PlatformPlatformIndexRoute
+  '/shareholder/': typeof ShareholderShareholderIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/admin': typeof ProtectedAdminRoute
-  '/app': typeof ProtectedAppRoute
   '/notes': typeof ProtectedNotesRoute
+  '/f/$facility': typeof CustomerFFacilityRoute
+  '/t/$token': typeof CustomerTTokenRoute
+  '/member': typeof CustomerMemberIndexRoute
+  '/karyawan': typeof KaryawanKaryawanIndexRoute
+  '/kelola': typeof KelolaKelolaIndexRoute
+  '/kds': typeof KitchenKdsIndexRoute
+  '/pos': typeof OpsPosIndexRoute
+  '/owner': typeof OwnerOwnerIndexRoute
+  '/platform': typeof PlatformPlatformIndexRoute
+  '/shareholder': typeof ShareholderShareholderIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
   '/_auth': typeof AuthRouteWithChildren
+  '/_customer': typeof CustomerRouteWithChildren
+  '/_karyawan': typeof KaryawanRouteWithChildren
+  '/_kelola': typeof KelolaRouteWithChildren
+  '/_kitchen': typeof KitchenRouteWithChildren
+  '/_ops': typeof OpsRouteWithChildren
+  '/_owner': typeof OwnerRouteWithChildren
+  '/_platform': typeof PlatformRouteWithChildren
   '/_protected': typeof ProtectedRouteWithChildren
+  '/_public': typeof PublicRouteWithChildren
+  '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
+  '/_customer/member': typeof CustomerMemberRouteWithChildren
   '/_protected/admin': typeof ProtectedAdminRoute
-  '/_protected/app': typeof ProtectedAppRoute
   '/_protected/notes': typeof ProtectedNotesRoute
+  '/_public/': typeof PublicIndexRoute
+  '/_customer/f/$facility': typeof CustomerFFacilityRoute
+  '/_customer/t/$token': typeof CustomerTTokenRoute
+  '/_customer/member/': typeof CustomerMemberIndexRoute
+  '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
+  '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
+  '/_kitchen/kds/': typeof KitchenKdsIndexRoute
+  '/_ops/pos/': typeof OpsPosIndexRoute
+  '/_owner/owner/': typeof OwnerOwnerIndexRoute
+  '/_platform/platform/': typeof PlatformPlatformIndexRoute
+  '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -100,9 +244,19 @@ export interface FileRouteTypes {
     | '/design-system'
     | '/sign-in'
     | '/sign-up'
+    | '/member'
     | '/admin'
-    | '/app'
     | '/notes'
+    | '/f/$facility'
+    | '/t/$token'
+    | '/member/'
+    | '/karyawan/'
+    | '/kelola/'
+    | '/kds/'
+    | '/pos/'
+    | '/owner/'
+    | '/platform/'
+    | '/shareholder/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -110,37 +264,66 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/admin'
-    | '/app'
     | '/notes'
+    | '/f/$facility'
+    | '/t/$token'
+    | '/member'
+    | '/karyawan'
+    | '/kelola'
+    | '/kds'
+    | '/pos'
+    | '/owner'
+    | '/platform'
+    | '/shareholder'
   id:
     | '__root__'
-    | '/'
     | '/_auth'
+    | '/_customer'
+    | '/_karyawan'
+    | '/_kelola'
+    | '/_kitchen'
+    | '/_ops'
+    | '/_owner'
+    | '/_platform'
     | '/_protected'
+    | '/_public'
+    | '/_shareholder'
     | '/design-system'
     | '/_auth/sign-in'
     | '/_auth/sign-up'
+    | '/_customer/member'
     | '/_protected/admin'
-    | '/_protected/app'
     | '/_protected/notes'
+    | '/_public/'
+    | '/_customer/f/$facility'
+    | '/_customer/t/$token'
+    | '/_customer/member/'
+    | '/_karyawan/karyawan/'
+    | '/_kelola/kelola/'
+    | '/_kitchen/kds/'
+    | '/_ops/pos/'
+    | '/_owner/owner/'
+    | '/_platform/platform/'
+    | '/_shareholder/shareholder/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRouteWithChildren
+  CustomerRoute: typeof CustomerRouteWithChildren
+  KaryawanRoute: typeof KaryawanRouteWithChildren
+  KelolaRoute: typeof KelolaRouteWithChildren
+  KitchenRoute: typeof KitchenRouteWithChildren
+  OpsRoute: typeof OpsRouteWithChildren
+  OwnerRoute: typeof OwnerRouteWithChildren
+  PlatformRoute: typeof PlatformRouteWithChildren
   ProtectedRoute: typeof ProtectedRouteWithChildren
+  PublicRoute: typeof PublicRouteWithChildren
+  ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_auth': {
       id: '/_auth'
       path: ''
@@ -148,11 +331,74 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_customer': {
+      id: '/_customer'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof CustomerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_karyawan': {
+      id: '/_karyawan'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof KaryawanRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_kelola': {
+      id: '/_kelola'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof KelolaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_kitchen': {
+      id: '/_kitchen'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof KitchenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_ops': {
+      id: '/_ops'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof OpsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_owner': {
+      id: '/_owner'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof OwnerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_platform': {
+      id: '/_platform'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof PlatformRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_protected': {
       id: '/_protected'
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof ProtectedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_public': {
+      id: '/_public'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof PublicRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_shareholder': {
+      id: '/_shareholder'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof ShareholderRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/design-system': {
@@ -176,18 +422,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthSignUpRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_customer/member': {
+      id: '/_customer/member'
+      path: '/member'
+      fullPath: '/member'
+      preLoaderRoute: typeof CustomerMemberRouteImport
+      parentRoute: typeof CustomerRoute
+    }
     '/_protected/admin': {
       id: '/_protected/admin'
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof ProtectedAdminRouteImport
-      parentRoute: typeof ProtectedRoute
-    }
-    '/_protected/app': {
-      id: '/_protected/app'
-      path: '/app'
-      fullPath: '/app'
-      preLoaderRoute: typeof ProtectedAppRouteImport
       parentRoute: typeof ProtectedRoute
     }
     '/_protected/notes': {
@@ -196,6 +442,83 @@ declare module '@tanstack/react-router' {
       fullPath: '/notes'
       preLoaderRoute: typeof ProtectedNotesRouteImport
       parentRoute: typeof ProtectedRoute
+    }
+    '/_public/': {
+      id: '/_public/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof PublicIndexRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_customer/f/$facility': {
+      id: '/_customer/f/$facility'
+      path: '/f/$facility'
+      fullPath: '/f/$facility'
+      preLoaderRoute: typeof CustomerFFacilityRouteImport
+      parentRoute: typeof CustomerRoute
+    }
+    '/_customer/member/': {
+      id: '/_customer/member/'
+      path: '/'
+      fullPath: '/member/'
+      preLoaderRoute: typeof CustomerMemberIndexRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/t/$token': {
+      id: '/_customer/t/$token'
+      path: '/t/$token'
+      fullPath: '/t/$token'
+      preLoaderRoute: typeof CustomerTTokenRouteImport
+      parentRoute: typeof CustomerRoute
+    }
+    '/_karyawan/karyawan/': {
+      id: '/_karyawan/karyawan/'
+      path: '/karyawan'
+      fullPath: '/karyawan/'
+      preLoaderRoute: typeof KaryawanKaryawanIndexRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
+    '/_kelola/kelola/': {
+      id: '/_kelola/kelola/'
+      path: '/kelola'
+      fullPath: '/kelola/'
+      preLoaderRoute: typeof KelolaKelolaIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kitchen/kds/': {
+      id: '/_kitchen/kds/'
+      path: '/kds'
+      fullPath: '/kds/'
+      preLoaderRoute: typeof KitchenKdsIndexRouteImport
+      parentRoute: typeof KitchenRoute
+    }
+    '/_ops/pos/': {
+      id: '/_ops/pos/'
+      path: '/pos'
+      fullPath: '/pos/'
+      preLoaderRoute: typeof OpsPosIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_owner/owner/': {
+      id: '/_owner/owner/'
+      path: '/owner'
+      fullPath: '/owner/'
+      preLoaderRoute: typeof OwnerOwnerIndexRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/_platform/platform/': {
+      id: '/_platform/platform/'
+      path: '/platform'
+      fullPath: '/platform/'
+      preLoaderRoute: typeof PlatformPlatformIndexRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_shareholder/shareholder/': {
+      id: '/_shareholder/shareholder/'
+      path: '/shareholder'
+      fullPath: '/shareholder/'
+      preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
+      parentRoute: typeof ShareholderRoute
     }
   }
 }
@@ -212,15 +535,107 @@ const AuthRouteChildren: AuthRouteChildren = {
 
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
+interface CustomerMemberRouteChildren {
+  CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
+}
+
+const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
+  CustomerMemberIndexRoute: CustomerMemberIndexRoute,
+}
+
+const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
+  CustomerMemberRouteChildren,
+)
+
+interface CustomerRouteChildren {
+  CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerFFacilityRoute: typeof CustomerFFacilityRoute
+  CustomerTTokenRoute: typeof CustomerTTokenRoute
+}
+
+const CustomerRouteChildren: CustomerRouteChildren = {
+  CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerFFacilityRoute: CustomerFFacilityRoute,
+  CustomerTTokenRoute: CustomerTTokenRoute,
+}
+
+const CustomerRouteWithChildren = CustomerRoute._addFileChildren(
+  CustomerRouteChildren,
+)
+
+interface KaryawanRouteChildren {
+  KaryawanKaryawanIndexRoute: typeof KaryawanKaryawanIndexRoute
+}
+
+const KaryawanRouteChildren: KaryawanRouteChildren = {
+  KaryawanKaryawanIndexRoute: KaryawanKaryawanIndexRoute,
+}
+
+const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
+  KaryawanRouteChildren,
+)
+
+interface KelolaRouteChildren {
+  KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+}
+
+const KelolaRouteChildren: KelolaRouteChildren = {
+  KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+}
+
+const KelolaRouteWithChildren =
+  KelolaRoute._addFileChildren(KelolaRouteChildren)
+
+interface KitchenRouteChildren {
+  KitchenKdsIndexRoute: typeof KitchenKdsIndexRoute
+}
+
+const KitchenRouteChildren: KitchenRouteChildren = {
+  KitchenKdsIndexRoute: KitchenKdsIndexRoute,
+}
+
+const KitchenRouteWithChildren =
+  KitchenRoute._addFileChildren(KitchenRouteChildren)
+
+interface OpsRouteChildren {
+  OpsPosIndexRoute: typeof OpsPosIndexRoute
+}
+
+const OpsRouteChildren: OpsRouteChildren = {
+  OpsPosIndexRoute: OpsPosIndexRoute,
+}
+
+const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
+
+interface OwnerRouteChildren {
+  OwnerOwnerIndexRoute: typeof OwnerOwnerIndexRoute
+}
+
+const OwnerRouteChildren: OwnerRouteChildren = {
+  OwnerOwnerIndexRoute: OwnerOwnerIndexRoute,
+}
+
+const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
+
+interface PlatformRouteChildren {
+  PlatformPlatformIndexRoute: typeof PlatformPlatformIndexRoute
+}
+
+const PlatformRouteChildren: PlatformRouteChildren = {
+  PlatformPlatformIndexRoute: PlatformPlatformIndexRoute,
+}
+
+const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
+  PlatformRouteChildren,
+)
+
 interface ProtectedRouteChildren {
   ProtectedAdminRoute: typeof ProtectedAdminRoute
-  ProtectedAppRoute: typeof ProtectedAppRoute
   ProtectedNotesRoute: typeof ProtectedNotesRoute
 }
 
 const ProtectedRouteChildren: ProtectedRouteChildren = {
   ProtectedAdminRoute: ProtectedAdminRoute,
-  ProtectedAppRoute: ProtectedAppRoute,
   ProtectedNotesRoute: ProtectedNotesRoute,
 }
 
@@ -228,10 +643,41 @@ const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
   ProtectedRouteChildren,
 )
 
+interface PublicRouteChildren {
+  PublicIndexRoute: typeof PublicIndexRoute
+}
+
+const PublicRouteChildren: PublicRouteChildren = {
+  PublicIndexRoute: PublicIndexRoute,
+}
+
+const PublicRouteWithChildren =
+  PublicRoute._addFileChildren(PublicRouteChildren)
+
+interface ShareholderRouteChildren {
+  ShareholderShareholderIndexRoute: typeof ShareholderShareholderIndexRoute
+}
+
+const ShareholderRouteChildren: ShareholderRouteChildren = {
+  ShareholderShareholderIndexRoute: ShareholderShareholderIndexRoute,
+}
+
+const ShareholderRouteWithChildren = ShareholderRoute._addFileChildren(
+  ShareholderRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
   AuthRoute: AuthRouteWithChildren,
+  CustomerRoute: CustomerRouteWithChildren,
+  KaryawanRoute: KaryawanRouteWithChildren,
+  KelolaRoute: KelolaRouteWithChildren,
+  KitchenRoute: KitchenRouteWithChildren,
+  OpsRoute: OpsRouteWithChildren,
+  OwnerRoute: OwnerRouteWithChildren,
+  PlatformRoute: PlatformRouteWithChildren,
   ProtectedRoute: ProtectedRouteWithChildren,
+  PublicRoute: PublicRouteWithChildren,
+  ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
 }
 export const routeTree = rootRouteImport
