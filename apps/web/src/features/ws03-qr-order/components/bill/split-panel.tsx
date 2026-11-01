@@ -27,6 +27,7 @@ import {
   previewEqualSplit,
   previewItemSplit,
   splitDraftError,
+  splitScope,
   type SplitMode,
 } from "../../domain.ts";
 import { useCreateSplits } from "../../hooks";
@@ -63,12 +64,18 @@ export function SplitPanel({
   const [owners, setOwners] = useState<Readonly<Record<string, string>>>({});
   const [key, setKey] = useState(() => idempotencyKey("split"));
 
+  // The server splits a pay-first order waiting for payment on its own, else
+  // the whole bill; the preview must divide exactly the same amount (ORD-06).
+  const scope = useMemo(
+    () => splitScope(bill.orders, bill.totals.paidIdr),
+    [bill.orders, bill.totals.paidIdr],
+  );
   const orderItems = useMemo(
-    () => bill.orders.flatMap((order) => order.items),
-    [bill.orders],
+    () => (scope?.orders ?? bill.orders).flatMap((order) => order.items),
+    [scope, bill.orders],
   );
   const itemIds = orderItems.map((item) => item.id);
-  const total = bill.totals.totalIdr;
+  const total = scope?.totalIdr ?? bill.totals.totalIdr;
 
   const guestLabel = (participantId: string) => {
     const n = participants.findIndex((p) => p.id === participantId) + 1;

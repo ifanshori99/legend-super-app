@@ -26,6 +26,13 @@ export function SplitList({
   const t = useT();
   const splits = liveSplits(bill);
   const sum = splits.reduce((total, split) => total + split.amountIdr, 0);
+  // Shares of one order (pay-first) add up to that order, else to the bill.
+  const orderId = splits[0]?.orderId ?? null;
+  const splitOrder =
+    orderId !== null && splits.every((split) => split.orderId === orderId)
+      ? bill.orders.find((order) => order.id === orderId)
+      : undefined;
+  const expected = splitOrder?.totalIdr ?? bill.totals.totalIdr;
   const guestName = (participantId: string) => {
     const n = participantIds.indexOf(participantId) + 1;
     return participantId === myParticipantId
@@ -89,7 +96,7 @@ export function SplitList({
           );
         })}
       </ul>
-      {sum === bill.totals.totalIdr && (
+      {sum === expected && (
         <p className="flex items-start gap-2 text-sm text-muted-foreground">
           <CircleCheck
             className="mt-0.5 size-4 shrink-0 text-success"

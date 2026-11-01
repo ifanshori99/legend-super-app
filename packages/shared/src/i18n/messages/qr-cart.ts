@@ -96,6 +96,9 @@ export const qrCartMessages = {
     openBillSubmit: "Kirim pesanan ke dapur",
     placing: "Memproses pesanan…",
     splitSubmit: "Bagi tagihan",
+    splitInProgress:
+      "Pesanan ini sudah dibagi dan sebagian sudah dibayar. Bayar bagian Anda di Tagihan.",
+    toBill: "Buka tagihan",
     splitHint:
       "Pesan dulu, lalu bagi tagihan rata, per orang, atau per item. Tiap tamu membayar bagiannya sendiri.",
     sentToast: "Pesanan terkirim ke dapur",

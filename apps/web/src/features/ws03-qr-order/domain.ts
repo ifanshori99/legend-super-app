@@ -104,6 +104,40 @@ export function hasDuplicateAssignment(
   return false;
 }
 
+/**
+ * What a split divides (ORD-06). A pay-first order waiting for payment is
+ * split on its own; otherwise the whole bill. Once part of the bill was paid
+ * outside a split (a pay-first order, or "Bayar semua" before new orders), a
+ * new split is refused: shares of the full total would charge that part twice.
+ * PRD is silent on splitting a partly paid bill; the guest pays the rest in
+ * one go or asks the waiter (safest option, reviewer note legend-2m4).
+ */
+export function splitScope<
+  O extends { id: string; status: QrOrderStatus; totalIdr: number },
+>(
+  orders: readonly O[],
+  paidIdr: number,
+): { orders: O[]; totalIdr: number } | null {
+  const awaiting = orders.find((order) => order.status === "awaiting_payment");
+  if (awaiting) return { orders: [awaiting], totalIdr: awaiting.totalIdr };
+  const live = orders.filter((order) => order.status !== "voided");
+  if (live.length === 0 || paidIdr > 0) return null;
+  return {
+    orders: live,
+    totalIdr: live.reduce((sum, order) => sum + order.totalIdr, 0),
+  };
+}
+
+/** True when a share of this order is already paid: paying the whole order again would charge twice. */
+export function orderHasPaidShare(
+  splits: readonly { orderId: string | null; status: string }[],
+  orderId: string,
+): boolean {
+  return splits.some(
+    (split) => split.orderId === orderId && split.status === "paid",
+  );
+}
+
 /** The pending split part that belongs to this guest, if any. */
 export function myPendingShare<
   T extends { status: string; participantId: string | null },

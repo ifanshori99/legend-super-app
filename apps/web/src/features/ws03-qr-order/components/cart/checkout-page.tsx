@@ -17,7 +17,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
-import { usePlaceOrder, useQuote } from "../../hooks";
+import { orderHasPaidShare } from "../../domain.ts";
+import { usePlaceOrder, useQuote, useSessionBill } from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
 import { PayDialog } from "../bill/pay-dialog";
 import { Notice } from "../notice";
@@ -73,6 +74,12 @@ export function CheckoutPage() {
   const base = useQuote(sessionId, cartVersion, {});
   const coded = useQuote(code ? sessionId : null, cartVersion, codes);
   const place = usePlaceOrder(sessionId ?? "none");
+  // Only needed to see whether a waiting pay-first order is already being paid per share.
+  const bill = useSessionBill(
+    view?.orders.some((order) => order.status === "awaiting_payment")
+      ? sessionId
+      : null,
+  );
   const [payTarget, setPayTarget] = useState<{
     target: GuestPaymentTarget;
     amountIdr: number;
@@ -138,23 +145,42 @@ export function CheckoutPage() {
           <CardContent className="grid gap-3">
             <p className="font-semibold">{awaitingOrder.number}</p>
             <Money amount={awaitingOrder.totalIdr} size="xl" />
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("qrCart.checkout.modePayFirstHint")}
-            </p>
-            <Button
-              type="button"
-              size="lg"
-              onClick={() =>
-                setPayTarget({
-                  target: { kind: "order", orderId: awaitingOrder.id },
-                  amountIdr: awaitingOrder.totalIdr,
-                })
-              }
-            >
-              {t("qrCart.checkout.payFirstSubmit", {
-                total: formatRupiah(awaitingOrder.totalIdr),
-              })}
-            </Button>
+            {orderHasPaidShare(
+              bill.data?.data.splits ?? [],
+              awaitingOrder.id,
+            ) ? (
+              <>
+                {/* ORD-06: shares are being paid; the whole order must not be charged again. */}
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("qrCart.checkout.splitInProgress")}
+                </p>
+                <Button asChild size="lg">
+                  <Link to="/t/$token/bill" params={{ token: qrToken }}>
+                    {t("qrCart.checkout.toBill")}
+                  </Link>
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("qrCart.checkout.modePayFirstHint")}
+                </p>
+                <Button
+                  type="button"
+                  size="lg"
+                  onClick={() =>
+                    setPayTarget({
+                      target: { kind: "order", orderId: awaitingOrder.id },
+                      amountIdr: awaitingOrder.totalIdr,
+                    })
+                  }
+                >
+                  {t("qrCart.checkout.payFirstSubmit", {
+                    total: formatRupiah(awaitingOrder.totalIdr),
+                  })}
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
         {payTarget && (

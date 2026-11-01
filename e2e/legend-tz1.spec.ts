@@ -73,7 +73,7 @@ test.describe("Failed-item recovery and review (mock)", () => {
     ).toBeVisible();
   });
 
-  test("ORD-09 a paid guest rates the visit and gets the Google review CTA", async ({
+  test("PRD Ulasan Pascamakan: a paid guest rates the visit and gets the Google review CTA", async ({
     page,
   }) => {
     await joinTable(page, freeTable);
@@ -99,7 +99,7 @@ test.describe("Failed-item recovery and review (mock)", () => {
       timeout: 15_000,
     });
 
-    // The bill must be settled before the review opens (ORD-09).
+    // The bill must be settled before the review opens (PRD "Ulasan Pascamakan").
     await page.goto(`/t/${freeTable}/bill`);
     await expect(page.getByText("Tagihan lunas")).toBeVisible({
       timeout: 15_000,

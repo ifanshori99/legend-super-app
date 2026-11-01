@@ -136,6 +136,8 @@ function refreshSession(queryClient: QueryClient, sessionId: string) {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: sessionKey(sessionId) }),
     queryClient.invalidateQueries({ queryKey: ["qr-quote", sessionId] }),
+    // A placed order changes the bill (checkout "Bagi tagihan" opens it next).
+    queryClient.invalidateQueries({ queryKey: [billEndpointId] }),
   ]);
 }
 

@@ -5,6 +5,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEngine } from "../apps/web/src/features/ws03-qr-order/mock-engine.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import {
+  orderHasPaidShare,
+  previewEqualSplit,
+  splitScope,
+} from "../apps/web/src/features/ws03-qr-order/domain.ts";
 
 const T = qr.qrTokenFixtures;
 const key = () => `test-${Math.random().toString(36).slice(2)}-abcdef`;
@@ -316,6 +321,123 @@ test("ORD-06 a paid share cannot be re-split and paying every share settles the 
   assert.equal(settled.totals.outstandingIdr, 0);
   qr.sessionBillSchema.parse(settled);
   assert.equal(engine.reviewEligibility(sessionId).eligible, true);
+});
+
+/** Places one plain item in the free pay-first table and returns the order. */
+function placePlain(engine, sessionId, quantity = 1) {
+  const item = engine
+    .menuFor(T.freeTable)
+    .items.find(
+      (i) =>
+        i.variants.length === 0 &&
+        i.modifierGroups.length === 0 &&
+        i.status === "available",
+    );
+  const version = engine.view(sessionId).cart.version;
+  engine.addLine(sessionId, {
+    menuItemId: item.id,
+    quantity,
+    modifierIds: [],
+    expectedCartVersion: version,
+  });
+  return engine.place(sessionId, {
+    expectedCartVersion: version + 1,
+    idempotencyKey: key(),
+  }).order;
+}
+
+test("ORD-06 a pay-first split divides only the order waiting for payment, as the preview does", () => {
+  const { engine, sessionId, tick } = fresh(T.freeTable, 2);
+  const first = placePlain(engine, sessionId);
+  const pay = engine.startPayment(sessionId, {
+    target: { kind: "order", orderId: first.id },
+    method: "qris",
+    idempotencyKey: key(),
+  });
+  tick(5000);
+  assert.equal(engine.getPayment(sessionId, pay.id).status, "paid");
+  const second = placePlain(engine, sessionId, 3);
+  const bill = engine.bill(sessionId);
+  const scope = splitScope(bill.orders, bill.totals.paidIdr);
+  assert.deepEqual(
+    scope.orders.map((o) => o.id),
+    [second.id],
+  );
+  assert.equal(scope.totalIdr, bill.totals.outstandingIdr);
+  const result = engine.createSplits(sessionId, {
+    method: "equal",
+    parts: 2,
+    idempotencyKey: key(),
+  });
+  const sum = result.splits.reduce((s, p) => s + p.amountIdr, 0);
+  assert.equal(sum, second.totalIdr);
+  assert.deepEqual(
+    result.splits.map((p) => p.amountIdr),
+    previewEqualSplit(scope.totalIdr, 2),
+  );
+  // by item covers exactly the items of the waiting order.
+  const byItem = engine.createSplits(sessionId, {
+    method: "by_item",
+    assignments: [{ orderItemIds: second.items.map((i) => i.id) }],
+    idempotencyKey: key(),
+  });
+  assert.equal(
+    byItem.splits.reduce((s, p) => s + p.amountIdr, 0),
+    second.totalIdr,
+  );
+});
+
+test("ORD-06 a bill partly paid outside a split is not split again (no double charge)", () => {
+  const { engine, sessionId, tick } = fresh(T.freeTable, 2);
+  const order = placePlain(engine, sessionId);
+  const pay = engine.startPayment(sessionId, {
+    target: { kind: "order", orderId: order.id },
+    method: "qris",
+    idempotencyKey: key(),
+  });
+  tick(5000);
+  engine.getPayment(sessionId, pay.id);
+  const bill = engine.bill(sessionId);
+  assert.equal(splitScope(bill.orders, bill.totals.paidIdr), null);
+  assert.throws(
+    () =>
+      engine.createSplits(sessionId, {
+        method: "equal",
+        parts: 2,
+        idempotencyKey: key(),
+      }),
+    (e) => e.status === 409 && e.code === "SPLIT_LOCKED",
+  );
+});
+
+test("ORD-06 once a share of a pay-first order is paid, the whole order cannot be charged again", () => {
+  const { engine, sessionId, tick } = fresh(T.freeTable, 2);
+  const order = placePlain(engine, sessionId, 2);
+  const { splits } = engine.createSplits(sessionId, {
+    method: "equal",
+    parts: 2,
+    idempotencyKey: key(),
+  });
+  const share = engine.startPayment(sessionId, {
+    target: { kind: "split", billSplitId: splits[0].id },
+    method: "qris",
+    idempotencyKey: key(),
+  });
+  tick(5000);
+  assert.equal(engine.getPayment(sessionId, share.id).status, "paid");
+  assert.equal(
+    orderHasPaidShare(engine.bill(sessionId).splits, order.id),
+    true,
+  );
+  assert.throws(
+    () =>
+      engine.startPayment(sessionId, {
+        target: { kind: "order", orderId: order.id },
+        method: "qris",
+        idempotencyKey: key(),
+      }),
+    (e) => e.status === 409 && e.code === "SPLIT_LOCKED",
+  );
 });
 
 test("ORD-08 a failed item offers only swap or voucher and resolves once", () => {

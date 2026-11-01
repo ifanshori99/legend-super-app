@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOnline } from "@/lib/use-online";
-import { canSplitBill } from "../../domain.ts";
+import { canSplitBill, splitScope } from "../../domain.ts";
 import { useTableJourney } from "../../context";
 import { useSendServiceRequest, useSessionBill } from "../../hooks";
 import { BillTotals, MinimumSpendStatus } from "./bill-totals";
@@ -124,7 +124,9 @@ export function BillPage() {
   const splits = liveSplits(data);
   const hasPaidSplit = splits.some((split) => split.status === "paid");
   const closed = sessionStatus === "closed" || sessionStatus === "voided";
-  const canSplit = canSplitBill({ sessionStatus, outstandingIdr: outstanding });
+  const canSplit =
+    canSplitBill({ sessionStatus, outstandingIdr: outstanding }) &&
+    splitScope(data.orders, data.totals.paidIdr) !== null;
   const openBill =
     (menu?.zone.paymentMode ?? session?.paymentMode) === "open_bill";
   const settled = outstanding === 0;

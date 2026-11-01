@@ -35,6 +35,7 @@ import {
   type TableSessionView,
 } from "@starter/shared/qr-order";
 import { ApiError } from "../../lib/api/errors.ts";
+import { orderHasPaidShare, splitScope } from "./domain.ts";
 
 const STAFF_USER = "00000000-0000-4000-8000-000000009001";
 const EARN_SPEND_IDR = 10_000; // fixture loyalty program earnRate: 1 point / Rp10.000
@@ -808,21 +809,27 @@ export function createEngine(clock: Clock = Date.now) {
   ) {
     const rec = recOf(sessionId);
     usable(rec);
-    const awaiting = rec.orders.find((o) => o.status === "awaiting_payment");
-    const target = awaiting ?? null;
-    const orders = target ? [target] : settledOrders(rec);
-    if (orders.length === 0)
-      throw new ApiError(
-        422,
-        "NOTHING_TO_SPLIT",
-        "Belum ada pesanan yang bisa dibagi.",
-      );
-    const totalIdr = idr(orders.reduce((s, o) => s + o.totalIdr, 0)) as Idr;
     if (rec.splits.some((s) => s.status === "paid"))
       conflict(
         "SPLIT_LOCKED",
         "Sebagian bagian sudah dibayar, pembagian tidak bisa diubah.",
       );
+    if (settledOrders(rec).length === 0)
+      throw new ApiError(
+        422,
+        "NOTHING_TO_SPLIT",
+        "Belum ada pesanan yang bisa dibagi.",
+      );
+    // Same scope as the bill screen's preview (domain.ts splitScope).
+    const scope = splitScope(rec.orders, rec.paidIdr);
+    if (!scope)
+      conflict(
+        "SPLIT_LOCKED",
+        "Sebagian tagihan sudah dibayar. Bayar sisanya sekaligus atau panggil waiter.",
+      );
+    const orders = scope.orders;
+    const target = orders[0].status === "awaiting_payment" ? orders[0] : null;
+    const totalIdr = idr(scope.totalIdr) as Idr;
     const lines = orders.flatMap((o) =>
       o.items.map((item) => ({
         orderItemId: item.id,
@@ -918,6 +925,12 @@ export function createEngine(clock: Clock = Date.now) {
         throw new ApiError(404, "NOT_FOUND", "Pesanan tidak ditemukan.");
       if (order.status !== "awaiting_payment")
         conflict("ALREADY_PAID", "Pesanan ini sudah dibayar.");
+      // A paid share means the order is being paid per person (ORD-06).
+      if (orderHasPaidShare(rec.splits, order.id))
+        conflict(
+          "SPLIT_LOCKED",
+          "Pesanan ini sudah dibagi dan sebagian sudah dibayar. Bayar bagian Anda di Tagihan.",
+        );
       return order.totalIdr;
     }
     if (target.kind === "split") {

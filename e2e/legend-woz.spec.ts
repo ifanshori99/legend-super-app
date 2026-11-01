@@ -115,6 +115,15 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     await page.goto(`/t/${freeTable}/bill`);
     await expect(page.getByText("Lunas").first()).toBeVisible();
     await expect(page.getByText("Belum dibayar").first()).toBeVisible();
+
+    // With a share paid, checkout no longer offers to charge the whole order.
+    await page.goto(`/t/${freeTable}/checkout`);
+    await expect(
+      page.getByRole("link", { name: "Buka tagihan" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Bayar Rp/ })).toHaveCount(
+      0,
+    );
   });
 
   test("ORD-06 point claim asks for the guest's own share and confirms it", async ({
