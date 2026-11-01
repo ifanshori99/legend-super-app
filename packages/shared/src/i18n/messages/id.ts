@@ -408,6 +408,7 @@ export const id = {
     errorTitle: "Pickup display tidak dapat dimuat",
     errorHint: "Periksa koneksi ke edge node, lalu coba lagi.",
     loading: "Memuat pickup display…",
+  },
   // Akses Fasilitas (WS-09, PRD §3 F22/F23/F42, alur S/T/U/V/Z). Layar
   // pelanggan: pemesanan shower dari QR fasilitas, tiket akses, Fasilitas
   // Saya, dan halaman langganan.
