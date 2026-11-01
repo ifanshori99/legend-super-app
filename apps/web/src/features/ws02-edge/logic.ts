@@ -51,6 +51,21 @@ export function deriveConnectivity(input: {
   return { kind: "online" };
 }
 
+/**
+ * A cloud deployment does not serve `/api/edge/*` (edge endpoints live on the
+ * outlet's edge node), so a 404 means "no edge node here", not an outage: the
+ * back office opened from home must not carry a permanent warning banner.
+ * Any other failure (network, 5xx) stays "unknown" (review legend-cyu.12).
+ */
+export function edgeProbeFailed(isError: boolean, error: unknown): boolean {
+  if (!isError) return false;
+  const status =
+    typeof error === "object" && error !== null && "status" in error
+      ? (error as { status: unknown }).status
+      : undefined;
+  return status !== 404;
+}
+
 /** Revoked devices are a registry decision, not an outage. */
 export function isDeviceOffline(device: Device, nowMs: number): boolean {
   if (device.status === "revoked") return false;

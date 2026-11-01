@@ -2,8 +2,10 @@
 // to training runs sandbox data that never enters reports, so every screen on
 // that device must say so. The pattern is decorative; one screen-reader line
 // carries the same fact, and nothing here blocks interaction.
+import { useLocation } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { useEdgeStatus } from "../hooks.ts";
+import { isGuestPath } from "../logic.ts";
 import { useHydrated } from "../use-now.ts";
 
 const WATERMARK_ROWS = 9;
@@ -11,7 +13,9 @@ const WATERMARK_ROWS = 9;
 export function TrainingModeWatermark() {
   const t = useT();
   const hydrated = useHydrated();
-  const { data } = useEdgeStatus();
+  // Guest screens run on customers' phones, never a training device: no poll.
+  const { pathname } = useLocation();
+  const { data } = useEdgeStatus({ enabled: !isGuestPath(pathname) });
   const trainingMode = data?.data.thisDevice?.trainingMode === true;
 
   if (!hydrated || !trainingMode) return null;

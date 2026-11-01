@@ -115,7 +115,15 @@ export const listEdgeDevices = defineEndpoint({
 
 export const deviceParams = z.strictObject({ deviceId: uuidSchema });
 
-/** Training mode is per device and sandboxed from reports (F5 Mode Latihan). */
+/**
+ * Training mode is per device and sandboxed from reports (F5 Mode Latihan).
+ *
+ * Security (review legend-cyu.12): a device in training mode keeps its sales
+ * out of reports, so the toggle is fraud-sensitive. The API requires
+ * `device.registry.manage` (the screen gates on the same code), checks the
+ * device belongs to the edge node's outlet, and writes an audit event for
+ * every change. A cashier session can never switch its own device.
+ */
 export const setDeviceTrainingMode = defineEndpoint({
   method: "PATCH",
   path: "/api/edge/devices/:deviceId/training-mode",

@@ -24,10 +24,10 @@ import {
  * Live edge status. Disabled during SSR: it is a probe of the device's own
  * edge node, and the server cannot stand in for that device.
  */
-export function useEdgeStatus() {
+export function useEdgeStatus(options?: { enabled?: boolean }) {
   return useQuery({
     ...edgeStatusQuery(),
-    enabled: typeof window !== "undefined",
+    enabled: typeof window !== "undefined" && (options?.enabled ?? true),
   });
 }
 

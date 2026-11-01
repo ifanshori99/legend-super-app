@@ -245,3 +245,17 @@ test("F5: the edge endpoints keep client input strict and free of tenant ids", (
     true,
   );
 });
+
+test("Alur F: a cloud deployment without an edge route is not an outage", () => {
+  assert.equal(logic.edgeProbeFailed(false, null), false);
+  assert.equal(
+    logic.edgeProbeFailed(true, { status: 404 }),
+    false,
+    "404 = no edge node on this deployment",
+  );
+  assert.equal(logic.edgeProbeFailed(true, { status: 503 }), true);
+  assert.equal(
+    logic.edgeProbeFailed(true, new TypeError("fetch failed")),
+    true,
+  );
+});

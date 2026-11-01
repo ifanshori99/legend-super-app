@@ -18,6 +18,7 @@ import { useOnline } from "@/lib/use-online";
 import { useEdgeStatus } from "../hooks.ts";
 import {
   deriveConnectivity,
+  edgeProbeFailed,
   formatClock,
   isGuestPath,
   isOperationsPath,
@@ -78,16 +79,18 @@ export function ConnectivityBanner() {
   const hydrated = useHydrated();
   const browserOnline = useOnline();
   const { pathname } = useLocation();
-  const { data, isError } = useEdgeStatus();
+  const guest = isGuestPath(pathname);
+  // Guest screens never poll the edge node (they render their own notice).
+  const { data, isError, error } = useEdgeStatus({ enabled: !guest });
 
-  if (!hydrated || isGuestPath(pathname)) return null;
+  if (!hydrated || guest) return null;
 
   const status = data?.data;
   const state = deriveConnectivity({
     browserOnline,
     cloudLink: status?.cloudLink ?? null,
     pendingEventCount: status?.pendingEventCount ?? 0,
-    statusFailed: isError,
+    statusFailed: edgeProbeFailed(isError, error),
   });
   if (state.kind === "online") return null;
 
