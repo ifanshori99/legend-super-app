@@ -22,7 +22,9 @@
     "./api": "./src/api/index.ts",
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
-    "./metrics": "./src/metrics/index.ts"
+    "./metrics": "./src/metrics/index.ts",
+    "./kitchen": "./src/kitchen/index.ts",
+    "./access": "./src/access/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
