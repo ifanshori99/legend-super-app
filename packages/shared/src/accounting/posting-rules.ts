@@ -151,6 +151,9 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["cash_on_hand", "credit", "refundCashIdr"],
       ["gateway_clearing", "credit", "refundGatewayIdr"],
       ["edc_clearing", "credit", "refundEdcIdr"],
+      // Points returned to the member restore the liability the sale used
+      // (mirror of the order.paid loyalty_liability debit, §3.20).
+      ["loyalty_liability", "credit", "refundPointsIdr"],
     ],
   ),
   rule(

@@ -802,3 +802,32 @@ test("platform error codes map to HTTP statuses", () => {
     assert.ok(error.message.length > 0);
   }
 });
+
+test("TEN-05 malformed whole flag document disables modules and providers", () => {
+  assert.equal(
+    platform.isModuleEnabled(
+      { modules: ["pos"], integrationProviders: "bad" },
+      "pos",
+    ),
+    false,
+  );
+  assert.equal(
+    platform.isIntegrationProviderAvailable(
+      { modules: "bad", integrationProviders: ["kirimdev"] },
+      "kirimdev",
+    ),
+    false,
+  );
+});
+
+test("TEN-04 invalid support access intent fails closed", () => {
+  assert.throws(() =>
+    platform.assertSupportAccess(fx.supportGrants, {
+      tenantId: fx.tenant.id,
+      superAdminUserId: fx.superAdmin.id,
+      dataClass: "financial",
+      intent: "delete",
+      now: fx.now,
+    }),
+  );
+});

@@ -43,6 +43,20 @@
       "when": 1793545509308,
       "tag": "0005_outbox_replay_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793548701506,
+      "tag": "0006_typical_miek",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793548713428,
+      "tag": "0007_platform_org_rls",
+      "breakpoints": true
     }
   ]
 }

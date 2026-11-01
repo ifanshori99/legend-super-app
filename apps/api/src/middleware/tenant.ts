@@ -66,6 +66,21 @@ export function getTenantContext(req: Request): TenantContext {
   return context;
 }
 
+/**
+ * A tenant-aware route that requires a resolved tenant (TEN-02). Without a
+ * domain or credential there is no tenant, so the answer is 404 — never a
+ * tenant picked from request input.
+ */
+export const requireTenantContext: RequestHandler = (req, _res, next) => {
+  if (!contexts.has(req))
+    throw new HttpError(
+      404,
+      "TENANT_NOT_FOUND",
+      "No tenant is available for this request.",
+    );
+  next();
+};
+
 /** Optional for global starter endpoints; tenant services must call getTenantContext. */
 export function developmentTenantContext(options: {
   enabled: boolean;
