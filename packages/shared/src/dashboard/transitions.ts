@@ -8,7 +8,11 @@
 // approved, and the worker asserts that again before generation.
 
 import { CoreError } from "../core/index.ts";
-import type { ReportExportStatus } from "./exports.ts";
+import { ReportError } from "./errors.ts";
+import type {
+  ReportExportApprovalStatus,
+  ReportExportStatus,
+} from "./exports.ts";
 import type { SavedReportStatus } from "./builder.ts";
 
 export const reportExportTransitions = {
@@ -80,21 +84,27 @@ export function transitionSavedReportStatus(
 export type ReportExportApprovalCheck = {
   readonly containsPersonalData: boolean;
   readonly approvalRequestId: string | null;
+  /** Status of that approval request, read by the worker from WS-01. */
+  readonly approvalStatus: ReportExportApprovalStatus;
   readonly status: ReportExportStatus;
 };
 
 /**
  * DASH-04 server guard: before a worker generates an export that contains
- * personal data, the job must carry an approval request and be `queued` (the
- * only status that may become `generating`). Throws CoreError FORBIDDEN, so a
- * caller that skipped the gate cannot produce a file.
+ * personal data, the job must carry an approval request that is `approved`,
+ * and be `queued` (the only status that may become `generating`). Throws
+ * ReportError EXPORT_PII_APPROVAL_REQUIRED (403), so a caller that skipped
+ * the gate cannot produce a file.
  */
 export function assertReportExportMayGenerate(
   job: ReportExportApprovalCheck,
 ): void {
-  if (job.containsPersonalData && job.approvalRequestId === null)
-    throw new CoreError(
-      "FORBIDDEN",
+  if (
+    job.containsPersonalData &&
+    (job.approvalRequestId === null || job.approvalStatus !== "approved")
+  )
+    throw new ReportError(
+      "EXPORT_PII_APPROVAL_REQUIRED",
       "Personal-data exports need an approved approval request (DASH-04).",
     );
   if (job.status !== "queued")

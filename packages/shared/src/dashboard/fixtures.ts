@@ -156,8 +156,9 @@ export const reportRunResultFixture = reportResultSchema.parse({
 export const reportBuilderQueryFixture = reportBuilderQuerySchema.parse({
   metricCodes: ["net_sales", "pax"],
   period: { startDate: "2026-10-01", endDate: "2026-10-31" },
+  outletIds: [outlet.id],
   groupBy: ["hour"],
-  filters: [{ key: "outlet", values: [outlet.id] }],
+  filters: [{ key: "channel", values: ["qr", "pos"] }],
   bucket: "day",
   sort: { column: "net_sales", direction: "desc" },
   limit: 100,

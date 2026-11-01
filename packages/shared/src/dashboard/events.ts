@@ -76,6 +76,13 @@ export const reportGeneratedPayloadSchema = z
         message: "A scheduled run belongs to a saved report",
         path: ["savedReportId"],
       });
+    // DASH-04: schedules never deliver personal data (reportScheduleGate).
+    if (payload.trigger === "scheduled" && payload.containsPersonalData)
+      ctx.addIssue({
+        code: "custom",
+        message: "A scheduled delivery cannot contain personal data (DASH-04)",
+        path: ["containsPersonalData"],
+      });
   });
 export type ReportGeneratedPayload = z.infer<
   typeof reportGeneratedPayloadSchema

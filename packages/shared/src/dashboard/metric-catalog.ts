@@ -12,6 +12,7 @@
 // can never disagree (DASH-01/DASH-02).
 
 import {
+  cafeLegendMetricDefinitions,
   metricDefinitionSchema,
   type MetricAggregation,
   type MetricDefinition,
@@ -144,7 +145,7 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     expression: "sum(refund.amount_idr)",
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet", "payment_method"],
+    dimensions: ["outlet", "payment_method", "channel"],
     grain: "day",
     officiality: "live",
     reportCode: "sales.refund",
@@ -545,7 +546,7 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     expression: "count(order.comp)",
     unit: "count",
     aggregation: "sum",
-    dimensions: ["outlet", "employee"],
+    dimensions: ["outlet", "employee", "station"],
     grain: "day",
     officiality: "live",
     reportCode: "operations.remake_comp",
@@ -1018,7 +1019,7 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     expression: "sum(payment.fee_idr)",
     unit: "idr",
     aggregation: "sum",
-    dimensions: ["outlet", "payment_method"],
+    dimensions: ["outlet", "payment_method", "channel"],
     grain: "day",
     officiality: "live",
     reportCode: "payments.fees",
@@ -1085,6 +1086,20 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   }),
 ];
 
-/** Registry lookup for the dashboard/report contract (merged by the FE kit). */
+/** Registry lookup for the metrics this contract adds (no metrics-layer rows). */
 export const dashboardMetricByCode: ReadonlyMap<string, MetricDefinition> =
   new Map(dashboardMetricDefinitions.map((metric) => [metric.code, metric]));
+
+/**
+ * The whole registry the report catalog, tiles and builder read: the
+ * metrics-layer rows plus this contract's additions (DASH-01). Schemas refine
+ * against it, so the builder can only offer a code or split that exists.
+ */
+export const reportMetricDefinitions: readonly MetricDefinition[] =
+  Object.freeze([
+    ...cafeLegendMetricDefinitions,
+    ...dashboardMetricDefinitions,
+  ]);
+
+export const reportMetricByCode: ReadonlyMap<string, MetricDefinition> =
+  new Map(reportMetricDefinitions.map((metric) => [metric.code, metric]));

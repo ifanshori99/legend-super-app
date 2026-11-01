@@ -23,6 +23,7 @@ import type {
   ReportPeriodPreset,
 } from "./reports.ts";
 import type { MetricBucket } from "../metrics/index.ts";
+import { reportMetricByCode } from "./metric-catalog.ts";
 
 type ReportSeed = {
   code: string;
@@ -536,9 +537,11 @@ const reportSeeds: readonly ReportDefinition[] = [
   defineReport({
     code: "purchasing.price_history",
     name: "Riwayat harga bahan",
-    description: "Nilai pembelian dan HPP untuk memantau perubahan harga.",
+    description:
+      "Nilai pembelian per pemasok dan bahan untuk memantau perubahan harga.",
     family: "purchasing",
-    metrics: ["purchase_total", "cogs"],
+    // HPP is recognised per sale, not per supplier, so it is not split here.
+    metrics: ["purchase_total"],
     dimensions: ["supplier", "menu_item"],
   }),
 
@@ -1018,6 +1021,18 @@ const byCode = new Map<string, ReportDefinition>();
 for (const report of reportSeeds) {
   if (byCode.has(report.code))
     throw new Error(`Duplicate report code in catalog: ${report.code}`);
+  // DASH-02: a report may only split by a dimension every metric it shows
+  // declares, otherwise the metrics layer refuses the run it offers.
+  for (const code of report.metrics) {
+    const metric = reportMetricByCode.get(code);
+    if (metric === undefined)
+      throw new Error(`Report ${report.code} cites unknown metric ${code}`);
+    for (const dimension of report.dimensions)
+      if (!metric.dimensions.includes(dimension))
+        throw new Error(
+          `Report ${report.code} splits by ${dimension}, which ${code} does not declare`,
+        );
+  }
   byCode.set(report.code, report);
 }
 

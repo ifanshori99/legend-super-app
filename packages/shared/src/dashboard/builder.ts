@@ -33,8 +33,12 @@ import {
   metricPeriodSchema,
   metricQueryPeriodSchema,
   metricValueSchema,
+  reportCodeSchema,
 } from "../metrics/index.ts";
+import type { MetricDefinition } from "../metrics/index.ts";
 import { reportExportFormatSchema } from "./reports.ts";
+import { reportByCode } from "./catalog.ts";
+import { reportMetricByCode } from "./metric-catalog.ts";
 import type { ReportExportFormat } from "./reports.ts";
 import { savedReportIdSchema, reportScheduleIdSchema } from "./ids.ts";
 
@@ -81,6 +85,52 @@ const reportSelectionShape = {
     .default(REPORT_BUILDER_DEFAULT_ROWS),
 };
 
+/**
+ * Outlets are chosen only through `outletIds`, which the server intersects
+ * with the caller's scope (TEN-03, outletIdsForQuery). An `outlet` dimension
+ * filter would be a second, unchecked outlet selector, so it is refused.
+ */
+export function refineOutletFilter(
+  filters: readonly { key: string }[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const [index, filter] of filters.entries())
+    if (filter.key === "outlet")
+      ctx.addIssue({
+        code: "custom",
+        message: "Filter outlets with outletIds, not an outlet filter (TEN-03)",
+        path: ["filters", index, "key"],
+      });
+}
+
+/**
+ * Every group-by/filter key must be one the source offers (DASH-01/DASH-02):
+ * the report's own dimensions, or the dimensions all builder metrics declare.
+ */
+export function refineSelectionDimensions(
+  selection: {
+    groupBy: readonly string[];
+    filters: readonly { key: string }[];
+  },
+  allowed: readonly string[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const [index, key] of selection.groupBy.entries())
+    if (!allowed.includes(key))
+      ctx.addIssue({
+        code: "custom",
+        message: `groupBy ${key} is not offered by the source`,
+        path: ["groupBy", index],
+      });
+  for (const [index, filter] of selection.filters.entries())
+    if (!allowed.includes(filter.key))
+      ctx.addIssue({
+        code: "custom",
+        message: `filter ${filter.key} is not offered by the source`,
+        path: ["filters", index, "key"],
+      });
+}
+
 function refineSelection(
   selection: {
     groupBy: readonly string[];
@@ -89,6 +139,7 @@ function refineSelection(
   },
   ctx: z.RefinementCtx,
 ): void {
+  refineOutletFilter(selection.filters, ctx);
   if (new Set(selection.groupBy).size !== selection.groupBy.length)
     ctx.addIssue({
       code: "custom",
@@ -109,7 +160,9 @@ function refineSelection(
 /**
  * Builder query: metrics + dimensions + filters + period (PRD §3.36). Multiple
  * group-by dimensions are supported here; the single-metric API query in
- * `@starter/shared/metrics` stays the low-level primitive.
+ * `@starter/shared/metrics` stays the low-level primitive. Metric codes must
+ * be registry rows and every split must be declared by all selected metrics,
+ * so the builder cannot carry an arbitrary field name (DASH-01/DASH-02).
  */
 export const reportBuilderQuerySchema = clientInputSchema({
   metricCodes: z.array(metricCodeSchema).min(1).max(REPORT_BUILDER_MAX_METRICS),
@@ -132,21 +185,54 @@ export const reportBuilderQuerySchema = clientInputSchema({
       message: "sort.column must be one of metricCodes or groupBy",
       path: ["sort", "column"],
     });
+  const definitions: MetricDefinition[] = [];
+  for (const [index, code] of query.metricCodes.entries()) {
+    const definition = reportMetricByCode.get(code);
+    if (definition === undefined)
+      ctx.addIssue({
+        code: "custom",
+        message: `Unknown metric ${code}`,
+        path: ["metricCodes", index],
+      });
+    else definitions.push(definition);
+  }
+  const [first] = definitions;
+  if (first !== undefined && definitions.length === query.metricCodes.length) {
+    const shared = first.dimensions.filter((key) =>
+      definitions.every((definition) => definition.dimensions.includes(key)),
+    );
+    refineSelectionDimensions(query, shared, ctx);
+  }
 });
 export type ReportBuilderQuery = z.infer<typeof reportBuilderQuerySchema>;
 
 /** POST /api/reports/run — run one catalog report with the viewer filters. */
 export const reportRunInputSchema = clientInputSchema({
-  reportCode: z
-    .string()
-    .min(2)
-    .max(80)
-    .regex(
-      /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/,
-      "Report codes are lower_snake_case or dotted",
-    ),
+  reportCode: reportCodeSchema,
   ...reportSelectionShape,
-}).superRefine(refineSelection);
+}).superRefine((input, ctx) => {
+  refineSelection(input, ctx);
+  const report = reportByCode(input.reportCode);
+  if (report === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      message: `Unknown report ${input.reportCode}`,
+      path: ["reportCode"],
+    });
+    return;
+  }
+  refineSelectionDimensions(input, report.dimensions, ctx);
+  if (
+    input.sort !== undefined &&
+    !report.metrics.includes(input.sort.column) &&
+    !input.groupBy.includes(input.sort.column)
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "sort.column must be one of the report metrics or groupBy",
+      path: ["sort", "column"],
+    });
+});
 export type ReportRunInput = z.infer<typeof reportRunInputSchema>;
 
 /** One row: the dimension values in `groupBy` order, then one value per metric. */
@@ -194,7 +280,7 @@ export type ReportResultRow = z.infer<typeof reportResultRowSchema>;
 export const reportResultSchema = z
   .strictObject({
     /** Null for an ad hoc builder preview; set for a catalog report. */
-    reportCode: z.string().min(2).max(80).nullable(),
+    reportCode: reportCodeSchema.nullable(),
     period: metricPeriodSchema,
     outletFilter: metricOutletFilterSchema,
     definitions: z
@@ -209,6 +295,14 @@ export const reportResultSchema = z
     rowLimit: z.number().int().min(1).max(REPORT_BUILDER_MAX_ROWS),
   })
   .superRefine((result, ctx) => {
+    const report =
+      result.reportCode === null ? null : reportByCode(result.reportCode);
+    if (report === undefined)
+      ctx.addIssue({
+        code: "custom",
+        message: "reportCode is not in the catalog",
+        path: ["reportCode"],
+      });
     const codes = result.definitions.map((definition) => definition.code);
     if (new Set(codes).size !== codes.length)
       ctx.addIssue({
@@ -257,6 +351,21 @@ export const reportResultSchema = z
             code: "custom",
             message: `Cell value unit must be ${definition.unit}`,
             path: ["rows", index, "values", position, "value", "unit"],
+          });
+        // SH-02: a figure is final only when its period is closed and, for
+        // closed-period-only metrics or reports, the books are closed too.
+        if (
+          cell.finality === "final" &&
+          (result.period.status === "open" ||
+            (!result.period.accountingPeriodClosed &&
+              (definition.officiality === "closed_period_only" ||
+                report?.closedPeriodOnly === true)))
+        )
+          ctx.addIssue({
+            code: "custom",
+            message:
+              "An open or not-yet-closed period can only report estimates (SH-02)",
+            path: ["rows", index, "values", position, "finality"],
           });
       }
     }

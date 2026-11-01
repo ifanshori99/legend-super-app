@@ -95,6 +95,30 @@ export function reportRouteForCode(code: ReportCode | string): string {
   return `/reports/${code.split(".").join("/").replaceAll("_", "-")}`;
 }
 
+/**
+ * Dimension keys whose rows or filters single out a person (DASH-04; PRD §3.7
+ * shareholder limit "tanpa data pribadi pelanggan atau karyawan"). `employee`
+ * is the only person-level key in CORE_METRIC_DIMENSIONS; `customer_tier` is a
+ * segment, not a person. Splitting or filtering any report by one of these
+ * makes its output personal data, whatever the report itself is flagged.
+ */
+export const PERSONAL_DATA_DIMENSIONS: readonly string[] = Object.freeze([
+  "employee",
+]);
+
+/** True when a group-by or filter singles out a person (DASH-04). */
+export function selectionContainsPersonalData(selection: {
+  readonly groupBy: readonly string[];
+  readonly filters: readonly { readonly key: string }[];
+}): boolean {
+  return (
+    selection.groupBy.some((key) => PERSONAL_DATA_DIMENSIONS.includes(key)) ||
+    selection.filters.some((filter) =>
+      PERSONAL_DATA_DIMENSIONS.includes(filter.key),
+    )
+  );
+}
+
 // ---- Definition ------------------------------------------------------------
 
 const reportDefinitionBaseSchema = z.strictObject({

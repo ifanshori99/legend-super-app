@@ -242,46 +242,118 @@ test("SH-02: shareholder official tiles stay closed-period only and open periods
 test("DASH-04: personal-data exports never leave the server without an approved approval request", () => {
   const report = dashboard.reportByCode("crm.customers");
   assert.equal(report.containsPersonalData, true);
+  const piiPermissions = new Set([
+    ...report.requiredPermissions,
+    dashboard.REPORT_PERSONAL_DATA_EXPORT_PERMISSION,
+  ]);
   const base = {
-    containsPersonalData: true,
-    hasExportPermission: true,
+    report,
+    query: { groupBy: ["customer_tier"], filters: [] },
+    permissions: piiPermissions,
     format: "xlsx",
-    supportedFormats: report.exportFormats,
   };
   assert.deepEqual(dashboard.reportExportGate({ ...base, approval: "none" }), {
     action: "request_approval",
+    containsPersonalData: true,
   });
   assert.deepEqual(
     dashboard.reportExportGate({ ...base, approval: "pending" }),
-    { action: "request_approval" },
+    { action: "request_approval", containsPersonalData: true },
   );
   assert.deepEqual(
     dashboard.reportExportGate({ ...base, approval: "approved" }),
-    { action: "queue" },
+    { action: "queue", containsPersonalData: true },
   );
   assert.deepEqual(
     dashboard.reportExportGate({ ...base, approval: "rejected" }),
     { action: "reject", code: "EXPORT_PII_APPROVAL_REQUIRED" },
   );
+  // The aggregate export permission alone cannot export personal data.
   assert.deepEqual(
     dashboard.reportExportGate({
       ...base,
-      containsPersonalData: false,
-      approval: "none",
+      approval: "approved",
+      permissions: new Set([
+        ...report.requiredPermissions,
+        dashboard.REPORT_EXPORT_PERMISSION,
+      ]),
     }),
-    { action: "queue" },
-  );
-  assert.deepEqual(
-    dashboard.reportExportGate({ ...base, hasExportPermission: false }),
     { action: "reject", code: "REPORT_NOT_PERMITTED" },
   );
   assert.deepEqual(
     dashboard.reportExportGate({
       ...base,
-      format: "xlsx",
-      supportedFormats: ["csv", "pdf"],
+      approval: "none",
+      permissions: new Set([dashboard.REPORT_PERSONAL_DATA_EXPORT_PERMISSION]),
+    }),
+    { action: "reject", code: "REPORT_NOT_PERMITTED" },
+    "the report's own view permission is required",
+  );
+
+  // DASH-04: the flag is derived from the definition and the splits, so an
+  // aggregate report split by employee is personal data too.
+  const sales = dashboard.reportByCode("sales.void");
+  const aggregate = dashboard.reportByCode("sales.daily");
+  const exportPermissions = new Set([
+    ...aggregate.requiredPermissions,
+    dashboard.REPORT_EXPORT_PERMISSION,
+  ]);
+  assert.deepEqual(
+    dashboard.reportExportGate({
+      report: aggregate,
+      query: { groupBy: ["channel"], filters: [] },
+      permissions: exportPermissions,
+      format: "csv",
+      approval: "none",
+    }),
+    { action: "queue", containsPersonalData: false },
+  );
+  assert.deepEqual(
+    dashboard.reportExportGate({
+      report: sales,
+      query: { groupBy: [], filters: [{ key: "employee", values: ["e-1"] }] },
+      permissions: new Set([
+        ...sales.requiredPermissions,
+        dashboard.REPORT_PERSONAL_DATA_EXPORT_PERMISSION,
+      ]),
+      format: "csv",
+      approval: "none",
+    }),
+    { action: "request_approval", containsPersonalData: true },
+  );
+  assert.equal(
+    dashboard.reportExportContainsPersonalData({
+      report: null,
+      query: { groupBy: ["hour", "employee"], filters: [] },
+    }),
+    true,
+    "a saved builder query split by employee is personal data",
+  );
+  assert.deepEqual(
+    dashboard.reportExportGate({
+      report: aggregate,
+      query: { groupBy: [], filters: [] },
+      permissions: exportPermissions,
+      format: "docx",
+      approval: "none",
     }),
     { action: "reject", code: "EXPORT_FORMAT_NOT_SUPPORTED" },
+  );
+  assert.equal(
+    dashboard.createReportExportInputSchema.safeParse({
+      ...fixtures.createExportInput,
+      containsPersonalData: false,
+    }).success,
+    false,
+    "the client cannot send a personal-data flag",
+  );
+  assert.equal(
+    dashboard.createReportExportInputSchema.safeParse({
+      ...fixtures.createExportInput,
+      query: { ...fixtures.createExportInput.query, groupBy: ["supplier"] },
+    }).success,
+    false,
+    "an export only splits by its report's dimensions",
   );
 
   const pending = fixtures.exportPendingApproval;
@@ -295,21 +367,49 @@ test("DASH-04: personal-data exports never leave the server without an approved 
       `unapproved personal-data export cannot be ${status}`,
     );
   }
-  assert.ok(dashboard.reportExportSchema.parse(fixtures.exportReady));
-  assert.throws(
-    () =>
-      dashboard.assertReportExportMayGenerate({
-        containsPersonalData: true,
-        approvalRequestId: null,
-        status: "queued",
-      }),
-    /DASH-04/,
+  assert.equal(
+    dashboard.reportExportSchema.safeParse({
+      ...pending,
+      containsPersonalData: false,
+      status: "queued",
+    }).success,
+    false,
+    "a stored job cannot clear the flag of a personal-data report",
   );
+  assert.equal(
+    dashboard.reportExportSchema.safeParse({
+      ...fixtures.exportReady,
+      query: { ...fixtures.exportReady.query, groupBy: ["employee"] },
+    }).success,
+    false,
+    "an aggregate job split by employee must carry the personal-data flag",
+  );
+  assert.ok(dashboard.reportExportSchema.parse(fixtures.exportReady));
+  const approvalRequestId = "c1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+  for (const job of [
+    { approvalRequestId: null, approvalStatus: "approved" },
+    { approvalRequestId, approvalStatus: "pending" },
+    { approvalRequestId, approvalStatus: "rejected" },
+  ])
+    assert.throws(
+      () =>
+        dashboard.assertReportExportMayGenerate({
+          containsPersonalData: true,
+          status: "queued",
+          ...job,
+        }),
+      (error) =>
+        error instanceof dashboard.ReportError &&
+        error.code === "EXPORT_PII_APPROVAL_REQUIRED" &&
+        error.status === 403,
+      JSON.stringify(job),
+    );
   assert.throws(
     () =>
       dashboard.assertReportExportMayGenerate({
         containsPersonalData: false,
         approvalRequestId: null,
+        approvalStatus: "none",
         status: "generating",
       }),
     /queued/,
@@ -317,9 +417,32 @@ test("DASH-04: personal-data exports never leave the server without an approved 
   assert.doesNotThrow(() =>
     dashboard.assertReportExportMayGenerate({
       containsPersonalData: true,
-      approvalRequestId: "c1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      approvalRequestId,
+      approvalStatus: "approved",
       status: "queued",
     }),
+  );
+});
+
+test("DASH-04: email schedules never deliver personal data", () => {
+  assert.deepEqual(dashboard.reportScheduleGate(fixtures.savedReport.query), {
+    action: "queue",
+    containsPersonalData: false,
+  });
+  assert.deepEqual(
+    dashboard.reportScheduleGate({ groupBy: ["employee"], filters: [] }),
+    { action: "reject", code: "EXPORT_PII_APPROVAL_REQUIRED" },
+  );
+  assert.equal(
+    dashboard.reportGeneratedPayloadSchema.safeParse({
+      ...fixtures.generatedEvent.payload,
+      trigger: "scheduled",
+      format: "pdf",
+      exportId: null,
+      savedReportId: fixtures.savedReport.id,
+      containsPersonalData: true,
+    }).success,
+    false,
   );
 });
 
@@ -328,40 +451,129 @@ test("DASH-01: the report builder only offers splits every selected metric decla
   assert.deepEqual(dashboard.checkReportBuilderQuery(query, registry), {
     ok: true,
   });
-  const mixed = dashboard.reportBuilderQuerySchema.parse({
-    metricCodes: ["net_sales", "void_rate_pct"],
-    period: { startDate: "2026-10-01", endDate: "2026-10-31" },
-    groupBy: ["employee"],
-  });
-  const rejected = dashboard.checkReportBuilderQuery(mixed, registryByCode);
-  assert.equal(rejected.ok, false);
-  assert.equal(rejected.code, "REPORT_FILTER_NOT_SUPPORTED");
-  assert.equal(rejected.field, "groupBy.0");
-  const unknown = dashboard.checkReportBuilderQuery(
-    dashboard.reportBuilderQuerySchema.parse({
-      metricCodes: ["nope"],
-      period: { startDate: "2026-10-01", endDate: "2026-10-31" },
-    }),
-    registry,
-  );
-  assert.equal(unknown.ok, false);
-  assert.equal(unknown.code, "REPORT_NOT_FOUND");
-  assert.equal(unknown.field, "metricCodes.0");
+  // Schema level: unknown metrics and splits not declared by every metric
+  // never reach the service.
   for (const patch of [
+    { metricCodes: ["nope"] },
+    { metricCodes: ["net_sales", "food_cost_pct"], groupBy: ["hour"] },
+    { groupBy: ["supplier"] },
+    { filters: [{ key: "zone", values: ["indoor"] }] },
+    { groupBy: ["order_id"] },
     { metricCodes: ["net_sales", "net_sales"] },
     { groupBy: ["hour", "hour"] },
     { groupBy: ["hour", "channel", "zone", "employee"] },
     { sort: { column: "avg_ticket", direction: "desc" } },
     { sort: { column: "net_sales", direction: "up" } },
+    { filters: [{ key: "outlet", values: [outlet.id] }] },
   ])
     assert.equal(
       dashboard.reportBuilderQuerySchema.safeParse({
         ...query,
+        sort: undefined,
+        filters: [],
         ...patch,
       }).success,
       false,
       JSON.stringify(patch),
     );
+  assert.ok(
+    dashboard.reportBuilderQuerySchema.parse({
+      metricCodes: ["net_sales", "void_rate_pct"],
+      period: { startDate: "2026-10-01", endDate: "2026-10-31" },
+      groupBy: ["employee"],
+    }),
+  );
+  // The helper still checks against a registry the service injects.
+  const rejected = dashboard.checkReportBuilderQuery(
+    { ...query, metricCodes: ["net_sales"], groupBy: ["zone"], filters: [] },
+    registryByCode,
+  );
+  assert.deepEqual(rejected, {
+    ok: false,
+    code: "REPORT_FILTER_NOT_SUPPORTED",
+    field: "groupBy.0",
+  });
+  assert.equal(
+    dashboard.checkReportBuilderQuery(query, [registryByCode.get("pax")]).code,
+    "REPORT_NOT_FOUND",
+  );
+  assert.equal(
+    dashboard.reportMetricByCode.size,
+    registry.length,
+    "the builder registry is the metrics layer plus this contract",
+  );
+
+  // A catalog run only splits by the report's own dimensions.
+  const run = {
+    reportCode: "sales.per_hour",
+    period: { startDate: "2026-10-01", endDate: "2026-10-31" },
+    groupBy: ["hour"],
+  };
+  assert.ok(dashboard.reportRunInputSchema.parse(run));
+  for (const patch of [
+    { reportCode: "sales.nope" },
+    { groupBy: ["employee"] },
+    { filters: [{ key: "channel", values: ["qr"] }] },
+    { sort: { column: "food_cost_pct", direction: "desc" } },
+    { tenantId: tenant.id },
+  ])
+    assert.equal(
+      dashboard.reportRunInputSchema.safeParse({ ...run, ...patch }).success,
+      false,
+      JSON.stringify(patch),
+    );
+
+  // Every catalog report splits only by dimensions all its metrics declare.
+  for (const report of dashboard.reportCatalog)
+    for (const code of report.metrics)
+      for (const dimension of report.dimensions)
+        assert.ok(
+          registryByCode.get(code).dimensions.includes(dimension),
+          `${report.code}: ${code} does not declare ${dimension}`,
+        );
+});
+
+test("SH-02: a report result never labels an open or unclosed period final", () => {
+  const result = fixtures.runResult;
+  assert.ok(dashboard.reportResultSchema.parse(result));
+  assert.equal(
+    dashboard.reportResultSchema.safeParse({
+      ...result,
+      period: {
+        ...result.period,
+        status: "open",
+        accountingPeriodClosed: false,
+      },
+    }).success,
+    false,
+  );
+  const unclosedBooks = {
+    ...result,
+    reportCode: "finance.income_statement",
+    period: { ...result.period, accountingPeriodClosed: false },
+  };
+  assert.equal(
+    dashboard.reportResultSchema.safeParse(unclosedBooks).success,
+    false,
+    "a closed-period-only report waits for the books to close",
+  );
+  assert.ok(
+    dashboard.reportResultSchema.parse({
+      ...unclosedBooks,
+      rows: unclosedBooks.rows.map((row) => ({
+        ...row,
+        values: row.values.map((cell) => ({ ...cell, finality: "estimate" })),
+      })),
+    }),
+  );
+  assert.equal(
+    dashboard.metricDashboardTileSchema.safeParse({
+      ...dashboard.SHAREHOLDER_DASHBOARD_TILES[0],
+      closedPeriodOnly: false,
+    }).success,
+    false,
+    "a shareholder tile cannot be live",
+  );
 });
 
 test("tenant scope: saved reports and schedules reject client tenant fields and bad delivery settings", () => {

@@ -31,9 +31,16 @@ import {
 import {
   REPORT_BUILDER_MAX_DIMENSIONS,
   REPORT_BUILDER_MAX_FILTERS,
+  refineOutletFilter,
+  refineSelectionDimensions,
 } from "./builder.ts";
-import { reportExportFormatSchema } from "./reports.ts";
-import type { ReportExportFormat } from "./reports.ts";
+import {
+  REPORT_EXPORT_FORMATS,
+  reportExportFormatSchema,
+  selectionContainsPersonalData,
+} from "./reports.ts";
+import type { ReportDefinition, ReportExportFormat } from "./reports.ts";
+import { reportByCode } from "./catalog.ts";
 import { reportExportIdSchema, savedReportIdSchema } from "./ids.ts";
 import { reportErrorCodeSchema } from "./errors.ts";
 import type { ReportErrorCode } from "./errors.ts";
@@ -81,6 +88,7 @@ export const reportExportQuerySchema = z
     bucket: metricBucketSchema.default("total"),
   })
   .superRefine((query, ctx) => {
+    refineOutletFilter(query.filters, ctx);
     if (new Set(query.groupBy).size !== query.groupBy.length)
       ctx.addIssue({
         code: "custom",
@@ -120,7 +128,36 @@ export const createReportExportInputSchema = clientInputSchema({
       message: "Send exactly one of reportCode or savedReportId",
       path: ["reportCode"],
     });
+  if (request.reportCode !== undefined) {
+    const report = reportByCode(request.reportCode);
+    if (report === undefined)
+      ctx.addIssue({
+        code: "custom",
+        message: `Unknown report ${request.reportCode}`,
+        path: ["reportCode"],
+      });
+    else refineSelectionDimensions(request.query, report.dimensions, ctx);
+  }
 });
+
+/**
+ * DASH-04: whether an export's output is personal data, derived only from the
+ * catalog definition and the export's own group-by/filters — never from a
+ * client flag. A saved builder query (`report: null`) is personal exactly when
+ * it splits or filters by a person-level dimension.
+ */
+export function reportExportContainsPersonalData(input: {
+  readonly report: Pick<ReportDefinition, "containsPersonalData"> | null;
+  readonly query: {
+    readonly groupBy: readonly string[];
+    readonly filters: readonly { readonly key: string }[];
+  };
+}): boolean {
+  return (
+    input.report?.containsPersonalData === true ||
+    selectionContainsPersonalData(input.query)
+  );
+}
 export type CreateReportExportInput = z.infer<
   typeof createReportExportInputSchema
 >;
@@ -177,12 +214,45 @@ export const reportExportSchema = z
     errorCode: reportErrorCodeSchema.nullable(),
   })
   .superRefine((reportExport, ctx) => {
-    if (reportExport.reportCode === null && reportExport.savedReportId === null)
+    if (
+      (reportExport.reportCode === null) ===
+      (reportExport.savedReportId === null)
+    )
       ctx.addIssue({
         code: "custom",
-        message: "An export names a report or a saved report",
+        message: "An export names exactly one report or saved report",
         path: ["reportCode"],
       });
+    // DASH-04: the personal-data flag is derived, never trusted. A catalog
+    // export must match its definition plus its splits; a saved-query export
+    // that splits by a person is personal whatever was stored.
+    const report =
+      reportExport.reportCode === null
+        ? null
+        : reportByCode(reportExport.reportCode);
+    if (report === undefined)
+      ctx.addIssue({
+        code: "custom",
+        message: "reportCode is not in the catalog",
+        path: ["reportCode"],
+      });
+    else {
+      const derived = reportExportContainsPersonalData({
+        report,
+        query: reportExport.query,
+      });
+      if (
+        report === null
+          ? derived && !reportExport.containsPersonalData
+          : derived !== reportExport.containsPersonalData
+      )
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "containsPersonalData must follow the report and its splits (DASH-04)",
+          path: ["containsPersonalData"],
+        });
+    }
     const status = reportExport.status;
 
     // DASH-04: nothing personal leaves before approval.
@@ -301,41 +371,92 @@ export type ReportExportPage = z.infer<typeof reportExportPageSchema>;
 /** Export jobs never leave the storage retention window. */
 export const REPORT_EXPORT_RETENTION_DAYS = 7;
 
-/** Decision the service applies before it creates/queues an export (DASH-04). */
+/** Permission to export aggregate data (access catalog, `bulk_export`). */
+export const REPORT_EXPORT_PERMISSION = "export.data.run";
+/** Permission to request a personal-data export (access catalog, DASH-04). */
+export const REPORT_PERSONAL_DATA_EXPORT_PERMISSION =
+  "export.personal_data.request";
+/** WS-01 approval action type a personal-data export routes through. */
+export const REPORT_EXPORT_APPROVAL_ACTION = "personal_data_export";
+
+/**
+ * Decision the service applies before it creates/queues an export (DASH-04).
+ * `containsPersonalData` is what the service stores on the job.
+ */
 export type ReportExportGateDecision =
-  | { readonly action: "queue" }
-  | { readonly action: "request_approval" }
+  | { readonly action: "queue"; readonly containsPersonalData: boolean }
+  | { readonly action: "request_approval"; readonly containsPersonalData: true }
   | { readonly action: "reject"; readonly code: ReportErrorCode };
 
 export type ReportExportGateInput = {
-  readonly containsPersonalData: boolean;
-  readonly approval: ReportExportApprovalStatus;
-  readonly hasExportPermission: boolean;
+  /** The catalog definition the server loaded; null for a saved builder query. */
+  readonly report: ReportDefinition | null;
+  /** The export's group-by/filters, after schema validation. */
+  readonly query: {
+    readonly groupBy: readonly string[];
+    readonly filters: readonly { readonly key: string }[];
+  };
   readonly format: ReportExportFormat;
-  readonly supportedFormats: readonly ReportExportFormat[];
+  /** Permission codes the server resolved for the caller (RBAC). */
+  readonly permissions: ReadonlySet<string>;
+  /** Status of this job's own `personal_data_export` approval request. */
+  readonly approval: ReportExportApprovalStatus;
 };
 
 /**
- * Server-side export gate. Order matters: permission, then format, then the
- * personal-data approval rule, then the approval outcome. `request_approval`
- * creates the approval request and leaves the job in `pending_approval` — no
- * file and no rows leave the server (DASH-04).
+ * Server-side export gate. Order matters: report permission, then export
+ * permission, then format, then the personal-data approval rule, then the
+ * approval outcome. The personal-data flag is derived here from the report
+ * and the splits, so no request field can turn the gate off (DASH-04).
+ * `request_approval` creates the approval request and leaves the job in
+ * `pending_approval` — no file and no rows leave the server.
  */
 export function reportExportGate(
   input: ReportExportGateInput,
 ): ReportExportGateDecision {
-  if (!input.hasExportPermission)
+  const containsPersonalData = reportExportContainsPersonalData(input);
+  if (
+    input.report !== null &&
+    !input.report.requiredPermissions.every((code) =>
+      input.permissions.has(code),
+    )
+  )
     return { action: "reject", code: "REPORT_NOT_PERMITTED" };
-  if (!input.supportedFormats.includes(input.format))
+  if (
+    !input.permissions.has(
+      containsPersonalData
+        ? REPORT_PERSONAL_DATA_EXPORT_PERMISSION
+        : REPORT_EXPORT_PERMISSION,
+    )
+  )
+    return { action: "reject", code: "REPORT_NOT_PERMITTED" };
+  const supportedFormats: readonly ReportExportFormat[] =
+    input.report?.exportFormats ?? REPORT_EXPORT_FORMATS;
+  if (!supportedFormats.includes(input.format))
     return { action: "reject", code: "EXPORT_FORMAT_NOT_SUPPORTED" };
-  if (!input.containsPersonalData) return { action: "queue" };
+  if (!containsPersonalData) return { action: "queue", containsPersonalData };
   switch (input.approval) {
     case "approved":
-      return { action: "queue" };
+      return { action: "queue", containsPersonalData };
     case "rejected":
       return { action: "reject", code: "EXPORT_PII_APPROVAL_REQUIRED" };
     case "none":
     case "pending":
-      return { action: "request_approval" };
+      return { action: "request_approval", containsPersonalData };
   }
+}
+
+/**
+ * DASH-04 for email schedules: a scheduled delivery is a file leaving the
+ * server with no per-run approval, so a saved query that splits or filters by
+ * a person cannot be scheduled. PRD is silent on standing approvals; refusing
+ * is the fail-closed choice until the owner decides otherwise.
+ */
+export function reportScheduleGate(query: {
+  readonly groupBy: readonly string[];
+  readonly filters: readonly { readonly key: string }[];
+}): ReportExportGateDecision {
+  if (selectionContainsPersonalData(query))
+    return { action: "reject", code: "EXPORT_PII_APPROVAL_REQUIRED" };
+  return { action: "queue", containsPersonalData: false };
 }

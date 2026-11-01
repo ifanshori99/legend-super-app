@@ -220,6 +220,13 @@ export const metricDashboardTileSchema = z
         message: "Tile metricCodes repeat a code",
         path: ["metricCodes"],
       });
+    // SH-02: every shareholder figure is official only for closed periods.
+    if (tile.dashboard === "shareholder" && !tile.closedPeriodOnly)
+      ctx.addIssue({
+        code: "custom",
+        message: "Shareholder metric tiles are closed-period only (SH-02)",
+        path: ["closedPeriodOnly"],
+      });
     if (tile.comparison === "target" && tile.metricCodes.length < 1)
       ctx.addIssue({
         code: "custom",

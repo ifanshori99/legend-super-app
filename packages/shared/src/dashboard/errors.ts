@@ -43,3 +43,30 @@ export const reportErrorHttpStatus = {
 } as const satisfies Record<ReportErrorCode, number>;
 
 export const REPORT_ERROR_CODES = reportErrorCodeSchema.options;
+
+/** Safe Indonesian fallback messages; the UI maps `code` to catalog text. */
+const defaultMessages: Record<ReportErrorCode, string> = {
+  REPORT_NOT_FOUND: "Laporan tidak ditemukan di katalog.",
+  REPORT_NOT_PERMITTED: "Role Anda tidak memiliki izin untuk laporan ini.",
+  REPORT_FILTER_NOT_SUPPORTED: "Laporan ini tidak mendukung filter tersebut.",
+  REPORT_QUERY_INVALID: "Pengaturan laporan tidak valid.",
+  SAVED_REPORT_NOT_FOUND: "Laporan tersimpan tidak ditemukan.",
+  REPORT_SCHEDULE_INVALID: "Jadwal pengiriman laporan tidak valid.",
+  EXPORT_FORMAT_NOT_SUPPORTED: "Format ekspor ini tidak tersedia.",
+  EXPORT_PII_APPROVAL_REQUIRED: "Ekspor data pribadi memerlukan approval.",
+  EXPORT_NOT_READY: "File ekspor belum selesai dibuat.",
+  EXPORT_EXPIRED: "File ekspor sudah kedaluwarsa.",
+};
+
+/** Domain error the API error handler maps like CoreError (D-CORE-4). */
+export class ReportError extends Error {
+  readonly code: ReportErrorCode;
+  readonly status: number;
+
+  constructor(code: ReportErrorCode, message: string = defaultMessages[code]) {
+    super(message);
+    this.name = "ReportError";
+    this.code = code;
+    this.status = reportErrorHttpStatus[code];
+  }
+}
