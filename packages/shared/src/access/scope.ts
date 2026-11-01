@@ -133,7 +133,8 @@ export function isAssignmentActive(
 ): boolean {
   const at = now.getTime();
   if (Number.isNaN(at)) throw new RangeError("Invalid clock value");
-  if (Date.parse(assignment.validFrom) > at) return false;
+  const from = Date.parse(assignment.validFrom);
+  if (!Number.isFinite(from) || from > at) return false;
   return (
     assignment.validUntil === null || at < Date.parse(assignment.validUntil)
   );
@@ -265,7 +266,7 @@ export function authorize(input: AuthorizeInput): AccessDecision {
   if (
     isMfaGuardedSurface(input.surface) &&
     !input.mfaVerified &&
-    active.some((row) => roles.get(lower(row.roleId))?.mfaRequired)
+    active.some((row) => roles.get(lower(row.roleId))?.mfaRequired !== false)
   )
     return { allowed: false, reason: "mfa_required" };
   let permissionSeen = false;
@@ -299,7 +300,7 @@ export function userRequiresMfa(
 ): boolean {
   const byId = rolesById(roles);
   return activeAssignmentsOf(principal, now).some(
-    (row) => byId.get(lower(row.roleId))?.mfaRequired,
+    (row) => byId.get(lower(row.roleId))?.mfaRequired !== false,
   );
 }
 

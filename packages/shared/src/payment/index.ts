@@ -66,11 +66,25 @@ export function canTransitionPayment(
   from: PaymentStatus,
   to: PaymentStatus,
   source?: string,
+  method?: PaymentMethod,
 ): boolean {
-  return (
-    transitions[from].includes(to) &&
-    (to !== "paid" || paymentConfirmationSourceSchema.safeParse(source).success)
-  );
+  if (!transitions[from]?.includes(to)) return false;
+  if (to !== "paid") return true;
+
+  switch (source) {
+    case "verified_webhook":
+    case "gateway_status":
+      return ["qris", "card", "ewallet", "va", "paylater"].some(
+        (onlineMethod) => onlineMethod === method,
+      );
+    case "edc_ecr":
+    case "authorized_edc_standalone":
+      return method === "edc_card" || method === "edc_qris";
+    case "authorized_cash":
+      return method === "cash";
+    default:
+      return false;
+  }
 }
 export const paymentIntentSchema = z.strictObject({
   ...row,
