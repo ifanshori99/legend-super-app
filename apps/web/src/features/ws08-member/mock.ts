@@ -50,8 +50,10 @@ const points = createMockStore(() =>
     ),
 );
 
+// Cloned: a redemption decrements stock, which must never reach the shared
+// fixtures (a reset would not restore it).
 const rewards = createMockStore(() =>
-  fixtures.rewards
+  structuredClone(fixtures.rewards)
     .filter((reward) => reward.isActive)
     .sort((left, right) => left.sortOrder - right.sortOrder),
 );

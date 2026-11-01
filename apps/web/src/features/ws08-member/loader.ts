@@ -18,7 +18,6 @@ const settle = (promise: Promise<unknown>) => promise.catch(() => undefined);
 export function preloadMemberOverview(queryClient: QueryClient) {
   return Promise.all([
     settle(queryClient.ensureQueryData(memberOverviewQuery())),
-    settle(queryClient.ensureQueryData(memberPointsQuery({ limit: 5 }))),
     settle(queryClient.ensureQueryData(memberMissionsQuery())),
     settle(queryClient.ensureQueryData(memberRewardsQuery())),
     settle(queryClient.ensureQueryData(memberVouchersQuery())),

@@ -875,8 +875,6 @@ export const id = {
       greeting: "Halo, {name}",
       pointsTitle: "Saldo poin",
       pointsCta: "Lihat riwayat poin",
-      expiringTitle: "Poin akan kedaluwarsa",
-      expiringBody: "{points} poin kedaluwarsa {date}",
       tierTitle: "Tier kamu",
       missionsTitle: "Misi aktif",
       missionsEmpty: "Belum ada misi aktif bulan ini.",
@@ -921,7 +919,7 @@ export const id = {
     signup: {
       title: "Keanggotaan Legend",
       intro:
-        "Keanggotaan aktif setelah nomor WhatsApp terverifikasi dan kamu menyetujui program loyalty. Poin berlaku 12 bulan sejak diperoleh.",
+        "Keanggotaan aktif setelah nomor WhatsApp terverifikasi dan kamu menyetujui program loyalty.",
       whatsappTitle: "Nomor WhatsApp",
       whatsappVerifiedBody:
         "Nomor WhatsApp kamu sudah terverifikasi pada {date}. Keanggotaan terikat ke nomor ini.",

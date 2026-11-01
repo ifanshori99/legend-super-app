@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { formatNumber } from "@starter/shared/i18n";
-import type { PointLedgerEntry } from "@starter/shared/crm";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +10,6 @@ import {
   useMemberFavorites,
   useMemberMissions,
   useMemberOverview,
-  useMemberPoints,
   useMemberRewards,
   useMemberVouchers,
   useMemberVisits,
@@ -27,31 +25,12 @@ import { TierCard } from "./tier-card";
 import { VisitList } from "./visit-list";
 import { VoucherCard } from "./voucher-card";
 
-/** Earliest future expiry among the points the member still holds. */
-function earliestExpiry(entries: readonly PointLedgerEntry[]) {
-  const now = Date.now();
-  let earliest: string | null = null;
-  for (const entry of entries) {
-    if (entry.points <= 0 || entry.expiresAt === null) continue;
-    if (Date.parse(entry.expiresAt) <= now) continue;
-    if (earliest === null || entry.expiresAt < earliest)
-      earliest = entry.expiresAt;
-  }
-  if (earliest === null) return null;
-  // Every grant that expires on that date is lost together.
-  const points = entries
-    .filter((entry) => entry.points > 0 && entry.expiresAt === earliest)
-    .reduce((sum, entry) => sum + entry.points, 0);
-  return { points, date: earliest };
-}
-
 // Member overview: PRD §3.20 "Halaman Member" puts balance, tier and progress,
 // active missions, rewards, visits, vouchers and favorites in the customer
 // PWA. Each block loads on its own so one slow list never hides the rest.
 export function MemberOverviewPage() {
   const t = useT();
   const overviewQuery = useMemberOverview();
-  const pointsQuery = useMemberPoints(5);
   const missionsQuery = useMemberMissions();
   const rewardsQuery = useMemberRewards();
   const vouchersQuery = useMemberVouchers();
@@ -68,7 +47,6 @@ export function MemberOverviewPage() {
     activeConsentFor(overview.consents, "loyalty") !== undefined;
   const membershipActive =
     overview.profile.membershipStatus === "active" && loyaltyActive;
-  const expiring = earliestExpiry(pointsQuery.data?.data ?? []);
   const activeVouchers = (vouchersQuery.data?.data ?? []).filter(
     (voucher) => voucher.status === "issued",
   );
@@ -98,7 +76,6 @@ export function MemberOverviewPage() {
       <PointsCard
         balance={overview.profile.pointsBalance}
         program={overview.program}
-        expiring={expiring}
       />
 
       <TierCard overview={overview} />
