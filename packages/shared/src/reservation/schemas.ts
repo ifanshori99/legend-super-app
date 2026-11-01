@@ -10,8 +10,10 @@
 // - money is whole rupiah (`*Idr`); DP amount, minimum spend and pre-order
 //   subtotal are server-computed and never come from the client.
 // - guest contact is write-only: the API receives `contactPhone` once and
-//   stores/returns only its SHA-256 `contactHash`, so list and detail payloads
-//   never leak a phone number (same rule as `customer_profiles.whatsapp_hash`).
+//   stores/returns only its keyed digest `contactHash` (`hashGuestContact`:
+//   HMAC-SHA-256 with a server secret, never a bare SHA-256 — the Indonesian
+//   mobile number space is small enough to brute-force), so list and detail
+//   payloads never leak a phone number.
 // - menu prices exclude tax and service charge (owner decision, 1 Nov 2026);
 //   the pre-order subtotal is therefore net and tax is applied at checkout.
 
@@ -27,6 +29,7 @@ import {
   timeZoneSchema,
   clientInputSchema,
 } from "../core/index.ts";
+import { hmacSha256, toHex, utf8 } from "../adapters/hmac.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import {
   floorZoneIdSchema,
@@ -42,6 +45,8 @@ const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
 const positiveIdr = idrSchema.refine((value) => value > 0);
 const safeInt = (value: number) => Number.isSafeInteger(value);
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
+/** HMAC-SHA-256 hex digest produced by `hashGuestContact`. */
+const contactDigestSchema = sha256HexSchema;
 const httpsUrlSchema = z.url().refine((value) => value.startsWith("https://"), {
   message: "Expected an https URL",
 });
@@ -55,6 +60,24 @@ const phoneDigitsSchema = z
     /^[1-9][0-9]{7,14}$/,
     "Phone numbers are digits in international form, e.g. 6281234567890",
   );
+
+/**
+ * `contactHash` for a reservation or waitlist entry: HMAC-SHA-256 (hex) of the
+ * guest's WhatsApp digits, keyed with a server secret of at least 16
+ * characters. A bare SHA-256 of a phone number is reversible by enumerating
+ * the ~10^10 Indonesian mobile numbers, so the key is mandatory (same rule as
+ * `hashIpForAudit`). Use one secret per deployment so the same guest hashes to
+ * the same digest across reservations and the waitlist.
+ */
+export async function hashGuestContact(
+  phone: string,
+  secret: string,
+): Promise<string> {
+  if (secret.length < 16)
+    throw new TypeError("Contact hash secret must be at least 16 characters");
+  const digits = phoneDigitsSchema.parse(phone);
+  return toHex(await hmacSha256(secret, utf8(digits)));
+}
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
 
@@ -150,8 +173,8 @@ export const reservationSchema = z
     customerProfileId: uuidSchema.nullable(),
     /** Display name the guest or host entered; the only personal data on the wire. */
     guestName: name,
-    /** SHA-256 of the WhatsApp number, lowercase hex. Never the number itself. */
-    contactHash: sha256HexSchema.nullable(),
+    /** `hashGuestContact` digest of the WhatsApp number. Never the number itself. */
+    contactHash: contactDigestSchema.nullable(),
     reservedFor: isoDateTimeSchema,
     durationMinutes: z.number().int().min(15).max(720),
     pax: z.number().int().min(1).max(60),
@@ -203,6 +226,35 @@ export const reservationSchema = z
         path: ["depositPaymentId"],
         message: "A zero DP has no payment intent",
       });
+    // The DP amount comes from the policy snapshot, never from elsewhere.
+    if (
+      reservation.policy.depositRequirement === "required" &&
+      reservation.depositIdr !== reservation.policy.depositAmountIdr
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["depositIdr"],
+        message: "A required DP equals the snapshot's DP amount (RSV-02)",
+      });
+    if (
+      reservation.policy.depositRequirement === "none" &&
+      reservation.depositIdr !== 0
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["depositIdr"],
+        message: "A reservation without DP carries a zero deposit",
+      });
+    if (
+      reservation.policy.depositRequirement === "optional" &&
+      reservation.depositIdr !== 0 &&
+      reservation.depositIdr !== reservation.policy.depositAmountIdr
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["depositIdr"],
+        message: "An optional DP is either zero or the snapshot's DP amount",
+      });
     // RSV-02: a reservation waiting for its DP is the only state with an
     // unpaid DP, and it must carry the DP amount and its payment link.
     if (
@@ -215,11 +267,15 @@ export const reservationSchema = z
         message:
           "pending_deposit needs a DP amount and payment intent (RSV-02)",
       });
-    // A required DP must be settled before the reservation is confirmed.
+    // A required DP must be settled before the reservation is confirmed, and
+    // stays settled once the guest is seated (same rule as `depositIsSettled`).
     if (
-      reservation.status === "confirmed" &&
+      (reservation.status === "confirmed" ||
+        reservation.status === "seated" ||
+        reservation.status === "completed") &&
       reservation.policy.depositRequirement === "required" &&
-      reservation.depositStatus !== "paid"
+      reservation.depositStatus !== "paid" &&
+      reservation.depositStatus !== "partially_refunded"
     )
       ctx.addIssue({
         code: "custom",
@@ -423,7 +479,7 @@ export const waitlistEntrySchema = z
     name,
     pax: z.number().int().min(1).max(60),
     /** SHA-256 of the WhatsApp number; never the number itself. */
-    contactHash: sha256HexSchema,
+    contactHash: contactDigestSchema,
     zoneId: floorZoneIdSchema.nullable(),
     status: waitlistStatusSchema,
     joinedAt: isoDateTimeSchema,

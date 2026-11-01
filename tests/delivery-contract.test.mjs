@@ -91,6 +91,27 @@ test("F20 a platform price that differs from our channel price is flagged, not h
     () => delivery.assertDeliveryOrderInjectable(unmatched),
     (error) => error.code === "DELIVERY_MAPPING_INCOMPLETE",
   );
+  // An injected order (it has an internal orderId) cannot hold an unmatched line.
+  assert.notEqual(preparing.orderId, null);
+  assert.equal(
+    delivery.deliveryChannelOrderSchema.safeParse({
+      ...preparing,
+      lines: unmatched.lines,
+    }).success,
+    false,
+  );
+  assert.equal(
+    delivery.deliveryChannelOrderSchema.safeParse({
+      ...preparing,
+      orderId: null,
+      number: null,
+      status: "received",
+      acceptedAt: null,
+      readyAt: null,
+      lines: unmatched.lines,
+    }).success,
+    true,
+  );
   // The schema keeps mapping and menu link coherent.
   assert.equal(
     delivery.deliveryOrderLineSchema.safeParse({

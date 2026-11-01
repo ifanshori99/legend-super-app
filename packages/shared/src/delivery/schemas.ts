@@ -27,6 +27,7 @@ import {
   isoDateTimeSchema,
   businessDateSchema,
   clientInputSchema,
+  sumIdr,
 } from "../core/index.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import { channelSchema } from "../menu/schemas.ts";
@@ -236,6 +237,17 @@ export const deliveryChannelOrderSchema = z
         code: "custom",
         path: ["closedAt"],
         message: "Only a cancelled or rejected order has a close instant",
+      });
+    // An order reaches the KDS only when every line maps to a menu item
+    // (`assertDeliveryOrderInjectable`); an unmatched line keeps it out.
+    if (
+      order.orderId !== null &&
+      order.lines.some((line) => line.mapping === "unmatched")
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["orderId"],
+        message: "An order with an unmatched line is not injected to the KDS",
       });
     if ((order.settledAt === null) !== (order.settledNetIdr === null))
       ctx.addIssue({
@@ -487,17 +499,15 @@ export type DeliveryReconciliationQuery = z.infer<
 export function deliveryReconciliationSummaryOf(
   lines: readonly DeliverySettlementLine[],
 ): DeliveryReconciliationSummary {
-  const sum = (values: readonly number[]) =>
-    values.reduce((total, value) => total + value, 0);
   return deliveryReconciliationSummarySchema.parse({
     lineCount: lines.length,
     matchedCount: lines.filter((line) => line.status === "matched").length,
     varianceCount: lines.filter((line) => line.status === "variance").length,
     unknownOrderCount: lines.filter((line) => line.status === "unknown_order")
       .length,
-    grossIdr: sum(lines.map((line) => line.grossIdr)),
-    commissionIdr: sum(lines.map((line) => line.commissionIdr)),
-    settledNetIdr: sum(lines.map((line) => line.settledNetIdr)),
-    varianceIdr: sum(lines.map((line) => line.varianceIdr)),
+    grossIdr: sumIdr(lines.map((line) => line.grossIdr)),
+    commissionIdr: sumIdr(lines.map((line) => line.commissionIdr)),
+    settledNetIdr: sumIdr(lines.map((line) => line.settledNetIdr)),
+    varianceIdr: sumIdr(lines.map((line) => line.varianceIdr)),
   });
 }

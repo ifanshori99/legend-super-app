@@ -155,6 +155,21 @@ test("RSV-02 a paid DP is a deposit: confirmed needs it settled, seating allocat
   unpaid.depositStatus = "pending";
   assert.equal(rsv.reservationSchema.safeParse(unpaid).success, false);
 
+  // The DP amount is the snapshot's, never another number (RSV-02/03).
+  const wrongAmount = structuredClone(f.reservations[1]);
+  wrongAmount.depositIdr = wrongAmount.policy.depositAmountIdr - 1;
+  assert.equal(rsv.reservationSchema.safeParse(wrongAmount).success, false);
+  const optional = structuredClone(f.reservations[1]);
+  optional.policy.depositRequirement = "optional";
+  assert.equal(rsv.reservationSchema.safeParse(optional).success, true);
+  optional.depositIdr = optional.policy.depositAmountIdr + 1;
+  assert.equal(rsv.reservationSchema.safeParse(optional).success, false);
+
+  // A seated reservation keeps its required DP settled.
+  const seatedUnpaid = structuredClone(f.reservations[2]);
+  seatedUnpaid.depositStatus = "pending";
+  assert.equal(rsv.reservationSchema.safeParse(seatedUnpaid).success, false);
+
   // pending_deposit must carry the payment intent it waits for.
   const noIntent = structuredClone(f.reservations[0]);
   noIntent.depositPaymentId = null;
@@ -428,4 +443,28 @@ test("reservation endpoint contracts are unique and path-param complete", () => 
     }).success,
     false,
   );
+});
+
+test("guest contact is a keyed digest, never a bare SHA-256 of the phone", async () => {
+  const secret = "reservation-contact-secret-0001";
+  const phone = "6281234567890";
+  const digest = await rsv.hashGuestContact(phone, secret);
+  assert.match(digest, /^[a-f0-9]{64}$/);
+  // Deterministic for the same secret, so reservations and the waitlist link.
+  assert.equal(await rsv.hashGuestContact(phone, secret), digest);
+  // Different secret → different digest; a bare SHA-256 is not accepted.
+  assert.notEqual(
+    await rsv.hashGuestContact(phone, "another-secret-of-16+chars"),
+    digest,
+  );
+  const { createHash } = await import("node:crypto");
+  assert.notEqual(createHash("sha256").update(phone).digest("hex"), digest);
+  await assert.rejects(() => rsv.hashGuestContact(phone, "short"), TypeError);
+  await assert.rejects(() => rsv.hashGuestContact("+62 812-3456-7890", secret));
+  // The digest stays write-only: no event payload carries it.
+  for (const event of Object.values(rsv.reservationEventFixtures))
+    assert.equal(
+      JSON.stringify(event).includes(f.reservations[0].contactHash),
+      false,
+    );
 });
