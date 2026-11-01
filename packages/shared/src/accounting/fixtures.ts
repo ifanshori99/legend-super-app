@@ -7,7 +7,7 @@
 // the fixtures exercise the same code the BE runs and always balance.
 
 import { cafeLegendFixtures, idr } from "../core/index.ts";
-import type { OutletId } from "../core/index.ts";
+import type { OutletId, UserId } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import {
   straightLineSchedule,
@@ -53,6 +53,25 @@ import {
   defaultPostingRules,
   resolvePostingRule,
 } from "./posting-rules.ts";
+import {
+  attachDistributionStatement,
+  buildDistributionStatement,
+  buildMyProfitShare,
+  buildProfitShareEstimate,
+  calculateAdjustmentDistribution,
+  calculateDistribution,
+  distributionRunSchema,
+  profitEntitySchema,
+  shareAllocationVersionSchema,
+  shareholderDocumentSchema,
+  shareholderSchema,
+  transitionDistributionRun,
+} from "./profit-share.ts";
+import type {
+  AdjustmentCalculation,
+  DistributionCalculation,
+  DistributionRun,
+} from "./profit-share.ts";
 import {
   buildBalanceSheet,
   buildProfitAndLoss,
@@ -998,6 +1017,483 @@ const octoberSnapshot = periodCloseSnapshotSchema.parse({
   })),
 });
 
+// ---- Profit share & dividends (F37, §6 I; SH-03, SH-04) --------------------
+// Shareholders, versions, runs and statements are built through the same
+// calculation and state-machine functions the API runs, so the fixtures cannot
+// drift from the contract (like journals above). Amounts are illustrative:
+// the owner confirms the real split and policy later.
+
+/** Fixture user ids are plain strings until a schema brands them. */
+const actor = (id: string) => id as UserId;
+
+const profitShareholders = [
+  shareholderSchema.parse({
+    id: fixedId("5a000000", 1),
+    tenantId,
+    userId: owner,
+    name: "Raka Pratama",
+    type: "person",
+    status: "active",
+    npwpMasked: "****3341",
+    payoutAccount: {
+      bank: "BCA",
+      accountNumberMasked: "****4821",
+      accountHolder: "Raka Pratama",
+    },
+    createdAt: "2026-01-02T03:00:00.000Z",
+  }),
+  shareholderSchema.parse({
+    id: fixedId("5a000000", 2),
+    tenantId,
+    userId: people.shareholder.id,
+    name: "Dewi Lestari",
+    type: "person",
+    status: "active",
+    npwpMasked: "****8820",
+    payoutAccount: {
+      bank: "Mandiri",
+      accountNumberMasked: "****7730",
+      accountHolder: "Dewi Lestari",
+    },
+    createdAt: "2026-01-02T03:05:00.000Z",
+  }),
+  shareholderSchema.parse({
+    id: fixedId("5a000000", 3),
+    tenantId,
+    userId: null,
+    name: "PT Angkasa Modal Nusantara",
+    type: "company",
+    status: "active",
+    npwpMasked: "****7712",
+    payoutAccount: {
+      bank: "BNI",
+      accountNumberMasked: "****2214",
+      accountHolder: "PT Angkasa Modal Nusantara",
+    },
+    createdAt: "2026-01-02T03:10:00.000Z",
+  }),
+  shareholderSchema.parse({
+    id: fixedId("5a000000", 4),
+    tenantId,
+    userId: null,
+    name: "Nur Aisyah",
+    type: "person",
+    status: "active",
+    npwpMasked: null,
+    payoutAccount: {
+      bank: "BJB",
+      accountNumberMasked: "****9056",
+      accountHolder: "Nur Aisyah",
+    },
+    createdAt: "2026-01-02T03:15:00.000Z",
+  }),
+];
+const [raka, dewi, angkasa, nurAisyah] = profitShareholders;
+
+const legalEntityProfitEntity = profitEntitySchema.parse({
+  id: fixedId("5b000000", 1),
+  tenantId,
+  name: legalEntity.name,
+  type: "legal_entity",
+  legalEntityId,
+  outletId: null,
+  policy: {
+    basis: "closed_period_net_profit",
+    reserveBp: 1_000,
+    frequency: "quarterly",
+    taxWithholdingBp: 1_000,
+  },
+  isActive: true,
+});
+const outletProfitEntity = profitEntitySchema.parse({
+  id: fixedId("5b000000", 2),
+  tenantId,
+  name: "Cafe Legend Bandung",
+  type: "outlet",
+  legalEntityId: null,
+  outletId: bandung,
+  policy: {
+    basis: "closed_period_net_profit",
+    reserveBp: 500,
+    frequency: "monthly",
+    taxWithholdingBp: 1_000,
+  },
+  isActive: true,
+});
+const profitEntities = [legalEntityProfitEntity, outletProfitEntity];
+
+let shareAllocationCount = 0;
+const allocRows = (pairs: readonly [string, number][]) =>
+  pairs.map(([shareholderId, shareBp]) => ({
+    id: fixedId("5c000000", ++shareAllocationCount),
+    shareholderId,
+    shareBp,
+  }));
+
+const shareVersions = [
+  shareAllocationVersionSchema.parse({
+    tenantId,
+    profitEntityId: legalEntityProfitEntity.id,
+    version: 1,
+    effectiveFrom: "2026-01-01",
+    status: "approved",
+    allocations: allocRows([
+      [raka.id, 3_000],
+      [dewi.id, 2_000],
+      [angkasa.id, 4_000],
+      [nurAisyah.id, 1_000],
+    ]),
+    requestedBy: generalManager,
+    requestedAt: "2025-12-18T03:00:00.000Z",
+    decidedBy: owner,
+    decidedAt: "2025-12-19T02:00:00.000Z",
+    decisionNote: null,
+  }),
+  shareAllocationVersionSchema.parse({
+    tenantId,
+    profitEntityId: legalEntityProfitEntity.id,
+    version: 2,
+    effectiveFrom: "2026-07-01",
+    status: "approved",
+    allocations: allocRows([
+      [raka.id, 3_500],
+      [dewi.id, 2_500],
+      [angkasa.id, 3_000],
+      [nurAisyah.id, 1_000],
+    ]),
+    requestedBy: finance,
+    requestedAt: "2026-06-20T04:00:00.000Z",
+    decidedBy: owner,
+    decidedAt: "2026-06-22T02:30:00.000Z",
+    decisionNote: null,
+  }),
+  // Under-allocated draft (9,500 bp): the admin screen's live sum indicator
+  // flags it, and SH-03 refuses to submit it. Not used by any distribution.
+  shareAllocationVersionSchema.parse({
+    tenantId,
+    profitEntityId: legalEntityProfitEntity.id,
+    version: 3,
+    effectiveFrom: "2027-01-01",
+    status: "draft",
+    allocations: allocRows([
+      [raka.id, 4_000],
+      [dewi.id, 2_500],
+      [angkasa.id, 3_000],
+    ]),
+    requestedBy: finance,
+    requestedAt: "2026-11-05T02:00:00.000Z",
+    decidedBy: null,
+    decidedAt: null,
+    decisionNote: null,
+  }),
+  shareAllocationVersionSchema.parse({
+    tenantId,
+    profitEntityId: outletProfitEntity.id,
+    version: 1,
+    effectiveFrom: "2026-01-01",
+    status: "approved",
+    allocations: allocRows([
+      [raka.id, 6_000],
+      [dewi.id, 4_000],
+    ]),
+    requestedBy: generalManager,
+    requestedAt: "2025-12-19T03:00:00.000Z",
+    decidedBy: owner,
+    decidedAt: "2025-12-20T02:00:00.000Z",
+    decisionNote: null,
+  }),
+];
+const legalEntityVersion = (version: number) =>
+  shareVersions.find(
+    (row) =>
+      row.profitEntityId === legalEntityProfitEntity.id &&
+      row.version === version,
+  )!;
+const currentLegalEntityVersion = legalEntityVersion(2);
+
+let distributionLineCount = 0;
+const nextDistributionLineId = () =>
+  fixedId("5d000000", ++distributionLineCount);
+
+function draftDistributionRun(input: {
+  id: string;
+  calc: DistributionCalculation | AdjustmentCalculation;
+  type: "regular" | "adjustment";
+  shareVersion: number;
+  requestedBy: string;
+  requestedAt: string;
+  adjustsRunId?: string;
+  adjustmentReason?: string;
+}): DistributionRun {
+  const { calc } = input;
+  const adjustment = input.type === "adjustment";
+  const regular = calc as DistributionCalculation;
+  const correction = calc as AdjustmentCalculation;
+  return distributionRunSchema.parse({
+    id: input.id,
+    tenantId,
+    profitEntityId: calc.profitEntityId,
+    fiscalPeriodId: calc.fiscalPeriodId,
+    period: calc.period,
+    type: input.type,
+    basis: calc.basis,
+    status: "draft",
+    shareVersion: input.shareVersion,
+    periodNetProfitIdr: adjustment ? null : regular.periodNetProfitIdr,
+    reserveIdr: adjustment ? 0 : regular.reserveIdr,
+    distributableIdr: adjustment
+      ? correction.adjustmentIdr
+      : regular.distributableIdr,
+    lines: calc.lines.map((line) => ({
+      id: nextDistributionLineId(),
+      tenantId,
+      distributionRunId: input.id,
+      ...line,
+      paymentStatus: "pending",
+      paymentRef: null,
+      paidAt: null,
+      statementFileKey: null,
+    })),
+    totalGrossIdr: calc.totalGrossIdr,
+    totalTaxWithheldIdr: calc.totalTaxWithheldIdr,
+    totalNetIdr: calc.totalNetIdr,
+    requestedBy: input.requestedBy,
+    requestedAt: input.requestedAt,
+    approvedBy: null,
+    approvedAt: null,
+    paidAt: null,
+    adjustsRunId: input.adjustsRunId ?? null,
+    adjustmentReason: input.adjustmentReason ?? null,
+    reversalJournalEntryId: null,
+  });
+}
+
+/** Approved by someone other than the requester (AUTH-06). */
+function approveRun(
+  draft: DistributionRun,
+  approver: string,
+  approvedAt: string,
+): DistributionRun {
+  return transitionDistributionRun(
+    transitionDistributionRun(draft, {
+      type: "submit",
+      actorId: draft.requestedBy,
+    }),
+    { type: "approve", actorId: actor(approver), now: approvedAt },
+  );
+}
+
+const septemberCalculation = calculateDistribution({
+  profitEntityId: legalEntityProfitEntity.id,
+  fiscalPeriodId: periodId("2026-09"),
+  period: "2026-09",
+  periodStatus: "closed",
+  periodNetProfitIdr: idr(180_000_000),
+  policy: legalEntityProfitEntity.policy,
+  allocations: currentLegalEntityVersion.allocations,
+});
+const septemberDraft = draftDistributionRun({
+  id: fixedId("5e000000", 1),
+  calc: septemberCalculation,
+  type: "regular",
+  shareVersion: currentLegalEntityVersion.version,
+  requestedBy: finance,
+  requestedAt: "2026-10-05T03:00:00.000Z",
+});
+let septemberRun = approveRun(
+  septemberDraft,
+  owner,
+  "2026-10-06T02:00:00.000Z",
+);
+for (const [index, line] of septemberRun.lines.entries()) {
+  septemberRun = transitionDistributionRun(septemberRun, {
+    type: "record_payment",
+    actorId: actor(finance),
+    lineId: line.id,
+    paymentRef: `TRF/2026/10/Q3-${index + 1}`,
+    paidAt: `2026-10-${String(7 + index).padStart(2, "0")}T04:00:00.000Z`,
+  });
+}
+const statementKeyOf = (period: string, slug: string) =>
+  `shareholder/${period}/${slug}-statement.pdf`;
+for (const line of septemberRun.lines) {
+  const slug =
+    line.shareholderId === raka.id
+      ? "raka-pratama"
+      : line.shareholderId === dewi.id
+        ? "dewi-lestari"
+        : line.shareholderId === angkasa.id
+          ? "pt-angkasa-modal-nusantara"
+          : "nur-aisyah";
+  septemberRun = attachDistributionStatement(
+    septemberRun,
+    line.id,
+    statementKeyOf("2026-09", slug),
+  );
+}
+
+const octoberCalculation = calculateDistribution({
+  profitEntityId: legalEntityProfitEntity.id,
+  fiscalPeriodId: periodId("2026-10"),
+  period: "2026-10",
+  periodStatus: "closed",
+  periodNetProfitIdr: idr(165_000_000),
+  policy: legalEntityProfitEntity.policy,
+  allocations: currentLegalEntityVersion.allocations,
+});
+const octoberDraft = draftDistributionRun({
+  id: fixedId("5e000000", 2),
+  calc: octoberCalculation,
+  type: "regular",
+  shareVersion: currentLegalEntityVersion.version,
+  requestedBy: finance,
+  requestedAt: "2026-11-05T02:30:00.000Z",
+});
+let octoberRun = approveRun(octoberDraft, owner, "2026-11-05T06:00:00.000Z");
+// Two lines paid, two pending: shows the approval → payment → statement step.
+for (const [index, line] of octoberRun.lines.slice(0, 2).entries()) {
+  octoberRun = transitionDistributionRun(octoberRun, {
+    type: "record_payment",
+    actorId: actor(finance),
+    lineId: line.id,
+    paymentRef: `TRF/2026/11/OKT-${index + 1}`,
+    paidAt: `2026-11-05T0${7 + index}:00:00.000Z`,
+  });
+}
+for (const line of octoberRun.lines.filter(
+  (row) => row.paymentStatus === "paid",
+)) {
+  const slug =
+    line.shareholderId === raka.id
+      ? "raka-pratama"
+      : line.shareholderId === dewi.id
+        ? "dewi-lestari"
+        : "shareholder";
+  octoberRun = attachDistributionStatement(
+    octoberRun,
+    line.id,
+    statementKeyOf("2026-10", slug),
+  );
+}
+
+// SH-04: a correction of the Q3 run is a new adjustment run with its own
+// approval and reversing journal, never an edit of the paid September run.
+const adjustmentCalculation = calculateAdjustmentDistribution({
+  profitEntityId: legalEntityProfitEntity.id,
+  fiscalPeriodId: periodId("2026-10"),
+  period: "2026-10",
+  periodStatus: "closed",
+  adjustsRunId: septemberRun.id,
+  reason:
+    "Koreksi lebih bayar dividen Q3 2026: tagihan listrik tercatat ganda.",
+  adjustmentIdr: idr(-4_000_000),
+  taxWithholdingBp: legalEntityProfitEntity.policy.taxWithholdingBp,
+  allocations: currentLegalEntityVersion.allocations,
+});
+const adjustmentRun = draftDistributionRun({
+  id: fixedId("5e000000", 3),
+  calc: adjustmentCalculation,
+  type: "adjustment",
+  shareVersion: currentLegalEntityVersion.version,
+  requestedBy: finance,
+  requestedAt: "2026-11-05T03:00:00.000Z",
+  adjustsRunId: septemberRun.id,
+  adjustmentReason: adjustmentCalculation.reason,
+});
+
+const profitShareRuns = [septemberRun, octoberRun, adjustmentRun];
+const profitEntityById = (id: string) =>
+  profitEntities.find((row) => row.id === id)!;
+const statementsOf = (run: DistributionRun) =>
+  run.lines.map((line) =>
+    buildDistributionStatement({
+      run,
+      line,
+      shareholder: profitShareholders.find(
+        (row) => row.id === line.shareholderId,
+      )!,
+      profitEntity: profitEntityById(run.profitEntityId),
+    }),
+  );
+const profitShareStatements = profitShareRuns.flatMap(statementsOf);
+
+const shareholderDocuments = [
+  shareholderDocumentSchema.parse({
+    id: fixedId("5f000000", 1),
+    tenantId,
+    profitEntityId: legalEntityProfitEntity.id,
+    kind: "monthly_report",
+    title: "Laporan Bulanan Oktober 2026",
+    fileKey: "shareholder/2026-10/laporan-bulanan-oktober-2026.pdf",
+    visibility: "shareholders",
+    publishedAt: "2026-11-05T03:30:00.000Z",
+    publishedBy: owner,
+    createdAt: "2026-11-05T03:00:00.000Z",
+  }),
+  shareholderDocumentSchema.parse({
+    id: fixedId("5f000000", 2),
+    tenantId,
+    profitEntityId: legalEntityProfitEntity.id,
+    kind: "general_meeting_minutes",
+    title: "Notulen RUPS Tahunan 2026",
+    fileKey: "shareholder/2026-06/notulen-rups-tahunan-2026.pdf",
+    visibility: "management",
+    publishedAt: "2026-06-30T04:00:00.000Z",
+    publishedBy: generalManager,
+    createdAt: "2026-06-29T04:00:00.000Z",
+  }),
+  shareholderDocumentSchema.parse({
+    id: fixedId("5f000000", 3),
+    tenantId,
+    profitEntityId: outletProfitEntity.id,
+    kind: "other",
+    title: "Draf Laporan Kinerja Outlet Bandung",
+    fileKey: "shareholder/2026-11/draf-kinerja-outlet-bandung.pdf",
+    visibility: "shareholders",
+    publishedAt: null,
+    publishedBy: null,
+    createdAt: "2026-11-05T04:00:00.000Z",
+  }),
+];
+
+// F35 "Bagi Hasil Pribadi": only Dewi's own rows (SH-01), with the November
+// number labelled estimate (SH-02).
+const dewiProfitShare = buildMyProfitShare({
+  shareholder: dewi,
+  entities: profitEntities,
+  versions: shareVersions,
+  statements: profitShareStatements.filter(
+    (row) => row.shareholderId === dewi.id,
+  ),
+  estimates: [
+    buildProfitShareEstimate({
+      profitEntity: legalEntityProfitEntity,
+      period: "2026-11",
+      shareBp: 2_500,
+      estimatedNetProfitIdr: idr(120_000_000),
+      asOf: "2026-11-05T05:00:00.000Z",
+    }),
+  ],
+  asOf: "2026-11-05",
+});
+
+const profitShare = {
+  entities: profitEntities,
+  shareholders: profitShareholders,
+  versions: shareVersions,
+  runs: {
+    september: septemberRun,
+    october: octoberRun,
+    adjustment: adjustmentRun,
+  },
+  documents: shareholderDocuments,
+  statements: profitShareStatements,
+  myProfitShare: dewiProfitShare,
+  shareholderById: (id: string) =>
+    profitShareholders.find((row) => row.id === id)!,
+  entityById: profitEntityById,
+};
+
 export const cafeLegendAccountingFixtures = {
   tenantId,
   legalEntity,
@@ -1046,6 +1542,7 @@ export const cafeLegendAccountingFixtures = {
     cashFlowNovember,
     equityChangesOctober,
   },
+  profitShare,
   /** "Today" for the fixtures (aging, alerts). */
   asOf: "2026-11-05",
 };

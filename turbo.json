@@ -6,7 +6,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "env": ["VITE_API_URL"],
+      "env": ["NODE_ENV", "VITE_*"],
       "outputs": ["dist/**", ".output/**"]
     },
     "typecheck": {

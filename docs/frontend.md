@@ -15,7 +15,7 @@ component
 
 - **Browser client** — `lib/auth-client.ts` creates the Better Auth client for `VITE_API_URL` with `credentials: "include"` and the admin plugin (sharing `@starter/shared/permissions`). Sign-in, sign-up, and sign-out forms call it directly, then `router.invalidate()` re-runs the route guards.
 - **Server middleware** — `lib/auth.middleware.ts` defines `authMiddleware`, a TanStack Start server function middleware. On the web server it reads the visitor's session from the API by forwarding their cookie (`lib/session.server.ts`) and puts it on `context.session`. `requireAuthMiddleware` additionally rejects anonymous calls — attach it to any server function you add that must not run signed out.
-- **Session in routes** — `routes/__root.tsx` calls `getSessionFn()` in `beforeLoad` and shares `{ session }` as router context. `_protected.tsx` redirects to `/sign-in` without one; `_auth.tsx` redirects signed-in visitors to `/app`.
+- **Session in routes** — `routes/__root.tsx` calls `getSessionFn()` in `beforeLoad` and shares `{ session }` as router context. `_protected.tsx` redirects to `/sign-in` without one; `_auth.tsx` redirects signed-in visitors to `/` (`siteConfig.homePath`).
 - **Roles in the UI** — `roleHasPermission(session.user.role, { notes: ["read-any"] })` from `@starter/shared/permissions` hides links and, in a page's `beforeLoad`, throws `notFound()`. The API re-checks every request; never treat a UI check as authorization.
 
 The session cookie belongs to the API host. The web server receives it because cookies ignore ports (`localhost`) or because production sets `COOKIE_DOMAIN` to a parent domain of both apps.
@@ -104,6 +104,101 @@ Files ending in `.server.ts` (`session.server.ts`, `logger.server.ts`, `api/upst
 4. Components under `features/<resource>/components/`, reusing `components/ui`.
 5. A page under `routes/_protected/` whose loader ensures the query; `roleHasPermission` in `beforeLoad` for cross-account pages.
 6. A Playwright test in `e2e/` for the main flow, then `pnpm test:e2e`.
+
+## Where to put a new screen
+
+Bead `legend-fbu` · PRD v1.7 §3 F3, §5 "Peta situs". Every URL belongs to one of nine **areas**. An area fixes the shell, the density, the guard and the navigation, so a feature bead only adds its screen.
+
+| Area          | URL prefixes (PRD §5)                             | Shell · density (DESIGN.md §1)    | Guard (RBAC §3.7)                                   | Route files in `routes/` |
+| ------------- | ------------------------------------------------- | --------------------------------- | --------------------------------------------------- | ------------------------ |
+| `public`      | `/`, `/menu`, `/reservasi`, `/masuk`              | Customer · Hangat                 | open, indexed                                       | `_public/`               |
+| `customer`    | `/t/$token`, `/f/$facility`, `/member/*`, `/wifi` | Customer · Hangat                 | open; `/member/*` needs a session; noindex          | `_customer/`             |
+| `ops`         | `/pos/*`, `/fasilitas/*`, `/operasional/*`        | Operations · Kontras Tinggi       | permission, surface `pos` (staff PIN, no MFA), edge | `_ops/`                  |
+| `kitchen`     | `/kds/*`, `/expo`, `/pickup`                      | Operations · Kontras, always dark | permission, surface `kds`, edge                     | `_kitchen/`              |
+| `kelola`      | `/kelola/*`                                       | Management · Padat                | `dashboard.management.view`, MFA (AUTH-05)          | `_kelola/`               |
+| `owner`       | `/owner/*`                                        | Management · Padat                | `dashboard.owner.view`, MFA                         | `_owner/`                |
+| `shareholder` | `/shareholder/*`                                  | Management · Padat                | `dashboard.shareholder.view`, MFA                   | `_shareholder/`          |
+| `karyawan`    | `/karyawan/*`                                     | Customer · Hangat (PWA)           | `self.profile.view`, surface `hris`                 | `_karyawan/`             |
+| `platform`    | `/platform/*`                                     | Management · Padat                | `platform.*`, MFA                                   | `_platform/`             |
+
+The table is data in `lib/areas/definitions.ts` (tested by `tests/areas.test.mjs`); change an area there, not in a route.
+
+### Add a page
+
+1. **Route file** `routes/_<area>/<url-with-dots>.tsx`, e.g. `/kelola/inventori/stok` → `routes/_kelola/kelola.inventori.stok.tsx`, `/pos/meja/$tableId` → `routes/_ops/pos.meja.$tableId.tsx`. Do not add a layout: the `_<area>.tsx` layout already runs the guard and renders the shell around your `<Outlet />`. Run `pnpm dev` (or `pnpm build`) once: it regenerates `routeTree.gen.ts`, which you commit (on a merge conflict in that file, regenerate it, do not hand-merge).
+2. **Feature folder** `features/<ws>-<name>/` (for example `features/ws06-inventory/`):
+
+   ```text
+   api.ts       one function per endpoint (callEndpoint + the contract)
+   queries.ts   query keys + queryOptions
+   hooks.ts     useX / useCreateX
+   mock.ts      registerMock(...) handlers for VITE_API_MOCK=true
+   nav.ts       the menu item (below)
+   components/  screen components; text from the catalog, tokens from DESIGN.md
+   ```
+
+3. **Menu item**: `features/<ws>-<name>/nav.ts` default-exports `AreaNavEntry[]`. It is collected automatically (`lib/areas/nav-registry.ts`), so two beads never edit the same list. `anyPermission` hides the item for visitors without it; it is not an access check.
+
+   ```ts
+   import { Boxes } from "lucide-react";
+   import type { AreaNavEntry } from "@/lib/areas/nav";
+
+   const nav: AreaNavEntry[] = [
+     {
+       area: "kelola",
+       labelKey: "nav.management.inventory",
+       to: "/kelola/inventori",
+       icon: Boxes,
+       order: 30,
+       anyPermission: ["inventory.stock.view"],
+     },
+   ];
+   export default nav;
+   ```
+
+4. **Page guard** (only when the page needs more than the area's permission, e.g. `/kelola/inventori` needs `inventory.stock.view`): add it in the page's own `beforeLoad`, using the same evaluator as the area. Never rely on `anyPermission` in `nav.ts` for this.
+
+   ```ts
+   import { notFound } from "@tanstack/react-router";
+   import { evaluateGuard } from "@/lib/areas/guard";
+
+   export const Route = createFileRoute("/_kelola/kelola/inventori")({
+     beforeLoad: ({ context }) => {
+       const gate = evaluateGuard(
+         {
+           kind: "permission",
+           surface: "dashboard",
+           anyOf: ["inventory.stock.view"],
+         },
+         context.access,
+       );
+       if (gate.status !== "allowed") throw notFound();
+     },
+     component: InventoryPage,
+   });
+   ```
+
+5. **Text** goes in `packages/shared/src/i18n/messages/id.ts`; add only your own keys.
+6. **Replace the placeholder**: each area's `*.index.tsx` renders `AreaIndexPage` (an honest empty state). The bead that owns the area's landing screen replaces it.
+
+### Guards, MFA and the access context
+
+`runGuard` in `lib/areas/route.ts` runs in each area layout's `beforeLoad` using `evaluateGuard` (`lib/areas/guard.ts`), which follows `authorize()` in `@starter/shared/access`: signed out → redirect to `/sign-in`; AUTH-05 second factor missing on `back_office`/`dashboard` → the layout shows "Verifikasi dua langkah diperlukan"; no matching permission → "Anda belum punya akses". The API enforces the same rules; these screens only avoid showing what a visitor cannot use.
+
+The visitor's reach (`context.access`, set in the root route) comes from `lib/areas/access.ts`. Until the API exposes the caller's effective permissions, a real session has **no** permissions, so every work area fails closed. In mock mode (`VITE_API_MOCK=true`) the cookie `legend-mock-role` picks a role template (`cashier`, `general_manager`, `shareholder`, … , `all` = every permission, the default, `none` = signed out) so each area can be reviewed:
+
+```js
+document.cookie = "legend-mock-role=cashier; path=/"; // then reload
+```
+
+### Shell parts you get for free
+
+- **Offline banner slot**: `OfflineBannerSlot` (`components/layout/`) sits above every page's content; bead `legend-diq` fills it. Operations screens also show the connection badge in the shell header.
+- **Theme toggle** in every shell header (kitchen is always dark).
+- **noindex** on every area except `public` (PRD §5 "Diindeks: Tidak"). Every page response defaults to `Cache-Control: private, no-store` (`start.ts`), because SSR HTML embeds the visitor's session; a route that is safe to cache sets its own header.
+- **Mock mode is dev-only**: a web build with `VITE_API_MOCK=true` refuses to boot unless `DEPLOYMENT_MODE=development` (`lib/env.server.ts`).
+- **PWA**: `public/manifest.webmanifest` is a stub linked from `/member/*` and `/karyawan/*`; the per-brand manifest comes from a worker later (PRD §5).
+- **Brand name** in headers is the catalog's `app.defaultBrand` until tenant config supplies the real one (D43); the outlet name and time zone in the operations header wait for the outlet-context bead.
 
 ## Typed endpoints and mock mode
 

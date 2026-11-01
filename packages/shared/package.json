@@ -32,7 +32,12 @@
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",
-    "./pos": "./src/pos/index.ts"
+    "./pos": "./src/pos/index.ts",
+    "./reservation": "./src/reservation/index.ts",
+    "./delivery": "./src/delivery/index.ts",
+    "./website": "./src/website/index.ts",
+    "./hris": "./src/hris/index.ts",
+    "./platform": "./src/platform/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

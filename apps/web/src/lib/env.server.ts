@@ -22,6 +22,19 @@ function load(): DeploymentSettings {
     );
     process.exit(1);
   }
+  // Mock mode (VITE_API_MOCK=true) grants every area to a cookie-chosen role
+  // template and serves fixtures; it is a review tool, never a deployment.
+  // Vite inlines the flag at build time, so a production build made with it
+  // refuses to boot instead of trusting "never set it" in the docs.
+  const mockBuild =
+    import.meta.env?.VITE_API_MOCK === "true" ||
+    process.env.VITE_API_MOCK === "true";
+  if (mockBuild && result.data.DEPLOYMENT_MODE !== "development") {
+    console.error(
+      "Invalid web environment:\n  VITE_API_MOCK: mock mode is only allowed with DEPLOYMENT_MODE=development",
+    );
+    process.exit(1);
+  }
   return result.data;
 }
 
