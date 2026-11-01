@@ -71,7 +71,13 @@ export function toWireSession(row: SessionRow): Session {
     kind: row.kind === "management" ? "management" : "customer",
     deviceLabel: row.deviceLabel ?? deviceLabelFor(row.userAgent),
     createdAt: row.createdAt.toISOString(),
-    lastSeenAt: row.lastSeenAt.toISOString(),
+    // `last_seen_at` defaults to the database clock while Better Auth stamps
+    // `created_at` with the API clock; a skew of a few ms between them must
+    // not make the row fail the contract (lastSeenAt >= createdAt) and lock
+    // the user out with a 422.
+    lastSeenAt: new Date(
+      Math.max(row.lastSeenAt.getTime(), row.createdAt.getTime()),
+    ).toISOString(),
     expiresAt: row.expiresAt.toISOString(),
     revokedAt: row.revokedAt?.toISOString() ?? null,
     mfaVerifiedAt: row.mfaVerifiedAt?.toISOString() ?? null,

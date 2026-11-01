@@ -18,7 +18,7 @@ import { AccessError, type PermissionCode } from "@starter/shared/access";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "./auth";
-import { verifiedMfaAt } from "../lib/mfa";
+import { sessionMfaVerifiedAt } from "../lib/mfa";
 import { getTenantContext } from "./tenant";
 import {
   loadTenantAccess,
@@ -46,9 +46,11 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     tenant,
     userId,
     ...data,
-    // lib/mfa.ts fails closed until the factor store lands; the web guard
-    // reads the same flag through /api/me/access.
-    mfaVerified: (await verifiedMfaAt(req)) !== null,
+    // The session's verified second factor (lib/mfa.ts, bead legend-6xf).
+    // Never the per-request `mfaCode` check: that consumes a TOTP step and is
+    // reserved for TEN-04 support access. The web guard reads the same flag
+    // through /api/me/access.
+    mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
     now: new Date(),
   });
   snapshots.set(req, snapshot);

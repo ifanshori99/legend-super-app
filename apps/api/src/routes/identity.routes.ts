@@ -28,6 +28,7 @@ import {
 } from "../services/identity-mfa.service";
 import {
   listOwnSessions,
+  loadSessionRow,
   revokeOwnSession,
 } from "../services/identity-session.service";
 
@@ -35,6 +36,12 @@ import {
 const MFA_ISSUER = "Legend";
 
 export const identityAuthRouter = Router();
+
+/** True once this session verified a second factor (AUTH-05 step-up). */
+async function sessionMfaVerified(sessionId: string): Promise<boolean> {
+  const row = await loadSessionRow(sessionId);
+  return row !== null && row.mfaVerifiedAt !== null;
+}
 
 identityAuthRouter.get("/mfa/factors", requireAuth, async (req, res) => {
   res.json({ data: await listMfaFactors(getAuth(req).user.id) });
@@ -53,6 +60,7 @@ identityAuthRouter.post(
       accountName: auth.user.email,
       type: input.type,
       issuer: MFA_ISSUER,
+      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
     });
     res.status(201).json({ data: enrollment });
   },
@@ -82,7 +90,12 @@ identityAuthRouter.delete(
   requireTrustedOrigin,
   async (req, res) => {
     const { factorId } = mfaFactorParamsSchema.parse(req.params);
-    await deleteMfaFactor({ userId: getAuth(req).user.id, factorId });
+    const auth = getAuth(req);
+    await deleteMfaFactor({
+      userId: auth.user.id,
+      factorId,
+      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+    });
     res.status(204).end();
   },
 );
