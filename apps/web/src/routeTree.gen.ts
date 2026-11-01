@@ -35,6 +35,7 @@ import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
+import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
@@ -166,6 +167,11 @@ const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
   path: '/kds/',
   getParentRoute: () => KitchenRoute,
 } as any)
+const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
+  id: '/operasional/koneksi',
+  path: '/operasional/koneksi',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
   id: '/pos/',
   path: '/pos/',
@@ -237,6 +243,7 @@ export interface FileRoutesByFullPath {
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
+  '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -264,6 +271,7 @@ export interface FileRoutesByTo {
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
+  '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -304,6 +312,7 @@ export interface FileRoutesById {
   '/_public/': typeof PublicIndexRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRoute
+  '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -334,6 +343,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/f/$facility'
     | '/t/$token'
+    | '/operasional/koneksi'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -361,6 +371,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/f/$facility'
     | '/t/$token'
+    | '/operasional/koneksi'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -400,6 +411,7 @@ export interface FileRouteTypes {
     | '/_public/'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
+    | '/_ops/operasional/koneksi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -616,6 +628,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KitchenKdsIndexRouteImport
       parentRoute: typeof KitchenRoute
     }
+    '/_ops/operasional/koneksi': {
+      id: '/_ops/operasional/koneksi'
+      path: '/operasional/koneksi'
+      fullPath: '/operasional/koneksi'
+      preLoaderRoute: typeof OpsOperasionalKoneksiRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/': {
       id: '/_ops/pos/'
       path: '/pos'
@@ -789,10 +808,12 @@ const KitchenRouteWithChildren =
   KitchenRoute._addFileChildren(KitchenRouteChildren)
 
 interface OpsRouteChildren {
+  OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
+  OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
 }
 
