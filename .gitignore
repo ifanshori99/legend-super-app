@@ -23,3 +23,9 @@ coverage/
 .vercel/
 .claude/settings.local.json
 .codex/config.local.toml
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
