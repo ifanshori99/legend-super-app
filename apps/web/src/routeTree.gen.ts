@@ -24,11 +24,13 @@ import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
+import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
 import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
@@ -123,6 +125,11 @@ const CustomerMemberRoute = CustomerMemberRouteImport.update({
   path: '/member',
   getParentRoute: () => CustomerRoute,
 } as any)
+const CustomerWifiRoute = CustomerWifiRouteImport.update({
+  id: '/wifi',
+  path: '/wifi',
+  getParentRoute: () => CustomerRoute,
+} as any)
 const KitchenExpoRoute = KitchenExpoRouteImport.update({
   id: '/expo',
   path: '/expo',
@@ -147,6 +154,11 @@ const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => PublicRoute,
+} as any)
+const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
+  id: '/bayar/$token',
+  path: '/bayar/$token',
+  getParentRoute: () => CustomerRoute,
 } as any)
 const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
   id: '/f/$facility',
@@ -308,10 +320,12 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
+  '/wifi': typeof CustomerWifiRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -347,10 +361,12 @@ export interface FileRoutesByTo {
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
+  '/wifi': typeof CustomerWifiRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -397,11 +413,13 @@ export interface FileRoutesById {
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
+  '/_customer/wifi': typeof CustomerWifiRoute
   '/_kitchen/expo': typeof KitchenExpoRoute
   '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
+  '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -440,10 +458,12 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/member'
+    | '/wifi'
     | '/expo'
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/t/$token'
     | '/operasional/koneksi'
@@ -479,10 +499,12 @@ export interface FileRouteTypes {
     | '/design-system'
     | '/sign-in'
     | '/sign-up'
+    | '/wifi'
     | '/expo'
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/operasional/koneksi'
     | '/member'
@@ -528,11 +550,13 @@ export interface FileRouteTypes {
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
+    | '/_customer/wifi'
     | '/_kitchen/expo'
     | '/_kitchen/pickup'
     | '/_protected/admin'
     | '/_protected/notes'
     | '/_public/'
+    | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
     | '/_ops/operasional/koneksi'
@@ -686,6 +710,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerMemberRouteImport
       parentRoute: typeof CustomerRoute
     }
+    '/_customer/wifi': {
+      id: '/_customer/wifi'
+      path: '/wifi'
+      fullPath: '/wifi'
+      preLoaderRoute: typeof CustomerWifiRouteImport
+      parentRoute: typeof CustomerRoute
+    }
     '/_kitchen/expo': {
       id: '/_kitchen/expo'
       path: '/expo'
@@ -720,6 +751,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof PublicIndexRouteImport
       parentRoute: typeof PublicRoute
+    }
+    '/_customer/bayar/$token': {
+      id: '/_customer/bayar/$token'
+      path: '/bayar/$token'
+      fullPath: '/bayar/$token'
+      preLoaderRoute: typeof CustomerBayarTokenRouteImport
+      parentRoute: typeof CustomerRoute
     }
     '/_customer/f/$facility': {
       id: '/_customer/f/$facility'
@@ -985,12 +1023,16 @@ const CustomerTTokenRouteWithChildren = CustomerTTokenRoute._addFileChildren(
 
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerWifiRoute: typeof CustomerWifiRoute
+  CustomerBayarTokenRoute: typeof CustomerBayarTokenRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRouteWithChildren
 }
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerWifiRoute: CustomerWifiRoute,
+  CustomerBayarTokenRoute: CustomerBayarTokenRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRouteWithChildren,
 }

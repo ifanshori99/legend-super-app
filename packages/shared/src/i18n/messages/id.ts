@@ -221,6 +221,7 @@ export const id = {
       orders: "Pesanan",
       member: "Member",
       facility: "Fasilitas",
+      wifi: "Wi-Fi",
       account: "Akun",
     },
     management: {
@@ -256,6 +257,113 @@ export const id = {
   layout: {
     offlineRegion: "Status koneksi",
     themeToggle: "Ganti tema",
+  },
+  // Customer payment pages (bead legend-2w5, PRD §3.13 F13). The screen never
+  // marks itself paid from a gateway redirect (PAY-02).
+  payment: {
+    title: "Pembayaran",
+    back: "Kembali",
+    billTitle: "Rincian tagihan",
+    reference: "Tagihan {reference}",
+    tableContext: "{table} · {pax} tamu",
+    subtotal: "Subtotal",
+    discount: "Diskon",
+    serviceCharge: "Service charge",
+    tax: "Pajak",
+    rounding: "Pembulatan",
+    total: "Total tagihan",
+    paid: "Sudah dibayar",
+    outstanding: "Sisa tagihan",
+    taxExclusiveHint:
+      "Harga menu belum termasuk service charge dan pajak; keduanya ditambahkan di tagihan ini.",
+    chooseTitle: "Pilih metode pembayaran",
+    chooseHint:
+      "Nominal dan status lunas ditentukan oleh sistem pembayaran, bukan oleh halaman ini.",
+    methodLegend: "Metode pembayaran",
+    methodQris: "QRIS",
+    methodQrisHint: "Pindai sekali dengan aplikasi bank atau e-wallet apa pun.",
+    methodVa: "Virtual Account",
+    methodVaHint: "Transfer dari m-banking ke Virtual Account bank pilihanmu.",
+    methodBankTransfer: "Transfer bank",
+    methodBankTransferHint:
+      "Transfer ke rekening outlet dengan kode unik, dikonfirmasi otomatis.",
+    methodUnavailable: "Sementara tidak tersedia",
+    bankLabel: "Bank",
+    bankPlaceholder: "Pilih bank",
+    continue: "Lanjutkan pembayaran",
+    pendingTitle: "Selesaikan pembayaran",
+    statusPending: "Menunggu pembayaran",
+    expiresIn: "Berlaku {time}",
+    expiresInLong: "Kode pembayaran berlaku {time} lagi",
+    qrisTitle: "Pindai kode QRIS",
+    qrisHint:
+      "Buka aplikasi bank atau e-wallet, pilih bayar QRIS, lalu pindai kode ini.",
+    amount: "Nominal",
+    refreshingCode: "Memperbarui kode…",
+    vaTitleWithBank: "Nomor Virtual Account {bank}",
+    vaHint:
+      "Gunakan nomor ini hanya untuk tagihan ini. Nominal harus sama persis.",
+    vaStep1: "Buka aplikasi bank dan pilih menu Transfer.",
+    vaStep2: "Pilih Virtual Account, lalu masukkan nomor di atas.",
+    vaStep3:
+      "Masukkan nominal tepat seperti di atas, lalu selesaikan transfer.",
+    transferTitle: "Rekening tujuan",
+    transferHint:
+      "Nominal sudah termasuk kode unik. Transfer tepat sebesar ini, jangan dibulatkan.",
+    accountNumber: "Nomor rekening",
+    accountHolder: "Atas nama",
+    uniqueCode: "Kode unik",
+    transferTotal: "Nominal transfer",
+    copy: "Salin",
+    copied: "Tersalin",
+    copyValue: "Salin {label}",
+    copyFailed: "Tidak bisa menyalin otomatis. Salin manual dari teks di atas.",
+    checkingAuto: "Status diperiksa otomatis tiap beberapa detik.",
+    changeMethod: "Ganti metode",
+    changeMethodTitle: "Ganti metode pembayaran?",
+    changeMethodBody:
+      "Kode {method} sebelumnya masih bisa dibayar sampai kedaluwarsa. Jangan membayar keduanya.",
+    changeMethodConfirm: "Ganti metode",
+    changeMethodCancel: "Tetap di sini",
+    expiredTitle: "Kode pembayaran kedaluwarsa",
+    expiredHint: "Buat kode baru untuk melanjutkan. Tagihan belum berubah.",
+    failedTitle: "Pembayaran gagal",
+    failedHint:
+      "Tidak ada dana yang tercatat. Coba lagi atau pilih metode lain.",
+    retry: "Coba lagi",
+    newCode: "Buat kode baru",
+    paidTitle: "Pembayaran berhasil",
+    paidHint:
+      "Terima kasih. Pembayaran sudah dikonfirmasi oleh sistem pembayaran.",
+    paidLate:
+      "Pembayaran diterima setelah kode kedaluwarsa, jadi kasir akan menindaklanjuti.",
+    paidAtLabel: "Waktu pembayaran",
+    refundedHint:
+      "Pembayaran ini sudah dikembalikan. Hubungi kasir bila ada pertanyaan.",
+    finish: "Selesai",
+    gatewayDownTitle: "Pembayaran online sedang gangguan",
+    gatewayDownHint:
+      "Bayar di kasir: tunai, kartu debit/kredit, atau QRIS lewat EDC bank. Supervisor akan membantu.",
+    payAtCashier: "Beri tahu kasir",
+    payAtCashierDone:
+      "Kasir sudah menerima permintaanmu. Tunjukkan tagihan {reference} di kasir.",
+    unavailableTitle: "Metode pembayaran online tidak tersedia",
+    unavailableHint: "Bayar di kasir atau coba lagi nanti.",
+    emptyTitle: "Tidak ada yang perlu dibayar",
+    emptyHint:
+      "Tagihan ini sudah lunas atau belum memiliki nominal untuk dibayar.",
+    offlineTitle: "Tidak ada koneksi internet",
+    offlineHint:
+      "Pembayaran yang sudah dikirim tetap diproses oleh sistem pembayaran. Sambungkan internet, lalu periksa status lagi.",
+    checkAgain: "Periksa status",
+    loadFailedTitle: "Tagihan tidak dapat dimuat",
+    linkNotFound: "Tautan pembayaran tidak ditemukan",
+    linkNotFoundHint: "Minta tautan baru dari kasir atau dari pesananmu.",
+    alreadyPaid: "Tagihan ini sudah lunas.",
+    methodInvalid:
+      "Metode atau bank yang dipilih belum tersedia. Pilih yang lain.",
+    actionFailed: "Permintaan belum bisa diproses. Coba lagi.",
+    secureNote: "Jangan bagikan kode pembayaran ini ke siapa pun.",
   },
   gate: {
     forbiddenTitle: "Anda belum punya akses ke area ini",
@@ -408,6 +516,7 @@ export const id = {
     errorTitle: "Pickup display tidak dapat dimuat",
     errorHint: "Periksa koneksi ke edge node, lalu coba lagi.",
     loading: "Memuat pickup display…",
+  },
   // Akses Fasilitas (WS-09, PRD §3 F22/F23/F42, alur S/T/U/V/Z). Layar
   // pelanggan: pemesanan shower dari QR fasilitas, tiket akses, Fasilitas
   // Saya, dan halaman langganan.
@@ -667,6 +776,90 @@ export const id = {
         cancelled: "Berhenti",
       },
     },
+  },
+  // Wi-Fi tamu dan produk WFC (PRD v1.7 §3 Kelompok C "Wi-Fi Tamu & WFC",
+  // §4 Alur X, FAC-11..FAC-13). Angka di layar selalu berasal dari kebijakan
+  // zona (wifi_policies), bukan dari teks ini.
+  wifi: {
+    title: "Wi-Fi Tamu",
+    intro:
+      "Kuota gratis setiap hari, otomatis bertambah dari pesanan yang lunas.",
+    loading: "Memuat kuota Wi-Fi…",
+    zoneUnknownTitle: "Zona Wi-Fi belum dipilih",
+    zoneUnknownHint:
+      "Pindai QR di meja atau stiker Wi-Fi untuk membuka portal dengan zona yang benar.",
+    loginTitle: "Masuk dengan WhatsApp",
+    loginHint:
+      "Wi-Fi tamu terikat ke akun pelanggan lewat WhatsApp. Maksimal {devices} perangkat per akun.",
+    loginAction: "Masuk dengan WhatsApp",
+    connectTitle: "Sambungkan Wi-Fi",
+    connectHint:
+      "Perangkat ini akan memakai kuota gratis hari ini. Sambungan tidak pernah diputus saat kuota habis.",
+    connectAction: "Sambungkan Wi-Fi",
+    connectPending: "Menyambungkan…",
+    connectError: "Wi-Fi belum tersambung. Coba lagi sebentar lagi.",
+    deviceLimitError:
+      "Akun ini sudah memakai {devices} perangkat. Putuskan salah satu perangkat, lalu sambungkan lagi.",
+    quotaLabel: "Sisa kuota hari ini",
+    quotaUsed: "{used} dari {quota} menit terpakai",
+    quotaNote: "Kuota diperbarui otomatis setiap 30 detik dari pesanan lunas.",
+    speedFull: "Kecepatan penuh",
+    speedFullHint: "Kecepatan penuh selama kuota tersedia.",
+    speedBase: "Kecepatan dasar",
+    speedBaseHint:
+      "Koneksi turun ke kecepatan dasar dan tetap tersambung, tidak diputus.",
+    reminderTitle: "Kuota hampir habis",
+    reminderHint: "Sisa {minutes}. Tambah 1 jam dengan memesan minuman.",
+    spentTitle: "Kuota habis",
+    spentHint:
+      "Tambah 1 jam dengan memesan minuman; kuota bertambah otomatis setelah pesanan lunas.",
+    addHour: "Tambah 1 jam",
+    ruleFree: "{minutes} gratis setiap hari di luar jam ramai",
+    rulePeak: "Jam ramai: {minutes} gratis · {windows}",
+    ruleSpend:
+      "Setiap belanja {amount} menambah {minutes}, otomatis setelah lunas",
+    ruleTier: "Bonus tier: {tiers}",
+    ruleDevices: "Maksimal {devices} perangkat per akun",
+    tierValue: "{tier} {minutes}",
+    orderAction: "Pesan makanan & minuman",
+    orderHint:
+      "Halaman pesanan dan pembayaran tetap terbuka tanpa login Wi-Fi.",
+    drinksTitle: "Tambah 1 jam",
+    drinksHint:
+      "Setiap belanja {amount} yang lunas menambah {minutes} secara otomatis dalam 1 menit, tanpa login ulang.",
+    drinksOpenMenu: "Buka menu meja",
+    drinksNoTable:
+      "Pindai QR di meja Anda untuk membuka menu dan memesan minuman.",
+    drinksClose: "Nanti saja",
+    wfcTitle: "Bekerja seharian di Zona WFC?",
+    wfcHint:
+      "Produk WFC memakai slot, hak akses, dan langganan yang sama dengan fasilitas lain.",
+    wfcDayPass: "Day pass WFC",
+    wfcDayPassHint:
+      "Termasuk minuman, Wi-Fi cepat sepanjang hari, dan jaminan kursi di Zona WFC.",
+    wfcSeat: "Reservasi kursi WFC",
+    wfcSeatHint: "Pesan kursi di Zona WFC per slot.",
+    wfcPlanAmount: "{sessions} sesi per {interval}",
+    wfcPlanEmpty: "Belum ada paket langganan yang aktif.",
+    wfcCta: "Lihat & pesan produk WFC",
+    wfcNoFacility: "Pindai QR Zona WFC untuk melihat harga dan memesan.",
+    intervalMonth: "bulan",
+    intervalYear: "tahun",
+    hoursMinutes: "{hours} jam {minutes} menit",
+    hours: "{hours} jam",
+    minutes: "{minutes} menit",
+    daysShort: {
+      sun: "Min",
+      mon: "Sen",
+      tue: "Sel",
+      wed: "Rab",
+      thu: "Kam",
+      fri: "Jum",
+      sat: "Sab",
+    },
+    dayRange: "{from}–{to}",
+    peakRange: "{start}–{end}",
+    peakWindow: "{days} {times}",
   },
   // Kamus istilah (PRD §3 F4 "Teks & Kamus Istilah"): istilah yang boleh
   // diganti tenant lewat text_overrides tanpa deploy. Kuncinya terdaftar di
