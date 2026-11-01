@@ -101,6 +101,7 @@ export const id = {
       menu: "Menu",
       orders: "Pesanan",
       member: "Member",
+      wifi: "Wi-Fi",
       account: "Akun",
     },
     management: {
@@ -201,6 +202,90 @@ export const id = {
       emptyTitle: "Panel platform belum berisi tenant",
       emptyHint: "Daftar tenant, paket, dan kesehatan sistem tampil di sini.",
     },
+  },
+  // Wi-Fi tamu dan produk WFC (PRD v1.7 §3 Kelompok C "Wi-Fi Tamu & WFC",
+  // §4 Alur X, FAC-11..FAC-13). Angka di layar selalu berasal dari kebijakan
+  // zona (wifi_policies), bukan dari teks ini.
+  wifi: {
+    title: "Wi-Fi Tamu",
+    intro:
+      "Kuota gratis setiap hari, otomatis bertambah dari pesanan yang lunas.",
+    loading: "Memuat kuota Wi-Fi…",
+    zoneUnknownTitle: "Zona Wi-Fi belum dipilih",
+    zoneUnknownHint:
+      "Pindai QR di meja atau stiker Wi-Fi untuk membuka portal dengan zona yang benar.",
+    loginTitle: "Masuk dengan WhatsApp",
+    loginHint:
+      "Wi-Fi tamu terikat ke akun pelanggan lewat WhatsApp. Maksimal {devices} perangkat per akun.",
+    loginAction: "Masuk dengan WhatsApp",
+    connectTitle: "Sambungkan Wi-Fi",
+    connectHint:
+      "Perangkat ini akan memakai kuota gratis hari ini. Sambungan tidak pernah diputus saat kuota habis.",
+    connectAction: "Sambungkan Wi-Fi",
+    connectPending: "Menyambungkan…",
+    connectError: "Wi-Fi belum tersambung. Coba lagi sebentar lagi.",
+    deviceLimitError:
+      "Akun ini sudah memakai {devices} perangkat. Putuskan salah satu perangkat, lalu sambungkan lagi.",
+    quotaLabel: "Sisa kuota hari ini",
+    quotaUsed: "{used} dari {quota} menit terpakai",
+    quotaNote: "Kuota diperbarui otomatis setiap 30 detik dari pesanan lunas.",
+    speedFull: "Kecepatan penuh",
+    speedFullHint: "Kecepatan penuh selama kuota tersedia.",
+    speedBase: "Kecepatan dasar",
+    speedBaseHint:
+      "Koneksi turun ke kecepatan dasar dan tetap tersambung, tidak diputus.",
+    reminderTitle: "Kuota hampir habis",
+    reminderHint: "Sisa {minutes}. Tambah 1 jam dengan memesan minuman.",
+    spentTitle: "Kuota habis",
+    spentHint:
+      "Tambah 1 jam dengan memesan minuman; kuota bertambah otomatis setelah pesanan lunas.",
+    addHour: "Tambah 1 jam",
+    ruleFree: "{minutes} gratis setiap hari di luar jam ramai",
+    rulePeak: "Jam ramai: {minutes} gratis · {windows}",
+    ruleSpend:
+      "Setiap belanja {amount} menambah {minutes}, otomatis setelah lunas",
+    ruleTier: "Bonus tier: {tiers}",
+    ruleDevices: "Maksimal {devices} perangkat per akun",
+    tierValue: "{tier} {minutes}",
+    orderAction: "Pesan makanan & minuman",
+    orderHint:
+      "Halaman pesanan dan pembayaran tetap terbuka tanpa login Wi-Fi.",
+    drinksTitle: "Tambah 1 jam",
+    drinksHint:
+      "Setiap belanja {amount} yang lunas menambah {minutes} secara otomatis dalam 1 menit, tanpa login ulang.",
+    drinksOpenMenu: "Buka menu meja",
+    drinksNoTable:
+      "Pindai QR di meja Anda untuk membuka menu dan memesan minuman.",
+    drinksClose: "Nanti saja",
+    wfcTitle: "Bekerja seharian di Zona WFC?",
+    wfcHint:
+      "Produk WFC memakai slot, hak akses, dan langganan yang sama dengan fasilitas lain.",
+    wfcDayPass: "Day pass WFC",
+    wfcDayPassHint:
+      "Termasuk minuman, Wi-Fi cepat sepanjang hari, dan jaminan kursi di Zona WFC.",
+    wfcSeat: "Reservasi kursi WFC",
+    wfcSeatHint: "Pesan kursi di Zona WFC per slot.",
+    wfcPlanAmount: "{sessions} sesi per {interval}",
+    wfcPlanEmpty: "Belum ada paket langganan yang aktif.",
+    wfcCta: "Lihat & pesan produk WFC",
+    wfcNoFacility: "Pindai QR Zona WFC untuk melihat harga dan memesan.",
+    intervalMonth: "bulan",
+    intervalYear: "tahun",
+    hoursMinutes: "{hours} jam {minutes} menit",
+    hours: "{hours} jam",
+    minutes: "{minutes} menit",
+    daysShort: {
+      sun: "Min",
+      mon: "Sen",
+      tue: "Sel",
+      wed: "Rab",
+      thu: "Kam",
+      fri: "Jum",
+      sat: "Sab",
+    },
+    dayRange: "{from}–{to}",
+    peakRange: "{start}–{end}",
+    peakWindow: "{days} {times}",
   },
   // Kamus istilah (PRD §3 F4 "Teks & Kamus Istilah"): istilah yang boleh
   // diganti tenant lewat text_overrides tanpa deploy. Kuncinya terdaftar di

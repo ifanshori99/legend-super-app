@@ -24,6 +24,7 @@ import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
+import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
@@ -102,6 +103,11 @@ const CustomerMemberRoute = CustomerMemberRouteImport.update({
   path: '/member',
   getParentRoute: () => CustomerRoute,
 } as any)
+const CustomerWifiRoute = CustomerWifiRouteImport.update({
+  id: '/wifi',
+  path: '/wifi',
+  getParentRoute: () => CustomerRoute,
+} as any)
 const ProtectedAdminRoute = ProtectedAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -175,6 +181,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
+  '/wifi': typeof CustomerWifiRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
@@ -193,6 +200,7 @@ export interface FileRoutesByTo {
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
+  '/wifi': typeof CustomerWifiRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
@@ -223,6 +231,7 @@ export interface FileRoutesById {
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
+  '/_customer/wifi': typeof CustomerWifiRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
@@ -245,6 +254,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/member'
+    | '/wifi'
     | '/admin'
     | '/notes'
     | '/f/$facility'
@@ -263,6 +273,7 @@ export interface FileRouteTypes {
     | '/design-system'
     | '/sign-in'
     | '/sign-up'
+    | '/wifi'
     | '/admin'
     | '/notes'
     | '/f/$facility'
@@ -292,6 +303,7 @@ export interface FileRouteTypes {
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
+    | '/_customer/wifi'
     | '/_protected/admin'
     | '/_protected/notes'
     | '/_public/'
@@ -429,6 +441,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerMemberRouteImport
       parentRoute: typeof CustomerRoute
     }
+    '/_customer/wifi': {
+      id: '/_customer/wifi'
+      path: '/wifi'
+      fullPath: '/wifi'
+      preLoaderRoute: typeof CustomerWifiRouteImport
+      parentRoute: typeof CustomerRoute
+    }
     '/_protected/admin': {
       id: '/_protected/admin'
       path: '/admin'
@@ -549,12 +568,14 @@ const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
 
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerWifiRoute: typeof CustomerWifiRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRoute
 }
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerWifiRoute: CustomerWifiRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRoute,
 }
