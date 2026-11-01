@@ -6,6 +6,7 @@ import { errorHandler } from "./error-handler";
 import {
   developmentTenantContext,
   getTenantContext,
+  requireTenantContext,
   tenantContext,
 } from "./tenant";
 
@@ -101,6 +102,51 @@ describe("TEN-02 tenant resolution", () => {
       .set("Host", "unknown.example.com")
       .set("X-Forwarded-Host", "a.example.com");
     expect(response.status).toBe(404);
+  });
+  it("mounts globally without a tenant and lets routes demand one", async () => {
+    const server = express();
+    server.use(
+      tenantContext({
+        required: false,
+        resolveDomain: async () => null,
+        verifyCredential: async () => null,
+      }),
+    );
+    server.get("/global", (_req, res) => res.sendStatus(200));
+    server.get("/tenant", requireTenantContext, (_req, res) =>
+      res.sendStatus(200),
+    );
+    server.use(errorHandler);
+    expect((await request(server).get("/global")).status).toBe(200);
+    expect((await request(server).get("/tenant")).status).toBe(404);
+  });
+  it("runs the development fallback only when no real source resolved", async () => {
+    let fallbackCalls = 0;
+    const server = express();
+    server.use(
+      tenantContext({
+        resolveDomain: async (host) =>
+          host === "a.example.com" ? domainTenant : null,
+        verifyCredential: async () => null,
+        fallback: async () => {
+          fallbackCalls += 1;
+          return { tenantId: tenantB, brandId: null, source: "session" };
+        },
+      }),
+    );
+    server.get("/", (req, res) =>
+      res.json({ tenantId: getTenantContext(req).tenantId }),
+    );
+    expect(
+      (await request(server).get("/").set("Host", "a.example.com")).body
+        .tenantId,
+    ).toBe(tenantA);
+    expect(fallbackCalls).toBe(0);
+    expect(
+      (await request(server).get("/").set("Host", "unknown.example.com")).body
+        .tenantId,
+    ).toBe(tenantB);
+    expect(fallbackCalls).toBe(1);
   });
 });
 

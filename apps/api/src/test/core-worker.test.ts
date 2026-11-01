@@ -92,6 +92,8 @@ it("gives a generation a deterministic id and retries startup failures safely", 
       id: a,
       retryLimit: 5,
       retryBackoff: true,
+      // A vanished worker must not own the job for pg-boss's 900s default.
+      expireInSeconds: 120,
       deadLetter: OUTBOX_DEAD_LETTER_QUEUE,
     }),
   );

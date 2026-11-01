@@ -107,6 +107,11 @@ test("F12 · Pickup display keeps the sound choice per device", async ({
   page,
 }) => {
   await page.goto("/pickup");
+  // The sound button is server-rendered before the page is interactive; wait
+  // for the pickup data so the click below cannot land on inert markup.
+  const waiting = page.getByRole("region", { name: /Menunggu siap/ });
+  await expect(waiting).toBeVisible();
+
   const toggle = page.getByRole("button", { name: "Suara mati" });
   await expect(toggle).toBeVisible();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
@@ -117,6 +122,8 @@ test("F12 · Pickup display keeps the sound choice per device", async ({
   ).toHaveAttribute("aria-pressed", "true");
 
   await page.reload();
+  // The device preference is read once the page hydrates again.
+  await expect(waiting).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Suara aktif" }),
   ).toHaveAttribute("aria-pressed", "true");

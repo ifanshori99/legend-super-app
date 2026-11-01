@@ -11,5 +11,6 @@ export * from "./scope.ts";
 export * from "./grants.ts";
 export * from "./approval.ts";
 export * from "./schemas.ts";
+export * from "./endpoints.ts";
 export * from "./events.ts";
 export * from "./fixtures.ts";

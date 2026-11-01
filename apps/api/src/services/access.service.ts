@@ -1,0 +1,935 @@
+// Tenant RBAC administration (bead legend-4f9; PRD v1.7 §3.7 "RBAC, Organisasi
+// & Matriks Approval", §6 B roles / role_assignments / approval_policies,
+// TEN-03).
+//
+// Every function runs inside `withTenant`, so RLS scopes rows to the resolved
+// tenant and the service scope comes from the caller's assignments. Rules come
+// from `@starter/shared/access` — role templates, custom-role validation, the
+// grant rules (re-auth, no self-elevation, top-authority), the approval matrix
+// validator — never re-implemented here.
+//
+// Sensitive changes (role created/updated, assignment granted/ended, matrix
+// replaced) write the domain event through the transactional outbox and an
+// audit record through the fail-closed AuditWriter port, in the same
+// transaction.
+
+import { randomUUID } from "node:crypto";
+import {
+  AccessError,
+  approvalPolicyChangedEvent,
+  approvalMatrixSchema,
+  approvalPolicySchema,
+  roleAssignmentSchema,
+  roleIdSchema,
+  roleSchema,
+  assertCanGrantRole,
+  isRoleTemplateKey,
+  normalizeCustomRolePermissions,
+  ROLE_TEMPLATES,
+  roleCreatedEvent,
+  roleAssignmentEndedEvent,
+  roleAssignmentGrantedEvent,
+  roleTemplate,
+  roleUpdatedEvent,
+  scopeCovers,
+  type AccessTarget,
+  type ApprovalPolicy,
+  type PermissionCode,
+  type Role,
+  type RoleAssignment,
+  type CreateCustomRoleInput,
+  type EndRoleAssignmentInput,
+  type GrantRoleInput,
+  type UpdateCustomRoleInput,
+} from "@starter/shared/access";
+import {
+  createUlid,
+  decodeCursor,
+  encodeCursor,
+  userIdSchema,
+} from "@starter/shared/core";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import type { ReplaceApprovalMatrixInput } from "@starter/shared/identity";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
+import { db } from "../db";
+import {
+  approvalPolicies,
+  domainEventOutbox,
+  roleAssignments,
+  roles,
+  user,
+} from "../db/schema";
+import { withTenant } from "../db/tenant";
+import { HttpError } from "../lib/http-error";
+import { recordAudit } from "./audit-writer";
+import { appendOutbox } from "./core-outbox";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type AccessSnapshot,
+  type Tx,
+} from "./permission-resolver";
+
+type RoleRow = typeof roles.$inferSelect;
+type AssignmentRow = typeof roleAssignments.$inferSelect;
+type PolicyRow = typeof approvalPolicies.$inferSelect;
+
+/** Consumers receive access events through the cloud sync stream. */
+const EVENT_DESTINATION = "cloud-sync";
+
+function uniqueViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23505" || uniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
+function toRole(row: RoleRow): Role {
+  return roleSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    name: row.name,
+    isTemplate: row.isTemplate,
+    templateKey: row.templateKey,
+    permissions: row.permissions,
+    mfaRequired: row.mfaRequired,
+    allowedScopeTypes: row.allowedScopeTypes,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+}
+
+function toAssignment(row: AssignmentRow): RoleAssignment {
+  return roleAssignmentSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    userId: row.userId,
+    roleId: row.roleId,
+    scope:
+      row.scopeType === "tenant"
+        ? { type: "tenant", id: null }
+        : { type: row.scopeType, id: row.scopeId },
+    validFrom: row.validFrom.toISOString(),
+    validUntil: row.validUntil?.toISOString() ?? null,
+    assignedBy: row.assignedBy,
+    assignedAt: row.assignedAt.toISOString(),
+  });
+}
+
+function toPolicy(row: PolicyRow): ApprovalPolicy {
+  return approvalPolicySchema.parse({
+    id: row.id,
+    actionType: row.actionType,
+    thresholdIdr: row.thresholdIdr,
+    approverRoleId: row.approverRoleId,
+    levels: row.levels,
+    requiresDistinctActor: true,
+  });
+}
+
+function targetOf(scope: RoleAssignment["scope"]): AccessTarget {
+  return scope.type === "tenant"
+    ? { type: "tenant" }
+    : { type: scope.type, id: scope.id };
+}
+
+/** Server-side permission check, independent of the route middleware. */
+async function assertTenantPermission(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  permission: PermissionCode,
+  now: Date,
+): Promise<AccessSnapshot> {
+  const data = await loadTenantAccessInTransaction(tx, context, actorUserId);
+  const snapshot = resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId: actorUserId,
+    ...data,
+    mfaVerified: false,
+    now,
+  });
+  if (!snapshot.allows(permission, { type: "tenant" }))
+    throw new AccessError("PERMISSION_DENIED");
+  return snapshot;
+}
+
+async function nextSequence(
+  tx: Tx,
+  tenantId: string,
+  aggregateType: string,
+  aggregateId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateType, aggregateType),
+        eq(domainEventOutbox.aggregateId, aggregateId),
+      ),
+    );
+  return Number(row?.last ?? 0) + 1;
+}
+
+/** Append one catalogued access event inside the caller's transaction. */
+async function appendAccessEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  definition: {
+    readonly name: string;
+    readonly version: number;
+    readonly payloadSchemaRef: string;
+    readonly entry: { readonly aggregateType: string };
+    readonly envelopeSchema: { parse(value: unknown): unknown };
+  },
+  input: {
+    aggregateId: string;
+    actorUserId: string;
+    payload: Record<string, unknown>;
+    now: Date;
+  },
+) {
+  const sequence = await nextSequence(
+    tx,
+    context.tenant.tenantId,
+    definition.entry.aggregateType,
+    input.aggregateId,
+  );
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(input.now.getTime()),
+    tenantId: context.tenant.tenantId,
+    outletId: null,
+    name: definition.name,
+    version: definition.version,
+    aggregateType: definition.entry.aggregateType,
+    aggregateId: input.aggregateId,
+    sequence,
+    occurredAt: input.now.toISOString(),
+    actor: { type: "user", id: input.actorUserId },
+    deviceId: null,
+    idempotencyKey: `${definition.name}:${input.aggregateId}:${sequence}`.slice(
+      0,
+      100,
+    ),
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload: input.payload,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(input.now.getTime()),
+    event,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+}
+
+// ------------------------------------------------------------------- roles
+
+export async function listRoles(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  now = new Date(),
+): Promise<{ data: Role[] }> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.view",
+      now,
+    );
+    const rows = await tx
+      .select()
+      .from(roles)
+      .where(eq(roles.tenantId, context.tenant.tenantId))
+      .orderBy(
+        desc(roles.isTemplate),
+        asc(roles.templateKey),
+        asc(roles.name),
+        asc(roles.id),
+      );
+    return { data: rows.map(toRole) };
+  });
+}
+
+/**
+ * Seeds the 17 tenant-level templates (PRD §3.7 table; Super Admin is a
+ * platform role and is never a tenant row) into a new tenant. Idempotent, so a
+ * retried provisioning run cannot duplicate or overwrite renamed roles.
+ */
+export async function seedTenantRoleTemplates(
+  tx: Tx,
+  tenantId: string,
+): Promise<void> {
+  const values = roleTemplateValues(tenantId);
+  await tx
+    .insert(roles)
+    .values(values)
+    .onConflictDoNothing({ target: [roles.tenantId, roles.templateKey] });
+}
+
+export function roleTemplateValues(tenantId: string) {
+  return ROLE_TEMPLATES.filter((template) => template.level === "tenant").map(
+    (template) => ({
+      tenantId,
+      name: template.defaultName,
+      isTemplate: true,
+      templateKey: template.key,
+      permissions: [...template.permissions],
+      mfaRequired: template.mfaRequired,
+      allowedScopeTypes: [...template.allowedScopeTypes],
+    }),
+  );
+}
+
+export async function createCustomRole(
+  context: ScopedTenantContext,
+  input: CreateCustomRoleInput,
+  actorUserId: string,
+  now = new Date(),
+): Promise<Role> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.manage",
+      now,
+    );
+    const normalized = normalizeCustomRolePermissions(input.permissions, {
+      mfaRequested: input.mfaRequired,
+    });
+    let row: RoleRow;
+    try {
+      [row] = await tx
+        .insert(roles)
+        .values({
+          tenantId: context.tenant.tenantId,
+          name: input.name,
+          isTemplate: false,
+          templateKey: null,
+          permissions: normalized.permissions,
+          mfaRequired: normalized.mfaRequired,
+          allowedScopeTypes: input.allowedScopeTypes,
+        })
+        .returning();
+    } catch (error) {
+      if (uniqueViolation(error))
+        throw new HttpError(409, "CONFLICT", "That role name is taken.");
+      throw error;
+    }
+    await appendAccessEvent(tx, context, roleCreatedEvent, {
+      aggregateId: row.id,
+      actorUserId,
+      now,
+      payload: {
+        roleId: row.id,
+        name: row.name,
+        isTemplate: false,
+        permissions: normalized.permissions,
+        mfaRequired: normalized.mfaRequired,
+      },
+    });
+    await recordAudit({
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: actorUserId,
+      deviceId: null,
+      action: "role.created",
+      objectType: "role",
+      objectId: row.id,
+      reason: null,
+      before: null,
+      after: {
+        name: row.name,
+        permissions: normalized.permissions,
+        mfaRequired: normalized.mfaRequired,
+        allowedScopeTypes: input.allowedScopeTypes,
+      },
+      sensitiveAccess: false,
+    });
+    return toRole(row);
+  });
+}
+
+export async function updateCustomRole(
+  context: ScopedTenantContext,
+  roleId: string,
+  input: UpdateCustomRoleInput,
+  actorUserId: string,
+  now = new Date(),
+): Promise<Role> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.manage",
+      now,
+    );
+    const [current] = await tx
+      .select()
+      .from(roles)
+      .where(
+        and(eq(roles.id, roleId), eq(roles.tenantId, context.tenant.tenantId)),
+      )
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Role not found.");
+    if (current.isTemplate)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Template roles are fixed; create a custom role instead.",
+      );
+    const nextPermissions =
+      input.permissions === undefined
+        ? current.permissions
+        : normalizeCustomRolePermissions(input.permissions, {
+            mfaRequested: input.mfaRequired,
+          }).permissions;
+    const nextMfa =
+      input.permissions === undefined && input.mfaRequired === undefined
+        ? current.mfaRequired
+        : normalizeCustomRolePermissions(nextPermissions, {
+            mfaRequested: input.mfaRequired,
+          }).mfaRequired;
+    const added = nextPermissions.filter(
+      (code) => !current.permissions.includes(code),
+    );
+    const removed = current.permissions.filter(
+      (code) => !nextPermissions.includes(code),
+    );
+    // PRD §3.7 Pemberian Role: "pengguna tidak dapat menaikkan hak dirinya
+    // sendiri". Editing a role the actor holds (now or from a future
+    // valid_from) would raise their own rights without a grant, so adding a
+    // permission or dropping the MFA requirement on such a role is refused.
+    if (added.length > 0 || (current.mfaRequired && !nextMfa)) {
+      const [held] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.tenantId, context.tenant.tenantId),
+            eq(roleAssignments.userId, actorUserId),
+            eq(roleAssignments.roleId, roleId),
+            or(
+              isNull(roleAssignments.validUntil),
+              gt(roleAssignments.validUntil, now),
+            ),
+          ),
+        )
+        .limit(1);
+      if (held)
+        throw new AccessError(
+          "SELF_ELEVATION_FORBIDDEN",
+          "Anda tidak dapat menambah hak pada role yang Anda pegang sendiri.",
+        );
+    }
+    const previous = {
+      name: current.name,
+      permissions: current.permissions,
+      mfaRequired: current.mfaRequired,
+      allowedScopeTypes: current.allowedScopeTypes,
+    };
+    let row: RoleRow;
+    try {
+      [row] = await tx
+        .update(roles)
+        .set({
+          ...(input.name === undefined ? {} : { name: input.name }),
+          permissions: nextPermissions,
+          mfaRequired: nextMfa,
+          ...(input.allowedScopeTypes === undefined
+            ? {}
+            : { allowedScopeTypes: input.allowedScopeTypes }),
+          updatedAt: now,
+        })
+        .where(eq(roles.id, roleId))
+        .returning();
+    } catch (error) {
+      if (uniqueViolation(error))
+        throw new HttpError(409, "CONFLICT", "That role name is taken.");
+      throw error;
+    }
+    await appendAccessEvent(tx, context, roleUpdatedEvent, {
+      aggregateId: row.id,
+      actorUserId,
+      now,
+      payload: {
+        roleId: row.id,
+        addedPermissions: added,
+        removedPermissions: removed,
+        mfaRequired: row.mfaRequired,
+      },
+    });
+    await recordAudit({
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: actorUserId,
+      deviceId: null,
+      action: "role.updated",
+      objectType: "role",
+      objectId: row.id,
+      reason: null,
+      before: previous,
+      after: {
+        name: row.name,
+        permissions: row.permissions,
+        mfaRequired: row.mfaRequired,
+        allowedScopeTypes: row.allowedScopeTypes,
+      },
+      sensitiveAccess: false,
+    });
+    return toRole(row);
+  });
+}
+
+// ------------------------------------------------------- role assignments
+
+export async function listRoleAssignments(
+  context: ScopedTenantContext,
+  query: {
+    limit: number;
+    cursor?: string;
+    userId?: string;
+    roleId?: string;
+    activeOnly?: boolean;
+  },
+  actorUserId: string,
+  now = new Date(),
+): Promise<{
+  data: RoleAssignment[];
+  meta: { limit: number; nextCursor: string | null };
+}> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.view",
+      now,
+    );
+    const filters = [eq(roleAssignments.tenantId, context.tenant.tenantId)];
+    if (query.userId) filters.push(eq(roleAssignments.userId, query.userId));
+    if (query.roleId) filters.push(eq(roleAssignments.roleId, query.roleId));
+    if (query.activeOnly) {
+      filters.push(lte(roleAssignments.validFrom, now));
+      filters.push(
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, now),
+        )!,
+      );
+    }
+    if (query.cursor) {
+      const [assignedAt, id] = decodeCursor(query.cursor);
+      if (typeof assignedAt !== "string" || typeof id !== "string")
+        throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      const at = new Date(assignedAt);
+      filters.push(
+        or(
+          sql`${roleAssignments.assignedAt} < ${at}`,
+          and(
+            eq(roleAssignments.assignedAt, at),
+            sql`${roleAssignments.id} < ${id}`,
+          ),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(roleAssignments)
+      .where(and(...filters))
+      .orderBy(desc(roleAssignments.assignedAt), desc(roleAssignments.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map(toAssignment),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.assignedAt.toISOString(), last.id])
+            : null,
+      },
+    };
+  });
+}
+
+export async function grantRoleAssignment(
+  context: ScopedTenantContext,
+  input: GrantRoleInput,
+  options: {
+    actorUserId: string;
+    /** Last successful re-authentication of the grantor, or null (denied). */
+    reauthenticatedAt: Date | null;
+    mfaVerified: boolean;
+    now?: Date;
+  },
+): Promise<RoleAssignment> {
+  const now = options.now ?? new Date();
+  return withTenant(db, context, async (tx) => {
+    const [roleRow] = await tx
+      .select()
+      .from(roles)
+      .where(
+        and(
+          eq(roles.id, input.roleId),
+          eq(roles.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!roleRow) throw new HttpError(404, "NOT_FOUND", "Role not found.");
+    const [grantee] = await tx
+      .select({ id: user.id })
+      .from(user)
+      .where(eq(user.id, input.userId))
+      .limit(1);
+    if (!grantee)
+      throw new HttpError(422, "VALIDATION_ERROR", "Unknown user account.");
+    const data = await loadTenantAccessInTransaction(
+      tx,
+      context,
+      options.actorUserId,
+    );
+    const templateKey = roleRow.templateKey;
+    const template =
+      templateKey !== null && isRoleTemplateKey(templateKey)
+        ? roleTemplate(templateKey)
+        : null;
+    if (!scopeCovers(input.scope, targetOf(input.scope), data.org))
+      throw new AccessError("ROLE_SCOPE_NOT_ALLOWED");
+    assertCanGrantRole({
+      grantor: {
+        tenantId: context.tenant.tenantId,
+        userId: userIdSchema.parse(options.actorUserId),
+        assignments: data.assignments,
+      },
+      grantorRoles: data.roles,
+      grantorMfaVerified: options.mfaVerified,
+      grantorReauthenticatedAt: options.reauthenticatedAt,
+      granteeUserId: input.userId,
+      role: {
+        id: roleIdSchema.parse(roleRow.id),
+        permissions: roleRow.permissions,
+        mfaRequired: roleRow.mfaRequired,
+        templateKey,
+        level: template?.level ?? "tenant",
+        allowedScopeTypes: roleRow.allowedScopeTypes,
+      },
+      scope: input.scope,
+      org: data.org,
+      now,
+    });
+    const validFrom =
+      input.validFrom === undefined ? now : new Date(input.validFrom);
+    const validUntil =
+      input.validUntil === undefined || input.validUntil === null
+        ? null
+        : new Date(input.validUntil);
+    const [row] = await tx
+      .insert(roleAssignments)
+      .values({
+        tenantId: context.tenant.tenantId,
+        userId: input.userId,
+        roleId: roleRow.id,
+        scopeType: input.scope.type,
+        scopeId: input.scope.type === "tenant" ? null : input.scope.id,
+        validFrom,
+        validUntil,
+        assignedBy: options.actorUserId,
+        assignedAt: now,
+      })
+      .returning();
+    const reauthenticatedAt = options.reauthenticatedAt as Date;
+    await appendAccessEvent(tx, context, roleAssignmentGrantedEvent, {
+      aggregateId: row.id,
+      actorUserId: options.actorUserId,
+      now,
+      payload: {
+        assignmentId: row.id,
+        userId: row.userId,
+        roleId: row.roleId,
+        scope:
+          row.scopeType === "tenant"
+            ? { type: "tenant", id: null }
+            : { type: row.scopeType, id: row.scopeId },
+        validFrom: row.validFrom.toISOString(),
+        validUntil: row.validUntil?.toISOString() ?? null,
+        grantedBy: row.assignedBy,
+        reauthenticatedAt: reauthenticatedAt.toISOString(),
+      },
+    });
+    await recordAudit({
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: options.actorUserId,
+      deviceId: null,
+      action: "role_assignment.granted",
+      objectType: "role_assignment",
+      objectId: row.id,
+      reason: null,
+      before: null,
+      after: {
+        userId: row.userId,
+        roleId: row.roleId,
+        scope: input.scope,
+        validFrom: row.validFrom.toISOString(),
+        validUntil: row.validUntil?.toISOString() ?? null,
+      },
+      sensitiveAccess: false,
+    });
+    return toAssignment(row);
+  });
+}
+
+export async function endRoleAssignment(
+  context: ScopedTenantContext,
+  assignmentId: string,
+  input: EndRoleAssignmentInput,
+  actorUserId: string,
+  now = new Date(),
+): Promise<RoleAssignment> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.role.assign",
+      now,
+    );
+    const [current] = await tx
+      .select()
+      .from(roleAssignments)
+      .where(
+        and(
+          eq(roleAssignments.id, assignmentId),
+          eq(roleAssignments.tenantId, context.tenant.tenantId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!current)
+      throw new HttpError(404, "NOT_FOUND", "Role assignment not found.");
+    const validUntil =
+      input.validUntil === undefined ? now : new Date(input.validUntil);
+    if (validUntil.getTime() <= current.validFrom.getTime())
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "validUntil must be after validFrom.",
+      );
+    // "End" only shortens. Moving valid_until later would extend a temporary
+    // assignment or re-activate an ended one (incl. the actor's own) without
+    // the grant rules (re-auth, no self-elevation; PRD §3.7 Pemberian Role).
+    if (
+      current.validUntil !== null &&
+      validUntil.getTime() > current.validUntil.getTime()
+    )
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "An assignment can only be shortened; grant a new one to extend it.",
+      );
+    const [row] = await tx
+      .update(roleAssignments)
+      .set({ validUntil })
+      .where(eq(roleAssignments.id, assignmentId))
+      .returning();
+    await appendAccessEvent(tx, context, roleAssignmentEndedEvent, {
+      aggregateId: row.id,
+      actorUserId,
+      now,
+      payload: {
+        assignmentId: row.id,
+        userId: row.userId,
+        roleId: row.roleId,
+        validUntil: validUntil.toISOString(),
+        endedBy: actorUserId,
+        reason: input.reason,
+      },
+    });
+    await recordAudit({
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: actorUserId,
+      deviceId: null,
+      action: "role_assignment.ended",
+      objectType: "role_assignment",
+      objectId: row.id,
+      reason: input.reason,
+      before: {
+        userId: row.userId,
+        roleId: row.roleId,
+        validUntil: current.validUntil?.toISOString() ?? null,
+      },
+      after: { validUntil: validUntil.toISOString() },
+      sensitiveAccess: false,
+    });
+    return toAssignment(row);
+  });
+}
+
+// ------------------------------------------------------- approval matrix
+
+export async function getApprovalMatrix(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  now = new Date(),
+): Promise<{ data: ApprovalPolicy[] }> {
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.approval_policy.manage",
+      now,
+    );
+    const rows = await tx
+      .select()
+      .from(approvalPolicies)
+      .where(eq(approvalPolicies.tenantId, context.tenant.tenantId))
+      .orderBy(
+        asc(approvalPolicies.actionType),
+        asc(approvalPolicies.levels),
+        asc(approvalPolicies.id),
+      );
+    return { data: rows.map(toPolicy) };
+  });
+}
+
+export async function replaceApprovalMatrix(
+  context: ScopedTenantContext,
+  input: ReplaceApprovalMatrixInput,
+  actorUserId: string,
+  now = new Date(),
+): Promise<{ data: ApprovalPolicy[] }> {
+  // The stored-row schema carries ids; the request does not. Validate the
+  // rules (tiers, contiguous levels, distinct actor) on synthetic rows.
+  const matrix = approvalMatrixSchema.parse(
+    input.policies.map((row) => ({
+      ...row,
+      id: randomUUID(),
+      requiresDistinctActor: true,
+    })),
+  );
+  return withTenant(db, context, async (tx) => {
+    await assertTenantPermission(
+      tx,
+      context,
+      actorUserId,
+      "access.approval_policy.manage",
+      now,
+    );
+    const roleIds = [...new Set(matrix.map((row) => row.approverRoleId))];
+    if (roleIds.length > 0) {
+      const known = await tx
+        .select({ id: roles.id })
+        .from(roles)
+        .where(
+          and(
+            eq(roles.tenantId, context.tenant.tenantId),
+            inArray(roles.id, roleIds),
+          ),
+        );
+      if (known.length !== roleIds.length)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "Every approver role must belong to this tenant.",
+        );
+    }
+    const beforeRows = await tx
+      .select()
+      .from(approvalPolicies)
+      .where(eq(approvalPolicies.tenantId, context.tenant.tenantId));
+    const before = beforeRows.map(toPolicy);
+    await tx
+      .delete(approvalPolicies)
+      .where(eq(approvalPolicies.tenantId, context.tenant.tenantId));
+    if (matrix.length > 0) {
+      await tx.insert(approvalPolicies).values(
+        matrix.map((row) => ({
+          tenantId: context.tenant.tenantId,
+          actionType: row.actionType,
+          thresholdIdr: row.thresholdIdr,
+          approverRoleId: row.approverRoleId,
+          levels: row.levels,
+          requiresDistinctActor: true,
+        })),
+      );
+    }
+    const afterRows = await tx
+      .select()
+      .from(approvalPolicies)
+      .where(eq(approvalPolicies.tenantId, context.tenant.tenantId))
+      .orderBy(
+        asc(approvalPolicies.actionType),
+        asc(approvalPolicies.levels),
+        asc(approvalPolicies.id),
+      );
+    const after = afterRows.map(toPolicy);
+    const actions = new Set([
+      ...before.map((row) => row.actionType),
+      ...after.map((row) => row.actionType),
+    ]);
+    for (const actionType of actions) {
+      const beforeOfType = before.filter(
+        (row) => row.actionType === actionType,
+      );
+      const afterOfType = after.filter((row) => row.actionType === actionType);
+      if (JSON.stringify(beforeOfType) === JSON.stringify(afterOfType))
+        continue;
+      const aggregateId =
+        afterOfType[0]?.id ?? beforeOfType[0]?.id ?? randomUUID();
+      await appendAccessEvent(tx, context, approvalPolicyChangedEvent, {
+        aggregateId,
+        actorUserId,
+        now,
+        payload: {
+          actionType,
+          before: beforeOfType,
+          after: afterOfType,
+        },
+      });
+    }
+    await recordAudit({
+      tenantId: context.tenant.tenantId,
+      outletId: null,
+      actorType: "user",
+      actorId: actorUserId,
+      deviceId: null,
+      action: "approval_policy.changed",
+      objectType: "approval_policy",
+      objectId: null,
+      reason: null,
+      before: { policies: before },
+      after: { policies: after },
+      sensitiveAccess: false,
+    });
+    return { data: after };
+  });
+}

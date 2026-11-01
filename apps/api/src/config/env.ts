@@ -123,6 +123,9 @@ const schema = z
           .map((item) => item.trim())
           .filter(Boolean),
       ),
+    // Shared secret Caddy sends with its on-demand TLS ask (X-Tls-Ask-Token).
+    // Unset in local development; set it wherever a public proxy calls the ask.
+    TLS_ASK_TOKEN: z.string().min(16).max(200).optional(),
   })
   .refine(
     (values) =>

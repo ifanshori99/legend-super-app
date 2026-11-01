@@ -38,9 +38,14 @@ test.describe("legend-xx9 · menu back office", () => {
     ).toBeVisible();
 
     await page.getByRole("tab", { name: "Varian" }).click();
-    await expect(page.getByText("Panas")).toBeVisible();
+    // Scope to the table: the section hint also mentions "Panas".
+    await expect(
+      page.getByRole("cell", { name: "Panas", exact: true }),
+    ).toBeVisible();
     await page.getByRole("tab", { name: "Modifier" }).click();
-    await expect(page.getByText("Tingkat gula").first()).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "Tingkat gula", exact: true }),
+    ).toBeVisible();
 
     expect(errors).toEqual([]);
   });
