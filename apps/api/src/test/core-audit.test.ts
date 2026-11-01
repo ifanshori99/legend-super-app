@@ -30,6 +30,18 @@ const event = {
   tenantId: tenantA,
   outletId: null,
 };
+/** Drizzle wraps the PostgreSQL error; assert on the database's own message. */
+async function rejectsWith(run: Promise<unknown>, pattern: RegExp) {
+  const error = await run.then(
+    () => null,
+    (caught: unknown) => caught,
+  );
+  expect(error).toBeInstanceOf(Error);
+  const cause = (error as Error & { cause?: unknown }).cause;
+  expect(cause instanceof Error ? cause.message : String(error)).toMatch(
+    pattern,
+  );
+}
 afterAll(async () => {
   await pool.end();
 });
@@ -47,16 +59,38 @@ describe("audit log", () => {
     });
   });
   it("PRD §6 audit records are append-only", async () => {
-    await expect(
+    // A real column, so the rejection comes from the guard, not a bad query.
+    await rejectsWith(
       withTenant(db, context(tenantA), async (tx) => {
-        await tx.execute(sql`UPDATE audit_logs SET action = 'audit.changed'`);
+        await tx.execute(
+          sql`UPDATE audit_logs SET retention_class = 'audit_2y'`,
+        );
       }),
-    ).rejects.toThrow();
-    await expect(
+      /permission denied/,
+    );
+    await rejectsWith(
       withTenant(db, context(tenantA), async (tx) => {
         await tx.execute(sql`DELETE FROM audit_logs`);
       }),
-    ).rejects.toThrow();
+      /permission denied/,
+    );
+    // The table owner is still blocked from rewriting recent history.
+    const owner = new Pool({
+      connectionString: process.env.MIGRATION_DATABASE_URL,
+    });
+    try {
+      await expect(
+        owner.query(
+          "UPDATE audit_logs SET retention_class = 'audit_2y' WHERE tenant_id = $1",
+          [tenantA],
+        ),
+      ).rejects.toThrow(/append-only/);
+      await expect(
+        owner.query("DELETE FROM audit_logs WHERE tenant_id = $1", [tenantA]),
+      ).rejects.toThrow(/append-only/);
+    } finally {
+      await owner.end();
+    }
   });
   it("PRD §4 rejects unmasked changes and sensitive access without a reason", async () => {
     await expect(
