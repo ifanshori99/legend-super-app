@@ -20,7 +20,7 @@ export const adapterFixtures = {
   payment: {
     ...scope,
     reference: "order-legend-001",
-    idempotencyKey: "pay-001",
+    idempotencyKey: "pay-legend-001",
     amountIdr: 56000,
     method: "qris",
   },
@@ -45,7 +45,6 @@ export const adapterFixtures = {
     phoneNumberId: "legend-number",
     sender: "628123456789",
     text: "LEGEND 123456",
-    signatureHeader: "X-Kirim-Signature",
   },
   message: {
     ...scope,
