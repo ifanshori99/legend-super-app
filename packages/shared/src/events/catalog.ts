@@ -19,7 +19,7 @@ export const eventCatalogEntrySchema = z
 export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
   "WS-01":
-    "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated",
+    "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed",
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
