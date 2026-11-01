@@ -188,9 +188,29 @@ export function isOperableSession(session: Pick<TableSession, "status">) {
   return session.status === "open" || session.status === "bill_requested";
 }
 
+/**
+ * Money already paid on a session (a settled split or partial payment) locks
+ * its orders: merging or moving items would re-split a bill that guests have
+ * partly paid (coordinator decision C2: a paid share locks re-split for the
+ * whole table session). `paidIdr` is the server's bill total, never a client
+ * number.
+ */
+export function assertSessionHasNoPayment(session: { paidIdr: number }): void {
+  if (session.paidIdr > 0)
+    throw new CoreError(
+      "CONFLICT",
+      "Sesi yang sudah dibayar sebagian tidak dapat digabung atau dipindah itemnya; selesaikan tagihan terlebih dahulu.",
+    );
+}
+
+type OperableSession = Pick<
+  TableSession,
+  "id" | "outletId" | "status" | "paymentMode"
+> & { paidIdr: number };
+
 export function assertSessionsCanMerge(input: {
-  target: Pick<TableSession, "id" | "outletId" | "status" | "paymentMode">;
-  source: Pick<TableSession, "id" | "outletId" | "status" | "paymentMode">;
+  target: OperableSession;
+  source: OperableSession;
 }): void {
   const { target, source } = input;
   if (target.id === source.id)
@@ -211,11 +231,13 @@ export function assertSessionsCanMerge(input: {
         "CONFLICT",
         "Hanya sesi yang sudah berjalan (open atau menunggu tagihan) yang dapat digabung; konfirmasi sesi open bill terlebih dahulu.",
       );
+  assertSessionHasNoPayment(target);
+  assertSessionHasNoPayment(source);
 }
 
 export function assertItemsCanMove(input: {
-  from: Pick<TableSession, "id" | "outletId" | "status">;
-  to: Pick<TableSession, "id" | "outletId" | "status">;
+  from: Pick<TableSession, "id" | "outletId" | "status"> & { paidIdr: number };
+  to: Pick<TableSession, "id" | "outletId" | "status"> & { paidIdr: number };
 }): void {
   const { from, to } = input;
   if (from.id === to.id)
@@ -228,6 +250,8 @@ export function assertItemsCanMove(input: {
         "CONFLICT",
         "Pindah item hanya berlaku untuk sesi yang sedang berjalan.",
       );
+  assertSessionHasNoPayment(from);
+  assertSessionHasNoPayment(to);
 }
 
 /** PRD "Mode Bayar": the session keeps the zone's mode it opened with. */

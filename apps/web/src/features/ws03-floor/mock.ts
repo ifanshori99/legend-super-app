@@ -12,7 +12,6 @@ import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import { createUlid, idr } from "@starter/shared/core";
 import {
-  billSplitSchema,
   cafeLegendQrOrderFixtures,
   cafeLegendTaxRules,
   canApplyTableStatusAction,
@@ -20,10 +19,8 @@ import {
   closeTableSession,
   computeQuote,
   confirmOpenBillSession,
-  createSessionSplits,
   floorBoardSchema,
   getFloorBoard,
-  getSessionBill,
   issueTableQr,
   mergeTableSessions,
   moveSessionItems,
@@ -31,7 +28,6 @@ import {
   qrOrderSchema,
   quoteConfigForZone,
   sessionBillSchema,
-  splitBill,
   tableLiveStatusSchema,
   tableQrSchema,
   tableSessionSchema,
@@ -332,9 +328,21 @@ function assertOutlet(outletIdFromParams: string) {
   if (outletIdFromParams !== outletId) notFound("Outlet");
 }
 
-/** Drop splits of a session whose orders changed: they no longer sum (ORD-06). */
+/** Drop splits of a session whose orders changed: they no longer sum (ORD-06).
+ * Only unpaid splits ever reach here: refusePaidSessions runs first. */
 function clearSplits(...sessionIds: string[]) {
   for (const sessionId of sessionIds) state().splits[sessionId] = [];
+}
+
+/** A paid share locks the session's orders (decision C2): no merge or item
+ * move, so a recorded payment can never vanish with a cleared split. */
+function refusePaidSessions(...sessionIds: string[]) {
+  for (const sessionId of sessionIds)
+    if (billFor(sessionId).totals.paidIdr > 0)
+      refuse(
+        "TABLE_SESSION_PAID",
+        "Sesi yang sudah dibayar sebagian tidak dapat digabung atau dipindah itemnya; selesaikan tagihan terlebih dahulu.",
+      );
 }
 
 // ---- Board and bills ------------------------------------------------------
@@ -353,10 +361,6 @@ registerMock(getFloorBoard, ({ params, scenario }) => {
     };
   return { data: board() };
 });
-
-registerMock(getSessionBill, ({ params }) => ({
-  data: billFor(params.sessionId),
-}));
 
 // ---- Session lifecycle ----------------------------------------------------
 
@@ -485,6 +489,7 @@ registerMock(mergeTableSessions, ({ params, body }) => {
       "CONFLICT",
       "Konfirmasi sesi open bill terlebih dahulu sebelum menggabungkan meja.",
     );
+  refusePaidSessions(target.id, source.id);
 
   const movedOrders = state().orders[source.id] ?? [];
   const targetOrders = state().orders[target.id] ?? [];
@@ -539,6 +544,9 @@ registerMock(moveSessionItems, ({ params, body }) => {
   for (const session of [from, to])
     if (session.status !== "open" && session.status !== "bill_requested")
       refuse("CONFLICT", "Pindah item hanya berlaku untuk sesi berjalan.");
+  if (from.outletId !== to.outletId)
+    refuse("CONFLICT", "Item tidak dapat dipindah antar-outlet.");
+  refusePaidSessions(from.id, to.id);
 
   const wanted = new Set(body.orderItemIds);
   const fromOrders = state().orders[from.id] ?? [];
@@ -597,52 +605,11 @@ registerMock(moveSessionItems, ({ params, body }) => {
 
 // ---- Split bill and table QR --------------------------------------------
 
-registerMock(createSessionSplits, ({ params, body }) => {
-  const session = sessionOf(params.sessionId);
-  if (!isActive(session))
-    refuse("CONFLICT", "Sesi sudah ditutup; tagihan tidak dapat dibagi.");
-  const bill = billFor(session.id);
-  if (bill.totals.totalIdr === 0) refuse("CONFLICT", "Tagihan masih kosong.");
-  if (body.method === "by_item")
-    throw new ApiError(
-      400,
-      "VALIDATION_ERROR",
-      "Mock belum mendukung bagi tagihan per item; pakai bagi rata.",
-    );
-  const drafts = splitBill(
-    body.method === "equal"
-      ? {
-          method: "equal",
-          totalIdr: bill.totals.totalIdr,
-          parts: body.parts,
-        }
-      : {
-          method: "by_person",
-          totalIdr: bill.totals.totalIdr,
-          participantIds: body.participantIds,
-        },
-  );
-  const now = nowIso();
-  const splits = drafts.map((draft) =>
-    billSplitSchema.parse({
-      id: mintId(),
-      tenantId: session.tenantId,
-      outletId: session.outletId,
-      tableSessionId: session.id,
-      orderId: null,
-      method: draft.method,
-      shareIndex: draft.shareIndex,
-      amountIdr: draft.amountIdr,
-      status: "pending",
-      label: draft.label,
-      itemIds: draft.itemIds,
-      participantId: draft.participantId,
-      createdAt: now,
-    }),
-  );
-  state().splits[session.id] = splits;
-  return { data: { bill: billFor(session.id), splits } };
-});
+// getSessionBill and createSessionSplits are served by the QR order mock
+// engine (features/ws03-qr-order/mock.ts), which owns the guest bill and the
+// split lock (decision C2: a paid share locks re-split). Registering them here
+// too would silently lose to it by glob order (review legend-7ko; follow-up
+// to unify the two mock session stores).
 
 registerMock(issueTableQr, ({ params }) => {
   const table = tableOf(params.tableId);

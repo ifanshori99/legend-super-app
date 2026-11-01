@@ -10,6 +10,7 @@ import {
 } from "../packages/shared/src/api/endpoint.ts";
 import { CoreError } from "../packages/shared/src/core/index.ts";
 import * as qr from "../packages/shared/src/qr-order/index.ts";
+import { roleTemplate } from "../packages/shared/src/access/roles.ts";
 
 const f = qr.qrOrderFixtures;
 const row = (code) => {
@@ -299,4 +300,44 @@ test("ORD-10 table operation endpoints carry strict inputs and typed responses",
     }).success,
     false,
   );
+});
+
+test("ORD-06 a partly paid session cannot be merged or have items moved (paid share locks re-split)", () => {
+  const paid = { ...copySession({ status: "open" }), paidIdr: 25_000 };
+  const other = {
+    ...copySession({ id: f.sessions[2].id, status: "open" }),
+    paidIdr: 0,
+  };
+  for (const [from, to] of [
+    [paid, other],
+    [other, paid],
+  ]) {
+    assert.throws(
+      () => qr.assertItemsCanMove({ from, to }),
+      (error) => error instanceof CoreError && /dibayar/.test(error.message),
+    );
+    assert.throws(
+      () =>
+        qr.assertSessionsCanMerge({
+          target: { ...to, paymentMode: from.paymentMode },
+          source: from,
+        }),
+      /dibayar/,
+    );
+  }
+  assert.doesNotThrow(() =>
+    qr.assertItemsCanMove({ from: other, to: { ...paid, paidIdr: 0 } }),
+  );
+});
+
+test("legend-4rmk legend-2l6k floor operations are a waiter/cashier task, layout stays manage", () => {
+  const holds = (key, permission) =>
+    roleTemplate(key).permissions.includes(permission);
+  for (const key of ["waiter", "cashier", "supervisor", "outlet_manager"])
+    assert.equal(holds(key, "floor.table.operate"), true, key);
+  for (const key of ["waiter", "cashier", "supervisor"])
+    assert.equal(holds(key, "floor.table.manage"), false, key);
+  assert.equal(holds("barista_cook", "floor.table.operate"), false);
+  // legend-2l6k: the outlet manager edits the floor plan; supervisor does not.
+  assert.equal(holds("outlet_manager", "floor.table.manage"), true);
 });

@@ -198,6 +198,10 @@ export function floorActionErrorKey(error: unknown): MessageKey {
       return "floor.error.sessionActive";
     case "TABLE_STATUS_CONFLICT":
       return "floor.error.conflict";
+    // A paid share locks merge, item moves and re-split (decision C2).
+    case "TABLE_SESSION_PAID":
+    case "SPLIT_LOCKED":
+      return "floor.error.sessionPaid";
     case "NETWORK_ERROR":
       return "floor.error.generic";
     case "CONFLICT":

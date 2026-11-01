@@ -342,6 +342,8 @@ export const id = {
       sessionActive:
         "Meja masih dipakai sesi aktif. Tutup sesi terlebih dahulu.",
       conflict: "Aksi tidak dapat dilakukan pada keadaan meja saat ini.",
+      sessionPaid:
+        "Tagihan meja ini sudah dibayar sebagian, jadi tidak bisa digabung, dipindah itemnya, atau dibagi ulang. Selesaikan sisa tagihan terlebih dahulu.",
       generic: "Aksi gagal. Coba lagi.",
     },
     offline: {

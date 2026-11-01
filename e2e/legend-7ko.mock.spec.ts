@@ -125,34 +125,57 @@ test("ORD-10 staff move a running session to an empty table", async ({
   await expect(tableButton(page, "A03")).toContainText("Perlu dibersihkan");
 });
 
-test("ORD-10 merging two open-bill tables puts them on one bill", async ({
+test("ORD-10 merging two unpaid open-bill tables puts them on one bill", async ({
   page,
 }) => {
   await openBoard(page);
-  await openActions(page, "P1");
+  // W01 waits for confirmation; a merge needs two running sessions.
+  await openActions(page, "W01");
+  await page.getByRole("button", { name: "Konfirmasi sesi" }).click();
+  const confirm = page.getByRole("dialog").last();
+  await confirm.getByRole("button", { name: "Konfirmasi sesi" }).click();
+  await expect(page.getByText("Sesi meja dikonfirmasi.").first()).toBeVisible();
+
+  await openActions(page, "W02");
   await page.getByRole("button", { name: "Gabung meja" }).click();
   const dialog = page.getByRole("dialog").last();
   await dialog.locator("#merge-source").click();
-  await page.getByRole("option", { name: /W02/ }).click();
+  await page.getByRole("option", { name: /W01/ }).click();
   await dialog.getByRole("button", { name: "Gabungkan" }).click();
 
   await expect(page.getByText("Meja digabung").first()).toBeVisible();
-  await expect(tableButton(page, "P1")).toContainText("Digabung");
+  await expect(tableButton(page, "W01")).toContainText("Digabung");
   await expect(tableButton(page, "W02")).toContainText("Digabung");
 });
 
-test("ORD-10 the bill splits into equal parts from the table panel", async ({
+test("ORD-06 a partly paid table is never merged or re-split (paid share lock)", async ({
+  page,
+}) => {
+  await openBoard(page);
+  // P1 already has a paid share in the fixtures.
+  await openActions(page, "P1");
+  await page.getByRole("button", { name: "Gabung meja" }).click();
+  const merge = page.getByRole("dialog").last();
+  await merge.locator("#merge-source").click();
+  await page.getByRole("option", { name: /W02/ }).click();
+  await merge.getByRole("button", { name: "Gabungkan" }).click();
+  await expect(page.getByRole("alert").first()).toContainText(
+    "sudah dibayar sebagian",
+  );
+});
+
+test("ORD-06 a partly paid table cannot be re-split from the panel", async ({
   page,
 }) => {
   await openBoard(page);
   await openActions(page, "P1");
   await page.getByRole("button", { name: "Pisah tagihan" }).click();
-  const dialog = page.getByRole("dialog").last();
-  await dialog.locator("#split-parts").fill("3");
-  await dialog.getByRole("button", { name: "Bagi tagihan" }).click();
-  await expect(
-    page.getByText("Tagihan dibagi menjadi 3 bagian.").first(),
-  ).toBeVisible();
+  const split = page.getByRole("dialog").last();
+  await split.locator("#split-parts").fill("3");
+  await split.getByRole("button", { name: "Bagi tagihan" }).click();
+  await expect(page.getByRole("alert").first()).toContainText(
+    "sudah dibayar sebagian",
+  );
 });
 
 test("ORD-10 the board has an empty state for an outlet without a floor plan", async ({

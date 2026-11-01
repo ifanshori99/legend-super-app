@@ -13,6 +13,8 @@ export const Route = createFileRoute("/_ops/pos/meja/")({
 function FloorBoardScreen() {
   const { access } = Route.useRouteContext();
   return (
-    <FloorBoardPage canManage={holdsAny(access, ["floor.table.manage"])} />
+    // Waiters, cashiers and supervisors run live table operations (PRD §3.9
+    // Keamanan Sesi, ORD-10); layout editing stays floor.table.manage.
+    <FloorBoardPage canManage={holdsAny(access, ["floor.table.operate"])} />
   );
 }
