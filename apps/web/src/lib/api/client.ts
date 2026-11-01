@@ -1,6 +1,7 @@
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
+import { bearerHeaderFor } from "@/lib/api/credentials";
 import type { ApiErrorBody } from "@starter/shared/types";
 import {
   apiBaseUrl,
@@ -68,6 +69,7 @@ export async function apiFetch<T>(
       headers: {
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...bearerHeaderFor(path),
         ...headers,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
