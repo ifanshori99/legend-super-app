@@ -110,7 +110,14 @@ export function newlyCalledCalls(
   const alreadyCalled = new Set(
     previous.filter((call) => call.calledAt !== null).map((call) => call.id),
   );
-  return next
-    .filter((call) => call.calledAt !== null && !alreadyCalled.has(call.id))
-    .sort((left, right) => left.number - right.number);
+  return (
+    next
+      .filter((call) => call.calledAt !== null && !alreadyCalled.has(call.id))
+      // Announce in the order the numbers were called (calledAt), number as tie-break.
+      .sort(
+        (left, right) =>
+          (left.calledAt ?? "").localeCompare(right.calledAt ?? "") ||
+          left.number - right.number,
+      )
+  );
 }

@@ -69,3 +69,15 @@ test("PRD §3 F12 pickup display: the sound choice is off until the device sets 
   writePickupSoundEnabled(true);
   assert.equal(readPickupSoundEnabled(), false);
 });
+
+test("PRD §3 F12 pickup display: call order wins over number order", () => {
+  const before = [call(12, "assigned"), call(15, "assigned")];
+  const after = [
+    call(12, "called", "2026-11-01T04:23:00.000Z"),
+    call(15, "called", "2026-11-01T04:22:00.000Z"),
+  ];
+  assert.deepEqual(
+    newlyCalledCalls(before, after).map((row) => row.number),
+    [15, 12],
+  );
+});
