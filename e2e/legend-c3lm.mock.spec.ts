@@ -126,7 +126,11 @@ test("membership screen verifies WhatsApp and saves versioned consents (AUTH-07)
   await expect(page.getByText("Persetujuan program loyalty")).toBeVisible();
   await expect(page.getByText("Versi kebijakan 2026-01").first()).toBeVisible();
 
-  await page.getByLabel("Program loyalty (wajib)").uncheck();
+  // The checkbox is server-rendered: a click that lands before hydration is
+  // dropped, so retry the (idempotent) uncheck until React owns the control.
+  await expect(async () => {
+    await page.getByLabel("Program loyalty (wajib)").uncheck({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
   await expect(
     page.getByText("Tanpa persetujuan program", { exact: false }),
   ).toBeVisible();
