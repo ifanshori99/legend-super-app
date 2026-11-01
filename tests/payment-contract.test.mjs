@@ -29,21 +29,21 @@ test("PAY-01 Cafe Legend payment fixtures satisfy all contracts", () => {
 });
 
 test("PAY-02 only authorized evidence permits paid transitions", () => {
-  for (const source of [
-    "verified_webhook",
-    "gateway_status",
-    "edc_ecr",
-    "authorized_cash",
-    "authorized_edc_standalone",
+  for (const [source, method] of [
+    ["verified_webhook", "qris"],
+    ["gateway_status", "va"],
+    ["edc_ecr", "edc_card"],
+    ["authorized_cash", "cash"],
+    ["authorized_edc_standalone", "edc_qris"],
   ])
     assert.equal(
-      payment.canTransitionPayment("pending", "paid", source),
+      payment.canTransitionPayment("pending", "paid", source, method),
       true,
       source,
     );
   for (const source of ["browser_redirect", undefined])
     assert.equal(
-      payment.canTransitionPayment("pending", "paid", source),
+      payment.canTransitionPayment("pending", "paid", source, "qris"),
       false,
     );
   assert.equal(payment.canTransitionPayment("paid", "pending"), false);
@@ -56,7 +56,7 @@ test("PAY-02 only authorized evidence permits paid transitions", () => {
     true,
   );
   assert.equal(
-    payment.canTransitionPayment("expired", "paid", "verified_webhook"),
+    payment.canTransitionPayment("expired", "paid", "verified_webhook", "qris"),
     true,
   );
   assert.equal(
@@ -77,6 +77,55 @@ test("PAY-01 payment records reject invalid scope and integer amounts", () => {
       ...payment.refundFixture,
       amountIdr: 10.1,
     }).success,
+    false,
+  );
+});
+
+test("PAY-02 confirmation evidence must match the payment method", () => {
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "authorized_cash", "qris"),
+    false,
+  );
+  assert.equal(
+    payment.canTransitionPayment(
+      "pending",
+      "paid",
+      "authorized_edc_standalone",
+      "qris",
+    ),
+    false,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "verified_webhook", "cash"),
+    false,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "edc_ecr", "cash"),
+    false,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "gateway_status", "qris"),
+    true,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "authorized_cash", "cash"),
+    true,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "edc_ecr", "edc_card"),
+    true,
+  );
+  assert.equal(
+    payment.canTransitionPayment(
+      "pending",
+      "paid",
+      "authorized_edc_standalone",
+      "edc_qris",
+    ),
+    true,
+  );
+  assert.equal(
+    payment.canTransitionPayment("pending", "paid", "verified_webhook"),
     false,
   );
 });
