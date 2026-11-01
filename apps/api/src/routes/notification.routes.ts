@@ -4,7 +4,19 @@ import {
   type ScopedTenantContext,
   type TenantContext,
 } from "@starter/shared/core";
-import { notificationEndpoints } from "@starter/shared/notification";
+import {
+  getNotificationPolicy,
+  getNotificationPreferences,
+  getUnreadNotificationCount,
+  listNotificationTemplates,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  registerPushSubscription,
+  removePushSubscription,
+  updateNotificationPolicy,
+  updateNotificationPreferences,
+} from "@starter/shared/notification";
 import { HttpError } from "../lib/http-error.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -50,19 +62,21 @@ export interface NotificationRoutePorts {
   service: NotificationServicePort;
 }
 
-const operations: readonly NotificationOperation[] = [
-  "list",
-  "unreadCount",
-  "markRead",
-  "markAllRead",
-  "getPreferences",
-  "updatePreferences",
-  "registerPush",
-  "removePush",
-  "getPolicy",
-  "updatePolicy",
-  "listTemplates",
-];
+// Each route names its operation explicitly: authorization must never depend
+// on the order of a shared endpoint list.
+const routes = [
+  [listNotifications, "list"],
+  [getUnreadNotificationCount, "unreadCount"],
+  [markNotificationRead, "markRead"],
+  [markAllNotificationsRead, "markAllRead"],
+  [getNotificationPreferences, "getPreferences"],
+  [updateNotificationPreferences, "updatePreferences"],
+  [registerPushSubscription, "registerPush"],
+  [removePushSubscription, "removePush"],
+  [getNotificationPolicy, "getPolicy"],
+  [updateNotificationPolicy, "updatePolicy"],
+  [listNotificationTemplates, "listTemplates"],
+] as const satisfies readonly (readonly [unknown, NotificationOperation])[];
 const denied = () =>
   new HttpError(403, "FORBIDDEN", "Your account cannot perform this action.");
 
@@ -70,8 +84,7 @@ const denied = () =>
 export function createNotificationRouter(ports?: NotificationRoutePorts) {
   const router = Router();
   router.use(requireAuth, requireTrustedOrigin);
-  notificationEndpoints.forEach((endpoint, index) => {
-    const operation = operations[index];
+  for (const [endpoint, operation] of routes) {
     const handler: RequestHandler = async (req, res) => {
       if (!ports) throw denied();
       let tenant: TenantContext;
@@ -121,6 +134,6 @@ export function createNotificationRouter(ports?: NotificationRoutePorts) {
         router.delete(path, ...handlers);
         break;
     }
-  });
+  }
   return router;
 }

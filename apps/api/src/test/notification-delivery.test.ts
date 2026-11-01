@@ -320,3 +320,68 @@ it("AUTH-03 monthly cap uses UTC consistently across recipient time zones", asyn
   ]);
   expect(results.filter((result) => result === "sent")).toHaveLength(1);
 });
+
+it("AUTH-03 releases the monthly WhatsApp slot when the provider declines for good", async () => {
+  const declined = await makeAttempt("whatsapp");
+  const next = await makeAttempt("whatsapp");
+  const when = new Date("2024-03-15T03:00:00Z");
+  const resolveOnce = async (
+    ctx: unknown,
+    notification: { userId: string },
+  ) => {
+    const base = await resolve(ctx, notification);
+    return {
+      ...base,
+      policy: notificationPolicySchema.parse({
+        ...base.policy,
+        maxAttempts: 1,
+        whatsapp: {
+          enabled: true,
+          allowedCategories: ["order_ready"],
+          monthlyCap: 1,
+          costPerMessageIdr: 1,
+        },
+      }),
+      preference: notificationPreferenceSchema.parse({
+        ...base.preference,
+        categories: {
+          order_ready: { web_push: false, email: false, whatsapp: true },
+        },
+      }),
+      reachability: {
+        hasPushSubscription: false,
+        hasVerifiedEmail: false,
+        whatsappOptIn: true,
+      },
+    };
+  };
+  const decline = {
+    async send(_context: unknown, request: { reference: string }) {
+      return { reference: request.reference, accepted: false };
+    },
+  };
+  expect(
+    await deliverNotificationAttempt(
+      db,
+      context,
+      declined,
+      { resolve: resolveOnce, push, email, whatsapp: decline },
+      when,
+    ),
+  ).toBe("failed");
+  const reservation = await withTenant(db, context, (tx) =>
+    tx.execute(
+      sql`SELECT status FROM whatsapp_reservations WHERE tenant_id = ${tenant}::uuid AND delivery_attempt_id = ${ulidToUuid(declined)}::uuid`,
+    ),
+  );
+  expect(reservation.rows[0]?.status).toBe("released");
+  expect(
+    await deliverNotificationAttempt(
+      db,
+      context,
+      next,
+      { resolve: resolveOnce, push, email, whatsapp },
+      when,
+    ),
+  ).toBe("sent");
+});

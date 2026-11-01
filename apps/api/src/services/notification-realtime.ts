@@ -86,6 +86,9 @@ export function attachNotificationRealtime(
     const signal: Signal = parsed.data;
     await Promise.all(
       [...clients].map(async ([ws, initial]) => {
+        // Cheap tenant filter first: a signal must not trigger a session
+        // re-check for every connected client of every tenant.
+        if (initial.tenantId !== signal.tenantId) return;
         try {
           const identity = await resolve(initial.request);
           if (

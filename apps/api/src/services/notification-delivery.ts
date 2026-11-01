@@ -243,6 +243,9 @@ export async function deliverNotificationAttempt(
   if (!claim) return "not_due";
   if (claim.kind === "skipped") return "skipped";
   let accepted = false;
+  // True only when the provider answered and declined: the message was
+  // certainly not sent. A thrown error may hide a send, so it keeps the slot.
+  let rejected = false;
   let providerRef: string | null = null;
   try {
     const base = {
@@ -282,6 +285,7 @@ export async function deliverNotificationAttempt(
             );
     const parsed = operationResultSchema.parse(result);
     accepted = parsed.accepted;
+    rejected = !parsed.accepted;
     providerRef = parsed.reference;
   } catch {
     /* Adapter failures are persisted as machine codes only. */
@@ -298,6 +302,17 @@ export async function deliverNotificationAttempt(
     if (updated.rows.length && accepted && claim.channel === "whatsapp")
       await tx.execute(
         sql`UPDATE whatsapp_reservations SET status = 'sent', updated_at = ${now} WHERE tenant_id = ${context.tenant.tenantId}::uuid AND delivery_attempt_id = ${id}::uuid`,
+      );
+    // AUTH-03: a dead attempt the provider definitely declined frees its slot
+    // in the monthly cap; ambiguous failures stay counted (fail closed on cost).
+    if (
+      updated.rows.length &&
+      status === "dead" &&
+      rejected &&
+      claim.channel === "whatsapp"
+    )
+      await tx.execute(
+        sql`UPDATE whatsapp_reservations SET status = 'released', updated_at = ${now} WHERE tenant_id = ${context.tenant.tenantId}::uuid AND delivery_attempt_id = ${id}::uuid AND status = 'reserved'`,
       );
     return updated.rows.length && accepted ? "sent" : "failed";
   });
