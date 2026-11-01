@@ -15,7 +15,7 @@
 
 import type { Request, RequestHandler } from "express";
 import { AccessError, type PermissionCode } from "@starter/shared/access";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "./auth";
 import { verifiedMfaAt } from "../lib/mfa";
@@ -92,6 +92,36 @@ export function requireTenantPermission(
       throw new AccessError(
         "PERMISSION_DENIED",
         "Your account cannot perform this action in this tenant.",
+      );
+    contexts.set(req, context);
+    res.setHeader("Cache-Control", "private, no-store");
+    next();
+  };
+}
+
+/**
+ * Requires `permission` on one outlet and mints an outlet-scoped context, so
+ * `withTenant` installs `app.outlet_ids` and RLS limits every query to that
+ * outlet (TEN-03). The outlet id must come from the verified request (path or
+ * body) and is schema-validated; a role that only holds another outlet, or a
+ * station-only grant, is denied. No route uses it yet (POS/KDS land with
+ * WS-04); the resolver half is covered by permission-resolver.test.ts.
+ */
+export function requireOutletPermission(
+  permission: PermissionCode,
+  outletIdOf: (req: Request) => string,
+): RequestHandler {
+  return async (req, res, next) => {
+    const snapshot = await loadRequestAccess(req);
+    const outletId = outletIdSchema.parse(outletIdOf(req));
+    const context = snapshot.contextFor(permission, {
+      type: "outlet",
+      id: outletId,
+    });
+    if (!context)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Your account cannot perform this action in this outlet.",
       );
     contexts.set(req, context);
     res.setHeader("Cache-Control", "private, no-store");
