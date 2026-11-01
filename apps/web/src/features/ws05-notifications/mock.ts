@@ -119,6 +119,15 @@ registerMock(contract.getNotificationPolicy, () => ({
   data: store.get().policy,
 }));
 
+// The tenant key follows the channel policy: off = no key = "unavailable".
+registerMock(contract.getPushPublicKey, () => ({
+  data: {
+    vapidPublicKey: store.get().policy.webPushEnabled
+      ? contract.cafeLegendNotificationFixtures.pushPublicKey
+      : null,
+  },
+}));
+
 registerMock(contract.registerPushSubscription, ({ body }) => {
   const state = store.get();
   // One row per browser in the sample data; the real API keys on endpoint.

@@ -97,7 +97,13 @@ export function PreferencesPanel() {
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start">
       <PreferencesForm
         preference={preference.data.data}
-        whatsappAllowed={policy.data?.data.whatsapp.enabled ?? null}
+        whatsappCategories={
+          policy.data
+            ? policy.data.data.whatsapp.enabled
+              ? policy.data.data.whatsapp.allowedCategories
+              : []
+            : null
+        }
       />
       <PushPanel />
     </div>
@@ -106,12 +112,18 @@ export function PreferencesPanel() {
 
 function PreferencesForm({
   preference,
-  whatsappAllowed,
+  whatsappCategories,
 }: {
   preference: NotificationPreference;
-  /** null when the policy is unknown (not the user's to read, or offline). */
-  whatsappAllowed: boolean | null;
+  /**
+   * Categories the tenant policy lets WhatsApp carry (PRD §3.15: WhatsApp is
+   * a paid channel, off unless allowed per category); [] = WhatsApp off,
+   * null = the policy is unknown (not the user's to read, or offline).
+   */
+  whatsappCategories: readonly NotificationCategory[] | null;
 }) {
+  const whatsappAllowed =
+    whatsappCategories === null ? null : whatsappCategories.length > 0;
   const t = useT();
   const toast = useToast();
   const save = useSaveNotificationPreferences();
@@ -243,7 +255,9 @@ function PreferencesForm({
                   {CHANNELS.map(({ key, labelKey }) => {
                     const id = `notification-${category}-${key}`;
                     const disabled =
-                      key === "whatsapp" && whatsappAllowed === false;
+                      key === "whatsapp" &&
+                      whatsappCategories !== null &&
+                      !whatsappCategories.includes(category);
                     return (
                       <div
                         key={key}

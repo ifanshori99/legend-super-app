@@ -4,8 +4,9 @@ import type { PushSubscriptionInput } from "./api";
 // Web push opt-in (PRD v1.7 §2 "PWA", §3.15 "Urutan Kanal"). This module only
 // talks to the browser: ask permission, register the service worker, subscribe
 // this device and hand the contract the fields it expects. Sending and the
-// VAPID pair belong to the delivery bead (legend-hyq); the tenant's key reaches
-// the browser as VITE_VAPID_PUBLIC_KEY.
+// VAPID pair belong to the delivery bead (legend-hyq); the tenant's public key
+// reaches the browser at runtime from GET /api/notifications/push-key (one web
+// build serves every tenant, so it is never a build-time variable).
 //
 // Mock mode has no VAPID key or service worker, so it short-circuits the push
 // stack and keeps the opt-in state in sessionStorage. The screens and tests
@@ -31,12 +32,6 @@ const MOCK_P256DH =
 const MOCK_AUTH = "tBHItJI5svbpez7KI4CCXg";
 
 type NavigatorWithStandalone = Navigator & { standalone?: boolean };
-
-/** VAPID public key of the tenant, or null when the channel is not enabled. */
-export function vapidPublicKey(): string | null {
-  const key: unknown = import.meta.env.VITE_VAPID_PUBLIC_KEY;
-  return typeof key === "string" && key.trim().length > 0 ? key.trim() : null;
-}
 
 export function readMockSubscriptionId(): string | null {
   try {
@@ -110,8 +105,13 @@ export function deviceLabel(userAgent = navigator.userAgent): string {
   return (system ? `${browser} · ${system}` : browser).slice(0, 100);
 }
 
-/** What this browser can do right now, without touching any stored state. */
-export async function detectPushState(): Promise<PushState> {
+/**
+ * What this browser can do right now, without touching any stored state.
+ * `vapidKey` is the tenant's public key; null = the tenant has push off.
+ */
+export async function detectPushState(
+  vapidKey: string | null,
+): Promise<PushState> {
   if (!("Notification" in window)) return "unsupported";
   // iOS 16.4+ only delivers web push to an app added to the Home Screen, so
   // the install guidance comes first — also in mock mode (PRD §2 PWA).
@@ -120,13 +120,14 @@ export async function detectPushState(): Promise<PushState> {
   if (ios && !ios.installed) return "ios-install";
   if (API_MOCK) {
     if (Notification.permission === "denied") return "blocked";
+    if (!vapidKey) return "unavailable";
     return readMockSubscriptionId() ? "active" : "inactive";
   }
   if (!window.isSecureContext) return "unsupported";
   if (!("serviceWorker" in navigator) || !("PushManager" in window))
     return "unsupported";
   if (Notification.permission === "denied") return "blocked";
-  if (!vapidPublicKey()) return "unavailable";
+  if (!vapidKey) return "unavailable";
   if (Notification.permission !== "granted") return "inactive";
   try {
     const registration = await navigator.serviceWorker.getRegistration();
@@ -152,7 +153,9 @@ function keyToBytes(key: string): Uint8Array<ArrayBuffer> {
 }
 
 /** Subscribes this browser and returns the contract's registration input. */
-export async function subscribeThisBrowser(): Promise<PushSubscriptionInput> {
+export async function subscribeThisBrowser(
+  vapidKey: string | null,
+): Promise<PushSubscriptionInput> {
   const label = deviceLabel();
   if (API_MOCK) {
     return {
@@ -161,8 +164,7 @@ export async function subscribeThisBrowser(): Promise<PushSubscriptionInput> {
       deviceLabel: label,
     };
   }
-  const key = vapidPublicKey();
-  if (!key) throw new Error("PUSH_UNAVAILABLE");
+  if (!vapidKey) throw new Error("PUSH_UNAVAILABLE");
   await navigator.serviceWorker.register("/sw.js");
   const registration = await navigator.serviceWorker.ready;
   const existing = await registration.pushManager.getSubscription();
@@ -170,7 +172,7 @@ export async function subscribeThisBrowser(): Promise<PushSubscriptionInput> {
     existing ??
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: keyToBytes(key),
+      applicationServerKey: keyToBytes(vapidKey),
     }));
   const json = subscription.toJSON();
   if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth)

@@ -45,5 +45,12 @@ export const unreadCountQuery = () =>
 export const notificationPreferencesQuery = () =>
   endpointQueryOptions(notification.getNotificationPreferences);
 
+/** Tenant VAPID public key, served at runtime per tenant (never build-time). */
+export const pushPublicKeyQuery = () => ({
+  ...endpointQueryOptions(notification.getPushPublicKey),
+  staleTime: 5 * 60_000,
+  retry: false,
+});
+
 export const notificationPolicyQuery = () =>
   endpointQueryOptions(notification.getNotificationPolicy);

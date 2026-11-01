@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   BellRing,
   CircleCheck,
@@ -21,6 +22,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useDeletePushSubscription, useSavePushSubscription } from "../hooks";
+import { pushPublicKeyQuery } from "../queries";
 import {
   deviceLabel,
   detectPushState,
@@ -54,6 +56,17 @@ const STATUS: Record<PushState, StatusMeta> = {
   },
 };
 
+// The tenant key comes from the API at runtime; a failed lookup reads as
+// "not enabled" so the card never offers a subscribe it cannot finish.
+async function loadTenantKey(queryClient: QueryClient): Promise<string | null> {
+  try {
+    return (await queryClient.fetchQuery(pushPublicKeyQuery())).data
+      .vapidPublicKey;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Web-push opt-in for this browser (PRD §2 PWA). The card never claims the
  * channel works when it cannot: unsupported browsers, blocked permissions,
@@ -65,6 +78,8 @@ export function PushPanel() {
   const toast = useToast();
   const save = useSavePushSubscription();
   const remove = useDeletePushSubscription();
+  const queryClient = useQueryClient();
+  const tenantKey = () => loadTenantKey(queryClient);
   const [state, setState] = useState<PushState>("checking");
   const [device, setDevice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,7 +90,7 @@ export function PushPanel() {
     let active = true;
     void (async () => {
       const label = deviceLabel();
-      const next = await detectPushState();
+      const next = await detectPushState(await loadTenantKey(queryClient));
       if (!active) return;
       setDevice(label);
       setSubscriptionId(readMockSubscriptionId());
@@ -84,13 +99,13 @@ export function PushPanel() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [queryClient]);
 
   const enable = async () => {
     setError(null);
     setBusy(true);
     try {
-      const next = await detectPushState();
+      const next = await detectPushState(await tenantKey());
       if (next !== "inactive" && next !== "active") {
         setState(next);
         return;
@@ -102,11 +117,13 @@ export function PushPanel() {
       if (Notification.permission !== "granted") {
         const permission = await requestPushPermission();
         if (permission !== "granted") {
-          setState(await detectPushState());
+          setState(await detectPushState(await tenantKey()));
           return;
         }
       }
-      const saved = await save.mutateAsync(await subscribeThisBrowser());
+      const saved = await save.mutateAsync(
+        await subscribeThisBrowser(await tenantKey()),
+      );
       setSubscriptionId(saved.data.id);
       rememberMockSubscriptionId(saved.data.id);
       setState("active");
@@ -117,7 +134,7 @@ export function PushPanel() {
       });
     } catch {
       setError(t("notification.push.enableError"));
-      setState(await detectPushState());
+      setState(await detectPushState(await tenantKey()));
     } finally {
       setBusy(false);
     }
@@ -131,7 +148,9 @@ export function PushPanel() {
       // Saving again returns this browser's row (upsert), which the revoke
       // call needs after a reload.
       if (!id)
-        id = (await save.mutateAsync(await subscribeThisBrowser())).data.id;
+        id = (
+          await save.mutateAsync(await subscribeThisBrowser(await tenantKey()))
+        ).data.id;
       await remove.mutateAsync(id);
       await unsubscribeThisBrowser();
       setSubscriptionId(null);

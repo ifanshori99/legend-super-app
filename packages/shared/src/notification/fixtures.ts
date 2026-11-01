@@ -175,8 +175,13 @@ const outboxRow = notificationOutboxRowSchema.parse({
   createdAt: "2026-11-02T05:12:29.000Z",
 });
 
+/** Sample VAPID public key (P-256, base64url, 87 chars); not a real tenant key. */
+const pushPublicKey =
+  "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+
 export const cafeLegendNotificationFixtures = {
   policy,
+  pushPublicKey,
   baristaPreference,
   templates,
   notifications,
