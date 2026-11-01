@@ -12,6 +12,7 @@ import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
 import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
+import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
@@ -104,6 +105,11 @@ export function createApp({
     req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? "";
     next();
   });
+
+  // Legend identity routes (MFA factors, device sessions) share the /api/auth
+  // prefix with Better Auth. They are mounted first so Better Auth's catch-all
+  // does not swallow them; every other path falls through unchanged.
+  app.use("/api/auth", identityAuthRouter);
 
   // Better Auth owns /api/auth/*: sign-up, sign-in, session, sign-out, admin.
   // It reads the raw body itself, so no JSON parser may run before it, and
