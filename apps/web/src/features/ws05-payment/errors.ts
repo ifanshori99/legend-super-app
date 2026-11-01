@@ -1,0 +1,38 @@
+// Maps payment API failures to catalog text. The API's `code` is the stable
+// key; its message is only a fallback and never shown as-is (DESIGN.md: UI
+// text comes from the catalog).
+import type { MessageKey } from "@starter/shared/i18n";
+import { ApiError } from "@/lib/api/errors";
+
+export function isOfflineError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.status === 0 || error.code === "NETWORK_ERROR")
+  );
+}
+
+export function isNotFoundError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.status === 404 || error.code === "NOT_FOUND")
+  );
+}
+
+export function paymentErrorKey(error: unknown): MessageKey {
+  if (error instanceof ApiError) {
+    if (isOfflineError(error)) return "payment.offlineHint";
+    switch (error.code) {
+      case "NOT_FOUND":
+        return "payment.linkNotFoundHint";
+      case "CONFLICT":
+        return "payment.alreadyPaid";
+      case "VALIDATION_ERROR":
+        return "payment.methodInvalid";
+      case "SERVICE_UNAVAILABLE":
+        return "payment.gatewayDownHint";
+      default:
+        return "payment.actionFailed";
+    }
+  }
+  return "payment.actionFailed";
+}

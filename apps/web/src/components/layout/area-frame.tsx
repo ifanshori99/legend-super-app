@@ -2,7 +2,7 @@
 // Hangat → CustomerShell, Kontras Tinggi → OperationsShell, Padat →
 // ManagementShell. Route layouts render <AreaFrame> around their <Outlet />.
 import { useMemo, type ReactNode } from "react";
-import { useLocation } from "@tanstack/react-router";
+import { useLocation, useParams } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
@@ -21,6 +21,7 @@ import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
 import { useOnline } from "@/lib/use-online";
+import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's
@@ -46,6 +47,7 @@ export function AreaFrame({
   const t = useT();
   const online = useOnline();
   const { pathname } = useLocation();
+  const { token } = useParams({ strict: false }) as { token?: string };
   const definition = AREAS[area];
   const nav = useMemo(
     () =>
@@ -113,6 +115,21 @@ export function AreaFrame({
     );
   }
 
+  const signIn = signOut ?? (
+    <Button asChild variant="outline" size="sm">
+      <Link to="/sign-in">{t("auth.signIn")}</Link>
+    </Button>
+  );
+
+  // A table QR journey (/t/$token/*, PRD §3 F10) brings its own shell parts:
+  // the tenant brand, "Meja A03 · 4 tamu" and the Menu/Keranjang/Pesanan/Tagihan nav.
+  if (area === "customer" && token !== undefined && pathname.startsWith("/t/"))
+    return (
+      <TableCustomerFrame qrToken={token} pathname={pathname} signedIn={signIn}>
+        {children}
+      </TableCustomerFrame>
+    );
+
   return (
     <CustomerShell
       brandName={brandName}
@@ -121,11 +138,7 @@ export function AreaFrame({
       actions={
         <>
           <ThemeToggle />
-          {signOut ?? (
-            <Button asChild variant="outline" size="sm">
-              <Link to="/sign-in">{t("auth.signIn")}</Link>
-            </Button>
-          )}
+          {signIn}
         </>
       }
     >

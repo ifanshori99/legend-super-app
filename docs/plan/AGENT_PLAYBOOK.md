@@ -39,6 +39,12 @@ bead-specific part. If the brief and this file disagree, the brief wins.
 - **Security:** deny by default; validate every input with strict Zod; never log secrets/PII; money
   and state transitions only through the contract state machines.
 
+- **Missing dependency? Do not block.** If a resolver/service another bead will build is missing
+  (tenant/role/permission resolver, provider, route registry), code against a small port interface
+  with a fail-closed default (deny / feature off), inject a test double in tests, and note the wiring
+  bead in your report. Wiring code your bead needs (route registration, worker consumer registration,
+  WebSocket setup) is inside your ownership — keep it minimal.
+
 ## 3. Definition of done (all must be true before you report)
 
 - [ ] Acceptance IDs from the bead each have at least one test whose name contains the ID.

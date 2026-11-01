@@ -7,4 +7,5 @@ export * from "./pricing.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./table-operations.ts";
+export * from "./guest.ts";
 export * from "./fixtures.ts";
