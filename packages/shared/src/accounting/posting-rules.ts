@@ -253,7 +253,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
-    { event: "loyalty_points.earned" },
+    { event: "points.earned" },
     "loyalty",
     "Poin loyalty diperoleh (pendapatan ditangguhkan)",
     "§3.20 Liabilitas Poin",
@@ -263,7 +263,7 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
-    { event: "loyalty_points.expired" },
+    { event: "points.expired" },
     "loyalty",
     "Poin loyalty kedaluwarsa diakui sebagai pendapatan",
     "§3.20 Liabilitas Poin",
