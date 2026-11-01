@@ -916,24 +916,29 @@ const invoiceDrafts = invoiceSeeds.map((seed) => {
     if (line.kind === "goods") goodsIdr += line.lineTotalIdr;
     else servicesIdr += line.lineTotalIdr;
   }
-  const match = threeWayMatch(
-    {
-      invoice: {
-        id: seed.id as SupplierInvoice["id"],
-        purchaseOrderId:
-          seed.purchaseOrderId as SupplierInvoice["purchaseOrderId"],
-        goodsIdr: idr(goodsIdr),
-        servicesIdr: idr(servicesIdr),
+  const matchWith = (headerGoodsIdr: number) =>
+    threeWayMatch(
+      {
+        invoice: {
+          id: seed.id as SupplierInvoice["id"],
+          purchaseOrderId:
+            seed.purchaseOrderId as SupplierInvoice["purchaseOrderId"],
+          goodsIdr: idr(headerGoodsIdr),
+          servicesIdr: idr(servicesIdr),
+        },
+        invoiceLines: lines,
+        purchaseOrderLines: linesForPo(seed.purchaseOrderId),
+        goodsReceiptLines: receiptLinesForPo(seed.purchaseOrderId),
+        toleranceBp: seed.matchToleranceBp,
+        computedAt: seed.matchedAt,
       },
-      invoiceLines: lines,
-      purchaseOrderLines: linesForPo(seed.purchaseOrderId),
-      goodsReceiptLines: receiptLinesForPo(seed.purchaseOrderId),
-      toleranceBp: seed.matchToleranceBp,
-      computedAt: seed.matchedAt,
-    },
-    "half_up",
-  );
-  const priceVarianceIdr = match.priceVarianceIdr;
+      "half_up",
+    );
+  // The server derives the header the same way: the line variance first, then
+  // goods at PO price = invoice-price goods − variance (it clears GRNI).
+  const priceVarianceIdr = matchWith(goodsIdr).priceVarianceIdr;
+  goodsIdr -= priceVarianceIdr;
+  const match = matchWith(goodsIdr);
   const totalIdr = goodsIdr + priceVarianceIdr + servicesIdr + seed.ppnIdr;
   const payableIdr = totalIdr - seed.pph23Idr;
   const invoice = supplierInvoiceSchema.parse({

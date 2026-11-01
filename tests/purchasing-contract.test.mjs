@@ -207,6 +207,70 @@ test("PRD §3.18 three-way match checks line totals and invoice header amounts",
   );
   assert.deepEqual(badHeader.headerIssues, ["invoice_total_mismatch"]);
   assert.equal(badHeader.status, "discrepancy");
+
+  // Billing the same receipt again on a second invoice exceeds the cumulative cap.
+  const rebilled = shared.threeWayMatch(
+    {
+      invoice: matched.invoice,
+      invoiceLines: matched.lines,
+      purchaseOrderLines: order.lines,
+      goodsReceiptLines: receipt.lines,
+      toleranceBp: 0,
+      computedAt: matched.invoice.matchedAt,
+      previouslyInvoicedLines: matched.lines,
+    },
+    "half_up",
+  );
+  assert.equal(rebilled.status, "discrepancy");
+  assert.equal(
+    rebilled.rows.some((row) =>
+      row.issues.includes("quantity_exceeds_receipt"),
+    ),
+    true,
+  );
+});
+
+test("PRD §3.18 an invoice with a price variance bills the invoice price once and clears GRNI at PO cost", () => {
+  const discrepant = invoiceByNumber("KN/2026/11/0031");
+  const invoicePriceGoods = discrepant.lines
+    .filter((line) => line.kind === "goods")
+    .reduce((total, line) => total + line.lineTotalIdr, 0);
+  const services = discrepant.lines
+    .filter((line) => line.kind !== "goods")
+    .reduce((total, line) => total + line.lineTotalIdr, 0);
+  assert.ok(discrepant.invoice.priceVarianceIdr !== 0);
+  // goodsIdr is at PO price; goods + variance is what the supplier billed.
+  assert.equal(
+    discrepant.invoice.goodsIdr + discrepant.invoice.priceVarianceIdr,
+    invoicePriceGoods,
+  );
+  assert.equal(
+    discrepant.invoice.totalIdr,
+    invoicePriceGoods + services + discrepant.invoice.ppnIdr,
+  );
+  assert.deepEqual(discrepant.match.headerIssues, []);
+  // The recorded event refuses a split whose journal would not balance.
+  const payload = {
+    supplierInvoiceId: discrepant.invoice.id,
+    supplierId: discrepant.invoice.supplierId,
+    purchaseOrderId: discrepant.invoice.purchaseOrderId,
+    number: discrepant.invoice.number,
+    goodsIdr: discrepant.invoice.goodsIdr,
+    priceVarianceIdr: discrepant.invoice.priceVarianceIdr,
+    servicesIdr: discrepant.invoice.servicesIdr,
+    ppnIdr: discrepant.invoice.ppnIdr,
+    pph23Idr: discrepant.invoice.pph23Idr,
+    payableIdr: discrepant.invoice.payableIdr,
+    totalIdr: discrepant.invoice.totalIdr,
+    recordedBy: discrepant.invoice.recordedBy,
+    recordedAt: discrepant.invoice.recordedAt,
+  };
+  const schema = shared.supplierInvoiceRecordedEventPayloadSchema;
+  assert.equal(schema.safeParse(payload).success, true);
+  assert.equal(
+    schema.safeParse({ ...payload, goodsIdr: invoicePriceGoods }).success,
+    false,
+  );
 });
 
 test("PRD §4 Alur I purchase request approval needs a different person and follows the state machine", () => {
@@ -359,15 +423,38 @@ test("PRD §3.18 supplier payment needs a matched invoice, another approver and 
     (error) => error.code === "SUPPLIER_INVOICE_NOT_PAYABLE",
   );
   assert.doesNotThrow(() =>
-    shared.assertSupplierPaymentWithinInvoice(matched, matched.outstandingIdr),
+    shared.assertSupplierPaymentWithinInvoice(
+      matched,
+      matched.outstandingIdr,
+      [],
+    ),
   );
   assert.throws(
     () =>
       shared.assertSupplierPaymentWithinInvoice(
         matched,
         matched.outstandingIdr + 1,
+        [],
       ),
     (error) => error.code === "SUPPLIER_INVOICE_OVERPAYMENT",
+  );
+  // A second request while the first is still open cannot overpay the invoice;
+  // rejected or cancelled requests do not count.
+  const half = Math.floor(matched.outstandingIdr / 2);
+  assert.throws(
+    () =>
+      shared.assertSupplierPaymentWithinInvoice(
+        matched,
+        matched.outstandingIdr - half + 1,
+        [{ amountIdr: half, status: "pending_approval" }],
+      ),
+    (error) => error.code === "SUPPLIER_INVOICE_OVERPAYMENT",
+  );
+  assert.doesNotThrow(() =>
+    shared.assertSupplierPaymentWithinInvoice(matched, matched.outstandingIdr, [
+      { amountIdr: half, status: "rejected" },
+      { amountIdr: half, status: "cancelled" },
+    ]),
   );
 
   assert.equal(

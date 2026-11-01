@@ -94,21 +94,38 @@ export type GoodsReceiptRecordedEventPayload = z.infer<
   typeof goodsReceiptRecordedEventPayloadSchema
 >;
 
-export const supplierInvoiceRecordedEventPayloadSchema = z.strictObject({
-  supplierInvoiceId: supplierInvoiceIdSchema,
-  supplierId: supplierIdSchema,
-  purchaseOrderId: purchaseOrderIdSchema,
-  number: z.string().min(1).max(60),
-  goodsIdr: idrSchema,
-  priceVarianceIdr: idrSchema,
-  servicesIdr: idrSchema,
-  ppnIdr: idrSchema,
-  pph23Idr: idrSchema,
-  payableIdr: idrSchema,
-  totalIdr: idrSchema,
-  recordedBy: userIdSchema,
-  recordedAt: isoDateTimeSchema,
-});
+export const supplierInvoiceRecordedEventPayloadSchema = z
+  .strictObject({
+    supplierInvoiceId: supplierInvoiceIdSchema,
+    supplierId: supplierIdSchema,
+    purchaseOrderId: purchaseOrderIdSchema,
+    number: z.string().min(1).max(60),
+    goodsIdr: idrSchema,
+    priceVarianceIdr: idrSchema,
+    servicesIdr: idrSchema,
+    ppnIdr: idrSchema,
+    pph23Idr: idrSchema,
+    payableIdr: idrSchema,
+    totalIdr: idrSchema,
+    recordedBy: userIdSchema,
+    recordedAt: isoDateTimeSchema,
+  })
+  // The accounting posting rule consumes these keys; refuse a split whose
+  // journal would not balance.
+  .refine(
+    (payload) =>
+      payload.goodsIdr +
+        payload.priceVarianceIdr +
+        payload.servicesIdr +
+        payload.ppnIdr ===
+        payload.totalIdr &&
+      payload.totalIdr - payload.pph23Idr === payload.payableIdr,
+    {
+      path: ["payableIdr"],
+      message:
+        "total = goods + variance + services + ppn and payable = total - pph23",
+    },
+  );
 export type SupplierInvoiceRecordedEventPayload = z.infer<
   typeof supplierInvoiceRecordedEventPayloadSchema
 >;

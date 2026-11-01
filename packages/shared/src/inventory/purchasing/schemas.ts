@@ -1023,8 +1023,11 @@ export type SupplierInvoiceLine = z.infer<typeof supplierInvoiceLineSchema>;
 
 /**
  * Recorded supplier invoice. Header amounts are server-computed from the lines
- * and the match: `priceVarianceIdr` is the line-level price difference against
- * the PO price, `totalIdr = goods + variance + services + ppn`, and
+ * and the match: `goodsIdr` is the invoiced goods valued at the PO price (the
+ * amount that clears GRNI, which the receipt credited at PO cost),
+ * `priceVarianceIdr` is the line-level price difference against the PO price
+ * (invoiced goods at invoice price = goods + variance), `totalIdr = goods +
+ * variance + services + ppn` is what the supplier billed, and
  * `payableIdr = total - pph23` (PPh 23 is withheld from the payment). A
  * quantity difference is a match issue, not a price variance.
  */
@@ -1182,6 +1185,14 @@ export function threeWayMatch(
     >[];
     toleranceBp: number;
     computedAt: IsoDateTime;
+    /**
+     * Goods lines of earlier, non-void invoices on the same PO. The accepted
+     * receipt is a cumulative cap: two invoices may not each bill it in full.
+     */
+    previouslyInvoicedLines?: readonly Pick<
+      SupplierInvoiceLine,
+      "purchaseOrderLineId" | "kind" | "quantity"
+    >[];
   },
   mode: RoundingMode,
 ): ThreeWayMatch {
@@ -1206,6 +1217,17 @@ export function threeWayMatch(
     );
   }
 
+  // Quantity already billed per PO line (earlier invoices, then this
+  // invoice's earlier lines), so the receipt cap is cumulative.
+  const invoicedByLine = new Map<string, bigint>();
+  for (const line of input.previouslyInvoicedLines ?? []) {
+    if (line.kind !== "goods" || line.purchaseOrderLineId === null) continue;
+    invoicedByLine.set(
+      line.purchaseOrderLineId,
+      (invoicedByLine.get(line.purchaseOrderLineId) ?? 0n) +
+        parseDecimal4(line.quantity),
+    );
+  }
   let invoicedGoodsIdr: Idr = idr(0);
   let invoicedServicesIdr: Idr = idr(0);
   const rows: ThreeWayMatchRow[] = input.invoiceLines.map((line) => {
@@ -1249,8 +1271,12 @@ export function threeWayMatch(
         issues,
       };
     const accepted = acceptedByLine.get(orderLine.id) ?? 0n;
-    if (line.kind === "goods" && parseDecimal4(line.quantity) > accepted)
-      issues.push("quantity_exceeds_receipt");
+    if (line.kind === "goods") {
+      const billed =
+        (invoicedByLine.get(orderLine.id) ?? 0n) + parseDecimal4(line.quantity);
+      invoicedByLine.set(orderLine.id, billed);
+      if (billed > accepted) issues.push("quantity_exceeds_receipt");
+    }
     const orderedPrice = parseDecimal4(orderLine.unitPriceIdr);
     const invoicedPrice = parseDecimal4(line.unitPriceIdr);
     const priceVarianceBp =
@@ -1304,9 +1330,11 @@ export function threeWayMatch(
       extendCostIdr(line.quantity, line.unitPriceIdr, mode),
     ),
   );
+  const priceVarianceIdr = sumIdr(rows.map((row) => row.priceVarianceIdr));
   const headerIssues: ThreeWayMatchIssue[] = [];
+  // Header goods are at PO price: invoice-price goods minus the price variance.
   if (
-    invoicedGoodsIdr !== input.invoice.goodsIdr ||
+    invoicedGoodsIdr !== addIdr(input.invoice.goodsIdr, priceVarianceIdr) ||
     invoicedServicesIdr !== input.invoice.servicesIdr
   )
     headerIssues.push("invoice_total_mismatch");
@@ -1321,7 +1349,7 @@ export function threeWayMatch(
     receivedValueIdr,
     invoicedGoodsIdr,
     invoicedServicesIdr,
-    priceVarianceIdr: sumIdr(rows.map((row) => row.priceVarianceIdr)),
+    priceVarianceIdr,
     rows,
     headerIssues,
     computedAt: input.computedAt,
@@ -1514,15 +1542,31 @@ export function assertSupplierInvoicePayable(
     );
 }
 
-/** Partial payments are allowed; the total may not exceed `outstandingIdr`. */
+/**
+ * Partial payments are allowed; the new payment plus every payment already
+ * requested or approved but not yet paid (`openPayments`, status
+ * `pending_approval` or `approved`) may not exceed `outstandingIdr`, so two
+ * concurrent requests cannot overpay one invoice. Paid payments are already
+ * inside `outstandingIdr`; rejected/cancelled ones are ignored.
+ */
 export function assertSupplierPaymentWithinInvoice(
   invoice: Pick<SupplierInvoice, "outstandingIdr">,
   amountIdr: Idr,
+  openPayments: readonly Pick<SupplierPayment, "amountIdr" | "status">[],
 ): void {
-  if (amountIdr > invoice.outstandingIdr)
+  const committed = sumIdr(
+    openPayments
+      .filter(
+        (payment) =>
+          payment.status === "pending_approval" ||
+          payment.status === "approved",
+      )
+      .map((payment) => payment.amountIdr),
+  );
+  if (addIdr(committed, amountIdr) > invoice.outstandingIdr)
     throw new PurchasingError(
       "SUPPLIER_INVOICE_OVERPAYMENT",
-      `Payment ${amountIdr} exceeds outstanding ${invoice.outstandingIdr}`,
+      `Payment ${amountIdr} plus open requests ${committed} exceeds outstanding ${invoice.outstandingIdr}`,
     );
 }
 
