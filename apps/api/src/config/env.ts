@@ -17,6 +17,16 @@ const origin = (message: string) =>
     );
   }, message);
 
+const postgresUrl = z.url().refine((value) => {
+  const url = new URL(value);
+  return (
+    ["postgres:", "postgresql:"].includes(url.protocol) &&
+    Boolean(url.hostname) &&
+    url.pathname.length > 1 &&
+    !url.hash
+  );
+}, "Use a PostgreSQL connection string.");
+
 const schema = z
   .object({
     DEPLOYMENT_MODE: z
@@ -42,6 +52,7 @@ const schema = z
         !url.hash
       );
     }, "Set DATABASE_URL to a PostgreSQL connection string or run pnpm run setup."),
+    APP_DATABASE_URL: postgresUrl.optional(),
     BETTER_AUTH_SECRET: z
       .string()
       .min(32, "Run pnpm run setup to generate a secret."),

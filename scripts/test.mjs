@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { pnpmCommand, root } from "./lib.mjs";
+import { provisionAppRole } from "./provision-app-role.mjs";
 
 // Runs tests against a disposable PostgreSQL server that exists only for this
 // run. The development database is never touched.
@@ -81,9 +82,16 @@ try {
   if (!port)
     throw new Error("Could not determine the isolated PostgreSQL port.");
   const url = `postgresql://starter_test:${password}@127.0.0.1:${port}/starter_test`;
+  const appUrl = new URL(url);
+  appUrl.username = `legend_runtime_${randomBytes(8).toString("hex")}`;
+  appUrl.password = randomBytes(24).toString("hex");
   const testEnv = {
     ...env,
-    DATABASE_URL: url,
+    NODE_ENV: "test",
+    DEPLOYMENT_MODE: "development",
+    DATA_CLASSIFICATION: "synthetic",
+    DATABASE_URL: appUrl.toString(),
+    APP_DATABASE_URL: appUrl.toString(),
     MIGRATION_DATABASE_URL: url,
     STARTER_TEST_DATABASE_URL: url,
     STARTER_TEST_RUN: project,
@@ -93,6 +101,12 @@ try {
     VITE_API_URL: TEST_API_URL,
   };
   await run(pnpmCommand(), ["run", "db:migrate"], testEnv);
+  await provisionAppRole(url, appUrl.toString());
+  await run(
+    pnpmCommand(),
+    ["--filter", "@starter/api", "exec", "tsx", "src/db/seed-dev-tenant.ts"],
+    testEnv,
+  );
   if (mode === "unit") {
     await run(
       pnpmCommand(),

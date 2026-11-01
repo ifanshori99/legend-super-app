@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { createAppPool } from "./role";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { env } from "../config/env";
 import { SqlLogger } from "../lib/db-logger";
@@ -7,8 +7,7 @@ import * as schema from "./schema";
 
 // One pool per process. `pnpm dev` restarts the process on change, and
 // server.ts ends the pool on shutdown, so reloads never leak connections.
-export const pool = new Pool({
-  connectionString: env.DATABASE_URL,
+export const pool = createAppPool(env.APP_DATABASE_URL ?? env.DATABASE_URL, {
   max: 10,
   connectionTimeoutMillis: 5000,
   idleTimeoutMillis: 30000,
