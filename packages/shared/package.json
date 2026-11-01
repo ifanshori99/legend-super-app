@@ -12,6 +12,7 @@
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./core": "./src/core/index.ts",
+    "./adapters": "./src/adapters/index.ts",
     "./core/server": "./src/core/server.ts"
   },
   "scripts": {
