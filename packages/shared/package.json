@@ -20,7 +20,8 @@
     "./adapters": "./src/adapters/index.ts",
     "./api": "./src/api/index.ts",
     "./menu": "./src/menu/index.ts",
-    "./access": "./src/access/index.ts"
+    "./access": "./src/access/index.ts",
+    "./hris": "./src/hris/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
