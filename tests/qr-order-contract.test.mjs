@@ -95,6 +95,18 @@ test("ORD-03 prices, discounts, service, tax and rounding are server-computed", 
   assert.equal(quote.rounding.adjustmentIdr, 50);
   assert.equal(quote.totalIdr, 104_000);
   assert.equal(quote.minimumSpend.shortfallIdr, 0);
+  // Owner decision 2026-11-01: menu prices are exclusive, so the quote adds
+  // service and tax on top of the discounted subtotal, then rounds.
+  assert.ok(quote.serviceCharge.amountIdr > 0);
+  assert.ok(quote.taxIdr > 0);
+  assert.equal(
+    quote.totalIdr,
+    quote.subtotalIdr -
+      quote.discountIdr +
+      quote.serviceCharge.amountIdr +
+      quote.taxIdr +
+      quote.rounding.adjustmentIdr,
+  );
 
   const short = qr.computeQuote({
     sessionId: uuid,
@@ -838,5 +850,39 @@ test("ORD-04 QR token ids are cross-checked against the host tenant and table ro
       sessionTokenExpiresAt: scan.serverTime,
     }).success,
     false,
+  );
+});
+
+test("ORD-04 session token lives at most 12 hours and ends at bill close", () => {
+  assert.equal(qr.TABLE_SESSION_TOKEN_MAX_HOURS, 12);
+  const open = f.sessions[0];
+  assert.equal(
+    qr.tableSessionTokenExpiresAt(open),
+    "2026-11-01T16:30:00.000Z", // opened 04:30Z + 12 h, not delayed by a rescan
+  );
+  assert.equal(
+    f.scanResult.sessionTokenExpiresAt,
+    qr.tableSessionTokenExpiresAt(open),
+  );
+  const closed = f.sessions[3]; // opened 02:00Z, bill closed 03:00Z
+  assert.equal(closed.closedAt, "2026-11-01T03:00:00.000Z");
+  assert.equal(qr.tableSessionTokenExpiresAt(closed), closed.closedAt);
+
+  const scan = f.scanResult;
+  // One millisecond past the 12-hour window is refused.
+  assert.equal(
+    qr.qrScanResultSchema.safeParse({
+      ...scan,
+      sessionTokenExpiresAt: "2026-11-01T16:30:00.001Z",
+    }).success,
+    false,
+  );
+  // The server may shorten the token, and a shorter expiry is valid.
+  assert.equal(
+    qr.qrScanResultSchema.safeParse({
+      ...scan,
+      sessionTokenExpiresAt: "2026-11-01T06:00:00.000Z",
+    }).success,
+    true,
   );
 });
