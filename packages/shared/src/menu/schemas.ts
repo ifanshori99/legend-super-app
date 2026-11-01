@@ -186,3 +186,6 @@ export type PriceList = z.infer<typeof priceListSchema>;
 export type PriceListItem = z.infer<typeof priceListItemSchema>;
 export type Availability = z.infer<typeof availabilitySchema>;
 export type MenuImportRow = z.infer<typeof importRowSchema>;
+export type MenuFixture = z.infer<typeof menuFixtureSchema>;
+export type MenuChannel = z.infer<typeof channelSchema>;
+export type MenuSchedule = z.infer<typeof scheduleSchema>;

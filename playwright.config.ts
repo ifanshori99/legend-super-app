@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { MOCK_SPEC_PATTERNS } from "./e2e/mock-server.ts";
 
 // Both apps run from their production builds against the disposable database
 // that `pnpm test:e2e` creates. Never point this at a real database.
@@ -14,6 +15,10 @@ export const WEB_URL = "http://localhost:3101";
 
 export default defineConfig({
   testDir: "./e2e",
+  // Mock-mode specs need a dev server with VITE_API_MOCK=true; a production
+  // build compiles mock mode out, so they belong to `pnpm test:e2e:mock`
+  // (playwright.mock.config.ts) instead.
+  testIgnore: MOCK_SPEC_PATTERNS,
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

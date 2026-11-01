@@ -492,6 +492,9 @@ export const allDayCountSchema = z.strictObject({
 
 export const expoStationTicketSchema = z.strictObject({
   stationId: stationIdSchema,
+  /** Station label from the station row ("Dapur Panas"), so the expo card can
+   * name the station without a second lookup (bead legend-zvz). */
+  stationName: name,
   ticketId: kitchenTicketIdSchema,
   status: kitchenTicketStatusSchema,
 });
@@ -533,6 +536,19 @@ export const expoBoardSchema = z.strictObject({
   tickets: z.array(expoTicketSchema),
 });
 
+/**
+ * F12 "menugaskan runner": the staff the expo screen may assign to a table.
+ * `assignExpoRunner` takes a `userId`, so the screen needs the outlet's
+ * runnable staff as typed data instead of a free-typed id (bead legend-zvz).
+ * Which roles may run is roster/configuration, decided by the API.
+ */
+export const expoRunnerSchema = z.strictObject({
+  ...outletScope,
+  userId: userIdSchema,
+  name,
+});
+export type ExpoRunner = z.infer<typeof expoRunnerSchema>;
+
 /* ---------------------------------------------------------- pickup display */
 
 /** F12 "Pickup Display": takeaway and delivery call numbers (§6 `orders.channel`). */
@@ -570,10 +586,27 @@ export const pickupCallSchema = z
     message: "A picked-up number records pickedUpAt",
   });
 
+/**
+ * F12 "Pickup Display ... dengan promosi": the promotion slide a wall display
+ * shows between call numbers. Display-safe by design — no codes, quotas or
+ * budget (those stay in the promo engine, @starter/shared/crm) — so the feed
+ * cannot leak campaign internals to a customer-facing screen (bead legend-zvz).
+ */
+export const pickupPromotionSchema = z.strictObject({
+  ...outletScope,
+  id: uuidSchema,
+  title: name,
+  body: z.string().min(1).max(280),
+  /** Null = runs until the campaign ends; the display then keeps showing it. */
+  validUntil: isoDateTimeSchema.nullable(),
+});
+export type PickupPromotion = z.infer<typeof pickupPromotionSchema>;
+
 export const pickupDisplaySchema = z.strictObject({
   ...outletScope,
   generatedAt: isoDateTimeSchema,
   calls: z.array(pickupCallSchema),
+  promotions: z.array(pickupPromotionSchema),
 });
 
 /* -------------------------------------------------------- serving time */
@@ -788,6 +821,7 @@ export const kitchenFixtureSchema = z.strictObject({
   pacing: pacingSnapshotSchema,
   allDay: allDayCountSchema,
   expo: expoBoardSchema,
+  expoRunners: z.array(expoRunnerSchema),
   pickupDisplay: pickupDisplaySchema,
   servingTimeEstimate: servingTimeEstimateSchema,
   servingTimeSamples: z.array(servingTimeSampleSchema),

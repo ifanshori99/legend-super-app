@@ -31,6 +31,7 @@
     "doctor": "node scripts/doctor.mjs",
     "test": "node scripts/test.mjs unit",
     "test:e2e": "node scripts/test.mjs e2e",
+    "test:e2e:mock": "playwright test --config=playwright.mock.config.ts",
     "test:setup": "node scripts/test-setup.mjs",
     "traceability": "node scripts/ci/traceability.mjs",
     "create:variant": "node scripts/create-variant.mjs"

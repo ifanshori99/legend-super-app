@@ -443,6 +443,15 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
   respond(kitchen.getAllDayCount, fixtures.allDay);
   respond(kitchen.getExpoBoard, fixtures.expo);
   respond(kitchen.assignExpoRunner, fixtures.expo.tickets[3]);
+  respond(kitchen.listExpoRunners, fixtures.expoRunners);
+  // F12 "menugaskan runner": the expo screen can only pick staff the runner
+  // list offers (bead legend-zvz).
+  const runnerIds = new Set(
+    fixtures.expoRunners.map((runner) => runner.userId),
+  );
+  for (const row of fixtures.expo.tickets)
+    if (row.runnerId !== null)
+      assert.ok(runnerIds.has(row.runnerId), "assigned runner is assignable");
   respond(kitchen.getPickupDisplay, fixtures.pickupDisplay);
   respond(kitchen.callPickupNumber, fixtures.pickupDisplay.calls[1]);
   respond(kitchen.getPacing, fixtures.pacing);
