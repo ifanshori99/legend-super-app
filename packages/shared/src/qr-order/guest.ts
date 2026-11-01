@@ -657,7 +657,7 @@ export function buildQrMenu(input: {
     },
     orderingOpen: zoneIsOpen(
       input.zone,
-      input.at ?? new Date("2026-11-01T05:10:00.000Z"),
+      input.at ?? new Date("2026-11-02T03:10:00.000Z"),
     ),
     pricing: {
       pricesIncludeTaxAndService: false,

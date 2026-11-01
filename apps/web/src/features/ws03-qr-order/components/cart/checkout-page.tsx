@@ -191,13 +191,17 @@ export function CheckoutPage() {
     shortfall > 0 || quote.lines.length === 0 || awaitingConfirmation;
   const names = quote.removedLines.map((line) => line.name).join(", ");
 
-  const submit = () => {
+  const submit = (afterPlaced: "pay" | "split" = "pay") => {
     if (keyRef.current?.version !== cartVersion)
       keyRef.current = { version: cartVersion, key: idempotencyKey("order") };
     place.mutate(
       { expectedCartVersion: cartVersion, idempotencyKey: keyRef.current.key },
       {
         onSuccess: ({ data }) => {
+          if (afterPlaced === "split") {
+            void navigate({ to: "/t/$token/bill", params: { token: qrToken } });
+            return;
+          }
           if (data.kitchenFire === "held_for_payment")
             setPayTarget({
               target: { kind: "order", orderId: data.order.id },
@@ -359,7 +363,7 @@ export function CheckoutPage() {
           className="w-full"
           loading={place.isPending}
           disabled={blocked}
-          onClick={submit}
+          onClick={() => submit()}
         >
           {payFirst
             ? t("qrCart.checkout.payFirstSubmit", {
@@ -367,6 +371,23 @@ export function CheckoutPage() {
               })
             : t("qrCart.checkout.openBillSubmit")}
         </Button>
+        {payFirst && (
+          <Button
+            type="button"
+            variant="outline"
+            size="lg"
+            className="w-full"
+            disabled={blocked || place.isPending}
+            onClick={() => submit("split")}
+          >
+            {t("qrCart.checkout.splitSubmit")}
+          </Button>
+        )}
+        {payFirst && (
+          <p className="text-center text-sm leading-5 text-muted-foreground">
+            {t("qrCart.checkout.splitHint")}
+          </p>
+        )}
       </div>
 
       {payTarget && (

@@ -55,7 +55,8 @@ export const qrCartMessages = {
       "Waiter belum mengonfirmasi meja ini. Pesanan bisa dikirim setelah meja dikonfirmasi, biasanya hanya beberapa menit.",
     estimateTitle: "Estimasi siap",
     estimate: "{min}–{max} menit",
-    estimateNone: "Estimasi waktu akan tampil setelah dapur menghitung antrean.",
+    estimateNone:
+      "Estimasi waktu akan tampil setelah dapur menghitung antrean.",
     estimateHint: "Dihitung dari antrean dapur saat ini.",
     breakdown: {
       title: "Rincian bayar",
@@ -94,6 +95,9 @@ export const qrCartMessages = {
     payFirstSubmit: "Bayar {total}",
     openBillSubmit: "Kirim pesanan ke dapur",
     placing: "Memproses pesanan…",
+    splitSubmit: "Bagi tagihan",
+    splitHint:
+      "Pesan dulu, lalu bagi tagihan rata, per orang, atau per item. Tiap tamu membayar bagiannya sendiri.",
     sentToast: "Pesanan terkirim ke dapur",
     empty: "Keranjang kosong. Tambahkan menu dulu untuk checkout.",
     error: {

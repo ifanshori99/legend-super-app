@@ -75,7 +75,10 @@ test("ORD-01 variant prices drive the item base price and ids stay unique", () =
   const withVariants = menu.items.filter((item) => item.variants.length > 0);
   assert.ok(withVariants.length > 0);
   for (const item of withVariants)
-    assert.equal(item.priceIdr, Math.min(...item.variants.map((v) => v.priceIdr)));
+    assert.equal(
+      item.priceIdr,
+      Math.min(...item.variants.map((v) => v.priceIdr)),
+    );
   const ids = menu.items.map((item) => item.id);
   assert.equal(new Set(ids).size, ids.length);
   const broken = { ...withVariants[0], priceIdr: withVariants[0].priceIdr + 1 };
@@ -199,7 +202,9 @@ test("ORD-01 guest endpoints use absolute paths with schemas for every param", (
     );
   }
   assert.equal(
-    buildEndpointPath(qr.getQrMenu.path, { qrToken: qr.qrTokenFixtures.indoor }),
+    buildEndpointPath(qr.getQrMenu.path, {
+      qrToken: qr.qrTokenFixtures.indoor,
+    }),
     `/api/qr/menu/${encodeURIComponent(qr.qrTokenFixtures.indoor)}`,
   );
 });
