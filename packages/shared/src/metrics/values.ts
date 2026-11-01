@@ -78,8 +78,10 @@ function valueFromNative(unit: MetricUnit, native: bigint): MetricValue {
 }
 
 /**
- * Current minus previous in the same unit, plus the percentage change as
- * Decimal4 percentage points (null when the baseline is zero). Rounding is
+ * Current minus previous in the same unit, plus the relative change in percent
+ * as Decimal4, measured against |previous| so the sign always follows the
+ * difference (a loss shrinking from -100 to -50 is +50%, not -50%); null when
+ * the baseline is zero. Rounding is
  * half-up and explicit, in bigint, so no float ever touches a reported number.
  */
 export function compareMetricValues(
@@ -102,10 +104,26 @@ export function compareMetricValues(
       previousNative === 0n
         ? null
         : formatDecimal4(
-            divideRounded(difference * 1_000_000n, previousNative, "half_up"),
+            divideRounded(
+              difference * 1_000_000n,
+              previousNative < 0n ? -previousNative : previousNative,
+              "half_up",
+            ),
           ),
   };
 }
+
+/**
+ * Query keys every report route reads for the DASH-01 drill-down, so a tile
+ * and its source report filter identically (DASH-02). `outletId` repeats once
+ * per outlet.
+ */
+export const METRIC_REPORT_QUERY_KEYS = {
+  startDate: "startDate",
+  endDate: "endDate",
+  outletId: "outletId",
+  groupBy: "groupBy",
+} as const;
 
 export type MetricSourceReportParams = {
   startDate: string;
@@ -124,12 +142,16 @@ export function metricSourceReportPath(
   params: MetricSourceReportParams,
 ): string {
   const query = [
-    `startDate=${encodeURIComponent(params.startDate)}`,
-    `endDate=${encodeURIComponent(params.endDate)}`,
+    `${METRIC_REPORT_QUERY_KEYS.startDate}=${encodeURIComponent(params.startDate)}`,
+    `${METRIC_REPORT_QUERY_KEYS.endDate}=${encodeURIComponent(params.endDate)}`,
   ];
   for (const outletId of params.outletIds ?? [])
-    query.push(`outletId=${encodeURIComponent(outletId)}`);
+    query.push(
+      `${METRIC_REPORT_QUERY_KEYS.outletId}=${encodeURIComponent(outletId)}`,
+    );
   if (params.groupBy)
-    query.push(`groupBy=${encodeURIComponent(params.groupBy)}`);
+    query.push(
+      `${METRIC_REPORT_QUERY_KEYS.groupBy}=${encodeURIComponent(params.groupBy)}`,
+    );
   return `${source.route}?${query.join("&")}`;
 }

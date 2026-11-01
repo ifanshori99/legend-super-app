@@ -267,6 +267,14 @@ test("comparison keeps units, computes deltas and handles a zero baseline", () =
     ).changePercent,
     "-10.0000",
   );
+  // A negative baseline (net loss) measures change against |previous|.
+  assert.equal(
+    metrics.compareMetricValues(
+      { unit: "idr", valueIdr: -50_000 },
+      { unit: "idr", valueIdr: -100_000 },
+    ).changePercent,
+    "50.0000",
+  );
   assert.throws(
     () =>
       metrics.compareMetricValues(
@@ -443,6 +451,15 @@ test("WS-11 metrics.aggregated is catalogued and its payload is validated", () =
   assert.equal(entry.payloadSchemaRef, "metrics.aggregated.v1");
   assert.equal(entry.workstream, "WS-11");
   assert.ok(metrics.METRICS_EVENT_PAYLOAD_SCHEMAS["metrics.aggregated"]);
+  assert.equal(
+    metrics.metricsAggregatedEvent.payloadSchemaRef,
+    entry.payloadSchemaRef,
+  );
+  assert.ok(
+    metrics.metricsAggregatedEvent.envelopeSchema.parse(
+      fixtures.aggregatedEvent,
+    ),
+  );
   const payload = fixtures.aggregatedEvent.payload;
   assert.ok(metrics.metricsAggregatedPayloadSchema.parse(payload));
   for (const bad of [
@@ -476,4 +493,21 @@ test("metric domain errors map to stable codes and HTTP statuses", () => {
     "fixture is a valid API error envelope",
   );
   assert.ok(metrics.metricErrorCodeSchema.parse("METRIC_NOT_FOUND"));
+});
+
+test("ratio aggregation: percentages are never summed and ratios name their inputs", () => {
+  const base = fixtures.definitionByCode.food_cost_pct;
+  assert.ok(metrics.metricDefinitionSchema.parse(base));
+  assert.equal(
+    metrics.metricDefinitionSchema.safeParse({ ...base, aggregation: "sum" })
+      .success,
+    false,
+  );
+  assert.equal(
+    metrics.metricDefinitionSchema.safeParse({
+      ...base,
+      formula: { ...base.formula, inputs: [] },
+    }).success,
+    false,
+  );
 });

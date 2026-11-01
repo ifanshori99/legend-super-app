@@ -285,6 +285,25 @@ export const metricDefinitionSchema = metricDefinitionBaseSchema.superRefine(
         message: "A metric cannot use itself as a formula input",
         path: ["formula", "inputs"],
       });
+    // Percentages are never added up across days or outlets: a percent metric
+    // is recomputed from its components (ratio), averaged, or read as latest.
+    if (definition.unit === "percent" && definition.aggregation === "sum")
+      ctx.addIssue({
+        code: "custom",
+        message: "A percent metric cannot use sum aggregation",
+        path: ["aggregation"],
+      });
+    // A ratio is recomputed over component totals, so its formula must name
+    // at least one registered metric it divides by or reads.
+    if (
+      definition.aggregation === "ratio" &&
+      definition.formula.inputs.length === 0
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "A ratio metric lists the metrics it is computed from",
+        path: ["formula", "inputs"],
+      });
     if (Date.parse(definition.updatedAt) < Date.parse(definition.createdAt))
       ctx.addIssue({
         code: "custom",
@@ -447,7 +466,11 @@ export type MetricOutletFilter = z.infer<typeof metricOutletFilterSchema>;
 export const metricComparisonSchema = z.strictObject({
   previousValue: metricValueSchema,
   changeValue: metricValueSchema,
-  /** Null when the previous value was zero. Decimal4 percentage points. */
+  /**
+   * Relative change in percent (Decimal4), against the absolute previous value
+   * so a smaller loss reads as an improvement. Null when the previous value was
+   * zero.
+   */
   changePercent: decimal4Schema.nullable(),
 });
 export type MetricComparison = z.infer<typeof metricComparisonSchema>;

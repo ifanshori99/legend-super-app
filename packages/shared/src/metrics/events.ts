@@ -4,6 +4,7 @@
 // (payloadSchemaRef `metrics.aggregated.v1`), never a replacement for it.
 
 import { businessDateSchema, outletIdSchema, z } from "../core/index.ts";
+import { defineDomainEvent } from "../events/index.ts";
 import { metricCodeSchema, metricFinalitySchema } from "./schemas.ts";
 
 /**
@@ -47,3 +48,9 @@ export type MetricsAggregatedPayload = z.infer<
 export const METRICS_EVENT_PAYLOAD_SCHEMAS = {
   "metrics.aggregated": metricsAggregatedPayloadSchema,
 } as const;
+
+/** Catalog-bound definition: envelope schema validating name, ref and payload. */
+export const metricsAggregatedEvent = defineDomainEvent({
+  name: "metrics.aggregated",
+  payload: metricsAggregatedPayloadSchema,
+});
