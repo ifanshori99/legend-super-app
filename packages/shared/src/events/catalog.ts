@@ -51,7 +51,7 @@ const namesByWorkstream = {
   "WS-08":
     "customer.created reservation.created reservation.cancelled delivery_order.received points.earned points.reversed points.redeemed points.expired tier.changed",
   "WS-09":
-    "facility_entitlement.issued facility_entitlement.expired access_ticket.issued access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated",
+    "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
     "employee.updated attendance.recorded payroll_run.completed payslip.created",
   "WS-11": "metrics.aggregated report.generated",

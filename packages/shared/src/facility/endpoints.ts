@@ -1,0 +1,467 @@
+// HTTP contracts for facility access and WFC (PRD v1.7 §3 F22/F23/F39).
+// The API validates with these objects and the web app's typed client + mock
+// runtime read the same ones (docs/frontend.md "Typed endpoints and mock mode"),
+// so the FE beads can build against fixtures before the API exists.
+//
+// Paths: `/api/facility/...` for facility access, `/api/wifi/...` for the guest
+// Wi-Fi portal. Authorization lives in the service layer, never in the path.
+
+import {
+  z,
+  cursorPageSchema,
+  dataResponseSchema,
+  idrSchema,
+  isoDateTimeSchema,
+} from "../core/index.ts";
+import { defineEndpoint } from "../api/index.ts";
+import {
+  accessTicketCredentialSchema,
+  accessTicketSchema,
+  accessTicketViewSchema,
+  cancellationResolutionSchema,
+  cleaningTaskSchema,
+  facilityAddonSchema,
+  facilityAvailabilitySchema,
+  facilityAreaSchema,
+  facilityConfigSchema,
+  facilityIncidentSchema,
+  facilityProductSchema,
+  facilityQueueEntrySchema,
+  facilitySchema,
+  facilitySubscriptionSchema,
+  facilitySubscriptionViewSchema,
+  facilityUnitBoardRowSchema,
+  facilityUnitSchema,
+  entitlementRuleSchema,
+  subscriptionInvoiceSchema,
+  subscriptionPlanSchema,
+  wifiPolicySchema,
+  wifiQuotaViewSchema,
+  wifiSessionSchema,
+} from "./schemas.ts";
+import {
+  bookAccessTicketSchema,
+  cancelAccessTicketSchema,
+  completeCleaningTaskSchema,
+  createCleaningTaskSchema,
+  createFacilityAddonSchema,
+  createFacilityAreaSchema,
+  createFacilityProductSchema,
+  createFacilityUnitSchema,
+  createSubscriptionPlanSchema,
+  facilityConfigQuerySchema,
+  facilityUnitsQuerySchema,
+  joinFacilityQueueSchema,
+  leaveFacilityQueueParamsSchema,
+  listAccessTicketsQuerySchema,
+  listAvailabilityQuerySchema,
+  putEntitlementRuleSchema,
+  putWifiPolicySchema,
+  raiseFacilityIncidentSchema,
+  refreshWifiQuotaSchema,
+  respondFacilityIncidentSchema,
+  staffSellTicketSchema,
+  startCleaningTaskSchema,
+  startSubscriptionSchema,
+  startWifiSessionSchema,
+  subscriptionParamsSchema,
+  updateFacilityAddonSchema,
+  updateFacilityAreaSchema,
+  updateFacilityProductSchema,
+  updateFacilitySchema,
+  updateFacilityUnitSchema,
+  updateSubscriptionPlanSchema,
+  updateSubscriptionSchema,
+  wifiPolicyParamsSchema,
+  wifiPolicyQuerySchema,
+  wifiSessionParamsSchema,
+} from "./inputs.ts";
+import {
+  accessTicketIdSchema,
+  cleaningTaskIdSchema,
+  entitlementRuleIdSchema,
+  facilityAddonIdSchema,
+  facilityAreaIdSchema,
+  facilityIdSchema,
+  facilityIncidentIdSchema,
+  facilityProductIdSchema,
+  facilityUnitIdSchema,
+  subscriptionPlanIdSchema,
+} from "./ids.ts";
+
+const ticketIdParams = z.strictObject({ ticketId: accessTicketIdSchema });
+const unitIdParams = z.strictObject({ unitId: facilityUnitIdSchema });
+const taskIdParams = z.strictObject({ taskId: cleaningTaskIdSchema });
+const incidentIdParams = z.strictObject({
+  incidentId: facilityIncidentIdSchema,
+});
+const planIdParams = z.strictObject({ planId: subscriptionPlanIdSchema });
+const areaIdParams = z.strictObject({ areaId: facilityAreaIdSchema });
+const productIdParams = z.strictObject({ productId: facilityProductIdSchema });
+const addonIdParams = z.strictObject({ addonId: facilityAddonIdSchema });
+const ruleIdParams = z.strictObject({ ruleId: entitlementRuleIdSchema });
+
+/**
+ * The PIN and QR token are returned here, once. Fetching the ticket again
+ * returns `accessTicketViewSchema`, which never repeats them.
+ */
+const issuedTicketSchema = z.strictObject({
+  ticket: accessTicketSchema,
+  credential: accessTicketCredentialSchema,
+});
+
+// ---- Customer: availability, booking, ticket, queue, subscriptions ----------
+
+export const getFacilityAvailability = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/availability",
+  query: listAvailabilityQuerySchema,
+  response: dataResponseSchema(facilityAvailabilitySchema),
+});
+
+export const bookAccessTicket = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/tickets",
+  body: bookAccessTicketSchema,
+  response: dataResponseSchema(issuedTicketSchema),
+});
+
+/** POS / offline edge sale: the cashier names the customer (FAC-03). */
+export const sellAccessTicketAtPos = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/tickets/pos",
+  body: staffSellTicketSchema,
+  response: dataResponseSchema(issuedTicketSchema),
+});
+
+export const listAccessTickets = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/tickets",
+  query: listAccessTicketsQuerySchema,
+  response: cursorPageSchema(accessTicketViewSchema),
+});
+
+export const getAccessTicket = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/tickets/:ticketId",
+  params: ticketIdParams,
+  response: dataResponseSchema(accessTicketViewSchema),
+});
+
+export const cancelAccessTicket = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/tickets/:ticketId/cancel",
+  params: ticketIdParams,
+  body: cancelAccessTicketSchema,
+  response: dataResponseSchema(
+    z.strictObject({
+      ticket: accessTicketSchema,
+      resolution: cancellationResolutionSchema,
+      /** Fee kept by the house for a partial refund (0 otherwise). */
+      feeIdr: idrSchema.refine((value) => value >= 0),
+    }),
+  ),
+});
+
+export const joinFacilityQueue = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/queue",
+  body: joinFacilityQueueSchema,
+  response: dataResponseSchema(facilityQueueEntrySchema),
+});
+
+/** The caller's own place in the queue; null when not queued. */
+export const getCurrentFacilityQueueEntry = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/queue/current",
+  query: z.strictObject({ facilityId: facilityIdSchema }),
+  response: dataResponseSchema(facilityQueueEntrySchema.nullable()),
+});
+
+export const leaveFacilityQueue = defineEndpoint({
+  method: "DELETE",
+  path: "/api/facility/queue/:entryId",
+  params: leaveFacilityQueueParamsSchema,
+});
+
+export const listSubscriptionPlans = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/subscription-plans",
+  query: z.strictObject({ facilityId: facilityIdSchema }),
+  response: dataResponseSchema(
+    z.strictObject({ plans: z.array(subscriptionPlanSchema) }),
+  ),
+});
+
+export const getCurrentFacilitySubscription = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/subscriptions/current",
+  response: dataResponseSchema(facilitySubscriptionViewSchema.nullable()),
+});
+
+export const startFacilitySubscription = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/subscriptions",
+  body: startSubscriptionSchema,
+  response: dataResponseSchema(
+    z.strictObject({
+      subscription: facilitySubscriptionSchema,
+      invoice: subscriptionInvoiceSchema,
+    }),
+  ),
+});
+
+export const updateFacilitySubscription = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/subscriptions/:subscriptionId",
+  params: subscriptionParamsSchema,
+  body: updateSubscriptionSchema,
+  response: dataResponseSchema(facilitySubscriptionSchema),
+});
+
+// ---- Staff: status board, cleaning, incidents ------------------------------
+
+export const getFacilityUnitBoard = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/units",
+  query: facilityUnitsQuerySchema,
+  response: dataResponseSchema(
+    z.strictObject({
+      rows: z.array(facilityUnitBoardRowSchema),
+      serverTime: isoDateTimeSchema,
+    }),
+  ),
+});
+
+export const createCleaningTask = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/cleaning-tasks",
+  body: createCleaningTaskSchema,
+  response: dataResponseSchema(cleaningTaskSchema),
+});
+
+export const startCleaningTask = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/cleaning-tasks/:taskId/start",
+  params: taskIdParams,
+  body: startCleaningTaskSchema,
+  response: dataResponseSchema(cleaningTaskSchema),
+});
+
+export const completeCleaningTask = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/cleaning-tasks/:taskId/complete",
+  params: taskIdParams,
+  body: completeCleaningTaskSchema,
+  response: dataResponseSchema(
+    z.strictObject({
+      task: cleaningTaskSchema,
+      unit: facilityUnitSchema,
+    }),
+  ),
+});
+
+export const updateFacilityUnit = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/units/:unitId",
+  params: unitIdParams,
+  body: updateFacilityUnitSchema,
+  response: dataResponseSchema(facilityUnitSchema),
+});
+
+export const raiseFacilityIncident = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/incidents",
+  body: raiseFacilityIncidentSchema,
+  response: dataResponseSchema(facilityIncidentSchema),
+});
+
+export const respondFacilityIncident = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/incidents/:incidentId/respond",
+  params: incidentIdParams,
+  body: respondFacilityIncidentSchema,
+  response: dataResponseSchema(facilityIncidentSchema),
+});
+
+// ---- Guest Wi-Fi ------------------------------------------------------------
+
+export const getWifiPolicyForZone = defineEndpoint({
+  method: "GET",
+  path: "/api/wifi/policy",
+  query: wifiPolicyQuerySchema,
+  response: dataResponseSchema(wifiPolicySchema),
+});
+
+export const startWifiSession = defineEndpoint({
+  method: "POST",
+  path: "/api/wifi/sessions",
+  body: startWifiSessionSchema,
+  response: dataResponseSchema(wifiQuotaViewSchema),
+});
+
+export const getCurrentWifiSession = defineEndpoint({
+  method: "GET",
+  path: "/api/wifi/sessions/current",
+  response: dataResponseSchema(wifiQuotaViewSchema.nullable()),
+});
+
+/** Recompute the daily allowance after a payment lands (FAC-12, <= 1 minute). */
+export const refreshWifiQuota = defineEndpoint({
+  method: "POST",
+  path: "/api/wifi/sessions/current/refresh",
+  body: refreshWifiQuotaSchema,
+  response: dataResponseSchema(wifiQuotaViewSchema),
+});
+
+export const endWifiSession = defineEndpoint({
+  method: "POST",
+  path: "/api/wifi/sessions/:sessionId/end",
+  params: wifiSessionParamsSchema,
+  response: dataResponseSchema(wifiSessionSchema),
+});
+
+// ---- Admin configuration (bead legend-er32) --------------------------------
+
+export const getFacilityConfig = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/config",
+  query: facilityConfigQuerySchema,
+  response: dataResponseSchema(facilityConfigSchema),
+});
+
+export const updateFacility = defineEndpoint({
+  method: "PUT",
+  path: "/api/facility/facilities/:facilityId",
+  params: z.strictObject({ facilityId: facilityIdSchema }),
+  body: updateFacilitySchema,
+  response: dataResponseSchema(facilitySchema),
+});
+
+export const createFacilityArea = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/areas",
+  body: createFacilityAreaSchema,
+  response: dataResponseSchema(facilityAreaSchema),
+});
+
+export const updateFacilityArea = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/areas/:areaId",
+  params: areaIdParams,
+  body: updateFacilityAreaSchema,
+  response: dataResponseSchema(facilityAreaSchema),
+});
+
+/** Creates one bookable unit (booth); `PATCH /units/:unitId` changes its state. */
+export const createFacilityUnit = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/units",
+  body: createFacilityUnitSchema,
+  response: dataResponseSchema(facilityUnitSchema),
+});
+
+export const createFacilityProduct = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/products",
+  body: createFacilityProductSchema,
+  response: dataResponseSchema(facilityProductSchema),
+});
+
+export const updateFacilityProduct = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/products/:productId",
+  params: productIdParams,
+  body: updateFacilityProductSchema,
+  response: dataResponseSchema(facilityProductSchema),
+});
+
+export const createFacilityAddon = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/addons",
+  body: createFacilityAddonSchema,
+  response: dataResponseSchema(facilityAddonSchema),
+});
+
+export const updateFacilityAddon = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/addons/:addonId",
+  params: addonIdParams,
+  body: updateFacilityAddonSchema,
+  response: dataResponseSchema(facilityAddonSchema),
+});
+
+/** PUT replaces one entitlement rule (condition required, fixed per type). */
+export const putEntitlementRule = defineEndpoint({
+  method: "PUT",
+  path: "/api/facility/entitlement-rules/:ruleId",
+  params: ruleIdParams,
+  body: putEntitlementRuleSchema,
+  response: dataResponseSchema(entitlementRuleSchema),
+});
+
+export const createSubscriptionPlanEndpoint = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/subscription-plans",
+  body: createSubscriptionPlanSchema,
+  response: dataResponseSchema(subscriptionPlanSchema),
+});
+
+export const updateSubscriptionPlan = defineEndpoint({
+  method: "PATCH",
+  path: "/api/facility/subscription-plans/:planId",
+  params: planIdParams,
+  body: updateSubscriptionPlanSchema,
+  response: dataResponseSchema(subscriptionPlanSchema),
+});
+
+/** Replaces the Wi-Fi policy of a zone; applies on the next request (FAC-14). */
+export const putWifiPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/wifi/policies/:policyId",
+  params: wifiPolicyParamsSchema,
+  body: putWifiPolicySchema,
+  response: dataResponseSchema(wifiPolicySchema),
+});
+
+/** Every facility endpoint, for the mock runtime and future route generation. */
+export const facilityEndpoints = [
+  getFacilityAvailability,
+  bookAccessTicket,
+  sellAccessTicketAtPos,
+  listAccessTickets,
+  getAccessTicket,
+  cancelAccessTicket,
+  joinFacilityQueue,
+  getCurrentFacilityQueueEntry,
+  leaveFacilityQueue,
+  listSubscriptionPlans,
+  getCurrentFacilitySubscription,
+  startFacilitySubscription,
+  updateFacilitySubscription,
+  getFacilityUnitBoard,
+  createCleaningTask,
+  startCleaningTask,
+  completeCleaningTask,
+  updateFacilityUnit,
+  raiseFacilityIncident,
+  respondFacilityIncident,
+  getWifiPolicyForZone,
+  startWifiSession,
+  getCurrentWifiSession,
+  refreshWifiQuota,
+  endWifiSession,
+  getFacilityConfig,
+  updateFacility,
+  createFacilityArea,
+  updateFacilityArea,
+  createFacilityUnit,
+  createFacilityProduct,
+  updateFacilityProduct,
+  createFacilityAddon,
+  updateFacilityAddon,
+  putEntitlementRule,
+  createSubscriptionPlanEndpoint,
+  updateSubscriptionPlan,
+  putWifiPolicy,
+] as const;

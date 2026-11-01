@@ -29,7 +29,8 @@
     "./text": "./src/text/index.ts",
     "./inventory": "./src/inventory/index.ts",
     "./qr-order": "./src/qr-order/index.ts",
-    "./crm": "./src/crm/index.ts"
+    "./crm": "./src/crm/index.ts",
+    "./facility": "./src/facility/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
