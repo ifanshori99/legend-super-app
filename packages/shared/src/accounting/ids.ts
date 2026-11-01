@@ -27,6 +27,14 @@ export const fixedAssetIdSchema = uuidIdSchema<"FixedAssetId">();
 export const depreciationRunIdSchema = uuidIdSchema<"DepreciationRunId">();
 export const budgetIdSchema = uuidIdSchema<"BudgetId">();
 export const taxReportIdSchema = uuidIdSchema<"TaxReportId">();
+// Profit share & dividends (PRD §6 I).
+export const profitEntityIdSchema = uuidIdSchema<"ProfitEntityId">();
+export const shareholderIdSchema = uuidIdSchema<"ShareholderId">();
+export const shareAllocationIdSchema = uuidIdSchema<"ShareAllocationId">();
+export const distributionRunIdSchema = uuidIdSchema<"DistributionRunId">();
+export const distributionLineIdSchema = uuidIdSchema<"DistributionLineId">();
+export const shareholderDocumentIdSchema =
+  uuidIdSchema<"ShareholderDocumentId">();
 
 export type LegalEntityId = z.infer<typeof legalEntityIdSchema>;
 export type AccountId = z.infer<typeof accountIdSchema>;
@@ -45,3 +53,9 @@ export type FixedAssetId = z.infer<typeof fixedAssetIdSchema>;
 export type DepreciationRunId = z.infer<typeof depreciationRunIdSchema>;
 export type BudgetId = z.infer<typeof budgetIdSchema>;
 export type TaxReportId = z.infer<typeof taxReportIdSchema>;
+export type ProfitEntityId = z.infer<typeof profitEntityIdSchema>;
+export type ShareholderId = z.infer<typeof shareholderIdSchema>;
+export type ShareAllocationId = z.infer<typeof shareAllocationIdSchema>;
+export type DistributionRunId = z.infer<typeof distributionRunIdSchema>;
+export type DistributionLineId = z.infer<typeof distributionLineIdSchema>;
+export type ShareholderDocumentId = z.infer<typeof shareholderDocumentIdSchema>;

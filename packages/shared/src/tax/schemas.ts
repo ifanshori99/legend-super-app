@@ -7,6 +7,11 @@
 // adjustment journal, never by rewriting a rule (PRD R21). A version with
 // `isActive: false` is a tombstone: from its effective date the code no longer
 // applies. Rates, increments and rounding modes are tenant data, never code.
+//
+// Price display (owner decision, 2026-11-01): menu prices EXCLUDE tax and
+// service charge; both are added at checkout (QR web + POS). The tenant/outlet
+// calculation setting `pricesIncludeTax: false` is the default; inclusive
+// ("harga nett") stays an opt-in configuration, per tenant or per rule.
 
 import {
   z,
@@ -124,8 +129,10 @@ const taxRuleFields = {
   /** Empty = every channel. */
   channels: z.array(taxChannelSchema).max(taxChannelSchema.options.length),
   appliesTo: taxAppliesToSchema,
-  /** Prices of covered items already include this tax and the service charge
-   * ("harga nett"); the engine backs them out. */
+  /** Rule-level price mode: prices of covered items already include this tax
+   * and the service charge ("harga nett") and the engine backs them out.
+   * Created without it, a rule inherits the tenant/outlet setting
+   * `pricesIncludeTax` (exclusive by default, owner decision 2026-11-01). */
   priceIncludesTax: z.boolean(),
   /** Service charge is part of the tax base (DPP) for this rule. */
   includeServiceInBase: z.boolean(),
@@ -190,6 +197,13 @@ export type PackageAllocationMethod = z.infer<
 
 const settingsFields = {
   calculationOrder: calculationOrderSchema,
+  /**
+   * Tenant/outlet default for menu display and new rules: prices already
+   * include their tax and service charge ("harga nett"). Owner decision
+   * (2026-11-01): false — menu prices exclude both and checkout adds them
+   * (QR web + POS). True is the opt-in inclusive mode.
+   */
+  pricesIncludeTax: z.boolean(),
   /** Rounding of service charge to whole rupiah. */
   serviceRoundingMode: roundingModeSchema,
   /** Rounding of tax to whole rupiah (exclusive prices). */
