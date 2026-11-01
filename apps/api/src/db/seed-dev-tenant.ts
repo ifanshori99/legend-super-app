@@ -88,6 +88,48 @@ try {
     [brand.id, tenant.id, brand.slug, brand.name, brand.logoMediaId, null],
   );
 
+  // Tenant Themes come with the brand, so the whitelabel brand context has a
+  // real active theme to render. The brand points at the active version.
+  for (const theme of fixtures.themes) {
+    await client.query(
+      `INSERT INTO tenant_themes (id, tenant_id, brand_id, version, tokens, logo_media_id, font_family, corners, contrast_check_passed, status, created_by, created_at, activated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (id) DO UPDATE SET
+         version = EXCLUDED.version,
+         tokens = EXCLUDED.tokens,
+         logo_media_id = EXCLUDED.logo_media_id,
+         font_family = EXCLUDED.font_family,
+         corners = EXCLUDED.corners,
+         contrast_check_passed = EXCLUDED.contrast_check_passed,
+         status = EXCLUDED.status,
+         activated_at = EXCLUDED.activated_at`,
+      [
+        theme.id,
+        tenant.id,
+        brand.id,
+        theme.version,
+        JSON.stringify(theme.tokens),
+        theme.logoMediaId,
+        theme.fontFamily,
+        theme.corners,
+        theme.contrastCheckPassed,
+        theme.status,
+        theme.createdBy,
+        theme.createdAt,
+        theme.activatedAt,
+      ],
+    );
+  }
+  const activeTheme = fixtures.themes.find(
+    (theme) => theme.status === "active",
+  );
+  if (activeTheme) {
+    await client.query(
+      "UPDATE brands SET theme_id = $1 WHERE id = $2 AND tenant_id = $3",
+      [activeTheme.id, brand.id, tenant.id],
+    );
+  }
+
   const legalEntity = fixtures.legalEntity;
   await client.query(
     `INSERT INTO legal_entities (id, tenant_id, name, npwp_encrypted, npwp_last4, npwp_hash, is_pkp, address)

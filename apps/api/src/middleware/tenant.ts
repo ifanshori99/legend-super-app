@@ -13,10 +13,20 @@ type VerifiedCredential = ResolvedTenant & {
  * server-side. Neither callback may derive a tenant from client parameters.
  * A credential verifier returns null for absent or invalid credentials; route
  * authentication remains a separate requirement.
+ *
+ * `fallback` is the development-only synthetic tenant. It runs only when no
+ * real source resolved, so a request on a registered host can never be moved
+ * to another tenant by it.
+ *
+ * `required: false` mounts the resolver on the whole API: routes that need a
+ * tenant call `requireTenantContext`, while global and platform routes keep
+ * answering without one (TEN-02 asks for denial, not for a blanket 404).
  */
 export function tenantContext(resolvers: {
   resolveDomain(hostname: string): Promise<ResolvedTenant | null>;
   verifyCredential(req: Request): Promise<VerifiedCredential | null>;
+  fallback?(req: Request): Promise<VerifiedCredential | null>;
+  required?: boolean;
 }): RequestHandler {
   return async (req, _res, next) => {
     // Express only honors X-Forwarded-Host when the sender is a trusted proxy.
@@ -24,9 +34,14 @@ export function tenantContext(resolvers: {
       resolvers.resolveDomain(req.hostname.toLowerCase()),
       resolvers.verifyCredential(req),
     ]);
+    const fallback =
+      !domain && !credential && resolvers.fallback
+        ? await resolvers.fallback(req)
+        : null;
+    const resolved = credential ?? fallback;
     const domainContext =
       domain && establishTenantContext({ ...domain, source: "domain" });
-    const credentialContext = credential && establishTenantContext(credential);
+    const credentialContext = resolved && establishTenantContext(resolved);
     if (
       domainContext &&
       credentialContext &&
@@ -45,12 +60,15 @@ export function tenantContext(resolvers: {
       : credentialContext?.brandId
         ? credentialContext
         : (domainContext ?? credentialContext);
-    if (!context)
-      throw new HttpError(
-        404,
-        "TENANT_NOT_FOUND",
-        "No tenant is available for this request.",
-      );
+    if (!context) {
+      if (resolvers.required ?? true)
+        throw new HttpError(
+          404,
+          "TENANT_NOT_FOUND",
+          "No tenant is available for this request.",
+        );
+      return next();
+    }
     contexts.set(req, context);
     next();
   };
