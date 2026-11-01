@@ -5,7 +5,8 @@ import { defineConfig } from "vitest/config";
 // repository root, which creates that server and supplies its URL.
 export default defineConfig({
   test: {
-    include: ["src/test/**/*.test.ts"],
+    include: ["src/**/*.test.ts"],
+    reporters: ["verbose"],
     environment: "node",
     fileParallelism: false,
     testTimeout: 20_000,
