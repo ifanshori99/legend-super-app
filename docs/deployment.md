@@ -41,21 +41,25 @@ service cannot run while disagreeing with the others about its data policy.
 The check prints the offending setting names and messages — never the values —
 and exits non-zero before the service accepts traffic.
 
-| Runtime | Where the check runs                                                             |
-| ------- | -------------------------------------------------------------------------------- |
-| API     | `apps/api/src/config/env.ts`, imported by the server entry                       |
-| Web     | `apps/web/src/server.ts` (TanStack Start server entry) → `src/lib/env.server.ts` |
-| Worker  | Not built yet: its entrypoint must call `assertDeploymentEnv` first              |
-| Edge    | Not built yet: its entrypoint must call `assertDeploymentEnv` first              |
+| Runtime | Where the check runs                                                                          |
+| ------- | --------------------------------------------------------------------------------------------- |
+| API     | `apps/api/src/config/env.ts`, imported by the server entry                                    |
+| Web     | `apps/web/server/plugins/deployment-env.ts` (built server) and `apps/web/src/server.ts` (dev) |
+| Worker  | Not built yet: its entrypoint must call `assertDeploymentEnv` first                           |
+| Edge    | Not built yet: its entrypoint must call `assertDeploymentEnv` first                           |
 
-The web app needs a custom server entry for this: TanStack Start's default entry
-would only read the settings inside request handlers, after the port is already
-open. Keep `import "@/lib/env.server";` as the first import of
-`apps/web/src/server.ts`; `tests/deployment-env.test.mjs` fails if it is dropped.
-TanStack Start strips `.server.ts` modules from the browser bundle, so the check
-never reaches a client. `vite dev` loads the entry on the first server render,
-so a development server with invalid settings fails on its first request; the
-built server (`node .output/server/index.mjs`) fails at boot.
+The web app needs two entry points because it has two servers. The built server
+(`node .output/server/index.mjs`, produced by Nitro) opens its port before it
+loads the app — its default entry is a lazy handler — so a Nitro runtime plugin
+in `apps/web/server/plugins/deployment-env.ts` runs the check while the process
+starts, and a bad deployment exits before the port opens. `vite dev` uses
+TanStack Start's own server instead, whose entry is `apps/web/src/server.ts`;
+there the check runs when the server entry loads, on the first server render.
+Both import `apps/web/src/lib/env.server.ts` (the module that reports and
+exits), and `vite.config.ts` registers the plugin under `nitro.plugins`;
+`tests/deployment-env.test.mjs` fails if either import or that registration is
+dropped. TanStack Start strips `.server.ts` modules from the browser bundle, so
+the check never reaches a client.
 
 A future worker or edge entrypoint repeats the same three lines:
 

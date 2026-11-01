@@ -137,8 +137,9 @@ test("imports require an explicit classification and never leak real data early"
   assert.throws(() => assertDataImportAllowed(production, "unknown"));
 });
 
-// The web server has no framework to inherit a startup check from: its entry is
-// the only place the settings can be read before the first request is served.
+// The web server keeps its check in one server-only module so the built server
+// and the dev server cannot drift apart. See docs/deployment.md ("Startup
+// validation") for why it has two entry points.
 const web = resolve(root, "apps/web");
 // The check must not see the developer's own deployment settings.
 const shellEnv = { ...process.env };
@@ -197,9 +198,20 @@ test("the web server starts with the settings it reports", () => {
   });
 });
 
-test("the web server entry imports the startup validation", () => {
-  // Guard for the wiring itself: server.ts is what the framework loads, so an
-  // entry that stops importing the validator would silently skip the check.
-  const entry = readFileSync(resolve(web, "src/server.ts"), "utf8");
-  assert.match(entry, /^import "@\/lib\/env\.server";$/m);
+test("both web entry points import the startup validation", () => {
+  // Guard for the wiring itself, which no unit run can reach: the built server
+  // (Nitro plugin, registered through vite.config.ts) and the dev server
+  // (TanStack Start entry) each import the validator before serving anything.
+  assert.match(
+    readFileSync(resolve(web, "src/server.ts"), "utf8"),
+    /^import "@\/lib\/env\.server";$/m,
+  );
+  assert.match(
+    readFileSync(resolve(web, "server/plugins/deployment-env.ts"), "utf8"),
+    /^import "\.\.\/\.\.\/src\/lib\/env\.server";$/m,
+  );
+  assert.match(
+    readFileSync(resolve(web, "vite.config.ts"), "utf8"),
+    /plugins: \["\.\/server\/plugins\/deployment-env\.ts"\]/,
+  );
 });
