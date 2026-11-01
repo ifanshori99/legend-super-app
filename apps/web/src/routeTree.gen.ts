@@ -27,6 +27,7 @@ import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
@@ -117,6 +118,11 @@ const PublicIndexRoute = PublicIndexRouteImport.update({
   path: '/',
   getParentRoute: () => PublicRoute,
 } as any)
+const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
+  id: '/bayar/$token',
+  path: '/bayar/$token',
+  getParentRoute: () => CustomerRoute,
+} as any)
 const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
   id: '/f/$facility',
   path: '/f/$facility',
@@ -177,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/member': typeof CustomerMemberRouteWithChildren
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
   '/member/': typeof CustomerMemberIndexRoute
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/sign-up': typeof AuthSignUpRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -226,6 +234,7 @@ export interface FileRoutesById {
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
+  '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
@@ -247,6 +256,7 @@ export interface FileRouteTypes {
     | '/member'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/t/$token'
     | '/member/'
@@ -265,6 +275,7 @@ export interface FileRouteTypes {
     | '/sign-up'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/t/$token'
     | '/member'
@@ -295,6 +306,7 @@ export interface FileRouteTypes {
     | '/_protected/admin'
     | '/_protected/notes'
     | '/_public/'
+    | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
     | '/_customer/member/'
@@ -450,6 +462,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PublicIndexRouteImport
       parentRoute: typeof PublicRoute
     }
+    '/_customer/bayar/$token': {
+      id: '/_customer/bayar/$token'
+      path: '/bayar/$token'
+      fullPath: '/bayar/$token'
+      preLoaderRoute: typeof CustomerBayarTokenRouteImport
+      parentRoute: typeof CustomerRoute
+    }
     '/_customer/f/$facility': {
       id: '/_customer/f/$facility'
       path: '/f/$facility'
@@ -549,12 +568,14 @@ const CustomerMemberRouteWithChildren = CustomerMemberRoute._addFileChildren(
 
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerBayarTokenRoute: typeof CustomerBayarTokenRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRoute
 }
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerBayarTokenRoute: CustomerBayarTokenRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRoute,
 }

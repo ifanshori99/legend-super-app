@@ -136,6 +136,113 @@ export const id = {
     offlineRegion: "Status koneksi",
     themeToggle: "Ganti tema",
   },
+  // Customer payment pages (bead legend-2w5, PRD §3.13 F13). The screen never
+  // marks itself paid from a gateway redirect (PAY-02).
+  payment: {
+    title: "Pembayaran",
+    back: "Kembali",
+    billTitle: "Rincian tagihan",
+    reference: "Tagihan {reference}",
+    tableContext: "{table} · {pax} tamu",
+    subtotal: "Subtotal",
+    discount: "Diskon",
+    serviceCharge: "Service charge",
+    tax: "Pajak",
+    rounding: "Pembulatan",
+    total: "Total tagihan",
+    paid: "Sudah dibayar",
+    outstanding: "Sisa tagihan",
+    taxExclusiveHint:
+      "Harga menu belum termasuk service charge dan pajak; keduanya ditambahkan di tagihan ini.",
+    chooseTitle: "Pilih metode pembayaran",
+    chooseHint:
+      "Nominal dan status lunas ditentukan oleh sistem pembayaran, bukan oleh halaman ini.",
+    methodLegend: "Metode pembayaran",
+    methodQris: "QRIS",
+    methodQrisHint: "Pindai sekali dengan aplikasi bank atau e-wallet apa pun.",
+    methodVa: "Virtual Account",
+    methodVaHint: "Transfer dari m-banking ke Virtual Account bank pilihanmu.",
+    methodBankTransfer: "Transfer bank",
+    methodBankTransferHint:
+      "Transfer ke rekening outlet dengan kode unik, dikonfirmasi otomatis.",
+    methodUnavailable: "Sementara tidak tersedia",
+    bankLabel: "Bank",
+    bankPlaceholder: "Pilih bank",
+    continue: "Lanjutkan pembayaran",
+    pendingTitle: "Selesaikan pembayaran",
+    statusPending: "Menunggu pembayaran",
+    expiresIn: "Berlaku {time}",
+    expiresInLong: "Kode pembayaran berlaku {time} lagi",
+    qrisTitle: "Pindai kode QRIS",
+    qrisHint:
+      "Buka aplikasi bank atau e-wallet, pilih bayar QRIS, lalu pindai kode ini.",
+    amount: "Nominal",
+    refreshingCode: "Memperbarui kode…",
+    vaTitleWithBank: "Nomor Virtual Account {bank}",
+    vaHint:
+      "Gunakan nomor ini hanya untuk tagihan ini. Nominal harus sama persis.",
+    vaStep1: "Buka aplikasi bank dan pilih menu Transfer.",
+    vaStep2: "Pilih Virtual Account, lalu masukkan nomor di atas.",
+    vaStep3:
+      "Masukkan nominal tepat seperti di atas, lalu selesaikan transfer.",
+    transferTitle: "Rekening tujuan",
+    transferHint:
+      "Nominal sudah termasuk kode unik. Transfer tepat sebesar ini, jangan dibulatkan.",
+    accountNumber: "Nomor rekening",
+    accountHolder: "Atas nama",
+    uniqueCode: "Kode unik",
+    transferTotal: "Nominal transfer",
+    copy: "Salin",
+    copied: "Tersalin",
+    copyValue: "Salin {label}",
+    copyFailed: "Tidak bisa menyalin otomatis. Salin manual dari teks di atas.",
+    checkingAuto: "Status diperiksa otomatis tiap beberapa detik.",
+    changeMethod: "Ganti metode",
+    changeMethodTitle: "Ganti metode pembayaran?",
+    changeMethodBody:
+      "Kode {method} sebelumnya masih bisa dibayar sampai kedaluwarsa. Jangan membayar keduanya.",
+    changeMethodConfirm: "Ganti metode",
+    changeMethodCancel: "Tetap di sini",
+    expiredTitle: "Kode pembayaran kedaluwarsa",
+    expiredHint: "Buat kode baru untuk melanjutkan. Tagihan belum berubah.",
+    failedTitle: "Pembayaran gagal",
+    failedHint:
+      "Tidak ada dana yang tercatat. Coba lagi atau pilih metode lain.",
+    retry: "Coba lagi",
+    newCode: "Buat kode baru",
+    paidTitle: "Pembayaran berhasil",
+    paidHint:
+      "Terima kasih. Pembayaran sudah dikonfirmasi oleh sistem pembayaran.",
+    paidLate:
+      "Pembayaran diterima setelah kode kedaluwarsa, jadi kasir akan menindaklanjuti.",
+    paidAtLabel: "Waktu pembayaran",
+    refundedHint:
+      "Pembayaran ini sudah dikembalikan. Hubungi kasir bila ada pertanyaan.",
+    finish: "Selesai",
+    gatewayDownTitle: "Pembayaran online sedang gangguan",
+    gatewayDownHint:
+      "Bayar di kasir: tunai, kartu debit/kredit, atau QRIS lewat EDC bank. Supervisor akan membantu.",
+    payAtCashier: "Beri tahu kasir",
+    payAtCashierDone:
+      "Kasir sudah menerima permintaanmu. Tunjukkan tagihan {reference} di kasir.",
+    unavailableTitle: "Metode pembayaran online tidak tersedia",
+    unavailableHint: "Bayar di kasir atau coba lagi nanti.",
+    emptyTitle: "Tidak ada yang perlu dibayar",
+    emptyHint:
+      "Tagihan ini sudah lunas atau belum memiliki nominal untuk dibayar.",
+    offlineTitle: "Tidak ada koneksi internet",
+    offlineHint:
+      "Pembayaran yang sudah dikirim tetap diproses oleh sistem pembayaran. Sambungkan internet, lalu periksa status lagi.",
+    checkAgain: "Periksa status",
+    loadFailedTitle: "Tagihan tidak dapat dimuat",
+    linkNotFound: "Tautan pembayaran tidak ditemukan",
+    linkNotFoundHint: "Minta tautan baru dari kasir atau dari pesananmu.",
+    alreadyPaid: "Tagihan ini sudah lunas.",
+    methodInvalid:
+      "Metode atau bank yang dipilih belum tersedia. Pilih yang lain.",
+    actionFailed: "Permintaan belum bisa diproses. Coba lagi.",
+    secureNote: "Jangan bagikan kode pembayaran ini ke siapa pun.",
+  },
   gate: {
     forbiddenTitle: "Anda belum punya akses ke area ini",
     forbiddenHint:
