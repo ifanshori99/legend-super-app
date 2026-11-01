@@ -75,6 +75,7 @@ export const addDomainInputSchema = clientInputSchema({
   brandId: brandIdSchema,
   hostname: hostnameSchema,
 });
+export type AddDomainInput = z.infer<typeof addDomainInputSchema>;
 
 /** `<slug>.<platform domain>`; the platform domain is configuration. */
 export function platformSubdomain(

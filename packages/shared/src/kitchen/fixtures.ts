@@ -46,6 +46,9 @@ const staffId = {
   supervisor: id(503),
   cashier: id(504),
   runner: id(505),
+  // Two more floor staff the expo screen can assign as runner (F12).
+  waiter: id(506),
+  waiter2: id(507),
 };
 const deviceId = { kdsKitchen: id(600), kdsCoffee: id(601) };
 
@@ -799,11 +802,13 @@ export const expo: KitchenFixtureInput["expo"] = {
       stations: [
         {
           stationId: stationId.kitchen,
+          stationName: "Dapur",
           ticketId: ticketIds.kitchenDone,
           status: "done",
         },
         {
           stationId: stationId.coffee,
+          stationName: "Kopi",
           ticketId: ticketIds.coffeeInProgress,
           status: "in_progress",
         },
@@ -822,11 +827,13 @@ export const expo: KitchenFixtureInput["expo"] = {
       stations: [
         {
           stationId: stationId.kitchen,
+          stationName: "Dapur",
           ticketId: ticketIds.kitchenNew,
           status: "new",
         },
         {
           stationId: stationId.coffee,
+          stationName: "Kopi",
           ticketId: ticketIds.coffeeDone,
           status: "done",
         },
@@ -845,6 +852,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       stations: [
         {
           stationId: stationId.pastry,
+          stationName: "Pastry",
           ticketId: ticketIds.pastryRecalled,
           status: "recalled",
         },
@@ -863,6 +871,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       stations: [
         {
           stationId: stationId.kitchen,
+          stationName: "Dapur",
           ticketId: ticketIds.kitchenReady,
           status: "done",
         },
@@ -881,6 +890,7 @@ export const expo: KitchenFixtureInput["expo"] = {
       stations: [
         {
           stationId: stationId.beverage,
+          stationName: "Nonkopi",
           ticketId: ticketIds.beverageCancelled,
           status: "cancelled",
         },
@@ -892,6 +902,14 @@ export const expo: KitchenFixtureInput["expo"] = {
     },
   ],
 };
+
+// F12 "menugaskan runner": the floor staff the expo screen can pick from. The
+// assigned expo ticket above already points at staffId.runner.
+export const expoRunners: KitchenFixtureInput["expoRunners"] = [
+  { ...scope, userId: staffId.runner, name: "Rizky Alfian" },
+  { ...scope, userId: staffId.waiter, name: "Bagas Prakoso" },
+  { ...scope, userId: staffId.waiter2, name: "Nadia Puspita" },
+];
 
 export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
   {
@@ -929,10 +947,25 @@ export const pickupCalls: KitchenFixtureInput["pickupDisplay"]["calls"] = [
   },
 ];
 
+// F12 "... dengan promosi": the slide the pickup display shows between call
+// numbers. Illustrative campaign copy like the menu fixtures; the tenant's own
+// promotions come from the promo engine once the API serves this feed.
+export const pickupPromotions: KitchenFixtureInput["pickupDisplay"]["promotions"] =
+  [
+    {
+      ...scope,
+      id: id(960),
+      title: "Kopi Susu Aren · 2 gelas Rp 45.000",
+      body: "Berlaku setiap hari pukul 15.00–18.00 di Cafe Legend Bandung.",
+      validUntil: "2026-11-07T16:59:00.000Z",
+    },
+  ];
+
 export const pickupDisplay: KitchenFixtureInput["pickupDisplay"] = {
   ...scope,
   generatedAt: "2026-11-01T04:13:00.000Z",
   calls: pickupCalls,
+  promotions: pickupPromotions,
 };
 
 export const servingTimeEstimate: KitchenFixtureInput["servingTimeEstimate"] = {
@@ -1200,6 +1233,7 @@ export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   pacing,
   allDay,
   expo,
+  expoRunners,
   pickupDisplay,
   servingTimeEstimate,
   servingTimeSamples,

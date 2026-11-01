@@ -1,0 +1,1634 @@
+// POS contract (bead legend-4yp, WS-04) — PRD v1.7 §3 F8 "POS Kasir & Captain
+// Order" and F43/F44, §4 E "Alur Kasir Membuka dan Menutup Shift", §5 "Model
+// event untuk operasional" (orders, cash/EDC payments, shift cash are
+// append-only events), §6.C (`orders`, `order_items`, `order_events`,
+// `receipt_sequences`, `pos_shifts`, `cash_movements`). Acceptance criteria at
+// contract level: POS-03, POS-04, POS-06 (and the POS-02/POS-07 vocabulary the
+// screens need).
+//
+// What this contract is: the order, tender, discount, void/refund, cashier
+// shift, end-of-day, receipt/document and customer-display vocabularies plus
+// their explicit state machines, so the POS screens (WS-04 FE beads
+// legend-59v/5w6/2fo/iqi/azt/76t), the API and the edge node cannot drift.
+//
+// What it is not: authorization, pricing, payment processing or stock
+// deduction. Every amount here is server-computed (ORD-03, TEN-02): client
+// request schemas carry menu ids, quantities, rates and codes — never prices,
+// totals, expected cash or variance. Payment confirmation comes from WS-05
+// (verified webhook / EDC), and the two accounting events (`order.paid`,
+// `order.refunded`) carry exactly the amount keys the WS-07 posting rules
+// already read (@starter/shared/accounting).
+//
+// Money is whole rupiah (`*Idr`, D-CORE-2); ids are UUID except orders, order
+// items and order_events, which are ULIDs (§6, D-CORE-1).
+
+import {
+  z,
+  uuidSchema,
+  uuidIdSchema,
+  ulidIdSchema,
+  tenantIdSchema,
+  outletIdSchema,
+  userIdSchema,
+  idrSchema,
+  basisPointsSchema,
+  isoDateTimeSchema,
+  businessDateSchema,
+  clientInputSchema,
+  idempotencyKeySchema,
+} from "../core/index.ts";
+import type { Idr } from "../core/index.ts";
+import { orderIdSchema } from "../kitchen/schemas.ts";
+import {
+  discountLineSchema,
+  fireStatusSchema,
+  orderItemIdSchema,
+  orderItemStatusSchema,
+  orderModifierSnapshotSchema,
+  serviceChargeLineSchema,
+  tableSessionIdSchema,
+  taxLineSchema,
+} from "../qr-order/schemas.ts";
+import type { PaymentMethod } from "../payment/index.ts";
+import { PosError } from "./errors.ts";
+import { shiftExpectedCashIdr, shiftVarianceIdr } from "./calculations.ts";
+import { receiptNumberSchema, receiptPrefixSchema } from "./receipts.ts";
+
+const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
+const name = z.string().min(1).max(150);
+const note = z.string().max(200);
+const nonnegativeIdr = idrSchema.refine(
+  (value) => value >= 0,
+  "Amount must not be negative",
+);
+const positiveIdr = idrSchema.refine(
+  (value) => value > 0,
+  "Amount must be positive",
+);
+/** Approval records are WS-01 `approval_requests` rows (§3.7 Matriks Approval). */
+const approvalRequestIdSchema = uuidSchema;
+
+// ---- Ids ------------------------------------------------------------------
+
+export const posShiftIdSchema = uuidIdSchema<"CashierShiftId">();
+export const cashMovementIdSchema = uuidIdSchema<"CashMovementId">();
+export const posTenderIdSchema = uuidIdSchema<"PosTenderId">();
+export const posDiscountIdSchema = uuidIdSchema<"PosDiscountId">();
+export const posVoidIdSchema = uuidIdSchema<"PosVoidId">();
+export const posRefundIdSchema = uuidIdSchema<"PosRefundId">();
+export const posReceiptIdSchema = uuidIdSchema<"PosReceiptId">();
+export const receiptSequenceIdSchema = uuidIdSchema<"ReceiptSequenceId">();
+export const receiptDeliveryIdSchema = uuidIdSchema<"ReceiptDeliveryId">();
+export const customerDisplayPairingIdSchema =
+  uuidIdSchema<"CustomerDisplayPairingId">();
+export const dailyCloseIdSchema = uuidIdSchema<"DailyCloseId">();
+/** §6 `order_events` is an append-only operational log: ULID (§5). */
+export const orderEventIdSchema = ulidIdSchema<"OrderEventId">();
+
+// The order aggregate and its lines are owned by the kitchen/QR contracts;
+// re-export them so POS callers use one id type everywhere (AGENT_PLAYBOOK §2).
+export { orderIdSchema, orderItemIdSchema, receiptNumberSchema };
+
+// ---- Orders (§6.C orders) -------------------------------------------------
+
+/** §6 `orders.channel`. */
+export const ORDER_CHANNELS = [
+  "qr",
+  "pos",
+  "captain",
+  "gofood",
+  "grabfood",
+  "shopeefood",
+  "reservation",
+  "kiosk",
+] as const;
+export const orderChannelSchema = z.enum(ORDER_CHANNELS);
+export type OrderChannel = z.infer<typeof orderChannelSchema>;
+
+/** §6 `orders.service_type`. */
+export const SERVICE_TYPES = ["dine_in", "takeaway", "delivery"] as const;
+export const serviceTypeSchema = z.enum(SERVICE_TYPES);
+export type ServiceType = z.infer<typeof serviceTypeSchema>;
+
+/** §6 `orders.status`, plus the POS actions that move between them. */
+export const POS_ORDER_STATUSES = [
+  "draft",
+  "awaiting_payment",
+  "sent",
+  "completed",
+  "voided",
+] as const;
+export const posOrderStatusSchema = z.enum(POS_ORDER_STATUSES);
+export type PosOrderStatus = z.infer<typeof posOrderStatusSchema>;
+
+export const POS_ORDER_ACTIONS = [
+  "submit",
+  "fire",
+  "complete",
+  "void",
+] as const;
+export const posOrderActionSchema = z.enum(POS_ORDER_ACTIONS);
+export type PosOrderAction = z.infer<typeof posOrderActionSchema>;
+
+/**
+ * One explicit transition table for FE and BE. `completed` and `voided` are
+ * terminal (POS-04: no delete, no edit); correcting a completed sale is a
+ * linked void/refund record, never a status change.
+ */
+export const POS_ORDER_TRANSITIONS: Record<
+  PosOrderStatus,
+  Partial<Record<PosOrderAction, PosOrderStatus>>
+> = {
+  draft: { submit: "awaiting_payment", void: "voided" },
+  awaiting_payment: { fire: "sent", void: "voided" },
+  sent: { complete: "completed", void: "voided" },
+  completed: {},
+  voided: {},
+};
+
+export function canTransitionPosOrder(
+  status: PosOrderStatus,
+  action: PosOrderAction,
+): boolean {
+  return POS_ORDER_TRANSITIONS[status][action] !== undefined;
+}
+
+export function transitionPosOrder(
+  status: PosOrderStatus,
+  action: PosOrderAction,
+): PosOrderStatus {
+  const next = POS_ORDER_TRANSITIONS[status][action];
+  if (next === undefined) throw new PosError("ORDER_TRANSITION_INVALID");
+  return next;
+}
+
+/** POS-04: final orders are immutable history. */
+export function isFinalPosOrder(status: PosOrderStatus): boolean {
+  return status === "completed" || status === "voided";
+}
+
+/**
+ * POS-04 "Transaksi final tidak dapat dihapus": every mutating service calls
+ * this before touching an order. There is deliberately no delete operation in
+ * this contract.
+ */
+export function assertPosOrderMutable(order: Pick<PosOrder, "status">): void {
+  if (isFinalPosOrder(order.status))
+    throw new PosError("ORDER_FINAL_IMMUTABLE");
+}
+
+/** A sale is settled only after it was submitted; drafts are not payable. */
+export function canSettlePosOrder(status: PosOrderStatus): boolean {
+  return status === "awaiting_payment" || status === "sent";
+}
+
+export function assertPosOrderSettleable(
+  order: Pick<PosOrder, "status">,
+): void {
+  if (!canSettlePosOrder(order.status)) throw new PosError("ORDER_NOT_PAYABLE");
+}
+
+export const voidReasonSchema = z.enum([
+  "customer_cancelled",
+  "wrong_order",
+  "sold_out",
+  "duplicate_order",
+  "price_error",
+  "system_error",
+  "other",
+]);
+export const refundReasonSchema = z.enum([
+  "customer_cancelled",
+  "quality_complaint",
+  "wrong_order",
+  "overpayment",
+  "duplicate_payment",
+  "event_cancelled",
+  "manager_goodwill",
+  "other",
+]);
+export type VoidReason = z.infer<typeof voidReasonSchema>;
+export type RefundReason = z.infer<typeof refundReasonSchema>;
+
+const orderNumber = z
+  .string()
+  .min(3)
+  .max(30)
+  .regex(
+    /^[A-Z0-9-]+$/,
+    "Order numbers use uppercase letters, digits and hyphens",
+  );
+
+export const posOrderShape = {
+  id: orderIdSchema,
+  ...scope,
+  /** Nomor pesanan atau nomor panggilan (§6). */
+  number: orderNumber,
+  channel: orderChannelSchema,
+  serviceType: serviceTypeSchema,
+  tableSessionId: tableSessionIdSchema.nullable(),
+  customerProfileId: uuidSchema.nullable(),
+  /** Platform order number for the manual ojol channel (§6). */
+  externalRef: z.string().min(1).max(100).nullable(),
+  /** Shift attribution for POS-03 cash reconciliation. */
+  shiftId: posShiftIdSchema.nullable(),
+  deviceId: uuidSchema.nullable(),
+  cashierId: userIdSchema.nullable(),
+  subtotalIdr: nonnegativeIdr,
+  discountIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  taxIdr: nonnegativeIdr,
+  /** §6 `orders.rounding_idr`: a signed cash-rounding adjustment. */
+  roundingIdr: idrSchema,
+  totalIdr: nonnegativeIdr,
+  status: posOrderStatusSchema,
+  createdBy: userIdSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  submittedAt: isoDateTimeSchema.nullable(),
+  /** Set when the order first reached a kitchen station (F8 hold & fire). */
+  firedAt: isoDateTimeSchema.nullable(),
+  completedAt: isoDateTimeSchema.nullable(),
+  voidedAt: isoDateTimeSchema.nullable(),
+  voidReason: voidReasonSchema.nullable(),
+  voidReasonNote: z.string().min(4).max(500).nullable(),
+  voidApprovedBy: userIdSchema.nullable(),
+  voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+};
+
+export const posOrderBaseSchema = z.strictObject(posOrderShape);
+
+function checkOrderMoney(
+  order: {
+    subtotalIdr: Idr;
+    discountIdr: Idr;
+    serviceChargeIdr: Idr;
+    taxIdr: Idr;
+    roundingIdr: Idr;
+    totalIdr: Idr;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const expected =
+    Number(order.subtotalIdr) -
+    Number(order.discountIdr) +
+    Number(order.serviceChargeIdr) +
+    Number(order.taxIdr) +
+    Number(order.roundingIdr);
+  if (Number(order.totalIdr) !== expected)
+    ctx.addIssue({
+      code: "custom",
+      path: ["totalIdr"],
+      message:
+        "totalIdr must equal subtotal - discount + service + tax + rounding",
+    });
+}
+
+export const posOrderSchema = posOrderBaseSchema.superRefine((order, ctx) => {
+  checkOrderMoney(order, ctx);
+  if (order.status === "draft" && order.submittedAt !== null)
+    ctx.addIssue({
+      code: "custom",
+      path: ["submittedAt"],
+      message: "A draft order has not been submitted",
+    });
+  // An order voided straight from the draft never reached the kitchen or a
+  // payment, so it has no submittedAt.
+  if (
+    order.status !== "draft" &&
+    order.status !== "voided" &&
+    order.submittedAt === null
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["submittedAt"],
+      message: "A submitted order records submittedAt",
+    });
+  if (
+    (order.status === "sent" || order.status === "completed") &&
+    order.firedAt === null
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["firedAt"],
+      message: "A fired order records firedAt (hold & fire)",
+    });
+  if ((order.status === "completed") !== (order.completedAt !== null))
+    ctx.addIssue({
+      code: "custom",
+      path: ["completedAt"],
+      message: "completedAt is set exactly when the order is completed",
+    });
+  if (order.status === "voided") {
+    if (
+      order.voidedAt === null ||
+      order.voidReason === null ||
+      order.voidApprovedBy === null ||
+      order.voidApprovalRequestId === null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["voidedAt"],
+        message:
+          "A voided order records time, standard reason and approval (POS-02)",
+      });
+    if (order.voidReason === "other" && order.voidReasonNote === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["voidReasonNote"],
+        message: "An 'other' void reason needs a written note",
+      });
+  } else if (
+    order.voidedAt !== null ||
+    order.voidReason !== null ||
+    order.voidApprovedBy !== null ||
+    order.voidApprovalRequestId !== null
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["voidedAt"],
+      message: "Only a voided order carries void metadata",
+    });
+});
+
+export type PosOrder = z.infer<typeof posOrderSchema>;
+
+/** Cashier list row: enough for the order rail, without the lines. */
+export const posOrderSummarySchema = z.strictObject({
+  id: orderIdSchema,
+  ...scope,
+  number: orderNumber,
+  channel: orderChannelSchema,
+  serviceType: serviceTypeSchema,
+  tableSessionId: tableSessionIdSchema.nullable(),
+  status: posOrderStatusSchema,
+  shiftId: posShiftIdSchema.nullable(),
+  totalIdr: nonnegativeIdr,
+  itemCount: z.number().int().nonnegative(),
+  heldItemCount: z.number().int().nonnegative(),
+  createdAt: isoDateTimeSchema,
+});
+export type PosOrderSummary = z.infer<typeof posOrderSummarySchema>;
+
+// ---- Order items (§6.C order_items) ---------------------------------------
+
+export const posOrderItemShape = {
+  id: orderItemIdSchema,
+  tenantId: tenantIdSchema,
+  orderId: orderIdSchema,
+  menuItemId: uuidSchema,
+  variantId: uuidSchema.nullable(),
+  name,
+  quantity: z.number().int().min(1).max(99),
+  unitPriceIdr: positiveIdr,
+  modifiersTotalIdr: nonnegativeIdr,
+  lineTotalIdr: nonnegativeIdr,
+  modifiers: z.array(orderModifierSnapshotSchema),
+  note: note.nullable(),
+  course: z.string().min(1).max(20).nullable(),
+  /** F8 hold & fire, per item and per course. */
+  fireStatus: fireStatusSchema,
+  firedAt: isoDateTimeSchema.nullable(),
+  status: orderItemStatusSchema,
+  voidReason: voidReasonSchema.nullable(),
+  voidReasonNote: z.string().min(4).max(500).nullable(),
+  voidedBy: userIdSchema.nullable(),
+  voidApprovedBy: userIdSchema.nullable(),
+  voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+  /** §6 `order_items.cost_snapshot_idr`: HPP at sale time, server-computed. */
+  costSnapshotIdr: nonnegativeIdr,
+  createdAt: isoDateTimeSchema,
+};
+
+export const posOrderItemSchema = z
+  .strictObject(posOrderItemShape)
+  .superRefine((item, ctx) => {
+    if (
+      Number(item.lineTotalIdr) !==
+      (Number(item.unitPriceIdr) + Number(item.modifiersTotalIdr)) *
+        item.quantity
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["lineTotalIdr"],
+        message: "lineTotalIdr must equal (unit price + modifiers) x quantity",
+      });
+    if (
+      Number(item.modifiersTotalIdr) !==
+      item.modifiers.reduce(
+        (sum, modifier) => sum + Number(modifier.priceIdr),
+        0,
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["modifiersTotalIdr"],
+        message: "modifiersTotalIdr must equal the sum of modifier prices",
+      });
+    if ((item.fireStatus === "fired") !== (item.firedAt !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["firedAt"],
+        message: "A fired item records firedAt; a held item does not",
+      });
+    if (item.status === "voided") {
+      if (
+        item.voidReason === null ||
+        item.voidedBy === null ||
+        item.voidApprovedBy === null ||
+        item.voidApprovalRequestId === null
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["voidReason"],
+          message:
+            "A voided item records standard reason, who voided it and the approval (POS-02)",
+        });
+    } else if (
+      item.voidReason !== null ||
+      item.voidedBy !== null ||
+      item.voidApprovedBy !== null ||
+      item.voidApprovalRequestId !== null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["voidReason"],
+        message: "Only a voided item carries void metadata",
+      });
+  });
+export type PosOrderItem = z.infer<typeof posOrderItemSchema>;
+
+// ---- Tenders (§3 F8 Pembayaran, F10/F10a) ---------------------------------
+
+/**
+ * POS tender methods. `voucher` is not here: a voucher is a discount line
+ * applied before the total (like the QR quote), so every captured tender lands
+ * in an accounting bucket. E-wallet is paid through QRIS in Legend (PRD §7).
+ */
+export const POS_TENDER_METHODS = [
+  "cash",
+  "qris",
+  "va",
+  "ewallet",
+  "card",
+  "edc_card",
+  "edc_qris",
+  "points",
+] as const;
+export const posTenderMethodSchema = z.enum(POS_TENDER_METHODS);
+export type PosTenderMethod = z.infer<typeof posTenderMethodSchema>;
+
+export const TENDER_BUCKETS = ["cash", "gateway", "edc", "points"] as const;
+export const tenderBucketSchema = z.enum(TENDER_BUCKETS);
+export type TenderBucket = z.infer<typeof tenderBucketSchema>;
+
+export const POS_TENDER_PROVIDERS = [
+  "doit",
+  "duitku",
+  "edc",
+  "manual",
+] as const;
+export const posTenderProviderSchema = z.enum(POS_TENDER_PROVIDERS);
+export type PosTenderProvider = z.infer<typeof posTenderProviderSchema>;
+
+export const posTenderStatusSchema = z.enum([
+  "authorized",
+  "captured",
+  "failed",
+  "voided",
+]);
+export type PosTenderStatus = z.infer<typeof posTenderStatusSchema>;
+
+export const posTenderSchema = z
+  .strictObject({
+    id: posTenderIdSchema,
+    ...scope,
+    orderId: orderIdSchema,
+    method: posTenderMethodSchema,
+    provider: posTenderProviderSchema,
+    /** WS-05 `payment_intents` row that holds the money for this tender. */
+    paymentIntentId: uuidSchema.nullable(),
+    /** Amount applied to the bill; never the amount handed over. */
+    amountIdr: positiveIdr,
+    /** Cash only: banknotes handed over and the change returned. */
+    receivedIdr: nonnegativeIdr.nullable(),
+    changeIdr: nonnegativeIdr.nullable(),
+    /** EDC approval code / bank reference, or the gateway reference. */
+    reference: z.string().min(1).max(100).nullable(),
+    edcTransactionId: uuidSchema.nullable(),
+    pointsUsed: z.number().int().positive().max(1_000_000).nullable(),
+    status: posTenderStatusSchema,
+    requestedAt: isoDateTimeSchema,
+    resolvedAt: isoDateTimeSchema.nullable(),
+    capturedBy: userIdSchema.nullable(),
+    /** Supervisor PIN for the standalone EDC mode (§3.13 EDC). */
+    approvedBy: userIdSchema.nullable(),
+  })
+  .superRefine((tender, ctx) => {
+    if (tender.method === "cash") {
+      if (tender.receivedIdr === null || tender.changeIdr === null)
+        ctx.addIssue({
+          code: "custom",
+          path: ["receivedIdr"],
+          message: "A cash tender records received cash and change",
+        });
+      else {
+        if (Number(tender.receivedIdr) < Number(tender.amountIdr))
+          ctx.addIssue({
+            code: "custom",
+            path: ["receivedIdr"],
+            message: "Received cash must cover the applied amount",
+          });
+        if (
+          Number(tender.changeIdr) !==
+          Number(tender.receivedIdr) - Number(tender.amountIdr)
+        )
+          ctx.addIssue({
+            code: "custom",
+            path: ["changeIdr"],
+            message: "changeIdr must equal received - applied",
+          });
+      }
+    } else if (tender.receivedIdr !== null || tender.changeIdr !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["receivedIdr"],
+        message: "Only a cash tender records received cash and change",
+      });
+    if ((tender.method === "points") !== (tender.pointsUsed !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["pointsUsed"],
+        message: "Only a points tender records the points spent",
+      });
+    if (tender.status !== "authorized" && tender.resolvedAt === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["resolvedAt"],
+        message: "A resolved tender records resolvedAt",
+      });
+    if (tender.status === "authorized" && tender.resolvedAt !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["resolvedAt"],
+        message: "An authorized tender is not resolved yet",
+      });
+    if (
+      tender.status === "captured" &&
+      (tender.method === "edc_card" || tender.method === "edc_qris") &&
+      tender.reference === null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["reference"],
+        message: "A captured EDC tender records the bank reference",
+      });
+    // Online gateway methods are settled through a WS-05 payment intent, so a
+    // captured one is never an unexplained rupiah.
+    if (
+      tender.status === "captured" &&
+      (tender.method === "qris" ||
+        tender.method === "va" ||
+        tender.method === "ewallet" ||
+        tender.method === "card") &&
+      tender.paymentIntentId === null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["paymentIntentId"],
+        message: "A captured gateway tender links its payment intent (WS-05)",
+      });
+  });
+export type PosTender = z.infer<typeof posTenderSchema>;
+
+// ---- Discounts (POS-02, F8) -----------------------------------------------
+
+export const posDiscountSourceSchema = discountLineSchema.shape.source;
+export const posDiscountKindSchema = z.enum(["percent", "amount"]);
+export const discountReasonSchema = z.enum([
+  "promo_engine",
+  "member_benefit",
+  "manager_goodwill",
+  "staff_meal",
+  "event",
+  "complaint_recovery",
+  "price_correction",
+  "other",
+]);
+export type PosDiscountSource = z.infer<typeof posDiscountSourceSchema>;
+export type PosDiscountKind = z.infer<typeof posDiscountKindSchema>;
+export type DiscountReason = z.infer<typeof discountReasonSchema>;
+
+export const posDiscountSchema = z
+  .strictObject({
+    id: posDiscountIdSchema,
+    tenantId: tenantIdSchema,
+    orderId: orderIdSchema,
+    source: posDiscountSourceSchema,
+    kind: posDiscountKindSchema,
+    /** For `kind: "percent"`: the rate the cashier chose, e.g. 1000 = 10%. */
+    percentBp: basisPointsSchema.nullable(),
+    /** The amount the server applied; the receipt and `order.paid` read this. */
+    amountIdr: positiveIdr,
+    reason: discountReasonSchema,
+    reasonNote: z.string().min(4).max(500).nullable(),
+    appliedBy: userIdSchema,
+    approvedBy: userIdSchema.nullable(),
+    approvalRequestId: approvalRequestIdSchema.nullable(),
+    createdAt: isoDateTimeSchema,
+  })
+  .superRefine((discount, ctx) => {
+    if ((discount.kind === "percent") !== (discount.percentBp !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["percentBp"],
+        message: "Only a percent discount carries a rate",
+      });
+    if (discount.source === "manual" && discount.reasonNote === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["reasonNote"],
+        message: "A manual discount records its written reason (POS-02)",
+      });
+    if (discount.percentBp !== null && Number(discount.percentBp) === 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["percentBp"],
+        message: "A percent discount is above zero",
+      });
+  });
+export type PosDiscount = z.infer<typeof posDiscountSchema>;
+
+/** Tenant setting behind POS-02 "diskon di atas ambang". */
+export const posApprovalPolicySchema = z
+  .strictObject({
+    ...scope,
+    /** Manual discounts above this share of the subtotal need approval. */
+    discountThresholdBp: basisPointsSchema,
+    /** Cash rounding increment (PRD F11 "aturan pembulatan"). */
+    cashRoundingIncrementIdr: z.number().int().positive().max(1_000),
+  })
+  .refine((policy) => Number(policy.discountThresholdBp) > 0, {
+    message: "The discount threshold must be above zero",
+    path: ["discountThresholdBp"],
+  });
+export type PosApprovalPolicy = z.infer<typeof posApprovalPolicySchema>;
+
+// ---- Order corrections: void & refund (POS-02, POS-04) --------------------
+
+/**
+ * POS-04: a completed sale is corrected by a *linked* record, never by editing
+ * or deleting the order. A void of an order that has not completed is the
+ * `void` status transition above; this record applies to a final sale and
+ * keeps the receipt number it was sold under (POS-06: "struk yang di-void tetap
+ * tercatat dengan nomornya").
+ */
+export const posVoidSchema = z
+  .strictObject({
+    id: posVoidIdSchema,
+    ...scope,
+    /** The completed order being voided (stays `completed` with its lines). */
+    orderId: orderIdSchema,
+    receiptNumber: receiptNumberSchema,
+    amountIdr: positiveIdr,
+    reason: voidReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    requestedBy: userIdSchema,
+    approvedBy: userIdSchema,
+    approvalRequestId: approvalRequestIdSchema,
+    voidedAt: isoDateTimeSchema,
+  })
+  .refine((row) => row.requestedBy !== row.approvedBy, {
+    path: ["approvedBy"],
+    message: "The approver is a different actor from the requester (§3.7)",
+  });
+export type PosVoid = z.infer<typeof posVoidSchema>;
+
+/** POS-04: only a final sale can be voided or refunded by correction. */
+export function assertCorrectionTargetsFinalOrder(
+  order: Pick<PosOrder, "status">,
+): void {
+  if (order.status !== "completed")
+    throw new PosError("CORRECTION_TARGET_NOT_FINAL");
+}
+
+export const posRefundLineSchema = z.strictObject({
+  method: posTenderMethodSchema,
+  amountIdr: positiveIdr,
+  /** Gateway/EDC refund reference once the provider answered. */
+  reference: z.string().min(1).max(100).nullable(),
+});
+export type PosRefundLine = z.infer<typeof posRefundLineSchema>;
+
+export const posRefundSchema = z
+  .strictObject({
+    id: posRefundIdSchema,
+    ...scope,
+    orderId: orderIdSchema,
+    amountIdr: positiveIdr,
+    reason: refundReasonSchema,
+    reasonNote: z.string().min(4).max(500),
+    lines: z.array(posRefundLineSchema).min(1),
+    requestedBy: userIdSchema,
+    approvedBy: userIdSchema,
+    approvalRequestId: approvalRequestIdSchema,
+    refundedAt: isoDateTimeSchema,
+  })
+  .superRefine((refund, ctx) => {
+    const sum = refund.lines.reduce(
+      (total, line) => total + Number(line.amountIdr),
+      0,
+    );
+    if (sum !== Number(refund.amountIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["lines"],
+        message: "Refund lines must sum to the refund amount",
+      });
+    if (refund.requestedBy === refund.approvedBy)
+      ctx.addIssue({
+        code: "custom",
+        path: ["approvedBy"],
+        message: "The approver is a different actor from the requester (§3.7)",
+      });
+  });
+export type PosRefund = z.infer<typeof posRefundSchema>;
+
+// ---- Order events (§6.C order_events) -------------------------------------
+
+/** Event names this contract appends to `order_events` (see events.ts). */
+export const posOrderEventTypeSchema = z.enum([
+  "order.submitted",
+  "order.paid",
+  "order.voided",
+  "order.refunded",
+]);
+export type PosOrderEventType = z.infer<typeof posOrderEventTypeSchema>;
+
+export const posOrderEventSchema = z.strictObject({
+  id: orderEventIdSchema,
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  orderId: orderIdSchema,
+  type: posOrderEventTypeSchema,
+  /** JSON only, exactly as stored in `order_events.payload` (JSONB). */
+  payload: z.json(),
+  actorId: userIdSchema.nullable(),
+  deviceId: uuidSchema.nullable(),
+  /** Per-order sequence, so the edge can detect a gap (§5). */
+  sequence: z.number().int().positive(),
+  occurredAt: isoDateTimeSchema,
+});
+export type PosOrderEvent = z.infer<typeof posOrderEventSchema>;
+
+// ---- Cashier shift (§6.C pos_shifts, POS-03) ------------------------------
+
+export const POS_SHIFT_STATUSES = ["open", "closed"] as const;
+export const posShiftStatusSchema = z.enum(POS_SHIFT_STATUSES);
+export type PosShiftStatus = z.infer<typeof posShiftStatusSchema>;
+
+export const posShiftShape = {
+  id: posShiftIdSchema,
+  ...scope,
+  deviceId: uuidSchema,
+  cashierId: userIdSchema,
+  businessDate: businessDateSchema,
+  status: posShiftStatusSchema,
+  openedAt: isoDateTimeSchema,
+  openingFloatIdr: nonnegativeIdr,
+  /** Server aggregates over the shift's captured/refunded cash tenders. */
+  cashSalesIdr: nonnegativeIdr,
+  cashRefundsIdr: nonnegativeIdr,
+  cashInIdr: nonnegativeIdr,
+  cashOutIdr: nonnegativeIdr,
+  cashDropIdr: nonnegativeIdr,
+  expectedIdr: nonnegativeIdr.nullable(),
+  countedIdr: nonnegativeIdr.nullable(),
+  /** counted − expected: negative is short, positive is over. */
+  varianceIdr: idrSchema.nullable(),
+  varianceNote: z.string().min(4).max(500).nullable(),
+  approvedBy: userIdSchema.nullable(),
+  approvalRequestId: approvalRequestIdSchema.nullable(),
+  approvedAt: isoDateTimeSchema.nullable(),
+  closedAt: isoDateTimeSchema.nullable(),
+};
+
+export const posShiftSchema = z
+  .strictObject(posShiftShape)
+  .superRefine((shift, ctx) => {
+    if (shift.status === "open") {
+      for (const key of [
+        "countedIdr",
+        "expectedIdr",
+        "varianceIdr",
+        "approvedBy",
+        "approvalRequestId",
+        "approvedAt",
+        "closedAt",
+      ] as const)
+        if (shift[key] !== null)
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "An open shift has no close figures",
+          });
+      return;
+    }
+    if (
+      shift.closedAt === null ||
+      shift.countedIdr === null ||
+      shift.expectedIdr === null ||
+      shift.varianceIdr === null ||
+      shift.approvedBy === null ||
+      shift.approvalRequestId === null ||
+      shift.approvedAt === null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedAt"],
+        message:
+          "A closed shift records count, expectation, variance and supervisor approval (POS-03)",
+      });
+    else {
+      const expected = shiftExpectedCashIdr(shift);
+      if (Number(shift.expectedIdr) !== Number(expected))
+        ctx.addIssue({
+          code: "custom",
+          path: ["expectedIdr"],
+          message:
+            "expectedIdr must equal float + cash sales − cash refunds + in − out − drops",
+        });
+      if (
+        Number(shift.varianceIdr) !==
+        Number(shiftVarianceIdr(shift.countedIdr, shift.expectedIdr))
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["varianceIdr"],
+          message: "varianceIdr must equal counted − expected",
+        });
+      if (Number(shift.varianceIdr) !== 0 && shift.varianceNote === null)
+        ctx.addIssue({
+          code: "custom",
+          path: ["varianceNote"],
+          message: "A cash difference carries a written explanation (U9)",
+        });
+    }
+  });
+export type PosShift = z.infer<typeof posShiftSchema>;
+
+/** One denomination line of the blind count sheet. */
+export const blindCashCountSchema = z.strictObject({
+  denominationIdr: z.number().int().positive().max(100_000),
+  quantity: z.number().int().min(0).max(10_000),
+});
+export type BlindCashCount = z.infer<typeof blindCashCountSchema>;
+
+/**
+ * POS-03 blind count input. It deliberately has **no** expected, counted or
+ * variance field: the cashier counts notes and coins, and the server derives
+ * the total (strict parsing rejects a submitted system number). The approval
+ * fields carry the verified supervisor decision (§3.7, action type
+ * `cash_shift_close`); the API re-checks them, the id alone is not proof.
+ */
+export const closePosShiftInputSchema = clientInputSchema({
+  counts: z.array(blindCashCountSchema).min(1),
+  varianceNote: z.string().min(4).max(500).nullable().optional(),
+  approvedBy: userIdSchema,
+  approvalRequestId: approvalRequestIdSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const openPosShiftInputSchema = clientInputSchema({
+  openingFloatIdr: nonnegativeIdr,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+// ---- Cash movements (§6.C cash_movements) ---------------------------------
+
+export const CASH_MOVEMENT_TYPES = ["cash_in", "cash_out", "drop"] as const;
+export const cashMovementTypeSchema = z.enum(CASH_MOVEMENT_TYPES);
+export type CashMovementType = z.infer<typeof cashMovementTypeSchema>;
+
+export const posCashMovementSchema = z.strictObject({
+  id: cashMovementIdSchema,
+  ...scope,
+  shiftId: posShiftIdSchema,
+  type: cashMovementTypeSchema,
+  amountIdr: positiveIdr,
+  /** "kas masuk dan keluar dengan alasan" (§3 F8 Shift Kasir). */
+  reasonNote: z.string().min(4).max(500),
+  recordedBy: userIdSchema,
+  recordedAt: isoDateTimeSchema,
+  approvedBy: userIdSchema.nullable(),
+});
+export type PosCashMovement = z.infer<typeof posCashMovementSchema>;
+
+/** Shift screen: the shift, its cash movements and the device's receipt gaps. */
+export const posShiftReportSchema = z.strictObject({
+  shift: posShiftSchema,
+  movements: z.array(posCashMovementSchema),
+  /**
+   * POS-06: ordinals the device has not delivered. Empty means the day may be
+   * closed; the API recomputes this at close, the screen only explains it.
+   */
+  receiptGaps: z.array(z.number().int().positive()),
+});
+export type PosShiftReport = z.infer<typeof posShiftReportSchema>;
+
+export const recordCashMovementInputSchema = clientInputSchema({
+  type: cashMovementTypeSchema,
+  amountIdr: positiveIdr,
+  reasonNote: z.string().min(4).max(500),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+// ---- End of day (F8 "Tutup Hari") -----------------------------------------
+
+export const endOfDayDeviceRecapSchema = z.strictObject({
+  deviceId: uuidSchema,
+  orderCount: z.number().int().nonnegative(),
+  grossSalesIdr: nonnegativeIdr,
+  discountIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  taxIdr: nonnegativeIdr,
+  roundingIdr: idrSchema,
+  /** Sum of the orders that stand: gross − discount + service + tax + rounding. */
+  totalIdr: nonnegativeIdr,
+  voidedOrderCount: z.number().int().nonnegative(),
+  voidedAmountIdr: nonnegativeIdr,
+  refundCount: z.number().int().nonnegative(),
+  refundAmountIdr: nonnegativeIdr,
+  shiftCount: z.number().int().nonnegative(),
+  cashVarianceIdr: idrSchema,
+  closed: z.boolean(),
+});
+export type EndOfDayDeviceRecap = z.infer<typeof endOfDayDeviceRecapSchema>;
+
+export const endOfDayTenderRowSchema = z
+  .strictObject({
+    method: posTenderMethodSchema,
+    capturedIdr: nonnegativeIdr,
+    /** Refunds and voided paid sales paid back through this method. */
+    refundedIdr: nonnegativeIdr,
+    netIdr: idrSchema,
+  })
+  .refine(
+    (row) =>
+      Number(row.netIdr) === Number(row.capturedIdr) - Number(row.refundedIdr),
+    { path: ["netIdr"], message: "netIdr must equal captured − refunded" },
+  );
+export type EndOfDayTenderRow = z.infer<typeof endOfDayTenderRowSchema>;
+
+export const endOfDayChannelRowSchema = z.strictObject({
+  channel: orderChannelSchema,
+  orderCount: z.number().int().nonnegative(),
+  totalIdr: nonnegativeIdr,
+});
+export type EndOfDayChannelRow = z.infer<typeof endOfDayChannelRowSchema>;
+
+export const endOfDayRecapSchema = z
+  .strictObject({
+    id: dailyCloseIdSchema,
+    ...scope,
+    businessDate: businessDateSchema,
+    status: z.enum(["open", "closed"]),
+    generatedAt: isoDateTimeSchema,
+    closedAt: isoDateTimeSchema.nullable(),
+    closedBy: userIdSchema.nullable(),
+    devices: z.array(endOfDayDeviceRecapSchema).min(1),
+    tenders: z.array(endOfDayTenderRowSchema).min(1),
+    channels: z.array(endOfDayChannelRowSchema).min(1),
+    totalSalesIdr: nonnegativeIdr,
+    totalRefundsIdr: nonnegativeIdr,
+    totalVoidsIdr: nonnegativeIdr,
+    totalVarianceIdr: idrSchema,
+    /** F8: "pemotongan stok akhir hari bila dipilih". */
+    inventoryDeductionApplied: z.boolean(),
+    accountingSync: z.strictObject({
+      status: z.enum(["pending", "posted"]),
+      journalCount: z.number().int().nonnegative(),
+      postedAt: isoDateTimeSchema.nullable(),
+    }),
+  })
+  .superRefine((recap, ctx) => {
+    for (const device of recap.devices) {
+      const expected =
+        Number(device.grossSalesIdr) -
+        Number(device.discountIdr) +
+        Number(device.serviceChargeIdr) +
+        Number(device.taxIdr) +
+        Number(device.roundingIdr);
+      if (Number(device.totalIdr) !== expected)
+        ctx.addIssue({
+          code: "custom",
+          path: ["devices"],
+          message:
+            "A device total must equal gross − discount + service + tax + rounding",
+        });
+    }
+    const sales = recap.devices.reduce(
+      (sum, device) => sum + Number(device.totalIdr),
+      0,
+    );
+    if (Number(recap.totalSalesIdr) !== sales)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalSalesIdr"],
+        message: "totalSalesIdr must equal the device totals",
+      });
+    const refunds = recap.devices.reduce(
+      (sum, device) => sum + Number(device.refundAmountIdr),
+      0,
+    );
+    if (Number(recap.totalRefundsIdr) !== refunds)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalRefundsIdr"],
+        message: "totalRefundsIdr must equal the device refunds",
+      });
+    const voids = recap.devices.reduce(
+      (sum, device) => sum + Number(device.voidedAmountIdr),
+      0,
+    );
+    if (Number(recap.totalVoidsIdr) !== voids)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalVoidsIdr"],
+        message: "totalVoidsIdr must equal the device voided sales",
+      });
+    const variances = recap.devices.reduce(
+      (sum, device) => sum + Number(device.cashVarianceIdr),
+      0,
+    );
+    if (Number(recap.totalVarianceIdr) !== variances)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalVarianceIdr"],
+        message: "totalVarianceIdr must equal the device variances",
+      });
+    const net = recap.tenders.reduce((sum, row) => sum + Number(row.netIdr), 0);
+    const expectedNet =
+      Number(recap.totalSalesIdr) -
+      Number(recap.totalRefundsIdr) -
+      Number(recap.totalVoidsIdr);
+    if (net !== expectedNet)
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message:
+          "Tender net must equal sales − refunds − voided paid sales (POS-05 identity at contract level)",
+      });
+    if (
+      recap.status === "closed" &&
+      (recap.closedAt === null || recap.closedBy === null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedAt"],
+        message: "A closed business day records who closed it and when",
+      });
+    if (
+      recap.status === "open" &&
+      (recap.closedAt !== null || recap.closedBy !== null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["closedAt"],
+        message: "An open business day is not closed yet",
+      });
+    if (
+      (recap.accountingSync.status === "posted") !==
+      (recap.accountingSync.postedAt !== null)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["accountingSync", "postedAt"],
+        message: "A posted recap records postedAt",
+      });
+  });
+export type EndOfDayRecap = z.infer<typeof endOfDayRecapSchema>;
+
+export const closeBusinessDayInputSchema = clientInputSchema({
+  businessDate: businessDateSchema,
+  inventoryDeduction: z.boolean(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+// ---- Receipt sequences and receipts (POS-06) ------------------------------
+
+/** §6 `receipt_sequences`: one gapless run per outlet and device. */
+export const receiptSequenceSchema = z.strictObject({
+  id: receiptSequenceIdSchema,
+  ...scope,
+  deviceId: uuidSchema,
+  /** Printed before the ordinal: "prefiks perangkat diikuti nomor urut". */
+  prefix: receiptPrefixSchema,
+  lastNumber: z.number().int().min(0).max(999_999_999),
+  updatedAt: isoDateTimeSchema,
+});
+export type ReceiptSequence = z.infer<typeof receiptSequenceSchema>;
+
+export const posReceiptSchema = z
+  .strictObject({
+    id: posReceiptIdSchema,
+    ...scope,
+    orderId: orderIdSchema,
+    deviceId: uuidSchema,
+    /** The printed number; it stays on a voided receipt (POS-06). */
+    number: receiptNumberSchema,
+    sequenceNumber: z.number().int().positive().max(999_999_999),
+    status: z.enum(["issued", "voided"]),
+    issuedAt: isoDateTimeSchema,
+    voidedAt: isoDateTimeSchema.nullable(),
+    voidReason: voidReasonSchema.nullable(),
+    voidedBy: userIdSchema.nullable(),
+    reprintCount: z.number().int().nonnegative().max(99),
+  })
+  .superRefine((receipt, ctx) => {
+    if (receipt.status === "voided") {
+      if (
+        receipt.voidedAt === null ||
+        receipt.voidReason === null ||
+        receipt.voidedBy === null
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["voidedAt"],
+          message: "A voided receipt records when, why and by whom (POS-06)",
+        });
+    } else if (
+      receipt.voidedAt !== null ||
+      receipt.voidReason !== null ||
+      receipt.voidedBy !== null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["voidedAt"],
+        message: "Only a voided receipt carries void metadata",
+      });
+  });
+export type PosReceipt = z.infer<typeof posReceiptSchema>;
+
+// ---- Cashier order detail ------------------------------------------------
+
+/**
+ * The order with its lines, tenders, discounts and receipt — what the cashier
+ * screen and the payment panel render. It lives after the tender, discount and
+ * receipt schemas because it embeds all three.
+ */
+export const posOrderDetailSchema = posOrderBaseSchema
+  .extend({
+    items: z.array(posOrderItemSchema),
+    tenders: z.array(posTenderSchema),
+    discounts: z.array(posDiscountSchema),
+    receipt: posReceiptSchema.nullable(),
+  })
+  .superRefine((order, ctx) => {
+    checkOrderMoney(order, ctx);
+    for (const item of order.items)
+      if (item.orderId !== order.id)
+        ctx.addIssue({
+          code: "custom",
+          path: ["items"],
+          message: "Every order item belongs to the order",
+        });
+    // A live order's subtotal follows its non-voided lines; a voided order's
+    // totals are frozen history, so its own voided lines stay in the sum.
+    const countedItems =
+      order.status === "voided"
+        ? order.items
+        : order.items.filter((item) => item.status !== "voided");
+    const subtotal = countedItems.reduce(
+      (sum, item) => sum + Number(item.lineTotalIdr),
+      0,
+    );
+    if (Number(order.subtotalIdr) !== subtotal)
+      ctx.addIssue({
+        code: "custom",
+        path: ["subtotalIdr"],
+        message:
+          "subtotalIdr must equal the sum of the non-voided lines (all lines once the order is voided)",
+      });
+    for (const tender of order.tenders)
+      if (tender.orderId !== order.id)
+        ctx.addIssue({
+          code: "custom",
+          path: ["tenders"],
+          message: "Every tender belongs to the order",
+        });
+    for (const row of order.discounts)
+      if (row.orderId !== order.id)
+        ctx.addIssue({
+          code: "custom",
+          path: ["discounts"],
+          message: "Every discount belongs to the order",
+        });
+    const discount = order.discounts.reduce(
+      (sum, row) => sum + Number(row.amountIdr),
+      0,
+    );
+    if (Number(order.discountIdr) !== discount)
+      ctx.addIssue({
+        code: "custom",
+        path: ["discountIdr"],
+        message: "discountIdr must equal the sum of the discount rows",
+      });
+    const captured = order.tenders.filter(
+      (tender) => tender.status === "captured",
+    );
+    const paid = captured.reduce(
+      (sum, tender) => sum + Number(tender.amountIdr),
+      0,
+    );
+    // A split payment is still in progress until the last tender lands, so the
+    // tenders must merely never exceed the bill; a completed sale is exact.
+    if (captured.length > 0 && paid > Number(order.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "Captured tenders must not exceed the order total",
+      });
+    if (order.status === "completed" && paid !== Number(order.totalIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "A completed sale is paid in full",
+      });
+    if (order.status === "completed" && order.receipt === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["receipt"],
+        message: "A completed sale has a receipt number (POS-06)",
+      });
+    if (order.receipt !== null && order.receipt.orderId !== order.id)
+      ctx.addIssue({
+        code: "custom",
+        path: ["receipt"],
+        message: "The receipt belongs to the order",
+      });
+  });
+export type PosOrderDetail = z.infer<typeof posOrderDetailSchema>;
+
+/** What the payment panel receives back after adding one tender. */
+export const posTenderResultSchema = z.strictObject({
+  order: posOrderDetailSchema,
+  tender: posTenderSchema,
+  remainingIdr: nonnegativeIdr,
+});
+export type PosTenderResult = z.infer<typeof posTenderResultSchema>;
+
+// ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
+
+export const posDocumentLineSchema = z.strictObject({
+  name,
+  quantity: z.number().int().min(1).max(99),
+  unitPriceIdr: positiveIdr,
+  modifiersTotalIdr: nonnegativeIdr,
+  lineTotalIdr: nonnegativeIdr,
+  note: note.nullable(),
+});
+export type PosDocumentLine = z.infer<typeof posDocumentLineSchema>;
+
+export const posDocumentTenderSchema = z.strictObject({
+  method: posTenderMethodSchema,
+  amountIdr: positiveIdr,
+  reference: z.string().min(1).max(100).nullable(),
+});
+
+/**
+ * POS-07: "E-receipt dan kuitansi selalu memuat nama dan alamat outlet, rincian
+ * item, pajak, dan metode pembayaran." D40 adds the outlet name/address. The
+ * document is a printed/electronic snapshot: it carries the amounts of the
+ * order at issue time and never recomputes them.
+ */
+const documentTotalsShape = {
+  subtotalIdr: nonnegativeIdr,
+  discountIdr: nonnegativeIdr,
+  serviceChargeIdr: nonnegativeIdr,
+  taxIdr: nonnegativeIdr,
+  roundingIdr: idrSchema,
+  totalIdr: nonnegativeIdr,
+};
+
+function checkDocumentTotals(
+  document: {
+    items: readonly { lineTotalIdr: Idr }[];
+    discounts: readonly { amountIdr: Idr }[];
+    serviceCharge: { amountIdr: Idr } | null;
+    taxLines: readonly { amountIdr: Idr }[];
+    tenders: readonly { amountIdr: Idr }[];
+    subtotalIdr: Idr;
+    discountIdr: Idr;
+    serviceChargeIdr: Idr;
+    taxIdr: Idr;
+    roundingIdr: Idr;
+    totalIdr: Idr;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const sum = (values: readonly Idr[]) =>
+    values.reduce((total, value) => total + Number(value), 0);
+  if (
+    sum(document.items.map((line) => line.lineTotalIdr)) !==
+    Number(document.subtotalIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["subtotalIdr"],
+      message: "subtotalIdr must equal the document lines",
+    });
+  if (
+    sum(document.discounts.map((row) => row.amountIdr)) !==
+    Number(document.discountIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["discountIdr"],
+      message: "discountIdr must equal the discount lines",
+    });
+  if (
+    (document.serviceCharge === null
+      ? 0
+      : Number(document.serviceCharge.amountIdr)) !==
+    Number(document.serviceChargeIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["serviceChargeIdr"],
+      message: "serviceChargeIdr must match the service charge line",
+    });
+  if (
+    sum(document.taxLines.map((line) => line.amountIdr)) !==
+    Number(document.taxIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["taxIdr"],
+      message: "taxIdr must equal the tax lines",
+    });
+  const total =
+    Number(document.subtotalIdr) -
+    Number(document.discountIdr) +
+    Number(document.serviceChargeIdr) +
+    Number(document.taxIdr) +
+    Number(document.roundingIdr);
+  if (Number(document.totalIdr) !== total)
+    ctx.addIssue({
+      code: "custom",
+      path: ["totalIdr"],
+      message:
+        "totalIdr must equal subtotal - discount + service + tax + rounding",
+    });
+  if (
+    sum(document.tenders.map((row) => row.amountIdr)) !==
+    Number(document.totalIdr)
+  )
+    ctx.addIssue({
+      code: "custom",
+      path: ["tenders"],
+      message: "Tender methods must sum to the total (POS-07)",
+    });
+}
+
+export const receiptDocumentBaseShape = {
+  id: z.string().min(1).max(100),
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  receiptNumber: receiptNumberSchema,
+  orderNumber: orderNumber,
+  documentKind: z.enum(["receipt", "kuitansi"]),
+  status: z.enum(["issued", "voided"]),
+  outletName: z.string().min(1).max(150),
+  /** D40/POS-07: the address is printed on every receipt and kuitansi. */
+  outletAddress: z.string().min(10).max(300),
+  issuedAt: isoDateTimeSchema,
+  items: z.array(posDocumentLineSchema).min(1),
+  discounts: z.array(discountLineSchema),
+  serviceCharge: serviceChargeLineSchema.nullable(),
+  taxLines: z.array(taxLineSchema).min(1),
+  ...documentTotalsShape,
+  tenders: z.array(posDocumentTenderSchema).min(1),
+  cashierName: z.string().min(1).max(150).nullable(),
+  customerName: z.string().min(1).max(150).nullable(),
+};
+
+export const receiptDocumentSchema = z
+  .strictObject(receiptDocumentBaseShape)
+  .superRefine(checkDocumentTotals);
+export type ReceiptDocument = z.infer<typeof receiptDocumentSchema>;
+
+/**
+ * F8 "Invoice dapat dibuat untuk event dan pemesanan korporat": the same
+ * amounts as the receipt plus who is billed. The corporate tax number (NPWP)
+ * is optional data, never required.
+ */
+export const invoiceDocumentSchema = z
+  .strictObject({
+    ...receiptDocumentBaseShape,
+    receiptNumber: receiptNumberSchema,
+    documentKind: z.literal("invoice"),
+    billedTo: z.strictObject({
+      name: z.string().min(1).max(150),
+      address: z.string().min(10).max(300),
+      npwp: z
+        .string()
+        .regex(/^\d{2}\.\d{3}\.\d{3}\.\d-\d{3}\.\d{3}$/)
+        .nullable(),
+    }),
+    dueDate: businessDateSchema,
+    paymentStatus: z.enum(["unpaid", "paid", "refunded"]),
+    notes: z.string().min(4).max(500).nullable(),
+  })
+  .superRefine(checkDocumentTotals);
+export type InvoiceDocument = z.infer<typeof invoiceDocumentSchema>;
+
+/** Delivery of a document. WhatsApp is excluded on purpose: it costs money. */
+export const RECEIPT_DELIVERY_CHANNELS = ["print", "link", "email"] as const;
+export const receiptDeliveryChannelSchema = z.enum(RECEIPT_DELIVERY_CHANNELS);
+export const receiptDeliveryStatusSchema = z.enum(["queued", "sent", "failed"]);
+
+export const receiptDeliverySchema = z
+  .strictObject({
+    id: receiptDeliveryIdSchema,
+    ...scope,
+    receiptId: posReceiptIdSchema,
+    channel: receiptDeliveryChannelSchema,
+    status: receiptDeliveryStatusSchema,
+    /** Masked destination only (`o***@example.com`); never the raw address. */
+    destinationMasked: z.string().min(1).max(120).nullable(),
+    sentAt: isoDateTimeSchema.nullable(),
+    failureReason: z.string().min(1).max(200).nullable(),
+  })
+  .refine((row) => (row.status === "sent") === (row.sentAt !== null), {
+    path: ["sentAt"],
+    message: "sentAt is set exactly when the document was sent",
+  })
+  .refine((row) => row.status !== "failed" || row.failureReason !== null, {
+    path: ["failureReason"],
+    message: "A failed delivery records why",
+  });
+export type ReceiptDelivery = z.infer<typeof receiptDeliverySchema>;
+
+/** E-receipt link, returned once: the token is not stored, only its hash. */
+export const receiptLinkSchema = z.strictObject({
+  receiptId: posReceiptIdSchema,
+  url: z.string().min(1).max(500),
+  expiresAt: isoDateTimeSchema,
+});
+export type ReceiptLink = z.infer<typeof receiptLinkSchema>;
+
+/** What the print/e-receipt action returns: number, document and deliveries. */
+export const posReceiptIssueResultSchema = z.strictObject({
+  receipt: posReceiptSchema,
+  document: receiptDocumentSchema,
+  deliveries: z.array(receiptDeliverySchema),
+  /** E-receipt link, returned once; the raw token is never stored. */
+  link: receiptLinkSchema.nullable(),
+});
+export type PosReceiptIssueResult = z.infer<typeof posReceiptIssueResultSchema>;
+
+// ---- Customer display (F8 "Customer Display") -----------------------------
+
+export const customerDisplayPairingSchema = z
+  .strictObject({
+    id: customerDisplayPairingIdSchema,
+    ...scope,
+    terminalDeviceId: uuidSchema,
+    displayDeviceId: uuidSchema,
+    status: z.enum(["active", "revoked"]),
+    pairedAt: isoDateTimeSchema,
+    pairedBy: userIdSchema,
+    revokedAt: isoDateTimeSchema.nullable(),
+  })
+  .refine((row) => (row.status === "revoked") === (row.revokedAt !== null), {
+    path: ["revokedAt"],
+    message: "Revocation status and timestamp must agree",
+  });
+export type CustomerDisplayPairing = z.infer<
+  typeof customerDisplayPairingSchema
+>;
+
+export const pairCustomerDisplayInputSchema = clientInputSchema({
+  /** Six-digit code shown on the display while pairing. */
+  code: z.string().regex(/^\d{6}$/, "The pairing code is six digits"),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const customerDisplayLineSchema = z.strictObject({
+  name,
+  quantity: z.number().int().min(1).max(99),
+  unitPriceIdr: positiveIdr,
+  lineTotalIdr: nonnegativeIdr,
+  note: note.nullable(),
+});
+export type CustomerDisplayLine = z.infer<typeof customerDisplayLineSchema>;
+
+/** Dynamic QRIS (DOIT) shown on the second screen; it expires (~10 minutes). */
+export const customerDisplayQrisSchema = z.strictObject({
+  provider: z.literal("doit"),
+  amountIdr: positiveIdr,
+  payload: z.string().min(16).max(2048),
+  expiresAt: isoDateTimeSchema,
+});
+export type CustomerDisplayQris = z.infer<typeof customerDisplayQrisSchema>;
+
+export const customerDisplayStateSchema = z
+  .strictObject({
+    ...scope,
+    terminalDeviceId: uuidSchema,
+    displayDeviceId: uuidSchema,
+    state: z.enum(["idle", "ordering", "awaiting_payment", "paid"]),
+    orderId: orderIdSchema.nullable(),
+    orderNumber: orderNumber.nullable(),
+    lines: z.array(customerDisplayLineSchema),
+    subtotalIdr: nonnegativeIdr,
+    discountIdr: nonnegativeIdr,
+    serviceChargeIdr: nonnegativeIdr,
+    taxIdr: nonnegativeIdr,
+    /** Cash rounding carried from the order, so the screen shows the final total. */
+    roundingIdr: idrSchema,
+    totalIdr: nonnegativeIdr,
+    qris: customerDisplayQrisSchema.nullable(),
+    tenders: z.array(posDocumentTenderSchema),
+    changeIdr: nonnegativeIdr.nullable(),
+    /** Monotonic per terminal so the display drops stale pushes. */
+    version: z.number().int().nonnegative(),
+    updatedAt: isoDateTimeSchema,
+  })
+  .superRefine((state, ctx) => {
+    if (state.state === "idle" && state.orderId !== null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["orderId"],
+        message: "The idle screen has no order",
+      });
+    if (state.state !== "idle" && state.orderId === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["orderId"],
+        message: "A live display state shows an order",
+      });
+    const total =
+      Number(state.subtotalIdr) -
+      Number(state.discountIdr) +
+      Number(state.serviceChargeIdr) +
+      Number(state.taxIdr) +
+      Number(state.roundingIdr);
+    if (Number(state.totalIdr) !== total)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalIdr"],
+        message:
+          "totalIdr must equal subtotal - discount + service + tax + rounding",
+      });
+    if (state.qris !== null) {
+      if (state.state !== "awaiting_payment")
+        ctx.addIssue({
+          code: "custom",
+          path: ["qris"],
+          message: "QRIS is shown while the bill is awaiting payment",
+        });
+      if (Number(state.qris?.amountIdr) !== Number(state.totalIdr))
+        ctx.addIssue({
+          code: "custom",
+          path: ["qris", "amountIdr"],
+          message: "The QRIS amount is the bill total",
+        });
+    }
+    if (state.state === "paid" && state.tenders.length === 0)
+      ctx.addIssue({
+        code: "custom",
+        path: ["tenders"],
+        message: "A paid screen shows how it was paid",
+      });
+  });
+export type CustomerDisplayState = z.infer<typeof customerDisplayStateSchema>;
+
+// ---- Fixture set ----------------------------------------------------------
+
+/** Whole Cafe Legend POS fixture; must parse as one object (test). */
+export const posFixtureSchema = z.strictObject({
+  approvalPolicy: posApprovalPolicySchema,
+  shifts: z.array(posShiftSchema),
+  cashMovements: z.array(posCashMovementSchema),
+  orders: z.array(posOrderSchema),
+  orderDetails: z.array(posOrderDetailSchema),
+  orderItems: z.array(posOrderItemSchema),
+  orderEvents: z.array(posOrderEventSchema),
+  tenders: z.array(posTenderSchema),
+  discounts: z.array(posDiscountSchema),
+  voids: z.array(posVoidSchema),
+  refunds: z.array(posRefundSchema),
+  receiptSequences: z.array(receiptSequenceSchema),
+  receipts: z.array(posReceiptSchema),
+  receiptDocuments: z.array(receiptDocumentSchema),
+  invoices: z.array(invoiceDocumentSchema),
+  deliveries: z.array(receiptDeliverySchema),
+  customerDisplayPairings: z.array(customerDisplayPairingSchema),
+  customerDisplayState: customerDisplayStateSchema,
+  endOfDay: endOfDayRecapSchema,
+});
+export type PosFixture = z.infer<typeof posFixtureSchema>;
+
+// Re-exported for callers that group POS tender methods with payment methods.
+export type { PaymentMethod };
