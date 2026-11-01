@@ -13,10 +13,15 @@ import { cafeLegendTextFixtures } from "../text/fixtures.ts";
 import { cafeLegendTheme } from "../theme/tenants/cafe-legend.ts";
 import { failingThemeExample } from "../theme/tenants/failing-example.ts";
 import { configBundleSchema, configTemplateSchema } from "./config.ts";
+import { brandContextSchema } from "./context.ts";
 import { tenantDomainSchema } from "./domains.ts";
 import { tenantIntegrationSchema } from "./integrations.ts";
 import { tenantUsageSchema } from "./limits.ts";
-import { MODULE_KEYS, platformPackageSchema } from "./modules.ts";
+import {
+  MODULE_KEYS,
+  isModuleEnabled,
+  platformPackageSchema,
+} from "./modules.ts";
 import {
   brandSchema,
   legalEntitySchema,
@@ -315,6 +320,24 @@ const themes = [
   }),
 );
 
+/** What the web server renders SSR with; brand only, no platform identity. */
+const brandContext = brandContextSchema.parse({
+  brand: {
+    id: brand.id,
+    slug: brand.slug,
+    name: brand.name,
+    logoMediaId: brand.logoMediaId,
+  },
+  theme: {
+    tokens: themes[0].tokens,
+    fontFamily: themes[0].fontFamily,
+    corners: themes[0].corners,
+  },
+  enabledModules: MODULE_KEYS.filter((key) =>
+    isModuleEnabled(tenant.featureFlags, key),
+  ),
+});
+
 const supportGrants = [
   {
     id: fixedId("5ac0000a", 1),
@@ -420,6 +443,7 @@ export const cafeLegendPlatformFixtures = {
   outlets,
   domains,
   suspendedDomain,
+  brandContext,
   integrations,
   themes,
   supportGrants,

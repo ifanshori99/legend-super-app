@@ -4,6 +4,8 @@ import { adminRouter } from "./admin.routes";
 import { healthRouter } from "./health.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
+import { platformBrandRouter } from "./platform-brand.routes";
+import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -16,3 +18,7 @@ apiRouter.use("/admin", adminRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
 apiRouter.use("/platform", platformRouter);
 apiRouter.use("/org", orgRouter);
+// Whitelabel brand context for SSR (TEN-08), resolved from the request host.
+apiRouter.use("/tenant", platformBrandRouter);
+// Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.
+apiRouter.use("/internal", internalRouter);
