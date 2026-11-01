@@ -12,7 +12,8 @@
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./core": "./src/core/index.ts",
-    "./core/server": "./src/core/server.ts"
+    "./core/server": "./src/core/server.ts",
+    "./audit": "./src/audit/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
