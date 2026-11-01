@@ -112,31 +112,43 @@ export function createApp({
     next();
   });
 
+  // Tenant resolution shared by the public login path below and /api (TEN-02):
+  // a registered, verified domain of an active tenant or a signed device
+  // token. Never a client-supplied id.
+  const resolveDomain = async (hostname: string) => {
+    const resolution = await resolveHostname(hostname);
+    return resolution.ok
+      ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
+      : null;
+  };
+  const firstSyntheticTenant = async () => {
+    // Development only: the first seeded tenant (the synthetic Cafe Legend
+    // seed). Never derived from request input, and no tenant name is
+    // hard-coded here (TEN-07).
+    const result = await pool.query<{ id: string }>(
+      "SELECT id FROM tenants WHERE status = 'active' ORDER BY created_at, id LIMIT 1",
+    );
+    const row = result.rows[0];
+    return row
+      ? { tenantId: row.id, brandId: null, source: "session" as const }
+      : null;
+  };
+
   // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
-  // session to resolve a tenant from, and it must run before Better Auth's
-  // catch-all because the identity contract puts it under /api/auth/*.
-  //
-  // Tenant resolution: the production mount is the domain resolver of
-  // legend-1je (not merged yet). Until it lands, the same development-only
-  // fallback the rest of the API uses mints the seeded tenant for this path;
-  // in production the guard below disables it and the route answers
-  // TENANT_NOT_FOUND instead of guessing a tenant (TEN-02).
-  const developmentTenant = developmentTenantContext({
-    enabled:
-      env.DEPLOYMENT_MODE === "development" &&
-      env.NODE_ENV !== "production" &&
-      env.DATA_CLASSIFICATION === "synthetic",
-    // Public path: there is no session to gate on, so gate on nothing.
-    hasSession: async () => true,
-    lookup: async () => {
-      const result = await pool.query<{ id: string }>(
-        "SELECT id FROM tenants ORDER BY created_at, id LIMIT 1",
-      );
-      const row = result.rows[0];
-      return row ? { tenantId: row.id, brandId: null } : null;
-    },
-  });
-  app.use("/api/auth/login-challenges", developmentTenant);
+  // session to gate the development fallback on, and it must run before
+  // Better Auth's catch-all because the identity contract puts it under
+  // /api/auth/*. The tenant is the domain's (or device token's); in
+  // development with synthetic data only, the seeded tenant. Elsewhere an
+  // unresolved host answers TENANT_NOT_FOUND instead of guessing (TEN-02).
+  app.use(
+    "/api/auth/login-challenges",
+    tenantContext({
+      required: false,
+      resolveDomain,
+      verifyCredential: deviceTenantCredential,
+      fallback: developmentSyntheticTenant ? firstSyntheticTenant : undefined,
+    }),
+  );
   app.use("/api/auth/login-challenges", identityLoginChallengeRouter);
 
   // Better Auth owns /api/auth/*: sign-up, sign-in, session, sign-out, admin.
@@ -160,31 +172,17 @@ export function createApp({
     "/api",
     tenantContext({
       required: false,
-      resolveDomain: async (hostname) => {
-        const resolution = await resolveHostname(hostname);
-        return resolution.ok
-          ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
-          : null;
-      },
+      resolveDomain,
       verifyCredential: deviceTenantCredential,
+      // Development fallback only for a signed-in caller (the e2e/login flow);
+      // brands are read later inside the tenant transaction.
       fallback: developmentSyntheticTenant
         ? async (req) => {
             const session = await auth.api.getSession({
               headers: fromNodeHeaders(req.headers),
               query: { disableCookieCache: true },
             });
-            if (!session) return null;
-            // Development only: the first seeded tenant (the synthetic Cafe
-            // Legend seed). Never derived from request input, and no tenant
-            // name is hard-coded here (TEN-07); brands are read later inside
-            // the tenant transaction once the context exists.
-            const result = await pool.query<{ id: string }>(
-              "SELECT id FROM tenants WHERE status = 'active' ORDER BY created_at, id LIMIT 1",
-            );
-            const row = result.rows[0];
-            return row
-              ? { tenantId: row.id, brandId: null, source: "session" as const }
-              : null;
+            return session ? firstSyntheticTenant() : null;
           }
         : undefined,
     }),
