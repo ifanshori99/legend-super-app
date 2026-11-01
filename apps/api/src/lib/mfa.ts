@@ -2,19 +2,27 @@
 // MFA-only; TEN-04 requires a re-verified second factor before a support
 // session opens).
 //
-// The stored TOTP/passkey factors (`mfa_factors`, PRD §6 B) belong to the WS-01
-// identity bead, which has not landed yet. Until it does there is no verifier,
-// so this fails closed: a support session cannot be opened and no tenant
-// personal/financial data is reachable through the platform panel. Replace the
-// body with a real TOTP check and return the verified instant — never a
-// constant.
+// The request carries the six-digit TOTP code in `mfaCode`
+// (platform/support-access.ts requestSupportAccessInputSchema). It is checked
+// against the caller's first verified factor (identity-mfa.service), which also
+// marks this session as MFA-verified (AUTH-05). No factor or a wrong code
+// answers null, so the support session stays closed.
 
 import type { Request } from "express";
+import { verifyMfaCodeForUser } from "../services/identity-mfa.service";
 
 /** When the second factor was verified in this request, or null. */
 export async function verifiedMfaAt(req: Request): Promise<string | null> {
-  // The request carries the TOTP code today; there is no factor to check it
-  // against yet. Keep the parameter so the real verifier is a body change.
-  void req;
-  return null;
+  const body: unknown = req.body;
+  if (body === null || typeof body !== "object") return null;
+  const code = (body as { mfaCode?: unknown }).mfaCode;
+  if (typeof code !== "string" || !/^\d{6}$/.test(code)) return null;
+  const auth = req.auth;
+  if (!auth) return null;
+  const result = await verifyMfaCodeForUser({
+    userId: auth.user.id,
+    sessionId: auth.session.id,
+    code,
+  });
+  return result?.verifiedAt ?? null;
 }

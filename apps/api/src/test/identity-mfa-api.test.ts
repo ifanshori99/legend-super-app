@@ -1,0 +1,394 @@
+// Staff MFA + AUTH-05 enforcement over the real Express app (PRD v1.7 §3 F6
+// "Staf — Login Web", §3 F4 platform panel, TEN-04). The RBAC engine is not on
+// main yet, so the guarded probe routes inject a facts resolver; the default
+// resolver (deny) is itself asserted.
+//
+// Database: the disposable PostgreSQL server started by `pnpm test`; rows are
+// cleaned up through STARTER_TEST_DATABASE_URL.
+
+import { randomUUID } from "node:crypto";
+import express from "express";
+import { Pool } from "pg";
+import request from "supertest";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  roleAssignmentSchema,
+  roleIdSchema,
+  type AccessPrincipal,
+  type PermissionCode,
+  type RoleGrant,
+} from "@starter/shared/access";
+import { tenantIdSchema, userIdSchema } from "@starter/shared/core";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { createApp } from "../app";
+import { totpCode, totpStep } from "../lib/totp";
+import { requireAuth } from "../middleware/auth";
+import { errorHandler } from "../middleware/error-handler";
+import {
+  requireIdentitySurface,
+  requireSessionMfa,
+} from "../middleware/identity";
+import type {
+  SurfaceAccessFacts,
+  SurfaceAccessFactsResolver,
+} from "../services/identity-access.service";
+import { agent, originHeader, setRole, signUp } from "./helpers";
+
+const app = createApp();
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 2,
+});
+const tenants = cafeLegendPlatformFixtures.tenant.id;
+const OTHER_USER_ID = "33333333-3333-4333-8333-333333333333";
+const PASSWORD = "Test-password-123!";
+const createdUserIds = new Set<string>();
+
+afterAll(async () => {
+  if (createdUserIds.size > 0) {
+    await owner.query(
+      "DELETE FROM mfa_factors WHERE user_id = ANY($1::uuid[])",
+      [[...createdUserIds]],
+    );
+    await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
+      [...createdUserIds],
+    ]);
+    await owner.query(
+      "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+      [[...createdUserIds]],
+    );
+  }
+  await owner.end();
+});
+
+/** A session cookie signed in outside the agent's jar, for cross-app probes. */
+async function signInCookie(email: string): Promise<string> {
+  const response = await request(app)
+    .post("/api/auth/sign-in/email")
+    .set(originHeader)
+    .send({ email, password: PASSWORD });
+  expect(response.status).toBe(200);
+  createdUserIds.add(response.body.user.id);
+  const header = response.headers["set-cookie"];
+  const cookies = Array.isArray(header) ? header : [header];
+  return cookies.map((value) => value.split(";")[0]).join("; ");
+}
+
+function buildFacts(
+  userId: string,
+  options: { mfaRequired: boolean; permission?: PermissionCode },
+): SurfaceAccessFacts {
+  const roleId = randomUUID();
+  const principal: AccessPrincipal = {
+    tenantId: tenantIdSchema.parse(tenants),
+    userId: userIdSchema.parse(userId),
+    assignments: [
+      roleAssignmentSchema.parse({
+        id: randomUUID(),
+        tenantId: tenants,
+        userId,
+        roleId,
+        scope: { type: "tenant", id: null },
+        validFrom: "2026-01-01T00:00:00.000Z",
+        validUntil: null,
+        assignedBy: OTHER_USER_ID,
+        assignedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ],
+  };
+  const roles: RoleGrant[] = [
+    {
+      id: roleIdSchema.parse(roleId),
+      permissions: [options.permission ?? "dashboard.management.view"],
+      mfaRequired: options.mfaRequired,
+    },
+  ];
+  return { principal, roles };
+}
+
+/** Probe surface: back office (/kelola) with an injected RBAC facts resolver. */
+function probeApp(
+  options: {
+    facts?: SurfaceAccessFactsResolver;
+    platform?: boolean;
+  } = {},
+) {
+  const probe = express();
+  const facts: SurfaceAccessFactsResolver =
+    options.facts ??
+    (async ({ userId }) => buildFacts(userId, { mfaRequired: true }));
+  probe.get(
+    "/kelola/probe",
+    requireAuth,
+    requireIdentitySurface("back_office", { resolveAccessFacts: facts }),
+    (_req, res) => void res.json({ ok: true }),
+  );
+  probe.get(
+    "/platform/probe",
+    requireAuth,
+    requireSessionMfa(),
+    (_req, res) => void res.json({ ok: true }),
+  );
+  probe.use(errorHandler);
+  return probe;
+}
+
+async function enrollTotp(cookie: string) {
+  const response = await request(app)
+    .post("/api/auth/mfa/factors")
+    .set(originHeader)
+    .set("Cookie", cookie)
+    .send({ type: "totp" });
+  expect(response.status).toBe(201);
+  return response.body.data as {
+    factorId: string;
+    secretBase32: string;
+    otpauthUri: string;
+  };
+}
+
+async function verifyCode(cookie: string, factorId: string, code: string) {
+  return request(app)
+    .post("/api/auth/mfa/verify")
+    .set(originHeader)
+    .set("Cookie", cookie)
+    .send({ factorId, code });
+}
+
+describe("Staff MFA factors and the AUTH-05 gate", () => {
+  it("AUTH-05 denies the back office to an MFA role until this session verifies a factor", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Kepala Outlet");
+    const cookie = await signInCookie(email);
+    const probe = probeApp();
+
+    const denied = await request(probe)
+      .get("/kelola/probe")
+      .set("Cookie", cookie);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("MFA_REQUIRED");
+  });
+
+  it("AUTH-05 allows the surface after the session verifies a TOTP factor", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Manajer");
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    expect(enrollment.otpauthUri.startsWith("otpauth://totp/")).toBe(true);
+
+    const step = totpStep(new Date());
+    const verified = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, step),
+    );
+    expect(verified.status).toBe(200);
+    expect(verified.body.data.factorId).toBe(enrollment.factorId);
+
+    const list = await request(app)
+      .get("/api/auth/mfa/factors")
+      .set("Cookie", cookie);
+    expect(list.status).toBe(200);
+    expect(list.body.data).toHaveLength(1);
+
+    const allowed = await request(probeApp())
+      .get("/kelola/probe")
+      .set("Cookie", cookie);
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toEqual({ ok: true });
+  });
+
+  it("AUTH-05 a pending enrollment expires and must be reissued", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Pendaftaran Lama");
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    await owner.query(
+      "UPDATE mfa_factors SET created_at = now() - interval '20 minutes' WHERE id = $1",
+      [enrollment.factorId],
+    );
+    const response = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, totpStep(new Date())),
+    );
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("CONFLICT");
+    // Re-enrolling drops the stale pending factor and issues a new secret.
+    const reissued = await enrollTotp(cookie);
+    expect(reissued.factorId).not.toBe(enrollment.factorId);
+  });
+
+  it("AUTH-05 denies the surface when the RBAC resolver is not wired (fail closed)", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Tanpa Resolver");
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, totpStep(new Date())),
+    );
+
+    const probe = express();
+    probe.get(
+      "/kelola/probe",
+      requireAuth,
+      requireIdentitySurface("back_office"),
+      (_req, res) => void res.json({ ok: true }),
+    );
+    probe.use(errorHandler);
+    const denied = await request(probe)
+      .get("/kelola/probe")
+      .set("Cookie", cookie);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("PERMISSION_DENIED");
+  });
+
+  it("AUTH-05 platform panel needs a factor verified in this session", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Super Admin");
+    await setRole(email, "admin");
+    const cookie = await signInCookie(email);
+    const probe = probeApp();
+
+    const denied = await request(probe)
+      .get("/platform/probe")
+      .set("Cookie", cookie);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("MFA_REQUIRED");
+
+    const enrollment = await enrollTotp(cookie);
+    const verified = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, totpStep(new Date())),
+    );
+    expect(verified.status).toBe(200);
+
+    const allowed = await request(probe)
+      .get("/platform/probe")
+      .set("Cookie", cookie);
+    expect(allowed.status).toBe(200);
+  });
+
+  it("AUTH-05 rejects a wrong or replayed code and locks after five attempts", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Kasir Salah Kode");
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    const step = totpStep(new Date());
+    const code = totpCode(enrollment.secretBase32, step);
+
+    expect(
+      (await verifyCode(cookie, enrollment.factorId, "000000")).status,
+    ).toBe(401);
+    // First valid use, then the same code again: single-use per time step.
+    expect((await verifyCode(cookie, enrollment.factorId, code)).status).toBe(
+      200,
+    );
+    const replay = await verifyCode(cookie, enrollment.factorId, code);
+    expect(replay.status).toBe(401);
+    expect(replay.body.error.code).toBe("MFA_CODE_INVALID");
+
+    // Four more misses reach the five-attempt lock (the successful use above
+    // reset the counter).
+    for (let attempt = 0; attempt < 4; attempt++)
+      await verifyCode(cookie, enrollment.factorId, "999999");
+    const locked = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, step + 1),
+    );
+    expect(locked.status).toBe(429);
+    expect(locked.body.error.code).toBe("RATE_LIMITED");
+  });
+
+  it("AUTH-05 factors are isolated per user", async () => {
+    const first = agent(app);
+    const firstEmail = await signUp(first, "Pemilik Faktor");
+    const firstCookie = await signInCookie(firstEmail);
+    const enrollment = await enrollTotp(firstCookie);
+
+    const second = agent(app);
+    const secondEmail = await signUp(second, "Pengguna Lain");
+    const secondCookie = await signInCookie(secondEmail);
+
+    const list = await request(app)
+      .get("/api/auth/mfa/factors")
+      .set("Cookie", secondCookie);
+    expect(list.status).toBe(200);
+    expect(list.body.data).toEqual([]);
+
+    const foreign = await verifyCode(
+      secondCookie,
+      enrollment.factorId,
+      "123456",
+    );
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe("NOT_FOUND");
+  });
+
+  it("AUTH-05 passkey enrollment is refused explicitly until WebAuthn lands", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Passkey");
+    const cookie = await signInCookie(email);
+    const response = await request(app)
+      .post("/api/auth/mfa/factors")
+      .set(originHeader)
+      .set("Cookie", cookie)
+      .send({ type: "passkey" });
+    expect(response.status).toBe(501);
+    expect(response.body.error.code).toBe("MFA_PASSKEY_UNSUPPORTED");
+  });
+
+  it("AUTH-05 platform support access re-verifies the second factor per request", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Super Admin Support");
+    await setRole(email, "admin");
+    const cookie = await signInCookie(email);
+    const session = await request(app)
+      .get("/api/auth/get-session")
+      .set("Cookie", cookie);
+    const userId = session.body.user.id as string;
+    createdUserIds.add(userId);
+    await owner.query(
+      "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [userId],
+    );
+
+    const enrollment = await enrollTotp(cookie);
+    const step = totpStep(new Date());
+    const used = totpCode(enrollment.secretBase32, step);
+    expect((await verifyCode(cookie, enrollment.factorId, used)).status).toBe(
+      200,
+    );
+
+    const body = {
+      reason: "Menelusuri keluhan pelanggan pada tenant ini.",
+      durationMinutes: 60,
+      accessMode: "read_only",
+      mfaCode: used,
+    };
+    // The enrollment code was already consumed: replay must not open a session.
+    const replay = await request(app)
+      .post(`/api/platform/tenants/${tenants}/support-access`)
+      .set(originHeader)
+      .set("Cookie", cookie)
+      .send(body);
+    expect(replay.status).toBe(403);
+
+    const fresh = await request(app)
+      .post(`/api/platform/tenants/${tenants}/support-access`)
+      .set(originHeader)
+      .set("Cookie", cookie)
+      .send({ ...body, mfaCode: totpCode(enrollment.secretBase32, step + 1) });
+    expect(fresh.status).toBe(201);
+    expect(fresh.body.data.mfaVerifiedAt).toBeTruthy();
+
+    await owner.query(
+      "DELETE FROM support_access_grants WHERE super_admin_user_id = $1",
+      [userId],
+    );
+  });
+});
