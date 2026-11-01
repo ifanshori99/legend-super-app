@@ -19,7 +19,8 @@
     "./edge": "./src/edge/index.ts",
     "./adapters": "./src/adapters/index.ts",
     "./api": "./src/api/index.ts",
-    "./menu": "./src/menu/index.ts"
+    "./menu": "./src/menu/index.ts",
+    "./kitchen": "./src/kitchen/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
