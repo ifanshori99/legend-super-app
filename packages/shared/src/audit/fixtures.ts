@@ -1,6 +1,7 @@
 import { cafeLegendFixtures } from "../core/index.ts";
 import { auditEventSchema } from "./schemas.ts";
 
+const deviceId = "b23d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13";
 const actors = ["user", "ai", "mcp_client", "system", "device"] as const;
 export const cafeLegendAuditFixtures = actors.map((actorType, index) =>
   auditEventSchema.parse({
@@ -9,8 +10,12 @@ export const cafeLegendAuditFixtures = actors.map((actorType, index) =>
     outletId: cafeLegendFixtures.outlets[0].id,
     actorType,
     actorId:
-      actorType === "system" ? null : "a23d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13",
-    deviceId: "b23d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13",
+      actorType === "system"
+        ? null
+        : actorType === "device"
+          ? deviceId
+          : "a23d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13",
+    deviceId,
     action: "settings.updated",
     objectType: "outlet",
     objectId: cafeLegendFixtures.outlets[0].id,
