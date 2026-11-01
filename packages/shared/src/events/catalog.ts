@@ -62,8 +62,9 @@ const namesByWorkstream = {
   // wrap a provider, never by a provider itself. A webhook that fails signature
   // verification has no trusted tenant yet, so it is logged (gateway_webhook_events,
   // PRD §6), not published as a tenant event.
+  // Text contract (packages/shared/src/text): one event per term override change.
   "WS-00":
-    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed",
+    "document.generated provider_webhook.received wa_inbound_message.received outbound_message.sent outbound_message.failed edc_transaction.created edc_transaction.settled edc_transaction.cancelled wifi_session.authorized wifi_session.revoked lock_credential.issued lock_credential.revoked delivery_channel.action_executed text_override.updated",
 } as const;
 export const eventCatalog: readonly EventCatalogEntry[] = Object.freeze(
   Object.entries(namesByWorkstream).flatMap(([workstream, names]) =>

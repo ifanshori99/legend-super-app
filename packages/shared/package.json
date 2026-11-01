@@ -25,7 +25,8 @@
     "./metrics": "./src/metrics/index.ts",
     "./kitchen": "./src/kitchen/index.ts",
     "./tax": "./src/tax/index.ts",
-    "./notification": "./src/notification/index.ts"
+    "./notification": "./src/notification/index.ts",
+    "./text": "./src/text/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
