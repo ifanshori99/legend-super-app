@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { accountingMessages } from "./accounting.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -18,6 +19,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
+  accounting: accountingMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",

@@ -51,6 +51,8 @@ import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$to
 import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
+import { Route as KelolaKelolaAkuntansiIndexRouteImport } from './routes/_kelola/kelola.akuntansi.index'
+import { Route as KelolaKelolaAkuntansiJurnalBerulangRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-berulang'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -60,6 +62,12 @@ import { Route as KelolaKelolaMenuPaketRouteImport } from './routes/_kelola/kelo
 import { Route as KelolaKelolaMenuStasiunRouteImport } from './routes/_kelola/kelola.menu.stasiun'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
+import { Route as KelolaKelolaAkuntansiJurnalManualIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.index'
+import { Route as KelolaKelolaAkuntansiJurnalManualBaruRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.baru'
+import { Route as KelolaKelolaAkuntansiJurnalIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal.index'
+import { Route as KelolaKelolaAkuntansiJurnalJournalEntryIdRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal.$journalEntryId'
+import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.index'
+import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.ubah'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -264,6 +272,18 @@ const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => CustomerTTokenRoute,
 } as any)
+const KelolaKelolaAkuntansiIndexRoute =
+  KelolaKelolaAkuntansiIndexRouteImport.update({
+    id: '/kelola/akuntansi/',
+    path: '/kelola/akuntansi/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalBerulangRoute =
+  KelolaKelolaAkuntansiJurnalBerulangRouteImport.update({
+    id: '/kelola/akuntansi/jurnal-berulang',
+    path: '/kelola/akuntansi/jurnal-berulang',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -313,6 +333,42 @@ const CustomerTTokenPayPaymentIdRoute =
     path: '/pay/$paymentId',
     getParentRoute: () => CustomerTTokenRoute,
   } as any)
+const KelolaKelolaAkuntansiJurnalManualIndexRoute =
+  KelolaKelolaAkuntansiJurnalManualIndexRouteImport.update({
+    id: '/kelola/akuntansi/jurnal-manual/',
+    path: '/kelola/akuntansi/jurnal-manual/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalManualBaruRoute =
+  KelolaKelolaAkuntansiJurnalManualBaruRouteImport.update({
+    id: '/kelola/akuntansi/jurnal-manual/baru',
+    path: '/kelola/akuntansi/jurnal-manual/baru',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalIndexRoute =
+  KelolaKelolaAkuntansiJurnalIndexRouteImport.update({
+    id: '/kelola/akuntansi/jurnal/',
+    path: '/kelola/akuntansi/jurnal/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalJournalEntryIdRoute =
+  KelolaKelolaAkuntansiJurnalJournalEntryIdRouteImport.update({
+    id: '/kelola/akuntansi/jurnal/$journalEntryId',
+    path: '/kelola/akuntansi/jurnal/$journalEntryId',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute =
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport.update({
+    id: '/kelola/akuntansi/jurnal-manual/$manualJournalId/',
+    path: '/kelola/akuntansi/jurnal-manual/$manualJournalId/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute =
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport.update({
+    id: '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah',
+    path: '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -344,6 +400,7 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/akuntansi/jurnal-berulang': typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -352,9 +409,16 @@ export interface FileRoutesByFullPath {
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
+  '/kelola/akuntansi/': typeof KelolaKelolaAkuntansiIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/akuntansi/jurnal-manual/baru': typeof KelolaKelolaAkuntansiJurnalManualBaruRoute
+  '/kelola/akuntansi/jurnal/$journalEntryId': typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRoute
+  '/kelola/akuntansi/jurnal-manual/': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
+  '/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
+  '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -384,6 +448,7 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/akuntansi/jurnal-berulang': typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -392,9 +457,16 @@ export interface FileRoutesByTo {
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
+  '/kelola/akuntansi': typeof KelolaKelolaAkuntansiIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/akuntansi/jurnal-manual/baru': typeof KelolaKelolaAkuntansiJurnalManualBaruRoute
+  '/kelola/akuntansi/jurnal/$journalEntryId': typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRoute
+  '/kelola/akuntansi/jurnal-manual': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
+  '/kelola/akuntansi/jurnal': typeof KelolaKelolaAkuntansiJurnalIndexRoute
+  '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/kelola/akuntansi/jurnal-manual/$manualJournalId': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -438,6 +510,7 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_kelola/kelola/akuntansi/jurnal-berulang': typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -446,9 +519,16 @@ export interface FileRoutesById {
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
+  '/_kelola/kelola/akuntansi/': typeof KelolaKelolaAkuntansiIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/_kelola/kelola/akuntansi/jurnal-manual/baru': typeof KelolaKelolaAkuntansiJurnalManualBaruRoute
+  '/_kelola/kelola/akuntansi/jurnal/$journalEntryId': typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRoute
+  '/_kelola/kelola/akuntansi/jurnal-manual/': typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
+  '/_kelola/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
+  '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -482,6 +562,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/akuntansi/jurnal-berulang'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -490,9 +571,16 @@ export interface FileRouteTypes {
     | '/kelola/menu/stasiun'
     | '/member/fasilitas/'
     | '/t/$token/'
+    | '/kelola/akuntansi/'
     | '/kelola/menu/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/akuntansi/jurnal-manual/baru'
+    | '/kelola/akuntansi/jurnal/$journalEntryId'
+    | '/kelola/akuntansi/jurnal-manual/'
+    | '/kelola/akuntansi/jurnal/'
+    | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/kelola/akuntansi/jurnal-manual/$manualJournalId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -522,6 +610,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/akuntansi/jurnal-berulang'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -530,9 +619,16 @@ export interface FileRouteTypes {
     | '/kelola/menu/stasiun'
     | '/member/fasilitas'
     | '/t/$token'
+    | '/kelola/akuntansi'
     | '/kelola/menu'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/akuntansi/jurnal-manual/baru'
+    | '/kelola/akuntansi/jurnal/$journalEntryId'
+    | '/kelola/akuntansi/jurnal-manual'
+    | '/kelola/akuntansi/jurnal'
+    | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/kelola/akuntansi/jurnal-manual/$manualJournalId'
   id:
     | '__root__'
     | '/_auth'
@@ -575,6 +671,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_kelola/kelola/akuntansi/jurnal-berulang'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
@@ -583,9 +680,16 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/menu/stasiun'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
+    | '/_kelola/kelola/akuntansi/'
     | '/_kelola/kelola/menu/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
+    | '/_kelola/kelola/akuntansi/jurnal-manual/baru'
+    | '/_kelola/kelola/akuntansi/jurnal/$journalEntryId'
+    | '/_kelola/kelola/akuntansi/jurnal-manual/'
+    | '/_kelola/kelola/akuntansi/jurnal/'
+    | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -899,6 +1003,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerTTokenReviewRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
+    '/_kelola/kelola/akuntansi/': {
+      id: '/_kelola/kelola/akuntansi/'
+      path: '/kelola/akuntansi'
+      fullPath: '/kelola/akuntansi/'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal-berulang': {
+      id: '/_kelola/kelola/akuntansi/jurnal-berulang'
+      path: '/kelola/akuntansi/jurnal-berulang'
+      fullPath: '/kelola/akuntansi/jurnal-berulang'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalBerulangRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
       path: '/kelola/menu'
@@ -961,6 +1079,48 @@ declare module '@tanstack/react-router' {
       fullPath: '/t/$token/pay/$paymentId'
       preLoaderRoute: typeof CustomerTTokenPayPaymentIdRouteImport
       parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal-manual/': {
+      id: '/_kelola/kelola/akuntansi/jurnal-manual/'
+      path: '/kelola/akuntansi/jurnal-manual'
+      fullPath: '/kelola/akuntansi/jurnal-manual/'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalManualIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal-manual/baru': {
+      id: '/_kelola/kelola/akuntansi/jurnal-manual/baru'
+      path: '/kelola/akuntansi/jurnal-manual/baru'
+      fullPath: '/kelola/akuntansi/jurnal-manual/baru'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalManualBaruRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal/': {
+      id: '/_kelola/kelola/akuntansi/jurnal/'
+      path: '/kelola/akuntansi/jurnal'
+      fullPath: '/kelola/akuntansi/jurnal/'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal/$journalEntryId': {
+      id: '/_kelola/kelola/akuntansi/jurnal/$journalEntryId'
+      path: '/kelola/akuntansi/jurnal/$journalEntryId'
+      fullPath: '/kelola/akuntansi/jurnal/$journalEntryId'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/': {
+      id: '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/'
+      path: '/kelola/akuntansi/jurnal-manual/$manualJournalId'
+      fullPath: '/kelola/akuntansi/jurnal-manual/$manualJournalId/'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': {
+      id: '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+      path: '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+      fullPath: '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+      preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport
+      parentRoute: typeof KelolaRoute
     }
   }
 }
@@ -1055,24 +1215,46 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 
 interface KelolaRouteChildren {
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+  KelolaKelolaAkuntansiJurnalBerulangRoute: typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
   KelolaKelolaMenuKategoriRoute: typeof KelolaKelolaMenuKategoriRoute
   KelolaKelolaMenuKetersediaanRoute: typeof KelolaKelolaMenuKetersediaanRoute
   KelolaKelolaMenuPaketRoute: typeof KelolaKelolaMenuPaketRoute
   KelolaKelolaMenuStasiunRoute: typeof KelolaKelolaMenuStasiunRoute
+  KelolaKelolaAkuntansiIndexRoute: typeof KelolaKelolaAkuntansiIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
+  KelolaKelolaAkuntansiJurnalManualBaruRoute: typeof KelolaKelolaAkuntansiJurnalManualBaruRoute
+  KelolaKelolaAkuntansiJurnalJournalEntryIdRoute: typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRoute
+  KelolaKelolaAkuntansiJurnalManualIndexRoute: typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
+  KelolaKelolaAkuntansiJurnalIndexRoute: typeof KelolaKelolaAkuntansiJurnalIndexRoute
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+  KelolaKelolaAkuntansiJurnalBerulangRoute:
+    KelolaKelolaAkuntansiJurnalBerulangRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
   KelolaKelolaMenuKategoriRoute: KelolaKelolaMenuKategoriRoute,
   KelolaKelolaMenuKetersediaanRoute: KelolaKelolaMenuKetersediaanRoute,
   KelolaKelolaMenuPaketRoute: KelolaKelolaMenuPaketRoute,
   KelolaKelolaMenuStasiunRoute: KelolaKelolaMenuStasiunRoute,
+  KelolaKelolaAkuntansiIndexRoute: KelolaKelolaAkuntansiIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
+  KelolaKelolaAkuntansiJurnalManualBaruRoute:
+    KelolaKelolaAkuntansiJurnalManualBaruRoute,
+  KelolaKelolaAkuntansiJurnalJournalEntryIdRoute:
+    KelolaKelolaAkuntansiJurnalJournalEntryIdRoute,
+  KelolaKelolaAkuntansiJurnalManualIndexRoute:
+    KelolaKelolaAkuntansiJurnalManualIndexRoute,
+  KelolaKelolaAkuntansiJurnalIndexRoute: KelolaKelolaAkuntansiJurnalIndexRoute,
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute:
+    KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute,
+  KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute:
+    KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute,
 }
 
 const KelolaRouteWithChildren =
