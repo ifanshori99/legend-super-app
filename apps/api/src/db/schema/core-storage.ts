@@ -1,4 +1,5 @@
 import {
+  foreignKey,
   integer,
   pgTable,
   primaryKey,
@@ -7,6 +8,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { outlets } from "./platform-org";
 
 export const coreStorageObjects = pgTable(
   "core_storage_objects",
@@ -25,5 +27,13 @@ export const coreStorageObjects = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.tenantId, table.id] })],
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    // Tenant-scoped reference: an object can only belong to its own tenant's outlet.
+    foreignKey({
+      name: "core_storage_objects_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+  ],
 );

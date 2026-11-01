@@ -1,5 +1,5 @@
 {
-  "id": "5fa8323b-c036-431a-9574-d2a8dd6c7300",
+  "id": "ac0f6b3d-8e53-4b78-9bab-ff25ba68b499",
   "prevId": "75039819-1764-4dc7-aa4f-413ef28ab3f8",
   "version": "7",
   "dialect": "postgresql",
@@ -2531,7 +2531,23 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "core_storage_objects_outlet_fk": {
+          "name": "core_storage_objects_outlet_fk",
+          "tableFrom": "core_storage_objects",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "core_storage_objects_tenant_id_id_pk": {
           "name": "core_storage_objects_tenant_id_id_pk",
