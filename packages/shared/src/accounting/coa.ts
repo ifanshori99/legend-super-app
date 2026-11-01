@@ -191,6 +191,8 @@ export const POSTING_ACCOUNT_ROLES = {
   tax_payable_pbjt: "liability",
   pph21_payable: "liability",
   pph23_payable: "liability",
+  /** PPh withheld on profit-share / dividend payouts (§3.37 potongan pajak). */
+  dividend_tax_payable: "liability",
   retained_earnings: "equity",
   opening_balance_equity: "equity",
   sales_revenue: "revenue",
@@ -355,6 +357,13 @@ const standardRows: Row[] = [
   ["2201", "Utang PBJT", "current_liability", "2200", ["tax_payable_pbjt"]],
   ["2202", "Utang PPh 21", "current_liability", "2200", ["pph21_payable"]],
   ["2203", "Utang PPh 23", "current_liability", "2200", ["pph23_payable"]],
+  [
+    "2204",
+    "Utang PPh Dividen",
+    "current_liability",
+    "2200",
+    ["dividend_tax_payable"],
+  ],
   ["3100", "Ekuitas", "equity", null],
   ["3101", "Modal Disetor", "equity", "3100"],
   ["3102", "Laba Ditahan", "equity", "3100", ["retained_earnings"]],
