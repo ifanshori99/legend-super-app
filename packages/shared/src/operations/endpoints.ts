@@ -34,6 +34,7 @@ import { shiftTemplateIdSchema } from "../hris/ids.ts";
 import {
   inventoryItemIdSchema,
   stockBatchIdSchema,
+  supplierIdSchema,
 } from "../inventory/index.ts";
 import {
   checklistEvidenceKindSchema,
@@ -52,7 +53,6 @@ import {
   maintenanceTicketSchema,
   maintenanceTicketStatusSchema,
   maintenanceUrgencySchema,
-  maintenanceVendorIdSchema,
   nonnegativeIdrSchema,
   opsChecklistItemIdSchema,
   opsChecklistRunIdSchema,
@@ -274,7 +274,7 @@ export const createMaintenanceScheduleInputSchema = clientInputSchema({
   equipmentId: equipmentIdSchema,
   intervalDays: z.number().int().positive().max(3650),
   nextDueAt: isoDateTimeSchema,
-  vendorId: maintenanceVendorIdSchema.nullable().optional(),
+  vendorId: supplierIdSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -286,7 +286,7 @@ export const createMaintenanceTicketInputSchema = clientInputSchema({
   urgency: maintenanceUrgencySchema,
   description: z.string().trim().min(1).max(1000),
   mediaIds: z.array(uuidSchema).min(1).max(10),
-  vendorId: maintenanceVendorIdSchema.nullable().optional(),
+  vendorId: supplierIdSchema.nullable().optional(),
   costIdr: nonnegativeIdrSchema.nullable().optional(),
   /** OPS-04: marking the equipment broken disables its mapped menu items. */
   marksEquipmentBroken: z.boolean().optional(),
@@ -296,7 +296,7 @@ export const createMaintenanceTicketInputSchema = clientInputSchema({
 export const transitionMaintenanceTicketInputSchema = clientInputSchema({
   action: maintenanceTicketActionSchema,
   /** Resolving records the service vendor and cost when they are known. */
-  vendorId: maintenanceVendorIdSchema.nullable().optional(),
+  vendorId: supplierIdSchema.nullable().optional(),
   costIdr: nonnegativeIdrSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
 });

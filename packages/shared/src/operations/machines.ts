@@ -18,6 +18,7 @@ import {
 import type { IsoDateTime, UserId } from "../core/index.ts";
 import { OperationsError } from "./errors.ts";
 import {
+  checklistItemResultIssues,
   isTemperatureInRange,
   shiftHandoverSchema,
   temperatureThresholdSchema,
@@ -26,6 +27,7 @@ import type {
   ChecklistItem,
   ChecklistItemResult,
   ChecklistRun,
+  ChecklistTemplate,
   ChecklistRunStatus,
   Equipment,
   EquipmentStatus,
@@ -77,28 +79,6 @@ export function transitionChecklistRun(
   return next;
 }
 
-/** Evidence a finished item still needs; empty means the answer is complete. */
-export function checklistItemResultIssues(
-  item: ChecklistItem,
-  result: ChecklistItemResult,
-): string[] {
-  if (result.status === "pending") return [];
-  const issues: string[] = [];
-  if (item.requiredEvidence.includes("number") && result.numberValue === null)
-    issues.push("NUMBER_REQUIRED");
-  if (
-    item.requiredEvidence.includes("photo") &&
-    result.photoMediaIds.length === 0
-  )
-    issues.push("PHOTO_REQUIRED");
-  if (
-    item.requiredEvidence.includes("signature") &&
-    result.signatureMediaId === null
-  )
-    issues.push("SIGNATURE_REQUIRED");
-  return issues;
-}
-
 export function assertChecklistItemResult(
   item: ChecklistItem,
   result: ChecklistItemResult,
@@ -108,15 +88,38 @@ export function assertChecklistItemResult(
 }
 
 /**
+ * Owner decision: a run copies the template items at creation, so later
+ * template edits never change past runs. The server builds a new run's
+ * `templateVersion` + `items` from this snapshot.
+ */
+export function snapshotChecklistTemplate(
+  template: Pick<ChecklistTemplate, "id" | "version" | "items">,
+): Pick<ChecklistRun, "templateId" | "templateVersion" | "items"> {
+  return {
+    templateId: template.id,
+    templateVersion: template.version,
+    items: template.items.map((item) => ({
+      ...item,
+      requiredEvidence: [...item.requiredEvidence],
+    })),
+  };
+}
+
+/**
  * The outcome of a run whose items are all finished: any failed item fails the
- * run (OPS-01 alerts on both missed and failed). Throws until every template
- * item has a finished result, so a run cannot be completed half-way.
+ * run (OPS-01 alerts on both missed and failed). Pass the run's own snapshot
+ * (`run.items`), never the live template. Throws until every snapshot item has
+ * a finished result, so a run cannot be completed half-way, and refuses a
+ * result for an item that is not in the snapshot.
  */
 export function checklistCompletionStatus(
   items: readonly ChecklistItem[],
   results: readonly ChecklistItemResult[],
 ): Extract<ChecklistRunStatus, "completed" | "failed"> {
   const byItem = new Map(results.map((result) => [result.itemId, result]));
+  const itemIds = new Set(items.map((item) => item.id));
+  if (results.some((result) => !itemIds.has(result.itemId)))
+    throw new OperationsError("CHECKLIST_ITEM_NOT_IN_RUN");
   for (const item of items) {
     const result = byItem.get(item.id);
     if (!result || result.status === "pending")

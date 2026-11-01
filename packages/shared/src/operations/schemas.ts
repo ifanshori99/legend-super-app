@@ -34,6 +34,7 @@ import {
   inventoryItemIdSchema,
   productionOrderIdSchema,
   stockBatchIdSchema,
+  supplierIdSchema,
 } from "../inventory/index.ts";
 import { floorZoneIdSchema } from "../qr-order/schemas.ts";
 
@@ -54,9 +55,6 @@ export const equipmentIdSchema = uuidIdSchema<"EquipmentId">();
 export const maintenanceScheduleIdSchema =
   uuidIdSchema<"MaintenanceScheduleId">();
 export const maintenanceTicketIdSchema = uuidIdSchema<"MaintenanceTicketId">();
-/** §6 `maintenance_tickets.vendor_id`; the vendor registry itself is a later
- * contract (there is no vendor table in §6 L). */
-export const maintenanceVendorIdSchema = uuidIdSchema<"MaintenanceVendorId">();
 export const shiftHandoverIdSchema = uuidIdSchema<"ShiftHandoverId">();
 
 export type OpsChecklistTemplateId = z.infer<
@@ -147,6 +145,9 @@ export const checklistTemplateSchema = z
     schedule: checklistScheduleSchema,
     /** The role the run is assigned to; a run names the employee. */
     roleId: roleIdSchema.nullable(),
+    /** Bumped by the server whenever `items` change; a run records the version
+     * it snapshotted (owner decision, see `checklistRunSchema.items`). */
+    version: z.number().int().positive().safe(),
     updatedAt: isoDateTimeSchema,
   })
   .superRefine((template, ctx) => {
@@ -222,12 +223,46 @@ export const checklistItemResultSchema = z
   });
 export type ChecklistItemResult = z.infer<typeof checklistItemResultSchema>;
 
+export type ChecklistEvidenceIssue =
+  "NUMBER_REQUIRED" | "PHOTO_REQUIRED" | "SIGNATURE_REQUIRED";
+
+/** Evidence a finished item still needs; empty means the answer is complete
+ * (PRD §3 F45: an item can require a photo, a number or a signature). */
+export function checklistItemResultIssues(
+  item: Pick<ChecklistItem, "requiredEvidence">,
+  result: Pick<
+    ChecklistItemResult,
+    "status" | "numberValue" | "photoMediaIds" | "signatureMediaId"
+  >,
+): ChecklistEvidenceIssue[] {
+  if (result.status === "pending") return [];
+  const issues: ChecklistEvidenceIssue[] = [];
+  if (item.requiredEvidence.includes("number") && result.numberValue === null)
+    issues.push("NUMBER_REQUIRED");
+  if (
+    item.requiredEvidence.includes("photo") &&
+    result.photoMediaIds.length === 0
+  )
+    issues.push("PHOTO_REQUIRED");
+  if (
+    item.requiredEvidence.includes("signature") &&
+    result.signatureMediaId === null
+  )
+    issues.push("SIGNATURE_REQUIRED");
+  return issues;
+}
+
 export const checklistRunSchema = z
   .strictObject({
     id: opsChecklistRunIdSchema,
     tenantId: tenantIdSchema,
     outletId: outletIdSchema,
     templateId: opsChecklistTemplateIdSchema,
+    /** Owner decision: a run carries its own copy of the template items, taken
+     * when the run is created, so a later template edit never rewrites past
+     * runs. `templateVersion` is the template `version` that was copied. */
+    templateVersion: z.number().int().positive().safe(),
+    items: z.array(checklistItemSchema).min(1).max(100),
     /** Business date in the outlet time zone (D-CORE-6). */
     shiftDate: businessDateSchema,
     shiftTemplateId: shiftTemplateIdSchema.nullable(),
@@ -247,6 +282,31 @@ export const checklistRunSchema = z
         path: ["results"],
         message: "One result per checklist item",
       });
+    if (new Set(run.items.map((item) => item.id)).size !== run.items.length)
+      ctx.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "Checklist item ids must be unique",
+      });
+    const itemById = new Map(run.items.map((item) => [item.id, item]));
+    run.results.forEach((result, index) => {
+      const item = itemById.get(result.itemId);
+      if (!item) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["results", index, "itemId"],
+          message: "A result answers an item of the run's snapshot",
+        });
+        return;
+      }
+      // PRD §3 F45: a done/failed answer carries the evidence its item requires.
+      for (const issue of checklistItemResultIssues(item, result))
+        ctx.addIssue({
+          code: "custom",
+          path: ["results", index],
+          message: `Checklist item evidence missing: ${issue}`,
+        });
+    });
     const finished = run.status === "completed" || run.status === "failed";
     if (finished !== (run.completedAt !== null))
       ctx.addIssue({
@@ -254,6 +314,31 @@ export const checklistRunSchema = z
         path: ["completedAt"],
         message: "A completed or failed run carries its completion time",
       });
+    if (finished) {
+      const resultByItem = new Map(
+        run.results.map((result) => [result.itemId, result]),
+      );
+      if (
+        run.items.some(
+          (item) =>
+            (resultByItem.get(item.id)?.status ?? "pending") === "pending",
+        )
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["results"],
+          message: "A completed or failed run has a finished result per item",
+        });
+      const anyFailed = run.results.some(
+        (result) => result.status === "failed",
+      );
+      if ((run.status === "failed") !== anyFailed)
+        ctx.addIssue({
+          code: "custom",
+          path: ["status"],
+          message: "A run fails exactly when one of its items failed",
+        });
+    }
   });
 export type ChecklistRun = z.infer<typeof checklistRunSchema>;
 
@@ -434,7 +519,10 @@ export const maintenanceScheduleSchema = z.strictObject({
   equipmentId: equipmentIdSchema,
   intervalDays: z.number().int().positive().max(3650),
   nextDueAt: isoDateTimeSchema,
-  vendorId: maintenanceVendorIdSchema.nullable(),
+  /** Service vendor (§6 `vendor_id`). Owner decision (legend-uy1e): a vendor
+   * is a purchasing supplier (WS-06 `suppliers`); this contract has no vendor
+   * table of its own. */
+  vendorId: supplierIdSchema.nullable(),
   updatedAt: isoDateTimeSchema,
 });
 export type MaintenanceSchedule = z.infer<typeof maintenanceScheduleSchema>;
@@ -471,7 +559,8 @@ export const maintenanceTicketSchema = z
     urgency: maintenanceUrgencySchema,
     description,
     mediaIds: z.array(uuidSchema).min(1).max(10),
-    vendorId: maintenanceVendorIdSchema.nullable(),
+    /** Purchasing supplier that services the equipment (legend-uy1e). */
+    vendorId: supplierIdSchema.nullable(),
     costIdr: nonnegativeIdrSchema.nullable(),
     status: maintenanceTicketStatusSchema,
     marksEquipmentBroken: z.boolean(),
@@ -529,8 +618,8 @@ export const shiftHandoverSchema = z
   .superRefine((handover, ctx) => {
     const acknowledged = handover.status === "acknowledged";
     if (
-      acknowledged !==
-      (handover.acknowledgedBy !== null && handover.acknowledgedAt !== null)
+      acknowledged !== (handover.acknowledgedBy !== null) ||
+      acknowledged !== (handover.acknowledgedAt !== null)
     )
       ctx.addIssue({
         code: "custom",

@@ -5,6 +5,8 @@
 //
 // - checklist.missed: a run passed its deadline unfinished; the supervisor
 //   alert must follow within 15 minutes (OPS-01).
+// - checklist.failed: a run finished with at least one failed item; OPS-01
+//   alerts the supervisor on failures as well as misses.
 // - temperature.out_of_range: an out-of-range reading was saved with its
 //   mandatory corrective action (OPS-02).
 // - equipment.broken: a maintenance ticket marked equipment broken; consumers
@@ -24,6 +26,7 @@ import {
   equipmentIdSchema,
   maintenanceTicketIdSchema,
   maintenanceUrgencySchema,
+  opsChecklistItemIdSchema,
   opsChecklistRunIdSchema,
   opsChecklistTemplateIdSchema,
   temperatureLogIdSchema,
@@ -31,6 +34,7 @@ import {
 
 export const operationsEventNames = [
   "checklist.missed",
+  "checklist.failed",
   "temperature.out_of_range",
   "equipment.broken",
 ] as const;
@@ -47,6 +51,20 @@ export const checklistMissedEventPayloadSchema = z.strictObject({
 });
 export type ChecklistMissedEventPayload = z.infer<
   typeof checklistMissedEventPayloadSchema
+>;
+
+/** OPS-01: a failed run alerts the supervisor too; names the failed items. */
+export const checklistFailedEventPayloadSchema = z.strictObject({
+  runId: opsChecklistRunIdSchema,
+  templateId: opsChecklistTemplateIdSchema,
+  shiftDate: businessDateSchema,
+  assignedTo: userIdSchema,
+  dueAt: isoDateTimeSchema,
+  completedAt: isoDateTimeSchema,
+  failedItemIds: z.array(opsChecklistItemIdSchema).min(1).max(100),
+});
+export type ChecklistFailedEventPayload = z.infer<
+  typeof checklistFailedEventPayloadSchema
 >;
 
 /** OPS-02: emitted only after the corrective action is recorded, so the
@@ -79,6 +97,7 @@ export type EquipmentBrokenEventPayload = z.infer<
 /** Payload schema per event name, for the outbox writer and consumers. */
 export const operationsEventPayloadSchemas = {
   "checklist.missed": checklistMissedEventPayloadSchema,
+  "checklist.failed": checklistFailedEventPayloadSchema,
   "temperature.out_of_range": temperatureOutOfRangeEventPayloadSchema,
   "equipment.broken": equipmentBrokenEventPayloadSchema,
 } as const;

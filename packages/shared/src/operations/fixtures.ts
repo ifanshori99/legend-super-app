@@ -13,7 +13,10 @@
 import { cafeLegendFixtures, isoDateTimeSchema, z } from "../core/index.ts";
 import { cafeLegendAccessFixtures } from "../access/fixtures.ts";
 import { cafeLegendHrisFixtures } from "../hris/fixtures.ts";
-import { cafeLegendInventoryFixtures } from "../inventory/index.ts";
+import {
+  cafeLegendInventoryFixtures,
+  cafeLegendPurchasingFixtures,
+} from "../inventory/index.ts";
 import { cafeLegendMenuFixtures } from "../menu/index.ts";
 import { cafeLegendQrOrderFixtures } from "../qr-order/index.ts";
 import {
@@ -98,6 +101,18 @@ const productionOrder = (n: number) => {
   if (!order) throw new Error(`Missing production order fixture ${n}`);
   return order.id;
 };
+
+/** Service vendors are purchasing suppliers (owner decision, legend-uy1e).
+ * The coffee supplier also services the bar's coffee machines; the purchasing
+ * fixtures have no dedicated technician yet, so other equipment has none. */
+const supplierByName = (name: string) => {
+  const supplier = cafeLegendPurchasingFixtures.suppliers.find(
+    (row) => row.name === name,
+  );
+  if (!supplier) throw new Error(`Missing supplier fixture "${name}"`);
+  return supplier.id;
+};
+const coffeeMachineVendor = supplierByName("CV Kopi Priangan");
 
 /** A clock after the day's deadlines, so overdue fixtures stay overdue. */
 const now = "2026-11-01T12:00:00.000Z";
@@ -210,6 +225,7 @@ const checklistTemplates: ChecklistTemplate[] = [
       zoneId: null,
       dueTime: "08:30",
     },
+    version: 1,
     roleId: roleByTemplate("supervisor"),
     updatedAt: "2026-10-25T02:00:00.000Z",
   }),
@@ -226,6 +242,7 @@ const checklistTemplates: ChecklistTemplate[] = [
       zoneId: null,
       dueTime: "22:15",
     },
+    version: 1,
     roleId: roleByTemplate("supervisor"),
     updatedAt: "2026-10-25T02:00:00.000Z",
   }),
@@ -242,6 +259,7 @@ const checklistTemplates: ChecklistTemplate[] = [
       zoneId: indoorZone.id,
       dueTime: "23:00",
     },
+    version: 1,
     roleId: roleByTemplate("facility_attendant"),
     updatedAt: "2026-10-25T02:00:00.000Z",
   }),
@@ -258,12 +276,24 @@ const checklistTemplates: ChecklistTemplate[] = [
       zoneId: null,
       dueTime: "16:00",
     },
+    version: 1,
     roleId: roleByTemplate("barista_cook"),
     updatedAt: "2026-10-25T02:00:00.000Z",
   }),
 ];
 
 // ---- Checklist runs -------------------------------------------------------
+
+/** Each run carries its own copy of the template items (owner decision). */
+const snapshotOf = (templateId: string) => {
+  const template = checklistTemplates.find((row) => row.id === templateId);
+  if (!template) throw new Error(`Missing checklist template ${templateId}`);
+  return {
+    templateId: template.id,
+    templateVersion: template.version,
+    items: template.items,
+  };
+};
 
 const finished = (
   itemId: string,
@@ -300,7 +330,7 @@ const openingRun = {
   id: id(8201),
   tenantId: tenant.id,
   outletId,
-  templateId: id(8101),
+  ...snapshotOf(id(8101)),
   shiftDate: "2026-11-01",
   shiftTemplateId: pagi.id,
   assignedTo: people.supervisor.id,
@@ -338,7 +368,7 @@ const closingRun = {
   id: id(8202),
   tenantId: tenant.id,
   outletId,
-  templateId: id(8102),
+  ...snapshotOf(id(8102)),
   shiftDate: "2026-11-01",
   shiftTemplateId: siang.id,
   assignedTo: people.supervisor.id,
@@ -356,7 +386,7 @@ const cleaningRun = {
   id: id(8203),
   tenantId: tenant.id,
   outletId,
-  templateId: id(8103),
+  ...snapshotOf(id(8103)),
   shiftDate: "2026-11-01",
   shiftTemplateId: malam.id,
   assignedTo: people.facilityAttendant.id,
@@ -380,7 +410,7 @@ const missedRun = {
   id: id(8204),
   tenantId: tenant.id,
   outletId,
-  templateId: id(8104),
+  ...snapshotOf(id(8104)),
   shiftDate: "2026-10-31",
   shiftTemplateId: siang.id,
   assignedTo: people.barista.id,
@@ -400,7 +430,7 @@ const failedRun = {
   id: id(8205),
   tenantId: tenant.id,
   outletId,
-  templateId: id(8101),
+  ...snapshotOf(id(8101)),
   shiftDate: "2026-10-31",
   shiftTemplateId: pagi.id,
   assignedTo: people.supervisor.id,
@@ -590,7 +620,7 @@ const maintenanceSchedules: MaintenanceSchedule[] = [
     equipmentId: id(8303),
     intervalDays: 90,
     nextDueAt: "2026-12-15T02:00:00.000Z",
-    vendorId: id(8721),
+    vendorId: coffeeMachineVendor,
     updatedAt: "2026-10-01T02:00:00.000Z",
   }),
   maintenanceScheduleSchema.parse({
@@ -600,7 +630,7 @@ const maintenanceSchedules: MaintenanceSchedule[] = [
     equipmentId: id(8304),
     intervalDays: 120,
     nextDueAt: "2026-11-20T02:00:00.000Z",
-    vendorId: id(8721),
+    vendorId: coffeeMachineVendor,
     updatedAt: "2026-10-01T02:00:00.000Z",
   }),
   maintenanceScheduleSchema.parse({
@@ -610,7 +640,7 @@ const maintenanceSchedules: MaintenanceSchedule[] = [
     equipmentId: id(8301),
     intervalDays: 180,
     nextDueAt: "2026-11-10T02:00:00.000Z",
-    vendorId: id(8722),
+    vendorId: null,
     updatedAt: "2026-10-01T02:00:00.000Z",
   }),
   maintenanceScheduleSchema.parse({
@@ -635,7 +665,7 @@ const maintenanceTickets: MaintenanceTicket[] = [
     urgency: "medium",
     description: "Pisau blender berhenti berputar saat menggiling es.",
     mediaIds: [id(9010)],
-    vendorId: id(8721),
+    vendorId: coffeeMachineVendor,
     costIdr: null,
     status: "reported",
     marksEquipmentBroken: true,
@@ -651,7 +681,7 @@ const maintenanceTickets: MaintenanceTicket[] = [
     urgency: "high",
     description: "Elemen pemanas atas oven tidak panas.",
     mediaIds: [id(9011), id(9012)],
-    vendorId: id(8722),
+    vendorId: null,
     costIdr: 850_000,
     status: "resolved",
     marksEquipmentBroken: true,
@@ -667,7 +697,7 @@ const maintenanceTickets: MaintenanceTicket[] = [
     urgency: "low",
     description: "AC bergetar dan berbunyi saat kompresor menyala.",
     mediaIds: [id(9013)],
-    vendorId: id(8722),
+    vendorId: null,
     costIdr: null,
     status: "in_progress",
     marksEquipmentBroken: false,

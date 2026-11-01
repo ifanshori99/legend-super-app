@@ -5,6 +5,8 @@
 export const operationsErrorHttpStatus = {
   /** OPS-01: a checklist item is claimed done but its required evidence is missing. */
   CHECKLIST_ITEM_INCOMPLETE: 422,
+  /** The item is not part of the run's template snapshot (`run.items`). */
+  CHECKLIST_ITEM_NOT_IN_RUN: 404,
   /** The checklist run status does not allow the requested action. */
   CHECKLIST_TRANSITION_INVALID: 409,
   /** OPS-02: an out-of-range temperature needs a corrective action before it can be saved. */
@@ -36,6 +38,8 @@ export const OPERATIONS_ERROR_CODES = Object.keys(
 const defaultMessages: Record<OperationsErrorCode, string> = {
   CHECKLIST_ITEM_INCOMPLETE:
     "Butir checklist belum lengkap. Lengkapi foto, angka, atau tanda tangan yang diminta.",
+  CHECKLIST_ITEM_NOT_IN_RUN:
+    "Butir checklist ini tidak ada pada checklist tersebut.",
   CHECKLIST_TRANSITION_INVALID:
     "Checklist ini tidak dapat diubah ke status tersebut.",
   TEMPERATURE_CORRECTIVE_ACTION_REQUIRED:

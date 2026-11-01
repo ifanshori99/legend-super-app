@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as events from "../packages/shared/src/events/index.ts";
+import * as inventory from "../packages/shared/src/inventory/index.ts";
 import * as operations from "../packages/shared/src/operations/index.ts";
 import { matchEndpointPath } from "../packages/shared/src/api/index.ts";
 
@@ -48,13 +49,15 @@ test("WS-14 fixtures parse and cover the whole daily-operations contract", () =>
     }
   }
 
-  // Every run's results address the items of a real template.
+  // Every run snapshots a real template and its results address that snapshot.
   for (const run of f.checklistRuns) {
     const template = templateById(run.templateId);
     assert.ok(template, `run ${run.id} template`);
-    const templateItemIds = new Set(template.items.map((item) => item.id));
+    assert.equal(run.templateVersion, template.version);
+    assert.deepEqual(run.items, template.items);
+    const snapshotItemIds = new Set(run.items.map((item) => item.id));
     for (const result of run.results)
-      assert.equal(templateItemIds.has(result.itemId), true, result.itemId);
+      assert.equal(snapshotItemIds.has(result.itemId), true, result.itemId);
   }
 
   // Money is whole rupiah (D-CORE-2), ever a string or a fraction.
@@ -356,6 +359,14 @@ test("OPS-05 a shift handover cannot close before the receiving shift confirms i
     }).success,
     false,
   );
+  assert.equal(
+    operations.shiftHandoverSchema.safeParse({
+      ...submitted,
+      acknowledgedBy: receiver,
+    }).success,
+    false,
+    "a submitted handover carries no half-recorded confirmation",
+  );
 });
 
 test("checklist evidence gates completion: photo, number and signature are enforced", () => {
@@ -447,6 +458,143 @@ test("checklist evidence gates completion: photo, number and signature are enfor
   );
 });
 
+test("checklist runs snapshot the template items so later edits never change past runs (owner decision)", () => {
+  const run = f.checklistRuns[0];
+  const template = templateById(run.templateId);
+  assert.deepEqual(operations.snapshotChecklistTemplate(template), {
+    templateId: template.id,
+    templateVersion: template.version,
+    items: template.items,
+  });
+
+  // The template is edited later: an item is dropped and evidence tightened.
+  const edited = operations.checklistTemplateSchema.parse({
+    ...template,
+    version: template.version + 1,
+    items: template.items.slice(1).map((item) => ({
+      ...item,
+      requiredEvidence: ["photo", "number", "signature"],
+    })),
+  });
+  // The past run still validates and completes against its own snapshot.
+  assert.equal(operations.checklistRunSchema.safeParse(run).success, true);
+  assert.equal(run.templateVersion, 1);
+  assert.equal(
+    operations.checklistCompletionStatus(run.items, run.results),
+    "completed",
+  );
+  assert.throws(
+    () => operations.checklistCompletionStatus(edited.items, run.results),
+    (error) => error.code === "CHECKLIST_ITEM_NOT_IN_RUN",
+  );
+
+  // A run without its snapshot, or answering an item outside it, is refused.
+  const withoutItems = { ...run };
+  delete withoutItems.items;
+  assert.equal(
+    operations.checklistRunSchema.safeParse(withoutItems).success,
+    false,
+  );
+  const withoutVersion = { ...run };
+  delete withoutVersion.templateVersion;
+  assert.equal(
+    operations.checklistRunSchema.safeParse(withoutVersion).success,
+    false,
+  );
+  assert.equal(
+    operations.checklistRunSchema.safeParse({
+      ...run,
+      items: run.items.slice(1),
+    }).success,
+    false,
+  );
+});
+
+test("checklist evidence is enforced by the run schema, not only by the service", () => {
+  const run = f.checklistRuns[0];
+  const strip = (kind, patch) => {
+    const item = run.items.find((row) => row.requiredEvidence.includes(kind));
+    return {
+      ...run,
+      results: run.results.map((result) =>
+        result.itemId === item.id ? { ...result, ...patch } : result,
+      ),
+    };
+  };
+  for (const [kind, patch] of [
+    ["photo", { photoMediaIds: [] }],
+    ["number", { numberValue: null }],
+    ["signature", { signatureMediaId: null }],
+  ]) {
+    assert.equal(
+      operations.checklistRunSchema.safeParse(strip(kind, patch)).success,
+      false,
+      `a done item missing its ${kind} is refused`,
+    );
+    // The same gap is refused on an in-progress run too.
+    assert.equal(
+      operations.checklistRunSchema.safeParse({
+        ...strip(kind, patch),
+        status: "in_progress",
+        completedAt: null,
+      }).success,
+      false,
+      `in-progress ${kind}`,
+    );
+  }
+
+  // A completed run has a finished answer for every snapshot item.
+  assert.equal(
+    operations.checklistRunSchema.safeParse({
+      ...run,
+      results: run.results.slice(1),
+    }).success,
+    false,
+  );
+  // OPS-01: completed vs failed follows the item outcomes exactly.
+  assert.equal(
+    operations.checklistRunSchema.safeParse({
+      ...run,
+      results: run.results.map((result, index) =>
+        index === 0 ? { ...result, status: "failed" } : result,
+      ),
+    }).success,
+    false,
+    "OPS-01 a run with a failed item cannot be stored as completed",
+  );
+  const failedRun = f.checklistRuns.find((row) => row.status === "failed");
+  assert.equal(
+    operations.checklistRunSchema.safeParse({
+      ...failedRun,
+      status: "completed",
+    }).success,
+    false,
+  );
+});
+
+test("maintenance vendors are purchasing suppliers; no vendor entity of its own (legend-uy1e)", () => {
+  assert.equal("maintenanceVendorIdSchema" in operations, false);
+  const supplierIds = new Set(
+    inventory.cafeLegendPurchasingFixtures.suppliers.map((row) => row.id),
+  );
+  const vendorIds = [
+    ...f.maintenanceSchedules.map((row) => row.vendorId),
+    ...f.maintenanceTickets.map((row) => row.vendorId),
+  ].filter((vendorId) => vendorId !== null);
+  assert.ok(vendorIds.length >= 1);
+  for (const vendorId of vendorIds)
+    assert.equal(supplierIds.has(vendorId), true, vendorId);
+
+  const ticket = f.maintenanceTickets[0];
+  assert.equal(
+    operations.maintenanceTicketSchema.safeParse({
+      ...ticket,
+      vendorId: "not-a-supplier",
+    }).success,
+    false,
+  );
+});
+
 test("WS-14 domain events are catalogued and validate their payloads", () => {
   for (const name of operations.operationsEventNames) {
     const entry = events.eventCatalogByName.get(name);
@@ -479,6 +627,37 @@ test("WS-14 domain events are catalogued and validate their payloads", () => {
   assert.equal(
     operations.operationsEventSchema.parse(missedEnvelope).name,
     "checklist.missed",
+  );
+
+  // OPS-01: a failed run alerts too and names the failed items.
+  const failedRun = f.checklistRuns.find((run) => run.status === "failed");
+  const failedEnvelope = {
+    ...events.eventFixture,
+    name: "checklist.failed",
+    aggregateType: "checklist",
+    payloadSchemaRef: "checklist.failed.v1",
+    payload: {
+      runId: failedRun.id,
+      templateId: failedRun.templateId,
+      shiftDate: failedRun.shiftDate,
+      assignedTo: failedRun.assignedTo,
+      dueAt: failedRun.dueAt,
+      completedAt: failedRun.completedAt,
+      failedItemIds: failedRun.results
+        .filter((result) => result.status === "failed")
+        .map((result) => result.itemId),
+    },
+  };
+  assert.equal(
+    operations.operationsEventSchema.safeParse(failedEnvelope).success,
+    true,
+  );
+  assert.equal(
+    operations.operationsEventSchema.safeParse({
+      ...failedEnvelope,
+      payload: { ...failedEnvelope.payload, failedItemIds: [] },
+    }).success,
+    false,
   );
 
   const excursion = f.temperatureLogs.find((log) => !log.inRange);
