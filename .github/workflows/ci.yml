@@ -18,6 +18,17 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm run setup
+      - name: CI quality checks
+        run: |
+          pnpm exec node --test scripts/ci/*.test.mjs
+          pnpm exec node scripts/ci/tenant-hardcode.mjs
+          pnpm exec node scripts/ci/color.mjs
+          pnpm exec node scripts/ci/pending.mjs
+      # Known high findings are tracked by legend-ziit; still display them.
+      - name: Report high dependency advisories
+        run: pnpm audit --audit-level high || echo "High advisories present; see legend-ziit"
+      - name: Block critical dependency advisories
+        run: pnpm audit --audit-level critical
       - run: pnpm check
       - run: pnpm format:check
       - run: pnpm build

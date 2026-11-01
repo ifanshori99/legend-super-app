@@ -8,17 +8,17 @@ Three parallel source scans traced schema, routes, services, contracts, UI and t
 
 Estimates are rough **engineer-days** for implementing and testing the stated adaptation, not elapsed time; they assume contracts are agreed and do not include the full scope of downstream workstreams, production deployment, or review. Shared dependencies and parallel work mean estimates should not simply be summed. Presence of tests is not proof they pass or cover every invariant. This is static analysis; source tests and actual production configuration were not run or inspected.
 
-| §7 module | Inventory / recommendation | Estimate | Principal gap |
-|---|---|---:|---|
-| Tenant, resolution, flags, support | Partial; copy + adapt | 15–25 days | RLS deliberately disabled; brand/outlet/legal entity and universal gates missing |
-| WhatsApp reverse OTP and magic link | Present; copy + adapt | 15–25 days | Alumni coupling; replies enabled in source, contrary to AUTH-03 |
-| MFA, sessions, devices | Partial; copy + adapt | 10–20 days | MFA platform-centric; outlet PIN and supervisor override missing |
-| Roles, permissions, time-bound roles | Present; copy machinery + rebuild policy | 15–25 days | Outlet/station scope and approval matrix missing |
-| Multichannel notifications | Partial; copy + adapt | 5–8 days | Delivery queue is not a proven transactional domain-event outbox; realtime/edge missing |
-| Finance | Partial; reuse invariants + rebuild domain model | 15–25 days | Alumni ledger, no approved reopen; close/post race needs design |
-| AI gateway | Partial; copy + adapt gateway, rebuild shared tool catalog | 8–15 days | No shared MCP catalog; authorization delegated to callers |
-| Audit log | Partial; reuse patterns + rebuild common contract | 4–8 days | Fragmented domain-specific logs |
-| Image pipeline | Present; copy + adapt | 3–6 days | Membership/branding coupling and SVG security review |
+| §7 module                            | Inventory / recommendation                                 |   Estimate | Principal gap                                                                           |
+| ------------------------------------ | ---------------------------------------------------------- | ---------: | --------------------------------------------------------------------------------------- |
+| Tenant, resolution, flags, support   | Partial; copy + adapt                                      | 15–25 days | RLS deliberately disabled; brand/outlet/legal entity and universal gates missing        |
+| WhatsApp reverse OTP and magic link  | Present; copy + adapt                                      | 15–25 days | Alumni coupling; replies enabled in source, contrary to AUTH-03                         |
+| MFA, sessions, devices               | Partial; copy + adapt                                      | 10–20 days | MFA platform-centric; outlet PIN and supervisor override missing                        |
+| Roles, permissions, time-bound roles | Present; copy machinery + rebuild policy                   | 15–25 days | Outlet/station scope and approval matrix missing                                        |
+| Multichannel notifications           | Partial; copy + adapt                                      |   5–8 days | Delivery queue is not a proven transactional domain-event outbox; realtime/edge missing |
+| Finance                              | Partial; reuse invariants + rebuild domain model           | 15–25 days | Alumni ledger, no approved reopen; close/post race needs design                         |
+| AI gateway                           | Partial; copy + adapt gateway, rebuild shared tool catalog |  8–15 days | No shared MCP catalog; authorization delegated to callers                               |
+| Audit log                            | Partial; reuse patterns + rebuild common contract          |   4–8 days | Fragmented domain-specific logs                                                         |
+| Image pipeline                       | Present; copy + adapt                                      |   3–6 days | Membership/branding coupling and SVG security review                                    |
 
 ## Module detail
 

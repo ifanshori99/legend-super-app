@@ -1,0 +1,80 @@
+// Toasts confirm a finished action ("Pesanan dikirim"). They never carry the
+// only copy of an error the user must fix: put that next to the field or in
+// an ErrorState. Radix announces them politely and pauses on hover/focus.
+import * as React from "react";
+import { cn } from "cn";
+import { CircleAlert, CircleCheck, Info, X } from "lucide-react";
+import { Toast as ToastPrimitive } from "radix-ui";
+import { useT } from "@/components/i18n";
+
+type ToastTone = "info" | "success" | "danger";
+type ToastInput = { title: string; description?: string; tone?: ToastTone };
+type ToastItem = ToastInput & { id: number };
+
+const ToastContext = React.createContext<(toast: ToastInput) => void>(() => {
+  throw new Error("useToast must be used inside <Toaster>");
+});
+
+export function useToast() {
+  return React.useContext(ToastContext);
+}
+
+const ICONS = { info: Info, success: CircleCheck, danger: CircleAlert };
+const ICON_COLOR = {
+  info: "text-info",
+  success: "text-success",
+  danger: "text-danger",
+};
+
+export function Toaster({ children }: { children: React.ReactNode }) {
+  const t = useT();
+  const [items, setItems] = React.useState<ToastItem[]>([]);
+  const nextId = React.useRef(0);
+  const push = React.useCallback((toast: ToastInput) => {
+    const id = ++nextId.current;
+    setItems((current) => [...current.slice(-2), { ...toast, id }]);
+  }, []);
+  const remove = (id: number) =>
+    setItems((current) => current.filter((item) => item.id !== id));
+
+  return (
+    <ToastContext.Provider value={push}>
+      <ToastPrimitive.Provider swipeDirection="down" label={t("toast.region")}>
+        {children}
+        {items.map(({ id, title, description, tone = "info" }) => {
+          const Icon = ICONS[tone];
+          return (
+            <ToastPrimitive.Root
+              key={id}
+              type={tone === "danger" ? "foreground" : "background"}
+              onOpenChange={(open) => !open && remove(id)}
+              className="flex items-start gap-3 rounded-xl border bg-card p-4 text-foreground shadow-overlay data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out data-[swipe=move]:translate-y-(--radix-toast-swipe-move-y)"
+            >
+              <Icon
+                className={cn("mt-0.5 size-5 shrink-0", ICON_COLOR[tone])}
+                aria-hidden="true"
+              />
+              <div className="grid flex-1 gap-0.5">
+                <ToastPrimitive.Title className="text-sm leading-5 font-semibold">
+                  {title}
+                </ToastPrimitive.Title>
+                {description && (
+                  <ToastPrimitive.Description className="text-sm leading-5 text-muted-foreground">
+                    {description}
+                  </ToastPrimitive.Description>
+                )}
+              </div>
+              <ToastPrimitive.Close
+                aria-label={t("toast.dismiss")}
+                className="-m-1.5 inline-grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="size-4" aria-hidden="true" />
+              </ToastPrimitive.Close>
+            </ToastPrimitive.Root>
+          );
+        })}
+        <ToastPrimitive.Viewport className="fixed inset-x-0 bottom-0 z-[60] flex flex-col gap-2 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] outline-none sm:inset-x-auto sm:right-0 sm:w-96" />
+      </ToastPrimitive.Provider>
+    </ToastContext.Provider>
+  );
+}
