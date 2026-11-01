@@ -45,7 +45,13 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
   it("TEN-02 every migrated table with tenant_id forces RLS with the restrictive tenant policy", async () => {
     // Bootstrap-only tables that carry a tenant_id but are deliberately not
     // tenant-scoped. Adding to this list needs an Opus/owner review.
-    const allowlist = ["app.dev_tenant_lookup"];
+    //
+    // public.tenant_domains: host -> tenant resolution runs BEFORE a tenant
+    // context exists (TEN-02), so reads must work without app.tenant_id. Its
+    // migration enables RLS with an open SELECT policy and a tenant-checked
+    // write policy (INSERT/UPDATE/DELETE), and does not FORCE it so the
+    // migration owner can repair rows. Proven by the test below.
+    const allowlist = ["public.tenant_domains"];
     const result = await pool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_attribute a

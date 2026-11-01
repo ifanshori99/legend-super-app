@@ -1,0 +1,98 @@
+// Sealing for write-only personal/credential data (integration credentials,
+// legal-entity NPWP). PRD §3 F4: integration credentials are encrypted per
+// tenant/outlet and stored as a secret reference; NPWP is stored encrypted and
+// read back as four digits only.
+//
+// AES-256-GCM with a random 96-bit nonce. The envelope is
+// base64(version | nonce | tag | ciphertext) so the column stays text and the
+// format can evolve. AAD binds a blob to the row that owns it, so a sealed
+// value copied to another tenant row fails to open.
+//
+// Key material: DATA_ENCRYPTION_KEY (base64, 32 bytes) in any real deployment.
+// Until it is provisioned, a domain-separated scrypt of BETTER_AUTH_SECRET is
+// used so local development and the disposable test database work; production
+// should set a dedicated key.
+
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes,
+  scryptSync,
+} from "node:crypto";
+import { env } from "../config/env";
+
+const VERSION = 1;
+const NONCE_BYTES = 12;
+const TAG_BYTES = 16;
+const KEY_CONTEXT = "legend:data-encryption:v1";
+
+let cachedKey: Buffer | undefined;
+
+function dataKey(): Buffer {
+  if (cachedKey) return cachedKey;
+  if (env.DATA_ENCRYPTION_KEY) {
+    const key = Buffer.from(env.DATA_ENCRYPTION_KEY, "base64");
+    if (key.length !== 32)
+      throw new Error("DATA_ENCRYPTION_KEY must be 32 base64-encoded bytes.");
+    cachedKey = key;
+  } else if (env.isProduction) {
+    throw new Error("DATA_ENCRYPTION_KEY is required in production.");
+  } else {
+    cachedKey = scryptSync(env.BETTER_AUTH_SECRET, KEY_CONTEXT, 32);
+  }
+  return cachedKey;
+}
+
+/** Seals a UTF-8 value for the row identified by `aad`. */
+export function sealSecret(plaintext: string, aad: string): string {
+  if (!aad) throw new TypeError("Sealed data needs an AAD");
+  const nonce = randomBytes(NONCE_BYTES);
+  const cipher = createCipheriv("aes-256-gcm", dataKey(), nonce);
+  cipher.setAAD(Buffer.from(aad, "utf8"));
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final(),
+  ]);
+  return Buffer.concat([
+    Buffer.from([VERSION]),
+    nonce,
+    cipher.getAuthTag(),
+    ciphertext,
+  ]).toString("base64");
+}
+
+/** Opens a sealed value; throws if the envelope or AAD does not match. */
+export function openSecret(sealed: string, aad: string): string {
+  if (!sealed) throw new TypeError("Nothing to open");
+  const envelope = Buffer.from(sealed, "base64");
+  if (envelope.length < 1 + NONCE_BYTES + TAG_BYTES)
+    throw new Error("Sealed value is truncated");
+  const version = envelope[0];
+  if (version !== VERSION) throw new Error("Unknown sealed value version");
+  const nonce = envelope.subarray(1, 1 + NONCE_BYTES);
+  const tag = envelope.subarray(1 + NONCE_BYTES, 1 + NONCE_BYTES + TAG_BYTES);
+  const ciphertext = envelope.subarray(1 + NONCE_BYTES + TAG_BYTES);
+  const decipher = createDecipheriv("aes-256-gcm", dataKey(), nonce);
+  decipher.setAAD(Buffer.from(aad, "utf8"));
+  decipher.setAuthTag(tag);
+  return Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+/**
+ * HMAC-SHA256 blind index (hex) for uniqueness and equality lookups without
+ * storing plaintext: one NPWP per legal entity inside a tenant.
+ */
+export function blindIndex(value: string, purpose: string): string {
+  return createHmac("sha256", dataKey())
+    .update(`${purpose}\u0000${value}`, "utf8")
+    .digest("hex");
+}
+
+/** Opaque `sec_…` pointer handed out on reads (secretRefSchema). */
+export function newSecretRef(): string {
+  return `sec_${randomBytes(24).toString("base64url")}`;
+}
