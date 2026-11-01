@@ -8,6 +8,20 @@
       "when": 1791371371036,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793565000000,
+      "tag": "0001_tenant_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793565000001,
+      "tag": "0002_dev_tenant_lookup",
+      "breakpoints": true
     }
   ]
 }

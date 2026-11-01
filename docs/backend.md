@@ -142,3 +142,20 @@ curl -b jar http://localhost:4000/api/notes
 6. Add tests in `apps/api/src/test/` for CRUD, rejected input, anonymous access, origin checks, and cross-account isolation; then build the web side ([frontend](frontend.md)). Run `pnpm check`.
 
 Notes is replaceable example functionality. If removing it from a project that has already migrated, remove its routes, service, validator, web feature, and schema export, and generate a new reviewed migration. Do not rewrite historical migrations or drop saved notes without authorization.
+
+## Tenant database role
+
+Tenant tables use forced RLS. Migrations run using the owner/admin connection in
+`MIGRATION_DATABASE_URL` (or `DATABASE_URL`), while the API uses the restricted
+`APP_DATABASE_URL` when supplied. Managed local `pnpm dev:prepare` creates a
+separate random login and grants it membership of `legend_app`; credentials are
+stored in the worktree's private `.env.local`. Provisioning requires an admin
+with `CREATEROLE`, but the API login does not. External environments must
+provision a non-owner, non-superuser, non-BYPASSRLS login and grant it
+`legend_app` before starting the API. Never use the migration credentials as
+application credentials.
+
+Tenant services must use `withTenant` with server-minted tenant and outlet
+scope; it installs transaction-local settings and fails closed for unsafe roles.
+The development tenant lookup is synthetic and must not resolve production
+requests. Real registered-domain resolution is a separate integration.
