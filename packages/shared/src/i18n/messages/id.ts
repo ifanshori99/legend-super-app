@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { inventoryStockMessages } from "./ws06-inventory.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,9 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // WS-06 stock control screens (legend-vxj): stock card, balances/par,
+  // expiry, purchase suggestions. Its own file for the same reason.
+  inventoryStock: inventoryStockMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
