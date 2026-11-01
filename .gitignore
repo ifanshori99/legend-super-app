@@ -29,3 +29,6 @@ coverage/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Coordinator-managed git worktrees
+.worktrees/
