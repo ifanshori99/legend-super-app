@@ -51,6 +51,8 @@ test("F11 D13 fixtures parse: default PBJT 10% for F&B in Kota Bandung", () => {
 test("F11 ORD-03 calc order discount -> service -> tax on the Private Room bill", () => {
   const result = tax.calculateTax(f.privateRoomBill, config);
   tax.taxCalculationResultSchema.parse(result);
+  // Owner decision (2026-11-01): the menu prices in grossIdr exclude tax and
+  // service charge, so both are added on top at checkout (never backed out).
   // Order discount 10,000 spread pro rata over nets 56,000/40,000/34,000/51,000
   // (largest remainder): 3,094 / 2,210 / 1,878 / 2,818.
   assert.deepEqual(
@@ -72,6 +74,86 @@ test("F11 ORD-03 calc order discount -> service -> tax on the Private Room bill"
   assert.equal(byCode["PBJT-FNB"].taxIdr, 12_896);
   assert.equal(byCode["PBJT-FASILITAS"].taxBaseIdr, 48_182);
   assert.equal(byCode["PBJT-FASILITAS"].taxIdr, 4_818);
+});
+
+test("F11 owner decision: tenant default prices are exclusive; inclusive stays opt-in", () => {
+  // Owner decision 2026-11-01: menu prices exclude tax and service charge; both
+  // appear at checkout (QR web + POS). The tenant setting is the default and
+  // every published menu rule below follows it.
+  assert.equal(settings.pricesIncludeTax, false);
+  const inForce = tax.effectiveRuleVersions(
+    f.taxRules,
+    f.privateRoomBill.outletId,
+    "2026-11-02",
+  );
+  assert.equal(inForce.length, 2);
+  for (const rule of inForce) assert.equal(rule.priceIncludesTax, false);
+
+  // A rule created without a mode inherits the tenant default instead of an
+  // implicit inclusive fallback; an explicit inclusive rule is still accepted
+  // as opt-in configuration.
+  const draftInput = {
+    outletId: null,
+    code: "PBJT-FNB",
+    name: "PBJT Makanan dan Minuman",
+    taxType: "pbjt",
+    rateBp: 1000,
+    regionCode: tax.BANDUNG_REGION,
+    channels: [],
+    appliesTo: {
+      itemClasses: ["food_beverage"],
+      categoryIds: [],
+      itemIds: [],
+    },
+    includeServiceInBase: true,
+    isActive: true,
+    effectiveFrom: "2026-12-01",
+  };
+  assert.equal(
+    tax.createTaxRuleInputSchema.safeParse(draftInput).success,
+    true,
+  );
+  assert.equal(
+    tax.createTaxRuleInputSchema.safeParse({
+      ...draftInput,
+      priceIncludesTax: true,
+    }).success,
+    true,
+  );
+
+  // The settings write contract carries the default explicitly.
+  const settingsInput = {
+    outletId: null,
+    calculationOrder: "discount_service_tax",
+    serviceRoundingMode: "half_up",
+    taxRoundingMode: "half_up",
+    inclusiveBaseRoundingMode: "half_up",
+    billRounding: null,
+    packageAllocation: "fixed_bp",
+    effectiveFrom: "2026-11-01",
+  };
+  assert.equal(
+    tax.createTaxSettingsInputSchema.safeParse({
+      ...settingsInput,
+      pricesIncludeTax: false,
+    }).success,
+    true,
+  );
+  assert.equal(
+    tax.createTaxSettingsInputSchema.safeParse(settingsInput).success,
+    false,
+  );
+
+  // Hand-checked Private Room example: 186,000 menu prices - 15,000 discount
+  // = 171,000 base, + 6,141 service + 17,714 tax = 194,855 at checkout.
+  const result = tax.calculateTax(f.privateRoomBill, config);
+  assert.equal(result.baseIdr, result.grossIdr - result.discountIdr);
+  assert.ok(result.serviceChargeIdr > 0);
+  assert.ok(result.taxIdr > 0);
+  assert.equal(
+    result.totalIdr,
+    result.baseIdr + result.serviceChargeIdr + result.taxIdr,
+  );
 });
 
 test("ORD-06 per-line allocation sums exactly to the bill totals", () => {

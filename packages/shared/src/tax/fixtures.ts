@@ -3,6 +3,11 @@
 // D13). Illustrative, not owner-confirmed: the 5% Private Room service charge,
 // the facility rule (its rate waits for the tax consultant, A20 — it is data
 // the admin changes from the panel, R21) and every amount below.
+//
+// Owner decision (2026-11-01): menu prices exclude tax and service charge, so
+// the tenant settings default and every menu rule below are `exclusive`
+// (priceIncludesTax false) and checkout adds both. Inclusive prices are an
+// opt-in configuration, exercised only by the contract tests.
 
 import { cafeLegendFixtures } from "../core/index.ts";
 import { cafeLegendMenuFixtures } from "../menu/fixtures.ts";
@@ -86,7 +91,7 @@ const taxRules = [
     regionCode: BANDUNG_REGION,
     channels: [],
     appliesTo: { itemClasses: ["food_beverage"], categoryIds: [], itemIds: [] },
-    priceIncludesTax: true,
+    priceIncludesTax: false,
     includeServiceInBase: true,
     isActive: true,
     version: 2,
@@ -122,6 +127,7 @@ const settings = [
     tenantId: tenant.id,
     outletId: null,
     calculationOrder: "discount_service_tax",
+    pricesIncludeTax: false,
     serviceRoundingMode: "half_up",
     taxRoundingMode: "half_up",
     inclusiveBaseRoundingMode: "half_up",
