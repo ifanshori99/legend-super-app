@@ -23,7 +23,7 @@
 //   `after` row can never carry these values even if a caller forgets a safe
 //   list.
 
-import { z } from "../core/index.ts";
+import { tenantIdSchema, z } from "../core/index.ts";
 import {
   tenantPermissionCodeSchema,
   type PermissionCode,
@@ -269,7 +269,12 @@ export const HRIS_VIEWER_KINDS = [
 ] as const;
 export type HrisViewerKind = (typeof HRIS_VIEWER_KINDS)[number];
 
-/** What a viewer gets for one PII field. */
+/**
+ * What a viewer gets for one PII field. `full` is a server-side right only
+ * (payroll bank file, tax export, HR edit pre-fill on the server): API DTOs
+ * never carry plaintext, so `full` and `masked` both serialise as a
+ * `MaskedPiiValue` and `hidden` serialises as `null`.
+ */
 export const HRIS_PII_VISIBILITIES = ["full", "masked", "hidden"] as const;
 export type HrisPiiVisibility = (typeof HRIS_PII_VISIBILITIES)[number];
 
@@ -415,6 +420,18 @@ export function hrisPiiVisibility(
 ): HrisPiiVisibility {
   if (viewer.kind === "self" && !canHrisViewEmployee(viewer, subjectEmployeeId))
     return "hidden";
+  const ownRecord =
+    viewer.employeeId !== null &&
+    viewer.employeeId.toLowerCase() === subjectEmployeeId.toLowerCase();
+  // HR-03 fails closed: the viewer kind alone never unlocks another person's
+  // PII. A non-system viewer reading someone else's record must also hold one
+  // of the class's read permissions (resolved by the access contract).
+  if (viewer.kind !== "system" && !ownRecord) {
+    const required = hrisPiiReadPermissions(piiClass);
+    const allowed = required.length > 0 ? required : ["hr.employee.view"];
+    if (!allowed.some((code) => viewer.permissions.includes(code)))
+      return "hidden";
+  }
   const column: HrisViewerKind =
     viewer.kind === "hr" ||
     viewer.kind === "payroll" ||
@@ -440,12 +457,14 @@ export function hrisPiiReadPermissions(
 
 /** Metadata of one field; throws for an unknown field name (fail closed). */
 export function hrisPiiField(name: HrisPiiFieldName): HrisPiiFieldDefinition {
+  if (!Object.hasOwn(HRIS_PII_FIELDS, name))
+    throw new RangeError(`Unknown HRIS PII field: ${String(name)}`);
   return HRIS_PII_FIELDS[name];
 }
 
 /** Tenant-scoped PII subject: employee rows always belong to one tenant. */
 export const hrisPiiSubjectSchema = z.strictObject({
-  tenantId: z.uuid().toLowerCase(),
+  tenantId: tenantIdSchema,
   employeeId: employeeIdSchema,
 });
 export type HrisPiiSubject = z.infer<typeof hrisPiiSubjectSchema>;

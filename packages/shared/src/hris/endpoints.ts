@@ -193,6 +193,12 @@ export const clockAttendance = defineEndpoint({
   body: clientInputSchema({
     type: attendanceTypeSchema,
     method: attendanceMethodSchema,
+    /**
+     * Device clock at capture. The server records its own receipt time as the
+     * attendance time for online submissions and validates the QR window
+     * against it; `occurredAt` is only trusted for an offline-queued
+     * submission, which the service flags when it differs from receipt time.
+     */
     occurredAt: isoDateTimeSchema,
     /** Raw coordinates; the server computes the distance and never returns them. */
     location: z

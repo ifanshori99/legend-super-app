@@ -151,6 +151,7 @@ export function evaluateAttendanceSubmission(input: {
   geoDistanceM: number | null;
   deviceBound: boolean;
   selfieProvided: boolean;
+  /** Server-side token check; required (true) for `rotating_qr`. */
   qrValid?: boolean;
 }): AttendanceDecision {
   const reasons: AttendanceFlagReason[] = [];
@@ -164,15 +165,18 @@ export function evaluateAttendanceSubmission(input: {
       reasons.push("rotating_qr_disabled");
       rejected = true;
     }
-    if (input.qrValid === false) {
+    // Fail closed: a QR clock-in without a positive token check is invalid.
+    if (input.qrValid !== true) {
       reasons.push("qr_token_invalid");
       rejected = true;
     }
   }
+  // Missing coordinates on a geofenced method count as outside the fence, so
+  // switching GPS off cannot bypass the configured action.
   if (
     input.method === "selfie_geo" &&
-    input.geoDistanceM !== null &&
-    input.geoDistanceM > input.policy.geofenceRadiusM
+    (input.geoDistanceM === null ||
+      input.geoDistanceM > input.policy.geofenceRadiusM)
   ) {
     reasons.push("outside_geofence");
     if (input.policy.outsideGeofenceAction === "reject") rejected = true;

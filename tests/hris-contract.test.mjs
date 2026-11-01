@@ -90,10 +90,33 @@ test("HR-03 NIK, NPWP, BPJS, bank and salary are encrypted and HR/payroll only",
   assert.equal(hris.isHrisPiiColumn("full_name"), false);
 
   // HR-03 visibility: only HR and payroll see the cleartext value.
-  const hr = employeeViewer("hr");
-  const payroll = employeeViewer("payroll");
+  const withPermissions = (kind, permissions) => ({
+    ...employeeViewer(kind),
+    permissions,
+  });
+  const hr = withPermissions("hr", ["hr.employee.view"]);
+  const payroll = withPermissions("payroll", ["payroll.view"]);
   const owner = employeeViewer("owner");
-  const supervisor = employeeViewer("supervisor");
+  const supervisor = withPermissions("supervisor", ["hr.attendance.manage"]);
+  // HR-03 fail closed: the viewer kind alone never unlocks PII.
+  for (const kind of ["identity", "bank", "salary"])
+    assert.equal(
+      hris.hrisPiiVisibility(
+        employeeViewer("hr"),
+        fixtures.employees[3].id,
+        kind,
+      ),
+      "hidden",
+    );
+  assert.equal(
+    hris.hrisPiiVisibility(
+      employeeViewer("supervisor"),
+      fixtures.employees[3].id,
+      "attendance_photo",
+    ),
+    "hidden",
+  );
+  assert.throws(() => hris.hrisPiiField("notAField"), RangeError);
   const subject = fixtures.employees[3].id;
   for (const kind of ["identity", "tax", "social_security", "bank", "salary"]) {
     assert.equal(hris.hrisPiiVisibility(hr, subject, kind), "full");
@@ -238,7 +261,15 @@ test("HR-05 a swap that breaks working-time rules needs an explicit override", (
   const clean = fixtures.shiftSwapRequests[1];
   assert.equal(clean.status, "approved");
   assert.equal(clean.complianceIssues.length, 0);
-  assert.equal(hris.transitionShiftSwap("pending", "approve"), "approved");
+  assert.equal(
+    hris.transitionShiftSwap("pending", "approve", { complianceIssues: [] }),
+    "approved",
+  );
+  // HR-05 fail closed: approving without a recomputed compliance diff is refused.
+  assert.throws(
+    () => hris.transitionShiftSwap("pending", "approve"),
+    /dihitung ulang/,
+  );
   assert.throws(
     () =>
       hris.transitionShiftSwap("pending", "approve_with_override", {
@@ -330,6 +361,19 @@ test("compliance warnings cover long shifts, rest, overlap, weekly and consecuti
   const overlapIssues = hris.evaluateShiftCompliance(overlap, policy);
   assert.ok(overlapIssues.some((issue) => issue.code === "overlapping_shift"));
 
+  // A long shift overlapping two later shifts is caught twice, not once.
+  const overlaps = hris
+    .evaluateShiftCompliance(
+      [
+        make(60, "2026-11-02", "06:00", "18:00", 0),
+        make(61, "2026-11-02", "08:00", "10:00", 0),
+        make(62, "2026-11-02", "11:00", "13:00", 0),
+      ],
+      policy,
+    )
+    .filter((issue) => issue.code === "overlapping_shift");
+  assert.equal(overlaps.length, 2);
+
   // Cancelled shifts never raise warnings.
   const cancelled = [
     { ...make(50, "2026-10-26", "08:00", "20:00", 0), status: "cancelled" },
@@ -377,6 +421,32 @@ test("attendance policy rejects or flags per configuration, QR lives 30 seconds"
     }).validity,
     "flagged",
   );
+
+  // Fail closed: GPS off on a geofenced method counts as outside the fence,
+  // and a QR clock-in needs a positive server-side token check.
+  assert.equal(
+    hris.evaluateAttendanceSubmission({
+      policy: { ...policy, outsideGeofenceAction: "reject" },
+      method: "selfie_geo",
+      geoDistanceM: null,
+      deviceBound: true,
+      selfieProvided: true,
+    }).validity,
+    "rejected",
+  );
+  if (policy.allowRotatingQr)
+    assert.equal(
+      hris
+        .evaluateAttendanceSubmission({
+          policy,
+          method: "rotating_qr",
+          geoDistanceM: null,
+          deviceBound: true,
+          selfieProvided: true,
+        })
+        .reasons.includes("qr_token_invalid"),
+      true,
+    );
 
   const qr = fixtures.attendanceQr;
   assert.equal(

@@ -318,8 +318,11 @@ export const employmentContractSchema = z
     startDate: businessDateSchema,
     endDate: businessDateSchema.nullable(),
     renewedFromId: employmentContractIdSchema.nullable(),
-    /** Encrypted `salary_snapshot_encrypted`; masked on the wire (HR-03). */
-    salarySnapshot: maskedPiiValueSchema,
+    /**
+     * Encrypted `salary_snapshot_encrypted`; masked on the wire (HR-03), null
+     * for a viewer whose visibility is `hidden` (supervisor, owner).
+     */
+    salarySnapshot: maskedPiiValueSchema.nullable(),
     /** Short-lived signed URL of the private contract scan; the storage key stays server-side. */
     fileUrl: z.string().min(1).max(2048).nullable(),
     /** Reminder window before `endDate`; tenant configuration. */

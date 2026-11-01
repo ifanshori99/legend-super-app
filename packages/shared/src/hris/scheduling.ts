@@ -378,8 +378,16 @@ export function evaluateShiftCompliance(
         });
     }
 
+    // Compare each shift with the one that ends latest so far, not only the
+    // previous start: a long shift can overlap several later ones.
     for (let index = 1; index < sorted.length; index += 1) {
-      const previous = sorted[index - 1];
+      const previous = sorted
+        .slice(0, index)
+        .reduce((latest, candidate) =>
+          Date.parse(span(candidate).endsAt) > Date.parse(span(latest).endsAt)
+            ? candidate
+            : latest,
+        );
       const current = sorted[index];
       const gap = minutesBetween(span(previous).endsAt, span(current).startsAt);
       if (gap < 0)
@@ -572,6 +580,17 @@ export function transitionShiftSwap(
 ): ShiftSwapStatus {
   if (status !== "pending")
     throw new CoreError("CONFLICT", `Permintaan tukar shift sudah ${status}.`);
+  // Fail closed (HR-05): an approval must state the compliance diff the
+  // service recomputed against the roster as it is now (the copy frozen on the
+  // request may be stale). Omitting it is never read as "no violations".
+  if (
+    (action === "approve" || action === "approve_with_override") &&
+    options.complianceIssues === undefined
+  )
+    throw new CoreError(
+      "CONFLICT",
+      "Kepatuhan jadwal harus dihitung ulang sebelum persetujuan (HR-05).",
+    );
   const issues = options.complianceIssues ?? [];
   switch (action) {
     case "approve":
