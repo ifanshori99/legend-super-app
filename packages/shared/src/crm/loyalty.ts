@@ -273,6 +273,16 @@ export const pointLedgerEntrySchema = pointLedgerEntryObjectSchema.superRefine(
   (entry, ctx) => {
     const reject = (message: string, path: string[] = []) =>
       ctx.addIssue({ code: "custom", path, message });
+    // Earn, redeem and reverse rows name their source: the database keeps one
+    // row per (tenant, type, sourceType, sourceId) (see pointLedgerDedupeKey),
+    // so a replayed payment or refund webhook never books points twice.
+    if (
+      (entry.type === "earn" ||
+        entry.type === "redeem" ||
+        entry.type === "reverse") &&
+      entry.sourceId === null
+    )
+      reject("Earn, redeem and reverse rows name their source", ["sourceId"]);
     switch (entry.type) {
       case "earn":
         if (entry.points <= 0) reject("Earn rows are positive");
@@ -329,6 +339,22 @@ export const pointLedgerEntrySchema = pointLedgerEntryObjectSchema.superRefine(
   },
 );
 export type PointLedgerEntry = z.infer<typeof pointLedgerEntrySchema>;
+
+/**
+ * Idempotency key for source-driven ledger rows (earn, redeem, reverse): the
+ * service stores it under a unique index per tenant, so the same paid order,
+ * redemption or refund books its points exactly once. Null for rows without a
+ * single source (bonus without a source id, expiry, manual adjustment).
+ */
+export function pointLedgerDedupeKey(
+  entry: Pick<
+    PointLedgerEntry,
+    "tenantId" | "type" | "sourceType" | "sourceId"
+  >,
+): string | null {
+  if (entry.sourceId === null) return null;
+  return `${entry.tenantId}:${entry.type}:${entry.sourceType}:${entry.sourceId}`;
+}
 
 /**
  * LOY-01: the balance always equals the sum of the ledger. Rows are

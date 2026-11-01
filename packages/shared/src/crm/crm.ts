@@ -469,18 +469,18 @@ export function tierProgressBp(
   nextTier: LoyaltyTier | null,
 ): number {
   if (nextTier === null) return 10_000;
-  const spendRatio =
+  // Integer math, rounded down (D-CORE-2): no float ratios.
+  const spendBp =
     nextTier.thresholdSpendIdr > 0
-      ? stats.rollingSpendIdr / nextTier.thresholdSpendIdr
+      ? Math.floor(
+          (stats.rollingSpendIdr * 10_000) / nextTier.thresholdSpendIdr,
+        )
       : 0;
-  const visitRatio =
+  const visitBp =
     nextTier.thresholdVisits > 0
-      ? stats.rollingVisits / nextTier.thresholdVisits
+      ? Math.floor((stats.rollingVisits * 10_000) / nextTier.thresholdVisits)
       : 0;
-  return Math.min(
-    10_000,
-    Math.floor(Math.max(spendRatio, visitRatio) * 10_000),
-  );
+  return Math.min(10_000, Math.max(spendBp, visitBp));
 }
 
 export const customer360Schema = z.strictObject({

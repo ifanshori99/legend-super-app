@@ -12,10 +12,8 @@ import {
   idrSchema,
   isoDateTimeSchema,
 } from "../core/index.ts";
-import {
-  eventEnvelopeSchema,
-  eventCatalogEntrySchema,
-} from "../events/index.ts";
+import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import type { EventCatalogEntry } from "../events/index.ts";
 
 const safeInt = (value: number) => Number.isSafeInteger(value);
 const positivePointsSchema = z
@@ -40,19 +38,27 @@ export const crmEventNames = [
 ] as const;
 export type CrmEventName = (typeof crmEventNames)[number];
 
-export const pointsEarnedPayloadSchema = z.strictObject({
-  customerProfileId: uuidSchema,
-  points: positivePointsSchema,
-  /** PRD §3.20: earn comes from a paid order, a mission, referral or birthday. */
-  sourceType: z.enum(["order", "mission", "referral", "birthday"]),
-  /** Order ids are ULIDs, mission/referral rows are UUIDs. */
-  sourceId: z
-    .union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()])
-    .nullable(),
-  expiresAt: isoDateTimeSchema,
-  liabilityIdr: positiveIdr,
-  balanceAfter: nonnegativePointsSchema,
-});
+export const pointsEarnedPayloadSchema = z
+  .strictObject({
+    customerProfileId: uuidSchema,
+    points: positivePointsSchema,
+    /** PRD §3.20: earn comes from a paid order, a mission, referral or birthday. */
+    sourceType: z.enum(["order", "mission", "referral", "birthday"]),
+    /** Order ids are ULIDs, mission/referral rows are UUIDs. */
+    sourceId: z
+      .union([uuidSchema, ulidIdSchema<"PointsEventSourceId">()])
+      .nullable(),
+    expiresAt: isoDateTimeSchema,
+    liabilityIdr: positiveIdr,
+    balanceAfter: nonnegativePointsSchema,
+  })
+  .refine(
+    (payload) => payload.sourceType !== "order" || payload.sourceId !== null,
+    {
+      path: ["sourceId"],
+      message: "Points earned on a paid order name the order (LOY-02)",
+    },
+  );
 export type PointsEarnedPayload = z.infer<typeof pointsEarnedPayloadSchema>;
 
 export const pointsReversedPayloadSchema = z.strictObject({
@@ -97,7 +103,10 @@ export const tierChangedPayloadSchema = z.strictObject({
 });
 export type TierChangedPayload = z.infer<typeof tierChangedPayloadSchema>;
 
-const payloadSchemas: Record<CrmEventName, z.ZodType> = {
+const payloadSchemas: Record<
+  CrmEventName,
+  z.ZodType<Record<string, unknown>>
+> = {
   "points.earned": pointsEarnedPayloadSchema,
   "points.reversed": pointsReversedPayloadSchema,
   "points.redeemed": pointsRedeemedPayloadSchema,
@@ -105,32 +114,43 @@ const payloadSchemas: Record<CrmEventName, z.ZodType> = {
   "tier.changed": tierChangedPayloadSchema,
 };
 
+/**
+ * Catalog-bound definitions (contracts.md "One catalog, typed payloads"):
+ * defineDomainEvent throws at module load if a name is not catalogued, and
+ * each `envelopeSchema` validates name, version, schema ref and payload.
+ */
+export const crmEvents = Object.fromEntries(
+  crmEventNames.map((name) => [
+    name,
+    defineDomainEvent({ name, payload: payloadSchemas[name] }),
+  ]),
+) as Record<CrmEventName, ReturnType<typeof defineDomainEvent>>;
+
 /** Payload schema for a CRM event name, or null for any other event. */
 export function crmEventPayloadSchema(name: string): z.ZodType | null {
-  return (payloadSchemas as Record<string, z.ZodType>)[name] ?? null;
+  return Object.hasOwn(crmEvents, name)
+    ? crmEvents[name as CrmEventName].payloadSchema
+    : null;
 }
 
-export const crmEventCatalogEntries = crmEventNames.map((name) =>
-  eventCatalogEntrySchema.parse({
-    name,
-    aggregateType: name.split(".")[0],
-    version: 1,
-    payloadSchemaRef: `${name}.v1`,
-    workstream: "WS-08",
-  }),
-);
+export const crmEventCatalogEntries: readonly EventCatalogEntry[] =
+  crmEventNames.map((name) => crmEvents[name].entry);
 
 /**
- * An event envelope that must be one of the CRM events with a payload that
- * matches its registered schema.
+ * An event envelope that must be one of the CRM events and match its
+ * catalogued definition (name, version, schema ref and payload).
  */
-export const crmEventSchema = eventEnvelopeSchema.refine(
-  (event) => {
-    const schema = crmEventPayloadSchema(event.name);
-    return schema !== null && schema.safeParse(event.payload).success;
-  },
-  {
-    message: "CRM event name and payload must match a registered schema",
-    path: ["payload"],
-  },
-);
+export const crmEventSchema = eventEnvelopeSchema
+  .refine(
+    (event) => (crmEventNames as readonly string[]).includes(event.name),
+    { path: ["name"], message: "Not a CRM event" },
+  )
+  .refine(
+    (event) =>
+      crmEvents[event.name as CrmEventName]?.envelopeSchema.safeParse(event)
+        .success === true,
+    {
+      path: ["payload"],
+      message: "CRM event name and payload must match a registered schema",
+    },
+  );

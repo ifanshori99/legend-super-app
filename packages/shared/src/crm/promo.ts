@@ -323,7 +323,7 @@ function conditionFailure(
         break;
       case "time_window":
         if (!withinTimeWindow(condition, input.localDayOfWeek, input.localTime))
-          return "channel_mismatch";
+          return "time_window_mismatch";
         break;
       case "item_quantity": {
         const quantity = input.lines
@@ -361,13 +361,15 @@ function freeItemBenefit(
   if (multiples <= 0) return null;
   const freeItems: PromoFreeItem[] = [];
   let discountIdr = 0;
+  // The allowance (Y per multiple) is shared by every matching line, so two
+  // lines of the free item never double it.
+  let allowance = multiples * benefit.quantityPerMultiple;
   for (const line of input.lines) {
+    if (allowance <= 0) break;
     if (!benefit.menuItemIds.includes(line.menuItemId)) continue;
-    const quantity = Math.min(
-      line.quantity,
-      multiples * benefit.quantityPerMultiple,
-    );
+    const quantity = Math.min(line.quantity, allowance);
     if (quantity <= 0) continue;
+    allowance -= quantity;
     freeItems.push({ menuItemId: line.menuItemId, quantity });
     discountIdr += quantity * line.unitPriceIdr;
   }
@@ -379,13 +381,23 @@ function bundleDiscount(
   benefit: Extract<PromotionBenefit, { kind: "bundle_price" }>,
   input: PromoEvaluationInput,
 ): number | null {
-  let total = 0;
+  // One bundle = one unit of each listed item. The number of complete bundles
+  // is the smallest available quantity; each is priced at the cheapest unit
+  // price of that item on the bill, so extra units stay at full price.
+  let bundles = Number.POSITIVE_INFINITY;
+  let unitTotal = 0;
   for (const menuItemId of benefit.menuItemIds) {
-    const line = input.lines.find((entry) => entry.menuItemId === menuItemId);
-    if (!line) return null;
-    total += line.lineTotalIdr;
+    const lines = input.lines.filter(
+      (entry) => entry.menuItemId === menuItemId,
+    );
+    if (lines.length === 0) return null;
+    bundles = Math.min(
+      bundles,
+      lines.reduce((sum, line) => sum + line.quantity, 0),
+    );
+    unitTotal += Math.min(...lines.map((line) => line.unitPriceIdr));
   }
-  const discount = total - benefit.bundlePriceIdr;
+  const discount = bundles * (unitTotal - benefit.bundlePriceIdr);
   return discount > 0 ? discount : null;
 }
 
@@ -490,6 +502,17 @@ export const promoStackingPolicySchema = z.strictObject({
 });
 export type PromoStackingPolicy = z.infer<typeof promoStackingPolicySchema>;
 
+/**
+ * PRD §3.21 names "aturan tumpang tindih" as tenant configuration but does not
+ * fix a default. Until the owner sets one, the safest default applies a single
+ * promotion (the best discount), so promotions never combine by accident.
+ */
+export const defaultPromoStackingPolicy: PromoStackingPolicy = Object.freeze({
+  mode: "exclusive",
+  maxStacked: 1,
+  allowSameGroup: false,
+});
+
 export const promotionApplicationResultSchema = z.strictObject({
   evaluations: z.array(promotionEvaluationSchema),
   totalDiscountIdr: nonnegativeIdr,
@@ -591,8 +614,9 @@ export function applyPromotions(
       (entry) => entry.id === evaluation.promotionId,
     );
     // A non-stackable promotion cannot join an existing stack; if it comes
-    // first (by priority) it becomes the only promotion.
-    if (!(promotion?.stackable ?? true) && (stacked > 0 || exclusiveUsed)) {
+    // first (by priority) it becomes the only promotion, so nothing else may
+    // join it afterwards either.
+    if (exclusiveUsed || (!(promotion?.stackable ?? true) && stacked > 0)) {
       chosen.set(evaluation.promotionId, {
         applied: false,
         promotionId: evaluation.promotionId,
@@ -789,6 +813,8 @@ export function voucherUsability(
 
 export const voucherValidationInputSchema = clientInputSchema({
   code: voucherCodeInputSchema,
+  /** Preview only: the discount actually applied is recomputed from the
+   * server-priced bill when the order is posted. */
   subtotalIdr: nonnegativeIdr,
   channel: promoChannelSchema,
 });
@@ -847,15 +873,23 @@ export const promotionOutletSchema = z.strictObject({
 });
 export type PromotionOutlet = z.infer<typeof promotionOutletSchema>;
 
+/** A cart line as the client sends it: item and quantity, never a price. */
+export const promoRequestLineSchema = z.strictObject({
+  menuItemId: uuidSchema,
+  quantity: positiveInt,
+});
+export type PromoRequestLine = z.infer<typeof promoRequestLineSchema>;
+
 /**
  * Checkout request for the promo engine. The server derives `at`, the outlet
- * day/time, the member context and the voucher lookup; the client never sends
- * a tenant, a customer id or a time.
+ * day/time, the member context, the voucher lookup and every price (unit
+ * prices, line totals and the subtotal come from the channel price list, so a
+ * tampered client price can never inflate a discount); the client never sends
+ * a tenant, a customer id, a time or an amount.
  */
 export const promoEvaluationRequestSchema = clientInputSchema({
   channel: promoChannelSchema,
-  subtotalIdr: nonnegativeIdr,
-  lines: z.array(promoLineSchema).min(1),
+  lines: z.array(promoRequestLineSchema).min(1),
   voucherCode: voucherCodeInputSchema.nullable(),
 });
 export type PromoEvaluationRequest = z.infer<

@@ -103,6 +103,28 @@ test("LOY-01 ledger signs and sources are enforced per row type", () => {
     );
 });
 
+test("LOY-01 LOY-02 earn, redeem and reverse rows name their source once", () => {
+  const earn = f.ledgerEntries[0];
+  assert.equal(
+    crm.pointLedgerEntrySchema.safeParse({ ...earn, sourceId: null }).success,
+    false,
+  );
+  const key = crm.pointLedgerDedupeKey(earn);
+  assert.equal(key, `${earn.tenantId}:earn:order:${earn.sourceId}`);
+  // A replayed payment produces the same key, so the unique index rejects it.
+  assert.equal(crm.pointLedgerDedupeKey({ ...earn }), key);
+  assert.notEqual(
+    crm.pointLedgerDedupeKey({
+      ...earn,
+      type: "reverse",
+      sourceType: "refund",
+    }),
+    key,
+  );
+  const expiry = f.ledgerEntries.find((entry) => entry.type === "expire");
+  assert.equal(crm.pointLedgerDedupeKey(expiry), null);
+});
+
 // ---- LOY-02 ---------------------------------------------------------------
 
 test("LOY-02 points book only after payment and reverse on refund", () => {
@@ -408,23 +430,25 @@ test("promo DSL covers percent, nominal, BXGY, bundle, happy hour, member, chann
   ]);
   assert.equal(bxgy.discountIdr, 24_000);
 
+  // One complete bundle (2 kopi, 1 croissant): 28.000 + 24.000 - 45.000; the
+  // second kopi stays at full price.
   const bundle = evaluate("Paket Kopi + Croissant Rp45.000");
-  assert.equal(bundle.discountIdr, 35_000); // 56.000 + 24.000 - 45.000
+  assert.equal(bundle.discountIdr, 7_000);
 
   const happyHour = evaluate("Happy Hour 20%");
   assert.equal(happyHour.discountIdr, 20_000); // 46.000 capped at 20.000
   assert.equal(
     evaluate("Happy Hour 20%", { localTime: "19:00" }).reason,
-    "channel_mismatch",
+    "time_window_mismatch",
   );
   assert.equal(
     evaluate("Happy Hour 20%", { localDayOfWeek: 0 }).reason,
-    "channel_mismatch",
+    "time_window_mismatch",
   );
   assert.equal(
     evaluate("Happy Hour 20%", { localTime: "23:00", localDayOfWeek: 1 })
       .reason,
-    "channel_mismatch",
+    "time_window_mismatch",
   );
 
   const member = evaluate("Diskon Gold 15%");
@@ -511,13 +535,10 @@ test("promo stacking is deterministic and never exceeds the bill (PRD §3.21)", 
     maxStacked: 1,
     allowSameGroup: false,
   });
-  assert.equal(exclusive.totalDiscountIdr, 35_000); // bundle beats percent
+  assert.equal(exclusive.totalDiscountIdr, 34_500); // Gold 15% beats 10%
   const applied = exclusive.evaluations.filter((row) => row.applied);
   assert.equal(applied.length, 1);
-  assert.equal(
-    applied[0].promotionId,
-    promotion("Paket Kopi + Croissant Rp45.000").id,
-  );
+  assert.equal(applied[0].promotionId, promotion("Diskon Gold 15%").id);
 
   const stackable = crm.applyPromotions(f.promotions, context, [], {
     mode: "stackable",
@@ -545,6 +566,57 @@ test("promo stacking is deterministic and never exceeds the bill (PRD §3.21)", 
     allowSameGroup: true,
   });
   assert.ok(all.totalDiscountIdr <= context.subtotalIdr);
+});
+
+test("a non-stackable promotion chosen first stays alone (PRD §3.21 aturan tumpang tindih)", () => {
+  // Happy hour (priority 30, non-stackable) outranks Gold 15% and 10% once
+  // the facility reward is out of reach.
+  const context = promoContext({ subtotalIdr: 150_000 });
+  const result = crm.applyPromotions(f.promotions, context, [], {
+    mode: "stackable",
+    maxStacked: 10,
+    allowSameGroup: true,
+  });
+  const applied = result.evaluations.filter((row) => row.applied);
+  assert.deepEqual(
+    applied.map((row) => row.promotionId),
+    [promotion("Happy Hour 20%").id],
+  );
+  assert.equal(result.totalDiscountIdr, 20_000);
+  for (const name of ["Diskon Gold 15%", "Diskon 10% Semua Menu"])
+    assert.equal(
+      result.evaluations.find((row) => row.promotionId === promotion(name).id)
+        .reason,
+      "not_stackable",
+    );
+});
+
+test("default stacking policy applies one promotion when the PRD is silent (PRD §3.21)", () => {
+  assert.equal(crm.defaultPromoStackingPolicy.mode, "exclusive");
+  assert.ok(
+    crm.promoStackingPolicySchema.parse(crm.defaultPromoStackingPolicy),
+  );
+  const result = crm.applyPromotions(
+    f.promotions,
+    promoContext(),
+    [],
+    crm.defaultPromoStackingPolicy,
+  );
+  assert.equal(result.evaluations.filter((row) => row.applied).length, 1);
+});
+
+test("buy X get Y shares one free allowance across lines (PRD §3.21)", () => {
+  const croissant = f.menuItems.croissantMentega;
+  const result = evaluate("Beli 2 Kopi Gratis Croissant", {
+    lines: [
+      line(f.menuItems.kopiSusuAren, 2, 28_000),
+      line(croissant, 1, 24_000),
+      line(croissant, 1, 26_000),
+    ],
+  });
+  assert.equal(result.applied, true);
+  assert.deepEqual(result.freeItems, [{ menuItemId: croissant, quantity: 1 }]);
+  assert.equal(result.discountIdr, 24_000);
 });
 
 // ---- Vouchers -------------------------------------------------------------
@@ -784,6 +856,25 @@ test("CRM events are registered in the WS-00 catalog with typed payloads (PRD §
     false,
   );
   assert.equal(crm.crmEventPayloadSchema("order.paid"), null);
+  assert.equal(crm.crmEventPayloadSchema("constructor"), null);
+  // Defined via defineDomainEvent: each envelope is bound to its catalog entry.
+  assert.ok(
+    crm.crmEvents["points.earned"].envelopeSchema.parse(f.pointsEarnedEvent),
+  );
+  assert.equal(
+    crm.crmEventSchema.safeParse({
+      ...f.pointsEarnedEvent,
+      payload: { ...f.pointsEarnedEvent.payload, sourceId: null },
+    }).success,
+    false,
+  );
+  // Stale WS-08 placeholders were replaced by these events.
+  for (const stale of [
+    "loyalty_points.earned",
+    "loyalty_points.expired",
+    "loyalty_tier.evaluated",
+  ])
+    assert.equal(names.includes(stale), false, stale);
 });
 
 // ---- Endpoints ------------------------------------------------------------
@@ -833,10 +924,30 @@ test("CRM endpoint contracts accept fixtures and reject tenant input (TEN-02)", 
   assert.ok(
     crm.evaluatePromotions.body.parse({
       channel: "dine_in",
-      subtotalIdr: 230_000,
-      lines: promoContext().lines,
+      lines: promoContext().lines.map(({ menuItemId, quantity }) => ({
+        menuItemId,
+        quantity,
+      })),
       voucherCode: "legend25",
     }),
+  );
+  // Prices are server-derived: a client-sent price or subtotal is rejected.
+  assert.equal(
+    crm.evaluatePromotions.body.safeParse({
+      channel: "dine_in",
+      lines: promoContext().lines,
+      voucherCode: null,
+    }).success,
+    false,
+  );
+  assert.equal(
+    crm.evaluatePromotions.body.safeParse({
+      channel: "dine_in",
+      subtotalIdr: 1,
+      lines: [{ menuItemId: f.menuItems.americano, quantity: 1 }],
+      voucherCode: null,
+    }).success,
+    false,
   );
   const omitKeys = (object, keys) =>
     Object.fromEntries(
