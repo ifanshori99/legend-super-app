@@ -71,6 +71,14 @@ export function AreaFrame({
   );
   const brandName = t("app.defaultBrand");
   const signOut = session ? <SignOutButton /> : null;
+  // Never offer sign-in to a visitor the guard already treats as signed in
+  // (mock mode has access without a real session; the API still authorizes).
+  const signIn =
+    session || access.authenticated ? null : (
+      <Button asChild variant="outline" size="sm">
+        <Link to="/sign-in">{t("auth.signIn")}</Link>
+      </Button>
+    );
 
   if (definition.shell === "management") {
     const current = nav.find((item) => item.current);
@@ -121,11 +129,7 @@ export function AreaFrame({
       actions={
         <>
           <ThemeToggle />
-          {signOut ?? (
-            <Button asChild variant="outline" size="sm">
-              <Link to="/sign-in">{t("auth.signIn")}</Link>
-            </Button>
-          )}
+          {signOut ?? signIn}
         </>
       }
     >
