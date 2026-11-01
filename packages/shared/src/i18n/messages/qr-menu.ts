@@ -75,9 +75,13 @@ export const qrMenuMessages = {
     noResultsHint: "Coba kata kunci lain atau hapus filter.",
     errorTitle: "Menu belum bisa dimuat",
     errorHint: "Periksa koneksi internet Anda, lalu coba lagi.",
+    offlineTitle: "Tidak ada koneksi",
+    offlineHint:
+      "Menu butuh internet. Sambungkan kembali jaringan Anda, lalu muat ulang.",
     notFoundTitle: "QR meja tidak dikenali",
     notFoundHint:
       "Kode ini mungkin sudah diganti atau rusak. Scan ulang QR di meja Anda, atau minta bantuan waiter.",
+    retry: "Muat ulang",
     loading: "Memuat menu…",
   },
   join: {

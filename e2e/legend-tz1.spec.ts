@@ -4,6 +4,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const privateRoom = `v1.${"E".repeat(40)}.${"F".repeat(43)}`; // P1: one open failed item
+const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01: pay-first, no minimum spend
 
 async function joinTable(page: Page, token: string) {
   await page.goto(`/t/${token}`);
@@ -70,6 +71,55 @@ test.describe("Failed-item recovery and review (mock)", () => {
     await expect(
       page.getByText(/Bayar selisih|Dikreditkan|Tanpa selisih/),
     ).toBeVisible();
+  });
+
+  test("ORD-09 a paid guest rates the visit and gets the Google review CTA", async ({
+    page,
+  }) => {
+    await joinTable(page, freeTable);
+    await page.getByRole("searchbox", { name: "Cari menu" }).fill("espresso");
+    await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
+    const sheet = page.getByRole("dialog");
+    await sheet.getByRole("radio", { name: /Dingin/ }).click();
+    await sheet.getByRole("radio", { name: "Normal" }).click();
+    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+    await expect(sheet).toBeHidden();
+
+    // Pay the held order, so the bill is settled and the review opens.
+    await page.getByRole("link", { name: /Keranjang/ }).click();
+    await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
+    await page.getByRole("button", { name: /^Bayar Rp/ }).click();
+    const pay = page.getByRole("dialog");
+    await pay.getByRole("radio", { name: /QRIS/ }).click();
+    await pay.getByRole("button", { name: "Lanjut bayar" }).click();
+    await expect(page.getByRole("img", { name: /Kode QRIS/ })).toBeVisible();
+    await expect(
+      page.getByText("Pembayaran berhasil", { exact: true }),
+    ).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // The bill must be settled before the review opens (ORD-09).
+    await page.goto(`/t/${freeTable}/bill`);
+    await expect(page.getByText("Tagihan lunas")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole("link", { name: "Beri ulasan" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Bagaimana kunjungan Anda?" }),
+    ).toBeVisible();
+    await page.getByRole("radio", { name: "5 dari 5 bintang" }).click();
+    await page
+      .getByRole("textbox", { name: "Komentar" })
+      .fill("Kopi enak dan pelayanannya cepat.");
+    await page.getByRole("button", { name: "Kirim ulasan" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Terima kasih atas ulasan Anda" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: /Tulis ulasan di Google/ }),
+    ).toHaveAttribute("href", /^https:\/\//);
   });
 
   test("review stays closed until the bill is paid", async ({ page }) => {

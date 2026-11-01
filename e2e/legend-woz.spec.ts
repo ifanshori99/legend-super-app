@@ -5,6 +5,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const privateRoom = `v1.${"E".repeat(40)}.${"F".repeat(43)}`; // P1, open bill, bill + 2 splits (1 paid)
+const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01, pay-first, no minimum spend
 
 async function joinTable(page: Page, token: string) {
   await page.goto(`/t/${token}`);
@@ -63,6 +64,57 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     await expect(
       page.getByText(/Jumlah semua bagian .*, sama dengan total tagihan/),
     ).toBeVisible();
+  });
+
+  test("ORD-03 ORD-06 'Bagi tagihan' at checkout opens the bill and splits the order exactly", async ({
+    page,
+  }) => {
+    await joinTable(page, freeTable);
+    await page.getByRole("searchbox", { name: "Cari menu" }).fill("espresso");
+    await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
+    const sheet = page.getByRole("dialog");
+    await sheet.getByRole("radio", { name: /Dingin/ }).click();
+    await sheet.getByRole("radio", { name: "Normal" }).click();
+    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+    await expect(sheet).toBeHidden();
+
+    await page.getByRole("link", { name: /Keranjang/ }).click();
+    await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
+    // Checkout holds the order for payment and hands it to the split screen.
+    await page.getByRole("button", { name: "Bagi tagihan" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Tagihan", level: 1 }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Bagi tagihan", level: 2 }),
+    ).toBeVisible();
+
+    // The preview sums exactly to the bill total before anything is created.
+    await expect(
+      page.getByText(/Jumlah semua bagian .*, sama dengan total tagihan/),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Buat pembagian" }).click();
+    await expect(page.getByText("Bagian 1")).toBeVisible();
+    await expect(page.getByText("Bagian 2")).toBeVisible();
+
+    // One guest pays their share; the gateway confirms and the bill reflects it.
+    await page
+      .getByRole("button", { name: "Bayar bagian ini" })
+      .first()
+      .click();
+    const pay = page.getByRole("dialog");
+    await pay.getByRole("radio", { name: /QRIS/ }).click();
+    await pay.getByRole("button", { name: "Lanjut bayar" }).click();
+    await expect(page.getByRole("img", { name: /Kode QRIS/ })).toBeVisible();
+    await expect(
+      page.getByText("Pembayaran berhasil", { exact: true }),
+    ).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.goto(`/t/${freeTable}/bill`);
+    await expect(page.getByText("Lunas").first()).toBeVisible();
+    await expect(page.getByText("Belum dibayar").first()).toBeVisible();
   });
 
   test("ORD-06 point claim asks for the guest's own share and confirms it", async ({

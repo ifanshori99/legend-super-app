@@ -27,7 +27,14 @@ function BillSkeleton() {
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("qrOrders.bill.loading")}</span>
       <Skeleton className="h-7 w-40" />
-      <Skeleton className="h-72 w-full rounded-xl" />
+      <div className="grid gap-3 rounded-xl border-(length:--border-w) p-card">
+        {[0, 1, 2, 3, 4].map((row) => (
+          <div key={row} className="flex items-center justify-between gap-3">
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-4 w-20" />
+          </div>
+        ))}
+      </div>
       <Skeleton className="h-14 w-full rounded-control" />
     </div>
   );
@@ -240,7 +247,7 @@ export function BillPage() {
                 onDone={() => setChanging(false)}
               />
             )}
-            {splits.length === 0 && (
+            {splits.length === 0 && !showSplitPanel && (
               <section className="grid gap-2">
                 <h2 className="sr-only">{t("qrOrders.bill.payTitle")}</h2>
                 <Button

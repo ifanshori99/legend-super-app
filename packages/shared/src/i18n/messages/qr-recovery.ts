@@ -117,7 +117,7 @@ export const qrRecoveryMessages = {
     thanks: {
       title: "Terima kasih atas ulasan Anda",
       high: "Senang Anda menikmati kunjungan ini.",
-      low: "Terima kasih, masukan Anda kami baca",
+      low: "Masukan Anda kami baca dan jadikan perbaikan.",
       google: "Tulis ulasan di Google",
       googleHint: "Ulasan di Google membantu tamu lain menemukan kami.",
     },

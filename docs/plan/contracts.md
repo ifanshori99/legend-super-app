@@ -127,6 +127,7 @@ The customer screens of `/t/[token]` need read models the WS-03 contract beads (
 - `getOrderEtas`: per-order estimate from WS-04 pacing for the status screen (ORD-11 keeps the pre-checkout estimate in the quote).
 
 Guest endpoints (`/api/table-sessions/…`) are called with `Authorization: Bearer <sessionToken>` from `openOrJoinTableSession` (`lib/api/credentials.ts`).
+
 ## Identity & access (`@starter/shared/identity`, bead `legend-7sz`)
 
 Code: `packages/shared/src/identity`. Tests: `tests/identity-contract.test.mjs`. PRD §3 F6/F7, §6 B, flow §4 C and R, AUTH-01..07.

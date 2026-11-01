@@ -47,7 +47,7 @@ export function JoinDialog() {
               join.mutate(pax, { onSuccess: () => closeJoin() });
             }}
           >
-            <div className="flex items-center justify-between gap-4 rounded-xl border p-3">
+            <div className="flex flex-col items-start gap-3 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
               <div className="min-w-0">
                 <p id="pax-label" className="font-semibold">
                   {t("qrMenu.join.paxLabel")}

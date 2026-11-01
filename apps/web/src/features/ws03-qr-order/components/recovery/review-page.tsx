@@ -27,9 +27,18 @@ function ReviewSkeleton() {
   return (
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("common.loading")}</span>
-      <Skeleton className="h-8 w-3/4" />
-      <Skeleton className="h-12 w-64 max-w-full" />
-      <Skeleton className="h-28 w-full rounded-field" />
+      <div className="grid gap-1">
+        <Skeleton className="h-8 w-3/4" />
+        <Skeleton className="h-4 w-full max-w-sm" />
+      </div>
+      <div className="grid gap-2">
+        <Skeleton className="h-4 w-24" />
+        <Skeleton className="h-12 w-64 max-w-full rounded-control" />
+      </div>
+      <div className="grid gap-2">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="h-28 w-full rounded-field" />
+      </div>
       <Skeleton className="h-12 w-full rounded-control" />
     </div>
   );
@@ -74,10 +83,10 @@ function ThankYou({
       aria-live="polite"
       className="grid gap-3 rounded-xl border-(length:--border-w) p-card"
     >
-      <h2 className="flex items-start gap-2 text-lg leading-7 font-semibold">
+      <h1 className="flex items-start gap-2 text-lg leading-7 font-semibold">
         <CircleCheck className="mt-1 size-icon shrink-0" aria-hidden="true" />
         {t("qrRecovery.review.thanks.title")}
-      </h2>
+      </h1>
       {toGoogle ? (
         <>
           <p>{t("qrRecovery.review.thanks.high")}</p>
@@ -151,7 +160,6 @@ export function ReviewPage() {
   if (submit.isSuccess)
     return (
       <div className="grid gap-4">
-        {header}
         <ThankYou
           review={submit.data.data}
           googleUrl={safeHttpUrl(
@@ -164,15 +172,14 @@ export function ReviewPage() {
   if (state.alreadySubmitted)
     return (
       <div className="grid gap-4">
-        {header}
         <section className="grid gap-1 rounded-xl border-(length:--border-w) p-card">
-          <h2 className="flex items-start gap-2 text-lg leading-7 font-semibold">
+          <h1 className="flex items-start gap-2 text-lg leading-7 font-semibold">
             <CircleCheck
               className="mt-1 size-icon shrink-0"
               aria-hidden="true"
             />
             {t("qrRecovery.review.already.title")}
-          </h2>
+          </h1>
           <p className="text-muted-foreground">
             {t("qrRecovery.review.already.hint")}
           </p>
@@ -262,6 +269,7 @@ export function ReviewPage() {
             value={comment}
             maxLength={COMMENT_MAX}
             rows={4}
+            className="resize-none"
             placeholder={t("qrRecovery.review.comment.placeholder")}
             disabled={submit.isPending}
             onChange={(event) => setComment(event.target.value)}

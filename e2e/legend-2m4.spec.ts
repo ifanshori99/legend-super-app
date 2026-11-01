@@ -29,7 +29,9 @@ test.describe("QR customer journey (mock)", () => {
       page.getByRole("heading", { name: /Selamat datang di Cafe Legend/ }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Mulai pesan" }).click();
-    await expect(page.getByText("Meja A01 · 2 tamu")).toBeVisible();
+    await expect(
+      page.getByText("Indoor Reguler · Bayar di muka · 2 tamu"),
+    ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Menu", level: 1 }),
     ).toBeVisible();
@@ -70,7 +72,7 @@ test.describe("QR customer journey (mock)", () => {
     ).toBeVisible();
     await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
     const sheet = page.getByRole("dialog");
-    await sheet.getByRole("button", { name: /^Tambah ·/ }).click();
+    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
     await expect(
       sheet.getByText("Pilih salah satu varian dulu."),
     ).toBeVisible();
@@ -81,7 +83,7 @@ test.describe("QR customer journey (mock)", () => {
     await sheet.getByRole("radio", { name: /Dingin/ }).click();
     await sheet.getByRole("radio", { name: "Normal" }).click();
     await sheet.getByRole("button", { name: "Tambah jumlah" }).click();
-    await sheet.getByRole("button", { name: /^Tambah ·/ }).click();
+    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
     await expect(sheet).toBeHidden();
 
     // The shared cart shows it; the nav carries the count.
@@ -109,7 +111,9 @@ test.describe("QR customer journey (mock)", () => {
     await pay.getByRole("button", { name: "Lanjut bayar" }).click();
     await expect(page.getByRole("img", { name: /Kode QRIS/ })).toBeVisible();
     await expect(page.getByText("Menunggu pembayaran Anda…")).toBeVisible();
-    await expect(page.getByText("Pembayaran berhasil")).toBeVisible({
+    await expect(
+      page.getByText("Pembayaran berhasil", { exact: true }),
+    ).toBeVisible({
       timeout: 15_000,
     });
 
@@ -149,7 +153,39 @@ test.describe("QR customer journey (mock)", () => {
     ).toHaveCount(0);
     await page.getByRole("button", { name: "Buka sesi baru" }).click();
     await expect(
-      page.getByRole("button", { name: "Mulai pesan" }),
+      page.getByRole("dialog").getByRole("button", { name: "Mulai pesan" }),
+    ).toBeVisible();
+  });
+});
+
+// Reload persistence: the mock engine snapshots into sessionStorage, so a
+// refreshed tab keeps the joined table session and its shared cart (ORD-01).
+// No beforeEach here: that script clears sessionStorage on every navigation.
+test.describe("QR journey survives a reload (mock)", () => {
+  test("ORD-01 ORD-03 a reload keeps the joined table and the shared cart", async ({
+    page,
+  }) => {
+    await page.goto(`/t/${token}`);
+    await page.getByRole("button", { name: "Mulai pesan" }).click();
+    await expect(
+      page.getByText("Indoor Reguler · Bayar di muka · 2 tamu"),
+    ).toBeVisible();
+
+    await page.getByRole("searchbox", { name: "Cari menu" }).fill("espresso");
+    await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
+    const sheet = page.getByRole("dialog");
+    await sheet.getByRole("radio", { name: /Dingin/ }).click();
+    await sheet.getByRole("radio", { name: "Normal" }).click();
+    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+    await expect(sheet).toBeHidden();
+
+    await page.reload();
+    await expect(
+      page.getByText("Indoor Reguler · Bayar di muka · 2 tamu"),
+    ).toBeVisible();
+    await page.getByRole("link", { name: /Keranjang/ }).click();
+    await expect(
+      page.getByText("Espresso (Dingin)", { exact: true }),
     ).toBeVisible();
   });
 });

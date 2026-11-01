@@ -83,7 +83,7 @@ export function OrderCard({
       aria-labelledby={`order-${order.id}`}
       className="grid gap-3 rounded-xl border bg-card p-card"
     >
-      <header className="flex items-start justify-between gap-3">
+      <header className="flex flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="grid gap-0.5">
           <h2
             id={`order-${order.id}`}

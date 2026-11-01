@@ -22,6 +22,19 @@ export function MenuLoadState({
         icon={QrCode}
         title={t("qrMenu.states.notFoundTitle")}
         description={t("qrMenu.states.notFoundHint")}
+        action={
+          <Button type="button" onClick={onRetry}>
+            {t("qrMenu.states.retry")}
+          </Button>
+        }
+      />
+    );
+  if (error && (error.status === 0 || error.code === "NETWORK_ERROR"))
+    return (
+      <ErrorState
+        title={t("qrMenu.states.offlineTitle")}
+        description={t("qrMenu.states.offlineHint")}
+        onRetry={onRetry}
       />
     );
   return (

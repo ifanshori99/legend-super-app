@@ -390,3 +390,67 @@ test("ORD-01 the shared cart is one state for every guest of the table", () => {
   assert.equal(engine.view(sessionId).cart.lines.length, 1);
   assert.equal(engine.view(sessionId).cart.lines[0].quantity, 3);
 });
+
+test("ORD-01 a browser reload restores the joined session, cart and placed orders", () => {
+  const { engine, scan, sessionId } = fresh();
+  const menu = engine.menuFor(T.freeTable);
+  const item = menu.items.find(
+    (i) =>
+      i.variants.length === 0 &&
+      i.modifierGroups.length === 0 &&
+      i.status === "available",
+  );
+  engine.addLine(sessionId, {
+    menuItemId: item.id,
+    quantity: 1,
+    modifierIds: [],
+    expectedCartVersion: 0,
+  });
+
+  // What sessionStorage holds after the handler: plain JSON, no Maps or dates.
+  const saved = JSON.parse(JSON.stringify(engine.snapshot()));
+  const reloaded = createEngine();
+  reloaded.restore(saved);
+
+  const view = reloaded.view(scan.session.id);
+  assert.equal(view.session.id, sessionId);
+  assert.equal(view.session.participants.length, 1);
+  assert.equal(view.cart.version, 1);
+  assert.equal(view.cart.lines.length, 1);
+  assert.equal(view.cart.lines[0].quantity, 1);
+
+  // The restored engine keeps accepting writes with the restored cart version.
+  reloaded.addLine(sessionId, {
+    menuItemId: item.id,
+    quantity: 2,
+    modifierIds: [],
+    expectedCartVersion: 1,
+  });
+  assert.equal(reloaded.view(sessionId).cart.lines[0].quantity, 3);
+
+  const placed = reloaded.place(sessionId, {
+    expectedCartVersion: 2,
+    idempotencyKey: "reload-key-1",
+  });
+  assert.equal(placed.order.items.length, 1);
+  const again = JSON.parse(JSON.stringify(reloaded.snapshot()));
+  const third = createEngine();
+  third.restore(again);
+  assert.equal(third.view(sessionId).cart.lines.length, 0);
+  assert.equal(third.bill(sessionId).orders.length, 1);
+  // Replaying the same idempotency key after a reload returns the same order.
+  assert.equal(
+    third.place(sessionId, {
+      expectedCartVersion: third.view(sessionId).cart.version,
+      idempotencyKey: "reload-key-1",
+    }).order.id,
+    placed.order.id,
+  );
+
+  // A fresh engine still knows nothing (the session lives in the snapshot only).
+  assert.throws(
+    () => createEngine().view(sessionId),
+    (e) => e.status === 404,
+  );
+  assert.throws(() => reloaded.restore({ ...saved, version: 999 }), RangeError);
+});

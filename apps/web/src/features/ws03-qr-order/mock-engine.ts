@@ -16,6 +16,7 @@ import {
   qrTokenTableCodes,
   quoteConfigForZone,
   splitBill,
+  tableSessionTokenExpiresAt,
   type BillSplit,
   type CartLine,
   type FloorZone,
@@ -39,7 +40,6 @@ const STAFF_USER = "00000000-0000-4000-8000-000000009001";
 const EARN_SPEND_IDR = 10_000; // fixture loyalty program earnRate: 1 point / Rp10.000
 /** A mock payment settles this long after it is created (webhook stand-in). */
 export const MOCK_PAYMENT_SETTLE_MS = 4000;
-const SESSION_TOKEN_TTL_MS = 6 * 3_600_000;
 
 type Clock = () => number;
 
@@ -67,6 +67,12 @@ type PaymentRec = {
   applied: boolean;
 };
 
+type PlacedResult = {
+  order: QrOrder;
+  quote: ReturnType<typeof computeQuote>;
+  session: TableSession;
+};
+
 type SessionRec = {
   session: TableSession;
   table: Table;
@@ -82,17 +88,35 @@ type SessionRec = {
   review: TableReview | null;
   paidIdr: number;
   claimed: boolean;
-  placed: Map<
-    string,
-    {
-      order: QrOrder;
-      quote: ReturnType<typeof computeQuote>;
-      session: TableSession;
-    }
-  >;
+  placed: Map<string, PlacedResult>;
 };
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** Bumped when the serialized shape changes; stale browser snapshots are dropped. */
+export const ENGINE_SNAPSHOT_VERSION = 1;
+
+/** Serialized engine state kept in sessionStorage so a page reload keeps the table session. */
+export type QrEngineSnapshot = {
+  version: typeof ENGINE_SNAPSHOT_VERSION;
+  callerParticipantId: string | null;
+  orderSeq: number;
+  records: {
+    session: TableSession;
+    tableCode: string;
+    cartVersion: number;
+    lines: CartLine[];
+    orders: OrderRec[];
+    requests: { request: ServiceRequest; createdMs: number }[];
+    splits: BillSplit[];
+    issues: GuestOrderIssue[];
+    payments: PaymentRec[];
+    review: TableReview | null;
+    paidIdr: number;
+    claimed: boolean;
+    placed: [string, PlacedResult][];
+  }[];
+};
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -141,7 +165,22 @@ export function createEngine(clock: Clock = Date.now) {
 
   // ---- Seed from the fixtures -------------------------------------------
   {
-    const [indoor, privateRoom, wfc] = F.sessions;
+    // The fixtures are dated, so a running mock shifts the seeded sessions to
+    // "opened N minutes ago": they stay live (session token < 12 h) whenever the
+    // demo runs, and the bill/status screens show sensible times.
+    const recent = (
+      session: TableSession,
+      minutesAgo: number,
+    ): TableSession => ({
+      ...clone(session),
+      openedAt: iso(clock() - minutesAgo * 60_000),
+      lastActivityAt: iso(clock()),
+    });
+    const [indoor, privateRoom, wfc] = [
+      recent(F.sessions[0], 90),
+      recent(F.sessions[1], 150),
+      recent(F.sessions[2], 30),
+    ];
     const a03 = newRec(indoor, tableByCode("A03"));
     a03.lines = clone(F.cart.lines);
     a03.cartVersion = F.cart.version;
@@ -275,7 +314,8 @@ export function createEngine(clock: Clock = Date.now) {
       brand: F.scanResult.brand,
       session: clone(rec.session),
       sessionToken: `st_${rand("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789_-", 32)}`,
-      sessionTokenExpiresAt: iso(now + SESSION_TOKEN_TTL_MS),
+      // ORD-04: at most 12 h from the session open and never past the close.
+      sessionTokenExpiresAt: tableSessionTokenExpiresAt(rec.session),
       menuUpdatedAt: rec.menu.menuUpdatedAt,
       soldOutItemIds: rec.menu.items
         .filter((item) => item.status === "sold_out")
@@ -1220,6 +1260,65 @@ export function createEngine(clock: Clock = Date.now) {
     callerParticipantId = participantId;
   }
 
+  // ---- Reload persistence ---------------------------------------------------
+  /** Everything the browser needs to keep one table journey across a reload. */
+  function snapshot(): QrEngineSnapshot {
+    return {
+      version: ENGINE_SNAPSHOT_VERSION,
+      callerParticipantId,
+      orderSeq,
+      records: [...records.values()].map((rec) => ({
+        session: clone(rec.session),
+        tableCode: rec.table.code,
+        cartVersion: rec.cartVersion,
+        lines: clone(rec.lines),
+        orders: clone(rec.orders),
+        requests: clone(rec.requests),
+        splits: clone(rec.splits),
+        issues: clone(rec.issues),
+        payments: clone([...rec.payments.values()]),
+        review: clone(rec.review),
+        paidIdr: rec.paidIdr,
+        claimed: rec.claimed,
+        placed: clone([...rec.placed.entries()]),
+      })),
+    };
+  }
+
+  /** Rebuilds the seeded and guest-created sessions from a browser snapshot. */
+  function restore(saved: QrEngineSnapshot) {
+    if (saved.version !== ENGINE_SNAPSHOT_VERSION)
+      throw new RangeError("Snapshot mock QR tidak dikenal.");
+    const next = new Map<string, SessionRec>();
+    for (const entry of saved.records) {
+      const table = tableByCode(entry.tableCode);
+      const zone = zoneOf(table);
+      next.set(entry.session.id, {
+        session: clone(entry.session),
+        table,
+        zone,
+        menu: buildQrMenu({ table, zone }),
+        cartVersion: entry.cartVersion,
+        lines: clone(entry.lines),
+        orders: clone(entry.orders),
+        requests: clone(entry.requests),
+        splits: clone(entry.splits),
+        issues: clone(entry.issues),
+        payments: new Map(
+          clone(entry.payments).map((rec) => [rec.payment.id, rec]),
+        ),
+        review: clone(entry.review),
+        paidIdr: entry.paidIdr,
+        claimed: entry.claimed,
+        placed: new Map(clone(entry.placed)),
+      });
+    }
+    records.clear();
+    for (const [id, rec] of next) records.set(id, rec);
+    callerParticipantId = saved.callerParticipantId;
+    orderSeq = saved.orderSeq;
+  }
+
   return {
     scan,
     menuFor,
@@ -1243,6 +1342,8 @@ export function createEngine(clock: Clock = Date.now) {
     suggestions,
     orderEtas,
     setGuest,
+    snapshot,
+    restore,
     allocate: allocateIdr,
   };
 }

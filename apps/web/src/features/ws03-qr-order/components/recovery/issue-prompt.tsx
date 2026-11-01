@@ -23,25 +23,27 @@ export function IssuePrompt() {
   return (
     <div
       role="status"
-      className="flex flex-wrap items-center gap-3 rounded-xl border-(length:--border-w) border-warning bg-warning-subtle p-3"
+      className="flex items-start gap-3 rounded-xl border-(length:--border-w) border-warning bg-warning-subtle p-3"
     >
       <TriangleAlert
-        className="size-icon shrink-0 text-warning"
+        className="mt-0.5 size-icon shrink-0 text-warning"
         aria-hidden="true"
       />
-      <p className="min-w-0 flex-1 text-sm leading-5 font-medium text-foreground">
-        {open.length === 1
-          ? t("qrRecovery.prompt.one", { item: first.itemName })
-          : t("qrRecovery.prompt.many", { count: open.length })}
-      </p>
-      <Button asChild size="sm">
-        <Link
-          to="/t/$token/issue/$issueId"
-          params={{ token: qrToken, issueId: first.id }}
-        >
-          {t("qrRecovery.prompt.action")}
-        </Link>
-      </Button>
+      <div className="grid min-w-0 flex-1 gap-2">
+        <p className="min-w-0 text-sm leading-5 font-medium text-foreground">
+          {open.length === 1
+            ? t("qrRecovery.prompt.one", { item: first.itemName })
+            : t("qrRecovery.prompt.many", { count: open.length })}
+        </p>
+        <Button asChild size="sm" className="w-fit">
+          <Link
+            to="/t/$token/issue/$issueId"
+            params={{ token: qrToken, issueId: first.id }}
+          >
+            {t("qrRecovery.prompt.action")}
+          </Link>
+        </Button>
+      </div>
     </div>
   );
 }

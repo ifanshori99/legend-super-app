@@ -339,21 +339,7 @@ export function CheckoutPage() {
         />
       )}
 
-      {!session && (
-        <Card>
-          <CardContent className="grid gap-3">
-            <p className="font-semibold">{t("qrCart.checkout.loginTitle")}</p>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("qrCart.checkout.loginHint")}
-            </p>
-            <Button asChild variant="outline" className="w-fit">
-              <Link to="/sign-in">{t("qrCart.checkout.signIn")}</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="sticky bottom-0 z-10 -mx-gutter grid gap-2 border-t bg-background px-gutter py-3">
+      <div className="sticky bottom-0 z-10 order-last -mx-gutter grid gap-2 border-t bg-background px-gutter py-3 sm:static sm:order-none">
         {place.isError && (
           <Notice tone="danger" title={errorText(t, place.error)} />
         )}
@@ -389,6 +375,20 @@ export function CheckoutPage() {
           </p>
         )}
       </div>
+
+      {!session && (
+        <Card>
+          <CardContent className="grid gap-3">
+            <p className="font-semibold">{t("qrCart.checkout.loginTitle")}</p>
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("qrCart.checkout.loginHint")}
+            </p>
+            <Button asChild variant="outline" className="w-fit">
+              <Link to="/sign-in">{t("qrCart.checkout.signIn")}</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {payTarget && (
         <PayDialog

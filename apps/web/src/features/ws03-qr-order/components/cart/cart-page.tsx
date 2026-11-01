@@ -37,6 +37,17 @@ export function CartPage() {
   const busy = change.isPending || remove.isPending;
   const failure = change.error ?? remove.error;
 
+  const heading = (
+    <header className="grid gap-1">
+      <h1 className="text-3xl leading-9 font-bold tracking-tight">
+        {t("qrCart.cart.title")}
+      </h1>
+      <p className="text-sm leading-5 text-muted-foreground">
+        {t("qrCart.cart.sharedHint")}
+      </p>
+    </header>
+  );
+
   if (ended) return <SessionEnded />;
   if (!guest)
     return (
@@ -53,20 +64,26 @@ export function CartPage() {
     );
   if (viewError)
     return (
-      <ErrorState
-        title={t("qrCart.cart.errorTitle")}
-        description={t("qrCart.cart.errorHint")}
-        onRetry={() => window.location.reload()}
-      />
+      <div className="grid gap-4">
+        {heading}
+        <ErrorState
+          title={t("qrCart.cart.errorTitle")}
+          description={t("qrCart.cart.errorHint")}
+          onRetry={() => window.location.reload()}
+        />
+      </div>
     );
   if (!view)
     return (
-      <div aria-busy="true" className="grid gap-3">
-        <span className="sr-only">{t("qrCart.cart.loading")}</span>
-        <Skeleton className="h-9 w-1/2" />
-        {[0, 1, 2].map((key) => (
-          <Skeleton key={key} className="h-28 w-full rounded-2xl" />
-        ))}
+      <div className="grid gap-4">
+        {heading}
+        <div aria-busy="true" className="grid gap-3">
+          <span className="sr-only">{t("qrCart.cart.loading")}</span>
+          <Skeleton className="h-9 w-1/2" />
+          {[0, 1, 2].map((key) => (
+            <Skeleton key={key} className="h-28 w-full rounded-2xl" />
+          ))}
+        </div>
       </div>
     );
 
@@ -93,14 +110,7 @@ export function CartPage() {
 
   return (
     <div className="grid gap-4">
-      <header className="grid gap-1">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrCart.cart.title")}
-        </h1>
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("qrCart.cart.sharedHint")}
-        </p>
-      </header>
+      {heading}
 
       {failure && !busy && (
         <Notice

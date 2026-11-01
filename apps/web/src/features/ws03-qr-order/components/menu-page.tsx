@@ -220,7 +220,7 @@ export function MenuPage({
             placeholder={t("qrMenu.search.placeholder")}
             value={search.q ?? ""}
             onChange={(event) => onSearchChange({ q: event.target.value })}
-            className="px-10"
+            className="px-10 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
             autoComplete="off"
             enterKeyHint="search"
           />
