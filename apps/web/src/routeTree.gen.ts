@@ -24,6 +24,7 @@ import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
+import { Route as CustomerWifiRouteImport } from './routes/_customer/wifi'
 import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
 import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
@@ -122,6 +123,11 @@ const AuthSignUpRoute = AuthSignUpRouteImport.update({
 const CustomerMemberRoute = CustomerMemberRouteImport.update({
   id: '/member',
   path: '/member',
+  getParentRoute: () => CustomerRoute,
+} as any)
+const CustomerWifiRoute = CustomerWifiRouteImport.update({
+  id: '/wifi',
+  path: '/wifi',
   getParentRoute: () => CustomerRoute,
 } as any)
 const KitchenExpoRoute = KitchenExpoRouteImport.update({
@@ -314,6 +320,7 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
+  '/wifi': typeof CustomerWifiRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
@@ -354,6 +361,7 @@ export interface FileRoutesByTo {
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
+  '/wifi': typeof CustomerWifiRoute
   '/expo': typeof KitchenExpoRoute
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
@@ -405,6 +413,7 @@ export interface FileRoutesById {
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
+  '/_customer/wifi': typeof CustomerWifiRoute
   '/_kitchen/expo': typeof KitchenExpoRoute
   '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
@@ -449,6 +458,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/member'
+    | '/wifi'
     | '/expo'
     | '/pickup'
     | '/admin'
@@ -489,6 +499,7 @@ export interface FileRouteTypes {
     | '/design-system'
     | '/sign-in'
     | '/sign-up'
+    | '/wifi'
     | '/expo'
     | '/pickup'
     | '/admin'
@@ -539,6 +550,7 @@ export interface FileRouteTypes {
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
+    | '/_customer/wifi'
     | '/_kitchen/expo'
     | '/_kitchen/pickup'
     | '/_protected/admin'
@@ -696,6 +708,13 @@ declare module '@tanstack/react-router' {
       path: '/member'
       fullPath: '/member'
       preLoaderRoute: typeof CustomerMemberRouteImport
+      parentRoute: typeof CustomerRoute
+    }
+    '/_customer/wifi': {
+      id: '/_customer/wifi'
+      path: '/wifi'
+      fullPath: '/wifi'
+      preLoaderRoute: typeof CustomerWifiRouteImport
       parentRoute: typeof CustomerRoute
     }
     '/_kitchen/expo': {
@@ -1004,6 +1023,7 @@ const CustomerTTokenRouteWithChildren = CustomerTTokenRoute._addFileChildren(
 
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerWifiRoute: typeof CustomerWifiRoute
   CustomerBayarTokenRoute: typeof CustomerBayarTokenRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRouteWithChildren
@@ -1011,6 +1031,7 @@ interface CustomerRouteChildren {
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerWifiRoute: CustomerWifiRoute,
   CustomerBayarTokenRoute: CustomerBayarTokenRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRouteWithChildren,
