@@ -13,7 +13,7 @@ catalog:
   pino: 10.4.0
   pino-pretty: 13.2.0
   typescript: 5.9.3
-  zod: 4.6.5
+  zod: 4.6.6
 
 # Dependency install scripts are blocked unless reviewed here.
 allowBuilds:
@@ -22,3 +22,5 @@ allowBuilds:
 # drizzle-kit's legacy loader pins an old esbuild; use a patched release.
 overrides:
   "@esbuild-kit/core-utils>esbuild": 0.25.12
+  "express>body-parser": 2.4.0
+  "eslint-plugin-react-hooks>zod": 4.6.6
