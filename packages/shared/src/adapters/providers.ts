@@ -39,6 +39,10 @@ export const storageLookupSchema = z.strictObject({
   ...tenantScope,
   reference,
   key: storageKeySchema,
+  visibility: z.enum(["public", "private"]).optional(),
+});
+export const storageSignedLookupSchema = storageLookupSchema.extend({
+  expiresInSeconds: z.number().int().min(1).max(3600),
 });
 
 /** PRD §5 payment cycle: pending -> paid | expired | failed -> refunded;
@@ -149,7 +153,8 @@ export const storageRequestSchema = z.strictObject({
   reference,
   key: storageKeySchema,
   contentType: reference,
-  content: z.string(),
+  content: z.union([z.string(), z.instanceof(Uint8Array)]),
+  visibility: z.enum(["public", "private"]).optional(),
 });
 export const emailRequestSchema = z.strictObject({
   ...tenantScope,
@@ -204,6 +209,7 @@ export const operationResultSchema = z.strictObject({
 });
 export type ScopedReference = z.infer<typeof scopedReferenceSchema>;
 export type StorageLookup = z.infer<typeof storageLookupSchema>;
+export type StorageSignedLookup = z.infer<typeof storageSignedLookupSchema>;
 export type PaymentRequest = z.infer<typeof paymentRequestSchema>;
 export type PaymentRefundRequest = z.infer<typeof paymentRefundRequestSchema>;
 export type PaymentResult = z.infer<typeof paymentResultSchema>;
@@ -308,6 +314,15 @@ export interface ObjectStorage {
     context: ScopedTenantContext,
     input: StorageLookup,
   ): Promise<StorageRequest>;
+  delete(context: ScopedTenantContext, input: StorageLookup): Promise<void>;
+  signedGetUrl(
+    context: ScopedTenantContext,
+    input: StorageSignedLookup,
+  ): Promise<string>;
+  publicUrl(
+    context: ScopedTenantContext,
+    input: StorageLookup,
+  ): Promise<string>;
 }
 export interface EmailProvider {
   send(

@@ -1,0 +1,123 @@
+import { Router, type Request, type RequestHandler } from "express";
+import multer from "multer";
+import {
+  assertTrustedScopedContext,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  createStorageSignedUrl,
+  signedStorageUrlBodySchema,
+  signedStorageUrlSchema,
+  storageObjectIdSchema,
+  storageObjectSchema,
+  uploadStorageMetadataSchema,
+  uploadStorageObject,
+} from "@starter/shared/storage";
+import { HttpError } from "../lib/http-error";
+import { requireAuth } from "../middleware/auth";
+import { jsonBody } from "../middleware/body";
+import { requireTrustedOrigin } from "../middleware/origin";
+import { signedStorageUrl, uploadStorage } from "../services/core-storage";
+
+type UploadDependencies = Parameters<typeof uploadStorage>[4];
+type Database = Parameters<typeof uploadStorage>[0];
+type ResolveRequest = (request: Request) => Promise<{
+  context: ScopedTenantContext;
+  authorize: UploadDependencies["authorize"];
+}>;
+
+/** The caller supplies a server-side identity/scope and authorization resolver.
+ * No router is mounted until the application has a real resolver and providers. */
+export function createStorageRouter(options: {
+  database: Database;
+  storage: UploadDependencies["storage"];
+  scanner: UploadDependencies["scanner"];
+  resolveRequest: ResolveRequest;
+}) {
+  const router = Router();
+  router.use(requireAuth, requireTrustedOrigin);
+  const multipart = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: 10 * 1024 * 1024,
+      files: 1,
+      fields: 2,
+      parts: 3,
+      fieldSize: 256,
+    },
+  }).single("file");
+  const parseUpload: RequestHandler = (req, res, next) => {
+    if (!req.is("multipart/form-data"))
+      return next(
+        new HttpError(
+          415,
+          "UNSUPPORTED_MEDIA_TYPE",
+          "Send multipart form data.",
+        ),
+      );
+    multipart(req, res, (error: unknown) => {
+      if (error instanceof multer.MulterError) {
+        const oversized =
+          error.code === "LIMIT_FILE_SIZE" ||
+          error.code === "LIMIT_FIELD_VALUE";
+        return next(
+          new HttpError(
+            oversized ? 413 : 422,
+            oversized ? "PAYLOAD_TOO_LARGE" : "VALIDATION_ERROR",
+            "Invalid upload.",
+          ),
+        );
+      }
+      if (error)
+        return next(
+          new HttpError(422, "VALIDATION_ERROR", "Invalid multipart upload."),
+        );
+      next();
+    });
+  };
+  router.post(
+    uploadStorageObject.path.replace(/^\/api/, ""),
+    parseUpload,
+    async (req, res) => {
+      const metadata = uploadStorageMetadataSchema.parse(req.body);
+      if (!req.file)
+        throw new HttpError(422, "VALIDATION_ERROR", "A file is required.");
+      const resolved = await options.resolveRequest(req);
+      assertTrustedScopedContext(resolved.context);
+      const data = await uploadStorage(
+        options.database,
+        resolved.context,
+        metadata,
+        req.file.buffer,
+        {
+          storage: options.storage,
+          scanner: options.scanner,
+          authorize: resolved.authorize,
+        },
+      );
+      res.status(201).json({ data: storageObjectSchema.parse(data) });
+    },
+  );
+  router.post(
+    createStorageSignedUrl.path.replace(/^\/api/, ""),
+    jsonBody,
+    async (req, res) => {
+      const id = storageObjectIdSchema.parse(req.params.objectId);
+      const body = signedStorageUrlBodySchema.parse(req.body);
+      const resolved = await options.resolveRequest(req);
+      assertTrustedScopedContext(resolved.context);
+      const data = await signedStorageUrl(
+        options.database,
+        resolved.context,
+        id,
+        body.variant,
+        {
+          storage: options.storage,
+          authorize: resolved.authorize,
+        },
+      );
+      res.json({ data: signedStorageUrlSchema.parse(data) });
+    },
+  );
+  return router;
+}

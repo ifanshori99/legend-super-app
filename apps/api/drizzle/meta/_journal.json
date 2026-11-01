@@ -43,6 +43,13 @@
       "when": 1793545509308,
       "tag": "0005_outbox_replay_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793563477454,
+      "tag": "0006_happy_impossible_man",
+      "breakpoints": true
     }
   ]
 }

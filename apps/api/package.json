@@ -16,21 +16,26 @@
     "worker": "node --enable-source-maps dist/worker.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1161.0",
+    "@aws-sdk/s3-request-presigner": "^3.1161.0",
     "@starter/shared": "workspace:*",
     "better-auth": "catalog:",
     "cors": "2.8.6",
     "drizzle-orm": "catalog:",
     "express": "5.2.1",
     "helmet": "8.3.0",
+    "multer": "^2.5.0",
     "pg": "catalog:",
     "pg-boss": "^12.38.0",
     "pino": "catalog:",
     "pino-http": "11.0.0",
+    "sharp": "^0.35.5",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/cors": "2.8.19",
     "@types/express": "5.0.6",
+    "@types/multer": "^2.3.0",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "@types/supertest": "7.2.1",
