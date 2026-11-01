@@ -1,0 +1,61 @@
+import { API_MOCK } from "../api/mock-flag.ts";
+import { installBrowserControl, setLatencyMs } from "./control.ts";
+import { dispatchMock, resetMocks } from "./runtime.ts";
+
+// Entry point apiFetch uses in mock mode. Every handler file is picked up by
+// glob, so a feature adds `features/<name>/mock.ts` (calling registerMock) and
+// never edits a shared file:
+const handlerModules = import.meta.glob(
+  ["../../features/*/mock.ts", "./handlers/*.ts"],
+  { eager: true },
+);
+
+const DEFAULT_LATENCY_MS = 250;
+let ready = false;
+
+function setup() {
+  if (ready) return;
+  ready = true;
+  const configured = Number(import.meta.env.VITE_API_MOCK_LATENCY_MS);
+  setLatencyMs(
+    import.meta.env.VITE_API_MOCK_LATENCY_MS === undefined ||
+      Number.isNaN(configured)
+      ? DEFAULT_LATENCY_MS
+      : configured,
+  );
+  installBrowserControl({ reset: resetMocks });
+  if (import.meta.env.PROD && API_MOCK)
+    console.warn(
+      "[legend] VITE_API_MOCK is on in a production build: the app serves fixtures, not real data.",
+    );
+  if (import.meta.env.DEV)
+    console.info(
+      `[legend] API mock mode: ${Object.keys(handlerModules).length} handler files. Scenarios: ?mock=empty|slow|error|offline`,
+    );
+}
+
+export async function mockFetch<T>(
+  path: string,
+  request: {
+    method: string;
+    query?: Record<string, string | number | boolean | undefined>;
+    body?: unknown;
+    signal?: AbortSignal;
+  },
+): Promise<T> {
+  setup();
+  const url = new URL(path, "http://mock.invalid");
+  const query: Record<string, string | number | boolean | undefined> = {};
+  url.searchParams.forEach((value, key) => {
+    query[key] = value;
+  });
+  for (const [key, value] of Object.entries(request.query ?? {}))
+    if (value !== undefined) query[key] = String(value);
+  return (await dispatchMock({
+    method: request.method,
+    path: url.pathname,
+    query,
+    body: request.body,
+    signal: request.signal,
+  })) as T;
+}

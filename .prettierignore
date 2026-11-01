@@ -13,3 +13,5 @@ test-results
 *.tsbuildinfo
 .env*
 .beads/
+.worktrees/
+docs/PRD.md

@@ -11,7 +11,17 @@
     "./site": "./src/site.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
-    "./env": "./src/env/index.ts"
+    "./env": "./src/env/index.ts",
+    "./core": "./src/core/index.ts",
+    "./core/server": "./src/core/server.ts",
+    "./events": "./src/events/index.ts",
+    "./audit": "./src/audit/index.ts",
+    "./payment": "./src/payment/index.ts",
+    "./edge": "./src/edge/index.ts",
+    "./adapters": "./src/adapters/index.ts",
+    "./api": "./src/api/index.ts",
+    "./menu": "./src/menu/index.ts",
+    "./access": "./src/access/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -1,0 +1,892 @@
+// RBAC contract tests (WS-00, bead legend-0mc): permission catalog, the 18
+// role templates of PRD v1.7 §3.7 and their "Batas Akses" limits, scope model
+// tenant/brand/outlet/station (TEN-03), time-bound assignments, MFA (AUTH-05),
+// approval matrix + POS overrides (AUTH-06), grant rules, events and the Cafe
+// Legend fixtures. Loaded with plain Node ESM (type stripping, no resolve hook).
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import * as access from "../packages/shared/src/access/index.ts";
+import * as core from "../packages/shared/src/core/index.ts";
+import * as server from "../packages/shared/src/core/server.ts";
+
+const fx = access.cafeLegendAccessFixtures;
+const { bandung, bandung2 } = fx.outletIds;
+const station = (code) => fx.stations.find((row) => row.code === code).id;
+const roleId = (key) => fx.roles.find((role) => role.templateKey === key).id;
+const principal = (userKey, tenantId = fx.tenantId) => ({
+  tenantId,
+  userId: fx.users[userKey].id,
+  assignments: fx.assignments,
+});
+const check = (userKey, permission, target, extra = {}) =>
+  access.authorize({
+    principal: principal(userKey),
+    roles: fx.roleGrants,
+    org: fx.org,
+    permission,
+    target,
+    now: fx.now,
+    surface: "back_office",
+    mfaVerified: true,
+    ...extra,
+  });
+const outlet = (id) => ({ type: "outlet", id });
+const tenant = { type: "tenant" };
+const template = (key) => access.roleTemplate(key);
+const tagged = (key, tag) =>
+  template(key).permissions.filter((code) =>
+    access.permissionHasTag(code, tag),
+  );
+const throwsCode = (fn, code) =>
+  assert.throws(fn, (error) => {
+    assert.ok(error instanceof access.AccessError, String(error));
+    assert.equal(error.code, code);
+    return true;
+  });
+
+describe("permission catalog", () => {
+  test("is well formed and holds the PRD §6 example codes", () => {
+    access.assertCatalogWellFormed();
+    assert.ok(access.isPermissionCode("pos.void.approve"));
+    assert.ok(access.isPermissionCode("payroll.lock"));
+    assert.ok(!access.isPermissionCode("pos.everything"));
+    assert.ok(access.PERMISSION_CODES.length >= 100);
+  });
+
+  test("tenant permission schema rejects platform and unknown codes", () => {
+    assert.ok(
+      access.tenantPermissionCodeSchema.safeParse("pos.sale.create").success,
+    );
+    assert.ok(
+      !access.tenantPermissionCodeSchema.safeParse("platform.tenant.manage")
+        .success,
+    );
+    assert.ok(!access.tenantPermissionCodeSchema.safeParse("x.y.z").success);
+  });
+});
+
+describe("role templates (PRD §3.7 table)", () => {
+  test("exactly the 18 templates, every permission from the catalog", () => {
+    assert.equal(access.ROLE_TEMPLATES.length, 18);
+    assert.deepEqual(
+      access.ROLE_TEMPLATES.map((row) => row.defaultName),
+      [
+        "Super Admin",
+        "Owner / Direksi",
+        "Shareholder",
+        "Admin Tenant",
+        "General Manager",
+        "Outlet Manager",
+        "Supervisor / Captain",
+        "Kasir",
+        "Waiter / Runner",
+        "Barista / Cook",
+        "Attendant Fasilitas",
+        "Kitchen Lead",
+        "Purchasing",
+        "Gudang",
+        "Finance / Akuntan",
+        "HR",
+        "Marketing / CRM",
+        "Karyawan",
+      ],
+    );
+    for (const row of access.ROLE_TEMPLATES)
+      for (const code of [...row.permissions, ...row.optionalPermissions])
+        assert.ok(access.isPermissionCode(code), `${row.key}: ${code}`);
+  });
+
+  test("Super Admin is platform-only; tenant templates hold no platform permission", () => {
+    const superAdmin = template("super_admin");
+    assert.equal(superAdmin.level, "platform");
+    assert.deepEqual(superAdmin.allowedScopeTypes, []);
+    assert.ok(
+      superAdmin.permissions.every((code) =>
+        access.permissionHasTag(code, "platform"),
+      ),
+    );
+    for (const row of access.ROLE_TEMPLATES.filter((r) => r.level === "tenant"))
+      assert.deepEqual(tagged(row.key, "platform"), [], row.key);
+  });
+
+  test("Batas Akses limits hold", () => {
+    // Shareholder: only aggregate + own data, no customer/employee personal data.
+    for (const tag of [
+      "customer_pii",
+      "employee_pii",
+      "payroll",
+      "bulk_export",
+    ])
+      assert.deepEqual(tagged("shareholder", tag), [], `shareholder ${tag}`);
+    // Admin Tenant: no automatic finance authority.
+    for (const tag of ["finance", "payroll", "payment"])
+      assert.deepEqual(tagged("tenant_admin", tag), [], `tenant_admin ${tag}`);
+    // General Manager: does not change payroll data.
+    assert.deepEqual(tagged("general_manager", "payroll"), []);
+    // Outlet Manager: assigned outlet only.
+    assert.deepEqual(template("outlet_manager").allowedScopeTypes, ["outlet"]);
+    // Supervisor: no financial reports.
+    assert.deepEqual(tagged("supervisor", "finance"), []);
+    assert.ok(
+      !template("supervisor").permissions.includes("report.financial.view"),
+    );
+    // Kasir: no reports, cannot approve.
+    assert.ok(
+      !template("cashier").permissions.some((c) => c.startsWith("report.")),
+    );
+    assert.deepEqual(tagged("cashier", "approve"), []);
+    // Waiter: no payment unless allowed (optional permission, off by default).
+    assert.deepEqual(tagged("waiter", "payment"), []);
+    assert.deepEqual(template("waiter").optionalPermissions, [
+      "pos.payment.accept",
+    ]);
+    // Barista / Cook: KDS of the assigned station only.
+    assert.deepEqual(template("barista_cook").allowedScopeTypes, ["station"]);
+    assert.ok(
+      template("barista_cook").permissions.every((c) => c.startsWith("kds.")),
+    );
+    // Attendant Fasilitas: facility module only, no payment unless allowed.
+    assert.ok(
+      template("facility_attendant").permissions.every(
+        (c) => c.startsWith("facility.") || c === "ops.checklist.complete",
+      ),
+    );
+    assert.deepEqual(tagged("facility_attendant", "payment"), []);
+    // Kitchen Lead: no payment.
+    assert.deepEqual(tagged("kitchen_lead", "payment"), []);
+    // Purchasing: no payroll.
+    assert.deepEqual(tagged("purchasing", "payroll"), []);
+    // Gudang: no selling price, no financial reports.
+    assert.deepEqual(tagged("warehouse", "sell_price"), []);
+    assert.deepEqual(tagged("warehouse", "finance"), []);
+    // Finance: no customer personal data.
+    assert.deepEqual(tagged("finance", "customer_pii"), []);
+    // HR: no operational finance.
+    assert.deepEqual(tagged("hr", "finance"), []);
+    assert.deepEqual(tagged("hr", "payment"), []);
+    // Marketing: no bulk export except the approval request (DASH-04).
+    assert.deepEqual(tagged("marketing", "bulk_export"), [
+      "export.personal_data.request",
+    ]);
+    // Karyawan: own data only.
+    assert.ok(
+      template("employee").permissions.every(
+        (c) => c.startsWith("self.") || c === "ai.ask",
+      ),
+    );
+  });
+
+  test("AUTH-05: management, finance, HR, owner, shareholder and Super Admin require MFA", () => {
+    for (const key of [
+      "super_admin",
+      "owner",
+      "shareholder",
+      "tenant_admin",
+      "general_manager",
+      "outlet_manager",
+      "finance",
+      "hr",
+    ])
+      assert.equal(template(key).mfaRequired, true, key);
+    for (const key of ["cashier", "waiter", "barista_cook", "employee"])
+      assert.equal(template(key).mfaRequired, false, key);
+    // Any template reaching sensitive data requires MFA too.
+    for (const row of access.ROLE_TEMPLATES)
+      if (access.permissionsRequireMfa(row.permissions))
+        assert.equal(row.mfaRequired, true, row.key);
+  });
+});
+
+describe("fixtures (FE mock mode)", () => {
+  test("parse against the schemas, also after a JSON round trip", () => {
+    const json = JSON.parse(JSON.stringify(fx));
+    for (const role of json.roles) access.roleSchema.parse(role);
+    for (const row of json.assignments) access.roleAssignmentSchema.parse(row);
+    access.approvalMatrixSchema.parse(json.approvalPolicies);
+    assert.equal(fx.roles.filter((r) => r.isTemplate).length, 17);
+    assert.ok(fx.roles.every((role) => role.tenantId === fx.tenantId));
+  });
+});
+
+describe("authorize: deny by default, scope, time-bound (TEN-03)", () => {
+  test("no assignment, unknown role, other tenant → denied", () => {
+    const stranger = {
+      tenantId: fx.tenantId,
+      userId: "f0f0f0f0-0000-4000-8000-000000000001",
+      assignments: fx.assignments,
+    };
+    assert.deepEqual(
+      access.authorize({
+        principal: stranger,
+        roles: fx.roleGrants,
+        org: fx.org,
+        permission: "order.view",
+        target: outlet(bandung),
+        now: fx.now,
+        surface: "pos",
+        mfaVerified: false,
+      }),
+      { allowed: false, reason: "no_active_assignment" },
+    );
+    const otherTenant = principal(
+      "owner",
+      "0b6f1c2e-7d4a-4c1e-9a3b-000000000000",
+    );
+    assert.equal(
+      access.authorize({
+        principal: otherTenant,
+        roles: fx.roleGrants,
+        org: fx.org,
+        permission: "order.view",
+        target: tenant,
+        now: fx.now,
+        surface: "back_office",
+        mfaVerified: true,
+      }).allowed,
+      false,
+    );
+    assert.equal(
+      check("cashier", "order.view", outlet(bandung), { roles: [] }).allowed,
+      false,
+    );
+  });
+
+  test("cashier: own outlet only, no payroll", () => {
+    assert.equal(
+      check("cashier", "pos.payment.accept", outlet(bandung)).allowed,
+      true,
+    );
+    assert.deepEqual(check("cashier", "pos.payment.accept", outlet(bandung2)), {
+      allowed: false,
+      reason: "out_of_scope",
+    });
+    assert.deepEqual(check("cashier", "payroll.view", tenant), {
+      allowed: false,
+      reason: "permission_not_granted",
+    });
+    assert.equal(check("cashier", "pos.payment.accept", tenant).allowed, false);
+  });
+
+  test("station scope: barista sees only the assigned station", () => {
+    const kds = { surface: "kds", mfaVerified: false };
+    assert.equal(
+      check(
+        "barista",
+        "kds.ticket.process",
+        { type: "station", id: station("bar_kopi") },
+        kds,
+      ).allowed,
+      true,
+    );
+    assert.equal(
+      check(
+        "barista",
+        "kds.ticket.process",
+        { type: "station", id: station("dapur_panas") },
+        kds,
+      ).allowed,
+      false,
+    );
+    assert.equal(
+      check("barista", "kds.ticket.process", outlet(bandung), kds).allowed,
+      false,
+    );
+    assert.deepEqual(
+      access.stationReachOf({
+        principal: principal("barista"),
+        roles: fx.roleGrants,
+        org: fx.org,
+        now: fx.now,
+        permission: "kds.ticket.process",
+      }),
+      [station("bar_kopi")],
+    );
+    assert.equal(
+      access.stationReachOf({
+        principal: principal("kitchenLead"),
+        roles: fx.roleGrants,
+        org: fx.org,
+        now: fx.now,
+        permission: "kds.ticket.process",
+      }).length,
+      5,
+    );
+  });
+
+  test("brand scope reaches the brand's outlets, not tenant-wide targets", () => {
+    assert.equal(
+      check("generalManager", "report.sales.view", outlet(bandung2)).allowed,
+      true,
+    );
+    assert.equal(
+      check("generalManager", "report.sales.view", {
+        type: "brand",
+        id: fx.brandId,
+      }).allowed,
+      true,
+    );
+    assert.equal(
+      check("generalManager", "report.sales.view", tenant).allowed,
+      false,
+    );
+  });
+
+  test("unknown outlet or station fails closed", () => {
+    const ghost = "6a2d4f80-1c3e-4b5a-9d7f-000000000000";
+    assert.equal(check("owner", "order.view", outlet(ghost)).allowed, true); // tenant scope covers all
+    assert.equal(
+      check("generalManager", "order.view", outlet(ghost)).allowed,
+      false,
+    );
+    assert.equal(
+      check("outletManager", "order.view", { type: "station", id: ghost })
+        .allowed,
+      false,
+    );
+  });
+
+  test("time-bound: ended and future assignments grant nothing", () => {
+    const target = outlet(bandung2);
+    assert.equal(
+      check("supervisor", "inventory.adjustment.approve", target).allowed,
+      false,
+    );
+    assert.equal(
+      check("supervisor", "inventory.adjustment.approve", target, {
+        now: new Date("2026-10-15T05:00:00.000Z"),
+      }).allowed,
+      true,
+    );
+    const start = new Date("2026-12-01T00:00:00.000Z");
+    assert.equal(
+      check("supervisor2", "pos.void.approve", target).allowed,
+      false,
+    );
+    assert.equal(
+      check("supervisor2", "pos.void.approve", target, { now: start }).allowed,
+      true,
+    );
+    // validUntil is exclusive.
+    assert.equal(
+      access.isAssignmentActive(
+        {
+          validFrom: "2026-10-01T00:00:00.000Z",
+          validUntil: "2026-10-31T17:00:00.000Z",
+        },
+        new Date("2026-10-31T17:00:00.000Z"),
+      ),
+      false,
+    );
+    assert.ok(
+      !access.roleAssignmentSchema.safeParse({
+        ...fx.assignments[0],
+        validUntil: fx.assignments[0].validFrom,
+      }).success,
+    );
+  });
+
+  test("outlet reach feeds core outlet scope (TEN-03)", () => {
+    const reach = (userKey, permission) =>
+      access.outletReachOf({
+        principal: principal(userKey),
+        roles: fx.roleGrants,
+        org: fx.org,
+        now: fx.now,
+        permission,
+      });
+    assert.deepEqual(reach("owner"), { kind: "tenant" });
+    assert.deepEqual(
+      reach("generalManager").outletIds.sort(),
+      [bandung, bandung2].sort(),
+    );
+    assert.deepEqual(reach("barista"), {
+      kind: "outlets",
+      outletIds: [bandung],
+    });
+    assert.equal(reach("cashier", "report.financial.view"), null);
+    const scopeData = reach("cashier", "pos.payment.accept");
+    const ctx = server.establishTenantContext({
+      tenantId: fx.tenantId,
+      brandId: null,
+      source: "session",
+    });
+    const scope = server.establishOutletScope(ctx, scopeData);
+    assert.equal(core.isOutletInScope(scope, bandung), true);
+    assert.equal(core.isOutletInScope(scope, bandung2), false);
+  });
+});
+
+describe("AUTH-05: MFA roles on back office and dashboard", () => {
+  test("finance is denied without a second factor, allowed with it", () => {
+    assert.deepEqual(
+      check("finance", "accounting.journal.view", tenant, {
+        mfaVerified: false,
+      }),
+      { allowed: false, reason: "mfa_required" },
+    );
+    assert.equal(
+      check("finance", "accounting.journal.view", tenant).allowed,
+      true,
+    );
+    throwsCode(
+      () =>
+        access.assertAuthorized({
+          principal: principal("finance"),
+          roles: fx.roleGrants,
+          org: fx.org,
+          permission: "accounting.journal.view",
+          target: tenant,
+          now: fx.now,
+          surface: "dashboard",
+          mfaVerified: false,
+        }),
+      "MFA_REQUIRED",
+    );
+  });
+
+  test("surface guard: back office and dashboard need MFA, POS PIN surfaces do not", () => {
+    const base = { roles: fx.roleGrants, now: fx.now, mfaVerified: false };
+    throwsCode(
+      () =>
+        access.assertSurfaceAccess({
+          ...base,
+          principal: principal("hr"),
+          surface: "back_office",
+        }),
+      "MFA_REQUIRED",
+    );
+    throwsCode(
+      () =>
+        access.assertSurfaceAccess({
+          ...base,
+          principal: principal("shareholder"),
+          surface: "dashboard",
+        }),
+      "MFA_REQUIRED",
+    );
+    access.assertSurfaceAccess({
+      ...base,
+      principal: principal("cashier"),
+      surface: "back_office",
+    });
+    access.assertSurfaceAccess({
+      ...base,
+      principal: principal("outletManager"),
+      surface: "pos",
+    });
+    assert.equal(
+      access.userRequiresMfa(principal("owner"), fx.roleGrants, fx.now),
+      true,
+    );
+    assert.equal(
+      access.userRequiresMfa(principal("waiter"), fx.roleGrants, fx.now),
+      false,
+    );
+    // Outlet Manager approves a void at the POS with the PIN, no MFA prompt.
+    assert.equal(
+      check("outletManager", "pos.void.approve", outlet(bandung), {
+        surface: "pos",
+        mfaVerified: false,
+      }).allowed,
+      true,
+    );
+  });
+});
+
+describe("approval matrix (§3.7) and POS overrides (AUTH-06)", () => {
+  const policies = fx.approvalPolicies;
+  const req = (action, amount) =>
+    access.approvalRequirementFor(policies, action, amount);
+
+  test("threshold tiers pick the highest applicable tier", () => {
+    assert.deepEqual(req("void", 15_000).steps, [
+      { level: 1, approverRoleIds: [roleId("supervisor")] },
+    ]);
+    assert.deepEqual(req("discount", 30_000), { required: false });
+    assert.equal(req("discount", 50_000).thresholdIdr, 50_000);
+    assert.deepEqual(req("discount", 250_000).steps, [
+      { level: 1, approverRoleIds: [roleId("outlet_manager")] },
+    ]);
+    // Unknown amount: fail closed to the highest tier.
+    assert.equal(req("discount", null).thresholdIdr, 200_000);
+    assert.equal(req("refund", 600_000).steps.length, 2);
+    assert.equal(req("refund", 100_000).steps.length, 1);
+    assert.deepEqual(req("payroll", 250_000_000).steps, [
+      { level: 1, approverRoleIds: [roleId("hr")] },
+      { level: 2, approverRoleIds: [roleId("finance"), roleId("owner")] },
+    ]);
+  });
+
+  test("no policy → APPROVAL_POLICY_MISSING (deny by default)", () => {
+    throwsCode(() => req("leave", null), "APPROVAL_POLICY_MISSING");
+  });
+
+  test("matrix schema: distinct actor is mandatory, levels contiguous", () => {
+    const row = policies[0];
+    assert.ok(
+      !access.approvalPolicySchema.safeParse({
+        ...row,
+        requiresDistinctActor: false,
+      }).success,
+    );
+    assert.ok(
+      !access.approvalMatrixSchema.safeParse([{ ...row, levels: 2 }]).success,
+    );
+    assert.ok(
+      !access.approvalPolicySchema.safeParse({ ...row, thresholdIdr: -1 })
+        .success,
+    );
+    assert.ok(access.APPROVAL_ACTION_TYPES.includes("mcp_action"));
+    for (const action of [
+      "void",
+      "discount",
+      "refund",
+      "expense",
+      "purchase_order",
+      "stock_adjustment",
+      "price_change",
+      "payroll",
+      "dividend_distribution",
+      "ai_action",
+      "mcp_action",
+    ])
+      assert.ok(access.APPROVAL_ACTION_TYPES.includes(action), action);
+  });
+
+  const decide = (approverKey, overrides = {}) =>
+    access.assertApprovalDecisionAllowed({
+      requirement: req("void", 20_000),
+      requestedBy: fx.users.cashier.id,
+      priorDecisions: [],
+      level: 1,
+      approver: principal(approverKey),
+      approverRoles: fx.roleGrants,
+      approverMfaVerified: false,
+      surface: "pos",
+      target: outlet(bandung),
+      org: fx.org,
+      now: fx.now,
+      ...overrides,
+    });
+
+  test("approver must differ from requester and hold the step role in scope", () => {
+    decide("supervisor");
+    throwsCode(
+      () => decide("supervisor", { requestedBy: fx.users.supervisor.id }),
+      "APPROVER_IS_REQUESTER",
+    );
+    throwsCode(
+      () => decide("cashier", { requestedBy: fx.users.waiter.id }),
+      "APPROVER_ROLE_MISMATCH",
+    );
+    throwsCode(
+      () => decide("supervisor", { target: outlet(bandung2) }),
+      "APPROVER_ROLE_MISMATCH",
+    );
+    throwsCode(
+      () => decide("supervisor", { level: 2 }),
+      "APPROVAL_LEVEL_OUT_OF_ORDER",
+    );
+  });
+
+  test("two-level payroll: distinct people per level, MFA on the dashboard", () => {
+    const payroll = {
+      requirement: req("payroll", 250_000_000),
+      requestedBy: fx.users.employee.id,
+      surface: "dashboard",
+      target: tenant,
+    };
+    decide("hr", { ...payroll, approverMfaVerified: true });
+    const afterHr = [{ level: 1, approverId: fx.users.hr.id }];
+    throwsCode(
+      () =>
+        decide("hr", {
+          ...payroll,
+          level: 2,
+          priorDecisions: afterHr,
+          approverMfaVerified: true,
+        }),
+      "APPROVER_ALREADY_DECIDED",
+    );
+    throwsCode(
+      () =>
+        decide("finance", { ...payroll, level: 2, priorDecisions: afterHr }),
+      "MFA_REQUIRED",
+    );
+    decide("finance", {
+      ...payroll,
+      level: 2,
+      priorDecisions: afterHr,
+      approverMfaVerified: true,
+    });
+    decide("owner", {
+      ...payroll,
+      level: 2,
+      priorDecisions: afterHr,
+      approverMfaVerified: true,
+    });
+  });
+
+  test("override record: requester, approver, reason, value; approver ≠ requester", () => {
+    const record = {
+      id: "01JBQ7Z8K3M4N5P6Q7R8S9T0W1",
+      outletId: bandung,
+      action: "void",
+      requestedBy: fx.users.cashier.id,
+      approvedBy: fx.users.supervisor.id,
+      method: "supervisor_pin",
+      reasonCode: "salah_input",
+      reason: "Salah input menu",
+      valueIdr: 28_000,
+      approvalRequestId: null,
+      occurredAt: "2026-11-01T05:10:00.000Z",
+    };
+    access.posOverrideSchema.parse(record);
+    assert.ok(
+      !access.posOverrideSchema.safeParse({
+        ...record,
+        approvedBy: record.requestedBy,
+      }).success,
+    );
+    assert.ok(
+      !access.posOverrideSchema.safeParse({ ...record, reason: " " }).success,
+    );
+    assert.ok(
+      !access.posOverrideSchema.safeParse({ ...record, valueIdr: -1 }).success,
+    );
+    const withoutReason = { ...record };
+    delete withoutReason.reason;
+    assert.ok(!access.posOverrideSchema.safeParse(withoutReason).success);
+  });
+});
+
+describe("role grants (§3.7 Pemberian Role)", () => {
+  const cashierRole = () => {
+    const role = fx.roles.find((r) => r.templateKey === "cashier");
+    return {
+      ...role,
+      level: "tenant",
+      allowedScopeTypes: role.allowedScopeTypes,
+    };
+  };
+  const grant = (overrides = {}) =>
+    access.assertCanGrantRole({
+      grantor: principal("tenantAdmin"),
+      grantorRoles: fx.roleGrants,
+      grantorMfaVerified: true,
+      grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      granteeUserId: fx.users.employee.id,
+      role: cashierRole(),
+      scope: { type: "outlet", id: bandung },
+      org: fx.org,
+      now: fx.now,
+      ...overrides,
+    });
+
+  test("admin with recent re-auth and MFA may grant", () => {
+    assert.ok(grant());
+  });
+
+  test("self-grant, stale re-auth, platform role, wrong scope, no permission → refused", () => {
+    throwsCode(
+      () => grant({ granteeUserId: fx.users.tenantAdmin.id }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    throwsCode(
+      () => grant({ grantorReauthenticatedAt: null }),
+      "REAUTH_REQUIRED",
+    );
+    throwsCode(
+      () =>
+        grant({
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "REAUTH_REQUIRED",
+    );
+    throwsCode(
+      () => grant({ role: { ...cashierRole(), level: "platform" } }),
+      "ROLE_NOT_ASSIGNABLE",
+    );
+    throwsCode(
+      () =>
+        grant({ role: { ...cashierRole(), allowedScopeTypes: ["station"] } }),
+      "ROLE_SCOPE_NOT_ALLOWED",
+    );
+    throwsCode(
+      () => grant({ grantor: principal("cashier") }),
+      "PERMISSION_DENIED",
+    );
+    throwsCode(() => grant({ grantorMfaVerified: false }), "MFA_REQUIRED");
+  });
+
+  test("custom roles: catalog only, sensitive permissions force MFA", () => {
+    throwsCode(
+      () => access.normalizeCustomRolePermissions(["platform.tenant.manage"]),
+      "PERMISSION_NOT_IN_CATALOG",
+    );
+    throwsCode(
+      () => access.normalizeCustomRolePermissions(["pos.anything"]),
+      "PERMISSION_NOT_IN_CATALOG",
+    );
+    assert.deepEqual(
+      access.normalizeCustomRolePermissions(["order.view", "order.view"]),
+      { permissions: ["order.view"], mfaRequired: false },
+    );
+    assert.equal(
+      access.normalizeCustomRolePermissions(["report.financial.view"])
+        .mfaRequired,
+      true,
+    );
+  });
+
+  test("client inputs never carry the tenant (TEN-02)", () => {
+    const input = {
+      userId: fx.users.employee.id,
+      roleId: roleId("cashier"),
+      scope: { type: "outlet", id: bandung },
+    };
+    assert.ok(access.grantRoleSchema.safeParse(input).success);
+    assert.ok(
+      !access.grantRoleSchema.safeParse({ ...input, tenantId: fx.tenantId })
+        .success,
+    );
+    assert.ok(
+      !access.grantRoleSchema.safeParse({
+        ...input,
+        scope: { type: "tenant", id: bandung },
+      }).success,
+    );
+    assert.ok(
+      !access.createCustomRoleSchema.safeParse({
+        name: "X",
+        permissions: ["platform.tenant.manage"],
+        allowedScopeTypes: ["outlet"],
+      }).success,
+    );
+  });
+});
+
+describe("access events", () => {
+  test("names follow <aggregate>.<past_verb> and payloads parse", () => {
+    for (const type of access.ACCESS_EVENT_TYPES)
+      assert.match(type, /^[a-z_]+\.[a-z_]+$/);
+    access.ACCESS_EVENT_PAYLOADS["role_assignment.granted"].parse({
+      assignmentId: fx.assignments[0].id,
+      userId: fx.users.owner.id,
+      roleId: roleId("owner"),
+      scope: { type: "tenant", id: null },
+      validFrom: "2026-10-15T02:00:00.000Z",
+      validUntil: null,
+      grantedBy: fx.users.tenantAdmin.id,
+      reauthenticatedAt: "2026-10-15T01:59:00.000Z",
+    });
+    access.ACCESS_EVENT_PAYLOADS["approval_policy.changed"].parse({
+      actionType: "void",
+      before: [],
+      after: fx.approvalPolicies.filter((row) => row.actionType === "void"),
+    });
+  });
+});
+
+describe("security regression: fail closed", () => {
+  test("AUTH-05 missing approver role metadata cannot bypass MFA", () => {
+    const requirement = access.approvalRequirementFor(
+      fx.approvalPolicies,
+      "payroll",
+      250_000_000,
+    );
+    throwsCode(
+      () =>
+        access.assertApprovalDecisionAllowed({
+          requirement,
+          requestedBy: fx.users.employee.id,
+          priorDecisions: [],
+          level: 1,
+          approver: principal("hr"),
+          approverRoles: [],
+          approverMfaVerified: false,
+          surface: "dashboard",
+          target: tenant,
+          org: fx.org,
+          now: fx.now,
+        }),
+      "APPROVER_ROLE_MISMATCH",
+    );
+  });
+
+  test("AUTH-05 unknown active role cannot bypass MFA when another role grants access", () => {
+    const roles = fx.roleGrants.filter((role) => role.id !== roleId("hr"));
+    const hr = principal("hr");
+    const cashierAssignment = fx.assignments.find(
+      (row) => row.userId === fx.users.cashier.id,
+    );
+    const combined = {
+      ...hr,
+      assignments: [
+        ...hr.assignments,
+        { ...cashierAssignment, userId: hr.userId },
+      ],
+    };
+    assert.equal(
+      access.authorize({
+        principal: combined,
+        roles,
+        org: fx.org,
+        permission: "pos.sale.create",
+        target: outlet(bandung),
+        now: fx.now,
+        surface: "back_office",
+        mfaVerified: false,
+      }).allowed,
+      false,
+    );
+  });
+
+  test("approval rejects invalid monetary amounts", () => {
+    for (const amount of [NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])
+      assert.throws(
+        () =>
+          access.approvalRequirementFor(
+            fx.approvalPolicies,
+            "discount",
+            amount,
+          ),
+        RangeError,
+      );
+  });
+
+  test("approval cannot advance from an out-of-order prior decision", () => {
+    const requirement = access.approvalRequirementFor(
+      fx.approvalPolicies,
+      "payroll",
+      250_000_000,
+    );
+    throwsCode(
+      () =>
+        access.assertApprovalDecisionAllowed({
+          requirement,
+          requestedBy: fx.users.employee.id,
+          priorDecisions: [{ level: 2, approverId: fx.users.hr.id }],
+          level: 2,
+          approver: principal("finance"),
+          approverRoles: fx.roleGrants,
+          approverMfaVerified: true,
+          surface: "dashboard",
+          target: tenant,
+          org: fx.org,
+          now: fx.now,
+        }),
+      "APPROVAL_LEVEL_OUT_OF_ORDER",
+    );
+  });
+
+  test("invalid assignment start never becomes active", () => {
+    assert.equal(
+      access.isAssignmentActive(
+        { validFrom: "invalid", validUntil: null },
+        fx.now,
+      ),
+      false,
+    );
+  });
+});
