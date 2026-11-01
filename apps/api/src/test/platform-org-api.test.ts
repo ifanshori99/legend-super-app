@@ -80,7 +80,22 @@ async function adminClient() {
   const email = await signUp(client, "Platform Admin");
   await setRole(email, "admin");
   const session = await client.get("/api/auth/get-session");
-  return { client, userId: session.body.user.id as string };
+  const userId = session.body.user.id as string;
+  await owner.query(
+    "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+    [userId],
+  );
+  // legend-4f9: the global Better Auth admin no longer holds org.* (TEN-04).
+  // Tenant org routes authorize through stored role_assignments, so the test
+  // admin also holds the seeded Owner template in the synthetic tenant.
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
+     WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [seededTenantId, userId],
+  );
+  return { client, userId };
 }
 
 function scopedContext(outletIds?: string[]): ScopedTenantContext {
@@ -115,6 +130,10 @@ describe("Panel Platform API", () => {
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe("FORBIDDEN");
 
+    const legacy = agent(app);
+    const legacyEmail = await signUp(legacy, "Legacy Admin");
+    await setRole(legacyEmail, "admin");
+    expect((await legacy.get("/api/platform/tenants")).status).toBe(403);
     const admin = await adminClient();
     expect((await admin.client.get("/api/platform/tenants")).status).toBe(200);
     // The origin check still applies to a permitted role.

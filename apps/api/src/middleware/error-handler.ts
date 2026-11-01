@@ -2,7 +2,9 @@ import type { ErrorRequestHandler, RequestHandler } from "express";
 import { ZodError } from "zod";
 import { CoreError } from "@starter/shared/core";
 import { PlatformError } from "@starter/shared/platform";
+import { AccessError } from "@starter/shared/access";
 import { HttpError } from "../lib/http-error";
+import { AuditUnavailableError } from "../services/audit-writer";
 
 function send(
   res: Parameters<RequestHandler>[1],
@@ -35,10 +37,23 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
 
   // Domain contracts throw these with their own HTTP status (TEN-03
   // OUTLET_OUT_OF_SCOPE, TEN-05 FEATURE_DISABLED, TEN-04 SUPPORT_ACCESS_*).
-  if (error instanceof CoreError || error instanceof PlatformError)
+  if (
+    error instanceof CoreError ||
+    error instanceof PlatformError ||
+    error instanceof AccessError
+  )
     return send(res, error.status, {
       code: error.code,
       message: error.message,
+    });
+
+  // The audit writer is a fail-closed port until bead legend-4sc lands: a
+  // sensitive change without an audit trail is refused, not silently applied.
+  if (error instanceof AuditUnavailableError)
+    return send(res, 503, {
+      code: "SERVICE_UNAVAILABLE",
+      message:
+        "The audit log is not configured, so this change was refused. Try again after the audit service is available.",
     });
 
   if (error instanceof ZodError)

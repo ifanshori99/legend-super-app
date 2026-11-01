@@ -7,6 +7,7 @@
 // idempotent (ON CONFLICT updates the same ids), so `pnpm test` can run it on
 // every fresh disposable database.
 import { Pool } from "pg";
+import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { databaseUrl } from "./connection";
 
@@ -152,6 +153,27 @@ try {
         domain.kind,
         domain.tlsStatus,
         domain.verifiedAt,
+      ],
+    );
+  }
+
+  // Role templates (PRD §3.7, bead legend-4f9). A tenant created from the panel
+  // gets them in the same transaction; the synthetic dev tenant is inserted by
+  // this script instead, so seed the same 17 tenant-level rows idempotently.
+  for (const template of ROLE_TEMPLATES.filter(
+    (row) => row.level === "tenant",
+  )) {
+    await client.query(
+      `INSERT INTO roles (tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, true, $3, $4, $5, $6)
+       ON CONFLICT (tenant_id, template_key) DO NOTHING`,
+      [
+        tenant.id,
+        template.defaultName,
+        template.key,
+        JSON.stringify(template.permissions),
+        template.mfaRequired,
+        JSON.stringify(template.allowedScopeTypes),
       ],
     );
   }
