@@ -316,3 +316,12 @@ window.__legendMock.reset(); // normal scenario, seed data
 ### 5. Tests
 
 `tests/api-client.test.mjs` loads the contract, the runtime and the example handlers with plain Node ESM (type stripping, no bundler): `lib/api/errors.ts`, `endpoint-core.ts` and everything under `lib/mock` therefore avoid `@/` aliases, framework imports, `enum` and constructor parameter properties. Keep it that way. To unit-test a feature's mock in Node, import it with relative `.ts` paths (the `@/` alias only exists in Vite), then `dispatchMock({ method, path, query, body })` + `assert`. Every domain contract bead also adds a "fixtures parse" test (`docs/plan/contracts.md`).
+
+### 6. Browser specs in mock mode
+
+A screen built against fixtures is reviewable before its API exists, so its Playwright spec runs against those same fixtures: `pnpm test:e2e:mock` starts `vite dev` with `VITE_API_MOCK=true` on `http://localhost:3225` — no API, no database — and runs every mock spec.
+
+- Name a mock spec `<name>.mock.spec.ts`; the older per-bead name `legend-<bead>.spec.ts` is picked up too. `pnpm test:e2e` ignores both (its production build compiles mock mode out) and runs only the specs that need the real API and its disposable database.
+- `playwright.mock.config.ts` owns the server address and exports it to specs as `LEGEND_MOCK_WEB_URL` — the name to write in new specs — and `E2E_MOCK_BASE_URL`, the legacy alias `e2e/legend-g9r3.spec.ts` reads. A spec that skips itself when the variable is missing therefore runs here and still skips under `pnpm test:e2e`.
+- Run one spec: `pnpm test:e2e:mock e2e/legend-g9r3.spec.ts`. The mock runtime answers with zero latency in this project; ask for `?mock=slow` when a screen's loading state is the subject.
+- CI runs it right after `pnpm test:e2e`, with the browser installed for that step. `e2e/mock-mode.mock.spec.ts` is the runner's own smoke test: it proves the dev server, the fixtures and both variable names work without an API.

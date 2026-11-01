@@ -20,7 +20,7 @@ import {
   reservationErrorHttpStatus,
 } from "@starter/shared/reservation";
 import { TaxError } from "@starter/shared/tax";
-import { HttpError } from "../lib/http-error.ts";
+import { HttpError } from "../lib/http-error";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");

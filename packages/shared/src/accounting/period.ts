@@ -17,8 +17,11 @@
 //    transaction:
 //      post:   SELECT … FROM fiscal_periods WHERE id = $1 FOR SHARE
 //              → assertPostingAllowed(period, entryDate) → INSERT entry/lines
-//      close:  SELECT … FOR UPDATE → snapshot balances → status closed, version+1
-//      reopen: SELECT … FOR UPDATE → status open, version+1
+//      close/reopen: first lock the legal entity row FOR UPDATE, then lock the
+//              period row FOR UPDATE, check all entity periods and update.
+//              Close takes its snapshot before setting status and version.
+//    The shared entity lock serializes ordering checks across different periods;
+//    a period-row lock alone cannot prevent close vs reopen write skew.
 //    FOR SHARE blocks FOR UPDATE and vice versa, so a close waits for in-flight
 //    posts and a post that starts after the close commits reads `closed` and
 //    fails PERIOD_CLOSED. A client that read the period earlier (e.g. the
