@@ -186,6 +186,26 @@ export const id = {
       emptyHint: "Daftar tenant, paket, dan kesehatan sistem tampil di sini.",
     },
   },
+  // Kamus istilah (PRD §3 F4 "Teks & Kamus Istilah"): istilah yang boleh
+  // diganti tenant lewat text_overrides tanpa deploy. Kuncinya terdaftar di
+  // packages/shared/src/text/terms.ts; jangan menambah istilah di luar sana.
+  terms: {
+    table: "Meja",
+    zone: "Zona",
+    wfcZone: "Zona WFC",
+    facility: "Fasilitas",
+    showerRoom: "Shower Room",
+    station: "Stasiun",
+    stationBarKopi: "Bar Kopi",
+    stationBarNonkopi: "Bar Nonkopi",
+    stationDapurPanas: "Dapur Panas",
+    stationDapurDingin: "Dapur Dingin",
+    stationPastry: "Pastry",
+    loyaltyTier: "Tier",
+    tierSilver: "Silver",
+    tierGold: "Gold",
+    tierPlatinum: "Platinum",
+  },
   designSystem: {
     title: "Design System Platform",
     intro:
