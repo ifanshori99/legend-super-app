@@ -1,16 +1,18 @@
 import {
   bigint,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgTable,
   primaryKey,
+  text,
   timestamp,
   unique,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import type { EventEnvelope } from "@starter/shared/events";
+import type { EventActor, EventEnvelope } from "@starter/shared/events";
 
 /** ULID identifiers are stored losslessly as UUIDs; convert at the boundary. */
 export const domainEventOutbox = pgTable(
@@ -29,6 +31,16 @@ export const domainEventOutbox = pgTable(
     peerId: uuid("peer_id"),
     status: varchar("status", { length: 20 }).notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
+    dispatchState: varchar("dispatch_state", { length: 20 })
+      .notNull()
+      .default("ready"),
+    dispatchGeneration: integer("dispatch_generation").notNull().default(0),
+    dispatchLeaseToken: uuid("dispatch_lease_token"),
+    dispatchLeaseUntil: timestamp("dispatch_lease_until", {
+      withTimezone: true,
+    }),
+    dispatchJobId: uuid("dispatch_job_id"),
+    deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
     availableAt: timestamp("available_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -85,5 +97,62 @@ export const domainEventConsumptions = pgTable(
       table.aggregateId,
       table.sequence,
     ),
+  ],
+);
+
+/** A destination must receive the full contiguous sequence for an aggregate. */
+export const domainEventOffsets = pgTable(
+  "domain_event_offsets",
+  {
+    tenantId: uuid("tenant_id").notNull(),
+    outletId: uuid("outlet_id"),
+    consumer: varchar("consumer", { length: 255 }).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 255 }).notNull(),
+    aggregateId: uuid("aggregate_id").notNull(),
+    lastSequence: bigint("last_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.tenantId,
+        table.consumer,
+        table.aggregateType,
+        table.aggregateId,
+      ],
+    }),
+  ],
+);
+
+/** Append alongside a replay transition; never mutate or remove audit records. */
+export const domainEventReplays = pgTable(
+  "domain_event_replays",
+  {
+    tenantId: uuid("tenant_id").notNull(),
+    id: uuid("id").notNull().defaultRandom(),
+    outletId: uuid("outlet_id"),
+    outboxId: uuid("outbox_id").notNull(),
+    generation: integer("generation").notNull(),
+    actor: jsonb("actor").$type<EventActor>().notNull(),
+    reason: text("reason").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    unique("domain_event_replays_generation_key").on(
+      table.tenantId,
+      table.outboxId,
+      table.generation,
+    ),
+    foreignKey({
+      columns: [table.tenantId, table.outboxId],
+      foreignColumns: [domainEventOutbox.tenantId, domainEventOutbox.id],
+    }),
   ],
 );

@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { PgBoss } from "pg-boss";
+import { Client } from "pg";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -23,10 +24,15 @@ it("runs real jobs, dead-letters exhausted delivery, and replays through authori
   )
     throw new Error("Requires the disposable test database");
   const url = process.env.STARTER_TEST_DATABASE_URL;
+  const setup = new Client({ connectionString: url });
+  await setup.connect();
+  await setup.query("CREATE SCHEMA IF NOT EXISTS pgboss");
+  await setup.end();
   const inspector = new PgBoss(url);
   inspector.on("error", () => {});
   let permitted = false;
   let deliveries = 0;
+  let dead = 0;
   const runtime = createWorkerRuntime({
     boss: createPgBoss(url),
     resolveContext: async (tenantId) => ({ tenantId }),
@@ -34,10 +40,14 @@ it("runs real jobs, dead-letters exhausted delivery, and replays through authori
     deliver: async () => {
       deliveries++;
     },
+    markDead: async () => {
+      dead++;
+    },
   });
   const job = {
     tenantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     outboxId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    generation: 0,
   };
   try {
     await runtime.start();
@@ -51,10 +61,20 @@ it("runs real jobs, dead-letters exhausted delivery, and replays through authori
         (await inspector.findJobs(OUTBOX_DEAD_LETTER_QUEUE, { data: job }))
           .length > 0,
     );
+    await waitFor(async () => dead === 1);
     expect(deliveries).toBe(0);
     permitted = true;
-    await runtime.replay(job);
-    await waitFor(async () => deliveries === 1);
+    const replay = { ...job, generation: 1 };
+    const firstId = await runtime.enqueue(replay);
+    expect(await runtime.enqueue(replay)).toBe(firstId);
+    await waitFor(async () =>
+      (await inspector.findJobs(OUTBOX_QUEUE, { id: firstId })).some(
+        (row) => row.state === "completed",
+      ),
+    );
+    expect(await runtime.enqueue(replay)).toBe(firstId);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(deliveries).toBe(1);
     expect(
       (await inspector.findJobs(OUTBOX_DEAD_LETTER_QUEUE, { data: job }))
         .length,

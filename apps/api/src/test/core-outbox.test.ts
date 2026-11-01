@@ -14,6 +14,8 @@ import {
   appendOutbox,
   consumeOutbox,
   relayOutbox,
+  markOutboxDead,
+  replayOutbox,
 } from "../services/core-outbox";
 
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
@@ -65,6 +67,35 @@ describe("transactional domain event outbox", () => {
       await expect(appendOutbox(tx, context(tenantB), row)).rejects.toThrow();
     });
   });
+  it("holds a sequence gap until the missing lower event arrives", async () => {
+    const gaps: unknown[] = [];
+    expect(
+      await relayOutbox(
+        database,
+        context(tenantA),
+        async () => "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        async (gap) => {
+          gaps.push(gap);
+        },
+      ),
+    ).toBe(0);
+    expect(gaps).toEqual([
+      {
+        destination: "test",
+        aggregateType: "order",
+        aggregateId: event.aggregateId,
+        missingSequence: 1,
+      },
+    ]);
+    const deliver = async () => {};
+    await expect(
+      consumeOutbox(database, context(tenantA), {
+        outboxId: row.id,
+        authorize: async () => true,
+        deliver,
+      }),
+    ).rejects.toThrow("Aggregate sequence gap");
+  });
   it("orders aggregate delivery, deduplicates replay and preserves the provider key across a crash", async () => {
     const first = {
       ...row,
@@ -89,7 +120,7 @@ describe("transactional domain event outbox", () => {
     });
     await expect(
       consumeOutbox(database, context(tenantA), input(row.id)),
-    ).rejects.toThrow("Earlier aggregate event");
+    ).rejects.toThrow("Aggregate sequence gap");
     await expect(
       consumeOutbox(database, context(tenantA), input(first.id)),
     ).rejects.toThrow("crash after accept");
@@ -108,8 +139,79 @@ describe("transactional domain event outbox", () => {
     expect(
       await relayOutbox(database, context(tenantA), async (job) => {
         jobs.push(job);
+        return "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       }),
     ).toBe(0);
     expect(jobs).toEqual([]);
+  });
+  it("does not auto-requeue dead letters and requires an authorized audited replay", async () => {
+    const second = {
+      ...row,
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      event: {
+        ...event,
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        aggregateId: "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        sequence: 1,
+      },
+    };
+    await withTenant(database, context(tenantA), async (tx) =>
+      appendOutbox(tx, context(tenantA), second),
+    );
+    const sent: { tenantId: string; outboxId: string; generation: number }[] =
+      [];
+    const enqueue = async (job: {
+      tenantId: string;
+      outboxId: string;
+      generation: number;
+    }) => {
+      sent.push(job);
+      return "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    };
+    expect(await relayOutbox(database, context(tenantA), enqueue)).toBe(1);
+    await markOutboxDead(database, context(tenantA), {
+      outboxId: second.id,
+      generation: 0,
+    });
+    expect(await relayOutbox(database, context(tenantA), enqueue)).toBe(0);
+    const replay = {
+      outboxId: second.id,
+      actor: { type: "user", id: "33333333-3333-4333-8333-333333333333" },
+      reason: "Operator retry",
+      authorize: async () => false,
+    };
+    await expect(
+      replayOutbox(database, context(tenantA), replay),
+    ).rejects.toThrow("permission");
+    await replayOutbox(database, context(tenantA), {
+      ...replay,
+      authorize: async () => true,
+    });
+    expect(await relayOutbox(database, context(tenantA), enqueue)).toBe(1);
+    expect(sent.map((job) => job.generation)).toEqual([0, 1]);
+    await expect(
+      consumeOutbox(database, context(tenantA), {
+        outboxId: second.id,
+        generation: 0,
+        authorize: async () => true,
+        deliver: async () => {},
+      }),
+    ).rejects.toThrow("Stale or dead-lettered job");
+    await markOutboxDead(database, context(tenantA), {
+      outboxId: second.id,
+      generation: 0,
+    });
+    await withTenant(database, context(tenantA), async (tx) => {
+      const state = await tx.execute(
+        sql`SELECT dispatch_state FROM domain_event_outbox WHERE id = ${"01563e3a-b5d3-d676-4c61-efb99302bd60"}::uuid`,
+      );
+      expect(state.rows[0]?.dispatch_state).toBe("queued");
+    });
+    await withTenant(database, context(tenantA), async (tx) => {
+      const audit = await tx.execute(
+        sql`SELECT generation, reason FROM domain_event_replays`,
+      );
+      expect(audit.rows).toEqual([{ generation: 1, reason: "Operator retry" }]);
+    });
   });
 });
