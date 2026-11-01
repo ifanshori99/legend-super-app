@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "vitest";
 
-const base = {
+const base: NodeJS.ProcessEnv = {
   ...process.env,
   DATABASE_URL: "postgresql://example:example@localhost:5432/example",
   BETTER_AUTH_SECRET: "x".repeat(32),
@@ -11,6 +11,9 @@ const base = {
   EDGE_MODE: "false",
   DATA_CLASSIFICATION: "synthetic",
 };
+// The test runner exports APP_DATABASE_URL; each case sets it explicitly.
+delete base.APP_DATABASE_URL;
+const appUrl = "postgresql://app:app@localhost:5432/example";
 function run(overrides: Record<string, string>, expression = "") {
   return spawnSync(
     process.execPath,
@@ -42,9 +45,15 @@ test("validates deployment, edge, and data classification settings at startup", 
       DEPLOYMENT_MODE: "production",
       DATA_CLASSIFICATION: "real",
       EDGE_MODE: "true",
+      APP_DATABASE_URL: appUrl,
     }).status,
     0,
   );
+});
+
+test("TEN-02 requires the restricted application login outside development", () => {
+  for (const mode of ["staging", "production"])
+    assert.equal(run({ DEPLOYMENT_MODE: mode }).status, 1);
 });
 
 test("rejects real or unclassified imports outside production", () => {
@@ -52,21 +61,25 @@ test("rejects real or unclassified imports outside production", () => {
     for (const classification of ["real", "unknown"]) {
       assert.notEqual(
         run(
-          { DEPLOYMENT_MODE: mode },
+          { DEPLOYMENT_MODE: mode, APP_DATABASE_URL: appUrl },
           `assertDataImportAllowed('${classification}')`,
         ).status,
         0,
       );
     }
     assert.equal(
-      run({ DEPLOYMENT_MODE: mode }, "assertDataImportAllowed('synthetic')")
-        .status,
+      run(
+        { DEPLOYMENT_MODE: mode, APP_DATABASE_URL: appUrl },
+        "assertDataImportAllowed('synthetic')",
+      ).status,
       0,
     );
   }
   assert.equal(
-    run({ DEPLOYMENT_MODE: "production" }, "assertDataImportAllowed('real')")
-      .status,
+    run(
+      { DEPLOYMENT_MODE: "production", APP_DATABASE_URL: appUrl },
+      "assertDataImportAllowed('real')",
+    ).status,
     0,
   );
 });

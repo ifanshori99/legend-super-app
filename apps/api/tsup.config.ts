@@ -4,7 +4,11 @@ import { defineConfig } from "tsup";
 // @starter/shared (TypeScript source) and npm dependencies, so the production
 // image ships only dist/ and drizzle/ — no node_modules.
 export default defineConfig({
-  entry: { server: "src/server.ts", migrate: "src/migrate.ts" },
+  entry: {
+    server: "src/server.ts",
+    migrate: "src/migrate.ts",
+    worker: "src/worker-main.ts",
+  },
   format: "esm",
   platform: "node",
   target: "node22",

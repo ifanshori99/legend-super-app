@@ -129,3 +129,37 @@ test("PAY-02 confirmation evidence must match the payment method", () => {
     false,
   );
 });
+
+test("PAY-01 settled intents record paidAt and unpaid intents do not", () => {
+  const paidAt = "2026-11-01T05:13:00.000Z";
+  const parse = (status, at) =>
+    payment.paymentIntentSchema.safeParse({
+      ...payment.intentFixture,
+      status,
+      paidAt: at,
+    }).success;
+  assert.equal(parse("paid", paidAt), true);
+  assert.equal(parse("refunded", paidAt), true);
+  assert.equal(parse("paid", null), false);
+  assert.equal(parse("pending", paidAt), false);
+  assert.equal(parse("expired", paidAt), false);
+});
+
+test("PAY-01 EDC records never carry a full card number or free-form IP", () => {
+  const [, edcTx] = payment.paymentFixtures.find(
+    ([schema]) => schema === payment.edcTransactionSchema,
+  );
+  const [, terminal] = payment.paymentFixtures.find(
+    ([schema]) => schema === payment.edcTerminalSchema,
+  );
+  const pan = (maskedPan) =>
+    payment.edcTransactionSchema.safeParse({ ...edcTx, maskedPan }).success;
+  assert.equal(pan("****1234"), true);
+  assert.equal(pan("411111******1111"), true);
+  assert.equal(pan("4111111111111111"), false);
+  assert.equal(pan("4111 1111 1111 1111"), false);
+  const ip = (ipAddress) =>
+    payment.edcTerminalSchema.safeParse({ ...terminal, ipAddress }).success;
+  assert.equal(ip("192.168.1.20"), true);
+  assert.equal(ip("not-an-ip"), false);
+});
