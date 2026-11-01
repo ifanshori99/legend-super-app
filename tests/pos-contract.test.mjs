@@ -538,6 +538,18 @@ test("F8 tenders: cash change, multi-tender coverage and refund allocation are s
     changeIdr: 0,
   });
 
+  // Online money always points at the WS-05 intent that holds it.
+  const qrisTender = parsed.tenders.find((row) => row.method === "qris");
+  assert.ok(
+    qrisTender.paymentIntentId,
+    "a QRIS tender links its payment intent",
+  );
+  assert.equal(
+    pos.posTenderSchema.safeParse({ ...qrisTender, paymentIntentId: null })
+      .success,
+    false,
+  );
+
   const cashOrderTenders = tendersOf(P.orders.cashDineIn);
   const summary = pos.summarizeTenders(cashOrderTenders);
   assert.equal(summary.totalIdr, 120_100);

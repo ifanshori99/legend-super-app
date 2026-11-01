@@ -505,6 +505,8 @@ export const posTenderSchema = z
     orderId: orderIdSchema,
     method: posTenderMethodSchema,
     provider: posTenderProviderSchema,
+    /** WS-05 `payment_intents` row that holds the money for this tender. */
+    paymentIntentId: uuidSchema.nullable(),
     /** Amount applied to the bill; never the amount handed over. */
     amountIdr: positiveIdr,
     /** Cash only: banknotes handed over and the change returned. */
@@ -579,6 +581,21 @@ export const posTenderSchema = z
         code: "custom",
         path: ["reference"],
         message: "A captured EDC tender records the bank reference",
+      });
+    // Online gateway methods are settled through a WS-05 payment intent, so a
+    // captured one is never an unexplained rupiah.
+    if (
+      tender.status === "captured" &&
+      (tender.method === "qris" ||
+        tender.method === "va" ||
+        tender.method === "ewallet" ||
+        tender.method === "card") &&
+      tender.paymentIntentId === null
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["paymentIntentId"],
+        message: "A captured gateway tender links its payment intent (WS-05)",
       });
   });
 export type PosTender = z.infer<typeof posTenderSchema>;
