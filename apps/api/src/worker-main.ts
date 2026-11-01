@@ -2,12 +2,16 @@ import "./load-env";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
   tenantIdSchema,
+  ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
+import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
   consumeOutbox,
@@ -15,6 +19,11 @@ import {
   relayOutbox,
   type GapRequest,
 } from "./services/core-outbox";
+import {
+  createNotificationConsumer,
+  type NotificationRecipientResolver,
+} from "./services/notification-consumer.ts";
+import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -51,6 +60,8 @@ if (
     "Worker configuration requires resolveContext, authorize, authorizeEvent, deliverEvent, and requestMissing functions",
   );
 const handlers = config as {
+  resolveNotificationRecipients?: NotificationRecipientResolver;
+  notificationDelivery?: Parameters<typeof deliverNotificationAttempt>[3];
   resolveContext: (
     tenantId: OutboxJob["tenantId"],
   ) => Promise<ScopedTenantContext>;
@@ -99,8 +110,23 @@ const runtime = createWorkerRuntime({
       outboxId: job.outboxId,
       generation: job.generation,
       authorize: (event) => handlers.authorizeEvent(context, event),
-      deliver: (event, key, tx) =>
-        handlers.deliverEvent(context, event, key, tx),
+      deliver: async (event, key, tx) => {
+        const result = await tx.execute(
+          sql`SELECT destination FROM domain_event_outbox WHERE id = ${ulidToUuid(job.outboxId)}::uuid`,
+        );
+        if (result.rows[0]?.destination === "notification") {
+          if (!handlers.resolveNotificationRecipients)
+            throw new Error(
+              "Notification recipient resolver is not configured",
+            );
+          await createNotificationConsumer(
+            context,
+            handlers.resolveNotificationRecipients,
+          )(event, key, tx);
+        } else {
+          await handlers.deliverEvent(context, event, key, tx);
+        }
+      },
     });
   },
   markDead: async (context, job) => {
@@ -117,10 +143,31 @@ const relay = createRelayRuntime({
       )
     ).rows.map((row) => row.id),
   resolveContext,
-  relay: (context) =>
-    relayOutbox(db, context, runtime.enqueue, (gap) =>
+  relay: async (context) => {
+    await relayOutbox(db, context, runtime.enqueue, (gap) =>
       handlers.requestMissing(context, gap),
-    ),
+    );
+    // The relay's periodic sweep also recovers due notification attempts.
+    // Providers and recipient lookup are deployment-owned and absent by default.
+    if (!handlers.notificationDelivery) return;
+    const due = await withTenant(db, context, async (tx) =>
+      tx.execute(
+        sql`SELECT a.id FROM delivery_attempts a WHERE ((a.status IN ('queued','failed','sending') AND (a.next_attempt_at IS NULL OR a.next_attempt_at <= now())) OR (a.channel = 'whatsapp' AND a.status = 'skipped' AND a.skip_reason = 'free_channel_available')) AND (a.channel <> 'whatsapp' OR ${Boolean(handlers.notificationDelivery?.whatsapp)}::boolean) AND (a.channel <> 'whatsapp' OR NOT EXISTS (SELECT 1 FROM delivery_attempts f WHERE f.tenant_id = a.tenant_id AND f.notification_id = a.notification_id AND f.channel IN ('email','web_push') AND f.status IN ('queued','failed','sending','sent','delivered'))) ORDER BY a.created_at, a.id LIMIT 100`,
+      ),
+    );
+    for (const row of due.rows) {
+      try {
+        await deliverNotificationAttempt(
+          db,
+          context,
+          uuidToUlid(String(row.id)),
+          handlers.notificationDelivery,
+        );
+      } catch {
+        console.error("Notification delivery attempt failed");
+      }
+    }
+  },
 });
 try {
   await runtime.start();
