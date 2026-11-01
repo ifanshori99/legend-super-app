@@ -14,6 +14,7 @@ export * from "./platform-packages";
 export * from "./platform-integrations";
 export * from "./platform-themes";
 export * from "./platform-support";
+export * from "./platform-access";
 export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";

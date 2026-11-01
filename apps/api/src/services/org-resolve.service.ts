@@ -45,3 +45,11 @@ export async function resolveHostname(host: string): Promise<HostResolution> {
   );
   return resolveHost(hostname, domains, (tenantId) => statuses.get(tenantId));
 }
+
+/**
+ * True only for a host that resolves to a verified domain of an active tenant.
+ * Caddy's on-demand TLS ask uses it before issuing a certificate (TEN-02).
+ */
+export async function isVerifiedTenantHost(host: string): Promise<boolean> {
+  return (await resolveHostname(host)).ok;
+}

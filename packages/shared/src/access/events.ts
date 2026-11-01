@@ -64,3 +64,28 @@ export type AccessEventType = keyof typeof ACCESS_EVENT_PAYLOADS;
 export const ACCESS_EVENT_TYPES = Object.keys(
   ACCESS_EVENT_PAYLOADS,
 ) as AccessEventType[];
+
+// Typed envelopes for the API (bead legend-4f9). `defineDomainEvent` binds each
+// payload to its catalogued name/version, so a renamed event fails at import.
+import { defineDomainEvent } from "../events/index.ts";
+
+export const roleCreatedEvent = defineDomainEvent({
+  name: "role.created",
+  payload: roleCreatedPayloadSchema,
+});
+export const roleUpdatedEvent = defineDomainEvent({
+  name: "role.updated",
+  payload: roleUpdatedPayloadSchema,
+});
+export const roleAssignmentGrantedEvent = defineDomainEvent({
+  name: "role_assignment.granted",
+  payload: roleAssignmentGrantedPayloadSchema,
+});
+export const roleAssignmentEndedEvent = defineDomainEvent({
+  name: "role_assignment.ended",
+  payload: roleAssignmentEndedPayloadSchema,
+});
+export const approvalPolicyChangedEvent = defineDomainEvent({
+  name: "approval_policy.changed",
+  payload: approvalPolicyChangedPayloadSchema,
+});

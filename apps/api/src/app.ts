@@ -10,10 +10,12 @@ import { auth, CLIENT_IP_HEADER } from "./lib/auth";
 import { logger as defaultLogger, type Logger } from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
-import { developmentTenantContext } from "./middleware/tenant";
+import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { resolveHostname } from "./services/org-resolve.service";
+import { deviceTenantCredential } from "./services/platform-tenant.service";
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 
@@ -38,6 +40,13 @@ export function createApp({
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxySetting());
+
+  // The synthetic tenant fallback exists only where a synthetic dataset does:
+  // development, non-production runtime, synthetic data classification.
+  const developmentSyntheticTenant =
+    env.DEPLOYMENT_MODE === "development" &&
+    env.NODE_ENV !== "production" &&
+    env.DATA_CLASSIFICATION === "synthetic";
 
   app.use(
     helmet({
@@ -107,34 +116,41 @@ export function createApp({
   // limitAuthBody caps that body's size first.
   app.all("/api/auth/*splat", limitAuthBody, toNodeHandler(auth));
 
-  // Better Auth owns its routes above. Existing public and global starter routes
-  // remain accessible; tenant-aware services must require a minted context.
-  // Domain resolution is deliberately absent until registered domains exist.
+  // Tenant resolution (TEN-02). In every deployment a registered, verified
+  // domain of an active tenant or a signed device token names the tenant; the
+  // client never does. Only development with synthetic data keeps a fallback:
+  // the seeded tenant, and only for a signed-in caller (the e2e/login flow).
   app.use(
     "/api",
-    developmentTenantContext({
-      enabled:
-        env.DEPLOYMENT_MODE === "development" &&
-        env.NODE_ENV !== "production" &&
-        env.DATA_CLASSIFICATION === "synthetic",
-      hasSession: async (req) =>
-        Boolean(
-          await auth.api.getSession({
-            headers: fromNodeHeaders(req.headers),
-            query: { disableCookieCache: true },
-          }),
-        ),
-      lookup: async () => {
-        // Development only: resolve the first seeded tenant (the synthetic
-        // Cafe Legend seed). Never derived from request input, and no tenant
-        // name is hard-coded here (TEN-07); brands are read later inside the
-        // tenant transaction once the context exists.
-        const result = await pool.query<{ id: string }>(
-          "SELECT id FROM tenants ORDER BY created_at, id LIMIT 1",
-        );
-        const row = result.rows[0];
-        return row ? { tenantId: row.id, brandId: null } : null;
+    tenantContext({
+      required: false,
+      resolveDomain: async (hostname) => {
+        const resolution = await resolveHostname(hostname);
+        return resolution.ok
+          ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
+          : null;
       },
+      verifyCredential: deviceTenantCredential,
+      fallback: developmentSyntheticTenant
+        ? async (req) => {
+            const session = await auth.api.getSession({
+              headers: fromNodeHeaders(req.headers),
+              query: { disableCookieCache: true },
+            });
+            if (!session) return null;
+            // Development only: the first seeded tenant (the synthetic Cafe
+            // Legend seed). Never derived from request input, and no tenant
+            // name is hard-coded here (TEN-07); brands are read later inside
+            // the tenant transaction once the context exists.
+            const result = await pool.query<{ id: string }>(
+              "SELECT id FROM tenants WHERE status = 'active' ORDER BY created_at, id LIMIT 1",
+            );
+            const row = result.rows[0];
+            return row
+              ? { tenantId: row.id, brandId: null, source: "session" as const }
+              : null;
+          }
+        : undefined,
     }),
   );
   app.use("/api", apiRouter);

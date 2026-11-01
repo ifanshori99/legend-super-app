@@ -33,11 +33,15 @@ export function requestWifiSession(body: StartWifiSessionInput) {
   );
 }
 
-/** FAC-12: called after a payment lands; returns the recomputed allowance. */
-export function requestQuotaRefresh(sameDaySpendIdr: number) {
-  return callEndpoint(refreshWifiQuota, {
-    body: { sameDaySpendIdr },
-  }).then((response) => response.data);
+/**
+ * FAC-12: called after a payment lands; returns the recomputed allowance.
+ * The body is empty — the API derives same-day spend from the account's
+ * settled payments, never from the client.
+ */
+export function requestQuotaRefresh() {
+  return callEndpoint(refreshWifiQuota, { body: {} }).then(
+    (response) => response.data,
+  );
 }
 
 export async function fetchWfcPlans(facilityId: string, signal?: AbortSignal) {
