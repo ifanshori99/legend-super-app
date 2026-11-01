@@ -82,13 +82,16 @@ accessRouter.patch(
   async (req, res) => {
     const { roleId } = roleParamsSchema.parse(req.params);
     const input = updateCustomRoleSchema.parse(req.body);
+    // A custom-role edit may add permissions only when they are held or when
+    // the editor is a re-authenticated Owner/Admin Tenant (PRD §3.7).
+    const reauthenticatedAt = await verifiedMfaAt(req);
     res.json({
-      data: await updateCustomRole(
-        getScopedTenantContext(req),
-        roleId,
-        input,
-        getAuth(req).user.id,
-      ),
+      data: await updateCustomRole(getScopedTenantContext(req), roleId, input, {
+        actorUserId: getAuth(req).user.id,
+        reauthenticatedAt:
+          reauthenticatedAt === null ? null : new Date(reauthenticatedAt),
+        mfaVerified: reauthenticatedAt !== null,
+      }),
     });
   },
 );

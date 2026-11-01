@@ -22,7 +22,9 @@ import {
   roleAssignmentSchema,
   roleIdSchema,
   roleSchema,
+  assertCanEditCustomRole,
   assertCanGrantRole,
+  isAssignmentActive,
   isRoleTemplateKey,
   normalizeCustomRolePermissions,
   ROLE_TEMPLATES,
@@ -347,25 +349,28 @@ export async function createCustomRole(
         mfaRequired: normalized.mfaRequired,
       },
     });
-    await recordAudit({
-      tenantId: context.tenant.tenantId,
-      outletId: null,
-      actorType: "user",
-      actorId: actorUserId,
-      deviceId: null,
-      action: "role.created",
-      objectType: "role",
-      objectId: row.id,
-      reason: null,
-      before: null,
-      after: {
-        name: row.name,
-        permissions: normalized.permissions,
-        mfaRequired: normalized.mfaRequired,
-        allowedScopeTypes: input.allowedScopeTypes,
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "role.created",
+        objectType: "role",
+        objectId: row.id,
+        reason: null,
+        before: null,
+        after: {
+          name: row.name,
+          permissions: normalized.permissions,
+          mfaRequired: normalized.mfaRequired,
+          allowedScopeTypes: input.allowedScopeTypes,
+        },
+        sensitiveAccess: false,
       },
-      sensitiveAccess: false,
-    });
+      { tx, context },
+    );
     return toRole(row);
   });
 }
@@ -374,9 +379,16 @@ export async function updateCustomRole(
   context: ScopedTenantContext,
   roleId: string,
   input: UpdateCustomRoleInput,
-  actorUserId: string,
-  now = new Date(),
+  options: {
+    actorUserId: string;
+    /** Last successful re-authentication of the editor, or null (no bypass). */
+    reauthenticatedAt: Date | null;
+    mfaVerified: boolean;
+    now?: Date;
+  },
 ): Promise<Role> {
+  const { actorUserId } = options;
+  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
     await assertTenantPermission(
       tx,
@@ -418,30 +430,43 @@ export async function updateCustomRole(
     const removed = current.permissions.filter(
       (code) => !nextPermissions.includes(code),
     );
-    // PRD §3.7 Pemberian Role: "pengguna tidak dapat menaikkan hak dirinya
-    // sendiri". Editing a role the actor holds (now or from a future
-    // valid_from) would raise their own rights without a grant, so adding a
-    // permission or dropping the MFA requirement on such a role is refused.
     if (added.length > 0 || (current.mfaRequired && !nextMfa)) {
-      const [held] = await tx
-        .select({ id: roleAssignments.id })
-        .from(roleAssignments)
-        .where(
-          and(
-            eq(roleAssignments.tenantId, context.tenant.tenantId),
-            eq(roleAssignments.userId, actorUserId),
-            eq(roleAssignments.roleId, roleId),
-            or(
-              isNull(roleAssignments.validUntil),
-              gt(roleAssignments.validUntil, now),
-            ),
-          ),
+      const data = await loadTenantAccessInTransaction(
+        tx,
+        context,
+        actorUserId,
+      );
+      // PRD §3.7 Pemberian Role: "pengguna tidak dapat menaikkan hak dirinya
+      // sendiri". Adding a permission follows the grant rule (hold it, or be a
+      // re-authenticated Owner/Admin Tenant; coordinator decision C6).
+      assertCanEditCustomRole({
+        grantor: {
+          tenantId: context.tenant.tenantId,
+          userId: userIdSchema.parse(actorUserId),
+          assignments: data.assignments,
+        },
+        grantorRoles: data.roles,
+        grantorMfaVerified: options.mfaVerified,
+        grantorReauthenticatedAt: options.reauthenticatedAt,
+        addedPermissions: added,
+        org: data.org,
+        now,
+      });
+      // Dropping the MFA requirement from a role the editor holds would let
+      // them reach back office without the second factor; the grant rule only
+      // covers permissions, so keep this guard separate (AUTH-05).
+      if (
+        current.mfaRequired &&
+        !nextMfa &&
+        data.assignments.some(
+          (row) =>
+            row.roleId.toLowerCase() === roleId.toLowerCase() &&
+            isAssignmentActive(row, now),
         )
-        .limit(1);
-      if (held)
+      )
         throw new AccessError(
           "SELF_ELEVATION_FORBIDDEN",
-          "Anda tidak dapat menambah hak pada role yang Anda pegang sendiri.",
+          "Anda tidak dapat menghapus syarat MFA pada role yang Anda pegang sendiri.",
         );
     }
     const previous = {
@@ -481,25 +506,28 @@ export async function updateCustomRole(
         mfaRequired: row.mfaRequired,
       },
     });
-    await recordAudit({
-      tenantId: context.tenant.tenantId,
-      outletId: null,
-      actorType: "user",
-      actorId: actorUserId,
-      deviceId: null,
-      action: "role.updated",
-      objectType: "role",
-      objectId: row.id,
-      reason: null,
-      before: previous,
-      after: {
-        name: row.name,
-        permissions: row.permissions,
-        mfaRequired: row.mfaRequired,
-        allowedScopeTypes: row.allowedScopeTypes,
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "role.updated",
+        objectType: "role",
+        objectId: row.id,
+        reason: null,
+        before: previous,
+        after: {
+          name: row.name,
+          permissions: row.permissions,
+          mfaRequired: row.mfaRequired,
+          allowedScopeTypes: row.allowedScopeTypes,
+        },
+        sensitiveAccess: false,
       },
-      sensitiveAccess: false,
-    });
+      { tx, context },
+    );
     return toRole(row);
   });
 }
@@ -681,28 +709,107 @@ export async function grantRoleAssignment(
         reauthenticatedAt: reauthenticatedAt.toISOString(),
       },
     });
-    await recordAudit({
-      tenantId: context.tenant.tenantId,
-      outletId: null,
-      actorType: "user",
-      actorId: options.actorUserId,
-      deviceId: null,
-      action: "role_assignment.granted",
-      objectType: "role_assignment",
-      objectId: row.id,
-      reason: null,
-      before: null,
-      after: {
-        userId: row.userId,
-        roleId: row.roleId,
-        scope: input.scope,
-        validFrom: row.validFrom.toISOString(),
-        validUntil: row.validUntil?.toISOString() ?? null,
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: options.actorUserId,
+        deviceId: null,
+        action: "role_assignment.granted",
+        objectType: "role_assignment",
+        objectId: row.id,
+        reason: null,
+        before: null,
+        after: {
+          userId: row.userId,
+          roleId: row.roleId,
+          scope: input.scope,
+          validFrom: row.validFrom.toISOString(),
+          validUntil: row.validUntil?.toISOString() ?? null,
+        },
+        sensitiveAccess: false,
       },
-      sensitiveAccess: false,
-    });
+      { tx, context },
+    );
     return toAssignment(row);
   });
+}
+
+/**
+ * Owner assignment protection (coordinator decision C6, bead legend-vbws;
+ * PRD §3.7 "Owner / Direksi — Seluruh tenant sesuai cakupan"). Only an active
+ * tenant Owner may end another Owner's assignment, and the tenant must keep at
+ * least one active tenant-scoped Owner: two Owners cannot remove each other,
+ * and nobody can lock a tenant out of its top authority.
+ */
+async function assertCanEndOwnerAssignment(
+  tx: Tx,
+  context: ScopedTenantContext,
+  target: AssignmentRow,
+  actorUserId: string,
+  now: Date,
+): Promise<void> {
+  const [targetRole] = await tx
+    .select({ templateKey: roles.templateKey })
+    .from(roles)
+    .where(
+      and(
+        eq(roles.id, target.roleId),
+        eq(roles.tenantId, context.tenant.tenantId),
+      ),
+    )
+    .limit(1);
+  if (targetRole?.templateKey !== "owner") return;
+  const activeOwners = await tx
+    .select({ id: roleAssignments.id, userId: roleAssignments.userId })
+    .from(roleAssignments)
+    .innerJoin(
+      roles,
+      and(
+        eq(roles.tenantId, roleAssignments.tenantId),
+        eq(roles.id, roleAssignments.roleId),
+      ),
+    )
+    .where(
+      and(
+        eq(roleAssignments.tenantId, context.tenant.tenantId),
+        eq(roles.templateKey, "owner"),
+        eq(roleAssignments.scopeType, "tenant"),
+        lte(roleAssignments.validFrom, now),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, now),
+        ),
+      ),
+    )
+    // Serialize concurrent "end Owner" calls: the second caller waits, then
+    // re-evaluates against the first caller's commit, so two Owners cannot
+    // both remove each other and leave the tenant without one.
+    .for("update", { of: roleAssignments });
+  const actorIsOwner = activeOwners.some(
+    (row) => row.userId.toLowerCase() === actorUserId.toLowerCase(),
+  );
+  if (
+    target.userId.toLowerCase() !== actorUserId.toLowerCase() &&
+    !actorIsOwner
+  )
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Hanya Owner yang dapat mengakhiri penugasan Owner lain.",
+    );
+  const targetActive =
+    target.validFrom.getTime() <= now.getTime() &&
+    (target.validUntil === null || now.getTime() < target.validUntil.getTime());
+  if (
+    targetActive &&
+    activeOwners.filter((row) => row.id !== target.id).length === 0
+  )
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "Tenant harus memiliki minimal satu Owner aktif.",
+    );
 }
 
 export async function endRoleAssignment(
@@ -753,6 +860,7 @@ export async function endRoleAssignment(
         "VALIDATION_ERROR",
         "An assignment can only be shortened; grant a new one to extend it.",
       );
+    await assertCanEndOwnerAssignment(tx, context, current, actorUserId, now);
     const [row] = await tx
       .update(roleAssignments)
       .set({ validUntil })
@@ -771,24 +879,27 @@ export async function endRoleAssignment(
         reason: input.reason,
       },
     });
-    await recordAudit({
-      tenantId: context.tenant.tenantId,
-      outletId: null,
-      actorType: "user",
-      actorId: actorUserId,
-      deviceId: null,
-      action: "role_assignment.ended",
-      objectType: "role_assignment",
-      objectId: row.id,
-      reason: input.reason,
-      before: {
-        userId: row.userId,
-        roleId: row.roleId,
-        validUntil: current.validUntil?.toISOString() ?? null,
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "role_assignment.ended",
+        objectType: "role_assignment",
+        objectId: row.id,
+        reason: input.reason,
+        before: {
+          userId: row.userId,
+          roleId: row.roleId,
+          validUntil: current.validUntil?.toISOString() ?? null,
+        },
+        after: { validUntil: validUntil.toISOString() },
+        sensitiveAccess: false,
       },
-      after: { validUntil: validUntil.toISOString() },
-      sensitiveAccess: false,
-    });
+      { tx, context },
+    );
     return toAssignment(row);
   });
 }
@@ -916,20 +1027,23 @@ export async function replaceApprovalMatrix(
         },
       });
     }
-    await recordAudit({
-      tenantId: context.tenant.tenantId,
-      outletId: null,
-      actorType: "user",
-      actorId: actorUserId,
-      deviceId: null,
-      action: "approval_policy.changed",
-      objectType: "approval_policy",
-      objectId: null,
-      reason: null,
-      before: { policies: before },
-      after: { policies: after },
-      sensitiveAccess: false,
-    });
+    await recordAudit(
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "approval_policy.changed",
+        objectType: "approval_policy",
+        objectId: null,
+        reason: null,
+        before: { policies: before },
+        after: { policies: after },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
     return { data: after };
   });
 }
