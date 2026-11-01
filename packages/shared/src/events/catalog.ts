@@ -53,7 +53,7 @@ const namesByWorkstream = {
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised",
   "WS-10":
-    "employee.updated attendance.recorded payroll_run.completed payslip.created",
+    "employee.updated attendance.logged shift.published leave.approved payroll_run.completed payslip.created",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
