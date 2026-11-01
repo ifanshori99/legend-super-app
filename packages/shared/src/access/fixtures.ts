@@ -253,6 +253,7 @@ const approvalPolicies: ApprovalPolicy[] = approvalMatrixSchema.parse(
 );
 
 const org: OrgIndex = {
+  brands: [{ id: brand.id }],
   outlets: outlets.map((outlet) => ({
     id: outlet.id,
     brandId: outlet.brandId,

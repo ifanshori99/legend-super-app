@@ -1965,3 +1965,38 @@ describe("Profit-share fixtures, events and endpoints", () => {
     );
   });
 });
+
+test("ACC-01 invalid and overflowing journal amounts fail closed without throwing", () => {
+  const invalid = acc.checkJournalBalance([
+    { debitIdr: Infinity, creditIdr: 0 },
+    { debitIdr: 0, creditIdr: 1 },
+  ]);
+  assert.equal(invalid.balanced, false);
+  const max = Number.MAX_SAFE_INTEGER;
+  const overflow = acc.checkJournalBalance([
+    { debitIdr: max, creditIdr: 0 },
+    { debitIdr: 1, creditIdr: 0 },
+    { debitIdr: 0, creditIdr: max },
+    { debitIdr: 0, creditIdr: 1 },
+  ]);
+  assert.equal(overflow.balanced, false);
+});
+
+test("SH-03 a later allocation removing a shareholder removes the current holding", () => {
+  const old = version(legalEntityEntity.id, 1);
+  const removed = {
+    ...old,
+    version: 99,
+    effectiveFrom: "2026-12-01",
+    allocations: old.allocations.filter((row) => row.shareholderId !== dewi.id),
+  };
+  const result = acc.buildMyProfitShare({
+    shareholder: dewi,
+    entities: [legalEntityEntity],
+    versions: [old, removed],
+    statements: [],
+    estimates: [],
+    asOf: "2026-12-15",
+  });
+  assert.equal(result.holdings.length, 0);
+});

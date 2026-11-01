@@ -45,7 +45,8 @@ function targetOf(scope: AssignmentScope): AccessTarget {
  * Throws AccessError unless `grantor` may give `role` to `granteeUserId` at
  * `scope` right now. Checks, in order: no self-grant, recent re-auth, role is a
  * tenant role allowed at that scope type, grantor holds `access.role.assign`
- * over that scope (deny by default, MFA included). Returns the grantor
+ * over that scope and every delegated permission at that scope (deny by default,
+ * MFA included). This prevents reciprocal role elevation. Returns the grantor
  * assignment that authorized it, for the audit log.
  */
 export function assertCanGrantRole(input: {
@@ -71,16 +72,20 @@ export function assertCanGrantRole(input: {
     throw new AccessError("ROLE_NOT_ASSIGNABLE");
   if (!input.role.allowedScopeTypes.includes(input.scope.type))
     throw new AccessError("ROLE_SCOPE_NOT_ALLOWED");
-  return assertAuthorized({
+  const authorization = {
     principal: input.grantor,
     roles: input.grantorRoles,
     org: input.org,
-    permission: "access.role.assign",
+    permission: "access.role.assign" as const,
     target: targetOf(input.scope),
     now: input.now,
-    surface: "back_office",
+    surface: "back_office" as const,
     mfaVerified: input.grantorMfaVerified,
-  });
+  };
+  const assignmentId = assertAuthorized(authorization);
+  for (const permission of input.role.permissions)
+    assertAuthorized({ ...authorization, permission });
+  return assignmentId;
 }
 
 /**

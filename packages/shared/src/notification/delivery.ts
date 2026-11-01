@@ -2,7 +2,7 @@
 // WhatsApp cap, retry state machine and template rendering. The worker in
 // legend-5ub / legend-hyq calls these; the FE uses them for previews.
 
-import { categoryMeta } from "./schemas.ts";
+import { categoryMeta, inAppLinkSchema } from "./schemas.ts";
 import type {
   ChannelPreference,
   DeliveryStatus,
@@ -278,6 +278,8 @@ export function renderTemplate(
     link:
       template.link === null
         ? null
-        : fill(template.link, values, encodeURIComponent),
+        : inAppLinkSchema.parse(
+            fill(template.link, values, encodeURIComponent),
+          ),
   };
 }
