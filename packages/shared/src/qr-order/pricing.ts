@@ -47,7 +47,9 @@ export type QuoteTaxRule = {
   appliesTo: "net" | "net_plus_service";
 };
 
-/** Zone + tax configuration snapshot the server uses for one quote. */
+/** Zone + tax configuration snapshot the server uses for one quote. Menu
+ * prices are exclusive of tax and service charge (owner decision 2026-11-01);
+ * the quote adds both on top, so the guest sees them at checkout. */
 export type QuoteConfig = {
   serviceChargeBp: number;
   taxRules: readonly QuoteTaxRule[];
