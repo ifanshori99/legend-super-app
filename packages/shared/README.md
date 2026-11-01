@@ -6,17 +6,18 @@ The TypeScript contract package shared by the API, the web app and the edge node
 
 The base every Legend domain contract imports. Decisions and rationale: [`docs/plan/contracts.md`](../../docs/plan/contracts.md).
 
-| Area            | Use                                                                                                         | Rule                                                                                               |
-| --------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Ids             | `uuidIdSchema<"XId">()`, `ulidIdSchema<"XId">()`, `createUlidFactory()`, `ulidToUuid` / `uuidToUlid`        | UUID ids; ULID for time-ordered aggregates and events; every id stored in a Postgres `uuid` column |
-| Money           | `Idr`, `idr()`, `addIdr`, `sumIdr`, `applyBasisPoints`, `roundToIncrement`, `allocateIdr`, `splitIdrEvenly` | Whole rupiah (BIGINT), `…Idr` fields, explicit `RoundingMode`, splits sum exactly                  |
-| Unit cost / qty | `Decimal4`, `extendCostIdr`, `unitCostOf`, `multiplyDecimal4`                                               | NUMERIC(14,4) as a decimal string, never a float                                                   |
-| Tenant          | `TenantContext`, `establishTenantContext`, `clientInputSchema`, `OutletScope`, `isOutletInScope`            | Tenant from domain/token only (TEN-02); outlet scope (TEN-03)                                      |
-| Errors          | `apiErrorBodySchema`, `apiErrorBody`, `coreErrorHttpStatus`, `errorCodeSchema`                              | `{ error: { code, message, details?, requestId? } }`, UPPER_SNAKE codes                            |
-| Pagination      | `cursorPageQuerySchema`, `cursorPageSchema(item)`, `encodeCursor` / `decodeCursor`                          | Keyset cursor, limit 1–100 (default 25)                                                            |
-| Dates           | `isoDateTimeSchema`, `businessDateSchema`, `timeOfDaySchema`, `businessDateOf`, `toIsoDateTime`             | Instants with offset (UTC out); business dates in outlet time zone (default Asia/Jakarta)          |
-| Misc            | `dataResponseSchema(item)`, `idempotencyKeySchema`                                                          | `{ data }` envelope; idempotency keys up to 100 chars                                              |
-| Fixtures        | `cafeLegendFixtures`                                                                                        | Cafe Legend tenant, brand, outlets, sample page and error                                          |
+| Area            | Use                                                                                                                       | Rule                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Ids             | `uuidIdSchema<"XId">()`, `ulidIdSchema<"XId">()`, `createUlidFactory()`, `ulidToUuid` / `uuidToUlid`                      | UUID ids; ULID for time-ordered aggregates and events; every id stored in a Postgres `uuid` column |
+| Money           | `Idr`, `idr()`, `addIdr`, `sumIdr`, `applyBasisPoints`, `roundToIncrement`, `allocateIdr`, `splitIdrEvenly`               | Whole rupiah (BIGINT), `…Idr` fields, explicit `RoundingMode`, splits sum exactly                  |
+| Unit cost / qty | `Decimal4`, `extendCostIdr`, `unitCostOf`, `multiplyDecimal4`                                                             | NUMERIC(14,4) as a decimal string, never a float                                                   |
+| Tenant          | `TenantContext`, `OutletScope`, `assertTrustedScopedContext`, `isOutletInScope`, `outletIdsForQuery`, `clientInputSchema` | Checks only; values are minted server-side (TEN-02/TEN-03)                                         |
+| Server only     | `@starter/shared/core/server`: `establishTenantContext`, `establishOutletScope`, `establishScopedTenantContext`           | API/edge only; refuses to load in a browser                                                        |
+| Errors          | `apiErrorBodySchema`, `apiErrorBody`, `coreErrorHttpStatus`, `errorCodeSchema`                                            | `{ error: { code, message, details?, requestId? } }`, UPPER_SNAKE codes                            |
+| Pagination      | `cursorPageQuerySchema`, `cursorPageSchema(item)`, `encodeCursor` / `decodeCursor`                                        | Keyset cursor ≤ 1024 chars both ways, limit 1–100 (default 25)                                     |
+| Dates           | `isoDateTimeSchema`, `businessDateSchema`, `timeOfDaySchema`, `businessDateOf`, `toIsoDateTime`                           | Instants with offset (UTC out); business dates in outlet time zone (default Asia/Jakarta)          |
+| Misc            | `dataResponseSchema(item)`, `idempotencyKeySchema`                                                                        | `{ data }` envelope; idempotency keys up to 100 chars                                              |
+| Fixtures        | `cafeLegendFixtures`                                                                                                      | Cafe Legend tenant, brand, outlets, sample page and error                                          |
 
 ```ts
 import {

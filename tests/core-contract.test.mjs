@@ -1,26 +1,62 @@
 // Shared core conventions contract tests (WS-00, bead legend-6gu):
 // ids (UUID + ULID), money (BIGINT rupiah + NUMERIC(14,4)), tenant context
 // (TEN-02), outlet scope (TEN-03), error envelope, cursor pagination, ISO
-// date rules and the Cafe Legend fixtures. Loads the TypeScript sources
-// directly through Node type stripping.
+// date rules and the Cafe Legend fixtures. Loaded with plain Node ESM and its
+// built-in type stripping, with no resolve hook: the sources must import
+// exactly as the API and the edge runtime will load them.
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
+import * as core from "../packages/shared/src/core/index.ts";
+import * as server from "../packages/shared/src/core/server.ts";
 
-// Shared sources use bundler-style extensionless imports; let Node try ".ts".
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    try {
-      return nextResolve(specifier, context);
-    } catch (error) {
-      if (specifier.startsWith(".") && !/\.[cm]?[jt]s$/.test(specifier))
-        return nextResolve(`${specifier}.ts`, context);
-      throw error;
-    }
-  },
+const coreUrl = new URL(
+  "../packages/shared/src/core/index.ts",
+  import.meta.url,
+);
+const serverUrl = new URL(
+  "../packages/shared/src/core/server.ts",
+  import.meta.url,
+);
+
+function runNode(source) {
+  return spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
+    encoding: "utf8",
+  });
+}
+
+describe("module loading", () => {
+  test("both entry points import under native Node ESM without hooks", () => {
+    const result = runNode(
+      `const core = await import(${JSON.stringify(coreUrl.href)});
+       const server = await import(${JSON.stringify(serverUrl.href)});
+       if (typeof core.idr !== "function" || typeof server.establishTenantContext !== "function") process.exit(2);`,
+    );
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  test("server entry refuses to load where a DOM exists", () => {
+    const result = runNode(
+      `globalThis.document = {}; await import(${JSON.stringify(serverUrl.href)});`,
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /server-only/);
+  });
+
+  test("browser-safe entry exposes checks but no way to mint access", () => {
+    for (const name of [
+      "establishTenantContext",
+      "establishOutletScope",
+      "establishScopedTenantContext",
+      "mintTenantContext",
+      "mintOutletScope",
+    ])
+      assert.equal(name in core, false, name);
+    assert.equal(typeof core.assertTrustedTenantContext, "function");
+  });
 });
-
-const core = await import("../packages/shared/src/core/index.ts");
 
 describe("ids", () => {
   test("ULID: monotonic, sortable, canonical, timestamp round-trips", () => {
@@ -59,9 +95,16 @@ describe("ids", () => {
     );
   });
 
-  test("ULID schema rejects lowercase, wrong length and overflow", () => {
+  test("ULID schema normalizes case, rejects wrong length and overflow", () => {
+    assert.equal(
+      core.ulidSchema.parse("01arz3ndektsv4rrffq69g5fav"),
+      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
+    assert.equal(
+      core.uuidToUlid(core.ulidToUuid("01arz3ndektsv4rrffq69g5fav")),
+      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    );
     for (const bad of [
-      "01arz3ndektsv4rrffq69g5fav",
       "01ARZ3NDEKTSV4RRFFQ69G5FA",
       "81ARZ3NDEKTSV4RRFFQ69G5FAV",
       "01ARZ3NDEKTSV4RRFFQ69G5FAU",
@@ -73,6 +116,14 @@ describe("ids", () => {
     const id = core.cafeLegendFixtures.tenant.id;
     assert.equal(core.tenantIdSchema.parse(id), id);
     assert.throws(() => core.tenantIdSchema.parse("cafe-legend"));
+  });
+
+  test("UUIDs normalize to lowercase so ids compare with ===", () => {
+    const lower = core.cafeLegendFixtures.tenant.id;
+    const upper = lower.toUpperCase();
+    assert.equal(core.tenantIdSchema.parse(upper), lower);
+    assert.equal(core.uuidSchema.parse(upper), lower);
+    assert.equal(core.tenantIdSchema.parse(lower), lower);
   });
 });
 
@@ -292,31 +343,70 @@ describe("NUMERIC(14,4) quantities and unit costs", () => {
   });
 });
 
-describe("tenant context (TEN-02) and outlet scope (TEN-03)", () => {
-  const { tenant, outlets } = core.cafeLegendFixtures;
-
-  test("context comes only from a server source and is frozen", () => {
-    const context = core.establishTenantContext({
+describe("tenant context (TEN-02)", () => {
+  const { tenant } = core.cafeLegendFixtures;
+  const domainContext = () =>
+    server.establishTenantContext({
       tenantId: tenant.id,
       source: "domain",
       brandId: null,
     });
+
+  test("server-minted context is frozen and trusted", () => {
+    const context = domainContext();
     assert.equal(context.tenantId, tenant.id);
     assert.ok(Object.isFrozen(context));
+    assert.equal(core.isTrustedTenantContext(context), true);
+    core.assertTrustedTenantContext(context);
+  });
+
+  test("plain objects, JSON round-trips and copies are rejected at runtime", () => {
+    const context = domainContext();
+    const forgeries = [
+      { tenantId: tenant.id, brandId: null, source: "domain" },
+      JSON.parse(JSON.stringify(context)),
+      structuredClone(context),
+      { ...context },
+      Object.create(context),
+      null,
+      undefined,
+      tenant.id,
+    ];
+    for (const forged of forgeries) {
+      assert.equal(core.isTrustedTenantContext(forged), false);
+      assert.throws(() => core.assertTrustedTenantContext(forged), TypeError);
+    }
+  });
+
+  test("client-chosen sources and ids are refused", () => {
     assert.throws(() =>
-      core.establishTenantContext({
+      server.establishTenantContext({
         tenantId: tenant.id,
         source: "client",
         brandId: null,
       }),
     );
     assert.throws(() =>
-      core.establishTenantContext({
-        tenantId: "x",
+      server.establishTenantContext({
+        tenantId: "cafe-legend",
         source: "domain",
         brandId: null,
       }),
     );
+    assert.throws(() =>
+      server.establishTenantContext({
+        tenantId: tenant.id,
+        source: "domain",
+        brandId: null,
+        extra: true,
+      }),
+    );
+    const context = server.establishTenantContext({
+      tenantId: tenant.id.toUpperCase(),
+      source: "session",
+      brandId: null,
+    });
+    assert.equal(context.tenantId, tenant.id, "normalized to lowercase");
   });
 
   test("client input schemas refuse tenant fields at definition and parse time", () => {
@@ -333,24 +423,121 @@ describe("tenant context (TEN-02) and outlet scope (TEN-03)", () => {
       schema.safeParse({ note: "x", tenantId: tenant.id }).success,
       false,
     );
+    assert.equal(
+      schema.safeParse({ note: "x", tenant_id: tenant.id }).success,
+      false,
+    );
     assert.deepEqual(schema.parse({ note: "x" }), { note: "x" });
   });
+});
 
-  test("outlet scope", () => {
-    const [bandung, second] = outlets;
-    const all = core.outletScopeSchema.parse({ kind: "tenant" });
-    const one = core.outletScopeSchema.parse({
+describe("outlet scope (TEN-03)", () => {
+  const { tenant, outlets } = core.cafeLegendFixtures;
+  const [bandung, second] = outlets;
+  const otherTenantId = "5d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
+  const context = server.establishTenantContext({
+    tenantId: tenant.id,
+    source: "session",
+    brandId: null,
+  });
+  const owner = server.establishOutletScope(context, { kind: "tenant" });
+  const cashier = server.establishOutletScope(
+    context,
+    core.cafeLegendFixtures.cashierScope,
+  );
+
+  test("membership follows the verified assignment, ids case-insensitive", () => {
+    assert.equal(core.isOutletInScope(owner, second.id), true);
+    assert.equal(core.isOutletInScope(cashier, bandung.id), true);
+    assert.equal(core.isOutletInScope(cashier, bandung.id.toUpperCase()), true);
+    assert.equal(core.isOutletInScope(cashier, second.id), false);
+    assert.equal(owner.tenantId, tenant.id);
+    assert.ok(Object.isFrozen(cashier) && Object.isFrozen(cashier.outletIds));
+  });
+
+  test("forged scopes never grant access (fail closed)", () => {
+    const forgeries = [
+      { kind: "tenant", tenantId: tenant.id },
+      { kind: "tenant" },
+      JSON.parse(JSON.stringify(owner)),
+      { ...owner },
+      { ...cashier, outletIds: [bandung.id, second.id] },
+    ];
+    for (const forged of forgeries) {
+      assert.equal(core.isTrustedOutletScope(forged), false);
+      assert.throws(() => core.isOutletInScope(forged, second.id), TypeError);
+      assert.throws(() => core.outletIdsForQuery(forged), TypeError);
+    }
+  });
+
+  test("scope needs a trusted tenant and stays bound to it", () => {
+    assert.throws(
+      () =>
+        server.establishOutletScope(
+          { tenantId: tenant.id, brandId: null, source: "domain" },
+          { kind: "tenant" },
+        ),
+      TypeError,
+    );
+    assert.throws(() =>
+      server.establishOutletScope(context, { kind: "outlets", outletIds: [] }),
+    );
+    const scoped = server.establishScopedTenantContext(context, {
+      kind: "tenant",
+    });
+    core.assertTrustedScopedContext(scoped);
+    const otherTenant = server.establishTenantContext({
+      tenantId: otherTenantId,
+      source: "domain",
+      brandId: null,
+    });
+    assert.throws(
+      () =>
+        core.assertTrustedScopedContext({
+          tenant: otherTenant,
+          outletScope: scoped.outletScope,
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () => core.assertTrustedScopedContext(JSON.parse(JSON.stringify(scoped))),
+      TypeError,
+    );
+  });
+
+  test("report/export/AI outlet filter: cross-outlet requests are denied", () => {
+    assert.deepEqual(core.outletIdsForQuery(owner), { kind: "all" });
+    assert.deepEqual(core.outletIdsForQuery(owner, [second.id]), {
+      kind: "outlets",
+      outletIds: [second.id],
+    });
+    assert.deepEqual(core.outletIdsForQuery(cashier), {
       kind: "outlets",
       outletIds: [bandung.id],
     });
-    assert.equal(core.isOutletInScope(all, second.id), true);
-    assert.equal(core.isOutletInScope(one, bandung.id), true);
-    assert.equal(core.isOutletInScope(one, second.id), false);
-    assert.equal(
-      core.outletScopeSchema.safeParse({ kind: "outlets", outletIds: [] })
-        .success,
-      false,
+    assert.deepEqual(core.outletIdsForQuery(cashier, []), {
+      kind: "outlets",
+      outletIds: [bandung.id],
+    });
+    assert.deepEqual(
+      core.outletIdsForQuery(cashier, [bandung.id.toUpperCase(), bandung.id]),
+      { kind: "outlets", outletIds: [bandung.id] },
     );
+    for (const requested of [[second.id], [bandung.id, second.id]]) {
+      assert.throws(
+        () => core.outletIdsForQuery(cashier, requested),
+        (error) =>
+          error instanceof core.CoreError &&
+          error.code === "OUTLET_OUT_OF_SCOPE" &&
+          error.status === 403,
+      );
+    }
+    assert.throws(() => core.outletIdsForQuery(cashier, ["not-an-id"]));
+    assert.throws(
+      () => core.assertOutletInScope(cashier, second.id),
+      core.CoreError,
+    );
+    core.assertOutletInScope(cashier, bandung.id);
   });
 });
 
@@ -414,8 +601,45 @@ describe("cursor pagination", () => {
     const cursor = core.encodeCursor(keyset);
     assert.match(cursor, /^[A-Za-z0-9_-]+$/);
     assert.deepEqual(core.decodeCursor(cursor), keyset);
-    for (const bad of ["%%%", core.encodeCursor([]).slice(0, 1), "eyJhIjoxfQ"])
-      assert.throws(() => core.decodeCursor(bad), RangeError, bad);
+    for (const bad of [
+      "%%%",
+      core.encodeCursor([]).slice(0, 1),
+      "eyJhIjoxfQ",
+      "A".repeat(core.CURSOR_MAX_LENGTH + 4),
+    ])
+      assert.throws(() => core.decodeCursor(bad), RangeError, bad.slice(0, 20));
+  });
+
+  test("encoder and query schema share one length limit", () => {
+    const accepts = (cursor) =>
+      core.cursorPageQuerySchema.safeParse({ cursor }).success;
+    // Longest bounded keyset: timestamp, ULID, 150-code-point name of 4-byte chars.
+    const longest = [
+      "2026-11-01T13:00:00.000Z",
+      "01JBQ7Z8K3M4N5P6Q7R8S9T0VW",
+      "🍰".repeat(150),
+    ];
+    const cursor = core.encodeCursor(longest);
+    assert.ok(cursor.length <= core.CURSOR_MAX_LENGTH);
+    assert.ok(accepts(cursor));
+    assert.deepEqual(core.decodeCursor(cursor), longest);
+    // The reviewer's case: a 500-character ASCII key now fits too.
+    assert.ok(accepts(core.encodeCursor(["x".repeat(500)])));
+    // Unbounded keys are refused by the encoder, never emitted.
+    assert.throws(() => core.encodeCursor(["ꦗ".repeat(500)]), RangeError);
+    // Property: anything the encoder emits, the query schema accepts.
+    for (let size = 0; size < 800; size += 7) {
+      const key = "é☕🍰a".repeat(size).slice(0, size);
+      let encoded;
+      try {
+        encoded = core.encodeCursor([key, size]);
+      } catch (error) {
+        assert.ok(error instanceof RangeError);
+        continue;
+      }
+      assert.ok(accepts(encoded), `size ${size}`);
+      assert.deepEqual(core.decodeCursor(encoded), [key, size]);
+    }
   });
 
   test("page schema", () => {
@@ -472,6 +696,21 @@ describe("dates and times", () => {
       "2026-11-01T13:00:00.000Z",
     );
   });
+
+  test("business date range 0001-01-01..9999-12-31, zero-padded years", () => {
+    const at = (iso, zone) => core.businessDateOf(new Date(iso), zone);
+    assert.equal(at("0001-01-01T00:00:00.000Z", "UTC"), "0001-01-01");
+    assert.equal(at("0999-06-15T00:00:00.000Z", "UTC"), "0999-06-15");
+    assert.equal(at("9999-12-31T23:59:59.999Z", "UTC"), "9999-12-31");
+    // 23:00 UTC on 31 Dec 1 BC is already 1 Jan AD 1 in Jakarta.
+    assert.equal(at("0000-12-31T23:00:00.000Z", "Asia/Jakarta"), "0001-01-01");
+    assert.throws(() => at("0000-12-31T23:00:00.000Z", "UTC"), RangeError);
+    assert.throws(
+      () => at("9999-12-31T20:00:00.000Z", "Asia/Jakarta"),
+      RangeError,
+    );
+    assert.throws(() => core.businessDateOf(new Date(Number.NaN)), RangeError);
+  });
 });
 
 describe("Cafe Legend fixtures", () => {
@@ -480,7 +719,7 @@ describe("Cafe Legend fixtures", () => {
     core.tenantRefSchema.parse(f.tenant);
     core.brandRefSchema.parse(f.brand);
     for (const outlet of f.outlets) core.outletRefSchema.parse(outlet);
-    core.outletScopeSchema.parse(f.cashierScope);
+    core.outletScopeDataSchema.parse(f.cashierScope);
     core.apiErrorBodySchema.parse(f.errors.outletOutOfScope);
     core.cursorPageSchema(core.moneyLineFixtureSchema).parse(f.orderLinesPage);
     for (const line of f.orderLinesPage.data)

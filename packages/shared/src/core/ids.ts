@@ -13,26 +13,34 @@
 
 import { z } from "zod";
 
-/** RFC 9562 UUID text, lowercase or uppercase. */
-export const uuidSchema = z.uuid();
+/**
+ * RFC 9562 UUID text. Accepts either case and normalizes to lowercase (the
+ * form Postgres returns), so ids always compare with ===.
+ */
+export const uuidSchema = z.uuid().toLowerCase();
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const ULID_PATTERN = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
-/** Canonical ULID text: 26 uppercase Crockford base32 characters. */
+/**
+ * ULID text: 26 Crockford base32 characters. Accepts either case and
+ * normalizes to the canonical uppercase form.
+ */
 export const ulidSchema = z
   .string()
+  .toUpperCase()
   .regex(ULID_PATTERN, "Expected a canonical 26-character ULID");
 
 /** Branded UUID id for one aggregate, e.g. uuidIdSchema<"MenuItemId">(). */
 export function uuidIdSchema<Brand extends string>() {
-  return z.uuid().brand<Brand>();
+  return z.uuid().toLowerCase().brand<Brand>();
 }
 
 /** Branded ULID id for one time-ordered aggregate, e.g. ulidIdSchema<"OrderId">(). */
 export function ulidIdSchema<Brand extends string>() {
   return z
     .string()
+    .toUpperCase()
     .regex(ULID_PATTERN, "Expected a canonical 26-character ULID")
     .brand<Brand>();
 }
@@ -80,7 +88,8 @@ function encodeUlid(time: number, random: bigint): Ulid {
   return text;
 }
 
-function decodeUlid(ulid: string): bigint {
+function decodeUlid(input: string): bigint {
+  const ulid = input.toUpperCase();
   if (!ULID_PATTERN.test(ulid))
     throw new RangeError(`Not a canonical ULID: ${ulid}`);
   let value = 0n;

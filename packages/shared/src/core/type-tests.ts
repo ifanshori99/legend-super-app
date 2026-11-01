@@ -3,12 +3,13 @@
 // makes it compile, typecheck fails because the directive is unused.
 
 import { z } from "zod";
-import { cafeLegendFixtures } from "./fixtures";
-import { idr } from "./money";
-import type { Decimal4, Idr } from "./money";
-import { clientInputSchema, establishTenantContext } from "./tenant";
-import type { TenantContext } from "./tenant";
-import type { OutletId, TenantId } from "./ids";
+import { cafeLegendFixtures } from "./fixtures.ts";
+import { idr } from "./money.ts";
+import type { Decimal4, Idr } from "./money.ts";
+import { establishTenantContext } from "./server.ts";
+import { clientInputSchema } from "./tenant.ts";
+import type { OutletScope, TenantContext } from "./tenant.ts";
+import type { OutletId, TenantId } from "./ids.ts";
 
 export function typeTests(): void {
   const tenantId = cafeLegendFixtures.tenant.id;
@@ -16,6 +17,10 @@ export function typeTests(): void {
   // TEN-02: a TenantContext cannot be forged from request values.
   // @ts-expect-error object literal lacks the private brand
   const forged: TenantContext = { tenantId, brandId: null, source: "domain" };
+
+  // TEN-03: an OutletScope cannot be forged from request values either.
+  // @ts-expect-error object literal lacks the private brand
+  const forgedScope: OutletScope = { kind: "tenant", tenantId };
 
   // @ts-expect-error "client" is not a tenant context source
   establishTenantContext({ tenantId, brandId: null, source: "client" });
@@ -40,5 +45,13 @@ export function typeTests(): void {
   const plainQuantity: Decimal4 = "1.5";
   const amount: Idr = idr(25_000);
 
-  void [forged, wrongId, plainId, plainAmount, plainQuantity, amount];
+  void [
+    forged,
+    forgedScope,
+    wrongId,
+    plainId,
+    plainAmount,
+    plainQuantity,
+    amount,
+  ];
 }

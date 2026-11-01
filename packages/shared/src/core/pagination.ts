@@ -8,7 +8,13 @@ import { z } from "zod";
 
 export const PAGE_LIMIT_DEFAULT = 25;
 export const PAGE_LIMIT_MAX = 100;
-const CURSOR_MAX_LENGTH = 512;
+/**
+ * One limit for both directions: encodeCursor never emits, and the query
+ * schema never accepts, a cursor longer than this. 1024 base64url characters
+ * hold 768 bytes of UTF-8 JSON: enough for [isoTimestamp, ulid, name <= 150
+ * chars of any script]. Sort keys must be bounded columns, never free text.
+ */
+export const CURSOR_MAX_LENGTH = 1024;
 
 export const cursorSchema = z.string().min(1).max(CURSOR_MAX_LENGTH);
 
@@ -88,13 +94,25 @@ const keysetSchema = z
   .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
   .min(1);
 
-/** Encodes the sort-key tuple of the last returned row as an opaque cursor. */
+/**
+ * Encodes the sort-key tuple of the last returned row as an opaque cursor.
+ * Throws RangeError if the result would exceed CURSOR_MAX_LENGTH, so a server
+ * can never hand out a cursor its own query schema would reject.
+ */
 export function encodeCursor(keys: readonly CursorKey[]): string {
-  return toBase64Url(new codec.TextEncoder().encode(JSON.stringify(keys)));
+  const cursor = toBase64Url(
+    new codec.TextEncoder().encode(JSON.stringify(keys)),
+  );
+  if (cursor.length > CURSOR_MAX_LENGTH)
+    throw new RangeError(
+      `Cursor is ${cursor.length} characters; the limit is ${CURSOR_MAX_LENGTH}. Sort on bounded keys.`,
+    );
+  return cursor;
 }
 
 /** Decodes a cursor; throws RangeError (map to VALIDATION_ERROR) if tampered. */
 export function decodeCursor(cursor: string): CursorKey[] {
+  if (cursor.length > CURSOR_MAX_LENGTH) throw new RangeError("Invalid cursor");
   try {
     const json = new codec.TextDecoder("utf-8", { fatal: true }).decode(
       fromBase64Url(cursor),

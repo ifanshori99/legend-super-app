@@ -34,7 +34,12 @@ export function toIsoDateTime(instant: Date): IsoDateTime {
   return instant.toISOString();
 }
 
-/** Calendar date of an instant in a time zone, e.g. the outlet's business date. */
+/**
+ * Calendar date of an instant in a time zone, e.g. the outlet's business date.
+ * Supported range: dates 0001-01-01 to 9999-12-31 in that time zone (the
+ * range "YYYY-MM-DD" can express). Anything outside it, or an invalid Date,
+ * throws RangeError.
+ */
 export function businessDateOf(
   instant: Date | string,
   timeZone: string = DEFAULT_TIME_ZONE,
@@ -43,13 +48,24 @@ export function businessDateOf(
     typeof instant === "string"
       ? new Date(isoDateTimeSchema.parse(instant))
       : instant;
+  if (Number.isNaN(date.getTime())) throw new RangeError("Invalid date");
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
+    era: "short",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).formatToParts(date);
   const part = (type: string) =>
     parts.find((entry) => entry.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
+  // en-US years are era-based: 1 BC is year "1" with era "BC".
+  const year = Number(part("year"));
+  if (
+    part("era") !== "AD" ||
+    !Number.isInteger(year) ||
+    year < 1 ||
+    year > 9999
+  )
+    throw new RangeError("Business date outside 0001-01-01..9999-12-31");
+  return `${String(year).padStart(4, "0")}-${part("month")}-${part("day")}`;
 }

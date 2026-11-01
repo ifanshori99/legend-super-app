@@ -78,3 +78,20 @@ export function apiErrorBody(
 export function isApiErrorBody(value: unknown): value is ApiErrorEnvelope {
   return apiErrorBodySchema.safeParse(value).success;
 }
+
+/**
+ * Throwable carrying a core code and its HTTP status. The API error handler
+ * turns it into apiErrorBody(code, message); shared helpers throw it for
+ * expected denials such as OUTLET_OUT_OF_SCOPE.
+ */
+export class CoreError extends Error {
+  readonly code: CoreErrorCode;
+  readonly status: number;
+
+  constructor(code: CoreErrorCode, message: string) {
+    super(message);
+    this.name = "CoreError";
+    this.code = code;
+    this.status = coreErrorHttpStatus[code];
+  }
+}

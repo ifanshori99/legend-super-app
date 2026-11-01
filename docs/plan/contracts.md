@@ -29,10 +29,14 @@ PRD §6 says money is BIGINT rupiah, but `stock_ledger.unit_cost_idr` and `recip
 
 ### D-CORE-3 Tenant from domain or token, never from the client (TEN-02)
 
-- `TenantContext` has a private type brand; only `establishTenantContext({ tenantId, brandId, source })` creates one, with `source` in `domain | session | device | mcp_token | job | webhook`. Server middleware calls it after resolving the tenant; services take `TenantContext` (or `ScopedTenantContext`) as a parameter, never a bare `tenantId` from the request.
+- **Provenance is enforced at runtime, not only by types.** `TenantContext` and `OutletScope` are valid only if the server minted them: an internal WeakSet registry (`core/trust.ts`, exported from no entry point) records every minted object. Plain objects, JSON round-trips, `structuredClone` and spread copies are never members.
+- **Minting is server-only.** `@starter/shared/core/server` exports `establishTenantContext({ tenantId, brandId, source })` (`source` in `domain | session | device | mcp_token | job | webhook`), `establishOutletScope(tenant, assignment)` and `establishScopedTenantContext(tenant, assignment)`. It throws at import time where a DOM exists, and the browser-safe `@starter/shared/core` exports only the checks. Import the server entry only from `apps/api` and the edge runtime, with values the server resolved itself (host name → `tenant_domains`, verified token, job row, receiving webhook account; outlet reach from verified role assignments, which the RBAC contract `legend-0mc` expands from brand or station level to outlet ids).
+- **Service boundaries assert.** Services take `ScopedTenantContext` (or `TenantContext`) and call `assertTrustedScopedContext` / `assertTrustedTenantContext` first, never accept a bare `tenantId` from the request. An `OutletScope` is bound to its tenant; pairing it with another tenant's context fails.
 - Request schemas are built with `clientInputSchema({...})`: declaring `tenantId` / `tenant_id` is a compile error and throws at module load; parsing is strict, so a submitted `tenantId` is rejected.
 - The database enforces the same with RLS and `SET LOCAL` (bead `legend-73d`). `login_challenges` and `wa_inbound_messages` resolve the tenant from the receiving WhatsApp number (`source: "webhook"`) and are service-scoped without RLS (coordinator decision).
-- `OutletScope` (`{ kind: "tenant" }` or `{ kind: "outlets", outletIds }`) carries TEN-03; `isOutletInScope` is the single check. Denials use `OUTLET_OUT_OF_SCOPE`.
+- **TEN-03.** `isOutletInScope(scope, outletId)` and `assertOutletInScope` are the single check; an untrusted scope throws `TypeError` (fail closed). Lists, reports, exports, Tanya AI and MCP derive their outlet filter with `outletIdsForQuery(scope, requested?)`: nothing requested → the whole scope (`{ kind: "all" }` or the assigned outlets); any requested outlet outside the scope → `CoreError` `OUTLET_OUT_OF_SCOPE` (403).
+- Ids normalize on parse (UUID lowercase, ULID uppercase), so comparisons are plain `===`.
+- Two copies of the shared package in one process would not trust each other's objects (fails closed). Keep `@starter/shared` a single workspace dependency.
 
 ### D-CORE-4 Errors
 
@@ -40,11 +44,11 @@ Envelope: `{ "error": { "code", "message", "details"?: [{ field, message }], "re
 
 ### D-CORE-5 Pagination
 
-New list endpoints use cursor (keyset) pagination: query `cursorPageQuerySchema` (`cursor?`, `limit` 1–100, default 25), response `{ data, meta: { limit, nextCursor } }` (`nextCursor: null` on the last page). The cursor is `encodeCursor([sortKey…, id])`, opaque base64url; a tampered cursor decodes to `RangeError` → `VALIDATION_ERROR`. Offset paging stays only on the starter Notes example.
+New list endpoints use cursor (keyset) pagination: query `cursorPageQuerySchema` (`cursor?`, `limit` 1–100, default 25), response `{ data, meta: { limit, nextCursor } }` (`nextCursor: null` on the last page). The cursor is `encodeCursor([sortKey…, id])`, opaque base64url; a tampered cursor decodes to `RangeError` → `VALIDATION_ERROR`. One limit, `CURSOR_MAX_LENGTH` = 1024 characters, applies to both sides: `encodeCursor` throws instead of emitting a longer cursor, and the query schema rejects one. Sort only on bounded columns (timestamps, ids, names up to 150 characters), never free text. Offset paging stays only on the starter Notes example.
 
 ### D-CORE-6 Dates
 
-Instants: ISO 8601 with offset (`isoDateTimeSchema`); the server emits UTC with milliseconds (`toIsoDateTime`). Business dates: `YYYY-MM-DD` in the outlet time zone (`businessDateSchema`, `businessDateOf(instant, outlet.timeZone)`), derived on the server. Times of day: `HH:mm` (`timeOfDaySchema`). Time zone: IANA per outlet, default `Asia/Jakarta`. DB: `TIMESTAMPTZ`, `DATE`, `TIME`.
+Instants: ISO 8601 with offset (`isoDateTimeSchema`); the server emits UTC with milliseconds (`toIsoDateTime`). Business dates: `YYYY-MM-DD` in the outlet time zone (`businessDateSchema`, `businessDateOf(instant, outlet.timeZone)`), derived on the server; supported range 0001-01-01 to 9999-12-31 (zero-padded year), anything else or an invalid `Date` throws `RangeError`. Times of day: `HH:mm` (`timeOfDaySchema`). Time zone: IANA per outlet, default `Asia/Jakarta`. DB: `TIMESTAMPTZ`, `DATE`, `TIME`.
 
 ## Naming
 
@@ -65,5 +69,5 @@ packages/shared/src/<domain>/      # e.g. pos, payments, inventory (English, keb
 
 - One `package.json` export per domain: `"./<domain>": "./src/<domain>/index.ts"`. Import from the subpath, never deep paths.
 - Import shared conventions only from `@starter/shared/core` (inside the package: relative `../core`).
-- No Node-only or browser-only APIs (no `Buffer`, `node:*`, `window`, `document`); the code runs in the API, the web app and the edge. Keep files loadable by Node type stripping: no `enum`, `namespace` or constructor parameter properties, and use `import type` for type-only imports.
+- No Node-only or browser-only APIs (no `Buffer`, `node:*`, `window`, `document`); the code runs in the API, the web app and the edge. Keep files loadable by native Node ESM with type stripping (the edge runtime and the contract tests load them without a bundler or resolve hook): relative imports carry the `.ts` extension (`./ids.ts`; `allowImportingTsExtensions` is on in `tsconfig.base.json`), type-only imports use `import type`, and no `enum`, `namespace` or constructor parameter properties.
 - Every contract bead adds a fixture test (fixtures parse) to `tests/<domain>-contract.test.mjs`.

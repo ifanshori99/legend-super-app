@@ -1,20 +1,27 @@
-// Tenant context and outlet scope.
+// Tenant context and outlet scope: browser-safe types and checks.
 // TEN-02: "tenant ditentukan dari domain atau token, bukan dari parameter
-// klien". Enforced at three levels:
-// 1. Type level: TenantContext carries a private brand, so an object literal
-//    (e.g. built from req.query) is not assignable to it. Code that touches
-//    tenant data takes a TenantContext parameter, and the only constructor is
-//    establishTenantContext, called by server middleware after resolving the
-//    tenant from the host name, session/device/MCP token, job or webhook.
-// 2. Contract level: clientInputSchema refuses tenant fields when a request
-//    schema is defined (TypeScript error + TypeError), and parses strictly, so a
+// klien". Enforced at four levels:
+// 1. Runtime provenance: a TenantContext / OutletScope is valid only if the
+//    server entry (`@starter/shared/core/server`) minted it. Service
+//    boundaries call assertTrustedTenantContext / assertTrustedScopedContext;
+//    plain objects, JSON round-trips and copies are rejected (trust.ts).
+// 2. Type level: both types carry a private brand, so an object literal is not
+//    assignable to them.
+// 3. Contract level: clientInputSchema refuses tenant fields when a request
+//    schema is defined (TypeScript error + TypeError) and parses strictly, so a
 //    submitted tenantId is rejected rather than silently dropped.
-// 3. Database level: RLS + SET LOCAL app.tenant_id (bead legend-73d).
-// TEN-03: outlet-scoped roles see only their assigned outlets (OutletScope).
+// 4. Database level: RLS + SET LOCAL app.tenant_id (bead legend-73d).
+// TEN-03: outlet-scoped roles see only their assigned outlets, including in
+// reports, exports, Tanya AI and MCP (isOutletInScope, outletIdsForQuery).
 
 import { z } from "zod";
-import { brandIdSchema, outletIdSchema, tenantIdSchema } from "./ids";
-import type { BrandId, OutletId, TenantId } from "./ids";
+import { CoreError } from "./errors.ts";
+import { brandIdSchema, outletIdSchema, tenantIdSchema } from "./ids.ts";
+import type { BrandId, OutletId, TenantId } from "./ids.ts";
+import {
+  hasOutletScopeProvenance,
+  hasTenantContextProvenance,
+} from "./trust.ts";
 
 /** Where the server learned the tenant. Never a client-supplied parameter. */
 export const TENANT_CONTEXT_SOURCES = [
@@ -28,8 +35,9 @@ export const TENANT_CONTEXT_SOURCES = [
 export type TenantContextSource = (typeof TENANT_CONTEXT_SOURCES)[number];
 
 declare const tenantContextBrand: unique symbol;
+declare const outletScopeBrand: unique symbol;
 
-/** Server-resolved tenant. Construct only with establishTenantContext. */
+/** Server-resolved tenant. Minted only by `@starter/shared/core/server`. */
 export type TenantContext = {
   readonly tenantId: TenantId;
   /** Set when the domain or token pins one brand of the tenant. */
@@ -38,23 +46,75 @@ export type TenantContext = {
   readonly [tenantContextBrand]: true;
 };
 
-const tenantContextInput = z.strictObject({
+export const tenantContextDataSchema = z.strictObject({
   tenantId: tenantIdSchema,
   brandId: brandIdSchema.nullable(),
   source: z.enum(TENANT_CONTEXT_SOURCES),
 });
 
 /**
- * Server-side only by convention: call it in the middleware that resolved the
- * tenant from a domain or token, never with values read from the request
- * body, query or a client header. Returns a frozen context.
+ * Wire/data shape of a role assignment's outlet reach. Data only: it grants
+ * nothing until the server mints an OutletScope from verified assignments.
  */
-export function establishTenantContext(input: {
-  tenantId: string;
-  brandId: string | null;
-  source: TenantContextSource;
-}): TenantContext {
-  return Object.freeze(tenantContextInput.parse(input)) as TenantContext;
+export const outletScopeDataSchema = z.discriminatedUnion("kind", [
+  /** Every outlet of the tenant (owner, finance, head-office roles). */
+  z.strictObject({ kind: z.literal("tenant") }),
+  /** Only the listed outlets (outlet-scoped roles such as cashier). */
+  z.strictObject({
+    kind: z.literal("outlets"),
+    outletIds: z.array(outletIdSchema).min(1),
+  }),
+]);
+export type OutletScopeData = z.infer<typeof outletScopeDataSchema>;
+
+/** Server-minted outlet reach, bound to one tenant. */
+export type OutletScope = OutletScopeData & {
+  readonly tenantId: TenantId;
+  readonly [outletScopeBrand]: true;
+};
+
+/** Tenant context plus the caller's outlet scope; what services receive. */
+export type ScopedTenantContext = {
+  readonly tenant: TenantContext;
+  readonly outletScope: OutletScope;
+};
+
+export function isTrustedTenantContext(value: unknown): value is TenantContext {
+  return hasTenantContextProvenance(value);
+}
+
+/** Service boundary check: throws unless the server minted this context. */
+export function assertTrustedTenantContext(
+  value: unknown,
+): asserts value is TenantContext {
+  if (!hasTenantContextProvenance(value))
+    throw new TypeError(
+      "Untrusted tenant context: resolve the tenant from the domain or token on the server (TEN-02)",
+    );
+}
+
+export function isTrustedOutletScope(value: unknown): value is OutletScope {
+  return hasOutletScopeProvenance(value);
+}
+
+export function assertTrustedOutletScope(
+  value: unknown,
+): asserts value is OutletScope {
+  if (!hasOutletScopeProvenance(value))
+    throw new TypeError(
+      "Untrusted outlet scope: derive it on the server from verified role assignments (TEN-03)",
+    );
+}
+
+/** Both parts minted by the server and bound to the same tenant. */
+export function assertTrustedScopedContext(
+  value: unknown,
+): asserts value is ScopedTenantContext {
+  const candidate = value as Partial<ScopedTenantContext> | null;
+  assertTrustedTenantContext(candidate?.tenant);
+  assertTrustedOutletScope(candidate?.outletScope);
+  if (candidate.outletScope.tenantId !== candidate.tenant.tenantId)
+    throw new TypeError("Outlet scope belongs to a different tenant");
 }
 
 /** Keys a client request may never carry (TEN-02). */
@@ -81,26 +141,55 @@ export function clientInputSchema<Shape extends z.ZodRawShape>(
   return z.strictObject(shape as Shape);
 }
 
-/** Which outlets a role assignment may see (TEN-03). */
-export const outletScopeSchema = z.discriminatedUnion("kind", [
-  /** Every outlet of the tenant (owner, finance, HR head office roles). */
-  z.strictObject({ kind: z.literal("tenant") }),
-  /** Only the listed outlets (outlet-scoped roles such as cashier). */
-  z.strictObject({
-    kind: z.literal("outlets"),
-    outletIds: z.array(outletIdSchema).min(1),
-  }),
-]);
-export type OutletScope = z.infer<typeof outletScopeSchema>;
-
+/**
+ * True if the outlet is inside a server-minted scope. Throws TypeError for an
+ * untrusted scope (fail closed). Ids compare case-insensitively.
+ */
 export function isOutletInScope(
   scope: OutletScope,
-  outletId: OutletId,
+  outletId: OutletId | string,
 ): boolean {
-  return scope.kind === "tenant" || scope.outletIds.includes(outletId);
+  assertTrustedOutletScope(scope);
+  if (scope.kind === "tenant") return true;
+  const wanted = outletId.toLowerCase();
+  return scope.outletIds.some((id) => id.toLowerCase() === wanted);
 }
 
-/** Tenant context plus the caller's outlet scope; what services receive. */
-export type ScopedTenantContext = TenantContext & {
-  readonly outletScope: OutletScope;
-};
+/** Throws CoreError OUTLET_OUT_OF_SCOPE when the outlet is outside the scope. */
+export function assertOutletInScope(
+  scope: OutletScope,
+  outletId: OutletId | string,
+): void {
+  if (!isOutletInScope(scope, outletId))
+    throw new CoreError(
+      "OUTLET_OUT_OF_SCOPE",
+      "Anda tidak memiliki akses ke outlet ini.",
+    );
+}
+
+/** Outlet filter for a list, report, export, Tanya AI or MCP query. */
+export type OutletQueryFilter =
+  | { readonly kind: "all" }
+  | { readonly kind: "outlets"; readonly outletIds: readonly OutletId[] };
+
+/**
+ * Turns the outlets a caller asked for into the filter a query must apply.
+ * - Nothing requested: the whole scope (all outlets, or the assigned ones).
+ * - Outlets requested: each must be in scope, else OUTLET_OUT_OF_SCOPE; the
+ *   result is the deduplicated, lowercased request.
+ */
+export function outletIdsForQuery(
+  scope: OutletScope,
+  requested?: readonly string[],
+): OutletQueryFilter {
+  assertTrustedOutletScope(scope);
+  if (requested === undefined || requested.length === 0)
+    return scope.kind === "tenant"
+      ? { kind: "all" }
+      : { kind: "outlets", outletIds: [...scope.outletIds] };
+  const outletIds = [
+    ...new Set(requested.map((id) => outletIdSchema.parse(id))),
+  ];
+  for (const outletId of outletIds) assertOutletInScope(scope, outletId);
+  return { kind: "outlets", outletIds };
+}

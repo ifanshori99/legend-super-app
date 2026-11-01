@@ -8,16 +8,16 @@
 // every module embeds.
 
 import { z } from "zod";
-import { apiErrorBody } from "./errors";
+import { apiErrorBody } from "./errors.ts";
 import {
   brandIdSchema,
   outletIdSchema,
   tenantIdSchema,
   ulidIdSchema,
-} from "./ids";
-import { decimal4Schema, idrSchema } from "./money";
-import { encodeCursor } from "./pagination";
-import { DEFAULT_TIME_ZONE, timeZoneSchema } from "./time";
+} from "./ids.ts";
+import { decimal4Schema, idrSchema } from "./money.ts";
+import { encodeCursor } from "./pagination.ts";
+import { DEFAULT_TIME_ZONE, timeZoneSchema } from "./time.ts";
 
 export const tenantRefSchema = z.object({
   id: tenantIdSchema,
