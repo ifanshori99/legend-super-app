@@ -1,0 +1,291 @@
+// Approval matrix hooks (PRD v1.7 §3.7 "Matriks Approval": who approves what
+// and at which threshold; "Penyetuju selalu berbeda dari pemohon") and the POS
+// override record (§3.6 "Override Supervisor", AUTH-06).
+//
+// approval_policies row (§6 B): action_type, threshold_idr, approver_role_id,
+// levels, requires_distinct_actor. Reading used by this contract:
+// - A row applies when the amount is >= threshold_idr (null = any amount, and
+//   an unknown amount always applies: fail closed).
+// - Rows of one action form tiers by threshold; the highest applicable tier
+//   wins, so a big refund can need more approvers than a small one.
+// - Inside a tier, `levels` is the 1-based step a row fills. Several rows at
+//   the same level are alternatives ("HR lalu Finance atau Owner" = level 1
+//   HR, level 2 Finance or Owner). Levels must be contiguous from 1.
+// - requires_distinct_actor is always true: the PRD allows no exception.
+// - No policy for an action = approval required but nobody can approve
+//   (APPROVAL_POLICY_MISSING). Deny by default; seed policies per tenant.
+// The approval request/inbox DTOs belong to WS-01 identity & access contracts
+// (bead legend-7sz); this file is the matrix and the decision rules.
+
+import { z } from "zod";
+import {
+  idrSchema,
+  isoDateTimeSchema,
+  outletIdSchema,
+  ulidIdSchema,
+  userIdSchema,
+} from "../core/index.ts";
+import type { Idr, UserId } from "../core/index.ts";
+import { AccessError } from "./errors.ts";
+import { approvalPolicyIdSchema, roleIdSchema } from "./ids.ts";
+import type { RoleId } from "./ids.ts";
+import {
+  isAssignmentActive,
+  isMfaGuardedSurface,
+  scopeCovers,
+  type AppSurface,
+  type AccessPrincipal,
+  type AccessTarget,
+  type OrgIndex,
+  type RoleGrant,
+} from "./scope.ts";
+
+/** Action types an approval policy can govern, with the PRD clause that asks for approval. */
+export const APPROVAL_ACTIONS = {
+  // §3.7 Matriks Approval list
+  void: "§3.7 Matriks Approval; POS-02",
+  discount: "§3.7 Matriks Approval; POS-02 (di atas ambang)",
+  refund: "§3.7 Matriks Approval; POS-02; ORD-09",
+  expense: "§3.7 Matriks Approval",
+  purchase_order: "§3.7 Matriks Approval; §3.15 Alur Pengadaan",
+  stock_adjustment: "§3.7 Matriks Approval; §3.14 Stok Opname",
+  price_change: "§3.7 Matriks Approval",
+  payroll: "§3.7 Matriks Approval; §3 Payroll Run (approval dua tingkat)",
+  dividend_distribution: "§3.7 Matriks Approval; §3 Siklus Distribusi",
+  ai_action:
+    "§3.7 Matriks Approval; §2 AI dan MCP (aksi selalu melalui approval)",
+  mcp_action: "§3.7 Matriks Approval; §4 Q Agen MCP Mengajukan Aksi",
+  // §3.6 Override Supervisor (POS overrides not in the list above)
+  cash_drawer_open: "§3.6 Override Supervisor (buka laci tanpa transaksi)",
+  price_correction: "§3.6 Override Supervisor (koreksi harga)",
+  // Other PRD clauses that route through the matrix / approval inbox
+  cash_shift_close: "§3.10 Shift Kasir (approval supervisor)",
+  apology_voucher: "§3.9 Voucher Permintaan Maaf (batas nilai sesuai matriks)",
+  unallocated_funds: "PAY-04",
+  purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
+  supplier_payment: "§3.15 Alur Pengadaan (Supplier Payment dengan approval)",
+  manual_journal: "§3.16 Jurnal Manual & Berulang",
+  period_reopen: "§3.16 Tutup Periode; ACC-02",
+  payroll_cancel: "PAYR-05",
+  shareholder_version: "§3 Daftar Pemegang Saham Berversi; SH-03",
+  personal_data_export: "§3 Ekspor; DASH-04",
+  attendance_correction: "§3 Koreksi Absensi",
+  shift_swap: "§3 Tukar & Ganti Shift; HR-05",
+  leave: "§3 Pengajuan & Approval (cuti, izin, lembur)",
+  overtime: "§3 Pengajuan & Approval (cuti, izin, lembur)",
+  employee_loan: "§3 Kasbon",
+  reimbursement: "§3 Reimbursement",
+} as const;
+export type ApprovalActionType = keyof typeof APPROVAL_ACTIONS;
+export const APPROVAL_ACTION_TYPES = Object.keys(
+  APPROVAL_ACTIONS,
+) as ApprovalActionType[];
+export const approvalActionTypeSchema = z.enum(
+  APPROVAL_ACTION_TYPES as [ApprovalActionType, ...ApprovalActionType[]],
+);
+
+/** approval_requests.source (§6 B). */
+export const approvalSourceSchema = z.enum(["user", "ai", "mcp"]);
+export type ApprovalSource = z.infer<typeof approvalSourceSchema>;
+
+export const APPROVAL_MAX_LEVELS = 3;
+
+/** One approval_policies row (§6 B). */
+export const approvalPolicySchema = z.strictObject({
+  id: approvalPolicyIdSchema,
+  actionType: approvalActionTypeSchema,
+  /** Applies at amounts >= this; null = always. */
+  thresholdIdr: idrSchema
+    .refine((value) => value >= 0, "thresholdIdr must be >= 0")
+    .nullable(),
+  approverRoleId: roleIdSchema,
+  /** 1-based approval step this row fills. */
+  levels: z.number().int().min(1).max(APPROVAL_MAX_LEVELS),
+  requiresDistinctActor: z.literal(true),
+});
+export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
+
+/** A tenant's whole matrix; every tier's levels must be contiguous from 1. */
+export const approvalMatrixSchema = z
+  .array(approvalPolicySchema)
+  .superRefine((rows, ctx) => {
+    const tiers = new Map<string, Set<number>>();
+    for (const row of rows) {
+      const key = `${row.actionType}|${row.thresholdIdr ?? "any"}`;
+      const levels = tiers.get(key) ?? new Set<number>();
+      levels.add(row.levels);
+      tiers.set(key, levels);
+    }
+    for (const [key, levels] of tiers) {
+      const max = Math.max(...levels);
+      for (let level = 1; level <= max; level++)
+        if (!levels.has(level))
+          ctx.addIssue({
+            code: "custom",
+            message: `Approval tier ${key} skips level ${level}`,
+          });
+    }
+  });
+
+export type ApprovalStep = {
+  readonly level: number;
+  /** Any of these roles may decide this level. */
+  readonly approverRoleIds: readonly RoleId[];
+};
+
+export type ApprovalRequirement =
+  | { readonly required: false }
+  | {
+      readonly required: true;
+      readonly thresholdIdr: Idr | null;
+      readonly steps: readonly ApprovalStep[];
+    };
+
+/**
+ * What approval an action needs. `amountIdr` null = no amount known (applies
+ * every tier: fail closed). Throws APPROVAL_POLICY_MISSING when the tenant
+ * has no policy for the action at all.
+ */
+export function approvalRequirementFor(
+  policies: readonly ApprovalPolicy[],
+  actionType: ApprovalActionType,
+  amountIdr: Idr | number | null,
+): ApprovalRequirement {
+  const rows = policies.filter((row) => row.actionType === actionType);
+  if (rows.length === 0) throw new AccessError("APPROVAL_POLICY_MISSING");
+  const applicable = rows.filter(
+    (row) =>
+      row.thresholdIdr === null ||
+      amountIdr === null ||
+      amountIdr >= row.thresholdIdr,
+  );
+  if (applicable.length === 0) return { required: false };
+  const tier = applicable.reduce<Idr | null>(
+    (best, row) =>
+      row.thresholdIdr !== null && (best === null || row.thresholdIdr > best)
+        ? row.thresholdIdr
+        : best,
+    null,
+  );
+  const tierRows = applicable.filter((row) => row.thresholdIdr === tier);
+  const levels = [...new Set(tierRows.map((row) => row.levels))].sort(
+    (a, b) => a - b,
+  );
+  return {
+    required: true,
+    thresholdIdr: tier,
+    steps: levels.map((level) => ({
+      level,
+      approverRoleIds: tierRows
+        .filter((row) => row.levels === level)
+        .map((row) => row.approverRoleId),
+    })),
+  };
+}
+
+export type PriorDecision = {
+  readonly level: number;
+  readonly approverId: UserId | string;
+};
+
+/**
+ * Throws AccessError unless `approver` may decide the next level of a request
+ * (AUTH-06 and §3.7 distinct actor):
+ * - approver ≠ requester (APPROVER_IS_REQUESTER);
+ * - approver has not decided an earlier level (APPROVER_ALREADY_DECIDED);
+ * - `level` is the next open step (APPROVAL_LEVEL_OUT_OF_ORDER);
+ * - approver holds an active assignment of one of that step's roles whose
+ *   scope covers the request's target (APPROVER_ROLE_MISMATCH);
+ * - on back office / dashboard, an approver holding an MFA role decided with
+ *   MFA (MFA_REQUIRED, AUTH-05).
+ * For `ai` / `mcp` sources, `requestedBy` is the human the agent acts for.
+ */
+export function assertApprovalDecisionAllowed(input: {
+  readonly requirement: ApprovalRequirement;
+  readonly requestedBy: UserId | string;
+  readonly priorDecisions: readonly PriorDecision[];
+  readonly level: number;
+  readonly approver: AccessPrincipal;
+  readonly approverRoles: readonly RoleGrant[];
+  readonly approverMfaVerified: boolean;
+  /** Where the decision is made: POS PIN override ("pos") or the approval inbox ("dashboard"). */
+  readonly surface: AppSurface;
+  readonly target: AccessTarget;
+  readonly org: OrgIndex;
+  readonly now: Date;
+}): void {
+  const approverId = input.approver.userId.toLowerCase();
+  if (approverId === input.requestedBy.toLowerCase())
+    throw new AccessError("APPROVER_IS_REQUESTER");
+  if (
+    input.priorDecisions.some(
+      (decision) => decision.approverId.toLowerCase() === approverId,
+    )
+  )
+    throw new AccessError("APPROVER_ALREADY_DECIDED");
+  if (!input.requirement.required)
+    throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
+  const steps = input.requirement.steps;
+  const nextLevel = steps[input.priorDecisions.length]?.level;
+  if (nextLevel === undefined || input.level !== nextLevel)
+    throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
+  const step = steps[input.priorDecisions.length] as ApprovalStep;
+  const wanted = new Set(step.approverRoleIds.map((id) => id.toLowerCase()));
+  const roles = new Map(
+    input.approverRoles.map((role) => [role.id.toLowerCase(), role]),
+  );
+  const active = input.approver.assignments.filter(
+    (row) =>
+      row.tenantId.toLowerCase() === input.approver.tenantId.toLowerCase() &&
+      row.userId.toLowerCase() === approverId &&
+      isAssignmentActive(row, input.now),
+  );
+  const qualifying = active.filter(
+    (row) =>
+      wanted.has(row.roleId.toLowerCase()) &&
+      scopeCovers(row.scope, input.target, input.org),
+  );
+  if (qualifying.length === 0) throw new AccessError("APPROVER_ROLE_MISMATCH");
+  if (
+    isMfaGuardedSurface(input.surface) &&
+    !input.approverMfaVerified &&
+    active.some((row) => roles.get(row.roleId.toLowerCase())?.mfaRequired)
+  )
+    throw new AccessError("MFA_REQUIRED");
+}
+
+/** POS overrides (§3.6 Override Supervisor). */
+export const POS_OVERRIDE_ACTIONS = [
+  "void",
+  "discount",
+  "refund",
+  "cash_drawer_open",
+  "price_correction",
+] as const satisfies readonly ApprovalActionType[];
+export type PosOverrideAction = (typeof POS_OVERRIDE_ACTIONS)[number];
+
+/**
+ * AUTH-06: an override always records requester, approver, reason and value,
+ * and the approver is never the requester. `method`: supervisor PIN on the
+ * device, or approval from the supervisor's phone (§3.6).
+ */
+export const posOverrideSchema = z
+  .strictObject({
+    id: ulidIdSchema<"PosOverrideId">(),
+    outletId: outletIdSchema,
+    action: z.enum(POS_OVERRIDE_ACTIONS),
+    requestedBy: userIdSchema,
+    approvedBy: userIdSchema,
+    method: z.enum(["supervisor_pin", "supervisor_phone"]),
+    reasonCode: z.string().min(1).max(50).nullable(),
+    reason: z.string().trim().min(3).max(500),
+    /** Value affected: voided/refunded amount, discount, corrected difference; 0 for a no-sale drawer open. */
+    valueIdr: idrSchema.refine((value) => value >= 0, "valueIdr must be >= 0"),
+    approvalRequestId: z.uuid().toLowerCase().nullable(),
+    occurredAt: isoDateTimeSchema,
+  })
+  .refine((row) => row.approvedBy !== row.requestedBy, {
+    message: "Approver must differ from requester (AUTH-06)",
+    path: ["approvedBy"],
+  });
+export type PosOverride = z.infer<typeof posOverrideSchema>;
