@@ -35,7 +35,7 @@ export const eventCatalogEntrySchema = z
 export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
   "WS-01":
-    "login_challenge.created login_challenge.completed identity.linked session.created action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.granted support_access.ended config_import.completed usage_limit.reached",
+    "login_challenge.created login_challenge.completed identity.linked session.created session.revoked action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed approval.requested approval.decided tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.granted support_access.ended config_import.completed usage_limit.reached",
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
@@ -45,7 +45,7 @@ const namesByWorkstream = {
   "WS-05":
     "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
-    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded stock.moved stock.critical recipe.cost_changed",
+    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created purchase_order.approved goods_receipt.recorded supplier_invoice.recorded supplier_invoice.matched supplier_payment.paid purchase_return.recorded stock.moved stock.critical recipe.cost_changed",
   "WS-07":
     "journal.posted fiscal_period.closed fiscal_period.reopened distribution.approved distribution.paid distribution.completed bank_statement.imported cash_deposit.recorded cash_deposit.matched reconciliation_case.opened reconciliation_case.resolved depreciation_run.posted tax_report.exported",
   "WS-08":

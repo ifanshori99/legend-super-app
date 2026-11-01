@@ -29,7 +29,10 @@ import {
   timeZoneSchema,
   clientInputSchema,
 } from "../core/index.ts";
-import { hmacSha256, toHex, utf8 } from "../adapters/hmac.ts";
+import {
+  normalizeWhatsAppNumber,
+  whatsAppNumberDigest,
+} from "../identity/index.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import {
   floorZoneIdSchema,
@@ -56,27 +59,34 @@ const httpsUrlSchema = z.url().refine((value) => value.startsWith("https://"), {
  */
 const phoneDigitsSchema = z
   .string()
-  .regex(
-    /^[1-9][0-9]{7,14}$/,
-    "Phone numbers are digits in international form, e.g. 6281234567890",
-  );
+  .max(32)
+  .transform((value, ctx) => {
+    // One normalizer for every stored WhatsApp number (identity contract):
+    // "0812…", "+62 812-…" and "62812…" all become "62812…".
+    const digits = normalizeWhatsAppNumber(value);
+    if (digits === null) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Phone numbers are WhatsApp numbers, e.g. 6281234567890 or 081234567890",
+      });
+      return z.NEVER;
+    }
+    return digits;
+  });
 
 /**
- * `contactHash` for a reservation or waitlist entry: HMAC-SHA-256 (hex) of the
- * guest's WhatsApp digits, keyed with a server secret of at least 16
- * characters. A bare SHA-256 of a phone number is reversible by enumerating
- * the ~10^10 Indonesian mobile numbers, so the key is mandatory (same rule as
- * `hashIpForAudit`). Use one secret per deployment so the same guest hashes to
- * the same digest across reservations and the waitlist.
+ * `contactHash` for a reservation or waitlist entry: exactly
+ * `identity.whatsAppNumberDigest` (HMAC-SHA-256 of the normalized number with a
+ * server secret of at least 16 characters; never a bare SHA-256). Use the same
+ * secret as the identity digest so a guest's reservation links to their
+ * verified WhatsApp identity and customer profile.
  */
 export async function hashGuestContact(
   phone: string,
   secret: string,
 ): Promise<string> {
-  if (secret.length < 16)
-    throw new TypeError("Contact hash secret must be at least 16 characters");
-  const digits = phoneDigitsSchema.parse(phone);
-  return toHex(await hmacSha256(secret, utf8(digits)));
+  return whatsAppNumberDigest(phone, secret);
 }
 
 const scope = { tenantId: tenantIdSchema, outletId: outletIdSchema };
