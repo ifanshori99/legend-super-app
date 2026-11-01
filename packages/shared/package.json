@@ -16,6 +16,7 @@
     "./events": "./src/events/index.ts",
     "./audit": "./src/audit/index.ts",
     "./adapters": "./src/adapters/index.ts",
+    "./metrics": "./src/metrics/index.ts",
     "./core/server": "./src/core/server.ts"
   },
   "scripts": {
