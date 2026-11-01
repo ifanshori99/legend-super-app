@@ -138,3 +138,14 @@ Code: `packages/shared/src/accounting/profit-share*.ts`. Tests: `tests/accountin
 - **Calculation.** Closed periods only. reserve = half-up(net profit × `reserveBp`); gross per shareholder = `allocateIdr` over the allocations sorted by `shareholderId` (largest remainder, ties to the lowest id); tax = half-up(gross × `taxWithholdingBp`), one configurable rate per profit entity for launch (per-shareholder-type rates later). A share too small for Rp1 is `NOTHING_TO_DISTRIBUTE`.
 - **Runs (SH-04).** One regular run per profit entity and closed period (hard rule; partial unique index excluding cancelled runs). Approved/paid runs are frozen; a correction is an adjustment run that keeps the corrected run's entity, share version and split (`assertAdjustmentMatchesTarget`).
 - **Journal.** `distribution.completed`: debit `retained_earnings` gross (`distributedIdr`), credit `bank` net (`paidNetIdr`), credit `dividend_tax_payable` (CoA 2204 Utang PPh Dividen) the withholding (`taxWithheldIdr`); the payload refuses `distributed ≠ tax + net`.
+
+## Purchasing (bead `legend-ejk`)
+
+Code: `packages/shared/src/inventory/purchasing`. Tests: `tests/purchasing-contract.test.mjs`. PRD v1.7 §3.18, §4 Alur I, §6.E, INV-05.
+
+- **Approvals.** PR, PO and supplier payment approvers differ from the requester/creator (§3.7).
+- **Receipts (INV-05).** Only `received − rejected` enters stock and GRNI (at PO unit cost); cumulative accepted quantity per PO line never exceeds the ordered quantity.
+- **Supplier invoice money.** `goodsIdr` = invoiced goods at PO price (clears GRNI); `priceVarianceIdr` = invoice price − PO price (to inventory); `totalIdr = goods + variance + services + ppn` is the billed amount; `payableIdr = total − pph23`. The `supplier_invoice.recorded` payload refuses a split that does not balance.
+- **Three-way match.** Tolerance (`toleranceBp`) is tenant data. The accepted receipt is a cumulative cap across invoices (`previouslyInvoicedLines`).
+- **Payments.** Only a `matched` invoice is payable; a new payment plus open (`pending_approval`/`approved`) requests may not exceed `outstandingIdr`.
+- **Petty purchases.** Deny by default: no configured limit → refused; outlet row overrides the tenant row.
