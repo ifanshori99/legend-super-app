@@ -1465,7 +1465,7 @@ export function buildMyProfitShare(input: {
   for (const entity of input.entities) {
     if (!entity.isActive) continue;
     const version = effectiveShareAllocationVersion(
-      mine,
+      input.versions,
       entity.id,
       input.asOf,
     );

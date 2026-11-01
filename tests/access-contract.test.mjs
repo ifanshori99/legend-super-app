@@ -333,7 +333,7 @@ describe("authorize: deny by default, scope, time-bound (TEN-03)", () => {
 
   test("unknown outlet or station fails closed", () => {
     const ghost = "6a2d4f80-1c3e-4b5a-9d7f-000000000000";
-    assert.equal(check("owner", "order.view", outlet(ghost)).allowed, true); // tenant scope covers all
+    assert.equal(check("owner", "order.view", outlet(ghost)).allowed, false);
     assert.equal(
       check("generalManager", "order.view", outlet(ghost)).allowed,
       false,
@@ -399,10 +399,7 @@ describe("authorize: deny by default, scope, time-bound (TEN-03)", () => {
       reach("generalManager").outletIds.sort(),
       [bandung, bandung2].sort(),
     );
-    assert.deepEqual(reach("barista"), {
-      kind: "outlets",
-      outletIds: [bandung],
-    });
+    assert.equal(reach("barista"), null);
     assert.equal(reach("cashier", "report.financial.view"), null);
     const scopeData = reach("cashier", "pos.payment.accept");
     const ctx = server.establishTenantContext({
@@ -671,7 +668,7 @@ describe("role grants (§3.7 Pemberian Role)", () => {
   };
   const grant = (overrides = {}) =>
     access.assertCanGrantRole({
-      grantor: principal("tenantAdmin"),
+      grantor: principal("owner"),
       grantorRoles: fx.roleGrants,
       grantorMfaVerified: true,
       grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
@@ -683,13 +680,13 @@ describe("role grants (§3.7 Pemberian Role)", () => {
       ...overrides,
     });
 
-  test("admin with recent re-auth and MFA may grant", () => {
+  test("owner with recent re-auth and MFA may grant", () => {
     assert.ok(grant());
   });
 
   test("self-grant, stale re-auth, platform role, wrong scope, no permission → refused", () => {
     throwsCode(
-      () => grant({ granteeUserId: fx.users.tenantAdmin.id }),
+      () => grant({ granteeUserId: fx.users.owner.id }),
       "SELF_ELEVATION_FORBIDDEN",
     );
     throwsCode(
@@ -887,6 +884,208 @@ describe("security regression: fail closed", () => {
         fx.now,
       ),
       false,
+    );
+  });
+});
+
+test("TEN-03 tenant assignments reject outlet and station targets absent from org", () => {
+  const scope = { type: "tenant", id: null };
+  assert.equal(
+    access.scopeCovers(scope, { type: "outlet", id: "unknown" }, fx.org),
+    false,
+  );
+  assert.equal(
+    access.scopeCovers(scope, { type: "station", id: "unknown" }, fx.org),
+    false,
+  );
+});
+
+test("AUTH-06 role assignment cannot delegate permissions grantor does not hold", () => {
+  const role = fx.roles.find((r) => r.templateKey === "owner");
+  assert.throws(() =>
+    access.assertCanGrantRole({
+      grantor: principal("tenantAdmin"),
+      grantorRoles: fx.roleGrants,
+      grantorMfaVerified: true,
+      grantorReauthenticatedAt: fx.now,
+      granteeUserId: fx.users.employee.id,
+      role: { ...role, level: "tenant" },
+      scope: { type: "tenant", id: null },
+      org: fx.org,
+      now: fx.now,
+    }),
+  );
+});
+
+test("TEN-03 station scope does not grant outlet-wide query reach", () => {
+  assert.equal(
+    access.outletReachOf({
+      principal: principal("barista"),
+      roles: fx.roleGrants,
+      org: fx.org,
+      now: fx.now,
+    }),
+    null,
+  );
+});
+
+test("TEN-03 brand targets require tenant-owned brand inventory, including empty brands", () => {
+  const empty = "6a2d4f80-1c3e-4b5a-9d7f-000000000001";
+  const ghost = "6a2d4f80-1c3e-4b5a-9d7f-000000000002";
+  const org = { ...fx.org, brands: [...(fx.org.brands ?? []), { id: empty }] };
+  const tenantScope = { type: "tenant", id: null };
+  assert.equal(
+    access.scopeCovers(tenantScope, { type: "brand", id: empty }, org),
+    true,
+  );
+  assert.equal(
+    access.scopeCovers(tenantScope, { type: "brand", id: ghost }, org),
+    false,
+  );
+  assert.equal(
+    access.scopeCovers(
+      { type: "brand", id: ghost },
+      { type: "brand", id: ghost },
+      org,
+    ),
+    false,
+  );
+});
+
+// Coordinator decision (legend-cyu.10): tenant top authority (Owner / Admin
+// Tenant, MFA + re-auth <= 5 min) may grant any non-platform tenant role in its
+// tenant except Owner; everyone else must hold every delegated permission.
+describe("AUTH-06 role grants: tenant top authority vs delegated permissions", () => {
+  const templateRole = (key) => {
+    const role = fx.roles.find((r) => r.templateKey === key);
+    return { ...role, level: "tenant" };
+  };
+  const tenantScope = { type: "tenant", id: null };
+  const grantBy = (userKey, overrides = {}) =>
+    access.assertCanGrantRole({
+      grantor: principal(userKey),
+      grantorRoles: fx.roleGrants,
+      grantorMfaVerified: true,
+      grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      granteeUserId: fx.users.employee.id,
+      role: templateRole("finance"),
+      scope: tenantScope,
+      org: fx.org,
+      now: fx.now,
+      ...overrides,
+    });
+
+  test("AUTH-06 Admin Tenant may assign Finance although it lacks Finance permissions", () => {
+    const admin = templateRole("tenant_admin");
+    const finance = templateRole("finance");
+    assert.ok(
+      finance.permissions.some((p) => !admin.permissions.includes(p)),
+      "fixture premise: Finance holds permissions Admin Tenant does not",
+    );
+    assert.ok(grantBy("tenantAdmin"));
+  });
+
+  test("AUTH-06 top authority still needs MFA, fresh re-auth, no self-grant, no platform role", () => {
+    throwsCode(
+      () => grantBy("tenantAdmin", { grantorMfaVerified: false }),
+      "MFA_REQUIRED",
+    );
+    throwsCode(
+      () =>
+        grantBy("tenantAdmin", {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "REAUTH_REQUIRED",
+    );
+    throwsCode(
+      () => grantBy("tenantAdmin", { granteeUserId: fx.users.tenantAdmin.id }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    const superAdmin = fx.roles.find((r) => r.templateKey === "super_admin");
+    if (superAdmin)
+      throwsCode(
+        () =>
+          grantBy("tenantAdmin", {
+            role: { ...superAdmin, level: superAdmin.level ?? "platform" },
+          }),
+        "ROLE_NOT_ASSIGNABLE",
+      );
+    throwsCode(
+      () =>
+        grantBy("tenantAdmin", {
+          role: {
+            ...templateRole("finance"),
+            templateKey: null,
+            permissions: ["platform.tenant.manage"],
+          },
+        }),
+      "ROLE_NOT_ASSIGNABLE",
+    );
+  });
+
+  test("AUTH-06 Admin Tenant cannot create an Owner (no mutual promotion)", () => {
+    throwsCode(
+      () => grantBy("tenantAdmin", { role: templateRole("owner") }),
+      "PERMISSION_DENIED",
+    );
+    assert.ok(grantBy("owner", { role: templateRole("owner") }));
+  });
+
+  test("AUTH-06 a custom role with access.role.assign cannot delegate permissions it lacks", () => {
+    const customRoleId = "6a2d4f80-1c3e-4b5a-9d7f-0000000000c1";
+    const assignment = {
+      ...fx.assignments.find((row) => row.userId === fx.users.finance.id),
+      id: "6a2d4f80-1c3e-4b5a-9d7f-0000000000c2",
+      userId: fx.users.supervisor.id,
+      roleId: customRoleId,
+      scope: tenantScope,
+    };
+    const custom = {
+      id: customRoleId,
+      permissions: ["access.role.view", "access.role.assign"],
+      mfaRequired: true,
+      templateKey: null,
+    };
+    const grantor = {
+      tenantId: fx.tenantId,
+      userId: fx.users.supervisor.id,
+      assignments: [assignment],
+    };
+    const base = {
+      grantor,
+      grantorRoles: [...fx.roleGrants, custom],
+      grantorMfaVerified: true,
+      grantorReauthenticatedAt: fx.now,
+      granteeUserId: fx.users.employee.id,
+      scope: tenantScope,
+      org: fx.org,
+      now: fx.now,
+    };
+    throwsCode(
+      () =>
+        access.assertCanGrantRole({ ...base, role: templateRole("finance") }),
+      "PERMISSION_DENIED",
+    );
+    // Same custom role labelled as a template it is not: still refused,
+    // because only a stored template key unlocks top authority.
+    throwsCode(
+      () =>
+        access.assertCanGrantRole({
+          ...base,
+          grantorRoles: [...fx.roleGrants, { ...custom, templateKey: "hr" }],
+          role: templateRole("finance"),
+        }),
+      "PERMISSION_DENIED",
+    );
+    assert.ok(
+      access.assertCanGrantRole({
+        ...base,
+        role: {
+          ...templateRole("finance"),
+          templateKey: null,
+          permissions: ["access.role.view"],
+        },
+      }),
     );
   });
 });

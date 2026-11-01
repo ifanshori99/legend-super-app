@@ -525,3 +525,20 @@ test("F11 tax events are registered on the WS-05 catalog line and validate envel
     false,
   );
 });
+
+test("A20 package discounts never exceed allocated component gross", () => {
+  const original = f.privateRoomBill.lines[2];
+  const components = [0, 1, 2].map((i) => ({
+    ...original.components[i % 2],
+    componentId: `C${i}`,
+    allocationBp: [1428, 4286, 4286][i],
+  }));
+  const result = tax.calculateTax(
+    bill({
+      lines: [{ ...original, grossIdr: 4, discountIdr: 3, components }],
+      orderDiscountIdr: 1,
+    }),
+    config,
+  );
+  for (const row of result.lines) assert.ok(row.discountIdr <= row.grossIdr);
+});

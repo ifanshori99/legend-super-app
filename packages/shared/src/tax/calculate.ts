@@ -319,7 +319,10 @@ export function calculateTax(
     }
     const weights = packageWeights(line, settings.packageAllocation);
     const gross = allocateIdr(line.grossIdr, weights);
-    const discount = allocateIdr(line.discountIdr, weights);
+    const discount =
+      line.discountIdr === 0
+        ? gross.map(() => idr(0))
+        : allocateIdr(line.discountIdr, gross);
     line.components.forEach((component, index) =>
       rows.push({
         lineId: line.lineId,
