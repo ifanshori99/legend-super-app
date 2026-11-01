@@ -10,6 +10,7 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { createMenuRouter } from "./menu.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 export const apiRouter = Router();
@@ -28,5 +29,9 @@ apiRouter.use("/internal", internalRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Menu back office (WS-03, legend-lmk). No object-storage provider is wired
+// yet (WS-00 storage bead owns that), so the image upload answers 503 until
+// the bootstrap injects one; every other menu route is live.
+apiRouter.use("/menu", createMenuRouter());
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
