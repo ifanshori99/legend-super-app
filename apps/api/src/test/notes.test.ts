@@ -19,7 +19,11 @@ describe("Notes API", () => {
       const response = await client[method](url).set(originHeader);
       expect(response.status).toBe(401);
       expect(response.body).toEqual({
-        error: { code: "UNAUTHORIZED", message: "Sign in to continue." },
+        error: {
+          code: "UNAUTHORIZED",
+          message: "Sign in to continue.",
+          requestId: response.headers["x-request-id"],
+        },
       });
       expect(response.headers["cache-control"]).toContain("no-store");
     }
@@ -98,7 +102,12 @@ describe("Notes API", () => {
         .set(originHeader)
         .send(method === "patch" ? { title: "Stolen" } : undefined);
       expect(owned.status).toBe(404);
-      expect(owned.body).toEqual(absent.body);
+      expect(owned.body.error).toMatchObject({
+        code: absent.body.error.code,
+        message: absent.body.error.message,
+        requestId: owned.headers["x-request-id"],
+      });
+      expect(absent.body.error.requestId).toBe(absent.headers["x-request-id"]);
     }
     expect(
       (
