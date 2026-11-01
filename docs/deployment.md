@@ -2,6 +2,37 @@
 
 Deploy two Node.js services — the API and the web app — connected to a persistent PostgreSQL service. Neither app keeps data on its filesystem.
 
+## Environment and data policy
+
+PRD v1.7 §3 (Environment & Deployment) and §7 require separate development,
+staging and production environments. Only production may contain real data.
+The settings below describe the deployment and are separate from `NODE_ENV`,
+which selects Node runtime behavior. Set them consistently for every service.
+
+| Environment | `DEPLOYMENT_MODE`         | `EDGE_MODE` | `DATA_CLASSIFICATION`                                               | Data                           |
+| ----------- | ------------------------- | ----------- | ------------------------------------------------------------------- | ------------------------------ |
+| Development | `development`             | `false`     | `synthetic`                                                         | Synthetic only                 |
+| Staging     | `staging`                 | `false`     | `synthetic`                                                         | Synthetic only                 |
+| Production  | `production`              | `false`     | `synthetic` or `real`                                               | Real data permitted            |
+| Edge node   | Corresponding environment | `true`      | `synthetic` outside production; `synthetic` or `real` in production | Same policy as its environment |
+
+The defaults are `development`, `false`, and `synthetic`. Explicitly set the
+appropriate values in each deployment; an edge node is a topology, not an
+exception to the environment's data policy. The edge runtime and its image are
+separate follow-up work and are not supplied by these settings alone.
+
+Use fictional synthetic menus, 30 employees, and transactions for load and
+payroll testing. Do not copy production databases, backups, customer or employee
+records into development or staging, including masked or anonymized copies as a
+substitute for synthetic data. Keep secrets in environment variables or a secret
+manager, never in the repository.
+
+Classification is a declaration, not a way to detect actual data. Import code
+must classify its input honestly and call the real-data import guard before it
+reads or writes the data; deployment and database access controls must also
+prevent bypassing the application. Setting `DATA_CLASSIFICATION=synthetic` does
+not make a production dump synthetic.
+
 ## Domains and cookies
 
 The browser calls the API directly with cookies, and the web server reads the same cookie during server rendering. Put both apps on subdomains of one site and share the cookie with `COOKIE_DOMAIN`:
@@ -21,6 +52,9 @@ Unrelated domains (e.g. `app.example.com` and `example-api.net`) are not support
 
 ```dotenv
 NODE_ENV=production
+DEPLOYMENT_MODE=production
+EDGE_MODE=false
+DATA_CLASSIFICATION=real
 DATABASE_URL=postgresql://user:password@database-host:5432/app
 BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters
 BETTER_AUTH_URL=https://api.example.com
@@ -38,6 +72,9 @@ TRUST_PROXY=1
 
 ```dotenv
 NODE_ENV=production
+DEPLOYMENT_MODE=production
+EDGE_MODE=false
+DATA_CLASSIFICATION=real
 # Build time — inlined into the browser bundle:
 VITE_API_URL=https://api.example.com
 # Runtime, optional — the address the web server uses to reach the API privately:
@@ -76,6 +113,9 @@ docker build -f apps/web/Dockerfile --build-arg VITE_API_URL=https://api.example
 docker run --rm -e DATABASE_URL="$DATABASE_URL" my-api-migrate
 
 docker run -d -p 4000:4000 \
+  -e DEPLOYMENT_MODE=production \
+  -e EDGE_MODE=false \
+  -e DATA_CLASSIFICATION=real \
   -e DATABASE_URL="$DATABASE_URL" \
   -e BETTER_AUTH_SECRET="$BETTER_AUTH_SECRET" \
   -e BETTER_AUTH_URL=https://api.example.com \
@@ -84,7 +124,8 @@ docker run -d -p 4000:4000 \
   -e TRUST_PROXY=1 \
   my-api
 
-docker run -d -p 3000:3000 -e API_INTERNAL_URL=http://api:4000 my-web
+docker run -d -p 3000:3000 -e DEPLOYMENT_MODE=production -e EDGE_MODE=false \
+  -e DATA_CLASSIFICATION=real -e API_INTERNAL_URL=http://api:4000 my-web
 ```
 
 The builds need no secrets. Pass real values to running containers; never put secrets in `--build-arg`, `ENV`, or the image. `VITE_API_URL` is public by design. Rebuild the web image when the API's public origin changes.

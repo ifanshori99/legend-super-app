@@ -26,6 +26,19 @@ Setup checks Node.js and pnpm, installs the lockfile, generates missing private 
 
 `pnpm dev:api` and `pnpm dev:web` start one app alone.
 
+## Environment and synthetic data
+
+Local development defaults to `DEPLOYMENT_MODE=development`, `EDGE_MODE=false`,
+and `DATA_CLASSIFICATION=synthetic`. Staging also uses synthetic data only;
+real data is permitted only in production. Never import a production database,
+backup, or customer or employee records into a local environment. Generate
+fictional menus, employees, and transactions for development and tests instead.
+See the [environment matrix and import policy](deployment.md#environment-and-data-policy).
+
+`EDGE_MODE=true` selects edge topology; it does not change the data policy or
+provide the edge runtime by itself. Set environment values in your private local
+configuration, and do not commit secrets.
+
 ## Origins and ports
 
 Three settings in `.env.local` must agree; setup writes consistent defaults and `pnpm run doctor` checks them:

@@ -17,62 +17,82 @@ const origin = (message: string) =>
     );
   }, message);
 
-const schema = z.object({
-  NODE_ENV: z
-    .enum(["development", "production", "test"])
-    .default("development"),
-  // Defaults to BETTER_AUTH_URL's port (4000 when it has none).
-  PORT: z.coerce.number().int().min(1).max(65535).optional(),
-  HOST: z.string().default("0.0.0.0"),
-  DATABASE_URL: z.url().refine((value) => {
-    const url = new URL(value);
-    return (
-      ["postgres:", "postgresql:"].includes(url.protocol) &&
-      Boolean(url.hostname) &&
-      url.pathname.length > 1 &&
-      !url.hash
-    );
-  }, "Set DATABASE_URL to a PostgreSQL connection string or run pnpm run setup."),
-  BETTER_AUTH_SECRET: z
-    .string()
-    .min(32, "Run pnpm run setup to generate a secret."),
-  BETTER_AUTH_URL: origin(
-    "Use the API's origin, e.g. http://localhost:4000.",
-  ).default("http://localhost:4000"),
-  WEB_URL: origin(
-    "Use the web app's origin, e.g. http://localhost:3000.",
-  ).default("http://localhost:3000"),
-  TRUSTED_ORIGINS: z
-    .string()
-    .optional()
-    .transform((value) =>
-      (value ?? "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-    )
-    .pipe(z.array(origin("TRUSTED_ORIGINS must be comma-separated origins."))),
-  COOKIE_DOMAIN: z
-    .string()
-    .regex(/^\.?[a-z0-9.-]+$/i, "Use a parent domain such as .example.com.")
-    .optional(),
-  // A hop count or subnet list. `true` would trust any X-Forwarded-For a
-  // client sends, letting it pick the IP that rate limits are counted by.
-  TRUST_PROXY: z
-    .string()
-    .refine(
-      (value) => value !== "true",
-      "Use a hop count (e.g. 1) or a subnet list such as loopback; true trusts any client-supplied X-Forwarded-For.",
-    )
-    .optional(),
-  LOG_LEVEL: z
-    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
-    .optional(),
-  LOG_SQL: z
-    .enum(["true", "false", "1", "0"])
-    .optional()
-    .transform((value) => value === "true" || value === "1"),
-});
+const schema = z
+  .object({
+    DEPLOYMENT_MODE: z
+      .enum(["development", "staging", "production"])
+      .default("development"),
+    EDGE_MODE: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    DATA_CLASSIFICATION: z.enum(["synthetic", "real"]).default("synthetic"),
+    NODE_ENV: z
+      .enum(["development", "production", "test"])
+      .default("development"),
+    // Defaults to BETTER_AUTH_URL's port (4000 when it has none).
+    PORT: z.coerce.number().int().min(1).max(65535).optional(),
+    HOST: z.string().default("0.0.0.0"),
+    DATABASE_URL: z.url().refine((value) => {
+      const url = new URL(value);
+      return (
+        ["postgres:", "postgresql:"].includes(url.protocol) &&
+        Boolean(url.hostname) &&
+        url.pathname.length > 1 &&
+        !url.hash
+      );
+    }, "Set DATABASE_URL to a PostgreSQL connection string or run pnpm run setup."),
+    BETTER_AUTH_SECRET: z
+      .string()
+      .min(32, "Run pnpm run setup to generate a secret."),
+    BETTER_AUTH_URL: origin(
+      "Use the API's origin, e.g. http://localhost:4000.",
+    ).default("http://localhost:4000"),
+    WEB_URL: origin(
+      "Use the web app's origin, e.g. http://localhost:3000.",
+    ).default("http://localhost:3000"),
+    TRUSTED_ORIGINS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        (value ?? "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      )
+      .pipe(
+        z.array(origin("TRUSTED_ORIGINS must be comma-separated origins.")),
+      ),
+    COOKIE_DOMAIN: z
+      .string()
+      .regex(/^\.?[a-z0-9.-]+$/i, "Use a parent domain such as .example.com.")
+      .optional(),
+    // A hop count or subnet list. `true` would trust any X-Forwarded-For a
+    // client sends, letting it pick the IP that rate limits are counted by.
+    TRUST_PROXY: z
+      .string()
+      .refine(
+        (value) => value !== "true",
+        "Use a hop count (e.g. 1) or a subnet list such as loopback; true trusts any client-supplied X-Forwarded-For.",
+      )
+      .optional(),
+    LOG_LEVEL: z
+      .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
+      .optional(),
+    LOG_SQL: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
+  })
+  .refine(
+    (values) =>
+      values.DEPLOYMENT_MODE === "production" ||
+      values.DATA_CLASSIFICATION === "synthetic",
+    {
+      path: ["DATA_CLASSIFICATION"],
+      message: "Only synthetic data is permitted outside production.",
+    },
+  );
 
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
@@ -112,4 +132,12 @@ export function trustProxySetting(value = env.TRUST_PROXY) {
   if (value === undefined || value === "" || value === "false") return false;
   if (/^\d+$/.test(value)) return Number(value);
   return value;
+}
+
+// Importers must classify each input explicitly before persisting any records.
+export function assertDataImportAllowed(classification: unknown): void {
+  const dataType = z.enum(["synthetic", "real"]).parse(classification);
+  if (dataType === "real" && env.DEPLOYMENT_MODE !== "production") {
+    throw new Error("Real data imports are only permitted in production.");
+  }
 }
