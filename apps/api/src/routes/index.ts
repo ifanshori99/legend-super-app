@@ -10,6 +10,7 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { taxRouter } from "./tax.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 export const apiRouter = Router();
@@ -30,3 +31,5 @@ apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
+// WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
+apiRouter.use("/tax", taxRouter);

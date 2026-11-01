@@ -17,3 +17,5 @@ export * from "./platform-access";
 export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";
+// WS-05 versioned tax / service-charge rules, calculation options, snapshots.
+export * from "./tax";
