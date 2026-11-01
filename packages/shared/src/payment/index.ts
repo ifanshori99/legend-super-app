@@ -66,31 +66,58 @@ export function canTransitionPayment(
   from: PaymentStatus,
   to: PaymentStatus,
   source?: string,
+  method?: PaymentMethod,
 ): boolean {
-  return (
-    transitions[from].includes(to) &&
-    (to !== "paid" || paymentConfirmationSourceSchema.safeParse(source).success)
-  );
+  if (!transitions[from]?.includes(to)) return false;
+  if (to !== "paid") return true;
+
+  switch (source) {
+    case "verified_webhook":
+    case "gateway_status":
+      return ["qris", "card", "ewallet", "va", "paylater"].some(
+        (onlineMethod) => onlineMethod === method,
+      );
+    case "edc_ecr":
+    case "authorized_edc_standalone":
+      return method === "edc_card" || method === "edc_qris";
+    case "authorized_cash":
+      return method === "cash";
+    default:
+      return false;
+  }
 }
-export const paymentIntentSchema = z.strictObject({
-  ...row,
-  orderId: ulidSchema.nullable(),
-  billSplitId: id.nullable(),
-  reservationId: id.nullable(),
-  accessTicketId: ulidSchema.nullable(),
-  subscriptionInvoiceId: id.nullable(),
-  method: paymentMethodSchema,
-  provider: ref,
-  amountIdr: positiveIdr,
-  feeIdr: nonnegativeIdr,
-  idempotencyKey: ref,
-  providerRef: ref.nullable(),
-  status: paymentStatusSchema,
-  flags: z.array(z.enum(["late_payment", "double_payment"])),
-  edcTransactionId: id.nullable(),
-  paidAt: isoDateTimeSchema.nullable(),
-  expiresAt: isoDateTimeSchema,
-});
+const settledPaymentStatuses: readonly PaymentStatus[] = [
+  "paid",
+  "partially_refunded",
+  "refunded",
+];
+export const paymentIntentSchema = z
+  .strictObject({
+    ...row,
+    orderId: ulidSchema.nullable(),
+    billSplitId: id.nullable(),
+    reservationId: id.nullable(),
+    accessTicketId: ulidSchema.nullable(),
+    subscriptionInvoiceId: id.nullable(),
+    method: paymentMethodSchema,
+    provider: ref,
+    amountIdr: positiveIdr,
+    feeIdr: nonnegativeIdr,
+    idempotencyKey: ref,
+    providerRef: ref.nullable(),
+    status: paymentStatusSchema,
+    flags: z.array(z.enum(["late_payment", "double_payment"])),
+    edcTransactionId: id.nullable(),
+    paidAt: isoDateTimeSchema.nullable(),
+    expiresAt: isoDateTimeSchema,
+  })
+  // A settled intent always records when it was paid; an unpaid one never does.
+  .refine(
+    (intent) =>
+      settledPaymentStatuses.includes(intent.status) ===
+      (intent.paidAt !== null),
+    { path: ["paidAt"], message: "paidAt must be set exactly when paid" },
+  );
 export const paymentRoutingSchema = z.strictObject({
   ...row,
   method: paymentMethodSchema,
@@ -146,7 +173,7 @@ export const edcTerminalSchema = z.strictObject({
   merchantId: ref,
   model: ref,
   connection: z.enum(["lan", "usb", "bluetooth"]),
-  ipAddress: z.string().nullable(),
+  ipAddress: z.union([z.ipv4(), z.ipv6()]).nullable(),
   supportedMethods: z.array(z.enum(["card", "qris"])),
   assignedDeviceId: id.nullable(),
   status: z.enum(["active", "inactive"]),
@@ -164,7 +191,12 @@ export const edcTransactionSchema = z.strictObject({
   bankRef: ref.nullable(),
   cardType: ref.nullable(),
   issuer: ref.nullable(),
-  maskedPan: ref.nullable(),
+  // PCI DSS: at most the first 6 and last 4 digits may be stored, never a full PAN.
+  maskedPan: z
+    .string()
+    .regex(/^(?:\d{6})?[*Xx]{2,}\d{4}$/)
+    .max(23)
+    .nullable(),
   batchNo: ref.nullable(),
   mode: z.enum(["ecr", "standalone"]),
   approvedBy: id.nullable(),

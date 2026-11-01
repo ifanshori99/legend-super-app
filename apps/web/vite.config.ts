@@ -28,6 +28,10 @@ export default defineConfig(({ command, mode }) => {
     // honors PORT and HOST. The Dockerfile ships only that folder.
     nitro: {
       preset: "node-server",
+      // Runs at server startup, before the port opens: the built server would
+      // otherwise load the app (and its env validation) lazily on the first
+      // request. See docs/deployment.md ("Startup validation").
+      plugins: ["./server/plugins/deployment-env.ts"],
       rolldownConfig: {
         // Libraries ship RSC "use client" directives; this app has no server
         // components, so the bundler's notice about dropping them is noise.
