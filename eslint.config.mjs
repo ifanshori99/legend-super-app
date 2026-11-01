@@ -28,7 +28,8 @@ export default defineConfig([
           paths: [
             {
               name: "@starter/shared/core/server",
-              message: "Server-only: tenant context is minted by the API, never in the web app.",
+              message:
+                "Server-only: tenant context is minted by the API, never in the web app.",
             },
           ],
         },

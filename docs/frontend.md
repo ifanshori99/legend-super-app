@@ -104,3 +104,120 @@ Files ending in `.server.ts` (`session.server.ts`, `logger.server.ts`, `api/upst
 4. Components under `features/<resource>/components/`, reusing `components/ui`.
 5. A page under `routes/_protected/` whose loader ensures the query; `roleHasPermission` in `beforeLoad` for cross-account pages.
 6. A Playwright test in `e2e/` for the main flow, then `pnpm test:e2e`.
+
+## Typed endpoints and mock mode
+
+Bead `legend-zj2` · PRD v1.7 §3 "Prinsip Pengembangan Paralel". Every screen is built against a contract and fixtures first; the backend arrives later and the screens do not change.
+
+```text
+component → hook → queryOptions → endpoint caller (callEndpoint) → apiFetch ─┬─ real API
+                                       ▲ contract: defineEndpoint            └─ mock runtime (VITE_API_MOCK=true)
+                                       │            in @starter/shared/<domain>      ▲ registerMock(endpoint, handler)
+                                       └─ schemas + Cafe Legend fixtures ────────────┘ features/<name>/mock.ts
+```
+
+### 1. The contract lives in `packages/shared`
+
+A domain contract bead exports its endpoints next to its schemas (`defineEndpoint` from `@starter/shared/api`). One object per endpoint: method, path template, and Zod schemas for `params`, `query`, `body`, `response`. The API will validate with the same object. Request schemas come from `clientInputSchema` (a submitted `tenantId` is rejected, TEN-02); list endpoints use `cursorPageQuerySchema` / `cursorPageSchema` (D-CORE-5); money fields are `…Idr`.
+
+```ts
+import { defineEndpoint } from "@starter/shared/api";
+import {
+  cursorPageQuerySchema,
+  cursorPageSchema,
+  outletIdSchema,
+  z,
+} from "@starter/shared/core";
+
+export const getOutlet = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId",
+  params: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(outletSchema), // omit `response` for 204
+});
+```
+
+`@starter/shared/api` also ships working examples (`listExampleOutlets`, `getExampleOutlet`, `addExampleOrderLine`, `removeExampleOrderLine` under `/api/example/…`). They are the reference and the test subject; the API does not implement them.
+
+### 2. Call it with `callEndpoint`
+
+```ts
+// features/outlets/api.ts
+import { callEndpoint, endpointQueryOptions } from "@/lib/api/endpoint";
+import { getOutlet, listOutlets } from "@starter/shared/outlets";
+
+export const outletQuery = (outletId: string) =>
+  endpointQueryOptions(getOutlet, { params: { outletId } }); // GET → queryOptions
+export const createOutlet = (body) =>
+  callEndpoint(createOutletEndpoint, { body }); // mutation
+```
+
+- Arguments are typed from the contract: `{ params, query, body }`, only the parts the endpoint declares; the input argument is required exactly when a part is required. A 204 endpoint resolves `undefined`.
+- Input is parsed with the endpoint's schemas **before** the request (defaults applied, `ApiError` `VALIDATION_ERROR` with `details` on failure). The response is parsed in development and mock mode; a drift fails loudly as `ApiError` `RESPONSE_SHAPE_INVALID` (502).
+- `endpointQueryKey(endpoint, input)` is `[endpoint.id, input]`: hierarchical enough for `invalidateQueries({ queryKey: [endpoint.id] })`.
+- Hand-written `apiFetch<T>(path, …)` (the Notes pattern) keeps working, in mock mode too, as long as a mock exists for the path.
+
+### 3. Mock mode
+
+Set `VITE_API_MOCK=true` (and optionally `VITE_API_MOCK_LATENCY_MS`, default 250) in `.env.local` and restart the web dev server. `apiFetch` then never touches the network: it dispatches to the mock runtime in `lib/mock`. A normal build compiles the whole runtime out (checked: no mock code in the bundle). Never set the flag on a real deployment; a production build with the flag logs a console warning. Mock mode also serves as the clickable mockup for demos.
+
+**Add a mock for your feature** in `features/<name>/mock.ts`: files are discovered by glob, so you never edit a shared file.
+
+```ts
+// features/outlets/mock.ts
+import { registerMock } from "@/lib/mock/registry";
+import { paginateFixture } from "@/lib/mock/paginate";
+import { createMockStore } from "@/lib/mock/store";
+import { ApiError } from "@/lib/api/errors";
+import { outletFixtures } from "@starter/shared/outlets";
+import { getOutlet, listOutlets } from "@starter/shared/outlets";
+
+registerMock(listOutlets, ({ query, scenario }) =>
+  paginateFixture(outletFixtures, query, (o) => o.id, scenario),
+);
+
+registerMock(getOutlet, ({ params }) => {
+  const outlet = outletFixtures.find((o) => o.id === params.outletId);
+  if (!outlet) throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+  return { data: outlet };
+});
+```
+
+What the runtime does for you, like the real API:
+
+| Behavior            | Detail                                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Input validation    | `params`, `query`, `body` are parsed with the endpoint's schemas; handlers receive typed, normalized values. Failures are `VALIDATION_ERROR` 400 with `details`. |
+| Response validation | The handler's return is parsed with `endpoint.response`; a fixture that breaks the contract is `MOCK_RESPONSE_INVALID` 500, so fixtures cannot rot.              |
+| JSON round trip     | Responses are cloned through JSON: no leaked store references, nothing the wire cannot carry.                                                                    |
+| Errors              | Throw `ApiError(status, "UPPER_SNAKE", message)` or a `CoreError`; both reach the UI as `ApiError` with the same `code` the API will use.                        |
+| Pagination          | `paginateFixture` implements opaque cursors, `limit`, `nextCursor: null` on the last page, tampered cursor → `VALIDATION_ERROR`.                                 |
+| State               | `createMockStore(seed)` for data a mutation changes; every store re-seeds on `resetMocks()`.                                                                     |
+| Precedence          | `/api/x/special` beats `/api/x/:id`.                                                                                                                             |
+
+Rules for handlers: return fixtures from `@starter/shared/<domain>` (never hand-typed copies in a feature); never read `tenantId` from input; do not invent business rules the PRD does not state. Mock state lives per runtime (SSR server and browser each hold their own), so run mutations in the browser as usual.
+
+### 4. See loading, empty and error states
+
+Needed for the screenshot evidence of every screen. Add `?mock=<scenario>` to the URL (remembered in `localStorage["legend-mock-scenario"]`; `?mock=normal` resets) or use the console:
+
+| Scenario  | Effect                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------ |
+| `normal`  | Fixtures after the configured latency                                                      |
+| `slow`    | 3 s latency: skeletons and spinners                                                        |
+| `empty`   | `paginateFixture` returns an empty last page; use `scenario` in handlers for non-list data |
+| `error`   | Every call fails with `INTERNAL_ERROR` 500                                                 |
+| `offline` | Every call fails with `NETWORK_ERROR` status 0                                             |
+
+```js
+window.__legendMock.setScenario("empty");
+window.__legendMock.failNext("GET /api/outlets/:outletId", {
+  status: 403,
+  code: "OUTLET_OUT_OF_SCOPE",
+}); // one call
+window.__legendMock.reset(); // normal scenario, seed data
+```
+
+### 5. Tests
+
+`tests/api-client.test.mjs` loads the contract, the runtime and the example handlers with plain Node ESM (type stripping, no bundler): `lib/api/errors.ts`, `endpoint-core.ts` and everything under `lib/mock` therefore avoid `@/` aliases, framework imports, `enum` and constructor parameter properties. Keep it that way. To unit-test a feature's mock in Node, import it with relative `.ts` paths (the `@/` alias only exists in Vite), then `dispatchMock({ method, path, query, body })` + `assert`. Every domain contract bead also adds a "fixtures parse" test (`docs/plan/contracts.md`).

@@ -3,12 +3,14 @@ import express, { type Request } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
-import { toNodeHandler } from "better-auth/node";
+import { fromNodeHeaders, toNodeHandler } from "better-auth/node";
 import { env, trustProxySetting } from "./config/env";
+import { pool } from "./db";
 import { auth, CLIENT_IP_HEADER } from "./lib/auth";
 import { logger as defaultLogger, type Logger } from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
+import { developmentTenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { apiRouter } from "./routes";
 
@@ -99,6 +101,35 @@ export function createApp({
   // limitAuthBody caps that body's size first.
   app.all("/api/auth/*splat", limitAuthBody, toNodeHandler(auth));
 
+  // Better Auth owns its routes above. Existing public and global starter routes
+  // remain accessible; tenant-aware services must require a minted context.
+  // Domain resolution is deliberately absent until registered domains exist.
+  app.use(
+    "/api",
+    developmentTenantContext({
+      enabled:
+        env.DEPLOYMENT_MODE === "development" &&
+        env.NODE_ENV !== "production" &&
+        env.DATA_CLASSIFICATION === "synthetic",
+      hasSession: async (req) =>
+        Boolean(
+          await auth.api.getSession({
+            headers: fromNodeHeaders(req.headers),
+            query: { disableCookieCache: true },
+          }),
+        ),
+      lookup: async () => {
+        const result = await pool.query<{
+          tenant_id: string;
+          brand_id: string | null;
+        }>(
+          "SELECT tenant_id, brand_id FROM app.dev_tenant_lookup WHERE singleton",
+        );
+        const row = result.rows[0];
+        return row ? { tenantId: row.tenant_id, brandId: row.brand_id } : null;
+      },
+    }),
+  );
   app.use("/api", apiRouter);
 
   app.use(notFound);
