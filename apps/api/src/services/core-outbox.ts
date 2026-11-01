@@ -84,6 +84,32 @@ export type GapRequest = {
   missingSequence: number;
 };
 
+/** pg-boss owns a job for its expiry (120s) plus five exponential retries
+ * (about 15 minutes in total); a queued row older than this lease means the job
+ * vanished without a dead letter and the aggregate would stay blocked, so the
+ * relay re-dispatches it. */
+export const QUEUED_DISPATCH_LEASE_SECONDS = 20 * 60;
+
+/** Re-dispatch queued rows whose pg-boss job vanished. The generation advance
+ * fences the lost job: a late delivery for the old generation is rejected by
+ * consumeOutbox instead of applying twice. The database guard allows this
+ * transition only after the queued lease expired (migration 0006). */
+export async function recoverExpiredDispatches(
+  database: Database,
+  context: ScopedTenantContext,
+) {
+  const outletFilter =
+    context.outletScope.kind === "tenant"
+      ? sql`TRUE`
+      : sql`o.outlet_id = ANY(${outletArray(context)}::uuid[])`;
+  return withTenant(database, context, async (tx) => {
+    const result = await tx.execute(
+      sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_generation = dispatch_generation + 1, dispatch_job_id = NULL, dispatch_lease_token = NULL, dispatch_lease_until = NULL, dead_lettered_at = NULL WHERE id IN (SELECT id FROM domain_event_outbox o WHERE dispatch_state = 'queued' AND status <> 'delivered' AND dispatch_lease_until IS NOT NULL AND dispatch_lease_until < now() AND ${outletFilter} ORDER BY dispatch_lease_until, id FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id, dispatch_generation`,
+    );
+    return result.rows as { id: string; dispatch_generation: number }[];
+  });
+}
+
 /** Claim only ready rows; a fenced lease recovers a relay crash. Stable job IDs
  * make an enqueue retried after an uncertain acknowledgement idempotent. */
 export async function relayOutbox(
@@ -96,6 +122,9 @@ export async function relayOutbox(
   }) => Promise<string>,
   requestMissing: (gap: GapRequest) => Promise<void> = async () => {},
 ) {
+  // A vanished pg-boss job leaves its row queued; recover it before claiming so
+  // this sweep re-enqueues it under the advanced generation.
+  await recoverExpiredDispatches(database, context);
   const token = randomUUID();
   const rows = await withTenant(database, context, async (tx) => {
     const outletFilter =
@@ -135,7 +164,7 @@ export async function relayOutbox(
     );
     await withTenant(database, context, async (tx) => {
       await tx.execute(
-        sql`UPDATE domain_event_outbox SET dispatch_state = 'queued', dispatch_job_id = ${jobId}::uuid, dispatch_lease_token = NULL, dispatch_lease_until = NULL WHERE id = ${row.id}::uuid AND dispatch_state = 'ready' AND dispatch_lease_token = ${token}::uuid AND dispatch_generation = ${row.dispatch_generation} AND status <> 'delivered'`,
+        sql`UPDATE domain_event_outbox SET dispatch_state = 'queued', dispatch_job_id = ${jobId}::uuid, dispatch_lease_token = NULL, dispatch_lease_until = now() + make_interval(secs => ${QUEUED_DISPATCH_LEASE_SECONDS}) WHERE id = ${row.id}::uuid AND dispatch_state = 'ready' AND dispatch_lease_token = ${token}::uuid AND dispatch_generation = ${row.dispatch_generation} AND status <> 'delivered'`,
       );
     });
     count++;
