@@ -68,7 +68,9 @@ import {
 
 const nonnegativeIdr = idrSchema.refine((value) => value >= 0);
 const page = <Item extends z.ZodType>(item: Item) => cursorPageSchema(item);
-const withFilters = (shape: z.ZodRawShape) =>
+// Generic over the shape so the parsed query keeps its keys (a bare
+// `z.ZodRawShape` widened every list query to `{ [key: string]: unknown }`).
+const withFilters = <Shape extends z.ZodRawShape>(shape: Shape) =>
   cursorPageQuerySchema.extend(shape);
 
 const customerProfileIdParams = z.strictObject({

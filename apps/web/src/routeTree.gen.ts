@@ -51,6 +51,10 @@ import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$to
 import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
+import { Route as KelolaKelolaLoyaltyIndexRouteImport } from './routes/_kelola/kelola.loyalty.index'
+import { Route as KelolaKelolaLoyaltyMisiRouteImport } from './routes/_kelola/kelola.loyalty.misi'
+import { Route as KelolaKelolaLoyaltyRewardRouteImport } from './routes/_kelola/kelola.loyalty.reward'
+import { Route as KelolaKelolaLoyaltyTierRouteImport } from './routes/_kelola/kelola.loyalty.tier'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -264,6 +268,28 @@ const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => CustomerTTokenRoute,
 } as any)
+const KelolaKelolaLoyaltyIndexRoute =
+  KelolaKelolaLoyaltyIndexRouteImport.update({
+    id: '/kelola/loyalty/',
+    path: '/kelola/loyalty/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaLoyaltyMisiRoute = KelolaKelolaLoyaltyMisiRouteImport.update({
+  id: '/kelola/loyalty/misi',
+  path: '/kelola/loyalty/misi',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaLoyaltyRewardRoute =
+  KelolaKelolaLoyaltyRewardRouteImport.update({
+    id: '/kelola/loyalty/reward',
+    path: '/kelola/loyalty/reward',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaLoyaltyTierRoute = KelolaKelolaLoyaltyTierRouteImport.update({
+  id: '/kelola/loyalty/tier',
+  path: '/kelola/loyalty/tier',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -344,6 +370,9 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -352,6 +381,7 @@ export interface FileRoutesByFullPath {
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
+  '/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -384,6 +414,9 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -392,6 +425,7 @@ export interface FileRoutesByTo {
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
+  '/kelola/loyalty': typeof KelolaKelolaLoyaltyIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -438,6 +472,9 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_kelola/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/_kelola/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/_kelola/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -446,6 +483,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
+  '/_kelola/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -482,6 +520,9 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/loyalty/misi'
+    | '/kelola/loyalty/reward'
+    | '/kelola/loyalty/tier'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -490,6 +531,7 @@ export interface FileRouteTypes {
     | '/kelola/menu/stasiun'
     | '/member/fasilitas/'
     | '/t/$token/'
+    | '/kelola/loyalty/'
     | '/kelola/menu/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
@@ -522,6 +564,9 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/loyalty/misi'
+    | '/kelola/loyalty/reward'
+    | '/kelola/loyalty/tier'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -530,6 +575,7 @@ export interface FileRouteTypes {
     | '/kelola/menu/stasiun'
     | '/member/fasilitas'
     | '/t/$token'
+    | '/kelola/loyalty'
     | '/kelola/menu'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
@@ -575,6 +621,9 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_kelola/kelola/loyalty/misi'
+    | '/_kelola/kelola/loyalty/reward'
+    | '/_kelola/kelola/loyalty/tier'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
@@ -583,6 +632,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/menu/stasiun'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
+    | '/_kelola/kelola/loyalty/'
     | '/_kelola/kelola/menu/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
@@ -899,6 +949,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerTTokenReviewRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
+    '/_kelola/kelola/loyalty/': {
+      id: '/_kelola/kelola/loyalty/'
+      path: '/kelola/loyalty'
+      fullPath: '/kelola/loyalty/'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/misi': {
+      id: '/_kelola/kelola/loyalty/misi'
+      path: '/kelola/loyalty/misi'
+      fullPath: '/kelola/loyalty/misi'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyMisiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/reward': {
+      id: '/_kelola/kelola/loyalty/reward'
+      path: '/kelola/loyalty/reward'
+      fullPath: '/kelola/loyalty/reward'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyRewardRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/tier': {
+      id: '/_kelola/kelola/loyalty/tier'
+      path: '/kelola/loyalty/tier'
+      fullPath: '/kelola/loyalty/tier'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyTierRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
       path: '/kelola/menu'
@@ -1055,23 +1133,31 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 
 interface KelolaRouteChildren {
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+  KelolaKelolaLoyaltyMisiRoute: typeof KelolaKelolaLoyaltyMisiRoute
+  KelolaKelolaLoyaltyRewardRoute: typeof KelolaKelolaLoyaltyRewardRoute
+  KelolaKelolaLoyaltyTierRoute: typeof KelolaKelolaLoyaltyTierRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
   KelolaKelolaMenuKategoriRoute: typeof KelolaKelolaMenuKategoriRoute
   KelolaKelolaMenuKetersediaanRoute: typeof KelolaKelolaMenuKetersediaanRoute
   KelolaKelolaMenuPaketRoute: typeof KelolaKelolaMenuPaketRoute
   KelolaKelolaMenuStasiunRoute: typeof KelolaKelolaMenuStasiunRoute
+  KelolaKelolaLoyaltyIndexRoute: typeof KelolaKelolaLoyaltyIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+  KelolaKelolaLoyaltyMisiRoute: KelolaKelolaLoyaltyMisiRoute,
+  KelolaKelolaLoyaltyRewardRoute: KelolaKelolaLoyaltyRewardRoute,
+  KelolaKelolaLoyaltyTierRoute: KelolaKelolaLoyaltyTierRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
   KelolaKelolaMenuKategoriRoute: KelolaKelolaMenuKategoriRoute,
   KelolaKelolaMenuKetersediaanRoute: KelolaKelolaMenuKetersediaanRoute,
   KelolaKelolaMenuPaketRoute: KelolaKelolaMenuPaketRoute,
   KelolaKelolaMenuStasiunRoute: KelolaKelolaMenuStasiunRoute,
+  KelolaKelolaLoyaltyIndexRoute: KelolaKelolaLoyaltyIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
 }
 
