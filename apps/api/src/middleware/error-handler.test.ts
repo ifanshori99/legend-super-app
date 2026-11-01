@@ -3,6 +3,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { CoreError, apiErrorBodySchema } from "@starter/shared/core";
 import { DeliveryError } from "@starter/shared/delivery";
+import { PosError } from "@starter/shared/pos";
 import { requestContext } from "../lib/request-context.ts";
 import { errorHandler } from "./error-handler.ts";
 
@@ -42,6 +43,15 @@ describe("D-CORE-4 error envelope", () => {
     expect(response.body.error.requestId).toBe(
       response.headers["x-request-id"],
     );
+  });
+  it("maps PosError to its contract status", async () => {
+    const response = await request(
+      appThrowing(new PosError("BUSINESS_DAY_ALREADY_CLOSED")),
+    ).get("/");
+    expect(response.status).toBe(
+      new PosError("BUSINESS_DAY_ALREADY_CLOSED").status,
+    );
+    expect(response.body.error.code).toBe("BUSINESS_DAY_ALREADY_CLOSED");
   });
   it("does not expose an arbitrary error with forged status and code", async () => {
     const error = Object.assign(new Error("secret"), {

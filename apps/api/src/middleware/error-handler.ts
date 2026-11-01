@@ -15,6 +15,7 @@ import { FacilityError } from "@starter/shared/facility";
 import { IdentityError } from "@starter/shared/identity";
 import { NotificationError } from "@starter/shared/notification";
 import { PlatformError } from "@starter/shared/platform";
+import { PosError } from "@starter/shared/pos";
 import {
   ReservationError,
   reservationErrorHttpStatus,
@@ -54,6 +55,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof IdentityError ||
     error instanceof NotificationError ||
     error instanceof PlatformError ||
+    error instanceof PosError ||
     error instanceof TaxError
   )
     return send(error.status, error.code, error.message);
