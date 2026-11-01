@@ -42,6 +42,30 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     await pool.end();
   });
 
+  it("TEN-02 every migrated table with tenant_id forces RLS with the restrictive tenant policy", async () => {
+    // Bootstrap-only tables that carry a tenant_id but are deliberately not
+    // tenant-scoped. Adding to this list needs an Opus/owner review.
+    const allowlist = ["app.dev_tenant_lookup"];
+    const result = await pool.query<{ table: string }>(
+      `SELECT n.nspname || '.' || c.relname AS table
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE a.attname = 'tenant_id' AND NOT a.attisdropped
+         AND c.relkind IN ('r', 'p')
+         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND n.nspname NOT LIKE 'pg_toast%'
+         AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR NOT EXISTS (
+           SELECT 1 FROM pg_policy p
+           WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation' AND NOT p.polpermissive
+         ))
+       ORDER BY 1`,
+    );
+    expect(
+      result.rows.map((row) => row.table).filter((t) => !allowlist.includes(t)),
+    ).toEqual([]);
+  });
+
   it("sets scoped locals for a non-bypass login and clears them after commit", async () => {
     const database = drizzle(appPool, { schema });
     const context = establishScopedTenantContext(
