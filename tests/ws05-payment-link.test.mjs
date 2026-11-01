@@ -16,6 +16,7 @@ import {
   pollIntervalMs,
   remainingMs,
   shouldAutoRefresh,
+  nextRefreshCount,
   shouldPoll,
 } from "../apps/web/src/features/ws05-payment/status.ts";
 
@@ -221,4 +222,15 @@ test("PAY-01 service charge and tax are shown as added at checkout", () => {
     true,
   );
   assert.equal(billHasAddedCharges({ serviceChargeIdr: 0, taxIdr: 0 }), false);
+});
+
+test("PAY-02 auto-refresh cap is not reset by a new but already expired intent", () => {
+  let count = 0;
+  for (let i = 0; i < 10; i += 1) {
+    count = nextRefreshCount(count, 0);
+    if (!shouldAutoRefresh("pending", 0, count)) break;
+    count += 1;
+  }
+  assert.equal(count, MAX_AUTO_REFRESHES);
+  assert.equal(nextRefreshCount(MAX_AUTO_REFRESHES, 30_000), 0);
 });

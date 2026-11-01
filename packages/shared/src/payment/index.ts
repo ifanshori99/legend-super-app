@@ -687,6 +687,12 @@ export const getPaymentLink = defineEndpoint({
   params: linkParams,
   response: dataResponseSchema(paymentLinkViewSchema),
 });
+/**
+ * Creating an intent supersedes the link's previous pending intent, so one
+ * bill never shows two live codes. A late payment on a superseded code is
+ * still accepted and flagged (PRD §3.13 "Siklus Pembayaran"). Same
+ * idempotency key + different method/channel → IDEMPOTENCY_KEY_REUSED (409).
+ */
 export const createPaymentIntent = defineEndpoint({
   method: "POST",
   path: `${BASE}/:token/intents`,

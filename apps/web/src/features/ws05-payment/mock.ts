@@ -215,8 +215,19 @@ registerMock(createPaymentIntent, ({ params, body }) => {
   if (link.view.bill.totals.outstandingIdr === 0)
     throw new ApiError(409, "CONFLICT", "Tagihan ini sudah lunas.");
 
+  // contracts.md "Idempotent mutations": the same key returns the first
+  // result; the same key with a different request is refused (fakes enforce).
   const seen = link.idempotency.get(body.idempotencyKey);
-  if (seen) return { data: requireIntent(link, seen) };
+  if (seen) {
+    const first = requireIntent(link, seen);
+    if (first.method !== body.method || channelOf(first) !== body.channelCode)
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Permintaan pembayaran ini sudah dipakai untuk metode lain.",
+      );
+    return { data: first };
+  }
 
   const option = link.view.methods.find(
     (method) => method.method === body.method,
@@ -234,6 +245,12 @@ registerMock(createPaymentIntent, ({ params, body }) => {
     body.channelCode,
     link.view.bill.totals.outstandingIdr,
   );
+  // A new intent supersedes the link's previous pending one so the guest is
+  // never shown two live codes for one bill. A late payment on the old code is
+  // still accepted and flagged by the API (PRD §3.13 "Siklus Pembayaran").
+  const previous = link.view.activeIntent;
+  if (previous?.status === "pending")
+    link.intents.set(previous.id, { ...previous, status: "expired" });
   link.intents.set(intent.id, intent);
   link.idempotency.set(body.idempotencyKey, intent.id);
   link.view = { ...link.view, activeIntent: intent };

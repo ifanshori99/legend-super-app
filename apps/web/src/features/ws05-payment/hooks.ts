@@ -17,7 +17,12 @@ import {
   paymentLinkKey,
   paymentLinkQuery,
 } from "./queries";
-import { MAX_AUTO_REFRESHES, remainingMs, shouldAutoRefresh } from "./status";
+import {
+  MAX_AUTO_REFRESHES,
+  nextRefreshCount,
+  remainingMs,
+  shouldAutoRefresh,
+} from "./status";
 
 export function usePaymentLink(token: string) {
   return useQuery(paymentLinkQuery(token));
@@ -99,8 +104,15 @@ export function useAutoRefreshIntent(
 
   useEffect(() => {
     if (!intentId || !status) return;
+    // The cap counts refreshes that came back without a live code. A new
+    // intent id alone must not reset it: a server that mints an already
+    // expired intent on every refresh would otherwise loop forever.
     if (state.current.intentId !== intentId)
-      state.current = { intentId, refreshes: 0, inFlight: false };
+      state.current = { ...state.current, intentId, inFlight: false };
+    state.current.refreshes = nextRefreshCount(
+      state.current.refreshes,
+      remaining,
+    );
     if (isPending || state.current.inFlight) return;
     if (!shouldAutoRefresh(status, remaining, state.current.refreshes)) return;
     state.current.refreshes = Math.min(

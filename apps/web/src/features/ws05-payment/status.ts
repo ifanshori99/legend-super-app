@@ -116,6 +116,15 @@ export function shouldAutoRefresh(
   );
 }
 
+/**
+ * Consecutive auto-refreshes that returned no live code. A live code resets
+ * the count; switching intent id does not, so MAX_AUTO_REFRESHES still caps a
+ * server that keeps minting already-expired intents.
+ */
+export function nextRefreshCount(count: number, remaining: number): number {
+  return remaining > 0 ? 0 : count;
+}
+
 /** The method can be sent: QRIS stands alone, VA and transfer need a bank. */
 export function canSubmit(
   method: CustomerPaymentMethodCode | null,
