@@ -1,26 +1,16 @@
 import { createIsomorphicFn } from "@tanstack/react-start";
-import type { ApiErrorBody } from "@starter/shared/types";
 import { API_URL } from "@/lib/env";
+import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
+import type { ApiErrorBody } from "@starter/shared/types";
 import {
   apiBaseUrl,
   forwardedHeaders,
   logUpstreamFailure,
 } from "@/lib/api/upstream.server";
 
-// A failed API call, carrying the API's error envelope.
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-    public details?: ApiErrorBody["error"]["details"],
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
+export { ApiError };
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 type FailureLogger = (
   path: string,
@@ -58,6 +48,12 @@ export async function apiFetch<T>(
   path: string,
   { method = "GET", query, body, signal }: ApiRequest = {},
 ): Promise<T> {
+  // Mock mode (VITE_API_MOCK): fixtures instead of the network. The dynamic
+  // import is compiled out of builds that do not set the flag.
+  if (import.meta.env.VITE_API_MOCK === "true") {
+    const { mockFetch } = await import("@/lib/mock/transport");
+    return mockFetch<T>(path, { method, query, body, signal });
+  }
   const { baseUrl, headers, onFailure } = target();
   const url = new URL(path, baseUrl);
   for (const [key, value] of Object.entries(query ?? {}))
@@ -79,11 +75,7 @@ export async function apiFetch<T>(
   } catch (err) {
     if (signal?.aborted) throw err;
     onFailure(path, { err });
-    throw new ApiError(
-      0,
-      "NETWORK_ERROR",
-      "We couldn't reach the server. Check your connection and try again.",
-    );
+    throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
   }
 
   if (response.status === 204) return undefined as T;
