@@ -315,17 +315,7 @@ const STARTER_PAGES = new Map([
     "Starter sign-out button; WS-01 converts it to catalog text.",
   ],
   ["features/notes/components/note-form.tsx", "Starter Notes example feature."],
-  [
-    "router.tsx",
-    "Starter router loading state; replaced by the route skeleton.",
-  ],
-  [
-    "routes/__root.tsx",
-    "Starter error and 404 pages; replaced by the public area shell.",
-  ],
-  ["routes/_protected.tsx", "Starter app shell; replaced by per-area layouts."],
   ["routes/_protected/admin.tsx", "Starter admin example page."],
-  ["routes/_protected/app.tsx", "Starter landing page."],
   ["routes/_protected/notes.tsx", "Starter Notes example page."],
 ]);
 
