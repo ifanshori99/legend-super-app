@@ -82,8 +82,8 @@ export function isModuleEnabled(
   flags: FeatureFlags | null | undefined,
   module: ModuleKey,
 ): boolean {
-  if (!flags || !Array.isArray(flags.modules)) return false;
-  return flags.modules.includes(module);
+  const parsed = featureFlagsSchema.safeParse(flags);
+  return parsed.success && parsed.data.modules.includes(module);
 }
 
 /**
@@ -130,6 +130,6 @@ export function isIntegrationProviderAvailable(
   flags: FeatureFlags | null | undefined,
   provider: IntegrationProvider,
 ): boolean {
-  if (!flags || !Array.isArray(flags.integrationProviders)) return false;
-  return flags.integrationProviders.includes(provider);
+  const parsed = featureFlagsSchema.safeParse(flags);
+  return parsed.success && parsed.data.integrationProviders.includes(provider);
 }

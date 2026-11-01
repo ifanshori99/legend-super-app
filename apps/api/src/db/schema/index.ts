@@ -7,4 +7,10 @@ export * from "./notes";
 
 export * from "./core-events";
 
+export * from "./platform-org";
+export * from "./platform-domains";
+export * from "./platform-packages";
+export * from "./platform-integrations";
+export * from "./platform-themes";
+export * from "./platform-support";
 export * from "./core-audit";

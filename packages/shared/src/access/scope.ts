@@ -79,9 +79,10 @@ export type RoleGrant = {
 
 /**
  * The tenant's org tree, loaded by the server: which brand an outlet belongs
- * to and which outlet a station belongs to.
+ * to, which outlet a station belongs to, and all brands including empty ones.
  */
 export type OrgIndex = {
+  readonly brands: readonly { readonly id: BrandId }[];
   readonly outlets: readonly {
     readonly id: OutletId;
     readonly brandId: BrandId;
@@ -160,12 +161,9 @@ function outletsOfScope(
       return org.outlets.some((outlet) => lower(outlet.id) === lower(scope.id))
         ? [scope.id]
         : [];
-    case "station": {
-      const station = org.stations.find(
-        (row) => lower(row.id) === lower(scope.id),
-      );
-      return station ? [station.outletId] : [];
-    }
+    case "station":
+      // An outlet-only filter cannot enforce a station restriction.
+      return [];
   }
 }
 
@@ -175,7 +173,24 @@ export function scopeCovers(
   target: AccessTarget,
   org: OrgIndex,
 ): boolean {
-  if (scope.type === "tenant") return true;
+  if (
+    target.type === "brand" &&
+    !org.brands.some((row) => lower(row.id) === lower(target.id))
+  )
+    return false;
+  if (scope.type === "tenant") {
+    if (target.type === "outlet")
+      return org.outlets.some((row) => lower(row.id) === lower(target.id));
+    if (target.type === "station")
+      return org.stations.some(
+        (row) =>
+          lower(row.id) === lower(target.id) &&
+          org.outlets.some(
+            (outlet) => lower(outlet.id) === lower(row.outletId),
+          ),
+      );
+    return true;
+  }
   switch (target.type) {
     case "tenant":
       return false;
@@ -325,9 +340,10 @@ export function assertSurfaceAccess(input: {
 
 /**
  * Outlet reach of the caller's active assignments, optionally only those whose
- * role holds `permission`. The result is what the server passes to
+ * role holds `permission`. Station-only grants cannot safely produce outlet-wide reach.
+ * The result is what the server passes to
  * establishOutletScope (TEN-03): `tenant` if any tenant-scoped assignment
- * applies, else the union of outlets reached through brand, outlet and station
+ * applies, else the union of outlets reached through brand and outlet
  * assignments. null = no reach at all (deny).
  */
 export function outletReachOf(input: {
