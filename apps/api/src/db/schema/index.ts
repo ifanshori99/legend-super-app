@@ -13,3 +13,4 @@ export * from "./platform-packages";
 export * from "./platform-integrations";
 export * from "./platform-themes";
 export * from "./platform-support";
+export * from "./core-audit";
