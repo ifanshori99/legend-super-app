@@ -6,8 +6,8 @@ import {
 
 // The web server's deployment settings from PRD v1.7 §3 (Environment &
 // Deployment). Validation runs when this module is first evaluated: TanStack
-// Start strips `.server.ts` modules from the browser bundle, and src/start.ts
-// imports it at the top, so a production server refuses to boot with a
+// Start strips `.server.ts` modules from the browser bundle, and the server
+// entries (src/server.ts, server/plugins/deployment-env.ts) import it first, so a production server refuses to boot with a
 // deployment mode, edge topology, or data classification the API would reject.
 //
 // The worker and edge runtimes do not exist yet. Their entrypoints must call
