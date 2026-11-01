@@ -16,6 +16,7 @@
     "./events": "./src/events/index.ts",
     "./audit": "./src/audit/index.ts",
     "./payment": "./src/payment/index.ts",
+    "./edge": "./src/edge/index.ts",
     "./adapters": "./src/adapters/index.ts",
     "./core/server": "./src/core/server.ts",
     "./api": "./src/api/index.ts"
