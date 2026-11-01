@@ -45,7 +45,7 @@ const namesByWorkstream = {
   "WS-05":
     "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
-    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded stock.moved stock.critical recipe.cost_changed",
+    "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created purchase_order.approved goods_receipt.recorded supplier_invoice.recorded supplier_invoice.matched supplier_payment.paid purchase_return.recorded stock.moved stock.critical recipe.cost_changed",
   "WS-07":
     "journal.posted fiscal_period.closed fiscal_period.reopened distribution.completed bank_statement.imported cash_deposit.recorded cash_deposit.matched reconciliation_case.opened reconciliation_case.resolved depreciation_run.posted tax_report.exported",
   "WS-08":
