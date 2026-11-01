@@ -37,6 +37,7 @@ import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -168,6 +169,11 @@ const ShareholderShareholderIndexRoute =
     path: '/shareholder/',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
+  id: '/pos/meja/',
+  path: '/pos/meja/',
+  getParentRoute: () => OpsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -187,6 +193,7 @@ export interface FileRoutesByFullPath {
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/pos/meja/': typeof OpsPosMejaIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -205,6 +212,7 @@ export interface FileRoutesByTo {
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
+  '/pos/meja': typeof OpsPosMejaIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -236,6 +244,7 @@ export interface FileRoutesById {
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/owner/'
     | '/platform/'
     | '/shareholder/'
+    | '/pos/meja/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -275,6 +285,7 @@ export interface FileRouteTypes {
     | '/owner'
     | '/platform'
     | '/shareholder'
+    | '/pos/meja'
   id:
     | '__root__'
     | '/_auth'
@@ -305,6 +316,7 @@ export interface FileRouteTypes {
     | '/_owner/owner/'
     | '/_platform/platform/'
     | '/_shareholder/shareholder/'
+    | '/_ops/pos/meja/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -520,6 +532,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
       parentRoute: typeof ShareholderRoute
     }
+    '/_ops/pos/meja/': {
+      id: '/_ops/pos/meja/'
+      path: '/pos/meja'
+      fullPath: '/pos/meja/'
+      preLoaderRoute: typeof OpsPosMejaIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
   }
 }
 
@@ -599,10 +618,12 @@ const KitchenRouteWithChildren =
 
 interface OpsRouteChildren {
   OpsPosIndexRoute: typeof OpsPosIndexRoute
+  OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsPosIndexRoute: OpsPosIndexRoute,
+  OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
 }
 
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
