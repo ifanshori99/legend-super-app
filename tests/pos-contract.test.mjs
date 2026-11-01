@@ -1289,3 +1289,87 @@ test("F8 customer display: items, total and dynamic QRIS only while paying", () 
     false,
   );
 });
+
+// Review (legend-cyu.10): order.paid / order.refunded must always post a
+// balanced WS-07 journal, points included (POS-05, ORD-09, §3.19, §3.20).
+test("POS-04 order.paid and order.refunded payloads post balanced WS-07 journals (points included)", async () => {
+  const accounting = await import("../packages/shared/src/accounting/index.ts");
+  const journalFor = (eventName, payload) => {
+    const rule = accounting.resolvePostingRule(accounting.defaultPostingRules, {
+      eventName,
+    });
+    const map = new Map(
+      rule.lines.map((line, index) => [
+        line.role,
+        `0190a000-0000-7000-8000-${String(index).padStart(12, "0")}`,
+      ]),
+    );
+    const amounts = Object.fromEntries(
+      accounting.postingRuleAmountKeys(rule).map((key) => [key, payload[key]]),
+    );
+    return accounting.buildJournalLinesFromRule(rule, amounts, map, {
+      outletId: null,
+    });
+  };
+
+  const paid = {
+    grossSalesIdr: 104_000,
+    discountIdr: 0,
+    serviceChargeIdr: 5_200,
+    pbjtIdr: 10_920,
+    roundingIdr: -20,
+    paidCashIdr: 110_100,
+    paidGatewayIdr: 0,
+    paidEdcIdr: 0,
+    paidPointsIdr: 10_000,
+  };
+  assert.ok(journalFor("order.paid", paid).length > 0);
+
+  const refund = {
+    grossSalesIdr: 52_000,
+    discountIdr: 0,
+    serviceChargeIdr: 2_600,
+    pbjtIdr: 5_460,
+    refundCashIdr: 50_060,
+    refundGatewayIdr: 0,
+    refundEdcIdr: 0,
+    refundPointsIdr: 10_000,
+  };
+  const lines = journalFor("order.refunded", refund);
+  assert.ok(lines.some((line) => line.creditIdr === 10_000));
+});
+
+test("POS-04 order.refunded rejects a revenue split that does not equal the refund amount", () => {
+  const fixtureRefund = parsed.refunds[0];
+  const base = {
+    orderId: fixtureRefund.orderId,
+    outletId: fixtureRefund.outletId,
+    businessDate: "2026-11-01",
+    refundId: fixtureRefund.id,
+    amountIdr: 60_060,
+    reason: fixtureRefund.reason,
+    reasonNote: "Pelanggan komplain",
+    approvedBy: fixtureRefund.approvedBy,
+    approvalRequestId: fixtureRefund.approvalRequestId,
+    grossSalesIdr: 52_000,
+    discountIdr: 0,
+    serviceChargeIdr: 2_600,
+    pbjtIdr: 5_460,
+    refundCashIdr: 50_060,
+    refundGatewayIdr: 0,
+    refundEdcIdr: 0,
+    refundPointsIdr: 10_000,
+    lines: [
+      { method: "cash", amountIdr: 50_060 },
+      { method: "points", amountIdr: 10_000 },
+    ],
+    refundedAt: "2026-11-01T05:00:00.000Z",
+  };
+  const schema = pos.orderRefundedPayloadSchema;
+  const ok = schema.safeParse(base);
+  assert.equal(ok.success, true, JSON.stringify(ok.error?.issues));
+  assert.equal(
+    schema.safeParse({ ...base, grossSalesIdr: 40_000 }).success,
+    false,
+  );
+});

@@ -222,6 +222,21 @@ export const orderRefundedPayloadSchema = z
     refundedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {
+    // The refund journal debits revenue, service charge and tax and credits
+    // the discount plus each refund bucket (WS-07 order.refunded rule), so the
+    // revenue split must add up to the money returned or it cannot balance.
+    const split =
+      Number(payload.grossSalesIdr) -
+      Number(payload.discountIdr) +
+      Number(payload.serviceChargeIdr) +
+      Number(payload.pbjtIdr);
+    if (split !== Number(payload.amountIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["amountIdr"],
+        message:
+          "amountIdr must equal gross - discount + service + tax for the refunded lines",
+      });
     const sum = payload.lines.reduce(
       (total, line) => total + Number(line.amountIdr),
       0,

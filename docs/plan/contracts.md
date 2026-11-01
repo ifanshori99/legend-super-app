@@ -130,6 +130,7 @@ Code: `packages/shared/src/pos`. Tests: `tests/pos-contract.test.mjs`. PRD v1.7 
 - **End of day.** `endOfDayRecapSchema` is the F8 "Tutup Hari" report: per-device sales, voids (paid sales corrected), refunds, cash variance, tender rows (`captured − refunded = net`), channel rows and the accounting-sync marker, with the contract-level POS-05 identity `Σ net = sales − refunds − paid voids`. Stock deduction is a flag because the PRD makes it optional ("bila dipilih").
 - **Events (WS-04 catalog line).** `order.submitted`, `order.paid`, `order.voided`, `order.refunded` (the four the catalog already reserved for WS-04), `cashier_shift.opened`, `cashier_shift.closed`, plus two names this bead added: `day.closed` and `cash_movement.recorded`. All via `defineDomainEvent`; `order_events` rows (`posOrderEventSchema`) are the append-only sync log (§5) with a per-order sequence.
 - **Not in the contract.** Server pricing/tax computation (WS-05 tax contract, same path as the QR quote), payment capture (WS-05/EDC adapters), stock deduction (WS-06), approval inbox mechanics (WS-01), loyalty point valuation (WS-08). Endpoint handlers and RLS are the WS-04 BE beads (`legend-kk7`, `legend-…`), and the screens are the WS-04 FE beads.
+
 ## Identity & access (`@starter/shared/identity`, bead `legend-7sz`)
 
 Code: `packages/shared/src/identity`. Tests: `tests/identity-contract.test.mjs`. PRD §3 F6/F7, §6 B, flow §4 C and R, AUTH-01..07.
