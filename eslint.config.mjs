@@ -20,6 +20,22 @@ export default defineConfig([
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["apps/web/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@starter/shared/core/server",
+              message: "Server-only: tenant context is minted by the API, never in the web app.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     languageOptions: {
       globals: { ...globals.node },
     },
