@@ -119,14 +119,15 @@ export function createApp({
           }),
         ),
       lookup: async () => {
-        const result = await pool.query<{
-          tenant_id: string;
-          brand_id: string | null;
-        }>(
-          "SELECT tenant_id, brand_id FROM app.dev_tenant_lookup WHERE singleton",
+        // Development only: resolve the first seeded tenant (the synthetic
+        // Cafe Legend seed). Never derived from request input, and no tenant
+        // name is hard-coded here (TEN-07); brands are read later inside the
+        // tenant transaction once the context exists.
+        const result = await pool.query<{ id: string }>(
+          "SELECT id FROM tenants ORDER BY created_at, id LIMIT 1",
         );
         const row = result.rows[0];
-        return row ? { tenantId: row.tenant_id, brandId: row.brand_id } : null;
+        return row ? { tenantId: row.id, brandId: null } : null;
       },
     }),
   );

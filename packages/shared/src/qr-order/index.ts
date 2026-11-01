@@ -5,4 +5,5 @@ export * from "./schemas.ts";
 export * from "./pricing.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
+export * from "./guest.ts";
 export * from "./fixtures.ts";

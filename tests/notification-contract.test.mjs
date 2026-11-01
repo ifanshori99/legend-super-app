@@ -384,3 +384,14 @@ test("F12 notification events are registered on WS-05 and carry no message text"
     notification: f.notifications[0],
   });
 });
+
+test("F12 template links reject browser-normalized external hosts", () => {
+  for (const link of ["/\\evil.example", "/\n/evil.example"]) {
+    assert.equal(
+      n.notificationTemplateSchema.safeParse({ ...f.templates[0], link })
+        .success,
+      false,
+    );
+    assert.throws(() => n.renderTemplate({ title: "t", body: "b", link }, {}));
+  }
+});
