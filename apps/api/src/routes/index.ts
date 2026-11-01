@@ -10,6 +10,7 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { accountingRouter } from "./accounting.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 export const apiRouter = Router();
@@ -30,3 +31,5 @@ apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
+// Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
+apiRouter.use("/accounting", accountingRouter);
