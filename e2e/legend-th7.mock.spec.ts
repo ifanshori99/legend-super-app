@@ -125,7 +125,7 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     await expect(dialog.getByLabel("Kode meja")).toHaveValue("A07");
     await dialog.getByLabel("Kapasitas (kursi)").fill("4");
     await dialog.getByRole("button", { name: "Tambah", exact: true }).click();
-    await expect(page.getByText("Meja A07 ditambahkan")).toBeVisible();
+    await expect(page.getByText("Meja A07 ditambahkan").first()).toBeVisible();
     await expect(page.getByRole("button", { name: /^Meja A07/ })).toBeVisible();
   });
 
