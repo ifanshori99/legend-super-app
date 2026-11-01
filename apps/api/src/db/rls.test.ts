@@ -58,7 +58,21 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // tenant_id is nullable and only records the tenant of a tenant-bound
     // login. RLS would make a signed-in user's own sessions unreadable. See
     // identity-session-api.test.ts for the global-read proof.
-    const allowlist = ["public.tenant_domains", "public.session"];
+    //
+    // public.login_challenges and public.wa_inbound_messages: coordinator
+    // decision (docs/plan/contracts.md `login_challenges`, bead legend-v0o).
+    // A WhatsApp login attempt exists before any session or tenant context, and
+    // the KirimDev webhook resolves the tenant FROM the receiving number, so
+    // these §6 B "(global)" tables are service-scoped instead of RLS. The
+    // services refuse a message received on another tenant's number
+    // (identity-login.test.ts "AUTH-02 rejects a message received on another
+    // tenant's number").
+    const allowlist = [
+      "public.tenant_domains",
+      "public.session",
+      "public.login_challenges",
+      "public.wa_inbound_messages",
+    ];
     const result = await pool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_attribute a
