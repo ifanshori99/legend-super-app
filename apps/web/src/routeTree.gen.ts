@@ -29,6 +29,7 @@ import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
@@ -147,6 +148,11 @@ const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => PublicRoute,
+} as any)
+const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
+  id: '/bayar/$token',
+  path: '/bayar/$token',
+  getParentRoute: () => CustomerRoute,
 } as any)
 const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
   id: '/f/$facility',
@@ -312,6 +318,7 @@ export interface FileRoutesByFullPath {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -351,6 +358,7 @@ export interface FileRoutesByTo {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -402,6 +410,7 @@ export interface FileRoutesById {
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
+  '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -444,6 +453,7 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/t/$token'
     | '/operasional/koneksi'
@@ -483,6 +493,7 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/bayar/$token'
     | '/f/$facility'
     | '/operasional/koneksi'
     | '/member'
@@ -533,6 +544,7 @@ export interface FileRouteTypes {
     | '/_protected/admin'
     | '/_protected/notes'
     | '/_public/'
+    | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
     | '/_ops/operasional/koneksi'
@@ -720,6 +732,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof PublicIndexRouteImport
       parentRoute: typeof PublicRoute
+    }
+    '/_customer/bayar/$token': {
+      id: '/_customer/bayar/$token'
+      path: '/bayar/$token'
+      fullPath: '/bayar/$token'
+      preLoaderRoute: typeof CustomerBayarTokenRouteImport
+      parentRoute: typeof CustomerRoute
     }
     '/_customer/f/$facility': {
       id: '/_customer/f/$facility'
@@ -985,12 +1004,14 @@ const CustomerTTokenRouteWithChildren = CustomerTTokenRoute._addFileChildren(
 
 interface CustomerRouteChildren {
   CustomerMemberRoute: typeof CustomerMemberRouteWithChildren
+  CustomerBayarTokenRoute: typeof CustomerBayarTokenRoute
   CustomerFFacilityRoute: typeof CustomerFFacilityRoute
   CustomerTTokenRoute: typeof CustomerTTokenRouteWithChildren
 }
 
 const CustomerRouteChildren: CustomerRouteChildren = {
   CustomerMemberRoute: CustomerMemberRouteWithChildren,
+  CustomerBayarTokenRoute: CustomerBayarTokenRoute,
   CustomerFFacilityRoute: CustomerFFacilityRoute,
   CustomerTTokenRoute: CustomerTTokenRouteWithChildren,
 }
