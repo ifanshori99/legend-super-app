@@ -2,7 +2,9 @@ import { cafeLegendFixtures } from "../core/index.ts";
 import { menuFixtureSchema } from "./schemas.ts";
 import type { MenuItem } from "./schemas.ts";
 
-// Illustrative mock catalog; not the owner's confirmed menu or prices.
+// Illustrative mock catalog; not the owner's confirmed menu or prices. Prices
+// are exclusive of tax and service charge (owner decision 2026-11-01): the WS-05
+// tax engine adds both at checkout (QR web + POS).
 const { tenant, brand, outlets } = cafeLegendFixtures;
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;

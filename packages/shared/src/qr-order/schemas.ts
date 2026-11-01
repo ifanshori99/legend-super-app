@@ -26,6 +26,7 @@ import {
   idrSchema,
   basisPointsSchema,
   isoDateTimeSchema,
+  toIsoDateTime,
   timeOfDaySchema,
   roundingModeSchema,
   clientInputSchema,
@@ -319,6 +320,27 @@ export const tableSessionSchema = z
       });
   });
 export type TableSession = z.infer<typeof tableSessionSchema>;
+
+/**
+ * Coordinator decision (2026-11-01): a guest session token lives at most 12
+ * hours from the session open and never past the bill close (PRD "Keamanan
+ * Sesi": the session ends when the bill is settled and the table is clean).
+ * Rescans never extend it.
+ */
+export const TABLE_SESSION_TOKEN_MAX_HOURS = 12;
+
+/** Hard expiry of a session token: min(openedAt + 12 h, closedAt). */
+export function tableSessionTokenExpiresAt(
+  session: Pick<TableSession, "openedAt" | "closedAt">,
+): string {
+  const opened = new Date(session.openedAt).getTime();
+  if (Number.isNaN(opened)) throw new RangeError("Invalid openedAt");
+  const openedLimit = opened + TABLE_SESSION_TOKEN_MAX_HOURS * 60 * 60 * 1_000;
+  if (session.closedAt === null) return toIsoDateTime(new Date(openedLimit));
+  const closed = new Date(session.closedAt).getTime();
+  if (Number.isNaN(closed)) throw new RangeError("Invalid closedAt");
+  return toIsoDateTime(new Date(Math.min(openedLimit, closed)));
+}
 
 export const TABLE_SESSION_ACTIONS = [
   "confirm",
@@ -1612,7 +1634,8 @@ export const qrScanResultSchema = z
       .min(20)
       .max(256)
       .regex(/^[A-Za-z0-9_-]+$/, "Expected an opaque base64url token"),
-    /** Hard expiry; the client must rescan after it. Never later than close. */
+    /** Hard expiry; the client must rescan after it. At most 12 hours from the
+     * session open and never later than close (ORD-04). */
     sessionTokenExpiresAt: isoDateTimeSchema,
     menuUpdatedAt: isoDateTimeSchema,
     soldOutItemIds: z.array(uuidSchema),
@@ -1646,6 +1669,20 @@ export const qrScanResultSchema = z
       "The session token must expire after the server time",
       new Date(scan.sessionTokenExpiresAt).getTime() <=
         new Date(scan.serverTime).getTime(),
+    );
+    add(
+      ["sessionTokenExpiresAt"],
+      "ORD-04: a session token never outlives 12 hours from the session open",
+      new Date(scan.sessionTokenExpiresAt).getTime() >
+        new Date(scan.session.openedAt).getTime() +
+          TABLE_SESSION_TOKEN_MAX_HOURS * 60 * 60 * 1_000,
+    );
+    add(
+      ["sessionTokenExpiresAt"],
+      "ORD-04: a session token never outlives the bill close",
+      scan.session.closedAt !== null &&
+        new Date(scan.sessionTokenExpiresAt).getTime() >
+          new Date(scan.session.closedAt).getTime(),
     );
     add(
       ["session", "status"],
