@@ -1,0 +1,285 @@
+/*
+ * Legend Design System Platform — Base Theme tokens (PRD Kelompok A, D42).
+ * Read DESIGN.md before changing anything here.
+ *
+ * Layers, in cascade order:
+ *   1. Base Theme palettes (light on white, dark)        — this file
+ *   2. Density modes via [data-density]                   — this file
+ *   3. Tenant Theme via [data-tenant], generated at runtime from a tenant
+ *      config by buildTenantThemeCss (@starter/shared/theme)
+ *
+ * Palette blocks between "@palette <name>" and "@end" are mirrored in
+ * packages/shared/src/theme/base.ts. tests/design-system.test.mjs parses
+ * them and fails if a value differs, so change both together.
+ */
+
+/* ---------------------------------------------------------------- Light */
+/* @palette light */
+:root,
+[data-theme="light"] {
+  --background: #ffffff;
+  --foreground: #1c1b19;
+  --card: #ffffff;
+  --muted: #f5f4f2;
+  --muted-foreground: #5f5b55;
+  --secondary: #f0eeeb;
+  --accent: #efedea;
+  --border: #e3e0dc;
+  --input: #8a857d;
+  --ring: #1f5fbf;
+  --primary: #1c1b19;
+  --primary-foreground: #ffffff;
+  --brand: #3d3a35;
+  --brand-foreground: #ffffff;
+  --brand-subtle: #f3f1ee;
+  --success: #18794e;
+  --success-foreground: #ffffff;
+  --success-subtle: #e9f5ee;
+  --warning: #9a5b06;
+  --warning-foreground: #ffffff;
+  --warning-subtle: #fdf3e2;
+  --danger: #b42318;
+  --danger-foreground: #ffffff;
+  --danger-subtle: #fdecea;
+  --info: #1f5fbf;
+  --info-foreground: #ffffff;
+  --info-subtle: #eaf1fc;
+}
+/* @end */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --shadow-soft: rgb(28 27 25 / 0.08);
+  --shadow-strong: rgb(28 27 25 / 0.14);
+  --scrim: rgb(28 27 25 / 0.48);
+}
+
+/* ----------------------------------------------------------------- Dark */
+/* @palette dark */
+.dark,
+[data-theme="dark"] {
+  --background: #121110;
+  --foreground: #f3f1ee;
+  --card: #1a1917;
+  --muted: #23211f;
+  --muted-foreground: #aaa59d;
+  --secondary: #2a2825;
+  --accent: #2c2a27;
+  --border: #33302c;
+  --input: #78736b;
+  --ring: #7aaaf0;
+  --primary: #f3f1ee;
+  --primary-foreground: #1c1b19;
+  --brand: #d9d5cf;
+  --brand-foreground: #1c1b19;
+  --brand-subtle: #262421;
+  --success: #4cc38a;
+  --success-foreground: #05251a;
+  --success-subtle: #132a1f;
+  --warning: #eea64a;
+  --warning-foreground: #2a1803;
+  --warning-subtle: #2e2312;
+  --danger: #f47b70;
+  --danger-foreground: #2b0805;
+  --danger-subtle: #341815;
+  --info: #7aaaf0;
+  --info-foreground: #0a1a33;
+  --info-subtle: #15223a;
+}
+/* @end */
+
+.dark,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* Shadows barely read on dark; overlays also carry a border. */
+  --shadow-soft: rgb(0 0 0 / 0.4);
+  --shadow-strong: rgb(0 0 0 / 0.6);
+  --scrim: rgb(0 0 0 / 0.64);
+}
+
+/* Elevation: overlays only (menus, dialogs, sheets, toasts). Re-declared on
+ * every themed subtree so a dark island gets dark shadows. */
+:root,
+[data-theme] {
+  --elevation-raised:
+    0 1px 2px var(--shadow-soft), 0 1px 3px var(--shadow-soft);
+  --elevation-overlay:
+    0 12px 32px var(--shadow-strong), 0 2px 6px var(--shadow-soft);
+}
+
+/* ------------------------------------------- Semantic aliases (all modes) */
+/* Order item status (PRD ORD "Status Pesanan": diterima, diproses, siap,
+ * diantar) and KDS timer against target time (PRD KDS per Stasiun). Aliases
+ * only: no new hues, so meaning stays consistent with the status roles. */
+:root {
+  --order-received: var(--info);
+  --order-received-subtle: var(--info-subtle);
+  --order-preparing: var(--warning);
+  --order-preparing-subtle: var(--warning-subtle);
+  --order-ready: var(--success);
+  --order-ready-subtle: var(--success-subtle);
+  --order-delivered: var(--muted-foreground);
+  --order-delivered-subtle: var(--muted);
+  --timer-on-track: var(--success);
+  --timer-near: var(--warning);
+  --timer-late: var(--danger);
+}
+
+/* ------------------------------------------------- Shape, type, motion */
+:root {
+  /* Every radius is a multiple of this unit; Tenant Themes change only the
+   * unit ("gaya sudut": tegas 2px, lembut 4px, bulat 6px). */
+  --radius-unit: 4px;
+
+  --ff-brand:
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui,
+    sans-serif;
+  --ff-ui: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --ff-mono:
+    ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --easing-enter: cubic-bezier(0, 0, 0, 1);
+  --easing-exit: cubic-bezier(0.3, 0, 1, 1);
+}
+
+/* -------------------------------------------------------- Density modes */
+/* Hangat & Visual (default): QR order, member, shower, WFC, website, HRIS. */
+:root,
+[data-density="hangat"] {
+  --control-h: 3rem;
+  --control-h-sm: 2.75rem;
+  --control-h-lg: 3.5rem;
+  --control-x: 1.25rem;
+  --control-radius: 9999px;
+  --field-radius: calc(var(--radius-unit) * 3);
+  --density-text: 1rem;
+  --density-text-data: 1rem;
+  --row-h: 3.5rem;
+  --gutter: 1rem;
+  --card-pad: 1.25rem;
+  --border-w: 1px;
+  --check-size: 1.25rem;
+  --icon-size: 1.25rem;
+  --ff-body: var(--ff-brand);
+}
+
+/* Kontras Tinggi: POS, captain order, KDS, expo, pickup, papan bilik.
+ * Touch targets 56–64px (PRD). */
+[data-density="kontras"] {
+  --control-h: 3.75rem;
+  --control-h-sm: 3.5rem;
+  --control-h-lg: 4rem;
+  --control-x: 1.5rem;
+  --control-radius: calc(var(--radius-unit) * 2);
+  --field-radius: calc(var(--radius-unit) * 2);
+  --density-text: 1.125rem;
+  --density-text-data: 1.125rem;
+  --row-h: 4rem;
+  --gutter: 1rem;
+  --card-pad: 1.25rem;
+  --border-w: 2px;
+  --check-size: 1.75rem;
+  --icon-size: 1.5rem;
+  --ff-body: var(--ff-ui);
+}
+
+/* Padat & Presisi: management, owner, shareholder, finance dashboards. */
+[data-density="padat"] {
+  --control-h: 2.25rem;
+  --control-h-sm: 2rem;
+  --control-h-lg: 2.5rem;
+  --control-x: 0.875rem;
+  --control-radius: calc(var(--radius-unit) * 1.5);
+  --field-radius: calc(var(--radius-unit) * 1.5);
+  --density-text: 1rem;
+  --density-text-data: 0.875rem;
+  --row-h: 2.5rem;
+  --gutter: 1.5rem;
+  --card-pad: 1rem;
+  --border-w: 1px;
+  --check-size: 1rem;
+  --icon-size: 1rem;
+  --ff-body: var(--ff-ui);
+}
+
+/* Dense controls are for mouse use; on touch they grow back to the PRD's
+ * 44px minimum target. */
+@media (pointer: coarse) {
+  [data-density="padat"] {
+    --control-h: 2.75rem;
+    --control-h-sm: 2.75rem;
+    --control-h-lg: 3rem;
+    --row-h: 3rem;
+  }
+}
+
+/* Kontras Tinggi tightens neutrals (darkest text and strong lines in light, a
+ * near-black "dark kitchen" in dark). Mirrored in base.ts (kontrasOverrides). */
+/* @palette kontras-light */
+[data-density="kontras"],
+[data-theme="light"][data-density="kontras"],
+[data-theme="light"] [data-density="kontras"] {
+  --foreground: #000000;
+  --muted-foreground: #3d3a35;
+  --border: #8a857d;
+  --input: #3d3a35;
+}
+/* @end */
+
+/* @palette kontras-dark */
+.dark[data-density="kontras"],
+.dark [data-density="kontras"],
+[data-theme="dark"][data-density="kontras"],
+[data-theme="dark"] [data-density="kontras"] {
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #121110;
+  --muted: #1c1b19;
+  --muted-foreground: #d0cbc3;
+  --secondary: #23211f;
+  --accent: #2a2825;
+  --border: #5c5852;
+  --input: #a8a39b;
+}
+/* @end */
+
+/* A light island inside a dark page keeps light Kontras values. */
+.dark [data-theme="light"][data-density="kontras"],
+.dark [data-theme="light"] [data-density="kontras"] {
+  --background: #ffffff;
+  --foreground: #000000;
+  --card: #ffffff;
+  --muted: #f5f4f2;
+  --muted-foreground: #3d3a35;
+  --secondary: #f0eeeb;
+  --accent: #efedea;
+  --border: #8a857d;
+  --input: #3d3a35;
+}
+
+[data-density] {
+  font-family: var(--ff-body);
+  font-size: var(--density-text);
+}
+
+/* ---------------------------------------------------- Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

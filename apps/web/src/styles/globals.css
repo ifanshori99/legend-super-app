@@ -1,13 +1,24 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Self-hosted variable fonts: no third-party request, and they keep working
+ * on the outlet edge node when the internet is down (PRD offline-first). */
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource-variable/inter";
+@import "./tokens.css";
 
-@custom-variant dark (&:is(.dark *));
+/* Dark applies under html.dark or any [data-theme="dark"] island. Prefer
+ * tokens over dark: utilities; tokens already switch per mode. */
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 
+/* Tailwind names for the CSS variables in tokens.css. `inline` makes every
+ * utility read the variable where it is used, so [data-tenant],
+ * [data-theme] and [data-density] layers apply to any subtree. */
 @theme inline {
+  /* shadcn/ui role names, kept so `shadcn add` output works unchanged. */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
+  --color-card-foreground: var(--foreground);
   --color-popover: var(--card);
   --color-popover-foreground: var(--foreground);
   --color-primary: var(--primary);
@@ -16,55 +27,93 @@
   --color-secondary-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--secondary);
+  --color-accent: var(--accent);
   --color-accent-foreground: var(--foreground);
-  --color-destructive: var(--destructive);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--danger-foreground);
   --color-border: var(--border);
-  --color-input: var(--border);
-  --color-ring: var(--primary);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-}
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
-:root {
-  --radius: 0.75rem;
-  --background: #fafafa;
-  --foreground: #191919;
-  --card: #ffffff;
-  --card-foreground: #191919;
-  --primary: #bb371e;
-  --primary-foreground: #ffffff;
-  --secondary: #f0f0ef;
-  --muted: #f4f4f3;
-  --muted-foreground: #656561;
-  --border: #e4e4e1;
-  --destructive: #b91c1c;
-}
+  /* Legend roles. */
+  --color-surface: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-subtle: var(--success-subtle);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-subtle: var(--info-subtle);
+  --color-order-received: var(--order-received);
+  --color-order-received-subtle: var(--order-received-subtle);
+  --color-order-preparing: var(--order-preparing);
+  --color-order-preparing-subtle: var(--order-preparing-subtle);
+  --color-order-ready: var(--order-ready);
+  --color-order-ready-subtle: var(--order-ready-subtle);
+  --color-order-delivered: var(--order-delivered);
+  --color-order-delivered-subtle: var(--order-delivered-subtle);
+  --color-timer-on-track: var(--timer-on-track);
+  --color-timer-near: var(--timer-near);
+  --color-timer-late: var(--timer-late);
+  --color-scrim: var(--scrim);
 
-.dark {
-  --background: #161616;
-  --foreground: #f5f5f4;
-  --card: #202020;
-  --card-foreground: #f5f5f4;
-  --primary: #fb846b;
-  --primary-foreground: #29100a;
-  --secondary: #2d2d2b;
-  --muted: #252525;
-  --muted-foreground: #b0b0aa;
-  --border: #3b3b37;
-  --destructive: #ff8a8a;
+  /* Radius scale: multiples of --radius-unit (Tenant "gaya sudut"). */
+  --radius-xs: var(--radius-unit);
+  --radius-sm: calc(var(--radius-unit) * 1.5);
+  --radius-md: calc(var(--radius-unit) * 2);
+  --radius-lg: calc(var(--radius-unit) * 3);
+  --radius-xl: calc(var(--radius-unit) * 4);
+  --radius-2xl: calc(var(--radius-unit) * 6);
+  --radius-control: var(--control-radius);
+  --radius-field: var(--field-radius);
+
+  /* Density-driven sizes: h-control, px-control-x, h-row, p-card, … */
+  --spacing-control: var(--control-h);
+  --spacing-control-sm: var(--control-h-sm);
+  --spacing-control-lg: var(--control-h-lg);
+  --spacing-control-x: var(--control-x);
+  --spacing-row: var(--row-h);
+  --spacing-gutter: var(--gutter);
+  --spacing-card: var(--card-pad);
+  --spacing-check: var(--check-size);
+  --spacing-icon: var(--icon-size);
+
+  /* No --text-* names here on purpose: `cn` (tailwind-merge) reads unknown
+   * text-<name> classes as colors and drops the real color. Body size is
+   * inherited from [data-density]; when needed, use
+   * text-(length:--density-text) or text-(length:--density-text-data). */
+
+  --font-sans: var(--ff-body);
+  --font-brand: var(--ff-brand);
+  --font-ui: var(--ff-ui);
+  --font-mono: var(--ff-mono);
+
+  --shadow-raised: var(--elevation-raised);
+  --shadow-overlay: var(--elevation-overlay);
+
+  --ease-standard: var(--easing-standard);
+  --ease-enter: var(--easing-enter);
+  --ease-exit: var(--easing-exit);
 }
 
 @layer base {
   * {
     @apply border-border;
   }
+  html {
+    background-color: var(--background);
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    font-size: var(--density-text);
   }
   button,
   a,
@@ -78,6 +127,17 @@
     cursor: pointer;
   }
   ::selection {
-    background: #bb371e22;
+    background: color-mix(in srgb, var(--ring) 22%, transparent);
   }
+  /* One visible focus style everywhere (WCAG 2.2 SC 2.4.7). Components add
+   * their own ring; this covers plain links and native controls. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }

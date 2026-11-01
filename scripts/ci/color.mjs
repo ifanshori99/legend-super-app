@@ -16,7 +16,8 @@ export function findRawColors(file, source) {
   for (const [index, line] of source.split("\n").entries()) {
     // Raw values belong in the token declaration stylesheet, not other CSS rules.
     if (
-      file === "apps/web/src/styles/globals.css" &&
+      (file === "apps/web/src/styles/globals.css" ||
+        file === "apps/web/src/styles/tokens.css") &&
       /^\s*--[\w-]+\s*:/.test(line)
     )
       continue;
