@@ -24,6 +24,7 @@ import {
   capacityRuleSchema,
   createOrderIssueInputSchema,
   expoBoardSchema,
+  expoRunnerSchema,
   expoTicketSchema,
   kitchenItemActionSchema,
   kitchenTicketDetailSchema,
@@ -149,6 +150,19 @@ export const assignExpoRunner = defineEndpoint({
   params: orderParams,
   body: clientInputSchema({ runnerId: userIdSchema }),
   response: dataResponseSchema(expoTicketSchema),
+});
+
+/**
+ * The staff the expo screen may pick as runner (F12 "menugaskan runner").
+ * `assignExpoRunner` takes a `userId`; this projection supplies the choices
+ * with their names. Read-only — which roles may run is roster configuration
+ * (bead legend-zvz).
+ */
+export const listExpoRunners = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/expo/runners",
+  params: outletParams,
+  response: dataResponseSchema(z.array(expoRunnerSchema)),
 });
 
 /** Pickup display: called numbers for takeaway and delivery channels (F12). */

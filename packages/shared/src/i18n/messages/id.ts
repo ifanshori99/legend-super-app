@@ -202,6 +202,92 @@ export const id = {
       emptyHint: "Daftar tenant, paket, dan kesehatan sistem tampil di sini.",
     },
   },
+  // Channel names on every screen (PRD §6 `orders.channel`). Platform names
+  // stay spelled as the platforms spell them.
+  channel: {
+    dineIn: "Dine-in",
+    takeaway: "Takeaway",
+    gofood: "GoFood",
+    grabfood: "GrabFood",
+    shopeefood: "ShopeeFood",
+    reservation: "Reservasi",
+  },
+  // One station's ticket on the expo card (PRD §6 `kitchen_tickets.status`).
+  kitchenTicket: {
+    new: "Masuk antrean",
+    inProgress: "Sedang dibuat",
+    done: "Selesai",
+    recalled: "Dipanggil ulang",
+    cancelled: "Dibatalkan",
+  },
+  // PRD §3 F12 "Expo": every station's items per table, completeness and the
+  // runner assignment (bead legend-zvz).
+  expo: {
+    title: "Expo",
+    intro:
+      "Pesanan dari semua stasiun per meja. Tugaskan runner untuk pesanan yang sudah lengkap.",
+    screens: "Layar dapur",
+    updatedAt: "Diperbarui {time}",
+    refresh: "Muat ulang",
+    readyTitle: "Siap diantar",
+    readyHint: "Semua stasiun selesai. Tugaskan runner lalu antar ke meja.",
+    preparingTitle: "Sedang disiapkan",
+    preparingHint: "Menunggu stasiun yang belum selesai.",
+    tableLabel: "Meja {table}",
+    pickupLabel: "Antrean {number}",
+    stationProgress: "{done} dari {total} stasiun selesai",
+    readyAt: "Siap {time}",
+    assignRunner: "Tugaskan runner",
+    changeRunner: "Ganti runner",
+    runnerLabel: "Runner: {name}",
+    runnerPending: "Belum ada runner",
+    runnerDialogTitle: "Tugaskan runner",
+    runnerDialogHint: "Pilih staf yang mengantar {target}.",
+    runnerEmpty: "Belum ada runner tersedia",
+    runnerEmptyHint: "Runner diatur di pengaturan akses. Hubungi supervisor.",
+    runnerError: "Daftar runner tidak dapat dimuat",
+    runnerErrorHint: "Periksa koneksi, lalu coba lagi.",
+    runnerAssignedToast: "Runner untuk {target} ditugaskan",
+    emptyTitle: "Belum ada pesanan di expo",
+    emptyHint:
+      "Pesanan dari POS dan kanal ojol muncul di sini setelah diteruskan ke stasiun.",
+    errorTitle: "Expo tidak dapat dimuat",
+    errorHint: "Periksa koneksi ke edge node, lalu coba lagi.",
+    loading: "Memuat papan expo…",
+  },
+  // PRD §3 F12 "Pickup Display": call numbers for takeaway and delivery, with
+  // sound announcements and the promotion slide (bead legend-zvz).
+  pickup: {
+    title: "Pickup display",
+    intro: "Nomor panggilan takeaway dan ojol, dengan suara dan promo.",
+    calledTitle: "Nomor dipanggil",
+    calledHint: "Nomor ini sudah dipanggil dan menunggu diambil.",
+    waitingTitle: "Menunggu siap",
+    waitingHint: "Panggil setelah pesanan siap dan driver menunggu.",
+    pickedUpTitle: "Sudah diambil",
+    call: "Panggil",
+    callAgain: "Panggil ulang",
+    callFor: "Panggil nomor {number}",
+    callAgainFor: "Panggil ulang nomor {number}",
+    callError: "Nomor gagal dipanggil",
+    callErrorHint:
+      "Coba lagi; bila tetap gagal, panggil manual lewat pengeras suara.",
+    soundOn: "Suara aktif",
+    soundOff: "Suara mati",
+    soundUnavailable: "Perangkat ini tidak menyediakan suara",
+    announce: "Nomor {number}, pesanan siap diambil",
+    announced: "Nomor {number} dipanggil",
+    promoLabel: "Promo",
+    promoUntil: "Berlaku sampai {date}",
+    calledAt: "Dipanggil {time}",
+    pickedUpAt: "Diambil {time}",
+    emptyTitle: "Belum ada nomor panggilan",
+    emptyHint:
+      "Nomor takeaway dan ojol muncul di sini setelah pesanan siap diambil.",
+    errorTitle: "Pickup display tidak dapat dimuat",
+    errorHint: "Periksa koneksi ke edge node, lalu coba lagi.",
+    loading: "Memuat pickup display…",
+  },
   // Kamus istilah (PRD §3 F4 "Teks & Kamus Istilah"): istilah yang boleh
   // diganti tenant lewat text_overrides tanpa deploy. Kuncinya terdaftar di
   // packages/shared/src/text/terms.ts; jangan menambah istilah di luar sana.

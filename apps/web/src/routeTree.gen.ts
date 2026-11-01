@@ -24,6 +24,8 @@ import { Route as DesignSystemRouteImport } from './routes/design-system'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
+import { Route as KitchenExpoRouteImport } from './routes/_kitchen/expo'
+import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
@@ -102,6 +104,16 @@ const CustomerMemberRoute = CustomerMemberRouteImport.update({
   path: '/member',
   getParentRoute: () => CustomerRoute,
 } as any)
+const KitchenExpoRoute = KitchenExpoRouteImport.update({
+  id: '/expo',
+  path: '/expo',
+  getParentRoute: () => KitchenRoute,
+} as any)
+const KitchenPickupRoute = KitchenPickupRouteImport.update({
+  id: '/pickup',
+  path: '/pickup',
+  getParentRoute: () => KitchenRoute,
+} as any)
 const ProtectedAdminRoute = ProtectedAdminRouteImport.update({
   id: '/admin',
   path: '/admin',
@@ -175,6 +187,8 @@ export interface FileRoutesByFullPath {
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
+  '/expo': typeof KitchenExpoRoute
+  '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
@@ -193,6 +207,8 @@ export interface FileRoutesByTo {
   '/design-system': typeof DesignSystemRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
+  '/expo': typeof KitchenExpoRoute
+  '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
   '/f/$facility': typeof CustomerFFacilityRoute
@@ -223,6 +239,8 @@ export interface FileRoutesById {
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
+  '/_kitchen/expo': typeof KitchenExpoRoute
+  '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
   '/_public/': typeof PublicIndexRoute
@@ -245,6 +263,8 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/sign-up'
     | '/member'
+    | '/expo'
+    | '/pickup'
     | '/admin'
     | '/notes'
     | '/f/$facility'
@@ -263,6 +283,8 @@ export interface FileRouteTypes {
     | '/design-system'
     | '/sign-in'
     | '/sign-up'
+    | '/expo'
+    | '/pickup'
     | '/admin'
     | '/notes'
     | '/f/$facility'
@@ -292,6 +314,8 @@ export interface FileRouteTypes {
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
+    | '/_kitchen/expo'
+    | '/_kitchen/pickup'
     | '/_protected/admin'
     | '/_protected/notes'
     | '/_public/'
@@ -428,6 +452,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/member'
       preLoaderRoute: typeof CustomerMemberRouteImport
       parentRoute: typeof CustomerRoute
+    }
+    '/_kitchen/expo': {
+      id: '/_kitchen/expo'
+      path: '/expo'
+      fullPath: '/expo'
+      preLoaderRoute: typeof KitchenExpoRouteImport
+      parentRoute: typeof KitchenRoute
+    }
+    '/_kitchen/pickup': {
+      id: '/_kitchen/pickup'
+      path: '/pickup'
+      fullPath: '/pickup'
+      preLoaderRoute: typeof KitchenPickupRouteImport
+      parentRoute: typeof KitchenRoute
     }
     '/_protected/admin': {
       id: '/_protected/admin'
@@ -587,10 +625,14 @@ const KelolaRouteWithChildren =
   KelolaRoute._addFileChildren(KelolaRouteChildren)
 
 interface KitchenRouteChildren {
+  KitchenExpoRoute: typeof KitchenExpoRoute
+  KitchenPickupRoute: typeof KitchenPickupRoute
   KitchenKdsIndexRoute: typeof KitchenKdsIndexRoute
 }
 
 const KitchenRouteChildren: KitchenRouteChildren = {
+  KitchenExpoRoute: KitchenExpoRoute,
+  KitchenPickupRoute: KitchenPickupRoute,
   KitchenKdsIndexRoute: KitchenKdsIndexRoute,
 }
 
