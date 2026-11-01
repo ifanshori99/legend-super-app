@@ -36,6 +36,7 @@ import {
   tableReviewSchema,
   tableSchema,
   tableSessionSchema,
+  tableSessionTokenExpiresAt,
 } from "./schemas.ts";
 import type {
   ApologyVoucher,
@@ -475,7 +476,9 @@ export const cafeLegendTaxRules: QuoteTaxRule[] = [
 const roundingMode: RoundingMode = "half_up";
 const roundingIncrementIdr = 100;
 
-/** Quote configuration for a zone: service charge, tax rules, cash rounding. */
+/** Quote configuration for a zone: service charge, tax rules, cash rounding.
+ * Menu prices are exclusive of tax and service charge (owner decision
+ * 2026-11-01): the quote adds both on top at checkout. */
 export function quoteConfigForZone(zone: FloorZone): QuoteConfig {
   return {
     serviceChargeBp: zone.serviceChargeBp,
@@ -809,7 +812,8 @@ const scanResult = qrScanResultSchema.parse({
   brand,
   session: sessions[0],
   sessionToken: "st_01JC0QRD4M5N6P7Q8R9S0T1V2W",
-  sessionTokenExpiresAt: "2026-11-01T09:10:00.000Z",
+  // 12 h from the session open (04:30Z), never extended by a rescan.
+  sessionTokenExpiresAt: tableSessionTokenExpiresAt(sessions[0]),
   menuUpdatedAt: "2026-11-01T05:00:00.000Z",
   soldOutItemIds: [],
   serverTime: "2026-11-01T05:10:00.000Z",

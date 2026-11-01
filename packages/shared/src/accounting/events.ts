@@ -1,6 +1,6 @@
 // Accounting domain events (WS-07 line of events/catalog.ts). Payloads are
-// JSON only; amounts are whole rupiah. `distribution.completed` belongs to the
-// profit-share contract (bead legend-cq2) and is defined there.
+// JSON only; amounts are whole rupiah. The `distribution.*` events belong to
+// the profit-share contract (bead legend-cq2, profit-share-events.ts).
 
 import { z } from "zod";
 import {
