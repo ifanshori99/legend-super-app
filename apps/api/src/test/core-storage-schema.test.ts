@@ -33,7 +33,7 @@ async function seedOutlet() {
   const tag = tenantId.slice(0, 8);
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Uji Storage', 'lengkap', 'active', 'shared', '{"modules":[]}', $3, $4)`,
+     VALUES ($1, $2, 'Uji Storage', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
     [
       tenantId,
       `uji-storage-${tag}`,
