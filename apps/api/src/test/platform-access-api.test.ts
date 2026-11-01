@@ -387,8 +387,10 @@ describe("§3.7 Pemberian Role", () => {
     expect(self.status).toBe(403);
     expect(self.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
 
+    // A session whose second factor was verified within the 5-minute window
+    // is the re-authentication (legend-ma2v): the grant goes through over HTTP.
     const grantee = await signedIn("Grantee");
-    const noReauth = await grantor.client
+    const granted = await grantor.client
       .post("/api/access/role-assignments")
       .set(originHeader)
       .send({
@@ -396,9 +398,34 @@ describe("§3.7 Pemberian Role", () => {
         roleId: cashierRole,
         scope: { type: "outlet", id: bandung },
       });
-    // No factor store yet (lib/mfa.ts), so re-auth is absent and denied.
-    expect(noReauth.status).toBe(401);
-    expect(noReauth.body.error.code).toBe("REAUTH_REQUIRED");
+    expect(granted.status).toBe(201);
+    expect(granted.body.data).toMatchObject({
+      userId: grantee.userId,
+      scope: { type: "outlet", id: bandung },
+    });
+
+    // The same session past the window cannot grant again.
+    await owner.query(
+      // The session must stay internally consistent (sessionSchema), so age
+      // its creation and activity along with the verification.
+      `UPDATE "session"
+       SET created_at = now() - interval '10 minutes',
+           last_seen_at = now() - interval '6 minutes',
+           mfa_verified_at = now() - interval '6 minutes'
+       WHERE user_id = $1`,
+      [grantor.userId],
+    );
+    const staleGrantee = await signedIn("Grantee Stale");
+    const stale = await grantor.client
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId: staleGrantee.userId,
+        roleId: cashierRole,
+        scope: { type: "outlet", id: bandung },
+      });
+    expect(stale.status).toBe(401);
+    expect(stale.body.error.code).toBe("REAUTH_REQUIRED");
   });
 
   it("TEN-03 a verified grant is scoped, audited, emitted and revocable", async () => {
