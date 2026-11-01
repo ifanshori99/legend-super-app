@@ -22,6 +22,10 @@ import {
   updateFacilitySubscription,
   facilitySubscriptionSchema,
 } from "../packages/shared/src/facility/index.ts";
+import {
+  LOGIN_CODE_PATTERN,
+  loginCodeFromMessage,
+} from "../packages/shared/src/identity/index.ts";
 import { ApiError } from "../apps/web/src/lib/api/errors.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 import "../apps/web/src/features/facility/mock.ts";
@@ -36,7 +40,10 @@ import {
   formatClock,
   formatCountdown,
   INITIAL_DRAFT,
+  loginChallengeOutcome,
   redeemableSessions,
+  ticketShowsCredential,
+  ticketShowsTimer,
   sessionTimerState,
   ticketStatusMeta,
   unitsForSlot,
@@ -379,3 +386,110 @@ describe("labels and endpoints used by the screens", () => {
     assert.equal(formatClock("2026-11-01T23:00:00.000Z"), "06.00");
   });
 });
+
+describe("review fixes (legend-kaqr Opus review)", () => {
+  test("FAC-05: a retried booking with the same idempotency key returns the same ticket and redeems once", async () => {
+    const before = await request("GET", "/api/facility/subscriptions/current");
+    const idempotencyKey = crypto.randomUUID();
+    const first = await book({ source: "subscription", idempotencyKey });
+    const again = await book({ source: "subscription", idempotencyKey });
+    assert.equal(again.ticket.id, first.ticket.id);
+    assert.equal(again.credential.pin, first.credential.pin);
+    const after = await request("GET", "/api/facility/subscriptions/current");
+    assert.equal(
+      after.data.subscription.quotaUsed,
+      before.data.subscription.quotaUsed + 1,
+    );
+    const { data } = await request("GET", "/api/facility/tickets", {
+      query: { limit: 50 },
+    });
+    assert.equal(
+      data.filter((view) => view.ticket.id === first.ticket.id).length,
+      1,
+    );
+  });
+
+  test("FAC-01: the door credential is an opaque token, not a readable ticket id", async () => {
+    const issued = await book();
+    assert.ok(!issued.credential.qrToken.includes(issued.ticket.id));
+    assert.match(issued.credential.qrToken, /^[A-Za-z0-9_-]{32}$/);
+    assert.match(issued.credential.pin, /^\d{6}$/);
+  });
+
+  test("FAC-01: only an issued or in-use ticket shows its QR/PIN; cancelled ones hide the timer too", () => {
+    assert.equal(ticketShowsCredential("issued"), true);
+    assert.equal(ticketShowsCredential("in_use"), true);
+    for (const status of [
+      "pending_payment",
+      "completed",
+      "no_show",
+      "cancelled",
+      "refunded",
+    ])
+      assert.equal(ticketShowsCredential(status), false, status);
+    for (const status of [
+      "cancelled",
+      "refunded",
+      "no_show",
+      "pending_payment",
+    ])
+      assert.equal(ticketShowsTimer(status), false, status);
+    assert.equal(ticketShowsTimer("completed"), true);
+  });
+
+  test("AUTH-01/AUTH-03: the WhatsApp gate is a browser-polled reverse OTP with a 40-bit code", async () => {
+    const issued = await request(
+      "POST",
+      "/api/auth/login-challenges/whatsapp",
+      {
+        body: { returnTo: `/f/${facilityId}` },
+      },
+    );
+    assert.match(issued.data.code, LOGIN_CODE_PATTERN);
+    assert.equal(
+      loginCodeFromMessage(
+        decodeURIComponent(
+          new URL(issued.data.whatsAppDeepLink).searchParams.get("text"),
+        ),
+      ),
+      issued.data.code,
+    );
+    const id = issued.data.challenge.id;
+    const first = await request("GET", `/api/auth/login-challenges/${id}`);
+    assert.equal(loginChallengeOutcome(first.data, Date.now()), "pending");
+    assert.equal(first.data.session, null);
+    const second = await request("GET", `/api/auth/login-challenges/${id}`);
+    assert.equal(loginChallengeOutcome(second.data, Date.now()), "signed_in");
+    assert.equal(second.data.session.kind, "customer");
+  });
+
+  test("AUTH-01: a cancelled or timed-out challenge never signs in", async () => {
+    const issued = await request(
+      "POST",
+      "/api/auth/login-challenges/whatsapp",
+      {
+        body: {},
+      },
+    );
+    const id = issued.data.challenge.id;
+    await request("POST", `/api/auth/login-challenges/${id}/cancel`);
+    const view = await request("GET", `/api/auth/login-challenges/${id}`);
+    assert.equal(loginChallengeOutcome(view.data, Date.now()), "cancelled");
+    const pending = { ...challengeView(issued.data.challenge), session: null };
+    assert.equal(
+      loginChallengeOutcome(
+        pending,
+        Date.parse(issued.data.challenge.expiresAt) + 1,
+      ),
+      "expired",
+    );
+  });
+});
+
+function challengeView(challenge) {
+  return {
+    challenge,
+    mfaRequired: false,
+    mfaEnrollmentRequired: false,
+  };
+}

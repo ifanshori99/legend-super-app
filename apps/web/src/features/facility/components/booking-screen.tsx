@@ -2,7 +2,7 @@
 // (PRD §3 F22 Titik Masuk/Pemesanan, alur S langkah 1–4, alur T redemption).
 // One route, four steps: WhatsApp gate → area and time → product/add-ons →
 // review and pay. The ticket itself lives at `/member/fasilitas/[ticketId]`.
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type {
   AccessTicket,
   AccessTicketCredential,
@@ -58,6 +58,12 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
   const joinQueue = useJoinQueue(facilityId);
   const leaveQueue = useLeaveQueue(facilityId);
   const book = useBookTicket();
+  // One idempotency key per booking attempt: a retry after a lost response
+  // (timeout, offline) reuses it, so the API answers with the ticket it already
+  // issued instead of selling a second one. Changing the draft starts a new
+  // attempt.
+  const attempt = useRef<{ draft: BookingDraft; key: string } | null>(null);
+  const toSchedule = useCallback(() => setPhase("schedule"), []);
 
   const products =
     catalog.data?.products.filter(
@@ -66,6 +72,12 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
   const addons = catalog.data?.addons.filter((addon) => addon.isEnabled) ?? [];
   const area = findArea(availability.data, draft.areaId);
   const product = products.find((item) => item.id === draft.productId);
+
+  function idempotencyKeyFor(current: BookingDraft): string {
+    if (attempt.current?.draft !== current)
+      attempt.current = { draft: current, key: crypto.randomUUID() };
+    return attempt.current.key;
+  }
 
   async function pay() {
     if (!draft.areaId || !draft.timing || !draft.productId) return;
@@ -85,12 +97,13 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
       productId: draft.productId,
       source: draft.source,
       addonIds: draft.addonIds.length > 0 ? [...draft.addonIds] : undefined,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: idempotencyKeyFor(draft),
     };
     try {
       const result = await book.mutateAsync(body);
       // The credential is returned once: keep it for the ticket screen.
       saveTicketCredential(result.ticket.id, result.credential);
+      attempt.current = null;
       setIssued(result);
       setPhase("issued");
     } catch {
@@ -113,7 +126,7 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
       </header>
 
       {phase === "login" && (
-        <LoginStep onVerified={() => setPhase("schedule")} />
+        <LoginStep returnTo={`/f/${facilityId}`} onVerified={toSchedule} />
       )}
 
       {phase === "schedule" && (

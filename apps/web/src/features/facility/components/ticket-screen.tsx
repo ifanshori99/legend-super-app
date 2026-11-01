@@ -30,8 +30,15 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { useOnline } from "@/lib/use-online";
 import { useCancelTicket } from "../hooks";
-import { formatClock, formatDateLabel, unitLabel } from "../flow";
 import {
+  formatClock,
+  formatDateLabel,
+  ticketShowsCredential,
+  ticketShowsTimer,
+  unitLabel,
+} from "../flow";
+import {
+  clearTicketCredential,
   readTicketCredential,
   subscribeTicketCredentials,
 } from "../credential-store";
@@ -73,7 +80,10 @@ export function FacilityTicketScreen({
   const toast = useToast();
   const ticket = view.ticket;
   const unit = unitLabel(availability, ticket.unitId);
-  const credential = useStoredCredential(ticket.id);
+  const storedCredential = useStoredCredential(ticket.id);
+  // FAC-01: a ticket that can no longer open the door never shows its code.
+  const credentialLive = ticketShowsCredential(ticket.status);
+  const credential = credentialLive ? storedCredential : null;
   const hydrated = useHydrated();
   const cancel = useCancelTicket(ticket.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -93,6 +103,8 @@ export function FacilityTicketScreen({
         t("facility.ticket.cancelReason"),
       );
       setConfirmOpen(false);
+      // The door credential is dead now; drop this device's copy.
+      clearTicketCredential(ticket.id);
       toast({
         title: t("facility.ticket.cancelledToast"),
         description:
@@ -142,65 +154,69 @@ export function FacilityTicketScreen({
         )}
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("facility.ticket.credentialTitle")}</CardTitle>
-          {credential && (
-            <CardDescription>{t("facility.ticket.qrHint")}</CardDescription>
-          )}
-        </CardHeader>
-        {!hydrated ? (
-          <LoadingCard lines={4} />
-        ) : credential === null ? (
-          <div className="flex items-start gap-2 rounded-lg bg-muted px-3 py-2 text-sm leading-5">
-            <Ticket className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <div className="grid gap-0.5">
-              <p className="font-semibold">
-                {t("facility.ticket.credentialMissingTitle")}
-              </p>
-              <p className="text-muted-foreground">
-                {t("facility.ticket.credentialMissingBody")}
-              </p>
-              <p className="text-muted-foreground tabular">
-                {t("facility.ticket.window", {
-                  from: formatClock(view.credentialWindow.validFrom),
-                  until: formatClock(view.credentialWindow.validUntil),
-                })}
-              </p>
+      {credentialLive && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("facility.ticket.credentialTitle")}</CardTitle>
+            {credential && (
+              <CardDescription>{t("facility.ticket.qrHint")}</CardDescription>
+            )}
+          </CardHeader>
+          {!hydrated ? (
+            <LoadingCard lines={4} />
+          ) : credential === null ? (
+            <div className="flex items-start gap-2 rounded-lg bg-muted px-3 py-2 text-sm leading-5">
+              <Ticket className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <div className="grid gap-0.5">
+                <p className="font-semibold">
+                  {t("facility.ticket.credentialMissingTitle")}
+                </p>
+                <p className="text-muted-foreground">
+                  {t("facility.ticket.credentialMissingBody")}
+                </p>
+                <p className="text-muted-foreground tabular">
+                  {t("facility.ticket.window", {
+                    from: formatClock(view.credentialWindow.validFrom),
+                    until: formatClock(view.credentialWindow.validUntil),
+                  })}
+                </p>
+              </div>
             </div>
-          </div>
-        ) : credential ? (
-          <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
-            <AccessTicketQr
-              value={credential.qrToken}
-              label={t("facility.ticket.qrLabel", {
-                unit: unit?.code ?? "",
-              })}
-            />
-            <div className="grid gap-1">
-              <p className="text-sm leading-5 font-medium text-muted-foreground">
-                {t("facility.ticket.pinLabel")}
-              </p>
-              <p className="text-3xl leading-tight font-semibold tracking-[0.35em] tabular">
-                {credential.pin}
-              </p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("facility.ticket.window", {
-                  from: formatClock(credential.validFrom),
-                  until: formatClock(credential.validUntil),
+          ) : credential ? (
+            <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+              <AccessTicketQr
+                value={credential.qrToken}
+                label={t("facility.ticket.qrLabel", {
+                  unit: unit?.code ?? "",
                 })}
-              </p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("facility.ticket.pinHint")}
-              </p>
+              />
+              <div className="grid gap-1">
+                <p className="text-sm leading-5 font-medium text-muted-foreground">
+                  {t("facility.ticket.pinLabel")}
+                </p>
+                <p className="text-3xl leading-tight font-semibold tracking-[0.35em] tabular">
+                  {credential.pin}
+                </p>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("facility.ticket.window", {
+                    from: formatClock(credential.validFrom),
+                    until: formatClock(credential.validUntil),
+                  })}
+                </p>
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("facility.ticket.pinHint")}
+                </p>
+              </div>
             </div>
-          </div>
-        ) : null}
-      </Card>
+          ) : null}
+        </Card>
+      )}
 
-      <Card>
-        <SessionTimer view={view} />
-      </Card>
+      {ticketShowsTimer(ticket.status) && (
+        <Card>
+          <SessionTimer view={view} />
+        </Card>
+      )}
 
       {!online && (
         <Card>

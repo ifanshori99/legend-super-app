@@ -31,17 +31,16 @@ test.skip(
 
 /**
  * The first hit on a cold Vite dev server paints the server HTML before React
- * hydrates; keystrokes typed into a controlled input in that window are lost.
- * React attests a hydrated node with an internal `__reactFiber$…` property, so
- * wait for that before driving the form.
+ * hydrates; a click in that window is lost. React attests a hydrated node with
+ * an internal `__reactFiber$…` property, so wait for that on the gate's button.
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await page.waitForFunction(
     () => {
-      const field = document.querySelector("#main-content form input");
+      const button = document.querySelector("#main-content button");
       return (
-        field !== null &&
-        Object.keys(field).some((key) => key.startsWith("__reactFiber$"))
+        button !== null &&
+        Object.keys(button).some((key) => key.startsWith("__reactFiber$"))
       );
     },
     undefined,
@@ -49,26 +48,20 @@ async function waitForHydration(page: import("@playwright/test").Page) {
   );
 }
 
-/** Types like a guest, after hydration, and checks the field kept the text. */
-async function typeInto(
-  page: import("@playwright/test").Page,
-  label: string,
-  text: string,
-) {
-  const field = page.getByLabel(label);
-  await field.click();
-  await page.keyboard.type(text, { delay: 20 });
-  await expect(field).toHaveValue(text);
-}
-
+/**
+ * Reverse-OTP gate (AUTH-01/AUTH-03): the page shows a one-time code and a
+ * WhatsApp deep link; the mock completes the challenge on its second poll, the
+ * way the KirimDev webhook would after the guest sends the message.
+ */
 async function passWhatsAppGate(page: import("@playwright/test").Page) {
-  await typeInto(page, "Nomor WhatsApp", "081234567890");
-  await page.getByRole("button", { name: "Kirim kode WhatsApp" }).click();
-  await typeInto(page, "Kode verifikasi 6 digit", "123456");
-  await page.getByRole("button", { name: "Verifikasi nomor" }).click();
+  await page.getByRole("button", { name: "Masuk lewat WhatsApp" }).click();
+  await expect(page.getByText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/)).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Buka WhatsApp" }),
+  ).toHaveAttribute("href", /^https:\/\/wa\.me\//);
   await expect(
     page.getByRole("heading", { name: "Pilih area dan waktu" }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 15_000 });
 }
 
 test("FAC-04/FAC-05: a guest books a shower with QRIS and gets a ticket with QR and PIN", async ({
@@ -167,7 +160,9 @@ test("FAC-07: the subscription page shows the quota and stops from the member pa
   await expect(page.getByText("Kuota siap dipakai.")).toBeVisible();
 
   // Pausing is a customer action (alur U langkah 6): confirm, then the state
-  // reads as paused and the quota is no longer offered.
+  // reads as paused and the quota is no longer offered. Wait for hydration
+  // first: a click on the server-rendered button would be lost.
+  await waitForHydration(page);
   await page.getByRole("button", { name: "Jeda langganan" }).click();
   await page.getByRole("button", { name: "Ya, jeda" }).click();
   await expect(page.getByText("Langganan sedang dijeda.")).toBeVisible();

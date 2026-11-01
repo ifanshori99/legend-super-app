@@ -14,6 +14,7 @@ import type {
   FacilitySlotOption,
   FacilitySubscriptionView,
 } from "@starter/shared/facility";
+import type { LoginChallengeView } from "@starter/shared/identity";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's
@@ -380,4 +381,42 @@ export function addDays(date: string, days: number): string {
   return new Date(Date.UTC(year, month - 1, day + days))
     .toISOString()
     .slice(0, 10);
+}
+
+// ---- WhatsApp login gate (AUTH-01, AUTH-03) ---------------------------------
+
+export type LoginOutcome = "pending" | "signed_in" | "expired" | "cancelled";
+
+/**
+ * Where a polled WhatsApp challenge stands. Only a completed challenge that
+ * handed this browser a session signs the guest in; a pending challenge past
+ * its `expiresAt` is treated as expired even before the server sweeps it, so
+ * the screen never waits on a dead code (AUTH-01: valid 5 minutes).
+ */
+export function loginChallengeOutcome(
+  view: LoginChallengeView,
+  now: number,
+): LoginOutcome {
+  const { challenge } = view;
+  if (challenge.status === "completed")
+    return view.session !== null ? "signed_in" : "expired";
+  if (challenge.status === "cancelled") return "cancelled";
+  if (challenge.status === "expired") return "expired";
+  return now >= Date.parse(challenge.expiresAt) ? "expired" : "pending";
+}
+
+// ---- What a ticket screen may show -----------------------------------------
+
+/**
+ * FAC-01: the door QR/PIN is shown only while the ticket can still open the
+ * door. A cancelled, refunded, no-show or finished ticket hides any copy this
+ * device still holds, so a dead credential never looks valid.
+ */
+export function ticketShowsCredential(status: AccessTicketStatus): boolean {
+  return status === "issued" || status === "in_use";
+}
+
+/** The session timer belongs to a ticket that has or had a session. */
+export function ticketShowsTimer(status: AccessTicketStatus): boolean {
+  return status === "issued" || status === "in_use" || status === "completed";
 }

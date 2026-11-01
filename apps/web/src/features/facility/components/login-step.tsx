@@ -1,66 +1,72 @@
 // Step 1 of the facility journey: WhatsApp login (PRD §3 F22 Titik Masuk,
 // alur S langkah 2: "Pemesanan wajib login dengan WhatsApp terverifikasi").
-// The verification port lives in `wa-login.ts`; until AUTH-02 exposes its
-// endpoints the gate explains that instead of faking a signed-in customer.
-import { useState } from "react";
-import { ShieldCheck } from "lucide-react";
+//
+// Reverse OTP from the identity contract (AUTH-01/AUTH-03): the guest gets a
+// one-time 8-symbol code bound to this browser, opens WhatsApp with the
+// message already filled in (QR on a desktop), sends it, and this screen
+// continues once its polled challenge carries a session. Nothing is typed and
+// no message is sent to the guest; the code lives only in component state.
+import { useEffect, useState } from "react";
+import { MessageCircle, ShieldCheck } from "lucide-react";
+import type { LoginChallengeIssued } from "@starter/shared/identity";
 import { Button } from "@/components/ui/button";
-import { FormField } from "@/components/ui/form-field";
-import { Input } from "@/components/ui/input";
 import { useT } from "@/components/i18n";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
+import { formatClock, loginChallengeOutcome } from "../flow";
 import {
-  isValidOtp,
-  isValidPhone,
-  normalizePhone,
-  requestWhatsAppCode,
-  verifyWhatsAppCode,
-  OTP_LENGTH,
-} from "../wa-login";
+  useCancelWhatsAppLogin,
+  useLoginChallenge,
+  useStartWhatsAppLogin,
+} from "../hooks";
+import { AccessTicketQr } from "./access-ticket-qr";
 import { ApiFailure } from "./shared";
 
-export function LoginStep({ onVerified }: { onVerified: () => void }) {
+export function LoginStep({
+  returnTo,
+  onVerified,
+}: {
+  /** Path the API sends the guest back to (returnPathSchema). */
+  returnTo?: string;
+  onVerified: () => void;
+}) {
   const t = useT();
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
-  const [sent, setSent] = useState(false);
-  const [pending, setPending] = useState<"send" | "verify" | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [issued, setIssued] = useState<LoginChallengeIssued | null>(null);
+  const start = useStartWhatsAppLogin();
+  const cancel = useCancelWhatsAppLogin();
+  const poll = useLoginChallenge(issued?.challenge.id ?? null);
 
-  const phoneError =
-    phone.length > 0 && !isValidPhone(phone)
-      ? t("facility.login.phoneError")
-      : undefined;
-  const codeError =
-    code.length > 0 && !isValidOtp(code)
-      ? t("facility.login.codeError")
-      : undefined;
+  // Judged at the moment of the last poll (polling runs every 2 s while
+  // pending), so render stays pure and a dead code still reads as expired.
+  const outcome = poll.data
+    ? loginChallengeOutcome(poll.data, poll.dataUpdatedAt)
+    : issued
+      ? "pending"
+      : null;
 
-  async function send() {
-    setError(null);
-    setPending("send");
+  useEffect(() => {
+    if (outcome === "signed_in") onVerified();
+  }, [outcome, onVerified]);
+
+  async function begin() {
+    cancel.reset();
     try {
-      await requestWhatsAppCode(phone);
-      setSent(true);
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setPending(null);
+      setIssued(await start.mutateAsync(returnTo));
+    } catch {
+      // Rendered by ApiFailure below.
     }
   }
 
-  async function verify() {
-    setError(null);
-    setPending("verify");
+  async function abort() {
+    if (!issued) return;
     try {
-      await verifyWhatsAppCode(phone, code);
-      onVerified();
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setPending(null);
+      await cancel.mutateAsync(issued.challenge.id);
+    } catch {
+      // A failed cancel still drops the code here; it expires on its own.
     }
+    setIssued(null);
   }
+
+  const ended = outcome === "expired" || outcome === "cancelled";
 
   return (
     <div className="grid gap-4">
@@ -74,95 +80,86 @@ export function LoginStep({ onVerified }: { onVerified: () => void }) {
         </p>
       </div>
 
-      {!sent ? (
-        <form
-          className="grid gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send();
-          }}
-        >
-          <FormField
-            label={t("facility.login.phoneLabel")}
-            hint={t("facility.login.phoneHint")}
-            error={phoneError}
-            required
-          >
-            <Input
-              name="phone"
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel"
-              placeholder={t("facility.login.phoneHint")}
-              value={phone}
-              onChange={(event) => setPhone(event.target.value)}
-              onBlur={() => setPhone((value) => normalizePhone(value))}
-            />
-          </FormField>
-          <Button
-            type="submit"
-            size="lg"
-            loading={pending === "send"}
-            disabled={!isValidPhone(phone)}
-          >
-            {t("facility.login.sendCode")}
+      {issued === null || ended ? (
+        <div className="grid gap-3">
+          {ended && (
+            <div className="grid gap-0.5 rounded-lg bg-muted px-3 py-2 text-sm leading-5">
+              <p className="font-semibold">
+                {t("facility.login.expiredTitle")}
+              </p>
+              <p className="text-muted-foreground">
+                {t("facility.login.expiredHint")}
+              </p>
+            </div>
+          )}
+          <Button size="lg" loading={start.isPending} onClick={() => begin()}>
+            <MessageCircle aria-hidden="true" />
+            {ended ? t("facility.login.restart") : t("facility.login.start")}
           </Button>
-        </form>
+        </div>
       ) : (
-        <form
-          className="grid gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void verify();
-          }}
-        >
-          <FormField
-            label={t("facility.login.codeLabel")}
-            hint={t("facility.login.codeHint", {
-              phone: normalizePhone(phone),
-            })}
-            error={codeError}
-            required
-          >
-            <Input
-              name="code"
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={OTP_LENGTH}
-              pattern="\d{6}"
-              value={code}
-              onChange={(event) =>
-                setCode(
-                  event.target.value.replace(/\D/g, "").slice(0, OTP_LENGTH),
-                )
-              }
+        <div className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card">
+          <div className="grid gap-1">
+            <p className="text-sm leading-5 font-medium text-muted-foreground">
+              {t("facility.login.codeLabel")}
+            </p>
+            <p className="font-mono text-3xl leading-tight font-semibold tracking-widest tabular">
+              {issued.codeFormatted}
+            </p>
+            <p className="text-sm leading-5 text-muted-foreground tabular">
+              {t("facility.login.expiresAt", {
+                time: formatClock(issued.challenge.expiresAt),
+              })}
+            </p>
+          </div>
+
+          <Button asChild size="lg">
+            <a href={issued.whatsAppDeepLink} target="_blank" rel="noopener">
+              <MessageCircle aria-hidden="true" />
+              {t("facility.login.openWhatsApp")}
+            </a>
+          </Button>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("facility.login.sendHint")}
+          </p>
+
+          <div className="hidden gap-2 sm:grid sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+            <AccessTicketQr
+              value={issued.whatsAppDeepLink}
+              label={t("facility.login.qrLabel")}
             />
-          </FormField>
-          <Button
-            type="submit"
-            size="lg"
-            loading={pending === "verify"}
-            disabled={!isValidOtp(code)}
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("facility.login.qrHint")}
+            </p>
+          </div>
+
+          <p
+            role="status"
+            className="text-sm leading-5 font-medium text-foreground"
           >
-            {t("facility.login.verify")}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setSent(false);
-              setCode("");
-              setError(null);
-            }}
-          >
-            {t("facility.login.changeNumber")}
-          </Button>
-        </form>
+            {t("facility.login.waiting")}
+          </p>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => void poll.refetch()}>
+              {t("facility.login.sent")}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => void abort()}
+              loading={cancel.isPending}
+            >
+              {t("facility.login.cancel")}
+            </Button>
+          </div>
+        </div>
       )}
 
-      {error !== null && (
-        <ApiFailure error={error} onRetry={() => (sent ? verify() : send())} />
+      {start.isError && (
+        <ApiFailure error={start.error} onRetry={() => void begin()} />
+      )}
+      {poll.isError && (
+        <ApiFailure error={poll.error} onRetry={() => void poll.refetch()} />
       )}
 
       {API_MOCK && (

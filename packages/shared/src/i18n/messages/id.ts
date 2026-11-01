@@ -221,20 +221,24 @@ export const id = {
     login: {
       title: "Masuk dengan WhatsApp",
       hint: "Tiket terikat ke nomor WhatsApp-mu, jadi bisa dibuka lagi dari Fasilitas Saya.",
-      phoneLabel: "Nomor WhatsApp",
-      phoneHint: "Contoh: 0812 3456 7890",
-      phoneError:
-        "Tulis nomor yang diawali 08, 10–13 digit. Contoh: 0812 3456 7890.",
-      sendCode: "Kirim kode WhatsApp",
-      codeLabel: "Kode verifikasi 6 digit",
-      codeHint: "Kode dikirim ke WhatsApp {phone}.",
-      codeError: "Kode terdiri dari 6 angka.",
-      verify: "Verifikasi nomor",
-      changeNumber: "Ganti nomor",
-      mockHint: "Mode mock: kode 6 digit apa pun diterima.",
-      unavailableTitle: "Login WhatsApp belum tersedia",
-      unavailableHint:
-        "Endpoint verifikasi WhatsApp (AUTH-02) belum terpasang di lingkungan ini. Jalankan dengan VITE_API_MOCK=true untuk mencoba alurnya.",
+      start: "Masuk lewat WhatsApp",
+      restart: "Minta kode baru",
+      codeLabel: "Kode masuk",
+      expiresAt: "Kode berlaku sampai {time}, sekali pakai.",
+      openWhatsApp: "Buka WhatsApp",
+      sendHint:
+        "Kirim pesan yang sudah terisi tanpa mengubahnya. Halaman ini lanjut sendiri setelah pesanmu diterima.",
+      qrLabel: "QR untuk membuka WhatsApp",
+      qrHint:
+        "Di komputer? Pindai QR ini dengan ponsel untuk membuka WhatsApp dengan pesan yang sudah terisi.",
+      waiting: "Menunggu pesan WhatsApp-mu…",
+      sent: "Saya sudah mengirim",
+      cancel: "Batal",
+      expiredTitle: "Kode sudah tidak berlaku",
+      expiredHint:
+        "Kode masuk hanya berlaku 5 menit dan sekali pakai. Minta kode baru untuk melanjutkan.",
+      mockHint:
+        "Mode mock: login selesai sendiri beberapa detik setelah kode muncul.",
     },
     schedule: {
       title: "Pilih area dan waktu",

@@ -4,7 +4,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import { facilityKeys } from "./queries";
+import { cancelWhatsAppLogin, startWhatsAppLogin } from "./wa-login";
 import {
+  loginChallengeQuery,
   availabilityQuery,
   currentSubscriptionQuery,
   facilityCatalogQuery,
@@ -122,5 +124,26 @@ export function useUpdateSubscription() {
     }) => api.updateSubscription(input.subscriptionId, input.body),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: facilityKeys.subscription() }),
+  });
+}
+
+/** Creates the WhatsApp challenge (code + deep link, shown once). */
+export function useStartWhatsAppLogin() {
+  return useMutation({
+    mutationFn: (returnTo?: string) => startWhatsAppLogin(returnTo),
+  });
+}
+
+export function useLoginChallenge(challengeId: string | null) {
+  return useQuery({
+    ...loginChallengeQuery(challengeId ?? ""),
+    enabled: challengeId !== null,
+  });
+}
+
+/** "Bukan saya / batal": cancels the challenge from this browser. */
+export function useCancelWhatsAppLogin() {
+  return useMutation({
+    mutationFn: (challengeId: string) => cancelWhatsAppLogin(challengeId),
   });
 }

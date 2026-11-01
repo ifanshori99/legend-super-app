@@ -3,6 +3,7 @@
 // refreshes only the subscription data.
 import { queryOptions } from "@tanstack/react-query";
 import * as api from "./api";
+import { fetchLoginChallenge } from "./wa-login";
 
 export const facilityKeys = {
   all: ["facility"] as const,
@@ -18,7 +19,26 @@ export const facilityKeys = {
   subscription: () => [...facilityKeys.all, "subscription"] as const,
   plans: (facilityId: string) =>
     [...facilityKeys.all, "plans", facilityId] as const,
+  loginChallenge: (challengeId: string) =>
+    [...facilityKeys.all, "login-challenge", challengeId] as const,
 };
+
+/** Interval at which this browser polls its WhatsApp challenge (AUTH-01). */
+export const LOGIN_POLL_MS = 2_000;
+
+/**
+ * GET /api/auth/login-challenges/:id — polled while the guest sends the
+ * message; polling stops once the challenge leaves `pending`.
+ */
+export function loginChallengeQuery(challengeId: string) {
+  return queryOptions({
+    queryKey: facilityKeys.loginChallenge(challengeId),
+    queryFn: ({ signal }) => fetchLoginChallenge(challengeId, signal),
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data?.challenge.status === "pending" ? LOGIN_POLL_MS : false,
+  });
+}
 
 /** GET /api/facility/availability — live data, so never served from stale cache. */
 export function availabilityQuery(facilityId: string, date: string) {

@@ -202,7 +202,7 @@ export function ExtrasStep({
         onClick={onContinue}
         disabled={!draft.productId || products.length === 0}
       >
-        {draft.source === "subscription"
+        {draft.source === "subscription" && total === 0
           ? t("facility.extras.issueWithQuota")
           : t("facility.extras.pay")}
       </Button>

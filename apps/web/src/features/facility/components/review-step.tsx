@@ -42,6 +42,9 @@ export function ReviewStep({
         ? formatClock(draft.timing.startsAt)
         : "—";
   const redeeming = draft.source === "subscription";
+  // A quota session still pays for its add-ons (PRD §3 F22 "Add-on
+  // Opsional"): only a zero total skips the QRIS payment.
+  const needsPayment = payableIdr > 0;
 
   return (
     <div className="grid gap-5">
@@ -97,7 +100,7 @@ export function ReviewStep({
 
       {error !== null && <ApiFailure error={error} />}
 
-      {redeeming ? (
+      {!needsPayment ? (
         <Button size="lg" onClick={onPay} loading={pending}>
           {t("facility.review.issueTicket")}
         </Button>

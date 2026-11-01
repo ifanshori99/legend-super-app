@@ -41,6 +41,7 @@ import {
   startFacilitySubscription,
   updateFacilitySubscription,
   type AccessTicket,
+  type AccessTicketCredential,
   type AccessTicketView,
   type Facility,
   type FacilityAvailability,
@@ -50,6 +51,19 @@ import {
   type FacilityUnitStatus,
   type SubscriptionInvoice,
 } from "@starter/shared/facility";
+import {
+  cafeLegendIdentityFixtures as idFx,
+  cancelLoginChallenge,
+  CUSTOMER_SESSION_DAYS,
+  formatLoginCode,
+  generateLoginCode,
+  getLoginChallenge,
+  LOGIN_CODE_TTL_MINUTES,
+  loginChallengeSchema,
+  requestWhatsAppLoginChallenge,
+  whatsAppLoginDeepLink,
+  type LoginChallenge,
+} from "@starter/shared/identity";
 import { createUlidFactory } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
@@ -372,7 +386,39 @@ registerMock(getFacilityAvailability, ({ query, scenario }) => {
   };
 });
 
+/**
+ * Booking replies by idempotency key, like the real API: a retried request
+ * with the same key gets the ticket it already issued (and its credential),
+ * never a second ticket or a second quota redemption.
+ */
+type IssuedTicketWire = {
+  data: { ticket: AccessTicket; credential: AccessTicketCredential };
+};
+const bookingReplies = createMockStore<Map<string, IssuedTicketWire>>(
+  () => new Map(),
+);
+
+/** Opaque, unguessable door token: the lock looks it up, never parses it. */
+function mockQrToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/** Uniform 6-digit PIN from the CSPRNG (rejection sampling, no modulo bias). */
+function mockDoorPin(): string {
+  const limit = 4_294_000_000; // largest multiple of 10^6 below 2^32
+  for (;;) {
+    const [value] = crypto.getRandomValues(new Uint32Array(1));
+    if (value < limit) return String(value % 1_000_000).padStart(6, "0");
+  }
+}
+
 registerMock(bookAccessTicket, ({ body }) => {
+  const replay = bookingReplies.get().get(body.idempotencyKey);
+  if (replay) return replay;
   const facility = facilityById(body.facilityId);
   const area = fx.areas.find(
     (item) => item.id === body.areaId && item.facilityId === facility.id,
@@ -541,7 +587,7 @@ registerMock(bookAccessTicket, ({ body }) => {
   // The credential goes out once, here (see schemas.ts); the ticket view never
   // carries it again.
   const window = ticketCredentialWindow(ticket);
-  return {
+  const reply: IssuedTicketWire = {
     data: {
       ticket,
       credential: {
@@ -549,13 +595,17 @@ registerMock(bookAccessTicket, ({ body }) => {
         facilityId: facility.id,
         areaId: area.id,
         unitId: ticket.unitId,
-        qrToken: `LEG-${facility.type.toUpperCase()}-${ticket.id}`,
-        pin: String(100000 + Math.floor(Math.random() * 900000)),
+        qrToken: mockQrToken(),
+        pin: mockDoorPin(),
         validFrom: window.validFrom,
         validUntil: window.validUntil,
       },
     },
   };
+  bookingReplies.set(
+    new Map(bookingReplies.get()).set(body.idempotencyKey, reply),
+  );
+  return reply;
 });
 
 // The catalog read the customer screens use (see api.ts: the customer-facing
@@ -742,4 +792,108 @@ registerMock(updateFacilitySubscription, ({ params, body }) => {
   });
   subscriptionStore.set({ ...state, subscription: updated });
   return { data: updated };
+});
+
+// ---- WhatsApp login (identity contract, AUTH-01/AUTH-03) --------------------
+//
+// The facility gate is the first customer screen that signs a guest in, so it
+// serves the identity endpoints it calls until the customer-login FE bead owns
+// them (registerMock replaces, so that bead's handlers win when it lands). The
+// mock plays the KirimDev webhook: the guest "sends" the message by waiting,
+// and the challenge completes on the second poll from this browser.
+
+type MockChallenge = { challenge: LoginChallenge; polls: number };
+const loginChallenges = createMockStore<Map<string, MockChallenge>>(
+  () => new Map(),
+);
+const LOGIN_POLLS_TO_COMPLETE = 2;
+/** The fixture customer session (Sari, kind "customer"). */
+const customerSession = idFx.sessions.find(
+  (session) => session.kind === "customer",
+);
+
+function saveChallenge(entry: MockChallenge): void {
+  loginChallenges.set(
+    new Map(loginChallenges.get()).set(entry.challenge.id, entry),
+  );
+}
+
+registerMock(requestWhatsAppLoginChallenge, () => {
+  const createdAt = new Date();
+  const challenge = loginChallengeSchema.parse({
+    id: crypto.randomUUID(),
+    tenantId: idFx.tenantId,
+    brandId: idFx.brandId,
+    channel: "whatsapp_inbound",
+    status: "pending",
+    expiresAt: new Date(
+      createdAt.getTime() + LOGIN_CODE_TTL_MINUTES * MINUTE,
+    ).toISOString(),
+    completedAt: null,
+    matchedUserId: null,
+    createdAt: createdAt.toISOString(),
+  });
+  saveChallenge({ challenge, polls: 0 });
+  const code = generateLoginCode();
+  return {
+    data: {
+      challenge,
+      code,
+      codeFormatted: formatLoginCode(code),
+      whatsAppDeepLink: whatsAppLoginDeepLink({
+        numberDigits: idFx.login.number,
+        code,
+        keyword: idFx.login.keyword,
+      }),
+    },
+  };
+});
+
+registerMock(getLoginChallenge, ({ params }) => {
+  const entry = loginChallenges.get().get(params.challengeId);
+  if (!entry)
+    throw new ApiError(404, "NOT_FOUND", "Permintaan masuk tidak ditemukan.");
+  const now = new Date();
+  let { challenge } = entry;
+  const polls = entry.polls + 1;
+  if (challenge.status === "pending") {
+    if (now.getTime() >= Date.parse(challenge.expiresAt))
+      challenge = { ...challenge, status: "expired" };
+    else if (polls >= LOGIN_POLLS_TO_COMPLETE)
+      challenge = loginChallengeSchema.parse({
+        ...challenge,
+        status: "completed",
+        completedAt: now.toISOString(),
+        matchedUserId: customerSession?.userId ?? null,
+      });
+  }
+  saveChallenge({ challenge, polls });
+  const session =
+    challenge.status === "completed" && customerSession
+      ? {
+          ...customerSession,
+          createdAt: challenge.completedAt ?? now.toISOString(),
+          lastSeenAt: challenge.completedAt ?? now.toISOString(),
+          expiresAt: new Date(
+            now.getTime() + CUSTOMER_SESSION_DAYS * 24 * 60 * MINUTE,
+          ).toISOString(),
+        }
+      : null;
+  return {
+    data: {
+      challenge,
+      session,
+      mfaRequired: false,
+      mfaEnrollmentRequired: false,
+    },
+  };
+});
+
+registerMock(cancelLoginChallenge, ({ params }) => {
+  const entry = loginChallenges.get().get(params.challengeId);
+  if (!entry || entry.challenge.status !== "pending") return;
+  saveChallenge({
+    ...entry,
+    challenge: { ...entry.challenge, status: "cancelled" },
+  });
 });
