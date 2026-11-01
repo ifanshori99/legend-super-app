@@ -36,6 +36,7 @@ import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/memb
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KelolaKelolaDapurRouteImport } from './routes/_kelola/kelola.dapur'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
@@ -51,6 +52,8 @@ import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$to
 import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
+import { Route as KelolaKelolaDapurLaporanRouteImport } from './routes/_kelola/kelola.dapur_.laporan'
+import { Route as KelolaKelolaDapurRemakeRouteImport } from './routes/_kelola/kelola.dapur_.remake'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -185,6 +188,11 @@ const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   path: '/kelola/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaDapurRoute = KelolaKelolaDapurRouteImport.update({
+  id: '/kelola/dapur',
+  path: '/kelola/dapur',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
   id: '/kds/',
   path: '/kds/',
@@ -264,6 +272,17 @@ const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => CustomerTTokenRoute,
 } as any)
+const KelolaKelolaDapurLaporanRoute =
+  KelolaKelolaDapurLaporanRouteImport.update({
+    id: '/kelola/dapur_/laporan',
+    path: '/kelola/dapur/laporan',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaDapurRemakeRoute = KelolaKelolaDapurRemakeRouteImport.update({
+  id: '/kelola/dapur_/remake',
+  path: '/kelola/dapur/remake',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -328,6 +347,7 @@ export interface FileRoutesByFullPath {
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -344,6 +364,8 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/dapur/laporan': typeof KelolaKelolaDapurLaporanRoute
+  '/kelola/dapur/remake': typeof KelolaKelolaDapurRemakeRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -368,6 +390,7 @@ export interface FileRoutesByTo {
   '/notes': typeof ProtectedNotesRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
+  '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
@@ -384,6 +407,8 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/dapur/laporan': typeof KelolaKelolaDapurLaporanRoute
+  '/kelola/dapur/remake': typeof KelolaKelolaDapurRemakeRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -422,6 +447,7 @@ export interface FileRoutesById {
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/_kelola/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -438,6 +464,8 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_kelola/kelola/dapur_/laporan': typeof KelolaKelolaDapurLaporanRoute
+  '/_kelola/kelola/dapur_/remake': typeof KelolaKelolaDapurRemakeRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
@@ -466,6 +494,7 @@ export interface FileRouteTypes {
     | '/bayar/$token'
     | '/f/$facility'
     | '/t/$token'
+    | '/kelola/dapur'
     | '/operasional/koneksi'
     | '/member/'
     | '/karyawan/'
@@ -482,6 +511,8 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/dapur/laporan'
+    | '/kelola/dapur/remake'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -506,6 +537,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/bayar/$token'
     | '/f/$facility'
+    | '/kelola/dapur'
     | '/operasional/koneksi'
     | '/member'
     | '/karyawan'
@@ -522,6 +554,8 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/dapur/laporan'
+    | '/kelola/dapur/remake'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
@@ -559,6 +593,7 @@ export interface FileRouteTypes {
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
     | '/_customer/t/$token'
+    | '/_kelola/kelola/dapur'
     | '/_ops/operasional/koneksi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
@@ -575,6 +610,8 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_kelola/kelola/dapur_/laporan'
+    | '/_kelola/kelola/dapur_/remake'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
@@ -794,6 +831,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/dapur': {
+      id: '/_kelola/kelola/dapur'
+      path: '/kelola/dapur'
+      fullPath: '/kelola/dapur'
+      preLoaderRoute: typeof KelolaKelolaDapurRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kitchen/kds/': {
       id: '/_kitchen/kds/'
       path: '/kds'
@@ -898,6 +942,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/t/$token/review'
       preLoaderRoute: typeof CustomerTTokenReviewRouteImport
       parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_kelola/kelola/dapur_/laporan': {
+      id: '/_kelola/kelola/dapur_/laporan'
+      path: '/kelola/dapur/laporan'
+      fullPath: '/kelola/dapur/laporan'
+      preLoaderRoute: typeof KelolaKelolaDapurLaporanRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/dapur_/remake': {
+      id: '/_kelola/kelola/dapur_/remake'
+      path: '/kelola/dapur/remake'
+      fullPath: '/kelola/dapur/remake'
+      preLoaderRoute: typeof KelolaKelolaDapurRemakeRouteImport
+      parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
@@ -1054,7 +1112,10 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 )
 
 interface KelolaRouteChildren {
+  KelolaKelolaDapurRoute: typeof KelolaKelolaDapurRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+  KelolaKelolaDapurLaporanRoute: typeof KelolaKelolaDapurLaporanRoute
+  KelolaKelolaDapurRemakeRoute: typeof KelolaKelolaDapurRemakeRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
   KelolaKelolaMenuKategoriRoute: typeof KelolaKelolaMenuKategoriRoute
@@ -1065,7 +1126,10 @@ interface KelolaRouteChildren {
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
+  KelolaKelolaDapurRoute: KelolaKelolaDapurRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+  KelolaKelolaDapurLaporanRoute: KelolaKelolaDapurLaporanRoute,
+  KelolaKelolaDapurRemakeRoute: KelolaKelolaDapurRemakeRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
   KelolaKelolaMenuKategoriRoute: KelolaKelolaMenuKategoriRoute,
