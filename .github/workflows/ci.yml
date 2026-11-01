@@ -24,6 +24,17 @@ jobs:
           pnpm exec node scripts/ci/tenant-hardcode.mjs
           pnpm exec node scripts/ci/color.mjs
           pnpm exec node scripts/ci/pending.mjs
+      # Non-blocking while the acceptance suites are written. Switch to
+      # `pnpm traceability --strict` once all 125 PRD criteria have a test
+      # reference (legend-itfk).
+      - name: Acceptance-criteria traceability report
+        run: pnpm traceability
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-criteria-matrix
+          path: docs/plan/criteria-matrix.md
+          retention-days: 7
       - name: Block high dependency advisories
         run: pnpm audit --audit-level high
       - run: pnpm check
