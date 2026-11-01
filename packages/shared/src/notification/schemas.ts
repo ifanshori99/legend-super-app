@@ -280,11 +280,7 @@ export const notificationTemplateSchema = z
     title: z.string().min(1).max(120),
     body: z.string().min(1).max(1000),
     /** Relative path template, e.g. "/pesanan/{{orderId}}". */
-    link: z
-      .string()
-      .max(500)
-      .regex(/^\/(?!\/)/, "Links are relative paths starting with /")
-      .nullable(),
+    link: inAppLinkSchema.nullable(),
     /** Provider-approved WhatsApp template name; required for whatsapp. */
     whatsappTemplateName: z
       .string()

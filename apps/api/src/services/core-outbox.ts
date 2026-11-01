@@ -93,7 +93,7 @@ export const QUEUED_DISPATCH_LEASE_SECONDS = 20 * 60;
 /** Re-dispatch queued rows whose pg-boss job vanished. The generation advance
  * fences the lost job: a late delivery for the old generation is rejected by
  * consumeOutbox instead of applying twice. The database guard allows this
- * transition only after the queued lease expired (migration 0006). */
+ * transition only after the queued lease expired (migration 0008). */
 export async function recoverExpiredDispatches(
   database: Database,
   context: ScopedTenantContext,

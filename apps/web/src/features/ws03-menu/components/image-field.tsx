@@ -1,0 +1,157 @@
+// Menu photo field (PRD §8 "Konten Menu": foto). The browser resizes to at
+// most 1200px and re-encodes to JPEG before upload, so a phone photo stays
+// under the contract's 600 KB body limit; the API answers mediaId + URL.
+import * as React from "react";
+import { ImagePlus, Trash2 } from "lucide-react";
+import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
+import { useUploadMenuImage } from "../hooks";
+
+const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
+const MAX_EDGE = 1200;
+const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
+
+export type MenuImageValue = { mediaId: string; mediaUrl: string };
+
+type Resized = {
+  dataBase64: string;
+  contentType: "image/jpeg";
+  width: number;
+  height: number;
+};
+
+/** Downscales and re-encodes in the browser; pure DOM helper (no state). */
+async function resizeImage(file: File): Promise<Resized> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("canvas unavailable");
+  context.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close();
+  let quality = 0.85;
+  let dataUrl = canvas.toDataURL("image/jpeg", quality);
+  // 600 KB decoded ≈ 820k base64 characters.
+  while (dataUrl.length > 820_000 && quality > 0.4) {
+    quality -= 0.15;
+    dataUrl = canvas.toDataURL("image/jpeg", quality);
+  }
+  return {
+    dataBase64: dataUrl.slice(dataUrl.indexOf(",") + 1),
+    contentType: "image/jpeg",
+    width,
+    height,
+  };
+}
+
+export function ImageField({
+  value,
+  onChange,
+}: {
+  value: MenuImageValue | null;
+  onChange: (value: MenuImageValue | null) => void;
+}) {
+  const t = useT();
+  const upload = useUploadMenuImage();
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const [error, setError] = React.useState<string | undefined>();
+
+  async function handleFile(file: File | undefined) {
+    if (!file) return;
+    setError(undefined);
+    if (!ACCEPTED.includes(file.type)) {
+      setError(t("menu.editor.photoWrongType"));
+      return;
+    }
+    if (file.size > MAX_SOURCE_BYTES) {
+      setError(t("menu.editor.photoTooLarge"));
+      return;
+    }
+    try {
+      const resized = await resizeImage(file);
+      const result = await upload.mutateAsync({
+        fileName: file.name,
+        contentType: resized.contentType,
+        dataBase64: resized.dataBase64,
+        width: resized.width,
+        height: resized.height,
+      });
+      onChange(result.data);
+    } catch {
+      setError(t("menu.editor.photoUploadFailed"));
+    }
+  }
+
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center gap-3">
+        <span className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-lg border bg-muted">
+          {value ? (
+            <img
+              src={value.mediaUrl}
+              alt={t("menu.editor.fields.photo")}
+              className="size-full object-cover"
+            />
+          ) : (
+            <ImagePlus
+              className="size-6 text-muted-foreground"
+              aria-hidden="true"
+            />
+          )}
+        </span>
+        <div className="grid gap-1.5">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              loading={upload.isPending}
+              aria-busy={upload.isPending || undefined}
+              onClick={() => inputRef.current?.click()}
+            >
+              {value
+                ? t("menu.editor.photoChange")
+                : t("menu.editor.photoChoose")}
+            </Button>
+            {value && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => onChange(null)}
+              >
+                <Trash2 aria-hidden="true" />
+                {t("menu.editor.photoRemove")}
+              </Button>
+            )}
+          </div>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {upload.isPending
+              ? t("menu.editor.photoUploading")
+              : t("menu.editor.photoHint")}
+          </p>
+        </div>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPTED.join(",")}
+        className="sr-only"
+        tabIndex={-1}
+        onChange={(event) => {
+          void handleFile(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+      {error && (
+        <p className="text-sm leading-5 font-medium text-danger" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}

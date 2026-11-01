@@ -127,14 +127,17 @@ export function checkJournalBalance(lines: readonly Sided[]): JournalBalance {
       issues.push(`Line ${index + 1}: amounts are whole rupiah >= 0`);
     else if (lineSideIssue(line))
       issues.push(`Line ${index + 1}: fill debit or credit, exactly one`);
-    debit += BigInt(Math.trunc(line.debitIdr));
-    credit += BigInt(Math.trunc(line.creditIdr));
+    if (valid(line.debitIdr)) debit += BigInt(line.debitIdr);
+    if (valid(line.creditIdr)) credit += BigInt(line.creditIdr);
   });
   if (debit !== credit) issues.push("Total debit must equal total credit");
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (debit > max || credit > max)
+    issues.push("Journal totals exceed safe rupiah range");
   return {
     balanced: issues.length === 0,
-    totalDebitIdr: Number(debit) as Idr,
-    totalCreditIdr: Number(credit) as Idr,
+    totalDebitIdr: Number(debit > max ? 0n : debit) as Idr,
+    totalCreditIdr: Number(credit > max ? 0n : credit) as Idr,
     issues,
   };
 }
