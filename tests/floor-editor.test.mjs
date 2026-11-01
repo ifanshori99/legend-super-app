@@ -3,7 +3,7 @@
 // carries number, capacity, type, place on the plan and a signed QR.
 //
 // Two halves: the contract the screens are built on (write inputs, TEN-02) and
-// the pure editor helpers in apps/web/src/features/ws03-floor/lib.ts. The
+// the pure editor helpers in apps/web/src/features/ws03-floor-editor/lib.ts. The
 // screens themselves are exercised by e2e/legend-th7.mock.spec.ts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -29,7 +29,7 @@ import {
   suggestTableCode,
   tablesOfZone,
   toZoneHours,
-} from "../apps/web/src/features/ws03-floor/lib.ts";
+} from "../apps/web/src/features/ws03-floor-editor/lib.ts";
 
 const fixtures = qr.qrOrderFixtures;
 const zone = fixtures.zones[0];

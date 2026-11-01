@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import { QrPage } from "@/features/ws03-floor/components/qr-page";
-import { floorGuard } from "@/features/ws03-floor/guard";
+import { QrPage } from "@/features/ws03-floor-editor/components/qr-page";
+import { floorGuard } from "@/features/ws03-floor-editor/guard";
 
 const t = createTranslator();
 

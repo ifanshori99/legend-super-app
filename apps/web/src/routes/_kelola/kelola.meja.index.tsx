@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import { FloorEditorPage } from "@/features/ws03-floor/components/floor-editor-page";
-import { floorGuard } from "@/features/ws03-floor/guard";
+import { FloorEditorPage } from "@/features/ws03-floor-editor/components/floor-editor-page";
+import { floorGuard } from "@/features/ws03-floor-editor/guard";
 
 const t = createTranslator();
 
