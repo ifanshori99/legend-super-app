@@ -405,7 +405,7 @@ export const accessTicketSchema = z
     customerProfileId: uuidSchema,
     productId: facilityProductIdSchema,
     source: entitlementSourceSchema,
-    /** The grant this ticket consumed, when the source issued one (UUID FK). */
+    /** The `redeem` ledger row this ticket consumed (UUID FK, unique; FAC-05). */
     entitlementLedgerId: uuidSchema.nullable(),
     slot: z.strictObject({
       startsAt: isoDateTimeSchema,
@@ -492,7 +492,10 @@ export type AccessTicket = z.infer<typeof accessTicketSchema>;
  * `access_tickets.qr_hash` / `pin_hash` columns, split out of the ticket DTO so
  * no client response can carry them: a 6-digit PIN has only 10^6 possible
  * digests, so a leaked hash is a leaked PIN. Clients receive the plaintext once
- * at issue (`accessTicketCredentialSchema`) and never the digests.
+ * at issue (`accessTicketCredentialSchema`) and never the digests. For the
+ * same reason the digest must be keyed — HMAC-SHA-256 with a per-tenant secret
+ * held by the API and the edge (lock agent), never a bare SHA-256 — so a
+ * database or backup leak alone cannot be brute-forced back to PINs.
  */
 export const accessTicketCredentialDigestSchema = z.strictObject({
   ticketId: accessTicketIdSchema,

@@ -879,3 +879,56 @@ test("the facility contract exports one subpath, well-formed endpoints and no ru
     );
   }
 });
+
+test("FAC-12: re-authorising an active device never counts against the 2-device limit", () => {
+  const policy = { maxDevices: 2 };
+  assert.equal(
+    facility.assertWifiDeviceAllowed(2, policy, { deviceAlreadyActive: true }),
+    undefined,
+  );
+  assert.throws(() => facility.assertWifiDeviceAllowed(2, policy));
+});
+
+test("FAC-12: Rp30.000 steps add an hour each and the daily quota caps at one day", () => {
+  const policy = {
+    freeMinutes: 120,
+    peakFreeMinutes: 60,
+    tierBonusMinutes: {},
+    spendPerExtraHourIdr: 30_000,
+    extraMinutes: 60,
+  };
+  assert.equal(
+    facility.wifiQuotaMinutes(policy, {
+      isPeak: false,
+      sameDaySpendIdr: 90_000,
+    }),
+    120 + 180,
+  );
+  assert.equal(
+    facility.wifiQuotaMinutes(policy, {
+      isPeak: false,
+      sameDaySpendIdr: 89_999,
+    }),
+    120 + 120,
+  );
+  assert.equal(
+    facility.wifiQuotaMinutes(policy, {
+      isPeak: false,
+      sameDaySpendIdr: 1_000_000,
+    }),
+    facility.WIFI_MAX_DAILY_MINUTES,
+  );
+});
+
+test("FAC-02: the partial exclusion predicate and ticketHoldsSlot agree", () => {
+  assert.equal(
+    facility.SLOT_HOLD_PREDICATE_SQL,
+    "status NOT IN ('cancelled','refunded','no_show')",
+  );
+  for (const status of facility.accessTicketStatusSchema.options)
+    assert.equal(
+      facility.ticketHoldsSlot(status),
+      !facility.SLOT_RELEASING_TICKET_STATUSES.includes(status),
+      status,
+    );
+});

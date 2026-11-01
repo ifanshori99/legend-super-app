@@ -79,7 +79,14 @@ export function wifiExtraMinutesForSpend(
   return steps * policy.extraMinutes;
 }
 
-/** Whole daily allowance: free minutes for the moment, tier bonus and spend. */
+/**
+ * A daily allowance never exceeds one day. Without the cap a large bill
+ * (Rp1.000.000 = 33 extra hours at the default rule) would produce a quota the
+ * session row and the `wifi_quota.updated` payload (0..1440) reject.
+ */
+export const WIFI_MAX_DAILY_MINUTES = 1440;
+
+/** Whole daily allowance: free minutes for the moment, tier bonus and spend, capped at one day. */
 export function wifiQuotaMinutes(
   policy: Pick<
     WifiPolicy,
@@ -91,9 +98,10 @@ export function wifiQuotaMinutes(
   >,
   input: { isPeak: boolean; tierKey?: string; sameDaySpendIdr: number },
 ): number {
-  return (
+  return Math.min(
+    WIFI_MAX_DAILY_MINUTES,
     wifiFreeMinutes(policy, input) +
-    wifiExtraMinutesForSpend(policy, input.sameDaySpendIdr)
+      wifiExtraMinutesForSpend(policy, input.sameDaySpendIdr),
   );
 }
 
@@ -120,16 +128,26 @@ export function wifiRemainingMinutes(
 }
 
 /**
- * FAC-12: at most `maxDevices` per account (PRD default 2). The caller counts
- * active sessions for the account, including the device asking for access when
- * it is already authorised.
+ * FAC-12 / D37: at most `maxDevices` per account (PRD default 2). The caller
+ * counts the account's active device sessions. A device that already holds one
+ * of them is re-authorised (portal reload, roaming between access points) and
+ * never counts against itself; only a new device needs a free place.
  */
 export function assertWifiDeviceAllowed(
   activeDevices: number,
   policy: Pick<WifiPolicy, "maxDevices">,
+  options: { deviceAlreadyActive?: boolean } = {},
 ): void {
   if (!Number.isInteger(activeDevices) || activeDevices < 0)
     throw new RangeError(`Invalid active device count: ${activeDevices}`);
+  if (options.deviceAlreadyActive === true) {
+    if (activeDevices > policy.maxDevices)
+      throw new FacilityError(
+        "WIFI_DEVICE_LIMIT",
+        "Jumlah perangkat untuk akun ini sudah mencapai batas.",
+      );
+    return;
+  }
   if (activeDevices >= policy.maxDevices)
     throw new FacilityError(
       "WIFI_DEVICE_LIMIT",

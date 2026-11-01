@@ -96,18 +96,36 @@ export function assertTicketUsableAt(
 
 // ---- Ticket status machine --------------------------------------------------
 
+/** Statuses that release the unit's range (FAC-02, PRD §6 K). */
+export const SLOT_RELEASING_TICKET_STATUSES = [
+  "cancelled",
+  "refunded",
+  "no_show",
+] as const satisfies readonly AccessTicketStatus[];
+
 /**
  * FAC-02 + PRD §6 K: a ticket keeps its unit's range until it is cancelled,
- * refunded or lost to a no-show. A Postgres EXCLUDE constraint cannot be
- * filtered by status, so the service that releases a ticket shrinks its stored
- * range to empty (or removes the holding row) in the same transaction; this
- * function is the single answer to "does this status still hold the slot?".
+ * refunded or lost to a no-show. Postgres supports this directly with a
+ * partial exclusion constraint, so the migration (bead legend-nm4f) uses
+ * `SLOT_HOLD_PREDICATE_SQL` and never rewrites the stored slot:
+ *
+ *   EXCLUDE USING gist (tenant_id WITH =, unit_id WITH =, slot WITH &&)
+ *     WHERE (status NOT IN ('cancelled','refunded','no_show'))
+ *
+ * The stored range stays intact for audit and reporting. This function is the
+ * application-side answer to "does this status still hold the slot?" and must
+ * agree with the predicate (contract test).
  */
 export function ticketHoldsSlot(status: AccessTicketStatus): boolean {
-  return (
-    status !== "cancelled" && status !== "refunded" && status !== "no_show"
+  return !(SLOT_RELEASING_TICKET_STATUSES as readonly string[]).includes(
+    status,
   );
 }
+
+/** The exclusion constraint's WHERE clause, built from the same list. */
+export const SLOT_HOLD_PREDICATE_SQL = `status NOT IN (${SLOT_RELEASING_TICKET_STATUSES.map(
+  (status) => `'${status}'`,
+).join(",")})`;
 
 export type TicketAction =
   "mark_paid" | "open" | "end" | "mark_no_show" | "cancel" | "refund";

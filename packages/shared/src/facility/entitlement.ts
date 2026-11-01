@@ -125,12 +125,20 @@ export function assertRedemptionAvailable(
 }
 
 /**
- * FAC-05: a redemption is 1:1 — one grant is consumed by one ticket, and one
- * ticket consumes one grant. The database enforces it with unique indexes
- * (`access_tickets.entitlement_ledger_id` and the redemption row's
- * `access_ticket_id`); this mirrors the two unique keys so a service that
- * forgets them fails in a test. Under concurrency the second claim loses the
- * unique-index race and gets ENTITLEMENT_ALREADY_REDEEMED.
+ * FAC-05: a redemption is 1:1 — one `redeem` ledger row belongs to exactly one
+ * ticket and one ticket points at exactly one `redeem` row
+ * (`access_tickets.entitlement_ledger_id` = the redeem row's id; the redeem
+ * row's `access_ticket_id`). Both are unique indexes; this mirrors the two keys
+ * so a service that forgets them fails in a test.
+ *
+ * The unique keys stop one ticket from being redeemed twice. They do NOT stop
+ * two concurrent redemptions (two tickets) from both reading the same last
+ * session: the redeem service must serialise per (tenant, customer, facility)
+ * — `pg_advisory_xact_lock` on that key, or `SELECT … FOR UPDATE` on the
+ * customer's grant rows — then recompute `entitlementBalance` (skipping
+ * grants for which `isGrantExpired` is true and no `expire` row exists yet)
+ * and insert the `redeem` row in the same transaction. The loser then fails
+ * with ENTITLEMENT_INSUFFICIENT.
  */
 export const redemptionClaimSchema = z.strictObject({
   ledgerId: uuidSchema,
