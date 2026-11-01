@@ -49,7 +49,7 @@ const namesByWorkstream = {
   "WS-07":
     "journal.posted fiscal_period.closed fiscal_period.reopened distribution.completed",
   "WS-08":
-    "customer.created loyalty_points.earned loyalty_points.expired loyalty_tier.evaluated reservation.created reservation.cancelled delivery_order.received",
+    "customer.created reservation.created reservation.cancelled delivery_order.received points.earned points.reversed points.redeemed points.expired tier.changed",
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired access_ticket.issued access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated",
   "WS-10":
