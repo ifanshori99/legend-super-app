@@ -40,6 +40,8 @@ import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as KelolaKelolaMejaIndexRouteImport } from './routes/_kelola/kelola.meja.index'
+import { Route as KelolaKelolaMejaQrRouteImport } from './routes/_kelola/kelola.meja.qr'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -193,6 +195,16 @@ const ShareholderShareholderIndexRoute =
     path: '/shareholder/',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const KelolaKelolaMejaIndexRoute = KelolaKelolaMejaIndexRouteImport.update({
+  id: '/kelola/meja/',
+  path: '/kelola/meja/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaMejaQrRoute = KelolaKelolaMejaQrRouteImport.update({
+  id: '/kelola/meja/qr',
+  path: '/kelola/meja/qr',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -252,12 +264,14 @@ export interface FileRoutesByFullPath {
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
 }
 export interface FileRoutesByTo {
@@ -280,12 +294,14 @@ export interface FileRoutesByTo {
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
+  '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/kelola/meja': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
 }
 export interface FileRoutesById {
@@ -321,12 +337,14 @@ export interface FileRoutesById {
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
+  '/_kelola/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/_kelola/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/_kelola/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/_kelola/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
 }
 export interface FileRouteTypes {
@@ -352,12 +370,14 @@ export interface FileRouteTypes {
     | '/owner/'
     | '/platform/'
     | '/shareholder/'
+    | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/kelola/meja/'
     | '/kelola/menu/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -380,12 +400,14 @@ export interface FileRouteTypes {
     | '/owner'
     | '/platform'
     | '/shareholder'
+    | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/kelola/meja'
     | '/kelola/menu'
   id:
     | '__root__'
@@ -420,12 +442,14 @@ export interface FileRouteTypes {
     | '/_owner/owner/'
     | '/_platform/platform/'
     | '/_shareholder/shareholder/'
+    | '/_kelola/kelola/meja/qr'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
     | '/_kelola/kelola/menu/ketersediaan'
     | '/_kelola/kelola/menu/paket'
     | '/_kelola/kelola/menu/stasiun'
+    | '/_kelola/kelola/meja/'
     | '/_kelola/kelola/menu/'
   fileRoutesById: FileRoutesById
 }
@@ -663,6 +687,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
       parentRoute: typeof ShareholderRoute
     }
+    '/_kelola/kelola/meja/': {
+      id: '/_kelola/kelola/meja/'
+      path: '/kelola/meja'
+      fullPath: '/kelola/meja/'
+      preLoaderRoute: typeof KelolaKelolaMejaIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/meja/qr': {
+      id: '/_kelola/kelola/meja/qr'
+      path: '/kelola/meja/qr'
+      fullPath: '/kelola/meja/qr'
+      preLoaderRoute: typeof KelolaKelolaMejaQrRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
       path: '/kelola/menu'
@@ -769,23 +807,27 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 
 interface KelolaRouteChildren {
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+  KelolaKelolaMejaQrRoute: typeof KelolaKelolaMejaQrRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
   KelolaKelolaMenuKategoriRoute: typeof KelolaKelolaMenuKategoriRoute
   KelolaKelolaMenuKetersediaanRoute: typeof KelolaKelolaMenuKetersediaanRoute
   KelolaKelolaMenuPaketRoute: typeof KelolaKelolaMenuPaketRoute
   KelolaKelolaMenuStasiunRoute: typeof KelolaKelolaMenuStasiunRoute
+  KelolaKelolaMejaIndexRoute: typeof KelolaKelolaMejaIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+  KelolaKelolaMejaQrRoute: KelolaKelolaMejaQrRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
   KelolaKelolaMenuKategoriRoute: KelolaKelolaMenuKategoriRoute,
   KelolaKelolaMenuKetersediaanRoute: KelolaKelolaMenuKetersediaanRoute,
   KelolaKelolaMenuPaketRoute: KelolaKelolaMenuPaketRoute,
   KelolaKelolaMenuStasiunRoute: KelolaKelolaMenuStasiunRoute,
+  KelolaKelolaMejaIndexRoute: KelolaKelolaMejaIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
 }
 

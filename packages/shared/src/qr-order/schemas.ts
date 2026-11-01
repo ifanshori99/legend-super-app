@@ -86,6 +86,7 @@ export const zoneHoursSchema = z.strictObject({
   start: timeOfDaySchema,
   end: timeOfDaySchema,
 });
+export type ZoneHours = z.infer<typeof zoneHoursSchema>;
 
 export const floorZoneSchema = z.strictObject({
   id: floorZoneIdSchema,
@@ -115,6 +116,10 @@ export const tableStatusSchema = z.enum(TABLE_STATUSES);
 export type TableType = z.infer<typeof tableTypeSchema>;
 export type TableStatus = z.infer<typeof tableStatusSchema>;
 
+export const TABLE_SHAPES = ["rect", "round"] as const;
+export const tableShapeSchema = z.enum(TABLE_SHAPES);
+export type TableShape = z.infer<typeof tableShapeSchema>;
+
 /** Position and shape on the floor plan (JSONB `tables.layout`), in plan units. */
 export const tableLayoutSchema = z.strictObject({
   x: z.number().finite(),
@@ -127,8 +132,20 @@ export const tableLayoutSchema = z.strictObject({
     z.literal(180),
     z.literal(270),
   ]),
-  shape: z.enum(["rect", "round"]),
+  shape: tableShapeSchema,
 });
+export type TableLayout = z.infer<typeof tableLayoutSchema>;
+
+/**
+ * Table number as printed on the plan and the QR label: uppercase letters,
+ * digits and dashes. Unique per outlet (a guest reads it off the sticker).
+ */
+export const tableCodeSchema = z
+  .string()
+  .regex(
+    /^[A-Z0-9-]{1,20}$/,
+    "Pakai huruf besar, angka, atau tanda hubung (maks. 20 karakter)",
+  );
 
 /**
  * Table DTO. The permanent signed QR token and its `qr_token_hash` are not
@@ -139,13 +156,90 @@ export const tableSchema = z.strictObject({
   id: tableIdSchema,
   ...scope,
   zoneId: floorZoneIdSchema,
-  code: z.string().regex(/^[A-Z0-9-]{1,20}$/),
+  code: tableCodeSchema,
   capacity: z.number().int().min(1).max(50),
   type: tableTypeSchema,
   layout: tableLayoutSchema,
   status: tableStatusSchema,
 });
 export type Table = z.infer<typeof tableSchema>;
+
+// ---- Floor admin writes (§3 F9 "Denah & Meja") ----------------------------
+//
+// The read model for the editor is `getFloorBoard` (zones, tables and the live
+// session on each table). These inputs carry only what a manager edits; the
+// tenant and outlet come from the route and the session (TEN-02).
+
+export const ZONE_STATUSES = ["active", "inactive"] as const;
+export const zoneStatusSchema = z.enum(ZONE_STATUSES);
+export type ZoneStatus = z.infer<typeof zoneStatusSchema>;
+
+/** Opening windows; a zone with no window never opens (PRD §3 F9 "Zona"). */
+export const zoneOpeningHoursSchema = z.array(zoneHoursSchema).min(1).max(7);
+
+/** Zone name as the settings form sends it; the message tells how to fix it. */
+const zoneName = z
+  .string()
+  .trim()
+  .min(1, "Nama zona wajib diisi")
+  .max(150, "Nama zona maksimal 150 karakter");
+
+export const createFloorZoneInputSchema = clientInputSchema({
+  name: zoneName,
+  paymentMode: paymentModeSchema,
+  serviceChargeBp: basisPointsSchema,
+  minimumSpendIdr: nonnegativeIdr,
+  hours: zoneOpeningHoursSchema,
+  status: zoneStatusSchema.default("active"),
+  sortOrder: z.number().int().min(0).max(999).default(0),
+});
+
+/** PATCH: only the sent fields change, and at least one must be sent. */
+export const updateFloorZoneInputSchema = clientInputSchema({
+  name: zoneName.optional(),
+  paymentMode: paymentModeSchema.optional(),
+  serviceChargeBp: basisPointsSchema.optional(),
+  minimumSpendIdr: nonnegativeIdr.optional(),
+  hours: zoneOpeningHoursSchema.optional(),
+  status: zoneStatusSchema.optional(),
+  sortOrder: z.number().int().min(0).max(999).optional(),
+}).refine(
+  (value) => Object.values(value).some((field) => field !== undefined),
+  { message: "Send at least one field to change", path: ["name"] },
+);
+
+export const createTableInputSchema = clientInputSchema({
+  zoneId: floorZoneIdSchema,
+  code: tableCodeSchema,
+  capacity: z.number().int().min(1).max(50),
+  type: tableTypeSchema,
+  layout: tableLayoutSchema,
+  status: tableStatusSchema.default("available"),
+});
+
+export const updateTableInputSchema = clientInputSchema({
+  zoneId: floorZoneIdSchema.optional(),
+  code: tableCodeSchema.optional(),
+  capacity: z.number().int().min(1).max(50).optional(),
+  type: tableTypeSchema.optional(),
+  layout: tableLayoutSchema.optional(),
+  status: tableStatusSchema.optional(),
+}).refine(
+  (value) => Object.values(value).some((field) => field !== undefined),
+  { message: "Send at least one field to change", path: ["code"] },
+);
+
+/** One table's new place on the plan. */
+export const tablePlacementSchema = z.strictObject({
+  tableId: tableIdSchema,
+  layout: tableLayoutSchema,
+});
+export type TablePlacement = z.infer<typeof tablePlacementSchema>;
+
+/** The whole plan in one request, so a drag session never saves half a move. */
+export const saveFloorLayoutInputSchema = clientInputSchema({
+  placements: z.array(tablePlacementSchema).min(1).max(200),
+});
 
 // ---- Signed QR (§3 "Keamanan Sesi", ORD-04) -------------------------------
 
