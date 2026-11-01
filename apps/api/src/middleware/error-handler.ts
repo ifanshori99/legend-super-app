@@ -1,5 +1,7 @@
 import type { ErrorRequestHandler, RequestHandler } from "express";
 import { ZodError } from "zod";
+import { CoreError } from "@starter/shared/core";
+import { PlatformError } from "@starter/shared/platform";
 import { HttpError } from "../lib/http-error";
 
 function send(
@@ -26,6 +28,14 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
   if (res.headersSent) return next(error);
 
   if (error instanceof HttpError)
+    return send(res, error.status, {
+      code: error.code,
+      message: error.message,
+    });
+
+  // Domain contracts throw these with their own HTTP status (TEN-03
+  // OUTLET_OUT_OF_SCOPE, TEN-05 FEATURE_DISABLED, TEN-04 SUPPORT_ACCESS_*).
+  if (error instanceof CoreError || error instanceof PlatformError)
     return send(res, error.status, {
       code: error.code,
       message: error.message,

@@ -139,6 +139,7 @@ export const setTenantStatusInputSchema = clientInputSchema({
   status: tenantStatusSchema,
   reason: reasonSchema,
 });
+export type SetTenantStatusInput = z.infer<typeof setTenantStatusInputSchema>;
 export const setTenantPackageInputSchema = clientInputSchema({
   plan: packageKeySchema,
   featureFlags: featureFlagsSchema,
@@ -168,10 +169,12 @@ export const createBrandInputSchema = clientInputSchema({
   name: name150,
   logoMediaId: uuidSchema.nullable().default(null),
 });
+export type CreateBrandInput = z.infer<typeof createBrandInputSchema>;
 export const updateBrandInputSchema = clientInputSchema({
   name: name150.optional(),
   logoMediaId: uuidSchema.nullable().optional(),
 });
+export type UpdateBrandInput = z.infer<typeof updateBrandInputSchema>;
 
 // ---------------------------------------------------------- legal entities
 
@@ -206,12 +209,18 @@ export const createLegalEntityInputSchema = clientInputSchema({
   isPkp: z.boolean(),
   address: z.string().trim().min(1).max(500).nullable(),
 });
+export type CreateLegalEntityInput = z.infer<
+  typeof createLegalEntityInputSchema
+>;
 export const updateLegalEntityInputSchema = clientInputSchema({
   name: name150.optional(),
   npwp: npwpInputSchema.nullable().optional(),
   isPkp: z.boolean().optional(),
   address: z.string().trim().min(1).max(500).nullable().optional(),
 });
+export type UpdateLegalEntityInput = z.infer<
+  typeof updateLegalEntityInputSchema
+>;
 
 /** Last four NPWP digits for display; never more. */
 export function npwpLast4(npwp: string): string {
@@ -309,10 +318,12 @@ export const updateOutletInputSchema = clientInputSchema({
   geofence: geofenceSchema.nullable().optional(),
   openingHours: openingHoursSchema.optional(),
 });
+export type UpdateOutletInput = z.infer<typeof updateOutletInputSchema>;
 export const setOutletStatusInputSchema = clientInputSchema({
   status: outletStatusSchema,
   reason: reasonSchema,
 });
+export type SetOutletStatusInput = z.infer<typeof setOutletStatusInputSchema>;
 
 // ------------------------------------------------- platform admins, regions
 
