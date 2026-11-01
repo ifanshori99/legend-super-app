@@ -1,0 +1,103 @@
+// The created split parts and the "pay my share" action (ORD-06: the parts add
+// up exactly to the bill total, shown as a check line).
+import { CircleCheck, Clock } from "lucide-react";
+import type { BillSplit, SessionBill } from "@starter/shared/qr-order";
+import { formatRupiah } from "@starter/shared/i18n";
+import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Money } from "@/components/ui/money";
+
+export function liveSplits(bill: SessionBill): BillSplit[] {
+  return bill.splits.filter((split) => split.status !== "voided");
+}
+
+export function SplitList({
+  bill,
+  participantIds,
+  myParticipantId,
+  onPay,
+}: {
+  bill: SessionBill;
+  participantIds: readonly string[];
+  myParticipantId: string | null;
+  onPay: (split: BillSplit) => void;
+}) {
+  const t = useT();
+  const splits = liveSplits(bill);
+  const sum = splits.reduce((total, split) => total + split.amountIdr, 0);
+  const guestName = (participantId: string) => {
+    const n = participantIds.indexOf(participantId) + 1;
+    return participantId === myParticipantId
+      ? t("qrOrders.bill.guestYou", { n })
+      : t("qrOrders.bill.guest", { n });
+  };
+  return (
+    <section aria-labelledby="bill-shares" className="grid gap-3">
+      <h2 id="bill-shares" className="text-lg leading-7 font-semibold">
+        {t("qrOrders.bill.listTitle")}
+      </h2>
+      <ul className="divide-y rounded-xl border-(length:--border-w)">
+        {splits.map((split) => {
+          const mine =
+            split.participantId === null ||
+            split.participantId === myParticipantId;
+          const name = split.participantId
+            ? guestName(split.participantId)
+            : (split.label ??
+              t("qrOrders.bill.part", { n: split.shareIndex + 1 }));
+          return (
+            <li key={split.id} className="grid gap-3 p-card">
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid min-w-0 gap-0.5">
+                  <span className="font-semibold">{name}</span>
+                  <Money amount={split.amountIdr} size="lg" />
+                </div>
+                {split.status === "paid" ? (
+                  <Badge tone="success">
+                    <CircleCheck aria-hidden="true" />
+                    {t("qrOrders.bill.sharePaid")}
+                  </Badge>
+                ) : (
+                  <Badge tone="warning">
+                    <Clock aria-hidden="true" />
+                    {t("qrOrders.bill.sharePending")}
+                  </Badge>
+                )}
+              </div>
+              {split.status === "pending" &&
+                (mine ? (
+                  <Button
+                    type="button"
+                    variant={
+                      split.participantId === myParticipantId
+                        ? "default"
+                        : "secondary"
+                    }
+                    onClick={() => onPay(split)}
+                  >
+                    {t("qrOrders.bill.payShare")}
+                  </Button>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {t("qrOrders.bill.shareWaiting", {
+                      guest: guestName(split.participantId as string),
+                    })}
+                  </p>
+                ))}
+            </li>
+          );
+        })}
+      </ul>
+      {sum === bill.totals.totalIdr && (
+        <p className="flex items-start gap-2 text-sm text-muted-foreground">
+          <CircleCheck
+            className="mt-0.5 size-4 shrink-0 text-success"
+            aria-hidden="true"
+          />
+          {t("qrOrders.bill.splitSumOk", { amount: formatRupiah(sum) })}
+        </p>
+      )}
+    </section>
+  );
+}
