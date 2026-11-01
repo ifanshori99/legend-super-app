@@ -787,3 +787,106 @@ describe("access events", () => {
     });
   });
 });
+
+describe("security regression: fail closed", () => {
+  test("AUTH-05 missing approver role metadata cannot bypass MFA", () => {
+    const requirement = access.approvalRequirementFor(
+      fx.approvalPolicies,
+      "payroll",
+      250_000_000,
+    );
+    throwsCode(
+      () =>
+        access.assertApprovalDecisionAllowed({
+          requirement,
+          requestedBy: fx.users.employee.id,
+          priorDecisions: [],
+          level: 1,
+          approver: principal("hr"),
+          approverRoles: [],
+          approverMfaVerified: false,
+          surface: "dashboard",
+          target: tenant,
+          org: fx.org,
+          now: fx.now,
+        }),
+      "APPROVER_ROLE_MISMATCH",
+    );
+  });
+
+  test("AUTH-05 unknown active role cannot bypass MFA when another role grants access", () => {
+    const roles = fx.roleGrants.filter((role) => role.id !== roleId("hr"));
+    const hr = principal("hr");
+    const cashierAssignment = fx.assignments.find(
+      (row) => row.userId === fx.users.cashier.id,
+    );
+    const combined = {
+      ...hr,
+      assignments: [
+        ...hr.assignments,
+        { ...cashierAssignment, userId: hr.userId },
+      ],
+    };
+    assert.equal(
+      access.authorize({
+        principal: combined,
+        roles,
+        org: fx.org,
+        permission: "pos.sale.create",
+        target: outlet(bandung),
+        now: fx.now,
+        surface: "back_office",
+        mfaVerified: false,
+      }).allowed,
+      false,
+    );
+  });
+
+  test("approval rejects invalid monetary amounts", () => {
+    for (const amount of [NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1])
+      assert.throws(
+        () =>
+          access.approvalRequirementFor(
+            fx.approvalPolicies,
+            "discount",
+            amount,
+          ),
+        RangeError,
+      );
+  });
+
+  test("approval cannot advance from an out-of-order prior decision", () => {
+    const requirement = access.approvalRequirementFor(
+      fx.approvalPolicies,
+      "payroll",
+      250_000_000,
+    );
+    throwsCode(
+      () =>
+        access.assertApprovalDecisionAllowed({
+          requirement,
+          requestedBy: fx.users.employee.id,
+          priorDecisions: [{ level: 2, approverId: fx.users.hr.id }],
+          level: 2,
+          approver: principal("finance"),
+          approverRoles: fx.roleGrants,
+          approverMfaVerified: true,
+          surface: "dashboard",
+          target: tenant,
+          org: fx.org,
+          now: fx.now,
+        }),
+      "APPROVAL_LEVEL_OUT_OF_ORDER",
+    );
+  });
+
+  test("invalid assignment start never becomes active", () => {
+    assert.equal(
+      access.isAssignmentActive(
+        { validFrom: "invalid", validUntil: null },
+        fx.now,
+      ),
+      false,
+    );
+  });
+});

@@ -151,6 +151,10 @@ export function approvalRequirementFor(
   actionType: ApprovalActionType,
   amountIdr: Idr | number | null,
 ): ApprovalRequirement {
+  if (amountIdr !== null && (!Number.isSafeInteger(amountIdr) || amountIdr < 0))
+    throw new RangeError(
+      "amountIdr must be a non-negative safe integer or null",
+    );
   const rows = policies.filter((row) => row.actionType === actionType);
   if (rows.length === 0) throw new AccessError("APPROVAL_POLICY_MISSING");
   const applicable = rows.filter(
@@ -226,6 +230,17 @@ export function assertApprovalDecisionAllowed(input: {
   if (!input.requirement.required)
     throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
   const steps = input.requirement.steps;
+  const priorActors = new Set<string>();
+  for (const [index, decision] of input.priorDecisions.entries()) {
+    const actor = decision.approverId.toLowerCase();
+    if (
+      steps[index]?.level !== decision.level ||
+      actor === input.requestedBy.toLowerCase() ||
+      priorActors.has(actor)
+    )
+      throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
+    priorActors.add(actor);
+  }
   const nextLevel = steps[input.priorDecisions.length]?.level;
   if (nextLevel === undefined || input.level !== nextLevel)
     throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
@@ -243,13 +258,16 @@ export function assertApprovalDecisionAllowed(input: {
   const qualifying = active.filter(
     (row) =>
       wanted.has(row.roleId.toLowerCase()) &&
+      roles.has(row.roleId.toLowerCase()) &&
       scopeCovers(row.scope, input.target, input.org),
   );
   if (qualifying.length === 0) throw new AccessError("APPROVER_ROLE_MISMATCH");
   if (
     isMfaGuardedSurface(input.surface) &&
     !input.approverMfaVerified &&
-    active.some((row) => roles.get(row.roleId.toLowerCase())?.mfaRequired)
+    active.some(
+      (row) => roles.get(row.roleId.toLowerCase())?.mfaRequired !== false,
+    )
   )
     throw new AccessError("MFA_REQUIRED");
 }
