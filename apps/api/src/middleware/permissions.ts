@@ -8,17 +8,17 @@
 // checks agree on the caller's scope.
 //
 // AUTH-05: the snapshot carries `mfaRequired` / `mfaVerified` for the web area
-// guards and `/api/me/access`. The API-side second-factor gate is bead
-// legend-6xf (`assertSurfaceAccess` from @starter/shared/access); this
-// middleware enforces permission + scope + time only, which keeps every other
-// BE route usable until the MFA factor store lands.
+// guards and `/api/me/access`, read from the same session row the API gate
+// enforces (legend-6xf, mounted by legend-qfvu). This middleware itself
+// enforces permission + scope + time; the second-factor gate runs once per
+// guarded router (requireIdentitySurface / requireSessionMfa).
 
 import type { Request, RequestHandler } from "express";
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "./auth";
-import { verifiedMfaAt } from "../lib/mfa";
+import { loadSessionRow } from "../services/identity-session.service";
 import { getTenantContext } from "./tenant";
 import {
   loadTenantAccess,
@@ -42,13 +42,16 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     establishScopedTenantContext(tenant, { kind: "tenant" }),
     userId,
   );
+  const session = await loadSessionRow(getAuth(req).session.id);
   const snapshot = resolveAccessSnapshot({
     tenant,
     userId,
     ...data,
-    // lib/mfa.ts fails closed until the factor store lands; the web guard
-    // reads the same flag through /api/me/access.
-    mfaVerified: (await verifiedMfaAt(req)) !== null,
+    // AUTH-05: the same flag the API gate enforces (session.mfa_verified_at),
+    // so a session that verified a factor through /api/auth/mfa/verify opens
+    // the web area too. `verifiedMfaAt(req)` answers a different question — a
+    // fresh code for one support-access call (TEN-04) — and stays out of here.
+    mfaVerified: session?.mfaVerifiedAt != null,
     now: new Date(),
   });
   snapshots.set(req, snapshot);

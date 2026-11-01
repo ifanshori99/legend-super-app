@@ -18,7 +18,13 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import { setAuditWriter, type AuditEntry } from "../services/audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
-import { agent, originHeader, setRole, signUp } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 const app = createApp();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -38,13 +44,17 @@ function scopedContext(tenantId = seededTenantId): ScopedTenantContext {
   );
 }
 
-async function signedIn(name = "RBAC user") {
+async function signedIn(name = "RBAC user", options: { mfa?: boolean } = {}) {
   const client = agent(app);
-  await signUp(client, name);
+  const email = await signUp(client, name);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   createdUserIds.push(userId);
-  return { client, userId };
+  // AUTH-05: /api/access and /api/org are closed until this session verified a
+  // second factor (legend-qfvu mounted the gate). Suites about the pre-MFA
+  // snapshot opt out with { mfa: false }.
+  if (options.mfa ?? true) await verifySessionMfa(email);
+  return { client, userId, email };
 }
 
 async function roleIdOf(
@@ -114,7 +124,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
   it("TEN-03 fails closed without an assignment and lists effective codes with one", async () => {
     expect((await agent(app).get("/api/me/access")).status).toBe(401);
 
-    const plain = await signedIn("No role");
+    const plain = await signedIn("No role", { mfa: false });
     const empty = await plain.client.get("/api/me/access");
     expect(empty.status).toBe(200);
     expect(empty.body.data).toEqual({
@@ -123,7 +133,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
       mfaVerified: false,
     });
 
-    const ownerUser = await signedIn("Owner Access");
+    const ownerUser = await signedIn("Owner Access", { mfa: false });
     await assign(ownerUser.userId, "owner");
     const access = await ownerUser.client.get("/api/me/access");
     expect(access.status).toBe(200);

@@ -23,6 +23,7 @@ import {
 } from "@starter/shared/identity";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
+import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
@@ -43,7 +44,14 @@ import {
 
 export const accessRouter = Router();
 
-accessRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// AUTH-05: role administration is back office; an MFA role needs a verified
+// second factor on this session (legend-qfvu).
+accessRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+);
 
 // ------------------------------------------------------------------- roles
 
