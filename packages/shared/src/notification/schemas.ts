@@ -1,0 +1,434 @@
+// Notification contracts (PRD v1.7 §3 item 15 "Notifikasi Hemat Biaya", F12,
+// U14; §6.J `notifications` / `delivery_attempts` / `notification_outbox`).
+// Channel order: in-app (the official record) -> web push -> email ->
+// WhatsApp template (paid, off by default, allowed categories only, capped).
+// Reuse source: 119connect notifikasi (categories, quiet hours, push
+// subscription shape), adapted to Legend's categories and the transactional
+// domain-event outbox (docs/plan/119connect-inventory.md).
+
+import {
+  z,
+  uuidIdSchema,
+  ulidIdSchema,
+  ulidSchema,
+  tenantIdSchema,
+  outletIdSchema,
+  userIdSchema,
+  idrSchema,
+  isoDateTimeSchema,
+  timeOfDaySchema,
+  timeZoneSchema,
+} from "../core/index.ts";
+import { eventNameSchema } from "../events/schemas.ts";
+import { publicHttpsUrlSchema } from "../adapters/safety.ts";
+
+export const notificationIdSchema = ulidIdSchema<"NotificationId">();
+export const deliveryAttemptIdSchema = ulidIdSchema<"DeliveryAttemptId">();
+export const notificationOutboxIdSchema =
+  ulidIdSchema<"NotificationOutboxId">();
+export const notificationTemplateIdSchema =
+  uuidIdSchema<"NotificationTemplateId">();
+export const pushSubscriptionIdSchema = uuidIdSchema<"PushSubscriptionId">();
+export type NotificationId = z.infer<typeof notificationIdSchema>;
+
+// ---- Channels ---------------------------------------------------------------
+
+/** PRD §3.15 "Urutan Kanal", in cascade order. */
+export const NOTIFICATION_CHANNELS = [
+  "in_app",
+  "web_push",
+  "email",
+  "whatsapp",
+] as const;
+export const notificationChannelSchema = z.enum(NOTIFICATION_CHANNELS);
+export type NotificationChannel = z.infer<typeof notificationChannelSchema>;
+/** Channels with a delivery attempt (in-app is the stored record itself). */
+export const externalChannelSchema = z.enum(["web_push", "email", "whatsapp"]);
+export type ExternalChannel = z.infer<typeof externalChannelSchema>;
+/** Channels that cost nothing per message (U14: >= 90% of volume). */
+export const FREE_CHANNELS: readonly NotificationChannel[] = [
+  "in_app",
+  "web_push",
+  "email",
+];
+
+// ---- Categories -------------------------------------------------------------
+
+type CategoryMeta = {
+  audience: "staff" | "customer" | "any";
+  /** Pushed live to staff devices over WebSocket (PRD §3.15 operasional). */
+  realtime: boolean;
+  /** Ignores quiet hours (PRD §3.15 "kecuali pemberitahuan keamanan"). */
+  bypassQuietHours: boolean;
+  /** Default external channels when the user has not set a preference. */
+  defaultChannels: readonly ExternalChannel[];
+  prd: string;
+};
+
+/**
+ * Category catalog. WhatsApp is never a default channel: it needs the
+ * tenant's policy, an allowed category and the user's opt-in.
+ */
+export const NOTIFICATION_CATEGORY_CATALOG = {
+  waiter_call: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional",
+  },
+  order_ready: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional",
+  },
+  stock_critical: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional",
+  },
+  approval_request: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional; §3.7 Kotak Approval",
+  },
+  printer_offline: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional; EDG-05",
+  },
+  cash_variance: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15 Notifikasi Operasional",
+  },
+  emergency: {
+    audience: "staff",
+    realtime: true,
+    bypassQuietHours: true,
+    defaultChannels: ["web_push"],
+    prd: "FAC-08 tombol darurat",
+  },
+  security: {
+    audience: "any",
+    realtime: false,
+    bypassQuietHours: true,
+    defaultChannels: ["web_push", "email"],
+    prd: "§3.15 Preferensi (keamanan); §3.4 Support Access",
+  },
+  order_status: {
+    audience: "customer",
+    realtime: true,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3.15; ORD-08",
+  },
+  reservation_reminder: {
+    audience: "customer",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push", "email"],
+    prd: "§3 Reservasi Pengingat",
+  },
+  facility_session: {
+    audience: "customer",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 Fasilitas Sesi & Pengingat",
+  },
+  subscription_billing: {
+    audience: "customer",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push", "email"],
+    prd: "D24",
+  },
+  schedule_update: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 Notifikasi Jadwal",
+  },
+  payslip: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§4 Alur K",
+  },
+  daily_summary: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "AI-10",
+  },
+} as const satisfies Record<string, CategoryMeta>;
+
+export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;
+export const NOTIFICATION_CATEGORIES = Object.keys(
+  NOTIFICATION_CATEGORY_CATALOG,
+) as [NotificationCategory, ...NotificationCategory[]];
+export const notificationCategorySchema = z.enum(NOTIFICATION_CATEGORIES);
+
+export function categoryMeta(category: NotificationCategory): CategoryMeta {
+  return NOTIFICATION_CATEGORY_CATALOG[category];
+}
+
+// ---- Tenant channel policy --------------------------------------------------
+
+/** Tenant-wide channel policy. Costs, caps and retry limits are data. */
+export const notificationPolicySchema = z
+  .strictObject({
+    tenantId: tenantIdSchema,
+    webPushEnabled: z.boolean(),
+    emailEnabled: z.boolean(),
+    whatsapp: z.strictObject({
+      /** Off by default (PRD §3.15; AUTH-03 for the login flow). */
+      enabled: z.boolean(),
+      allowedCategories: z.array(notificationCategorySchema),
+      /** Messages per calendar month across the tenant; 0 = none. */
+      monthlyCap: z.number().int().nonnegative().max(1_000_000),
+      costPerMessageIdr: idrSchema.refine((n) => n >= 0),
+    }),
+    /** Total tries per external delivery, first one included. */
+    maxAttempts: z.number().int().min(1).max(10),
+    /** Wait before retry n (index 0 = before the 2nd try), in seconds. */
+    retryBackoffSeconds: z.array(z.number().int().min(1).max(86_400)).min(1),
+    updatedAt: isoDateTimeSchema,
+  })
+  .refine(
+    (p) => !p.whatsapp.enabled || p.whatsapp.allowedCategories.length > 0,
+    {
+      path: ["whatsapp", "allowedCategories"],
+      message: "Enabling WhatsApp needs at least one allowed category",
+    },
+  );
+export type NotificationPolicy = z.infer<typeof notificationPolicySchema>;
+
+// ---- User preferences -------------------------------------------------------
+
+export const channelPreferenceSchema = z.strictObject({
+  web_push: z.boolean(),
+  email: z.boolean(),
+  whatsapp: z.boolean(),
+});
+export type ChannelPreference = z.infer<typeof channelPreferenceSchema>;
+
+export const quietHoursSchema = z
+  .strictObject({
+    start: timeOfDaySchema,
+    end: timeOfDaySchema,
+  })
+  .refine((q) => q.start !== q.end, {
+    path: ["end"],
+    message: "Quiet hours must not start and end at the same time",
+  });
+export type QuietHours = z.infer<typeof quietHoursSchema>;
+
+/** PRD §3.15 "Preferensi": categories and channels per user, quiet hours. In-
+ * app is not optional: it is the official record. */
+export const notificationPreferenceSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  userId: userIdSchema,
+  /** Missing category = the catalog's defaultChannels. */
+  categories: z.partialRecord(
+    notificationCategorySchema,
+    channelPreferenceSchema,
+  ),
+  quietHours: quietHoursSchema.nullable(),
+  timeZone: timeZoneSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type NotificationPreference = z.infer<
+  typeof notificationPreferenceSchema
+>;
+
+// ---- Templates --------------------------------------------------------------
+
+const PLACEHOLDER = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
+export function templatePlaceholders(text: string): string[] {
+  return [...text.matchAll(PLACEHOLDER)].map((m) => m[1]);
+}
+
+/** Relative in-app link: one leading slash, never "//host" or a scheme. */
+export const inAppLinkSchema = z
+  .string()
+  .max(500)
+  .regex(/^\/(?!\/)[^\s\\]*$/, "Links are relative paths starting with /");
+
+export const notificationTemplateSchema = z
+  .strictObject({
+    id: notificationTemplateIdSchema,
+    /** Null = platform default; a tenant row overrides it (whitelabel). */
+    tenantId: tenantIdSchema.nullable(),
+    category: notificationCategorySchema,
+    channel: notificationChannelSchema,
+    locale: z.enum(["id", "en"]),
+    title: z.string().min(1).max(120),
+    body: z.string().min(1).max(1000),
+    /** Relative path template, e.g. "/pesanan/{{orderId}}". */
+    link: z
+      .string()
+      .max(500)
+      .regex(/^\/(?!\/)/, "Links are relative paths starting with /")
+      .nullable(),
+    /** Provider-approved WhatsApp template name; required for whatsapp. */
+    whatsappTemplateName: z
+      .string()
+      .regex(/^[a-z0-9_]{1,512}$/)
+      .nullable(),
+    variables: z.array(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/)).max(20),
+    version: z.number().int().positive(),
+    isActive: z.boolean(),
+  })
+  .superRefine((t, ctx) => {
+    const declared = new Set(t.variables);
+    for (const field of ["title", "body", "link"] as const) {
+      const text = t[field];
+      if (text === null) continue;
+      for (const name of templatePlaceholders(text))
+        if (!declared.has(name))
+          ctx.addIssue({
+            code: "custom",
+            path: [field],
+            message: `Undeclared variable {{${name}}}`,
+          });
+    }
+    if ((t.channel === "whatsapp") !== (t.whatsappTemplateName !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["whatsappTemplateName"],
+        message: "whatsappTemplateName is required for, and only for, whatsapp",
+      });
+  });
+export type NotificationTemplate = z.infer<typeof notificationTemplateSchema>;
+
+// ---- Records ----------------------------------------------------------------
+
+/** In-app notification (§6.J `notifications`): the official record. */
+export const notificationSchema = z.strictObject({
+  id: notificationIdSchema,
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema.nullable(),
+  userId: userIdSchema,
+  category: notificationCategorySchema,
+  title: z.string().min(1).max(120),
+  body: z.string().max(1000),
+  link: inAppLinkSchema.nullable(),
+  readAt: isoDateTimeSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  /** Domain event that caused it (null for manual/system notices). */
+  sourceEventId: ulidSchema.nullable(),
+  dedupeKey: z.string().min(1).max(200),
+});
+export type Notification = z.infer<typeof notificationSchema>;
+
+export const DELIVERY_STATUSES = [
+  "queued",
+  "sending",
+  "sent",
+  "delivered",
+  "failed",
+  "dead",
+  "skipped",
+] as const;
+export const deliveryStatusSchema = z.enum(DELIVERY_STATUSES);
+export type DeliveryStatus = z.infer<typeof deliveryStatusSchema>;
+
+/** Per-channel status (§6.J `delivery_attempts`, PRD "status per kanal"). */
+export const deliveryAttemptSchema = z.strictObject({
+  id: deliveryAttemptIdSchema,
+  tenantId: tenantIdSchema,
+  notificationId: notificationIdSchema,
+  channel: externalChannelSchema,
+  status: deliveryStatusSchema,
+  /** Tries made so far. */
+  attempts: z.number().int().nonnegative(),
+  nextAttemptAt: isoDateTimeSchema.nullable(),
+  /** Realized cost (U14 cost report); 0 for free channels. */
+  costIdr: idrSchema.refine((n) => n >= 0),
+  providerRef: z.string().max(255).nullable(),
+  /** Machine code only; never provider bodies or recipient data. */
+  errorCode: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{0,63}$/)
+    .nullable(),
+  skipReason: z.string().max(40).nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type DeliveryAttempt = z.infer<typeof deliveryAttemptSchema>;
+
+/** §6.J `notification_outbox`: written in the same transaction as the domain
+ * event (transactional outbox, legend-x5z); the worker fans it out. */
+export const notificationOutboxRowSchema = z.strictObject({
+  id: notificationOutboxIdSchema,
+  tenantId: tenantIdSchema,
+  sourceEventId: ulidSchema,
+  eventType: eventNameSchema,
+  payload: z.record(z.string(), z.json()),
+  status: z.enum(["pending", "processing", "done", "dead"]),
+  attempts: z.number().int().nonnegative(),
+  availableAt: isoDateTimeSchema,
+  lastErrorCode: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]{0,63}$/)
+    .nullable(),
+  createdAt: isoDateTimeSchema,
+});
+export type NotificationOutboxRow = z.infer<typeof notificationOutboxRowSchema>;
+
+/** One notification per (event, recipient, category): replays and duplicate
+ * events never notify twice (PRD §3.15 "deduplikasi"). */
+export function notificationDedupeKey(
+  sourceEventId: string,
+  userId: string,
+  category: NotificationCategory,
+): string {
+  return `${sourceEventId}:${userId}:${category}`;
+}
+
+// ---- Web push subscription --------------------------------------------------
+
+const base64url = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .regex(/^[A-Za-z0-9_-]+=*$/);
+
+/** Browser PushSubscription.toJSON() (iOS >= 16.4 PWA included). */
+export const pushSubscriptionInputSchema = z.strictObject({
+  endpoint: publicHttpsUrlSchema,
+  keys: z.strictObject({ p256dh: base64url(200), auth: base64url(100) }),
+  deviceLabel: z.string().trim().max(100).nullable(),
+});
+export const pushSubscriptionSchema = z.strictObject({
+  id: pushSubscriptionIdSchema,
+  tenantId: tenantIdSchema,
+  userId: userIdSchema,
+  /** The endpoint and keys stay server-side; clients see only the label. */
+  deviceLabel: z.string().max(100).nullable(),
+  createdAt: isoDateTimeSchema,
+  lastSuccessAt: isoDateTimeSchema.nullable(),
+});
+export type PushSubscription = z.infer<typeof pushSubscriptionSchema>;
+
+/** WebSocket frame for realtime operational notifications. */
+export const realtimeNotificationMessageSchema = z.strictObject({
+  type: z.literal("notification"),
+  notification: notificationSchema,
+});

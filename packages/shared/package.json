@@ -23,7 +23,9 @@
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
     "./metrics": "./src/metrics/index.ts",
-    "./kitchen": "./src/kitchen/index.ts"
+    "./kitchen": "./src/kitchen/index.ts",
+    "./tax": "./src/tax/index.ts",
+    "./notification": "./src/notification/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

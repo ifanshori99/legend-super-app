@@ -43,7 +43,7 @@ const namesByWorkstream = {
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed",
   "WS-05":
-    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported",
+    "payment_intent.created payment.paid payment.failed payment.refunded settlement.reconciled notification.created notification.sent payment.expired settlement.imported tax_rule.published service_charge_rule.published tax_settings.published notification.failed notification.read notification_preference.updated",
   "WS-06":
     "stock.deducted stock.adjusted stock.transferred recipe.updated production.completed purchase_order.created goods_receipt.recorded supplier_invoice.recorded",
   "WS-07":
