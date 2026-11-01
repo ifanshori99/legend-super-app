@@ -13,7 +13,8 @@
     "./i18n": "./src/i18n/index.ts",
     "./core": "./src/core/index.ts",
     "./core/server": "./src/core/server.ts",
-    "./events": "./src/events/index.ts"
+    "./events": "./src/events/index.ts",
+    "./audit": "./src/audit/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
