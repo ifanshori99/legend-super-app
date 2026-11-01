@@ -32,7 +32,8 @@
     "./crm": "./src/crm/index.ts",
     "./facility": "./src/facility/index.ts",
     "./accounting": "./src/accounting/index.ts",
-    "./hris": "./src/hris/index.ts"
+    "./hris": "./src/hris/index.ts",
+    "./platform": "./src/platform/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
