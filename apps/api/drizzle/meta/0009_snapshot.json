@@ -1,6 +1,6 @@
 {
-  "id": "ee73bdb6-f75d-4403-86eb-6242e6d73bd8",
-  "prevId": "807b5384-892a-4183-b9a6-28b142b71521",
+  "id": "d0e60d9d-53ea-4792-a5e0-a94f6ab19128",
+  "prevId": "a0c6cd17-6a3c-4170-a8f8-73f1ad30f321",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -85,10 +85,10 @@
       "uniqueConstraints": {
         "user_email_unique": {
           "name": "user_email_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -168,34 +168,34 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "session_user_id_user_id_fk": {
           "name": "session_user_id_user_id_fk",
           "tableFrom": "session",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "session_token_unique": {
           "name": "session_token_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "token"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -299,24 +299,24 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "account_user_id_user_id_fk": {
           "name": "account_user_id_user_id_fk",
           "tableFrom": "account",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -380,9 +380,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -461,24 +461,24 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "notes_user_id_user_id_fk": {
           "name": "notes_user_id_user_id_fk",
           "tableFrom": "notes",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -556,14 +556,14 @@
       "uniqueConstraints": {
         "domain_event_consumptions_aggregate_sequence_key": {
           "name": "domain_event_consumptions_aggregate_sequence_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "consumer",
             "aggregate_type",
             "aggregate_id",
             "sequence"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -816,9 +816,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -834,23 +834,23 @@
       "uniqueConstraints": {
         "domain_event_outbox_event_destination_key": {
           "name": "domain_event_outbox_event_destination_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "event_id",
             "destination"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "domain_event_outbox_aggregate_sequence_key": {
           "name": "domain_event_outbox_aggregate_sequence_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "destination",
             "aggregate_type",
             "aggregate_id",
             "sequence"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -917,17 +917,17 @@
         "domain_event_replays_tenant_id_outbox_id_domain_event_outbox_tenant_id_id_fk": {
           "name": "domain_event_replays_tenant_id_outbox_id_domain_event_outbox_tenant_id_id_fk",
           "tableFrom": "domain_event_replays",
+          "tableTo": "domain_event_outbox",
           "columnsFrom": [
             "tenant_id",
             "outbox_id"
           ],
-          "tableTo": "domain_event_outbox",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -942,12 +942,12 @@
       "uniqueConstraints": {
         "domain_event_replays_generation_key": {
           "name": "domain_event_replays_generation_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "outbox_id",
             "generation"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1008,34 +1008,34 @@
         "brands_tenant_id_tenants_id_fk": {
           "name": "brands_tenant_id_tenants_id_fk",
           "tableFrom": "brands",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "brands_tenant_slug_key": {
           "name": "brands_tenant_slug_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "slug"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "brands_tenant_id_id_key": {
           "name": "brands_tenant_id_id_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1122,36 +1122,36 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"legal_entities\".\"npwp_hash\" IS NOT NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "legal_entities_tenant_id_tenants_id_fk": {
           "name": "legal_entities_tenant_id_tenants_id_fk",
           "tableFrom": "legal_entities",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "legal_entities_tenant_id_id_key": {
           "name": "legal_entities_tenant_id_id_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1278,9 +1278,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "outlets_status_idx": {
           "name": "outlets_status_idx",
@@ -1299,86 +1299,86 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "outlets_tenant_id_tenants_id_fk": {
           "name": "outlets_tenant_id_tenants_id_fk",
           "tableFrom": "outlets",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "outlets_region_id_regions_id_fk": {
           "name": "outlets_region_id_regions_id_fk",
           "tableFrom": "outlets",
+          "tableTo": "regions",
           "columnsFrom": [
             "region_id"
           ],
-          "tableTo": "regions",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "outlets_brand_fk": {
           "name": "outlets_brand_fk",
           "tableFrom": "outlets",
+          "tableTo": "brands",
           "columnsFrom": [
             "tenant_id",
             "brand_id"
           ],
-          "tableTo": "brands",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "outlets_legal_entity_fk": {
           "name": "outlets_legal_entity_fk",
           "tableFrom": "outlets",
+          "tableTo": "legal_entities",
           "columnsFrom": [
             "tenant_id",
             "legal_entity_id"
           ],
-          "tableTo": "legal_entities",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "outlets_tenant_code_key": {
           "name": "outlets_tenant_code_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "code"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "outlets_tenant_id_id_key": {
           "name": "outlets_tenant_id_id_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1444,10 +1444,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"platform_admins\".\"revoked_at\" IS NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "platform_admins_break_glass_key": {
           "name": "platform_admins_break_glass_key",
@@ -1460,10 +1460,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"platform_admins\".\"is_break_glass\" AND \"platform_admins\".\"revoked_at\" IS NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1514,25 +1514,25 @@
         "regions_parent_id_regions_id_fk": {
           "name": "regions_parent_id_regions_id_fk",
           "tableFrom": "regions",
+          "tableTo": "regions",
           "columnsFrom": [
             "parent_id"
           ],
-          "tableTo": "regions",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "regions_code_unique": {
           "name": "regions_code_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "code"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1635,9 +1635,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "tenants_status_idx": {
           "name": "tenants_status_idx",
@@ -1650,9 +1650,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1660,10 +1660,10 @@
       "uniqueConstraints": {
         "tenants_slug_unique": {
           "name": "tenants_slug_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "slug"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -1753,57 +1753,57 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "tenant_domains_tenant_id_tenants_id_fk": {
           "name": "tenant_domains_tenant_id_tenants_id_fk",
           "tableFrom": "tenant_domains",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "tenant_domains_brand_fk": {
           "name": "tenant_domains_brand_fk",
           "tableFrom": "tenant_domains",
+          "tableTo": "brands",
           "columnsFrom": [
             "tenant_id",
             "brand_id"
           ],
-          "tableTo": "brands",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "tenant_domains_hostname_unique": {
           "name": "tenant_domains_hostname_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "hostname"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "tenant_domains_tenant_id_id_key": {
           "name": "tenant_domains_tenant_id_id_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -2000,10 +2000,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"tenant_integrations\".\"outlet_id\" IS NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "tenant_integrations_outlet_provider_key": {
           "name": "tenant_integrations_outlet_provider_key",
@@ -2028,10 +2028,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"tenant_integrations\".\"outlet_id\" IS NOT NULL",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "tenant_integrations_tenant_idx": {
           "name": "tenant_integrations_tenant_idx",
@@ -2050,39 +2050,39 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "tenant_integrations_tenant_id_tenants_id_fk": {
           "name": "tenant_integrations_tenant_id_tenants_id_fk",
           "tableFrom": "tenant_integrations",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "tenant_integrations_outlet_fk": {
           "name": "tenant_integrations_outlet_fk",
           "tableFrom": "tenant_integrations",
+          "tableTo": "outlets",
           "columnsFrom": [
             "tenant_id",
             "outlet_id"
           ],
-          "tableTo": "outlets",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2209,52 +2209,52 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"tenant_themes\".\"status\" = 'active'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "tenant_themes_tenant_id_tenants_id_fk": {
           "name": "tenant_themes_tenant_id_tenants_id_fk",
           "tableFrom": "tenant_themes",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "tenant_themes_brand_fk": {
           "name": "tenant_themes_brand_fk",
           "tableFrom": "tenant_themes",
+          "tableTo": "brands",
           "columnsFrom": [
             "tenant_id",
             "brand_id"
           ],
-          "tableTo": "brands",
           "columnsTo": [
             "tenant_id",
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "tenant_themes_brand_version_key": {
           "name": "tenant_themes_brand_version_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "brand_id",
             "version"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
@@ -2384,9 +2384,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "support_access_admin_open_idx": {
           "name": "support_access_admin_open_idx",
@@ -2411,24 +2411,24 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "support_access_grants_tenant_id_tenants_id_fk": {
           "name": "support_access_grants_tenant_id_tenants_id_fk",
           "tableFrom": "support_access_grants",
+          "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2458,379 +2458,40 @@
       },
       "isRLSEnabled": false
     },
-    "public.approval_policies": {
-      "name": "approval_policies",
+    "public.audit_logs": {
+      "name": "audit_logs",
       "schema": "",
       "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "action_type": {
-          "name": "action_type",
-          "type": "varchar(50)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "threshold_idr": {
-          "name": "threshold_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approver_role_id": {
-          "name": "approver_role_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "levels": {
-          "name": "levels",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requires_distinct_actor": {
-          "name": "requires_distinct_actor",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        }
-      },
-      "indexes": {
-        "approval_policies_tier_role_key": {
-          "name": "approval_policies_tier_role_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "action_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "coalesce(\"threshold_idr\", -1)",
-              "isExpression": true,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "levels",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "approver_role_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
-        }
-      },
-      "foreignKeys": {
-        "approval_policies_tenant_id_tenants_id_fk": {
-          "name": "approval_policies_tenant_id_tenants_id_fk",
-          "tableFrom": "approval_policies",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "tableTo": "tenants",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
-        "approval_policies_role_fk": {
-          "name": "approval_policies_role_fk",
-          "tableFrom": "approval_policies",
-          "columnsFrom": [
-            "tenant_id",
-            "approver_role_id"
-          ],
-          "tableTo": "roles",
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "approval_policies_tenant_id_id_key": {
-          "name": "approval_policies_tenant_id_id_key",
-          "columns": [
-            "tenant_id",
-            "id"
-          ],
-          "nullsNotDistinct": false
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "approval_policies_threshold_check": {
-          "name": "approval_policies_threshold_check",
-          "value": "\"approval_policies\".\"threshold_idr\" IS NULL OR (\"approval_policies\".\"threshold_idr\" >= 0 AND \"approval_policies\".\"threshold_idr\" <= 9007199254740991)"
-        },
-        "approval_policies_level_check": {
-          "name": "approval_policies_level_check",
-          "value": "\"approval_policies\".\"levels\" BETWEEN 1 AND 3"
-        },
-        "approval_policies_distinct_actor_check": {
-          "name": "approval_policies_distinct_actor_check",
-          "value": "\"approval_policies\".\"requires_distinct_actor\""
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.role_assignments": {
-      "name": "role_assignments",
-      "schema": "",
-      "columns": {
         "id": {
           "name": "id",
           "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role_id": {
-          "name": "role_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_type": {
-          "name": "scope_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_id": {
-          "name": "scope_id",
+        "outlet_id": {
+          "name": "outlet_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "valid_from": {
-          "name": "valid_from",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "valid_until": {
-          "name": "valid_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "assigned_by": {
-          "name": "assigned_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "assigned_at": {
-          "name": "assigned_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "role_assignments_tenant_user_idx": {
-          "name": "role_assignments_tenant_user_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "with": {},
-          "method": "btree",
-          "concurrently": false
-        }
-      },
-      "foreignKeys": {
-        "role_assignments_tenant_id_tenants_id_fk": {
-          "name": "role_assignments_tenant_id_tenants_id_fk",
-          "tableFrom": "role_assignments",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "tableTo": "tenants",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
-        "role_assignments_user_id_user_id_fk": {
-          "name": "role_assignments_user_id_user_id_fk",
-          "tableFrom": "role_assignments",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "tableTo": "user",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
-        "role_assignments_assigned_by_user_id_fk": {
-          "name": "role_assignments_assigned_by_user_id_fk",
-          "tableFrom": "role_assignments",
-          "columnsFrom": [
-            "assigned_by"
-          ],
-          "tableTo": "user",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
-        "role_assignments_role_fk": {
-          "name": "role_assignments_role_fk",
-          "tableFrom": "role_assignments",
-          "columnsFrom": [
-            "tenant_id",
-            "role_id"
-          ],
-          "tableTo": "roles",
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "role_assignments_tenant_id_id_key": {
-          "name": "role_assignments_tenant_id_id_key",
-          "columns": [
-            "tenant_id",
-            "id"
-          ],
-          "nullsNotDistinct": false
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "role_assignments_scope_check": {
-          "name": "role_assignments_scope_check",
-          "value": "(\"role_assignments\".\"scope_type\" = 'tenant' AND \"role_assignments\".\"scope_id\" IS NULL) OR (\"role_assignments\".\"scope_type\" IN ('brand', 'outlet', 'station') AND \"role_assignments\".\"scope_id\" IS NOT NULL)"
-        },
-        "role_assignments_window_check": {
-          "name": "role_assignments_window_check",
-          "value": "\"role_assignments\".\"valid_until\" IS NULL OR \"role_assignments\".\"valid_until\" > \"role_assignments\".\"valid_from\""
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.roles": {
-      "name": "roles",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "is_template": {
-          "name": "is_template",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "template_key": {
-          "name": "template_key",
-          "type": "varchar(50)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "permissions": {
-          "name": "permissions",
+        "event": {
+          "name": "event",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
-        "mfa_required": {
-          "name": "mfa_required",
-          "type": "boolean",
+        "retention_class": {
+          "name": "retention_class",
+          "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true,
-          "default": false
-        },
-        "allowed_scope_types": {
-          "name": "allowed_scope_types",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
+          "default": "'audit_2y'"
         },
         "created_at": {
           "name": "created_at",
@@ -2838,9 +2499,112 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        }
+      },
+      "indexes": {
+        "audit_logs_retention_idx": {
+          "name": "audit_logs_retention_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "audit_logs_tenant_id_id_pk": {
+          "name": "audit_logs_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.core_storage_objects": {
+      "name": "core_storage_objects",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
-        "updated_at": {
-          "name": "updated_at",
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "width": {
+          "name": "width",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "height": {
+          "name": "height",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "thumbnail_key": {
+          "name": "thumbnail_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -2849,71 +2613,43 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "roles_tenant_id_tenants_id_fk": {
-          "name": "roles_tenant_id_tenants_id_fk",
-          "tableFrom": "roles",
+        "core_storage_objects_outlet_fk": {
+          "name": "core_storage_objects_outlet_fk",
+          "tableFrom": "core_storage_objects",
+          "tableTo": "outlets",
           "columnsFrom": [
-            "tenant_id"
+            "tenant_id",
+            "outlet_id"
           ],
-          "tableTo": "tenants",
           "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "roles_tenant_id_id_key": {
-          "name": "roles_tenant_id_id_key",
-          "columns": [
             "tenant_id",
             "id"
           ],
-          "nullsNotDistinct": false
-        },
-        "roles_tenant_name_key": {
-          "name": "roles_tenant_name_key",
-          "columns": [
-            "tenant_id",
-            "name"
-          ],
-          "nullsNotDistinct": false
-        },
-        "roles_tenant_template_key": {
-          "name": "roles_tenant_template_key",
-          "columns": [
-            "tenant_id",
-            "template_key"
-          ],
-          "nullsNotDistinct": false
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {
+        "core_storage_objects_tenant_id_id_pk": {
+          "name": "core_storage_objects_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "roles_template_check": {
-          "name": "roles_template_check",
-          "value": "(\"roles\".\"is_template\" AND \"roles\".\"template_key\" IS NOT NULL AND \"roles\".\"template_key\" <> 'super_admin') OR (NOT \"roles\".\"is_template\" AND \"roles\".\"template_key\" IS NULL)"
-        },
-        "roles_permissions_array_check": {
-          "name": "roles_permissions_array_check",
-          "value": "jsonb_typeof(\"roles\".\"permissions\") = 'array'"
-        },
-        "roles_scope_array_check": {
-          "name": "roles_scope_array_check",
-          "value": "jsonb_typeof(\"roles\".\"allowed_scope_types\") = 'array' AND jsonb_array_length(\"roles\".\"allowed_scope_types\") > 0"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },
   "enums": {},
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

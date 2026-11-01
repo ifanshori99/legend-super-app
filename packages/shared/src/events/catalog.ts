@@ -57,7 +57,7 @@ const namesByWorkstream = {
   "WS-11": "metrics.aggregated report.generated",
   "WS-12": "ai_job.completed tool_request.approved",
   "WS-14":
-    "checklist.completed checklist.reminded equipment_service.reminded prep_list.created",
+    "checklist.completed checklist.reminded equipment_service.reminded prep_list.created checklist.missed checklist.failed temperature.out_of_range equipment.broken",
   // Adapter layer (packages/shared/src/adapters). Emitted by the services that
   // wrap a provider, never by a provider itself. A webhook that fails signature
   // verification has no trusted tenant yet, so it is logged (gateway_webhook_events,

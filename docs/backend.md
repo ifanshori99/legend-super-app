@@ -159,3 +159,28 @@ Tenant services must use `withTenant` with server-minted tenant and outlet
 scope; it installs transaction-local settings and fails closed for unsafe roles.
 The development tenant lookup is synthetic and must not resolve production
 requests. Real registered-domain resolution is a separate integration.
+
+## Core database columns
+
+Use `apps/api/src/db/columns.ts` for new schema columns: `ulidInUuid("id")`
+converts a ULID to a PostgreSQL `uuid` and back; `uuidId("id")` accepts a UUID
+(and can be branded with `.$type<YourId>()`). `idrColumn("total_idr")` uses
+`BIGINT` with safe-integer validation on both reads and writes.
+`decimal4Column("unit_cost_idr")` uses `NUMERIC(14,4)` as an exact `Decimal4`
+string, including for `ai_jobs.cost_idr`. `businessDate("business_date")` is
+an outlet-local calendar date, not a timestamp. Construct values using the
+shared core schemas and helpers, never floating point for decimal arithmetic.
+
+Use `tenantIdColumn(() => tenants.id).notNull()` and, for outlet-owned tables,
+`outletIdColumn(() => outlets.id).notNull()`. The domain schema must define
+appropriate tenant-scoped composite foreign keys where needed to prevent
+cross-tenant references; these single-column references alone do not establish
+that relationship. Apply `app.enforce_tenant_rls` in the migration for every
+tenant table and use `withTenant` for its queries.
+
+The error middleware converts `CoreError` and recognized domain error classes
+with declared HTTP statuses into `apiErrorBody`, including the request ID.
+For a domain whose contract does not define HTTP statuses (currently inventory
+and purchasing), services must explicitly translate expected failures to
+`HttpError` with a documented status. Unrecognized exceptions remain generic
+500 responses. Zod errors retain the starter's 422 validation response.

@@ -69,6 +69,7 @@ describe("Server logging", () => {
       error: {
         code: "INTERNAL_ERROR",
         message: "Something went wrong. Try again.",
+        requestId: "trace-500",
       },
     });
     expect(JSON.stringify(response.body)).not.toContain("boom");

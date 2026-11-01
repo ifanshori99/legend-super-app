@@ -7,6 +7,7 @@ import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
 import { platformRouter } from "./platform.routes";
+import { createNotificationRouter } from "./notification.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 export const apiRouter = Router();
@@ -21,3 +22,5 @@ apiRouter.use("/org", orgRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Fail closed until production tenant membership and role resolvers are wired.
+apiRouter.use("/notifications", createNotificationRouter());
