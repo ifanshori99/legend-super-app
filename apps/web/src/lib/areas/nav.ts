@@ -54,8 +54,7 @@ export function buildAreaNav(input: {
   ];
   const visible = all
     .filter(
-      (entry) =>
-        !entry.anyPermission || holdsAny(access, entry.anyPermission),
+      (entry) => !entry.anyPermission || holdsAny(access, entry.anyPermission),
     )
     .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
   const current = visible

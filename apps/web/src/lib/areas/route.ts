@@ -30,9 +30,7 @@ export function areaHead(area: AreaKey) {
           brand: t("app.defaultBrand"),
         }),
       },
-      ...(definition.noindex
-        ? [{ name: "robots", content: "noindex" }]
-        : []),
+      ...(definition.noindex ? [{ name: "robots", content: "noindex" }] : []),
     ],
   };
 }

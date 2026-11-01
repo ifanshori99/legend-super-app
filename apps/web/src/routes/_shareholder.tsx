@@ -5,7 +5,8 @@ import { areaHead, runGuard } from "@/lib/areas/route";
 
 // Area "shareholder" (PRD §5). Guard and shell come from lib/areas/definitions.ts.
 export const Route = createFileRoute("/_shareholder")({
-  beforeLoad: ({ context }) => runGuard(AREAS.shareholder.guard, context.access),
+  beforeLoad: ({ context }) =>
+    runGuard(AREAS.shareholder.guard, context.access),
   head: () => areaHead("shareholder"),
   component: Layout,
 });

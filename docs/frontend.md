@@ -109,17 +109,17 @@ Files ending in `.server.ts` (`session.server.ts`, `logger.server.ts`, `api/upst
 
 Bead `legend-fbu` · PRD v1.7 §3 F3, §5 "Peta situs". Every URL belongs to one of nine **areas**. An area fixes the shell, the density, the guard and the navigation, so a feature bead only adds its screen.
 
-| Area          | URL prefixes (PRD §5)                         | Shell · density (DESIGN.md §1)     | Guard (RBAC §3.7)                                       | Route files in `routes/`                  |
-| ------------- | --------------------------------------------- | ---------------------------------- | ------------------------------------------------------- | ----------------------------------------- |
-| `public`      | `/`, `/menu`, `/reservasi`, `/masuk`          | Customer · Hangat                  | open, indexed                                           | `_public/`                                |
-| `customer`    | `/t/$token`, `/f/$facility`, `/member/*`, `/wifi` | Customer · Hangat              | open; `/member/*` needs a session; noindex              | `_customer/`                              |
-| `ops`         | `/pos/*`, `/fasilitas/*`, `/operasional/*`    | Operations · Kontras Tinggi        | permission, surface `pos` (staff PIN, no MFA), edge     | `_ops/`                                   |
-| `kitchen`     | `/kds/*`, `/expo`, `/pickup`                  | Operations · Kontras, always dark  | permission, surface `kds`, edge                         | `_kitchen/`                               |
-| `kelola`      | `/kelola/*`                                   | Management · Padat                 | `dashboard.management.view`, MFA (AUTH-05)              | `_kelola/`                                |
-| `owner`       | `/owner/*`                                    | Management · Padat                 | `dashboard.owner.view`, MFA                             | `_owner/`                                 |
-| `shareholder` | `/shareholder/*`                              | Management · Padat                 | `dashboard.shareholder.view`, MFA                       | `_shareholder/`                           |
-| `karyawan`    | `/karyawan/*`                                 | Customer · Hangat (PWA)            | `self.profile.view`, surface `hris`                     | `_karyawan/`                              |
-| `platform`    | `/platform/*`                                 | Management · Padat                 | `platform.*`, MFA                                       | `_platform/`                              |
+| Area          | URL prefixes (PRD §5)                             | Shell · density (DESIGN.md §1)    | Guard (RBAC §3.7)                                   | Route files in `routes/` |
+| ------------- | ------------------------------------------------- | --------------------------------- | --------------------------------------------------- | ------------------------ |
+| `public`      | `/`, `/menu`, `/reservasi`, `/masuk`              | Customer · Hangat                 | open, indexed                                       | `_public/`               |
+| `customer`    | `/t/$token`, `/f/$facility`, `/member/*`, `/wifi` | Customer · Hangat                 | open; `/member/*` needs a session; noindex          | `_customer/`             |
+| `ops`         | `/pos/*`, `/fasilitas/*`, `/operasional/*`        | Operations · Kontras Tinggi       | permission, surface `pos` (staff PIN, no MFA), edge | `_ops/`                  |
+| `kitchen`     | `/kds/*`, `/expo`, `/pickup`                      | Operations · Kontras, always dark | permission, surface `kds`, edge                     | `_kitchen/`              |
+| `kelola`      | `/kelola/*`                                       | Management · Padat                | `dashboard.management.view`, MFA (AUTH-05)          | `_kelola/`               |
+| `owner`       | `/owner/*`                                        | Management · Padat                | `dashboard.owner.view`, MFA                         | `_owner/`                |
+| `shareholder` | `/shareholder/*`                                  | Management · Padat                | `dashboard.shareholder.view`, MFA                   | `_shareholder/`          |
+| `karyawan`    | `/karyawan/*`                                     | Customer · Hangat (PWA)           | `self.profile.view`, surface `hris`                 | `_karyawan/`             |
+| `platform`    | `/platform/*`                                     | Management · Padat                | `platform.*`, MFA                                   | `_platform/`             |
 
 The table is data in `lib/areas/definitions.ts` (tested by `tests/areas.test.mjs`); change an area there, not in a route.
 
@@ -144,7 +144,14 @@ The table is data in `lib/areas/definitions.ts` (tested by `tests/areas.test.mjs
    import type { AreaNavEntry } from "@/lib/areas/nav";
 
    const nav: AreaNavEntry[] = [
-     { area: "kelola", labelKey: "nav.management.inventory", to: "/kelola/inventori", icon: Boxes, order: 30, anyPermission: ["inventory.stock.view"] },
+     {
+       area: "kelola",
+       labelKey: "nav.management.inventory",
+       to: "/kelola/inventori",
+       icon: Boxes,
+       order: 30,
+       anyPermission: ["inventory.stock.view"],
+     },
    ];
    export default nav;
    ```

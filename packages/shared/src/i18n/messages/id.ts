@@ -92,6 +92,11 @@ export const id = {
     shift: "Shift",
   },
   nav: {
+    // Starter example screens (notes, admin) until they are removed.
+    starter: {
+      notes: "Catatan",
+      admin: "Admin",
+    },
     customer: {
       menu: "Menu",
       orders: "Pesanan",
@@ -112,9 +117,20 @@ export const id = {
     // Shown until tenant config supplies the brand name (D43 whitelabel).
     defaultBrand: "Legend",
     titleTemplate: "{page} | {brand}",
+    description:
+      "Platform operasional F&B: pesan lewat QR, kasir, dapur, dan manajemen.",
+    loading: "Memuat aplikasi…",
   },
   auth: {
     signIn: "Masuk",
+  },
+  errorPage: {
+    notFoundTitle: "Halaman tidak ditemukan",
+    notFoundHint: "Alamat ini tidak ada atau sudah dipindahkan.",
+    goHome: "Ke beranda",
+    errorTitle: "Terjadi kesalahan",
+    errorHint:
+      "Muat ulang halaman ini. Jika masih terjadi, hubungi admin tenant.",
   },
   layout: {
     offlineRegion: "Status koneksi",

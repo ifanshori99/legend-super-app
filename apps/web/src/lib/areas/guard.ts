@@ -4,7 +4,11 @@
 import { isMfaGuardedSurface } from "@starter/shared/access";
 import type { PermissionCode } from "@starter/shared/access";
 import type { AreaAccess } from "./access.ts";
-import { AREA_LIST, type AreaDefinition, type AreaGuard } from "./definitions.ts";
+import {
+  AREA_LIST,
+  type AreaDefinition,
+  type AreaGuard,
+} from "./definitions.ts";
 
 export type AreaGate =
   | { readonly status: "allowed" }

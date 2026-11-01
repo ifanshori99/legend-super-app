@@ -1,17 +1,19 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
+import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/client";
 import { ANONYMOUS_ACCESS } from "@/lib/areas/access";
 import { routeTree } from "./routeTree.gen";
 
 function Pending() {
+  const t = useT();
   return (
     <div
       role="status"
       className="mx-auto max-w-6xl px-6 py-16 text-sm text-muted-foreground"
     >
-      Loading your app…
+      {t("app.loading")}
     </div>
   );
 }

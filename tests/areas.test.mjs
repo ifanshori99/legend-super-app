@@ -126,11 +126,15 @@ describe("FE-AREA-03 anonymous visitors", () => {
     for (const area of defs.AREA_LIST.filter(
       (a) => a.guard.kind === "permission",
     ))
-      assert.equal(open(area.key, accessLib.ANONYMOUS_ACCESS), "unauthenticated");
+      assert.equal(
+        open(area.key, accessLib.ANONYMOUS_ACCESS),
+        "unauthenticated",
+      );
   });
   test("member pages need a session but no role", () => {
     assert.equal(
-      guard.evaluateGuard(defs.SESSION_GUARD, accessLib.ANONYMOUS_ACCESS).status,
+      guard.evaluateGuard(defs.SESSION_GUARD, accessLib.ANONYMOUS_ACCESS)
+        .status,
       "unauthenticated",
     );
     assert.equal(
@@ -231,26 +235,66 @@ describe("FE-AREA-05 role templates reach only their areas (deny by default)", (
 
 describe("FE-AREA-06 navigation as data", () => {
   const entries = [
-    { area: "kelola", labelKey: "nav.management.crm", to: "/kelola/crm", icon, order: 20, anyPermission: ["crm.customer.view"] },
-    { area: "kelola", labelKey: "nav.management.inventory", to: "/kelola/inventori", icon, order: 10, anyPermission: ["inventory.stock.view"] },
-    { area: "owner", labelKey: "nav.management.dashboard", to: "/owner/x", icon },
+    {
+      area: "kelola",
+      labelKey: "nav.management.crm",
+      to: "/kelola/crm",
+      icon,
+      order: 20,
+      anyPermission: ["crm.customer.view"],
+    },
+    {
+      area: "kelola",
+      labelKey: "nav.management.inventory",
+      to: "/kelola/inventori",
+      icon,
+      order: 10,
+      anyPermission: ["inventory.stock.view"],
+    },
+    {
+      area: "owner",
+      labelKey: "nav.management.dashboard",
+      to: "/owner/x",
+      icon,
+    },
   ];
   const build = (access, pathname) =>
-    nav.buildAreaNav({ area: "kelola", entries, indexIcon: icon, access, pathname, t });
+    nav.buildAreaNav({
+      area: "kelola",
+      entries,
+      indexIcon: icon,
+      access,
+      pathname,
+      t,
+    });
 
   test("area index is first, then by order; other areas' entries are ignored", () => {
     const items = build(roleAccess("owner"), "/kelola");
-    assert.deepEqual(items.map((i) => i.href), ["/kelola", "/kelola/inventori", "/kelola/crm"]);
+    assert.deepEqual(
+      items.map((i) => i.href),
+      ["/kelola", "/kelola/inventori", "/kelola/crm"],
+    );
     assert.equal(items[0].label, t("area.kelola.name"));
   });
   test("items the visitor cannot use are hidden", () => {
     const items = build(roleAccess("general_manager"), "/kelola");
-    assert.equal(items.some((i) => i.href === "/kelola/crm"), false);
+    assert.equal(
+      items.some((i) => i.href === "/kelola/crm"),
+      false,
+    );
   });
   test("the longest matching path is current, once", () => {
     const items = build(roleAccess("owner"), "/kelola/inventori/stok/42");
-    assert.deepEqual(items.filter((i) => i.current).map((i) => i.href), ["/kelola/inventori"]);
-    assert.deepEqual(build(roleAccess("owner"), "/kelola").filter((i) => i.current).map((i) => i.href), ["/kelola"]);
+    assert.deepEqual(
+      items.filter((i) => i.current).map((i) => i.href),
+      ["/kelola/inventori"],
+    );
+    assert.deepEqual(
+      build(roleAccess("owner"), "/kelola")
+        .filter((i) => i.current)
+        .map((i) => i.href),
+      ["/kelola"],
+    );
   });
   test("every area has catalog text for name, empty title and hint", () => {
     for (const area of defs.AREA_LIST)
@@ -277,9 +321,16 @@ describe("FE-AREA-07 mock role cookie (development only)", () => {
 
 describe("FE-AREA-08 gate texts exist in the catalog", () => {
   for (const key of [
-    "gate.forbiddenTitle", "gate.forbiddenHint", "gate.mfaTitle", "gate.mfaHint",
-    "gate.backHome", "auth.signIn", "area.reachable", "layout.offlineRegion",
-    "app.defaultBrand", "area.ops.outletUnset",
+    "gate.forbiddenTitle",
+    "gate.forbiddenHint",
+    "gate.mfaTitle",
+    "gate.mfaHint",
+    "gate.backHome",
+    "auth.signIn",
+    "area.reachable",
+    "layout.offlineRegion",
+    "app.defaultBrand",
+    "area.ops.outletUnset",
   ])
     test(key, () => assert.notEqual(t(key), key));
 });
