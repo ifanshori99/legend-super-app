@@ -835,13 +835,11 @@ describe("HRIS tenant and outlet isolation", () => {
   it("[TEN-02] RLS refuses writing a row into another tenant from a tenant context", async () => {
     await expect(
       withTenant(db, tenantScope(otherTenant), (tx) =>
-        tx
-          .insert(orgUnits)
-          .values({
-            tenantId,
-            code: `HU-${randomUUID().slice(0, 6)}`,
-            name: "Bocor",
-          }),
+        tx.insert(orgUnits).values({
+          tenantId,
+          code: `HU-${randomUUID().slice(0, 6)}`,
+          name: "Bocor",
+        }),
       ),
     ).rejects.toThrow();
   });
