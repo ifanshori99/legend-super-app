@@ -103,6 +103,9 @@ export const loginChallenges = pgTable(
      * rejected instead of completing this row (AUTH-02, no account leak).
      */
     receivingNumber: varchar("receiving_number", { length: 32 }),
+    /** Authenticated session that requested a link; null for sign-in. */
+    linkUserId: text("link_user_id"),
+    linkSessionId: text("link_session_id"),
     /** The account the sending number resolved to; set when completed. */
     matchedUserId: text("matched_user_id"),
     status: varchar("status", { length: 20 })
@@ -181,6 +184,8 @@ export const waInboundMessages = pgTable(
     providerMessageId: varchar("provider_message_id", {
       length: 255,
     }).notNull(),
+    /** Keyed digest of the complete provider message, for replay binding. */
+    requestHash: varchar("request_hash", { length: 64 }),
     /** null when no tenant owns the receiving number. */
     tenantId: uuid("tenant_id"),
     /** The provider-received number the message was routed by. */

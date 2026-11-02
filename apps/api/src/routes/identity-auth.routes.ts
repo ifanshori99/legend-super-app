@@ -13,6 +13,8 @@
 // AUTH-04 limits are enforced in the service.
 
 import { Router } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../lib/auth.ts";
 import {
   createWhatsAppLoginChallengeSchema,
   LOGIN_CODE_TTL_MINUTES,
@@ -57,9 +59,16 @@ loginChallengeRouter.post(
     // The contract's body is `{ returnTo? }` and nothing else: returnTo stays
     // in the browser and is never stored server-side.
     createWhatsAppLoginChallengeSchema.parse(req.body);
+    const signedIn = await auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+      query: { disableCookieCache: true },
+    });
     const nonce = ensureBindingNonce(req);
     const issued = await issueWhatsAppChallenge(getTenantContext(req), {
       bindingNonce: nonce,
+      link: signedIn
+        ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
+        : null,
       ip: req.ip ?? null,
       userAgent: req.get("user-agent") ?? null,
     });
@@ -71,7 +80,14 @@ loginChallengeRouter.post(
 /** The asking browser polls; the session appears once the message lands. */
 loginChallengeRouter.get("/:challengeId", async (req, res) => {
   const { challengeId } = loginChallengeParamsSchema.parse(req.params);
+  const signedIn = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+    query: { disableCookieCache: true },
+  });
   const polled = await pollWhatsAppChallenge(challengeId, {
+    link: signedIn
+      ? { userId: signedIn.user.id, sessionId: signedIn.session.id }
+      : null,
     bindingNonce: readBindingNonce(req),
     ip: req.ip ?? null,
     userAgent: req.get("user-agent") ?? null,
