@@ -3,10 +3,8 @@
 // does not depend on the lead's routes/index.ts registration; auth, tenant
 // resolution and RBAC are the real middleware against PostgreSQL.
 import { randomUUID } from "node:crypto";
-import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app";
-import { reservationRouter } from "../routes/reservation.routes";
 import { agent } from "./helpers";
 import {
   owner,
@@ -22,13 +20,7 @@ let staff: Staff;
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  // The real app mounts everything but the reservation router (the lead's
-  // wiring); route it explicitly in front of the app for this suite.
-  const wrapper = express();
-  const real = createApp();
-  wrapper.use("/api", reservationRouter);
-  wrapper.use(real);
-  app = wrapper as unknown as ReturnType<typeof createApp>;
+  app = createApp();
   staff = await staffWithRole(app, {
     template: "owner",
     label: "Rsv Api Owner",
