@@ -35,6 +35,7 @@ import {
   useDeleteConversion,
 } from "../hooks";
 import { decimalFromInput, formatQuantity } from "../lib";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 function unitName(units: readonly Uom[], id: string): string {
   const unit = units.find((row) => row.id === id);
@@ -123,7 +124,7 @@ export function ConversionsEditor({
           fromUomId: parsed.data.fromUomId,
           toUomId: parsed.data.toUomId,
           factor: normalized,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
       },
       {

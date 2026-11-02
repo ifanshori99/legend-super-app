@@ -4,12 +4,13 @@
 // A missing Web Crypto (insecure context) means no hash: the server then
 // applies the policy's unbound-device action (HR-02) instead of silently
 // passing a fake value.
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const DEVICE_STORAGE_KEY = "legend-hris-device";
 
 function randomId(): string {
   try {
-    return crypto.randomUUID();
+    return newIdempotencyKey();
   } catch {
     return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
   }

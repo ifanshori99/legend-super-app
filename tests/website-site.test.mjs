@@ -80,20 +80,19 @@ test("F21 JSON-LD cannot close the script tag from a menu item name", () => {
   );
 });
 
-test("F21 sitemap.xml lists home, menu, reservation and member from the canonical origin", () => {
+test("F21 sitemap.xml lists home, menu and reservation from the canonical origin, never the sign-in member page (legend-d6g5)", () => {
   const xml = seo.sitemapXml(homepage);
   assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
   assert.ok(
     xml.includes('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'),
   );
-  for (const path of ["/", "/menu", "/reservation", "/member"])
-    assert.ok(
-      xml.includes(
-        `<loc>${new URL(homepage.seo.canonicalUrl).origin}${path}</loc>`,
-      ),
-      path,
-    );
-  assert.equal((xml.match(/<url>/g) ?? []).length, 4);
+  const origin = new URL(homepage.seo.canonicalUrl).origin;
+  for (const path of ["/", "/menu", "/reservation"])
+    assert.ok(xml.includes(`<loc>${origin}${path}</loc>`), path);
+  // robots.txt below disallows /member, so submitting it would fail the crawl
+  // check (PRD §5 "Diindeks: Tidak").
+  assert.equal(xml.includes(`<loc>${origin}/member</loc>`), false);
+  assert.equal((xml.match(/<url>/g) ?? []).length, 3);
   assert.ok(xml.includes(`<lastmod>${homepage.updatedAt}</lastmod>`));
   assert.ok(xml.includes("<priority>1.0</priority>"));
 });

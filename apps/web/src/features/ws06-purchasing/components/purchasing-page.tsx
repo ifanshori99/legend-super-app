@@ -45,6 +45,7 @@ import {
   useUoms,
 } from "../hooks";
 import { purchaseSuggestions } from "../suggestions";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const statusKeys = {
   draft: "purchasing.status.draft",
@@ -110,7 +111,7 @@ function useAttemptKey() {
       keyFor(payload: unknown): string {
         const signature = JSON.stringify(payload);
         if (attempt.current?.signature !== signature)
-          attempt.current = { signature, key: crypto.randomUUID() };
+          attempt.current = { signature, key: newIdempotencyKey() };
         return attempt.current.key;
       },
       settle() {

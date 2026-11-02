@@ -329,6 +329,10 @@ bar, avatar. Aspect locks: `aspect-card` 1:1, `aspect-hero` 3:2, `aspect-thumb` 
 | `OperationsShell` | kontras | full screen; status bar on `bg-shell` (screen `type-title`, outlet · station, connection pill, outlet clock in its time zone); work area owns the rest; `mode="dark"` for kitchen                                                                          |
 | `ManagementShell` | padat   | sidebar on `bg-shell`: 256px grouped from 80rem shell width, 64px icon rail from 64rem, Sheet below; topbar 64px on `background` with `type-display` title (21px below 48rem), actions, initials chip; work area on `surface-2` canvas (container queries) |
 
+**Frames:** the public brand website (`/`, `/menu`, `/reservation`, `/member`) is a photo-led
+marketing site in a wide `max-w-6xl` frame (`SiteFrame`); the signed-in customer app keeps its
+`max-w-2xl` column (`CustomerShell`).
+
 ### Per-area guidance (v3)
 
 **Customer (Hangat) — white page, band rhythm.** The page stays white (owner rule; Metoric's

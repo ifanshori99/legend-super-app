@@ -58,6 +58,7 @@ import {
   sortWaitlist,
   todayInZone,
 } from "./lib.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendReservationFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -75,7 +76,7 @@ export const MOCK_FIXTURE_NOW = "2026-11-01T05:10:00.000Z";
 const bootMs = Date.now();
 const nowMs = () => Date.parse(MOCK_FIXTURE_NOW) + (Date.now() - bootMs);
 const nowIso = () => new Date(nowMs()).toISOString();
-const mintId = () => crypto.randomUUID();
+const mintId = () => newIdempotencyKey();
 
 function fail(code: ReservationErrorCode): never {
   throw new ApiError(

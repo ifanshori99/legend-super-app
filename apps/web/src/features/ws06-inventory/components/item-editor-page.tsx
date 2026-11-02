@@ -40,6 +40,7 @@ import {
 import { decimalFromInput, LIST_LIMIT } from "../lib";
 import { AlternatesEditor } from "./alternates-editor";
 import { ConversionsEditor } from "./conversions-editor";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const TYPE_LABEL: Record<InventoryItemType, MessageKey> = {
   raw_material: "inventory.types.raw_material",
@@ -171,7 +172,7 @@ function ItemForm({
           isPerishable: values.isPerishable,
           parMin,
           parMax,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
         {
           onSuccess: (result) => {

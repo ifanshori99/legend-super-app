@@ -28,6 +28,7 @@ import {
   newCustomerSession,
 } from "../../lib/mock/handlers/customer-auth.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 // --------------------------------------------------------------- email link
 
@@ -57,7 +58,7 @@ registerMock(completeMagicLink, () => {
 // -------------------------------------------------------------------- Google
 
 registerMock(startGoogleLogin, () => {
-  const state = crypto.randomUUID().replaceAll("-", "");
+  const state = newIdempotencyKey().replaceAll("-", "");
   return {
     data: {
       // Shaped like the provider's authorize URL; mock mode never opens it.

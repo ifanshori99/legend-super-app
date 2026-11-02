@@ -64,6 +64,7 @@ import {
   typeLabelKey,
 } from "../opname-lib";
 import { CountStatusBadge } from "./count-status";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type DialogAction = "start" | "approve" | "reject" | "post" | "cancel";
 
@@ -383,7 +384,7 @@ export function CountDetailPage({
   const [search, setSearch] = React.useState("");
   const [dialog, setDialog] = React.useState<DialogAction | null>(null);
   const [actionError, setActionError] = React.useState<string>();
-  const idempotencyKey = React.useRef(crypto.randomUUID());
+  const idempotencyKey = React.useRef(newIdempotencyKey());
 
   const itemById = React.useMemo(() => {
     const map = new Map<string, { name: string; unit: string }>();
@@ -432,7 +433,7 @@ export function CountDetailPage({
     : [];
 
   function openDialog(action: DialogAction) {
-    idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current = newIdempotencyKey();
     setActionError(undefined);
     setDialog(action);
   }
@@ -562,7 +563,7 @@ export function CountDetailPage({
       if (!flushed) return;
       // Every user intent gets its own key: reusing the start key would make
       // the API (and the mock) replay the earlier transition idempotently.
-      idempotencyKey.current = crypto.randomUUID();
+      idempotencyKey.current = newIdempotencyKey();
       runTransition("submit");
     } catch {
       setActionError(t("opname.detail.line.saveError"));
