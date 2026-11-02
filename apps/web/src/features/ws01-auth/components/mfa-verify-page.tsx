@@ -152,7 +152,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
       className="grid min-h-dvh grid-rows-[auto_1fr_auto]"
     >
       <header className="flex items-center justify-between gap-3 px-gutter py-4">
-        <p className="type-title">{t("app.defaultBrand")}</p>
+        <p className="type-heading">{t("app.defaultBrand")}</p>
         <ThemeToggle />
       </header>
 
