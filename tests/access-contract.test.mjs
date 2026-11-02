@@ -121,6 +121,15 @@ describe("role templates (PRD §3.7 table)", () => {
     // Admin Tenant: no automatic finance authority.
     for (const tag of ["finance", "payroll", "payment"])
       assert.deepEqual(tagged("tenant_admin", tag), [], `tenant_admin ${tag}`);
+    // ...but it reaches the /kelola area where access is managed (C10 decision).
+    assert.ok(
+      template("tenant_admin").permissions.includes(
+        "dashboard.management.view",
+      ),
+    );
+    assert.ok(
+      template("tenant_admin").permissions.includes("access.role.assign"),
+    );
     // General Manager: does not change payroll data.
     assert.deepEqual(tagged("general_manager", "payroll"), []);
     // Outlet Manager: assigned outlet only.
