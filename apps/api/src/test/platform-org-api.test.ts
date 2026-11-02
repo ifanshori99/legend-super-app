@@ -29,7 +29,13 @@ import {
   requireSupportAccess,
   requestSupportAccess,
 } from "../services/platform-support.service";
-import { agent, originHeader, setRole, signUp } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 const app = createApp();
 const fixtures = cafeLegendPlatformFixtures;
@@ -80,7 +86,26 @@ async function adminClient() {
   const email = await signUp(client, "Platform Admin");
   await setRole(email, "admin");
   const session = await client.get("/api/auth/get-session");
-  return { client, userId: session.body.user.id as string };
+  const userId = session.body.user.id as string;
+  await owner.query(
+    "INSERT INTO platform_admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING",
+    [userId],
+  );
+  // legend-4f9: the global Better Auth admin no longer holds org.* (TEN-04).
+  // Tenant org routes authorize through stored role_assignments, so the test
+  // admin also holds the seeded Owner template in the synthetic tenant.
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
+     WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [seededTenantId, userId],
+  );
+  // AUTH-05: the owner template requires MFA, so the platform panel and the
+  // tenant back office stay closed until the session verifies a factor
+  // (legend-qfvu). The TOTP path itself is covered by identity-mfa-api.test.ts.
+  await verifySessionMfa(email);
+  return { client, userId };
 }
 
 function scopedContext(outletIds?: string[]): ScopedTenantContext {
@@ -115,6 +140,10 @@ describe("Panel Platform API", () => {
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe("FORBIDDEN");
 
+    const legacy = agent(app);
+    const legacyEmail = await signUp(legacy, "Legacy Admin");
+    await setRole(legacyEmail, "admin");
+    expect((await legacy.get("/api/platform/tenants")).status).toBe(403);
     const admin = await adminClient();
     expect((await admin.client.get("/api/platform/tenants")).status).toBe(200);
     // The origin check still applies to a permitted role.
@@ -227,7 +256,9 @@ describe("Panel Platform API", () => {
         accessMode: "read_only",
         mfaCode: "123456",
       });
-    // lib/mfa.ts fails closed: no stored factors yet, so no session is opened.
+    // The second factor is re-verified per request (TEN-04): "123456" matches
+    // no enrolled factor, so no support session is opened. The enroll → verify
+    // path is identity-mfa-api.test.ts.
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe("FORBIDDEN");
   });

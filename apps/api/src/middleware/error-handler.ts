@@ -22,6 +22,7 @@ import {
 } from "@starter/shared/reservation";
 import { TaxError } from "@starter/shared/tax";
 import { HttpError } from "../lib/http-error";
+import { AuditUnavailableError } from "../services/audit-writer";
 
 export const notFound: RequestHandler = () => {
   throw new HttpError(404, "NOT_FOUND", "Route not found.");
@@ -67,6 +68,15 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       reservationErrorHttpStatus[error.code],
       error.code,
       error.message,
+    );
+
+  // The audit writer is a fail-closed port until bead legend-4sc lands: a
+  // sensitive change without an audit trail is refused, not silently applied.
+  if (error instanceof AuditUnavailableError)
+    return send(
+      503,
+      "SERVICE_UNAVAILABLE",
+      "The audit log is not configured, so this change was refused. Try again after the audit service is available.",
     );
 
   if (error instanceof ZodError)

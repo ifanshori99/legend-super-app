@@ -26,12 +26,15 @@ import {
   cartMutationResultSchema,
   closeTableSessionInputSchema,
   createApologyVoucherInputSchema,
+  createFloorZoneInputSchema,
   createOrderIssueInputSchema,
   createServiceRequestInputSchema,
   createSplitsInputSchema,
+  createTableInputSchema,
   customerOrderIssueChoiceInputSchema,
   floorBoardSchema,
   floorZoneIdSchema,
+  floorZoneSchema,
   orderIssueIdSchema,
   orderIssueOptionsSchema,
   orderIssueSchema,
@@ -44,6 +47,7 @@ import {
   quoteInputSchema,
   resolveServiceRequestInputSchema,
   reviewEligibilitySchema,
+  saveFloorLayoutInputSchema,
   serviceRequestIdSchema,
   serviceRequestSchema,
   serviceRequestStatusSchema,
@@ -54,10 +58,13 @@ import {
   tableIdSchema,
   tableQrSchema,
   tableReviewSchema,
+  tableSchema,
   tableSessionIdSchema,
   tableSessionSchema,
   tableSessionViewSchema,
   updateCartLineInputSchema,
+  updateFloorZoneInputSchema,
+  updateTableInputSchema,
   voucherCodeSchema,
 } from "./schemas.ts";
 
@@ -194,10 +201,100 @@ export const getFloorBoard = defineEndpoint({
   response: dataResponseSchema(floorBoardSchema),
 });
 
-/** Generate (or reprint) the signed permanent QR of a table. */
+// ---- Floor admin (§3 F9 "Denah & Meja") ----------------------------------
+//
+// The manager screens (zone settings, table placement, QR sheet) work on the
+// outlet the caller is signed in to, so these routes carry no outlet id: the
+// server resolves it from the staff session scope (TEN-02), like `/api/menu/…`.
+// `getFloorBoard` stays the device/edge read with an explicit outlet.
+// Reads answer `floorBoardSchema`, the same floor snapshot the board uses.
+
+const zoneParams = z.strictObject({ zoneId: floorZoneIdSchema });
+const tableParams = z.strictObject({ tableId: tableIdSchema });
+
+/** Zones, tables and live session summary of the caller's outlet. */
+export const getCurrentFloor = defineEndpoint({
+  method: "GET",
+  path: "/api/floor",
+  response: dataResponseSchema(floorBoardSchema),
+});
+
+/** Create a zone with its pay mode, service charge, min spend and hours. */
+export const createFloorZone = defineEndpoint({
+  method: "POST",
+  path: "/api/floor/zones",
+  body: createFloorZoneInputSchema,
+  response: dataResponseSchema(floorZoneSchema),
+});
+
+export const updateFloorZone = defineEndpoint({
+  method: "PATCH",
+  path: "/api/floor/zones/:zoneId",
+  params: zoneParams,
+  body: updateFloorZoneInputSchema,
+  response: dataResponseSchema(floorZoneSchema),
+});
+
+/** 204; a zone that still has tables is refused with 409 CONFLICT. */
+export const deleteFloorZone = defineEndpoint({
+  method: "DELETE",
+  path: "/api/floor/zones/:zoneId",
+  params: zoneParams,
+});
+
+/** Add a table: number, capacity, type and its place on the plan. */
+export const createTable = defineEndpoint({
+  method: "POST",
+  path: "/api/floor/tables",
+  body: createTableInputSchema,
+  response: dataResponseSchema(tableSchema),
+});
+
+export const updateTable = defineEndpoint({
+  method: "PATCH",
+  path: "/api/floor/tables/:tableId",
+  params: tableParams,
+  body: updateTableInputSchema,
+  response: dataResponseSchema(tableSchema),
+});
+
+/** 204; a table with an open session is refused with 409 CONFLICT (ORD-10). */
+export const deleteTable = defineEndpoint({
+  method: "DELETE",
+  path: "/api/floor/tables/:tableId",
+  params: tableParams,
+});
+
+/** Save moved tables in one request; answers every table that changed. */
+export const saveFloorLayout = defineEndpoint({
+  method: "PUT",
+  path: "/api/floor/layout",
+  body: saveFloorLayoutInputSchema,
+  response: dataResponseSchema(z.array(tableSchema)),
+});
+
+/**
+ * The table's current signed permanent QR, for printing and reprinting.
+ * Never rotates (coordinator decision, legend-th7 review): the server keeps
+ * the token sealed (encrypted at rest, only its hash is used for lookup) and
+ * re-renders it, so printing a whole floor never invalidates stickers already
+ * on tables. Issues the first token when the table has none.
+ */
 export const issueTableQr = defineEndpoint({
   method: "POST",
   path: "/api/tables/:tableId/qr",
+  params: z.strictObject({ tableId: tableIdSchema }),
+  response: dataResponseSchema(tableQrSchema),
+});
+
+/**
+ * "Ganti QR": the only action that rotates a table's token (lost or copied
+ * sticker). The old token is refused from then on (ORD-04); needs
+ * floor.table.manage and is audited. Returns the new QR to print.
+ */
+export const rotateTableQr = defineEndpoint({
+  method: "POST",
+  path: "/api/tables/:tableId/qr/rotate",
   params: z.strictObject({ tableId: tableIdSchema }),
   response: dataResponseSchema(tableQrSchema),
 });

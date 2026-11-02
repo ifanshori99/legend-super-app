@@ -33,7 +33,10 @@ import {
   campaignSchema,
   campaignSendSchema,
   customer360Schema,
+  customerFavoriteItemSchema,
+  customerVisitSchema,
   feedbackSchema,
+  memberOverviewSchema,
   segmentSchema,
 } from "./crm.ts";
 import { pointsEarnedPayloadSchema } from "./events.ts";
@@ -1235,6 +1238,40 @@ const vouchers = [
     redeemedOrderId: null,
     cancelledReason: "Diterbitkan untuk pelanggan yang salah",
   },
+  // The primary sample member's history, so the voucher screen shows every
+  // state (issued above, redeemed and expired here).
+  {
+    ...base(6006),
+    promotionId: null,
+    customerProfileId: sari.id,
+    codeHash: hash(9008),
+    source: "birthday" as const,
+    status: "redeemed" as const,
+    valueIdr: 25_000,
+    validFrom: "2026-09-01T00:00:00.000Z",
+    validUntil: "2026-09-30T15:59:59.000Z",
+    issuedAt: "2026-09-01T01:00:00.000Z",
+    issuedBy: null,
+    redeemedAt: "2026-09-12T04:00:00.000Z",
+    redeemedOrderId: orderId(34),
+    cancelledReason: null,
+  },
+  {
+    ...base(6007),
+    promotionId: null,
+    customerProfileId: sari.id,
+    codeHash: hash(9009),
+    source: "campaign" as const,
+    status: "expired" as const,
+    valueIdr: 20_000,
+    validFrom: "2026-07-01T00:00:00.000Z",
+    validUntil: "2026-07-31T15:59:59.000Z",
+    issuedAt: "2026-07-01T01:00:00.000Z",
+    issuedBy: null,
+    redeemedAt: null,
+    redeemedOrderId: null,
+    cancelledReason: null,
+  },
 ].map((voucher) => voucherSchema.parse(voucher));
 
 // ---- Segments -------------------------------------------------------------
@@ -1483,6 +1520,87 @@ const feedback = [
   },
 ].map((entry) => feedbackSchema.parse(entry));
 
+// ---- Member PWA read models (PRD §3.20 "Halaman Member") ------------------
+
+/** Visit history for the primary sample member, newest first. */
+const memberVisits = [
+  {
+    orderId: orderId(11),
+    outletId: outlet.id,
+    visitedAt: "2026-10-30T12:40:00.000Z",
+    spendIdr: 240_000,
+    itemCount: 4,
+  },
+  {
+    orderId: orderId(12),
+    outletId: outlet.id,
+    visitedAt: "2026-09-20T09:00:00.000Z",
+    spendIdr: 85_000,
+    itemCount: 2,
+  },
+  {
+    orderId: orderId(13),
+    outletId: outlet.id,
+    visitedAt: "2026-08-30T11:00:00.000Z",
+    spendIdr: 320_000,
+    itemCount: 6,
+  },
+  {
+    orderId: orderId(14),
+    outletId: outlet.id,
+    visitedAt: "2026-07-28T08:15:00.000Z",
+    spendIdr: 150_000,
+    itemCount: 3,
+  },
+  {
+    orderId: orderId(15),
+    outletId: outlet.id,
+    visitedAt: "2026-06-01T09:00:00.000Z",
+    spendIdr: 95_000,
+    itemCount: 2,
+  },
+  {
+    orderId: orderId(16),
+    outletId: outlet.id,
+    visitedAt: "2026-05-12T06:30:00.000Z",
+    spendIdr: 210_000,
+    itemCount: 5,
+  },
+].map((visit) => customerVisitSchema.parse(visit));
+
+/** Favorite menu items, most ordered first (PRD §3.21 "menu favorit"). */
+const memberFavorites = [
+  {
+    menuItemId: kopiSusuAren,
+    name: "Kopi Susu Aren",
+    quantity: 18,
+    lastOrderedAt: "2026-10-30T12:40:00.000Z",
+  },
+  {
+    menuItemId: croissantMentega,
+    name: "Croissant Mentega",
+    quantity: 6,
+    lastOrderedAt: "2026-09-20T09:00:00.000Z",
+  },
+  {
+    menuItemId: americano,
+    name: "Americano",
+    quantity: 4,
+    lastOrderedAt: "2026-07-28T08:15:00.000Z",
+  },
+].map((item) => customerFavoriteItemSchema.parse(item));
+
+const memberOverview = memberOverviewSchema.parse({
+  profile: profileDtos[0],
+  program,
+  currentTier: platinum,
+  nextTier: null,
+  tierProgressBp: 10_000,
+  rollingSpendIdr: 9_450_000,
+  rollingVisits: 34,
+  consents: consents.filter((consent) => consent.customerProfileId === sari.id),
+});
+
 // ---- Customer 360 for the primary sample member --------------------------
 
 const customer360 = customer360Schema.parse({
@@ -1493,43 +1611,8 @@ const customer360 = customer360Schema.parse({
   tierProgressBp: 10_000,
   rollingSpendIdr: 9_450_000,
   rollingVisits: 34,
-  recentVisits: [
-    {
-      orderId: orderId(11),
-      outletId: outlet.id,
-      visitedAt: "2026-10-30T12:40:00.000Z",
-      spendIdr: 240_000,
-      itemCount: 4,
-    },
-    {
-      orderId: orderId(12),
-      outletId: outlet.id,
-      visitedAt: "2026-09-20T09:00:00.000Z",
-      spendIdr: 85_000,
-      itemCount: 2,
-    },
-    {
-      orderId: orderId(13),
-      outletId: outlet.id,
-      visitedAt: "2026-08-30T11:00:00.000Z",
-      spendIdr: 320_000,
-      itemCount: 6,
-    },
-  ],
-  favoriteItems: [
-    {
-      menuItemId: kopiSusuAren,
-      name: "Kopi Susu Aren",
-      quantity: 18,
-      lastOrderedAt: "2026-10-30T12:40:00.000Z",
-    },
-    {
-      menuItemId: croissantMentega,
-      name: "Croissant Mentega",
-      quantity: 6,
-      lastOrderedAt: "2026-09-20T09:00:00.000Z",
-    },
-  ],
+  recentVisits: memberVisits.slice(0, 3),
+  favoriteItems: memberFavorites.slice(0, 2),
   recentFeedback: feedback.filter(
     (entry) => entry.customerProfileId === sari.id,
   ),
@@ -1593,6 +1676,9 @@ export const cafeLegendCrmFixtures = {
   campaignResults,
   feedback,
   customer360,
+  memberOverview,
+  memberVisits,
+  memberFavorites,
   pointsEarnedEvent,
   menuItems: { kopiSusuAren, americano, croissantMentega },
   facilityProductId: id(7001),
@@ -1654,6 +1740,15 @@ export const crmSchemaFixtures: readonly [z.ZodType, unknown][] = [
   [campaignResultsSchema, campaignResults],
   ...feedback.map((entry): [z.ZodType, unknown] => [feedbackSchema, entry]),
   [customer360Schema, customer360],
+  [memberOverviewSchema, memberOverview],
+  ...memberVisits.map((visit): [z.ZodType, unknown] => [
+    customerVisitSchema,
+    visit,
+  ]),
+  ...memberFavorites.map((item): [z.ZodType, unknown] => [
+    customerFavoriteItemSchema,
+    item,
+  ]),
 ];
 
 /** Consents per customer, for the consent-gating tests. */

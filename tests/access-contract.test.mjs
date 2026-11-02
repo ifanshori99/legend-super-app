@@ -736,6 +736,52 @@ describe("role grants (§3.7 Pemberian Role)", () => {
     );
   });
 
+  test("§3.7 custom-role edits may only add permissions the editor holds", () => {
+    const edit = (userKey, addedPermissions, overrides = {}) =>
+      access.assertCanEditCustomRole({
+        grantor: principal(userKey),
+        grantorRoles: fx.roleGrants,
+        grantorMfaVerified: true,
+        grantorReauthenticatedAt: null,
+        addedPermissions,
+        org: fx.org,
+        now: fx.now,
+        ...overrides,
+      });
+    // The Owner holds every tenant permission, so no re-auth is needed.
+    assert.doesNotThrow(() => edit("owner", ["audit.log.view"]));
+    // Admin Tenant does not hold finance permissions...
+    throwsCode(
+      () => edit("tenantAdmin", ["payroll.view"]),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // ...unless MFA is verified and it re-authenticated within five minutes.
+    assert.doesNotThrow(() =>
+      edit("tenantAdmin", ["payroll.view"], {
+        grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      }),
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorMfaVerified: false,
+          grantorReauthenticatedAt: fx.now,
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // Without access.role.manage there is no edit path at all.
+    throwsCode(() => edit("cashier", ["pos.sale.create"]), "PERMISSION_DENIED");
+    // No added permission means no grant decision (rename / remove only).
+    assert.doesNotThrow(() => edit("tenantAdmin", []));
+  });
+
   test("client inputs never carry the tenant (TEN-02)", () => {
     const input = {
       userId: fx.users.employee.id,
@@ -1087,5 +1133,54 @@ describe("AUTH-06 role grants: tenant top authority vs delegated permissions", (
         },
       }),
     );
+  });
+});
+
+describe("legend-t4y7 GET /api/me/access contract", () => {
+  test("returns effective permission codes plus the AUTH-05 flags", () => {
+    assert.equal(access.getMyAccess.id, "GET /api/me/access");
+    const view = access.myAccessViewSchema.parse({
+      permissions: ["org.structure.manage", "access.role.assign"],
+      mfaRequired: true,
+      mfaVerified: false,
+    });
+    assert.deepEqual(view.permissions, [
+      "org.structure.manage",
+      "access.role.assign",
+    ]);
+    // Platform codes are never part of a tenant view.
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        permissions: ["platform.tenant.manage"],
+        mfaRequired: true,
+        mfaVerified: true,
+      }).success,
+      false,
+    );
+    assert.equal(
+      access.myAccessViewSchema.safeParse({
+        permissions: [],
+        mfaRequired: false,
+      }).success,
+      false,
+    );
+  });
+
+  test("RBAC writes use catalogued, versioned envelopes", () => {
+    for (const definition of [
+      access.roleCreatedEvent,
+      access.roleUpdatedEvent,
+      access.roleAssignmentGrantedEvent,
+      access.roleAssignmentEndedEvent,
+      access.approvalPolicyChangedEvent,
+    ]) {
+      assert.equal(definition.version, 1);
+      assert.equal(definition.payloadSchemaRef, `${definition.name}.v1`);
+      assert.equal(definition.entry.name, definition.name);
+      assert.equal(
+        definition.entry.aggregateType,
+        definition.name.split(".")[0],
+      );
+    }
   });
 });

@@ -907,6 +907,15 @@ export const recipeComponentTypeSchema = z.enum(["item", "recipe"]);
 export type RecipeComponentType = z.infer<typeof recipeComponentTypeSchema>;
 
 /**
+ * Prep loss in basis points. The loss is a yield loss, so a 100% loss has no
+ * finite gross quantity (owner decision Q19, 2026-11-01).
+ */
+export const recipeWastePctSchema = basisPointsSchema.refine(
+  (value) => value < 10_000,
+  "Waste must be below 100%",
+);
+
+/**
  * A versioned recipe. `outputItemId` is set when the recipe produces a
  * semi-finished inventory item (nested BOM); a menu recipe has none.
  * `theoreticalCostIdr` is the current HPP per one `yieldUom` (NUMERIC(14,4),
@@ -930,8 +939,10 @@ export type Recipe = z.infer<typeof recipeSchema>;
 
 /**
  * One BOM line. `wastePctBp` is the prep loss allowance in basis points
- * (200 = 2%), applied on top of the line quantity when costing. A line must
- * not reference its own recipe; deeper loops are caught while costing.
+ * (200 = 2%), applied as a yield loss when costing: gross quantity is
+ * net ÷ (1 − waste), so 100 g net at 10% needs 111.1111 g gross (owner
+ * decision Q19, 2026-11-01). A line must not reference its own recipe; deeper
+ * loops are caught while costing.
  */
 export const recipeLineSchema = z
   .strictObject({
@@ -942,7 +953,7 @@ export const recipeLineSchema = z
     componentId: uuidSchema,
     quantity: positiveDecimal4Schema,
     uomId: uomIdSchema,
-    wastePctBp: basisPointsSchema,
+    wastePctBp: recipeWastePctSchema,
   })
   .superRefine((line, context) => {
     if (line.componentType === "recipe" && line.componentId === line.recipeId)
@@ -960,6 +971,33 @@ export const recipeDetailSchema = z.strictObject({
 });
 export type RecipeDetail = z.infer<typeof recipeDetailSchema>;
 
+function assertWastePct(wastePctBp: number): void {
+  if (!Number.isInteger(wastePctBp) || wastePctBp < 0 || wastePctBp >= 10_000)
+    throw new RangeError(`Invalid waste percentage: ${wastePctBp}`);
+}
+
+/**
+ * Gross quantity drawn from stock for a net recipe quantity. Waste is a yield
+ * loss, not an addition: 100 g net at 10% waste needs 100 ÷ (1 − 10%) =
+ * 111.1111 g gross (owner decision Q19, 2026-11-01). Use it for stock
+ * movements and display; `theoreticalRecipeCost` divides without rounding the
+ * quantity first, so sub-0.0001 unit precision still reaches the HPP.
+ */
+export function grossRecipeQuantity(
+  netQuantity: Decimal4,
+  wastePctBp: number,
+  mode: RoundingMode,
+): Decimal4 {
+  assertWastePct(wastePctBp);
+  return formatDecimal4(
+    divideRounded(
+      parseDecimal4(netQuantity) * 10_000n,
+      10_000n - BigInt(wastePctBp),
+      mode,
+    ),
+  );
+}
+
 /** Cost of one line: base quantity, with waste, valued at the item's cost. */
 export function recipeLineCostIdr(
   input: {
@@ -976,26 +1014,21 @@ export function recipeLineCostIdr(
 
 /**
  * Line cost at NUMERIC(14,4) scale (rupiah x 10^4). One rounding step:
- * rounding the quantity first would lose precision (18 g + 2% waste is
- * 18.36 g, which would round to 18.4 g), and recipes sum these unrounded so a
- * cheap line (2 g sugar at Rp 0.30/g) is not rounded away before it reaches
- * `theoreticalCostIdr` (NUMERIC(14,4), PRD §6.E).
+ * rounding the quantity first would lose precision (100 g net at 10% waste is
+ * 111.1111... g gross), and recipes sum these unrounded so a cheap line
+ * (2 g sugar at Rp 0.30/g) is not rounded away before it reaches
+ * `theoreticalCostIdr` (NUMERIC(14,4), PRD §6.E). The quantity and unit cost
+ * are both Decimal4, so `qty x cost / 10^4` is already rupiah x 10^4 and the
+ * yield loss divides it by (1 − waste) in the same step.
  */
 function recipeLineCostScaled(
   input: { baseQuantity: Decimal4; unitCostIdr: Decimal4; wastePctBp: number },
   mode: RoundingMode,
 ): bigint {
-  if (
-    !Number.isInteger(input.wastePctBp) ||
-    input.wastePctBp < 0 ||
-    input.wastePctBp > 10_000
-  )
-    throw new RangeError(`Invalid waste percentage: ${input.wastePctBp}`);
+  assertWastePct(input.wastePctBp);
   return divideRounded(
-    parseDecimal4(input.baseQuantity) *
-      parseDecimal4(input.unitCostIdr) *
-      (10_000n + BigInt(input.wastePctBp)),
-    100_000_000n,
+    parseDecimal4(input.baseQuantity) * parseDecimal4(input.unitCostIdr),
+    10_000n - BigInt(input.wastePctBp),
     mode,
   );
 }
@@ -1019,10 +1052,10 @@ export type RecipeCost = {
 /**
  * INV-02 / INV-04: the theoretical HPP of a recipe, resolving nested recipes
  * and converting every line to its component's base unit before applying the
- * moving-average cost and the line waste allowance. Throws
- * `RECIPE_CYCLE` for a loop, `RECIPE_COMPONENT_MISSING`, `RECIPE_NOT_FOUND`,
- * `RECIPE_OUTPUT_MISSING` (a nested recipe without an output item) or
- * `UNIT_COST_MISSING`.
+ * moving-average cost and the line yield loss (gross = net ÷ (1 − waste),
+ * owner decision Q19). Throws `RECIPE_CYCLE` for a loop,
+ * `RECIPE_COMPONENT_MISSING`, `RECIPE_NOT_FOUND`, `RECIPE_OUTPUT_MISSING` (a
+ * nested recipe without an output item) or `UNIT_COST_MISSING`.
  */
 export function theoreticalRecipeCost(
   book: RecipeCostBook,
@@ -1061,6 +1094,7 @@ export function theoreticalRecipeCost(
     try {
       for (const line of book.recipeLines) {
         if (line.recipeId !== id) continue;
+        assertWastePct(line.wastePctBp);
         if (line.componentType === "item") {
           const item = items.get(line.componentId);
           if (!item)
@@ -1130,10 +1164,8 @@ export function theoreticalRecipeCost(
             `Nested recipe ${nestedRecipe.id} yields no output`,
           );
         total += divideRounded(
-          nestedScaled *
-            parseDecimal4(consumedBase) *
-            (10_000n + BigInt(line.wastePctBp)),
-          parseDecimal4(producedBase) * 10_000n,
+          nestedScaled * parseDecimal4(consumedBase) * 10_000n,
+          parseDecimal4(producedBase) * (10_000n - BigInt(line.wastePctBp)),
           mode,
         );
       }
