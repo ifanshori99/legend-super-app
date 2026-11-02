@@ -13,13 +13,14 @@ import {
 //
 //   pnpm test:e2e:mock                          every mock spec
 //   pnpm test:e2e:mock e2e/legend-g9r3.spec.ts  one spec
+//   LEGEND_MOCK_PORT=3235 pnpm test:e2e:mock    another port (parallel worktree)
 //
 // Never point this config at a real deployment: mock mode serves fixtures for
 // every request.
 
 // The mock config owns both address env vars, so a spec that self-skips without
 // one still runs here and a spec that navigates with an absolute URL lands on
-// the server this config started.
+// the server this config started. MOCK_WEB_URL honors LEGEND_MOCK_PORT.
 process.env[MOCK_WEB_URL_ENV] = MOCK_WEB_URL;
 process.env[LEGACY_MOCK_WEB_URL_ENV] = MOCK_WEB_URL;
 
@@ -31,6 +32,10 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   reporter: "list",
+  // Compile every route area before the first test: a cold Vite dev server
+  // needs 20-35 s for the first SSR + client module graph (beads legend-1336,
+  // legend-b0kq), which is longer than Playwright's 5 s first assertion.
+  globalSetup: "./e2e/mock-global-setup.ts",
   use: { baseURL: MOCK_WEB_URL, trace: "retain-on-failure" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
