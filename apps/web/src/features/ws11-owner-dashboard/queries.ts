@@ -2,11 +2,7 @@
 // manual or interval refresh re-reads the same source reports the tiles cite.
 import { queryOptions } from "@tanstack/react-query";
 import type { ReportRunInput } from "@starter/shared/dashboard";
-import {
-  fetchLatestRatings,
-  fetchOwnerDashboard,
-  runOwnerReport,
-} from "./api";
+import { fetchLatestRatings, fetchOwnerDashboard, runOwnerReport } from "./api";
 
 /** Realtime means "refresh this often while the tab is visible". */
 export const OWNER_BOARD_REFRESH_MS = 60_000;
@@ -23,7 +19,7 @@ export const ownerDashboardKeys = {
 export function ownerDashboardQuery() {
   return queryOptions({
     queryKey: ownerDashboardKeys.layout(),
-    queryFn: ({ signal }) => fetchOwnerDashboard(signal),
+    queryFn: ({ signal }) => fetchOwnerDashboard({}, signal),
     staleTime: 30_000,
   });
 }

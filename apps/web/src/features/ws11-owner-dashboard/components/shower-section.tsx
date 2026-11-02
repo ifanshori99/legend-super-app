@@ -3,13 +3,19 @@
 // facility screen (WS-09); this dashboard shows its source report instead of
 // inventing unit rows, because the dashboard queue contract has no payload yet.
 import { useT } from "@/components/i18n";
-import { Card, CardDescription, CardTitle } from "@/components/ui/card";
+import {
+  CardShell,
+  CardShellBody,
+  CardShellFooter,
+} from "@/components/ui/card";
+import { StatStrip } from "@/components/ui/stat-tile";
 import type { DashboardTile } from "@starter/shared/dashboard";
 import {
   countOf,
   metricCell,
   ownerBoardTile,
   OWNER_TILE,
+  tileReportCode,
 } from "../board";
 import { useOwnerBoardContext } from "../board-context";
 import { BoardEmpty } from "./board-widget";
@@ -19,17 +25,20 @@ import { TileSource } from "./tile-source";
 function UnitStatusNote({ tile }: { tile: DashboardTile }) {
   const t = useT();
   return (
-    <Card className="min-w-0 gap-2">
-      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-        <div className="grid gap-1">
-          <CardTitle>{t("ownerDashboard.shower.unitsTitle")}</CardTitle>
-          <CardDescription>
-            {t("ownerDashboard.shower.unitsHint")}
-          </CardDescription>
-        </div>
-        <TileSource tile={tile} />
-      </div>
-    </Card>
+    <CardShell>
+      <CardShellBody className="gap-1 p-card">
+        <h3 className="type-title">{t("ownerDashboard.shower.unitsTitle")}</h3>
+        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+          {t("ownerDashboard.shower.unitsHint")}
+        </p>
+      </CardShellBody>
+      <CardShellFooter>
+        <TileSource
+          tile={tile}
+          className="font-semibold text-primary underline-offset-4 hover:underline"
+        />
+      </CardShellFooter>
+    </CardShell>
   );
 }
 
@@ -55,7 +64,7 @@ export function ShowerSection() {
         conversionTile,
         statusTile,
       ]
-        .map((tile) => tile?.reportCode ?? null)
+        .map((tile) => (tile === null ? null : tileReportCode(tile)))
         .filter((code): code is string => code !== null),
     ),
   ];
@@ -65,10 +74,10 @@ export function ShowerSection() {
   if (allEmpty) return <BoardEmpty />;
 
   return (
-    <div className="grid min-w-0 gap-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       {statusTile && <UnitStatusNote tile={statusTile} />}
 
-      <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <StatStrip label={t("ownerDashboard.shower.stripLabel")} columns={4}>
         {utilizationTile && (
           <KpiTile
             tile={utilizationTile}
@@ -77,7 +86,7 @@ export function ShowerSection() {
             contextFor={(result) => {
               const sessions = countOf(metricCell(result, "shower_sessions"));
               return sessions === null
-                ? null
+                ? undefined
                 : t("ownerDashboard.shower.utilizationContext", {
                     count: sessions,
                   });
@@ -110,14 +119,14 @@ export function ShowerSection() {
                 metricCell(result, "shower_sessions_with_fnb"),
               );
               return sessions === null
-                ? null
+                ? undefined
                 : t("ownerDashboard.shower.conversionContext", {
                     count: sessions,
                   });
             }}
           />
         )}
-      </div>
+      </StatStrip>
     </div>
   );
 }

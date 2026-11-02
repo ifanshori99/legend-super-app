@@ -23,6 +23,8 @@ export function OwnerBoardProvider({
 export function useOwnerBoardContext(): OwnerBoard {
   const board = useContext(OwnerBoardContext);
   if (board === null)
-    throw new Error("useOwnerBoardContext must be used inside OwnerBoardProvider");
+    throw new Error(
+      "useOwnerBoardContext must be used inside OwnerBoardProvider",
+    );
   return board;
 }

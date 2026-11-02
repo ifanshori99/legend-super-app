@@ -43,6 +43,9 @@ import {
 
 const tenant = cafeLegendFixtures.tenant;
 const outlet = cafeLegendFixtures.outlets[0];
+
+/** 11:40 WIB on the fixture business day; the kitchen board uses the same day. */
+export const ownerBoardGeneratedAt = "2026-11-01T04:40:00.000Z";
 const userId = "9b3f0f2e-2f5a-4d6c-8e44-2a1d7c9b0e11";
 
 const metricRefByCode = new Map<string, MetricDefinitionRef>(
@@ -101,7 +104,9 @@ export const cafeLegendDashboardFixtures = {
     businessDate: "2026-11-01",
     availableOutlets: [outlet.id],
     tiles: OWNER_DASHBOARD_TILES,
-    generatedAt: "2026-11-01T22:45:00.000Z",
+    // Same fixture instant as the owner board report runs, so the header's
+    // "Diperbarui" line and the business date describe one moment.
+    generatedAt: ownerBoardGeneratedAt,
     monitoringPeriod: {
       startDate: "2026-11-01",
       endDate: "2026-11-01",
@@ -508,9 +513,6 @@ export const dashboardErrorFixtures = {
 // same numbers (DASH-02). 1 November 2026 is the open business day in the
 // fixture calendar, so every value is an estimate (SH-02).
 
-/** 11:40 WIB on the fixture business day; the kitchen board uses the same day. */
-export const ownerBoardGeneratedAt = "2026-11-01T04:40:00.000Z";
-
 const ownerBoardPeriod = metricPeriodSchema.parse({
   startDate: "2026-11-01",
   endDate: "2026-11-01",
@@ -582,32 +584,44 @@ function ownerBoardRun(
 export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
   Object.freeze({
     // Ringkasan real-time (PRD §3 F34 "Ringkasan Real-time").
-    "sales.target": ownerBoardRun("sales.target", [], [
-      {
-        values: {
-          net_sales: { unit: "idr", valueIdr: 7_420_000 },
-          sales_target: { unit: "idr", valueIdr: 24_000_000 },
-          target_achievement_pct: { unit: "percent", value: "30.9167" },
+    "sales.target": ownerBoardRun(
+      "sales.target",
+      [],
+      [
+        {
+          values: {
+            net_sales: { unit: "idr", valueIdr: 7_420_000 },
+            sales_target: { unit: "idr", valueIdr: 24_000_000 },
+            target_achievement_pct: { unit: "percent", value: "30.9167" },
+          },
         },
-      },
-    ]),
-    "traffic.pax": ownerBoardRun("traffic.pax", [], [
-      {
-        values: {
-          pax: { unit: "count", value: 148 },
-          avg_spend_per_pax: { unit: "idr", valueIdr: 50_135 },
+      ],
+    ),
+    "traffic.pax": ownerBoardRun(
+      "traffic.pax",
+      [],
+      [
+        {
+          values: {
+            pax: { unit: "count", value: 148 },
+            avg_spend_per_pax: { unit: "idr", valueIdr: 50_135 },
+          },
         },
-      },
-    ]),
-    "sales.transactions": ownerBoardRun("sales.transactions", [], [
-      {
-        values: {
-          transaction_count: { unit: "count", value: 96 },
-          avg_ticket: { unit: "idr", valueIdr: 77_292 },
-          net_sales: { unit: "idr", valueIdr: 7_420_000 },
+      ],
+    ),
+    "sales.transactions": ownerBoardRun(
+      "sales.transactions",
+      [],
+      [
+        {
+          values: {
+            transaction_count: { unit: "count", value: 96 },
+            avg_ticket: { unit: "idr", valueIdr: 77_292 },
+            net_sales: { unit: "idr", valueIdr: 7_420_000 },
+          },
         },
-      },
-    ]),
+      ],
+    ),
     "operations.table_turnover": ownerBoardRun(
       "operations.table_turnover",
       [],
@@ -620,40 +634,44 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         },
       ],
     ),
-    "sales.per_channel": ownerBoardRun("sales.per_channel", ["channel"], [
-      {
-        dims: [["channel", "qr"]],
-        values: {
-          net_sales: { unit: "idr", valueIdr: 4_150_000 },
-          transaction_count: { unit: "count", value: 52 },
-          pax: { unit: "count", value: 92 },
+    "sales.per_channel": ownerBoardRun(
+      "sales.per_channel",
+      ["channel"],
+      [
+        {
+          dims: [["channel", "qr"]],
+          values: {
+            net_sales: { unit: "idr", valueIdr: 4_150_000 },
+            transaction_count: { unit: "count", value: 52 },
+            pax: { unit: "count", value: 92 },
+          },
         },
-      },
-      {
-        dims: [["channel", "pos"]],
-        values: {
-          net_sales: { unit: "idr", valueIdr: 1_980_000 },
-          transaction_count: { unit: "count", value: 28 },
-          pax: { unit: "count", value: 34 },
+        {
+          dims: [["channel", "pos"]],
+          values: {
+            net_sales: { unit: "idr", valueIdr: 1_980_000 },
+            transaction_count: { unit: "count", value: 28 },
+            pax: { unit: "count", value: 34 },
+          },
         },
-      },
-      {
-        dims: [["channel", "gofood"]],
-        values: {
-          net_sales: { unit: "idr", valueIdr: 780_000 },
-          transaction_count: { unit: "count", value: 10 },
-          pax: { unit: "count", value: 14 },
+        {
+          dims: [["channel", "gofood"]],
+          values: {
+            net_sales: { unit: "idr", valueIdr: 780_000 },
+            transaction_count: { unit: "count", value: 10 },
+            pax: { unit: "count", value: 14 },
+          },
         },
-      },
-      {
-        dims: [["channel", "grabfood"]],
-        values: {
-          net_sales: { unit: "idr", valueIdr: 510_000 },
-          transaction_count: { unit: "count", value: 6 },
-          pax: { unit: "count", value: 8 },
+        {
+          dims: [["channel", "grabfood"]],
+          values: {
+            net_sales: { unit: "idr", valueIdr: 510_000 },
+            transaction_count: { unit: "count", value: 6 },
+            pax: { unit: "count", value: 8 },
+          },
         },
-      },
-    ]),
+      ],
+    ),
 
     // Operasional (PRD §3 F34 "Operasional").
     "operations.serving_time": ownerBoardRun(
@@ -712,46 +730,52 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         },
       ],
     ),
-    "menu.best_sellers": ownerBoardRun("menu.best_sellers", ["menu_item"], [
-      {
-        dims: [["menu_item", "Kopi Susu Aren"]],
-        values: {
-          menu_sold_qty: { unit: "count", value: 42 },
-          net_sales: { unit: "idr", valueIdr: 1_260_000 },
+    "menu.best_sellers": ownerBoardRun(
+      "menu.best_sellers",
+      ["menu_item"],
+      [
+        {
+          dims: [["menu_item", "Kopi Susu Aren"]],
+          values: {
+            menu_sold_qty: { unit: "count", value: 42 },
+            net_sales: { unit: "idr", valueIdr: 1_260_000 },
+          },
         },
-      },
-      {
-        dims: [["menu_item", "Nasi Goreng Kampung"]],
-        values: {
-          menu_sold_qty: { unit: "count", value: 31 },
-          net_sales: { unit: "idr", valueIdr: 1_085_000 },
+        {
+          dims: [["menu_item", "Nasi Goreng Kampung"]],
+          values: {
+            menu_sold_qty: { unit: "count", value: 31 },
+            net_sales: { unit: "idr", valueIdr: 1_085_000 },
+          },
         },
-      },
-      {
-        dims: [["menu_item", "Ayam Geprek"]],
-        values: {
-          menu_sold_qty: { unit: "count", value: 27 },
-          net_sales: { unit: "idr", valueIdr: 945_000 },
+        {
+          dims: [["menu_item", "Ayam Geprek"]],
+          values: {
+            menu_sold_qty: { unit: "count", value: 27 },
+            net_sales: { unit: "idr", valueIdr: 945_000 },
+          },
         },
-      },
-      {
-        dims: [["menu_item", "Matcha Latte"]],
-        values: {
-          menu_sold_qty: { unit: "count", value: 24 },
-          net_sales: { unit: "idr", valueIdr: 720_000 },
+        {
+          dims: [["menu_item", "Matcha Latte"]],
+          values: {
+            menu_sold_qty: { unit: "count", value: 24 },
+            net_sales: { unit: "idr", valueIdr: 720_000 },
+          },
         },
-      },
-      {
-        dims: [["menu_item", "Croissant Mentega"]],
-        values: {
-          menu_sold_qty: { unit: "count", value: 21 },
-          net_sales: { unit: "idr", valueIdr: 525_000 },
+        {
+          dims: [["menu_item", "Croissant Mentega"]],
+          values: {
+            menu_sold_qty: { unit: "count", value: 21 },
+            net_sales: { unit: "idr", valueIdr: 525_000 },
+          },
         },
-      },
-    ]),
-    "menu.sold_out": ownerBoardRun("menu.sold_out", [], [
-      { values: { sold_out_menu_count: { unit: "count", value: 2 } } },
-    ]),
+      ],
+    ),
+    "menu.sold_out": ownerBoardRun(
+      "menu.sold_out",
+      [],
+      [{ values: { sold_out_menu_count: { unit: "count", value: 2 } } }],
+    ),
     "operations.waiter_calls": ownerBoardRun(
       "operations.waiter_calls",
       ["zone"],
@@ -770,40 +794,56 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
         },
       ],
     ),
-    "crm.reviews": ownerBoardRun("crm.reviews", [], [
-      {
-        values: {
-          review_rating: { unit: "decimal", value: "4.7000" },
-          review_count: { unit: "count", value: 128 },
+    "crm.reviews": ownerBoardRun(
+      "crm.reviews",
+      [],
+      [
+        {
+          values: {
+            review_rating: { unit: "decimal", value: "4.7000" },
+            review_count: { unit: "count", value: 128 },
+          },
         },
-      },
-    ]),
+      ],
+    ),
 
     // Shower room (PRD §3 F34 "Shower Room").
-    "facility.occupancy": ownerBoardRun("facility.occupancy", [], [
-      {
-        values: {
-          shower_occupancy_pct: { unit: "percent", value: "56.2500" },
-          shower_sessions: { unit: "count", value: 18 },
+    "facility.occupancy": ownerBoardRun(
+      "facility.occupancy",
+      [],
+      [
+        {
+          values: {
+            shower_occupancy_pct: { unit: "percent", value: "56.2500" },
+            shower_sessions: { unit: "count", value: 18 },
+          },
         },
-      },
-    ]),
-    "facility.revenue": ownerBoardRun("facility.revenue", [], [
-      {
-        values: {
-          shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
-          shower_sessions: { unit: "count", value: 18 },
+      ],
+    ),
+    "facility.revenue": ownerBoardRun(
+      "facility.revenue",
+      [],
+      [
+        {
+          values: {
+            shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
+            shower_sessions: { unit: "count", value: 18 },
+          },
         },
-      },
-    ]),
-    "facility.subscriptions": ownerBoardRun("facility.subscriptions", [], [
-      {
-        values: {
-          active_subscriptions: { unit: "count", value: 23 },
-          shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
+      ],
+    ),
+    "facility.subscriptions": ownerBoardRun(
+      "facility.subscriptions",
+      [],
+      [
+        {
+          values: {
+            active_subscriptions: { unit: "count", value: 23 },
+            shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
+          },
         },
-      },
-    ]),
+      ],
+    ),
     "facility.fnb_conversion": ownerBoardRun(
       "facility.fnb_conversion",
       [],
@@ -818,78 +858,90 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
     ),
 
     // Kursi & WFC (PRD §3 F34 "Kursi & WFC").
-    "facility.revpash": ownerBoardRun("facility.revpash", ["zone"], [
-      {
-        dims: [["zone", "Indoor Reguler"]],
-        values: {
-          revpash: { unit: "idr", valueIdr: 18_500 },
-          seat_occupancy_pct: { unit: "percent", value: "68.7500" },
+    "facility.revpash": ownerBoardRun(
+      "facility.revpash",
+      ["zone"],
+      [
+        {
+          dims: [["zone", "Indoor Reguler"]],
+          values: {
+            revpash: { unit: "idr", valueIdr: 18_500 },
+            seat_occupancy_pct: { unit: "percent", value: "68.7500" },
+          },
         },
-      },
-      {
-        dims: [["zone", "Taman Outdoor"]],
-        values: {
-          revpash: { unit: "idr", valueIdr: 9_200 },
-          seat_occupancy_pct: { unit: "percent", value: "42.5000" },
+        {
+          dims: [["zone", "Taman Outdoor"]],
+          values: {
+            revpash: { unit: "idr", valueIdr: 9_200 },
+            seat_occupancy_pct: { unit: "percent", value: "42.5000" },
+          },
         },
-      },
-      {
-        dims: [["zone", "Private Room Nusantara"]],
-        values: {
-          revpash: { unit: "idr", valueIdr: 26_400 },
-          seat_occupancy_pct: { unit: "percent", value: "75.0000" },
+        {
+          dims: [["zone", "Private Room Nusantara"]],
+          values: {
+            revpash: { unit: "idr", valueIdr: 26_400 },
+            seat_occupancy_pct: { unit: "percent", value: "75.0000" },
+          },
         },
-      },
-      {
-        dims: [["zone", "WFC Corner"]],
-        values: {
-          revpash: { unit: "idr", valueIdr: 12_800 },
-          seat_occupancy_pct: { unit: "percent", value: "55.0000" },
+        {
+          dims: [["zone", "WFC Corner"]],
+          values: {
+            revpash: { unit: "idr", valueIdr: 12_800 },
+            seat_occupancy_pct: { unit: "percent", value: "55.0000" },
+          },
         },
-      },
-    ]),
-    "traffic.dwell_time": ownerBoardRun("traffic.dwell_time", ["zone"], [
-      {
-        dims: [["zone", "Indoor Reguler"]],
-        values: {
-          avg_dwell_minutes: { unit: "decimal", value: "68.5000" },
-          avg_spend_per_pax: { unit: "idr", valueIdr: 48_200 },
-          table_turnover: { unit: "decimal", value: "1.9000" },
+      ],
+    ),
+    "traffic.dwell_time": ownerBoardRun(
+      "traffic.dwell_time",
+      ["zone"],
+      [
+        {
+          dims: [["zone", "Indoor Reguler"]],
+          values: {
+            avg_dwell_minutes: { unit: "decimal", value: "68.5000" },
+            avg_spend_per_pax: { unit: "idr", valueIdr: 48_200 },
+            table_turnover: { unit: "decimal", value: "1.9000" },
+          },
         },
-      },
-      {
-        dims: [["zone", "Taman Outdoor"]],
-        values: {
-          avg_dwell_minutes: { unit: "decimal", value: "82.0000" },
-          avg_spend_per_pax: { unit: "idr", valueIdr: 41_800 },
-          table_turnover: { unit: "decimal", value: "1.6000" },
+        {
+          dims: [["zone", "Taman Outdoor"]],
+          values: {
+            avg_dwell_minutes: { unit: "decimal", value: "82.0000" },
+            avg_spend_per_pax: { unit: "idr", valueIdr: 41_800 },
+            table_turnover: { unit: "decimal", value: "1.6000" },
+          },
         },
-      },
-      {
-        dims: [["zone", "Private Room Nusantara"]],
-        values: {
-          avg_dwell_minutes: { unit: "decimal", value: "96.5000" },
-          avg_spend_per_pax: { unit: "idr", valueIdr: 88_400 },
-          table_turnover: { unit: "decimal", value: "1.2000" },
+        {
+          dims: [["zone", "Private Room Nusantara"]],
+          values: {
+            avg_dwell_minutes: { unit: "decimal", value: "96.5000" },
+            avg_spend_per_pax: { unit: "idr", valueIdr: 88_400 },
+            table_turnover: { unit: "decimal", value: "1.2000" },
+          },
         },
-      },
-      {
-        dims: [["zone", "WFC Corner"]],
-        values: {
-          avg_dwell_minutes: { unit: "decimal", value: "110.0000" },
-          avg_spend_per_pax: { unit: "idr", valueIdr: 52_600 },
-          table_turnover: { unit: "decimal", value: "1.1000" },
+        {
+          dims: [["zone", "WFC Corner"]],
+          values: {
+            avg_dwell_minutes: { unit: "decimal", value: "110.0000" },
+            avg_spend_per_pax: { unit: "idr", valueIdr: 52_600 },
+            table_turnover: { unit: "decimal", value: "1.1000" },
+          },
         },
-      },
-    ]),
-    "facility.wifi": ownerBoardRun("facility.wifi", [], [
-      {
-        values: {
-          wifi_quota_used: { unit: "decimal", value: "42.7000" },
-          wifi_sessions: { unit: "count", value: 210 },
+      ],
+    ),
+    "facility.wifi": ownerBoardRun(
+      "facility.wifi",
+      [],
+      [
+        {
+          values: {
+            wifi_quota_used: { unit: "decimal", value: "42.7000" },
+            wifi_sessions: { unit: "count", value: 210 },
+          },
         },
-      },
-    ]),
+      ],
+    ),
   } satisfies Record<string, ReportResult>);
 
 export const cafeLegendReportFixtures = {

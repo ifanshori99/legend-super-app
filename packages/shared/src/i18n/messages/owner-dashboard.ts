@@ -7,20 +7,23 @@ export const ownerDashboardMessages = {
   businessDate: "Tanggal bisnis {date}",
   updatedAt: "Diperbarui {time} WIB",
   refresh: "Muat ulang",
+  loadFailed: "Gagal dimuat",
   estimate: "Estimasi",
   estimateHint:
     "Angka berjalan sampai buku ditutup; angka resmi diambil dari periode yang sudah ditutup.",
-  source: "Sumber: {report}",
   sourceAria: "Buka laporan sumber {report}",
   tabsLabel: "Bagian dashboard",
   todayShort: "Hari ini",
   tabs: {
     realtime: "Ringkasan",
     operations: "Operasional",
-    shower: "Shower room",
-    seats: "Kursi & WFC",
+    shower: "Shower",
+    seats: "Kursi",
+    /** The shorter visible label keeps the tab group inside 360px. */
+    seatsAria: "Kursi & WFC",
   },
   realtime: {
+    stripLabel: "Tamu, transaksi, dan okupansi meja",
     salesLabel: "Penjualan hari ini",
     targetLabel: "Target penjualan",
     achievement: "Pencapaian target {percent}",
@@ -49,6 +52,7 @@ export const ownerDashboardMessages = {
     },
   },
   operations: {
+    stripLabel: "Kualitas layanan hari ini",
     servingTitle: "Waktu saji per stasiun",
     servingHint: "Rata-rata tiket selesai hari ini.",
     station: "Stasiun",
@@ -76,6 +80,7 @@ export const ownerDashboardMessages = {
     noReviews: "Belum ada ulasan terbaru.",
   },
   shower: {
+    stripLabel: "Fasilitas shower hari ini",
     unitsTitle: "Status bilik saat ini",
     unitsHint:
       "Status per bilik mengikuti papan fasilitas operasional; angka di bawah ini dari laporan utilisasi hari ini.",
@@ -116,5 +121,6 @@ export const ownerDashboardMessages = {
     minutes: "{minutes} mnt",
     seconds: "{seconds} dtk",
     minutesValue: "{value} mnt",
+    unitMinutes: "mnt",
   },
 } as const;

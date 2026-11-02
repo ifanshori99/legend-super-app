@@ -1,6 +1,9 @@
 // PRD §3 F34 "Kursi & WFC": seat occupancy and RevPASH per zone, time spent
-// against spend, and guest Wi-Fi usage.
+// against spend, and guest Wi-Fi usage. Two tables as data shells plus one lone
+// StatTile (DESIGN.md v3: a single metric keeps its own card).
 import { useT } from "@/components/i18n";
+import { Skeleton } from "@/components/ui/skeleton";
+import { StatTile } from "@/components/ui/stat-tile";
 import {
   Table,
   TableBody,
@@ -11,23 +14,24 @@ import {
 } from "@/components/ui/table";
 import type { DashboardTile } from "@starter/shared/dashboard";
 import {
+  countOf,
   decimalOf,
   formatDecimal,
   metricCell,
   ownerBoardTile,
   OWNER_TILE,
   reportRows,
+  tileReportCode,
 } from "../board";
 import { useOwnerBoardContext } from "../board-context";
 import { BoardEmpty } from "./board-widget";
 import { BoardTable } from "./board-table";
-import { KpiTile } from "./kpi-tile";
-import { DecimalText, MetricCellView } from "./metric-display";
+import { DecimalText, MetricCellView, StatMetricValue } from "./metric-display";
 import { TileSource } from "./tile-source";
 
 function ZoneOccupancyTable({ tile }: { tile: DashboardTile }) {
   const t = useT();
-  const state = useOwnerBoardContext().report(tile.reportCode);
+  const state = useOwnerBoardContext().report(tileReportCode(tile));
   const rows = state.result
     ? reportRows(state.result, ["seat_occupancy_pct", "revpash"])
     : [];
@@ -43,9 +47,7 @@ function ZoneOccupancyTable({ tile }: { tile: DashboardTile }) {
         <TableHeader>
           <TableRow>
             <TableHead>{t("ownerDashboard.seats.zone")}</TableHead>
-            <TableHead numeric>
-              {t("ownerDashboard.seats.occupancy")}
-            </TableHead>
+            <TableHead numeric>{t("ownerDashboard.seats.occupancy")}</TableHead>
             <TableHead numeric>{t("ownerDashboard.seats.revpash")}</TableHead>
           </TableRow>
         </TableHeader>
@@ -71,7 +73,7 @@ function ZoneOccupancyTable({ tile }: { tile: DashboardTile }) {
 
 function DwellTable({ tile }: { tile: DashboardTile }) {
   const t = useT();
-  const state = useOwnerBoardContext().report(tile.reportCode);
+  const state = useOwnerBoardContext().report(tileReportCode(tile));
   const rows = state.result
     ? reportRows(state.result, [
         "avg_dwell_minutes",
@@ -97,7 +99,7 @@ function DwellTable({ tile }: { tile: DashboardTile }) {
             <TableHead numeric>
               {t("ownerDashboard.seats.spendPerPax")}
             </TableHead>
-            <TableHead numeric>
+            <TableHead numeric className="hidden sm:table-cell">
               {t("ownerDashboard.seats.turnover")}
             </TableHead>
           </TableRow>
@@ -114,14 +116,18 @@ function DwellTable({ tile }: { tile: DashboardTile }) {
               <TableRow key={row.label ?? "total"}>
                 <TableCell className="font-medium">{row.label}</TableCell>
                 <TableCell numeric>
-                  {dwell === null ? "—" : <DecimalText value={dwell} suffix="mnt" />}
+                  {dwell === null ? (
+                    "—"
+                  ) : (
+                    <DecimalText value={dwell} suffix="mnt" />
+                  )}
                 </TableCell>
                 <TableCell numeric>
                   <MetricCellView
                     value={row.values.get("avg_spend_per_pax") ?? null}
                   />
                 </TableCell>
-                <TableCell numeric>
+                <TableCell numeric className="hidden sm:table-cell">
                   {turnover === null ? (
                     "—"
                   ) : (
@@ -137,8 +143,49 @@ function DwellTable({ tile }: { tile: DashboardTile }) {
   );
 }
 
-export function SeatsSection() {
+function WifiTile({ tile }: { tile: DashboardTile }) {
   const t = useT();
+  const state = useOwnerBoardContext().report(tileReportCode(tile));
+  if (state.status === "loading")
+    return (
+      <StatTile
+        label={t("ownerDashboard.seats.wifi")}
+        value={<Skeleton className="h-7 w-24" />}
+        context={t("ownerDashboard.todayShort")}
+      />
+    );
+  const sessions = countOf(metricCell(state.result, "wifi_sessions"));
+  const quota = decimalOf(metricCell(state.result, "wifi_quota_used"));
+  const value =
+    sessions === null ? null : ({ unit: "count", value: sessions } as const);
+  return (
+    <StatTile
+      label={t("ownerDashboard.seats.wifi")}
+      value={
+        value === null ? (
+          <span className="type-heading font-normal text-muted-foreground">
+            —
+          </span>
+        ) : (
+          <StatMetricValue value={value} />
+        )
+      }
+      context={
+        quota === null
+          ? t("ownerDashboard.todayShort")
+          : [
+              t("ownerDashboard.todayShort"),
+              t("ownerDashboard.seats.wifiQuotaContext", {
+                quota: formatDecimal(quota),
+              }),
+            ].join(" · ")
+      }
+      source={<TileSource tile={tile} />}
+    />
+  );
+}
+
+export function SeatsSection() {
   const board = useOwnerBoardContext();
   const layout = board.layout;
   const zoneTile = ownerBoardTile(layout, OWNER_TILE.zoneOccupancy);
@@ -148,7 +195,7 @@ export function SeatsSection() {
   const reportCodes = [
     ...new Set(
       [zoneTile, dwellTile, wifiTile]
-        .map((tile) => tile?.reportCode ?? null)
+        .map((tile) => (tile === null ? null : tileReportCode(tile)))
         .filter((code): code is string => code !== null),
     ),
   ];
@@ -158,29 +205,19 @@ export function SeatsSection() {
   if (allEmpty) return <BoardEmpty />;
 
   return (
-    <div className="grid min-w-0 gap-4">
-      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-2">
         <div className="min-w-0">
           {zoneTile && <ZoneOccupancyTable tile={zoneTile} />}
         </div>
-        <div className="min-w-0">{dwellTile && <DwellTable tile={dwellTile} />}</div>
+        <div className="min-w-0">
+          {dwellTile && <DwellTable tile={dwellTile} />}
+        </div>
       </div>
 
       {wifiTile && (
-        <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-          <KpiTile
-            tile={wifiTile}
-            metricCode="wifi_sessions"
-            label={t("ownerDashboard.seats.wifi")}
-            contextFor={(result) => {
-              const quota = decimalOf(metricCell(result, "wifi_quota_used"));
-              return quota === null
-                ? null
-                : t("ownerDashboard.seats.wifiQuotaContext", {
-                    quota: formatDecimal(quota),
-                  });
-            }}
-          />
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2">
+          <WifiTile tile={wifiTile} />
         </div>
       )}
     </div>

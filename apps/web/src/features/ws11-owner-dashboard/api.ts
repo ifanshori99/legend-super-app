@@ -9,17 +9,19 @@ import {
   getDashboardEndpoint,
   runReportEndpoint,
   type DashboardLayout,
+  type DashboardQuery,
   type ReportResult,
   type ReportRunInput,
 } from "@starter/shared/dashboard";
 
 /** The owner dashboard layout: tiles, period, outlets (DASH-01). */
 export async function fetchOwnerDashboard(
+  query: DashboardQuery = {},
   signal?: AbortSignal,
 ): Promise<DashboardLayout> {
   const response = await callEndpoint(
     getDashboardEndpoint,
-    { params: { dashboard: "owner" } },
+    { params: { dashboard: "owner" }, query },
     { signal },
   );
   return response.data;
@@ -44,7 +46,9 @@ export async function runOwnerReport(
  * reads the CRM feedback queue that already exists; complaints stay in the CRM
  * inbox and are not mixed into a rating list.
  */
-export async function fetchLatestRatings(signal?: AbortSignal): Promise<Feedback[]> {
+export async function fetchLatestRatings(
+  signal?: AbortSignal,
+): Promise<Feedback[]> {
   const response = await callEndpoint(
     listFeedback,
     { query: { kind: "rating", limit: 3 } },

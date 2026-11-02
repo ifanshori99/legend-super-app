@@ -95,11 +95,21 @@ export function ownerBoardTile(
   return layout.tiles.find((tile) => tile.key === key) ?? null;
 }
 
+/**
+ * The source report of a tile. Link and queue tiles may carry none, and a
+ * personal-share tile never does, so callers never read the field directly.
+ */
+export function tileReportCode(tile: DashboardTile): string | null {
+  return "reportCode" in tile ? tile.reportCode : null;
+}
+
 /** Distinct source reports of the part-1 tiles, sorted for a stable order. */
 export function ownerBoardReportCodes(layout: DashboardLayout): string[] {
   const codes = new Set<string>();
-  for (const tile of ownerBoardTiles(layout))
-    if (tile.reportCode !== null) codes.add(tile.reportCode);
+  for (const tile of ownerBoardTiles(layout)) {
+    const code = tileReportCode(tile);
+    if (code !== null) codes.add(code);
+  }
   return [...codes].sort();
 }
 
@@ -116,6 +126,8 @@ export function ownerBoardRunInput(
     },
     outletIds: [...layout.availableOutlets],
     groupBy: [...(OWNER_BOARD_GROUP_BY[reportCode] ?? [])],
+    filters: [],
+    bucket: "total",
     limit: 100,
   };
 }
@@ -132,10 +144,11 @@ export function ownerBoardTilePath(
   tile: DashboardTile,
   layout: DashboardLayout,
 ): string | null {
+  const reportCode = tileReportCode(tile);
   const groupBy =
-    tile.reportCode === null
+    reportCode === null
       ? null
-      : (OWNER_BOARD_GROUP_BY[tile.reportCode]?.[0] ?? null);
+      : (OWNER_BOARD_GROUP_BY[reportCode]?.[0] ?? null);
   return dashboardTilePath(tile, {
     startDate: layout.monitoringPeriod.startDate,
     endDate: layout.monitoringPeriod.endDate,
@@ -226,9 +239,7 @@ export type ChannelMessageKey =
   (typeof CHANNEL_MESSAGE_KEYS)[keyof typeof CHANNEL_MESSAGE_KEYS];
 
 /** Catalog label of a known sales channel; null for an unknown value. */
-export function channelMessageKey(
-  channel: string,
-): ChannelMessageKey | null {
+export function channelMessageKey(channel: string): ChannelMessageKey | null {
   return channel in CHANNEL_MESSAGE_KEYS
     ? CHANNEL_MESSAGE_KEYS[channel as keyof typeof CHANNEL_MESSAGE_KEYS]
     : null;
@@ -278,7 +289,7 @@ export const OUTLET_TIME_ZONE = "Asia/Jakarta";
 
 const businessDateFormat = new Intl.DateTimeFormat("id-ID", {
   day: "numeric",
-  month: "long",
+  month: "short",
   year: "numeric",
   timeZone: "UTC",
 });
@@ -286,17 +297,19 @@ const businessDateFormat = new Intl.DateTimeFormat("id-ID", {
 const outletClockFormat = new Intl.DateTimeFormat("id-ID", {
   hour: "2-digit",
   minute: "2-digit",
+  hourCycle: "h23",
   timeZone: OUTLET_TIME_ZONE,
 });
 
-/** A business date (`2026-11-01`) as "1 November 2026". */
+/** A business date (`2026-11-01`) as "1 Nov 2026". */
 export function formatBusinessDate(businessDate: string): string {
   return businessDateFormat.format(new Date(`${businessDate}T00:00:00Z`));
 }
 
-/** A fetch instant as the outlet's wall-clock time, e.g. "11.40". */
-export function formatOutletTime(instantMs: number): string {
-  return outletClockFormat.format(new Date(instantMs));
+/** A server instant as the outlet's wall-clock time, e.g. "11.40". */
+export function formatOutletTime(instant: string): string {
+  const date = new Date(instant);
+  return Number.isNaN(date.getTime()) ? "" : outletClockFormat.format(date);
 }
 
 const reviewDateFormat = new Intl.DateTimeFormat("id-ID", {
@@ -305,6 +318,7 @@ const reviewDateFormat = new Intl.DateTimeFormat("id-ID", {
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
+  hourCycle: "h23",
   timeZone: OUTLET_TIME_ZONE,
 });
 

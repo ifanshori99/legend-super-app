@@ -51,8 +51,6 @@ export type OwnerBoard = {
   reviews: BoardReviews;
   /** Some request is in flight (the refresh button shows it). */
   isFetching: boolean;
-  /** Browser time of the last successful report read; null before hydration. */
-  lastUpdatedAt: number | null;
   refresh: () => void;
 };
 
@@ -111,14 +109,6 @@ export function useOwnerBoard(layout: DashboardLayout): OwnerBoard {
     return () => window.clearInterval(timer);
   }, [hydrated, refresh]);
 
-  const lastUpdatedAt = useMemo(() => {
-    if (!hydrated) return null;
-    let latest = 0;
-    for (const query of reportQueries)
-      if (query.data !== undefined) latest = Math.max(latest, query.dataUpdatedAt);
-    return latest > 0 ? latest : null;
-  }, [hydrated, reportQueries]);
-
   const reviews: BoardReviews = {
     status: reviewsQuery.isError
       ? "error"
@@ -138,8 +128,10 @@ export function useOwnerBoard(layout: DashboardLayout): OwnerBoard {
     report: (reportCode) =>
       reportState(reportCode ? reportsByCode.get(reportCode) : undefined),
     reviews,
-    isFetching: reportsByCode.size > 0 && (reportQueries.some((query) => query.isFetching) || reviewsQuery.isFetching),
-    lastUpdatedAt,
+    isFetching:
+      reportsByCode.size > 0 &&
+      (reportQueries.some((query) => query.isFetching) ||
+        reviewsQuery.isFetching),
     refresh,
   };
 }

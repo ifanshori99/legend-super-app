@@ -1,11 +1,18 @@
 // PRD §3 F34 "Ringkasan Real-time": today's sales against the target, guests,
 // average spend, table occupancy and turnover, and sales per channel. Every
 // number comes from the tile's source report (DASH-01/DASH-02).
+// DESIGN.md v3: page title lives in the ManagementShell topbar, the hero is a
+// CardShell, the related KPIs share one StatStrip.
 import { useT } from "@/components/i18n";
-import { Card } from "@/components/ui/card";
-import { Money, NumberDisplay } from "@/components/ui/money";
+import { formatRupiah } from "@starter/shared/i18n";
+import {
+  CardShell,
+  CardShellBody,
+  CardShellFooter,
+} from "@/components/ui/card";
+import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip } from "@/components/ui/stat-tile";
 import {
   Table,
   TableBody,
@@ -15,9 +22,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { DashboardTile } from "@starter/shared/dashboard";
+import { ErrorState } from "@/components/ui/feedback-state";
 import {
   channelMessageKey,
-  countOf,
   decimalOf,
   formatDecimal,
   formatPercent,
@@ -28,29 +35,39 @@ import {
   percentOf,
   reportRows,
   sharePercent,
+  tileReportCode,
 } from "../board";
 import { useOwnerBoardContext } from "../board-context";
-import { BoardEmpty, WidgetErrorCard } from "./board-widget";
+import { BoardEmpty } from "./board-widget";
 import { BoardTable } from "./board-table";
 import { KpiTile } from "./kpi-tile";
 import { MetricCellView } from "./metric-display";
 import { TileSource } from "./tile-source";
 
-function SalesHero({ tile }: { tile: DashboardTile }) {
+function SalesCard({ tile }: { tile: DashboardTile }) {
   const t = useT();
   const board = useOwnerBoardContext();
-  const state = board.report(tile.reportCode);
+  const state = board.report(tileReportCode(tile));
+
   if (state.status === "loading")
     return (
-      <Card className="min-w-0 gap-3" aria-busy="true">
+      <CardShell aria-busy="true">
         <span className="sr-only">{t("common.loading")}</span>
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-9 w-48" />
-        <Skeleton className="h-2 w-full" />
-      </Card>
+        <CardShellBody className="gap-3 p-card">
+          <Skeleton className="h-3.5 w-32" />
+          <Skeleton className="h-8 w-56" />
+          <Skeleton className="h-2 w-full" />
+        </CardShellBody>
+      </CardShell>
     );
   if (state.status === "error")
-    return <WidgetErrorCard retry={state.retry} />;
+    return (
+      <CardShell>
+        <CardShellBody>
+          <ErrorState onRetry={state.retry} />
+        </CardShellBody>
+      </CardShell>
+    );
 
   const netSalesIdr = idrOf(metricCell(state.result, "net_sales"));
   const targetIdr = idrOf(metricCell(state.result, "sales_target"));
@@ -59,42 +76,38 @@ function SalesHero({ tile }: { tile: DashboardTile }) {
   );
 
   return (
-    <Card className="min-w-0 gap-3">
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <div className="grid gap-1">
-          <p className="text-sm leading-5 font-medium text-muted-foreground">
-            {t("ownerDashboard.realtime.salesLabel")}
-          </p>
-          {netSalesIdr === null ? (
-            <p className="text-2xl leading-8 font-semibold text-muted-foreground">
-              —
+    <CardShell>
+      <CardShellBody className="gap-4 p-card">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="grid gap-1.5">
+            <p className="type-eyebrow text-muted-foreground">
+              {t("ownerDashboard.realtime.salesLabel")}
             </p>
-          ) : (
-            <Money amount={netSalesIdr} size="xl" />
-          )}
+            {netSalesIdr === null ? (
+              <p className="type-money-display text-muted-foreground">—</p>
+            ) : (
+              <Money amount={netSalesIdr} size="stat" />
+            )}
+          </div>
+          <div className="grid gap-1.5 text-right">
+            <p className="type-eyebrow text-muted-foreground">
+              {t("ownerDashboard.realtime.targetLabel")}
+            </p>
+            {targetIdr === null ? (
+              <p className="type-money-display text-muted-foreground">—</p>
+            ) : (
+              <Money amount={targetIdr} size="stat" />
+            )}
+          </div>
         </div>
-        <div className="grid gap-1 text-right">
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("ownerDashboard.realtime.targetLabel")}
-          </p>
-          {targetIdr === null ? (
-            <p className="tabular text-muted-foreground">—</p>
-          ) : (
-            <Money amount={targetIdr} size="lg" className="font-semibold" />
-          )}
-        </div>
-      </div>
-      {achievement === null ? (
-        <TileSource tile={tile} />
-      ) : (
-        <div className="grid gap-2">
+        {achievement === null ? null : (
           <div
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(Number(achievement))}
             aria-label={t("ownerDashboard.realtime.progressLabel")}
-            className="h-2 w-full overflow-hidden rounded-full bg-muted"
+            className="h-2 w-full overflow-hidden rounded-full bg-surface-3"
           >
             <div
               className="h-full rounded-full bg-primary"
@@ -103,24 +116,29 @@ function SalesHero({ tile }: { tile: DashboardTile }) {
               }}
             />
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("ownerDashboard.realtime.achievement", {
-                percent: `${formatPercent(achievement)}%`,
-              })}
-            </p>
-            <TileSource tile={tile} />
-          </div>
-        </div>
-      )}
-    </Card>
+        )}
+      </CardShellBody>
+      <CardShellFooter>
+        {achievement === null ? null : (
+          <span className="tabular">
+            {t("ownerDashboard.realtime.achievement", {
+              percent: `${formatPercent(achievement)}%`,
+            })}
+          </span>
+        )}
+        <TileSource
+          tile={tile}
+          className="ms-auto font-semibold text-primary underline-offset-4 hover:underline"
+        />
+      </CardShellFooter>
+    </CardShell>
   );
 }
 
 function ChannelTable({ tile }: { tile: DashboardTile }) {
   const t = useT();
   const board = useOwnerBoardContext();
-  const state = board.report(tile.reportCode);
+  const state = board.report(tileReportCode(tile));
   const rows = state.result
     ? reportRows(state.result, ["net_sales", "pax"])
     : [];
@@ -147,7 +165,7 @@ function ChannelTable({ tile }: { tile: DashboardTile }) {
             <TableHead numeric>
               {t("ownerDashboard.realtime.channelPax")}
             </TableHead>
-            <TableHead numeric>
+            <TableHead numeric className="hidden sm:table-cell">
               {t("ownerDashboard.realtime.channelShare")}
             </TableHead>
           </TableRow>
@@ -158,9 +176,7 @@ function ChannelTable({ tile }: { tile: DashboardTile }) {
             const share =
               netSales === null ? null : sharePercent(netSales, totalNetSales);
             const messageKey = row.label ? channelMessageKey(row.label) : null;
-            const label = messageKey
-              ? t(messageKey)
-              : (row.label ?? t("common.more"));
+            const label = messageKey ? t(messageKey) : (row.label ?? "—");
             return (
               <TableRow key={row.label ?? "unknown"}>
                 <TableCell className="font-medium">{label}</TableCell>
@@ -170,7 +186,7 @@ function ChannelTable({ tile }: { tile: DashboardTile }) {
                 <TableCell numeric>
                   <MetricCellView value={row.values.get("pax") ?? null} />
                 </TableCell>
-                <TableCell numeric>
+                <TableCell numeric className="hidden sm:table-cell">
                   {share === null ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
@@ -201,7 +217,7 @@ export function RealtimeSummarySection() {
   const reportCodes = [
     ...new Set(
       [salesTile, paxTile, transactionsTile, occupancyTile, channelsTile]
-        .map((tile) => tile?.reportCode ?? null)
+        .map((tile) => (tile === null ? null : tileReportCode(tile)))
         .filter((code): code is string => code !== null),
     ),
   ];
@@ -211,167 +227,54 @@ export function RealtimeSummarySection() {
   if (allEmpty) return <BoardEmpty />;
 
   return (
-    <div className="grid min-w-0 gap-4">
-      {salesTile && <SalesHero tile={salesTile} />}
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      {salesTile && <SalesCard tile={salesTile} />}
 
-      <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+      <StatStrip label={t("ownerDashboard.realtime.stripLabel")} columns={3}>
         {paxTile && (
-          <PaxTile tile={paxTile} label={t("ownerDashboard.realtime.pax")} />
+          <KpiTile
+            tile={paxTile}
+            metricCode="pax"
+            label={t("ownerDashboard.realtime.pax")}
+            contextFor={(result) => {
+              const spend = idrOf(metricCell(result, "avg_spend_per_pax"));
+              return spend === null
+                ? undefined
+                : `${t("ownerDashboard.realtime.paxContext")} ${formatRupiah(spend)}`;
+            }}
+          />
         )}
         {transactionsTile && (
-          <TransactionsTile
+          <KpiTile
             tile={transactionsTile}
+            metricCode="transaction_count"
             label={t("ownerDashboard.realtime.transactions")}
+            contextFor={(result) => {
+              const ticket = idrOf(metricCell(result, "avg_ticket"));
+              return ticket === null
+                ? undefined
+                : `${t("ownerDashboard.realtime.transactionsContext")} ${formatRupiah(ticket)}`;
+            }}
           />
         )}
         {occupancyTile && (
-          <OccupancyTile
+          <KpiTile
             tile={occupancyTile}
+            metricCode="table_occupancy_pct"
             label={t("ownerDashboard.realtime.occupancy")}
+            contextFor={(result) => {
+              const turnover = decimalOf(metricCell(result, "table_turnover"));
+              return turnover === null
+                ? undefined
+                : t("ownerDashboard.realtime.occupancyContext", {
+                    count: formatDecimal(turnover),
+                  });
+            }}
           />
         )}
-      </div>
+      </StatStrip>
 
       {channelsTile && <ChannelTable tile={channelsTile} />}
     </div>
-  );
-}
-
-function PaxTile({ tile, label }: { tile: DashboardTile; label: string }) {
-  const t = useT();
-  const state = useOwnerBoardContext().report(tile.reportCode);
-  if (state.status === "loading")
-    return (
-      <StatTile
-        label={label}
-        value={<Skeleton className="h-8 w-16" />}
-        className="min-w-0"
-      />
-    );
-  if (state.status === "error")
-    return <WidgetErrorCard retry={state.retry} />;
-  const pax = countOf(metricCell(state.result, "pax"));
-  const avgSpend = idrOf(metricCell(state.result, "avg_spend_per_pax"));
-  return (
-    <StatTile
-      label={label}
-      value={
-        pax === null ? (
-          <span className="text-muted-foreground">—</span>
-        ) : (
-          <NumberDisplay value={pax} className="text-[length:inherit]" />
-        )
-      }
-      context={
-        <>
-          {t("ownerDashboard.todayShort")}
-          {avgSpend === null ? null : (
-            <>
-              {" · "}
-              {t("ownerDashboard.realtime.paxContext")}{" "}
-              <Money amount={avgSpend} size="sm" />
-            </>
-          )}
-        </>
-      }
-      source={<TileSource tile={tile} />}
-      className="min-w-0"
-    />
-  );
-}
-
-function TransactionsTile({
-  tile,
-  label,
-}: {
-  tile: DashboardTile;
-  label: string;
-}) {
-  const t = useT();
-  const state = useOwnerBoardContext().report(tile.reportCode);
-  if (state.status === "loading")
-    return (
-      <StatTile
-        label={label}
-        value={<Skeleton className="h-8 w-16" />}
-        className="min-w-0"
-      />
-    );
-  if (state.status === "error")
-    return <WidgetErrorCard retry={state.retry} />;
-  const transactions = countOf(metricCell(state.result, "transaction_count"));
-  const avgTicket = idrOf(metricCell(state.result, "avg_ticket"));
-  return (
-    <StatTile
-      label={label}
-      value={
-        transactions === null ? (
-          <span className="text-muted-foreground">—</span>
-        ) : (
-          <NumberDisplay
-            value={transactions}
-            className="text-[length:inherit]"
-          />
-        )
-      }
-      context={
-        <>
-          {t("ownerDashboard.todayShort")}
-          {avgTicket === null ? null : (
-            <>
-              {" · "}
-              {t("ownerDashboard.realtime.transactionsContext")}{" "}
-              <Money amount={avgTicket} size="sm" />
-            </>
-          )}
-        </>
-      }
-      source={<TileSource tile={tile} />}
-      className="min-w-0"
-    />
-  );
-}
-
-function OccupancyTile({ tile, label }: { tile: DashboardTile; label: string }) {
-  const t = useT();
-  const state = useOwnerBoardContext().report(tile.reportCode);
-  if (state.status === "loading")
-    return (
-      <StatTile
-        label={label}
-        value={<Skeleton className="h-8 w-16" />}
-        className="min-w-0"
-      />
-    );
-  if (state.status === "error")
-    return <WidgetErrorCard retry={state.retry} />;
-  const occupancy = percentOf(metricCell(state.result, "table_occupancy_pct"));
-  const turnover = decimalOf(metricCell(state.result, "table_turnover"));
-  return (
-    <StatTile
-      label={label}
-      value={
-        occupancy === null ? (
-          <span className="text-muted-foreground">—</span>
-        ) : (
-          <span className="tabular">{formatPercent(occupancy)}%</span>
-        )
-      }
-      context={
-        <>
-          {t("ownerDashboard.todayShort")}
-          {turnover === null ? null : (
-            <>
-              {" · "}
-              {t("ownerDashboard.realtime.occupancyContext", {
-                count: formatDecimal(turnover),
-              })}
-            </>
-          )}
-        </>
-      }
-      source={<TileSource tile={tile} />}
-      className="min-w-0"
-    />
   );
 }
