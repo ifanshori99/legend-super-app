@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { captureScreenshot } from "./screenshots.ts";
 
 test("legend-8tv6 routing saves after a failed attempt and retry", async ({
   page,
@@ -53,10 +54,7 @@ for (const width of [390, 1440]) {
       await expect(
         page.getByRole("heading", { name: "Routing gateway" }),
       ).toBeVisible();
-      await page.screenshot({
-        path: `docs/design/screenshots/legend-8tv6/${width}-${theme}.png`,
-        fullPage: true,
-      });
+      await captureScreenshot(page, `legend-8tv6/${width}-${theme}.png`);
     });
   }
 }
@@ -75,9 +73,6 @@ for (const scenario of ["empty", "error"]) {
         )
         .first(),
     ).toBeVisible();
-    await page.screenshot({
-      path: `docs/design/screenshots/legend-8tv6/390-${scenario}.png`,
-      fullPage: true,
-    });
+    await captureScreenshot(page, `legend-8tv6/390-${scenario}.png`);
   });
 }
