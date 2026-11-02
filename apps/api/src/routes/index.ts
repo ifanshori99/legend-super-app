@@ -11,6 +11,9 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
+import { qrRouter } from "./qr.routes";
+import { tableSessionsRouter } from "./table-sessions.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -41,3 +44,10 @@ apiRouter.use("/me", meRouter);
 apiRouter.use("/inventory", inventoryRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
+// WS-03 floor: zones/tables editor, live board, signed table QR and the staff
+// table-session lifecycle; /qr is the public guest scan (legend-irw).
+apiRouter.use("/floor", floorRouter);
+apiRouter.use("/outlets", outletFloorRouter);
+apiRouter.use("/tables", tablesRouter);
+apiRouter.use("/table-sessions", tableSessionsRouter);
+apiRouter.use("/qr", qrRouter);
