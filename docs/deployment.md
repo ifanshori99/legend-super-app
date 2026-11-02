@@ -128,7 +128,7 @@ API_INTERNAL_URL=http://api:4000
 
 `NODE_ENV=production` switches both servers to JSON logs and the web app to sending HSTS. The Docker images set it; set it yourself everywhere else.
 
-`TRUST_PROXY` matters: the API resolves the client IP from it and hands that IP to Better Auth for per-IP rate limits on sign-in/sign-up. Set the number of proxies in front of the API (usually `1`) or their subnets. The API refuses `true`, which would trust any `X-Forwarded-For` a client sends and let it choose the IP its attempts are counted under. Without a proxy, leave it unset (the socket address is used and client-supplied `X-Forwarded-For` is ignored).
+`TRUST_PROXY` matters: the API resolves the client IP from it and hands that IP to Better Auth and the public rate limiter for per-IP limits on sign-in/sign-up and the guest reads. Set the number of proxies in front of the API (usually `1`, `2` when Cloudflare sits in front of your reverse proxy) or their subnets. The API refuses `true`, which would trust any `X-Forwarded-For` a client sends and let it choose the IP its attempts are counted under. Without a proxy, leave it unset (the socket address is used and client-supplied `X-Forwarded-For` is ignored).
 
 Keep provider-required TLS settings. Do not disable certificate verification. The example credentials are placeholders, not defaults.
 
@@ -185,12 +185,42 @@ Both servers write one JSON object per line to stdout with `level`, `time`, `ser
 
 The API uses one node-postgres pool with at most ten connections per process. Multiple instances multiply the connection count: use your provider's pooler and tune limits. Better Auth's rate-limit storage is in memory per instance; for several API instances configure shared rate-limit storage (see Better Auth's rate-limit docs). The web server keeps no state.
 
+## Public API rate limits
+
+The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.
+
+Two fixed one-minute windows are charged on every public read: one per client IP and one per resolved tenant. A request over either limit answers `429` with `{"error":{"code":"RATE_LIMITED"}}`, a `Retry-After` header holding the whole seconds left in the window, and `Cache-Control: no-store`. Health, Better Auth (`/api/auth/*`), provider webhooks and the TLS ask are not mounted on the limiter.
+
+| Variable                              | Default | Meaning                                 |
+| ------------------------------------- | ------- | --------------------------------------- |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`   | Requests per client IP per minute       |
+| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`  | Requests per resolved tenant per minute |
+
+Sizing the defaults — they must not break legitimate traffic:
+
+- Guests on the venue Wi-Fi usually reach the API through **one NAT address**, so all their scans, menu reads and payment polls share one IP bucket. Payment status polls every 2 s while a payment is pending (30 requests a minute per guest).
+- The web server's **SSR fetches** (`/_public/` routes) also come from one address: the web container's. Set `API_INTERNAL_URL` so SSR calls the API privately, and remember that address still counts as one client IP.
+- The store is bounded (20 000 keys per bucket, least recently used evicted first) and lives in memory per API process. Several API instances each enforce their own window, so N instances allow up to N times the configured limit; the Cloudflare rule below is the shared edge layer.
+
+`TRUST_PROXY` decides which address is "the client": the limiter uses `req.ip` as Express resolved it, never a raw `X-Forwarded-For`. Behind Cloudflare in front of Caddy that is **two** hops (`TRUST_PROXY=2`); with a single reverse proxy it is `1`. If the hop count is too low, every client appears as the proxy's address and all of them share one bucket.
+
+### Cloudflare free-plan rule (edge layer)
+
+The API limiter is one process's backstop. Put a stricter, shared rule at the edge where the plan allows it. On the **Free plan** Cloudflare's rate limiting rules allow **one rule**, a **10-second counting period**, **IP-only** counting, a **10-second mitigation timeout**, and expressions limited to **path** (plus verified bot). One rule can still cover the two catalogue-dumping surfaces:
+
+- Field: `http.request.uri.path`, match `contains "/api/qr/"` **or** `contains "/api/public/site/"` (a single custom expression). The other two prefixes keep the API limiter only; payment links carry a 256-bit token and are polled during checkout, the brand context is one read per page.
+- Requests: `30` per `10 seconds` per IP — 180 a minute, below the API's 600 default, so the edge sees an abuser first.
+- Action: **Managed Challenge**, so a real guest recovers by solving one page instead of waiting for the block to lift. Use **Block** with the 10-second mitigation period only if the venue never needs to scrape its own menu.
+
+On Pro and above, split the paths into separate rules with a longer period and a block action. Keep the API limits at or above the edge limits, so a legitimate client never meets the API's 429 before the edge rule has had its chance to challenge it.
+
 ## Security checklist
 
 Built in: authenticated and origin-checked API routes, ownership filtered in SQL, sign-in/sign-up rate limits, 100 kB request bodies (including Better Auth's), `httpOnly` `SameSite=Lax` session cookies, helmet on the API, and frame/nosniff/referrer headers (plus HSTS in production) on the web app. Before launch, confirm:
 
 - [ ] Both origins are HTTPS and `NODE_ENV=production` is set on both services.
-- [ ] `TRUST_PROXY` matches your proxy hops, so rate limits see real client IPs.
+- [ ] `TRUST_PROXY` matches your proxy hops, so rate limits see real client IPs (two hops with Cloudflare in front of Caddy).
+- [ ] The public API rate limits suit the venue: guests behind one NAT address and the web SSR traffic both share a per-IP bucket ([public API rate limits](#public-api-rate-limits)), and a Cloudflare rule covers `/api/qr/` and `/api/public/site/` at the edge.
 - [ ] Nothing untrusted is served under `COOKIE_DOMAIN` (see [Domains and cookies](#domains-and-cookies)).
 - [ ] Several API instances share rate-limit storage (see [scaling](#connection-pooling-and-scaling)).
 - [ ] Your proxy or load balancer also caps request bodies and slow uploads.

@@ -101,6 +101,23 @@ const schema = z
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .optional(),
+    // Public, session-free reads (guest QR scan/menu, brand website, SSR brand
+    // context, payment links) share one in-memory fixed window (legend-wd4b):
+    // a bucket per client IP and a bucket per resolved tenant. The defaults
+    // leave room for a venue full of guests behind one NAT address and for the
+    // web server's SSR traffic; tune them per deployment (docs/deployment.md).
+    PUBLIC_RATE_LIMIT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1_000_000)
+      .default(600),
+    PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(10_000_000)
+      .default(6000),
     LOG_SQL: z
       .enum(["true", "false", "1", "0"])
       .optional()
