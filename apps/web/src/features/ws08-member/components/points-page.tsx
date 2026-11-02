@@ -1,0 +1,70 @@
+import { useState } from "react";
+import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { MEMBER_PAGE_SIZE } from "../api";
+import { useMemberOverview, useMemberPoints } from "../hooks";
+import { LedgerList } from "./ledger-list";
+import { ListSkeleton } from "./list-skeleton";
+import { MemberPageHeader } from "./page-header";
+import { PointsCard } from "./points-card";
+
+// PRD §3.20 "Poin": the member's balance and the append-only ledger behind it.
+export function MemberPointsPage() {
+  const t = useT();
+  const [limit, setLimit] = useState(MEMBER_PAGE_SIZE);
+  const overviewQuery = useMemberOverview();
+  const pointsQuery = useMemberPoints(limit);
+
+  return (
+    <div className="grid gap-6">
+      <MemberPageHeader
+        title={t("member.points.title")}
+        intro={t("member.points.expiryHint", {
+          months: overviewQuery.data?.program.expiryMonths ?? 12,
+        })}
+      />
+
+      {overviewQuery.isPending ? (
+        <ListSkeleton rows={2} />
+      ) : overviewQuery.isError ? (
+        <ErrorState onRetry={() => overviewQuery.refetch()} />
+      ) : (
+        <PointsCard
+          balance={overviewQuery.data.profile.pointsBalance}
+          program={overviewQuery.data.program}
+          showCta={false}
+        />
+      )}
+
+      <section className="grid gap-3">
+        <h2 className="font-brand text-xl leading-7 font-semibold">
+          {t("member.points.historyTitle")}
+        </h2>
+        {pointsQuery.isPending ? (
+          <ListSkeleton rows={4} />
+        ) : pointsQuery.isError ? (
+          <ErrorState onRetry={() => pointsQuery.refetch()} />
+        ) : pointsQuery.data.data.length === 0 ? (
+          <EmptyState title={t("member.points.historyEmpty")} />
+        ) : (
+          <>
+            <LedgerList entries={pointsQuery.data.data} />
+            {pointsQuery.data.meta.nextCursor !== null && (
+              <Button
+                variant="outline"
+                className="w-fit"
+                loading={pointsQuery.isFetching}
+                onClick={() =>
+                  setLimit((current) => current + MEMBER_PAGE_SIZE)
+                }
+              >
+                {t("member.points.loadMore")}
+              </Button>
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
