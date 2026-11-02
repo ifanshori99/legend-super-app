@@ -1,6 +1,7 @@
 // Shared frame for every inventory back-office screen: page title, the tab
 // strip between sections, and the content slot. Tabs are links, not Radix
 // tabs, because each section has its own URL (docs/frontend.md "Add a page").
+import * as React from "react";
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -51,12 +52,31 @@ const TABS = [
     labelKey: "inventoryStock.tabs.suggestions",
     to: "/kelola/inventori/saran",
   },
+  // Stock opname and waste (legend-fzx).
+  {
+    key: "opname",
+    labelKey: "inventory.tabs.opname",
+    to: "/kelola/inventori/opname",
+  },
+  {
+    key: "waste",
+    labelKey: "inventory.tabs.waste",
+    to: "/kelola/inventori/waste",
+  },
 ] as const;
 
 export type InventorySection = (typeof TABS)[number]["key"];
 
 export function InventoryTabs({ active }: { active: InventorySection }) {
   const t = useT();
+  const activeRef = React.useRef<HTMLAnchorElement>(null);
+  // The strip is wider than a phone: keep the current section in view.
+  React.useEffect(() => {
+    activeRef.current?.scrollIntoView?.({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [active]);
   return (
     <nav
       aria-label={t("inventory.title")}
@@ -70,19 +90,10 @@ export function InventoryTabs({ active }: { active: InventorySection }) {
           <Link
             key={tab.key}
             to={tab.to}
-            // On 390px the strip scrolls; keep the current tab in view.
-            ref={
-              current
-                ? (node: HTMLAnchorElement | null) =>
-                    node?.scrollIntoView?.({
-                      block: "nearest",
-                      inline: "nearest",
-                    })
-                : undefined
-            }
+            ref={current ? activeRef : undefined}
             aria-current={current ? "page" : undefined}
             className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
+              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-2 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
               current && "border-primary font-semibold text-foreground",
             )}
           >

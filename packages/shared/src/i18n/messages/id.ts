@@ -14,8 +14,10 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { reservationMessages } from "./reservation.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
+import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -29,6 +31,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
+  reservation: reservationMessages,
   // Staff second factor, security settings and device sessions (legend-9bh;
   // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
   ...ws01AuthMessages,
@@ -37,6 +41,9 @@ export const id = {
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
+  // WS-06 stock opname and waste screens (legend-fzx), also in their own file.
+  opname: opnameMessages,
+  waste: wasteMessages,
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
@@ -423,6 +430,11 @@ export const id = {
     searchPlaceholder: "Cari kode meja…",
     legend: "Keterangan status",
     legendCount: "{status}: {count} meja",
+    attention: {
+      title: "Perlu tindakan",
+      clear: "Tidak ada yang mendesak",
+      urgent: "{count} meja perlu tindakan",
+    },
     tableCard: "Meja {code}, {status}, kapasitas {capacity}",
     openTable: "Buka aksi meja {code}",
     capacity: "{count} kursi",
@@ -753,6 +765,7 @@ export const id = {
     },
     operations: {
       floor: "Papan Meja",
+      reservations: "Reservasi",
     },
     management: {
       dashboard: "Dasbor",
@@ -771,6 +784,262 @@ export const id = {
       payments: "Pembayaran",
       tax: "Pajak & service charge",
       taxReport: "Laporan pajak",
+    },
+    karyawan: {
+      attendance: "Absen",
+      history: "Riwayat",
+    },
+  },
+  // Employee PWA: Beranda, attendance clock and correction requests (PRD v1.7
+  // §3 Kelompok D 33 "HRIS Self-Service Karyawan", F25/F30, Alur L, HR-02).
+  // Added by bead legend-nv3y.
+  hris: {
+    home: {
+      greeting: "Halo, {name}",
+      subtitle: "{position} · NIP {employeeNo}",
+      subtitleNoPosition: "NIP {employeeNo}",
+      attendanceTitle: "Absensi hari ini",
+      attendanceHint:
+        "Selfie, lokasi, dan perangkat terdaftar diperiksa setiap kali absen.",
+      notStarted: "Belum absen masuk",
+      notStartedHint: "Mulai shift dengan absen masuk.",
+      working: "Sudah absen masuk",
+      workingSince: "Masuk pukul {time}",
+      onBreak: "Sedang istirahat",
+      onBreakSince: "Istirahat sejak pukul {time}",
+      finished: "Sudah absen pulang",
+      finishedAt: "Pulang pukul {time}",
+      clockIn: "Absen masuk",
+      clockOut: "Absen pulang",
+      startBreak: "Mulai istirahat",
+      endBreak: "Selesai istirahat",
+      viewHistory: "Riwayat absensi",
+      timelineTitle: "Catatan hari ini",
+      timelineEmpty: "Belum ada catatan absensi hari ini.",
+      shiftTitle: "Shift hari ini",
+      shiftEmpty: "Tidak ada shift terjadwal hari ini.",
+      shiftEmptyHint: "Jadwal yang sudah terbit tampil di sini.",
+      shiftRange: "{start}–{end}",
+      shiftBreak: "Istirahat {minutes} menit",
+      ongoingTitle: "Pengajuan berjalan",
+      ongoingEmpty: "Tidak ada pengajuan yang menunggu.",
+      ongoingHint: "Koreksi absensi yang Anda kirim tampil di sini.",
+      seeAll: "Lihat semua",
+      announcementTitle: "Pengumuman",
+      announcementEmpty: "Belum ada pengumuman.",
+      queued: "{count} pengajuan menunggu koneksi",
+      queuedHint: "Akan dikirim otomatis saat ponsel kembali online.",
+    },
+    attendance: {
+      title: "Absen {type}",
+      typeTitle: {
+        in: "Absen masuk",
+        out: "Absen pulang",
+        break_start: "Mulai istirahat",
+        break_end: "Selesai istirahat",
+      },
+      back: "Kembali ke beranda",
+      subtitle:
+        "Absen memakai selfie dan lokasi. Bila GPS tidak akurat, pindai QR outlet.",
+      stepSelfie: "1. Selfie",
+      stepSelfieHint:
+        "Selfie menjadi bukti kehadiran dan ditinjau supervisor bila perlu.",
+      stepDetails: "2. Metode & lokasi",
+      stepSubmit: "3. Kirim",
+      cameraTitle: "Kamera",
+      cameraHint: "Posisikan wajah di tengah dan pastikan cahaya cukup.",
+      cameraStart: "Nyalakan kamera",
+      cameraStarting: "Menyalakan kamera…",
+      cameraUnavailable:
+        "Kamera tidak bisa dibuka. Ambil foto lewat aplikasi kamera.",
+      cameraDenied:
+        "Izin kamera ditolak. Izinkan kamera di pengaturan peramban atau ambil foto lewat aplikasi kamera.",
+      cameraRetake: "Ambil ulang",
+      cameraShutter: "Ambil foto",
+      photoReady: "Selfie siap dikirim.",
+      photoMissing: "Selfie belum diambil.",
+      photoRequired: "Ambil selfie sebelum mengirim absen.",
+      fileFallback: "Ambil atau pilih foto",
+      fileHint: "JPG atau PNG dari kamera ponsel, maksimal 5 MB.",
+      fileTooLarge: "Foto lebih dari 5 MB. Pilih foto yang lebih kecil.",
+      fileWrongType: "Pilih file gambar JPG atau PNG.",
+      photoAlt: "Pratinjau selfie absensi",
+      methodTitle: "Metode absen",
+      methodSelfie: "Selfie & GPS",
+      methodSelfieHint: "Cocok bila lokasi Anda akurat di dekat outlet.",
+      methodQr: "QR outlet",
+      methodQrHint: "Pindai layar outlet bila GPS tidak akurat.",
+      locationTitle: "Lokasi",
+      locationIdle: "Lokasi belum diperiksa.",
+      locationChecking: "Memeriksa lokasi…",
+      locationFound: "Lokasi ditemukan · akurasi ±{accuracy} m.",
+      locationCoarse:
+        "Akurasi lokasi rendah (±{accuracy} m). Pindai QR outlet bila absen ditandai.",
+      locationDenied:
+        "Izin lokasi ditolak. Aktifkan izin lokasi di peramban atau pindai QR outlet.",
+      locationUnavailable:
+        "Lokasi tidak tersedia di perangkat ini. Pindai QR outlet.",
+      locationRetry: "Periksa ulang",
+      locationNeeded: "Lokasi diperlukan untuk metode selfie & GPS.",
+      qrTitle: "QR outlet berotasi",
+      qrHint: "Pindai QR di layar outlet. Kode berganti setiap 30 detik.",
+      qrScan: "Pindai QR",
+      qrScanning: "Mengarahkan kamera ke QR…",
+      qrScanStop: "Hentikan pemindaian",
+      qrUnsupported:
+        "Pemindai QR tidak tersedia di perangkat ini. Ketik kode dari layar outlet.",
+      qrCodeLabel: "Kode dari layar outlet",
+      qrCodePlaceholder: "Contoh: QR-BDG01-20261101T0930",
+      qrScanFailed: "QR belum terbaca. Dekatkan kamera atau ketik kodenya.",
+      qrNeeded: "Pindai atau ketik kode QR outlet.",
+      mockQrHint: "Mode mock: kode layar outlet saat ini {token}",
+      mockQrFill: "Gunakan kode demo",
+      deviceTitle: "Perangkat",
+      deviceHint:
+        "Perangkat ini dikenali dari sidik jari acak yang disimpan di ponsel. ID perangkat asli tidak dikirim.",
+      mockBind: "Ikat perangkat ini (mode mock)",
+      mockBound: "Perangkat terikat (mode mock).",
+      qrReady: "Kode QR terisi",
+      qrMissing: "Kode QR belum diisi",
+      summaryMethod: "Metode",
+      summarySelfie: "Selfie",
+      summaryLocation: "Lokasi",
+      summaryQr: "QR outlet",
+      submit: "Kirim absen",
+      submitting: "Mengirim absen…",
+      submitOffline: "Absen butuh koneksi. Isian di halaman ini tidak hilang.",
+      offlineTitle: "Anda sedang offline",
+      offlineHint:
+        "Sambungkan internet lalu kirim absen. Selfie dan isian tetap ada di halaman ini.",
+      permissionTitle: "Akun ini belum bisa absen mandiri",
+      permissionHint:
+        "Minta HR memberi izin absen mandiri (self.attendance.clock).",
+      invalidForm: "Lengkapi selfie dan metode absen sebelum mengirim.",
+      errorTitle: "Absen gagal dikirim",
+      errorHint: "Periksa koneksi lalu kirim ulang. Tidak ada absen ganda.",
+    },
+    result: {
+      validTitle: "Absen tercatat",
+      flaggedTitle: "Absen ditandai untuk ditinjau",
+      rejectedTitle: "Absen ditolak",
+      validHint: "Catatan absensi sudah tersimpan.",
+      flaggedHint:
+        "Absensi ini masuk sampel tinjauan supervisor (PRD F25). Tidak perlu mengulang kecuali ditolak.",
+      rejectedHint: "Perbaiki penyebab di bawah lalu kirim ulang.",
+      at: "Pukul {time}",
+      distance: "{distance} m dari titik outlet",
+      method: "Metode: {method}",
+      detailType: "Jenis absen",
+      detailTime: "Waktu tercatat",
+      detailMethod: "Metode",
+      detailDistance: "Jarak dari outlet",
+      viewHistory: "Buka riwayat absensi",
+      backHome: "Kembali ke beranda",
+      retry: "Ulangi absen",
+    },
+    reason: {
+      title: "Yang perlu diperhatikan",
+      possibleTitle: "Kemungkinan penyebab",
+      outside_geofence: "Lokasi di luar radius outlet.",
+      outside_geofenceFix:
+        "Dekatkan ke titik outlet atau pindai QR outlet di layar.",
+      device_not_bound: "Perangkat ini belum terikat ke akun Anda.",
+      device_not_boundFix:
+        "Minta supervisor mengikat perangkat, lalu kirim ulang.",
+      selfie_missing: "Selfie wajib belum terlampir.",
+      selfie_missingFix: "Ambil selfie lalu kirim ulang.",
+      rotating_qr_disabled: "Absen QR tidak diaktifkan tenant ini.",
+      rotating_qr_disabledFix: "Gunakan absen selfie & GPS.",
+      qr_token_invalid: "Kode QR tidak valid atau sudah kedaluwarsa.",
+      qr_token_invalidFix: "Pindai ulang kode terbaru di layar outlet.",
+    },
+    validity: {
+      valid: "Sah",
+      flagged: "Ditandai",
+      rejected: "Ditolak",
+    },
+    type: {
+      in: "Masuk",
+      out: "Pulang",
+      break_start: "Mulai istirahat",
+      break_end: "Selesai istirahat",
+    },
+    typeShort: {
+      in: "Masuk",
+      out: "Pulang",
+      break_start: "Istirahat",
+      break_end: "Kembali",
+    },
+    method: {
+      selfie_geo: "Selfie & GPS",
+      rotating_qr: "QR outlet",
+      manual_correction: "Koreksi manual",
+    },
+    history: {
+      title: "Riwayat absensi",
+      subtitle: "Absensi milik Anda, termasuk yang ditandai supervisor.",
+      tabs: {
+        logs: "Absensi",
+        corrections: "Koreksi",
+      },
+      logsTitle: "Catatan absensi",
+      logsEmpty: "Belum ada catatan absensi.",
+      logsEmptyHint: "Catatan muncul setelah absen masuk pertama kali.",
+      correctionsTitle: "Koreksi saya",
+      correctionsEmpty: "Belum ada pengajuan koreksi.",
+      correctionsEmptyHint:
+        "Ajukan koreksi bila ada absen yang salah atau tidak tercatat.",
+      loadMore: "Muat lebih banyak",
+      loadingMore: "Memuat…",
+      selfie: "Dengan selfie",
+      noSelfie: "Tanpa selfie",
+      correct: "Ajukan koreksi",
+      correctionFor: "Koreksi untuk absen {type} pukul {time}",
+      requestedType: "{type} seharusnya pukul {time}",
+      requestedAt: "Diajukan {date}",
+      decidedAt: "Diputuskan {date}",
+      unmatched: "Absen tidak tercatat? Ajukan koreksi",
+      logReason: "Alasan: {reason}",
+    },
+    correctionStatus: {
+      pending: "Menunggu",
+      approved: "Disetujui",
+      rejected: "Ditolak",
+    },
+    correction: {
+      title: "Ajukan koreksi absensi",
+      hint: "Supervisor memutuskan koreksi. Tulis alasan yang jelas.",
+      typeLabel: "Jenis absen yang dikoreksi",
+      timeLabel: "Waktu yang benar",
+      reasonLabel: "Alasan",
+      reasonPlaceholder: "Contoh: lupa absen pulang setelah shift malam.",
+      reasonHint: "Singkat dan jelas, maksimal 500 karakter.",
+      timeInvalid: "Pilih tanggal dan waktu yang valid.",
+      invalid: "Periksa kembali isian koreksi.",
+      submit: "Kirim pengajuan",
+      submitting: "Mengirim…",
+      success: "Pengajuan koreksi terkirim.",
+      queued: "Pengajuan disimpan di perangkat dan dikirim saat ponsel online.",
+      queuedTitle: "Menunggu koneksi",
+      queuedHint: "Pengajuan terkirim otomatis saat internet tersedia.",
+      errorTitle: "Pengajuan gagal dikirim",
+      errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
+      noLog: "Absen tidak tercatat",
+      replayDropped:
+        "{count} pengajuan dari antrean ditolak server. Periksa riwayat koreksi lalu ajukan ulang bila perlu.",
+      cancel: "Batal",
+    },
+    state: {
+      loadingProfile: "Memuat profil…",
+      profileError: "Profil tidak bisa dimuat.",
+      offlineTitle: "Anda sedang offline",
+      offlineHint: "Absensi butuh koneksi internet. Sambungkan lalu coba lagi.",
+      logsError: "Catatan absensi tidak bisa dimuat.",
+      shiftError: "Jadwal shift tidak bisa dimuat.",
+      announcementsError: "Pengumuman tidak bisa dimuat.",
+      correctionsError: "Pengajuan koreksi tidak bisa dimuat.",
+      retryHint: "Periksa koneksi lalu coba lagi.",
+      emptyTitle: "Belum ada data",
     },
   },
   purchasing: {
@@ -2462,13 +2731,15 @@ export const id = {
   inventory: {
     title: "Inventori",
     subtitle:
-      "Bahan, satuan, lokasi, transfer, kartu stok, saldo dan par level, kedaluwarsa, serta saran pembelian per outlet.",
+      "Bahan, satuan, lokasi, transfer, kartu stok, saldo dan par level, kedaluwarsa, saran pembelian, stok opname, serta waste per outlet.",
     tabs: {
       items: "Item",
       categories: "Kategori",
       units: "Satuan",
       locations: "Lokasi",
       transfers: "Transfer",
+      opname: "Stok opname",
+      waste: "Waste & susut",
     },
     types: {
       raw_material: "Bahan baku",
