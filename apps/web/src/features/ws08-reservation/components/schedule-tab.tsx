@@ -21,6 +21,7 @@ import {
   TableBody,
   TableHead,
   TableHeader,
+  TableRow,
 } from "@/components/ui/table";
 import {
   RESERVATION_STATUSES,
@@ -267,13 +268,15 @@ export function ScheduleTab({
               <div className="overflow-hidden rounded-container border-(length:--border-w) bg-card">
                 <Table>
                   <TableHeader>
-                    <TableHead className="w-28">
-                      {t("reservation.detail.when")}
-                    </TableHead>
-                    <TableHead>{t("reservation.detail.paxLabel")}</TableHead>
-                    <TableHead numeric className="w-32">
-                      {t("reservation.detail.depositTitle")}
-                    </TableHead>
+                    <TableRow>
+                      <TableHead className="w-28">
+                        {t("reservation.detail.when")}
+                      </TableHead>
+                      <TableHead>{t("reservation.detail.paxLabel")}</TableHead>
+                      <TableHead numeric className="w-32">
+                        {t("reservation.detail.depositTitle")}
+                      </TableHead>
+                    </TableRow>
                   </TableHeader>
                   <TableBody>
                     {group.rows.map((reservation) => (
