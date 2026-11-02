@@ -21,6 +21,8 @@ import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
+import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
+import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
@@ -30,6 +32,8 @@ import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as PublicMenuRouteImport } from './routes/_public/menu'
+import { Route as PublicReservationRouteImport } from './routes/_public/reservation'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
@@ -121,6 +125,16 @@ const DesignSystemRoute = DesignSystemRouteImport.update({
   path: '/design-system',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
+  id: '/robots.txt',
+  path: '/robots.txt',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
+  id: '/sitemap.xml',
+  path: '/sitemap.xml',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthSignInRoute = AuthSignInRouteImport.update({
   id: '/sign-in',
   path: '/sign-in',
@@ -164,6 +178,16 @@ const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
 const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMenuRoute = PublicMenuRouteImport.update({
+  id: '/menu',
+  path: '/menu',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicReservationRoute = PublicReservationRouteImport.update({
+  id: '/reservation',
+  path: '/reservation',
   getParentRoute: () => PublicRoute,
 } as any)
 const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
@@ -383,6 +407,8 @@ const CustomerTTokenPayPaymentIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
@@ -391,6 +417,8 @@ export interface FileRoutesByFullPath {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/menu': typeof PublicMenuRoute
+  '/reservation': typeof PublicReservationRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -436,6 +464,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/wifi': typeof CustomerWifiRoute
@@ -443,6 +473,8 @@ export interface FileRoutesByTo {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/menu': typeof PublicMenuRoute
+  '/reservation': typeof PublicReservationRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -498,6 +530,8 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
@@ -506,6 +540,8 @@ export interface FileRoutesById {
   '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
+  '/_public/menu': typeof PublicMenuRoute
+  '/_public/reservation': typeof PublicReservationRoute
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
@@ -554,6 +590,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/sign-in'
     | '/sign-up'
     | '/member'
@@ -562,6 +600,8 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/menu'
+    | '/reservation'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -607,6 +647,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/sign-in'
     | '/sign-up'
     | '/wifi'
@@ -614,6 +656,8 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/menu'
+    | '/reservation'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -668,6 +712,8 @@ export interface FileRouteTypes {
     | '/_public'
     | '/_shareholder'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
@@ -676,6 +722,8 @@ export interface FileRouteTypes {
     | '/_kitchen/pickup'
     | '/_protected/admin'
     | '/_protected/notes'
+    | '/_public/menu'
+    | '/_public/reservation'
     | '/_public/'
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
@@ -733,6 +781,8 @@ export interface RootRouteChildren {
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  RobotsDottxtRoute: typeof RobotsDottxtRoute
+  SitemapDotxmlRoute: typeof SitemapDotxmlRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -821,6 +871,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DesignSystemRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/robots.txt': {
+      id: '/robots.txt'
+      path: '/robots.txt'
+      fullPath: '/robots.txt'
+      preLoaderRoute: typeof RobotsDottxtRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sitemap.xml': {
+      id: '/sitemap.xml'
+      path: '/sitemap.xml'
+      fullPath: '/sitemap.xml'
+      preLoaderRoute: typeof SitemapDotxmlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_auth/sign-in': {
       id: '/_auth/sign-in'
       path: '/sign-in'
@@ -882,6 +946,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof PublicIndexRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/menu': {
+      id: '/_public/menu'
+      path: '/menu'
+      fullPath: '/menu'
+      preLoaderRoute: typeof PublicMenuRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/reservation': {
+      id: '/_public/reservation'
+      path: '/reservation'
+      fullPath: '/reservation'
+      preLoaderRoute: typeof PublicReservationRouteImport
       parentRoute: typeof PublicRoute
     }
     '/_customer/bayar/$token': {
@@ -1373,10 +1451,14 @@ const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
 )
 
 interface PublicRouteChildren {
+  PublicMenuRoute: typeof PublicMenuRoute
+  PublicReservationRoute: typeof PublicReservationRoute
   PublicIndexRoute: typeof PublicIndexRoute
 }
 
 const PublicRouteChildren: PublicRouteChildren = {
+  PublicMenuRoute: PublicMenuRoute,
+  PublicReservationRoute: PublicReservationRoute,
   PublicIndexRoute: PublicIndexRoute,
 }
 
@@ -1408,6 +1490,8 @@ const rootRouteChildren: RootRouteChildren = {
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  RobotsDottxtRoute: RobotsDottxtRoute,
+  SitemapDotxmlRoute: SitemapDotxmlRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { websiteMessages } from "./website.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,9 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Public brand website (PRD §3.24): home, online menu, reservation/member
+  // entry, SEO copy. One file so the website bead never edits this catalog body.
+  website: websiteMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
