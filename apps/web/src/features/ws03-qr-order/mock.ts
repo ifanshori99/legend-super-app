@@ -1,11 +1,13 @@
 // Mock mode handlers for the QR order journey (VITE_API_MOCK=true). All logic
 // lives in mock-engine.ts; this file only binds it to the contract endpoints.
 // Cookie `legend-mock-guest=1` makes the point claim ask the guest to sign in.
-// The engine snapshots itself into sessionStorage after every call, so a reload
-// (or a second tab opened at the table) keeps the joined session and its cart.
+// The engine snapshots itself (guest state + the shared floor state) into
+// sessionStorage after every call, so a reload (or a second tab opened at the
+// table) keeps the joined session, its cart and the floor board's view of it.
 import type { AnyEndpoint } from "@starter/shared/api";
 import { registerMock, type MockHandler } from "@/lib/mock/registry";
-import { createMockStore } from "@/lib/mock/store";
+import type { Ws03Engine } from "@/lib/mock/ws03/engine";
+import { ws03Store } from "@/lib/mock/ws03/store";
 import {
   addCartLine,
   chooseOrderIssueResolution,
@@ -35,7 +37,7 @@ import {
   type QrEngineSnapshot,
 } from "./mock-engine.ts";
 
-const STORAGE_KEY = "legend-qr-mock-engine:v1";
+const STORAGE_KEY = "legend-qr-mock-engine:v2";
 
 /** sessionStorage in the browser only; the SSR server keeps a plain seed. */
 function browserStorage(): Storage | null {
@@ -46,12 +48,21 @@ function browserStorage(): Storage | null {
   }
 }
 
-const engine = createMockStore(() => createEngine());
+// The engine and the floor board/editor share one floor store. Deriving the
+// engine from the store (instead of a second createMockStore) keeps one resetter
+// and makes reset order irrelevant: a reseeded floor gets a fresh engine.
+let engine: MockEngine | null = null;
+let engineFloor: Ws03Engine | null = null;
 let restored = false;
 
-/** The engine, hydrated from the last snapshot once per page load. */
+/** The engine for the current floor, hydrated once per page load. */
 function store(): MockEngine {
-  const instance = engine.get();
+  const floor = ws03Store.get();
+  if (!engine || engineFloor !== floor) {
+    engine = createEngine(Date.now, floor);
+    engineFloor = floor;
+  }
+  const instance = engine;
   if (restored) return instance;
   restored = true;
   const storage = browserStorage();
@@ -116,9 +127,11 @@ handle(updateCartLine, ({ params, body }) => ({
   data: store().updateLine(params.sessionId, params.lineId, body),
 }));
 handle(removeCartLine, ({ params, query }) => ({
-  data: engine
-    .get()
-    .removeLine(params.sessionId, params.lineId, query.expectedCartVersion),
+  data: store().removeLine(
+    params.sessionId,
+    params.lineId,
+    query.expectedCartVersion,
+  ),
 }));
 handle(quoteTableSession, ({ params, body }) => ({
   data: store().quote(params.sessionId, body),

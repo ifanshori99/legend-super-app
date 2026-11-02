@@ -1,11 +1,11 @@
 // One printable table sticker: brand line, table number, zone, the signed QR
-// and the URL printed underneath. The QR keeps the library's black-on-white
-// output on purpose — a scannable code must not follow the dark theme (DESIGN
-// §8 forbids raw colors in UI, and this is a machine-readable image, not a
-// surface). `marginSize` keeps the quiet zone scanners need.
-import { QRCodeSVG } from "qrcode.react";
+// and the URL printed underneath. The code comes from the shared `QrCode`
+// renderer, which keeps a light plate in both color modes on purpose — a
+// scannable code must not follow the dark theme (DESIGN §4: a machine-readable
+// image, not a surface). The renderer's quiet zone keeps the scan reliable.
 import type { FloorZone, Table, TableQr } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
+import { QrCode } from "@/components/ui/qr-code";
 
 type Props = {
   qr: TableQr;
@@ -18,17 +18,13 @@ type Props = {
 function QrLabel({ qr, table, zone, brand }: Props) {
   const t = useT();
   return (
-    <article className="grid break-inside-avoid gap-2 overflow-hidden rounded-lg border-(length:--border-w) bg-card p-3">
-      <p className="text-xs leading-4 font-semibold tracking-wide text-muted-foreground uppercase">
-        {brand}
-      </p>
+    <article className="grid break-inside-avoid gap-2 overflow-hidden rounded-container border-(length:--border-w) bg-card p-3 shadow-hairline">
+      <p className="type-eyebrow text-muted-foreground">{brand}</p>
       <div className="flex flex-wrap items-start gap-3">
-        <QRCodeSVG
+        <QrCode
           value={qr.url}
+          label={t("floorEditor.tableTitle", { code: table.code })}
           size={104}
-          level="M"
-          marginSize={2}
-          title={t("floorEditor.tableTitle", { code: table.code })}
           className="shrink-0"
         />
         {/* min width keeps the text readable: it wraps under the QR instead

@@ -1,5 +1,5 @@
-import { Link } from "@tanstack/react-router";
-import { LockKeyhole, ShieldAlert } from "lucide-react";
+import { Link, useLocation } from "@tanstack/react-router";
+import { LockKeyhole, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,7 @@ export function AreaGateScreen({
   gate: Exclude<AreaGate, { status: "allowed" | "unauthenticated" }>;
 }) {
   const t = useT();
+  const { pathname } = useLocation();
   const definition = AREAS[area];
   const mfa = gate.status === "mfa_required";
   return (
@@ -35,9 +36,19 @@ export function AreaGateScreen({
           title={t(mfa ? "gate.mfaTitle" : "gate.forbiddenTitle")}
           description={t(mfa ? "gate.mfaHint" : "gate.forbiddenHint")}
           action={
-            <Button asChild variant="outline">
-              <Link to="/">{t("gate.backHome")}</Link>
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2">
+              {mfa && (
+                <Button asChild>
+                  <Link to="/verifikasi" search={{ returnTo: pathname }}>
+                    <ShieldCheck aria-hidden="true" />
+                    {t("gate.mfaVerify")}
+                  </Link>
+                </Button>
+              )}
+              <Button asChild variant="outline">
+                <Link to="/">{t("gate.backHome")}</Link>
+              </Button>
+            </div>
           }
         />
       </main>

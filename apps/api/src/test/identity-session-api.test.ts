@@ -6,10 +6,12 @@
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
+import { SESSION_ACTIVITY_WRITE_SECONDS } from "@starter/shared/identity";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import {
   loadSessionRow,
+  SESSION_EXTEND_RATE_LIMIT,
   sessionPolicy,
   toWireSession,
   touchSession,
@@ -155,11 +157,166 @@ describe("session policy (§3 F6 Sesi & Perangkat)", () => {
     const { cookie } = await signIn(email);
     const sessionId = await sessionIdOf(cookie);
     const row = await loadSessionRow(sessionId);
-    const later = new Date(row!.lastSeenAt.getTime() + MINUTE_MS);
+    expect(row).not.toBeNull();
+    expect(row!.kind).toBe("customer");
+    // touchSession decides on the wire clock, which clamps last_seen_at up to
+    // created_at when the database clock trails the API clock (toWireSession).
+    // Measure the injected activity instant from that same clock and step a
+    // whole window past the activity throttle, so neither clock skew nor the
+    // exact `elapsed >= 60 s` boundary can decide whether the write happens.
+    // A write is required: the test asserts the activity was recorded.
+    const lastSeenAt = Date.parse(toWireSession(row!).lastSeenAt);
+    const later = new Date(
+      lastSeenAt + 2 * SESSION_ACTIVITY_WRITE_SECONDS * 1000,
+    );
     await touchSession({ row: row!, management: false, now: later });
     const touched = await loadSessionRow(sessionId);
+    expect(touched).not.toBeNull();
     expect(touched!.expiresAt.getTime()).toBe(row!.expiresAt.getTime());
     expect(touched!.lastSeenAt.getTime()).toBe(later.getTime());
+  });
+
+  it("F6 a database clock behind the API clock still records customer activity without moving the 90-day end", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Jam Bergeser Aktif");
+    const { cookie } = await signIn(email);
+    const sessionId = await sessionIdOf(cookie);
+    // Reproduce the skew the flaky run hit: last_seen_at (DB clock) is stamped
+    // before created_at (API clock), so the wire clamp raises the value the
+    // activity throttle measures from.
+    await owner.query(
+      "UPDATE session SET last_seen_at = created_at - interval '5 milliseconds' WHERE id = $1",
+      [sessionId],
+    );
+    const row = await loadSessionRow(sessionId);
+    expect(row).not.toBeNull();
+    expect(row!.kind).toBe("customer");
+    const lastSeenAt = Date.parse(toWireSession(row!).lastSeenAt);
+    const later = new Date(
+      lastSeenAt + 2 * SESSION_ACTIVITY_WRITE_SECONDS * 1000,
+    );
+    await touchSession({ row: row!, management: false, now: later });
+    const touched = await loadSessionRow(sessionId);
+    expect(touched).not.toBeNull();
+    expect(touched!.expiresAt.getTime()).toBe(row!.expiresAt.getTime());
+    expect(touched!.lastSeenAt.getTime()).toBe(later.getTime());
+  });
+
+  it("AUTH-05 extends a live management session, while GET /api/auth/me is non-activity", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Aktivitas Manajer");
+    const { cookie } = await signIn(email);
+    const id = await sessionIdOf(cookie);
+    await owner.query(
+      "UPDATE session SET kind = 'management', created_at = now() - interval '40 minutes', last_seen_at = now() - interval '28 minutes', expires_at = now() + interval '2 minutes' WHERE id = $1",
+      [id],
+    );
+    const before = await loadSessionRow(id);
+    await request(app).get("/api/auth/me").set("Cookie", cookie);
+    const afterGet = await loadSessionRow(id);
+    expect(afterGet!.lastSeenAt.getTime()).toBe(before!.lastSeenAt.getTime());
+    expect(afterGet!.expiresAt.getTime()).toBe(before!.expiresAt.getTime());
+
+    const response = await request(app)
+      .post("/api/auth/sessions/current/activity")
+      .set(originHeader)
+      .set("Cookie", cookie);
+    expect(response.status).toBe(204);
+    const after = await loadSessionRow(id);
+    expect(after!.lastSeenAt.getTime()).toBeGreaterThan(
+      before!.lastSeenAt.getTime(),
+    );
+    expect(after!.expiresAt.getTime()).toBeGreaterThan(
+      before!.expiresAt.getTime(),
+    );
+    const again = await request(app)
+      .post("/api/auth/sessions/current/activity")
+      .set(originHeader)
+      .set("Cookie", cookie);
+    expect(again.status).toBe(204);
+    expect((await loadSessionRow(id))!.lastSeenAt.getTime()).toBe(
+      after!.lastSeenAt.getTime(),
+    );
+  });
+
+  it("AUTH-05 refuses unauthenticated, customer and untrusted-origin activity", async () => {
+    const path = "/api/auth/sessions/current/activity";
+    expect((await request(app).post(path).set(originHeader)).status).toBe(401);
+    const email = await signUp(agent(app), "Pelanggan Aktivitas");
+    const { cookie } = await signIn(email);
+    expect(
+      (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await request(app)
+          .post(path)
+          .set("Origin", "https://evil.example")
+          .set("Cookie", cookie)
+      ).status,
+    ).toBe(403);
+  });
+
+  it("AUTH-05 rate-limits explicit session activity per session", async () => {
+    const email = await signUp(agent(app), "Manajer Ramai");
+    const { cookie } = await signIn(email);
+    const id = await sessionIdOf(cookie);
+    await owner.query("UPDATE session SET kind = 'management' WHERE id = $1", [
+      id,
+    ]);
+    const path = "/api/auth/sessions/current/activity";
+    for (let i = 0; i < SESSION_EXTEND_RATE_LIMIT; i += 1)
+      expect(
+        (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+          .status,
+      ).toBe(204);
+    expect(
+      (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+        .status,
+    ).toBe(429);
+  });
+
+  it("AUTH-05 cannot resurrect an idle, expired or revoked session", async () => {
+    const email = await signUp(agent(app), "Manajer Kedaluwarsa");
+    const { cookie } = await signIn(email);
+    const id = await sessionIdOf(cookie);
+    const path = "/api/auth/sessions/current/activity";
+    await owner.query(
+      "UPDATE session SET kind = 'management', created_at = now() - interval '40 minutes', last_seen_at = now() - interval '31 minutes' WHERE id = $1",
+      [id],
+    );
+    expect(
+      (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+        .status,
+    ).toBe(401);
+    const idle = await loadSessionRow(id);
+    expect(idle!.lastSeenAt.getTime()).toBeLessThan(
+      Date.now() - 30 * MINUTE_MS,
+    );
+    await owner.query(
+      "UPDATE session SET expires_at = now() + interval '10 minutes', revoked_at = now(), last_seen_at = now() WHERE id = $1",
+      [id],
+    );
+    expect(
+      (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+        .status,
+    ).toBe(401);
+    expect((await loadSessionRow(id))!.revokedAt).not.toBeNull();
+    const expired = await signIn(email);
+    const expiredId = await sessionIdOf(expired.cookie);
+    await owner.query(
+      "UPDATE session SET expires_at = now() - interval '1 minute' WHERE id = $1",
+      [expiredId],
+    );
+    expect(
+      (
+        await request(app)
+          .post(path)
+          .set(originHeader)
+          .set("Cookie", expired.cookie)
+      ).status,
+    ).toBe(401);
   });
 
   it("F6 the device list shows the caller's live sessions and marks the current one", async () => {

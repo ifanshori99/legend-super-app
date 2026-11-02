@@ -3,12 +3,13 @@
 // new number out loud. The same screen serves the wall display at 1440px and a
 // staff phone at 390px.
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { Volume2, VolumeX } from "lucide-react";
+import { Clock, Megaphone, Volume2, VolumeX } from "lucide-react";
 import type { PickupCall } from "@starter/shared/kitchen";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatusBand } from "@/components/ui/status-band";
 import { useToast } from "@/components/ui/toast";
 import { formatOutletTime } from "../format.ts";
 import { useCallPickup, usePickupDisplay } from "../hooks.ts";
@@ -143,10 +144,10 @@ export function PickupScreen() {
           <span className="sr-only">{t("pickup.loading")}</span>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
             {[0, 1, 2, 3].map((tile) => (
-              <Skeleton key={tile} className="h-40 w-full rounded-xl" />
+              <Skeleton key={tile} className="h-40 w-full rounded-container" />
             ))}
           </div>
-          <Skeleton className="h-20 w-full rounded-xl" />
+          <Skeleton className="h-20 w-full rounded-container" />
         </div>
       </div>
     );
@@ -179,7 +180,7 @@ export function PickupScreen() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-6">
+    <div className="flex w-full flex-col gap-5">
       {header}
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {called.length > 0
@@ -193,10 +194,7 @@ export function PickupScreen() {
           className="flex flex-col gap-3"
         >
           <div className="min-w-0">
-            <h2
-              id="pickup-called"
-              className="text-lg leading-7 font-semibold tabular"
-            >
+            <h2 id="pickup-called" className="type-title tabular">
               {t("pickup.calledTitle")} · {called.length}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">
@@ -206,33 +204,45 @@ export function PickupScreen() {
           <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
             {called.map((row) => (
               <li key={row.id} className="min-w-0">
-                <article className="flex h-full min-w-0 flex-col gap-2 rounded-xl border-(length:--border-w) bg-card p-4">
-                  <ChannelBadge channel={row.channel} className="mb-1" />
-                  <p className="text-5xl leading-none font-bold tabular sm:text-6xl">
-                    {row.number}
-                  </p>
-                  {row.calledAt !== null && (
-                    <time
-                      dateTime={row.calledAt}
-                      className="text-sm leading-5 text-muted-foreground tabular"
-                    >
-                      {t("pickup.calledAt", {
-                        time: formatOutletTime(row.calledAt),
-                      })}
-                    </time>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-auto w-full"
-                    aria-label={t("pickup.callAgainFor", {
-                      number: row.number,
-                    })}
-                    onClick={() => handleCall(row)}
-                    disabled={call.isPending}
+                <article
+                  data-slot="pickup-call"
+                  data-call-status={row.status}
+                  className="flex h-full min-w-0 flex-col overflow-hidden rounded-container border-(length:--border-w) bg-card"
+                >
+                  <StatusBand
+                    tone="info"
+                    icon={Megaphone}
+                    label={t("pickup.status.called")}
+                    aside={<ChannelBadge channel={row.channel} />}
                   >
-                    {t("pickup.callAgain")}
-                  </Button>
+                    <p className="text-5xl leading-none font-bold text-foreground tabular sm:text-6xl">
+                      {row.number}
+                    </p>
+                  </StatusBand>
+                  <div className="flex flex-1 flex-col gap-2 p-4">
+                    {row.calledAt !== null && (
+                      <time
+                        dateTime={row.calledAt}
+                        className="text-sm leading-5 text-muted-foreground tabular"
+                      >
+                        {t("pickup.calledAt", {
+                          time: formatOutletTime(row.calledAt),
+                        })}
+                      </time>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-auto w-full"
+                      aria-label={t("pickup.callAgainFor", {
+                        number: row.number,
+                      })}
+                      onClick={() => handleCall(row)}
+                      disabled={call.isPending}
+                    >
+                      {t("pickup.callAgain")}
+                    </Button>
+                  </div>
                 </article>
               </li>
             ))}
@@ -248,34 +258,47 @@ export function PickupScreen() {
           className="flex flex-col gap-3"
         >
           <div className="min-w-0">
-            <h2
-              id="pickup-waiting"
-              className="text-lg leading-7 font-semibold tabular"
-            >
+            <h2 id="pickup-waiting" className="type-title tabular">
               {t("pickup.waitingTitle")} · {waiting.length}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("pickup.waitingHint")}
             </p>
           </div>
-          <ul className="grid gap-2 xl:grid-cols-2">
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-4">
             {waiting.map((row) => (
               <li key={row.id} className="min-w-0">
-                <div className="flex flex-wrap items-center gap-3 rounded-xl border-(length:--border-w) bg-card px-4 py-3">
-                  <p className="text-2xl leading-8 font-bold tabular">
-                    {row.number}
-                  </p>
-                  <ChannelBadge channel={row.channel} />
-                  <Button
-                    size="sm"
-                    className="ml-auto min-w-28"
-                    aria-label={t("pickup.callFor", { number: row.number })}
-                    loading={call.isPending && call.variables === row.id}
-                    onClick={() => handleCall(row)}
+                <article
+                  data-slot="pickup-call"
+                  data-call-status={row.status}
+                  className="flex h-full min-w-0 flex-col overflow-hidden rounded-container border-(length:--border-w) bg-card"
+                >
+                  <StatusBand
+                    tone="neutral"
+                    icon={Clock}
+                    label={t("pickup.status.waiting")}
+                    aside={<ChannelBadge channel={row.channel} />}
                   >
-                    {t("pickup.call")}
-                  </Button>
-                </div>
+                    <p className="text-4xl leading-none font-bold tabular">
+                      {row.number}
+                    </p>
+                  </StatusBand>
+                  <div className="flex flex-1 flex-col p-4">
+                    {/* Neutral fill: several numbers wait at once, so calling
+                        one is not the screen's single accent action
+                        (DESIGN.md §2, owner Q21). */}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="mt-auto w-full"
+                      aria-label={t("pickup.callFor", { number: row.number })}
+                      loading={call.isPending && call.variables === row.id}
+                      onClick={() => handleCall(row)}
+                    >
+                      {t("pickup.call")}
+                    </Button>
+                  </div>
+                </article>
               </li>
             ))}
           </ul>
@@ -287,10 +310,7 @@ export function PickupScreen() {
           aria-labelledby="pickup-picked-up"
           className="flex flex-col gap-3"
         >
-          <h2
-            id="pickup-picked-up"
-            className="text-lg leading-7 font-semibold tabular"
-          >
+          <h2 id="pickup-picked-up" className="type-title tabular">
             {t("pickup.pickedUpTitle")}
           </h2>
           <ul className="flex flex-wrap gap-2">

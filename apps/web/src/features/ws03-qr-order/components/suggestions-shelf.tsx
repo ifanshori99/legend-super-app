@@ -1,14 +1,15 @@
 // "Disarankan untuk Anda" shelf (PRD AI-01). The server applies the outlet's
-// rules (margin, stock, hours) and returns only orderable items; the shelf
-// just renders them and opens the same item sheet.
+// rules (margin, stock, hours) and returns only orderable items; the shelf just
+// renders them and opens the same item sheet. It is the page's 4:5 carousel on
+// the surface-2 band (DESIGN.md v2 §4 "Media", §5 "Surface composition").
 import { Plus } from "lucide-react";
 import type { MenuSuggestion, QrMenu } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
 import { useMenuSuggestions } from "../hooks";
-import { MenuMedia } from "./menu-media";
+import { PhotoBadge } from "./photo-badge";
 
 export function SuggestionsShelf({
   sessionId,
@@ -35,9 +36,12 @@ export function SuggestionsShelf({
     );
   if (picks.length === 0) return null;
   return (
-    <section aria-labelledby="suggestions-title" className="grid gap-2">
+    <section
+      aria-labelledby="suggestions-title"
+      className="-mx-gutter grid gap-3 bg-surface-2 px-gutter py-4"
+    >
       <div>
-        <h2 id="suggestions-title" className="text-lg leading-7 font-semibold">
+        <h2 id="suggestions-title" className="type-heading">
           {title ?? t("qrMenu.suggestions.title")}
         </h2>
         <p className="text-sm text-muted-foreground">
@@ -49,41 +53,24 @@ export function SuggestionsShelf({
           item ? (
             <li
               key={item.id}
-              className="relative grid w-44 shrink-0 snap-start content-start gap-2 rounded-2xl border bg-card p-3"
+              className="relative grid w-[148px] shrink-0 snap-start content-start gap-1.5"
             >
-              <MenuMedia
-                name={item.name}
-                photoUrl={item.photoUrl}
-                className="aspect-[4/3] w-full"
-              />
-              <div className="grid min-w-0 content-start gap-1">
-                {suggestion.kind === "upgrade" && (
-                  <Badge tone="info" className="w-fit">
-                    {t("qrMenu.suggestions.upgrade")}
-                  </Badge>
-                )}
-                <p className="line-clamp-2 min-h-12 font-semibold">
-                  <button
-                    type="button"
-                    onClick={() => onPick(item.id)}
-                    className="rounded-xs text-left after:absolute after:inset-0 after:rounded-2xl"
-                  >
-                    {item.name}
-                  </button>
-                </p>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <Money
-                  amount={item.priceIdr}
-                  size="sm"
-                  className="font-semibold"
+              <div className="relative">
+                <MediaPlate
+                  ratio="thumb"
+                  src={item.photoUrl}
+                  alt=""
+                  topStart={
+                    suggestion.kind === "upgrade" ? (
+                      <PhotoBadge>{t("qrMenu.suggestions.upgrade")}</PhotoBadge>
+                    ) : undefined
+                  }
                 />
                 <Button
                   type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  className="relative z-10"
+                  size="icon"
                   onClick={() => onPick(item.id)}
+                  className="absolute end-2.5 bottom-2.5 z-10 size-10 rounded-full bg-card text-foreground shadow-card hover:bg-card/90"
                 >
                   <Plus aria-hidden="true" />
                   <span className="sr-only">
@@ -91,6 +78,16 @@ export function SuggestionsShelf({
                   </span>
                 </Button>
               </div>
+              <p className="line-clamp-1 font-semibold">
+                <button
+                  type="button"
+                  onClick={() => onPick(item.id)}
+                  className="rounded-xs text-left after:absolute after:inset-0"
+                >
+                  {item.name}
+                </button>
+              </p>
+              <Money amount={item.priceIdr} size="sm" className="font-medium" />
             </li>
           ) : null,
         )}

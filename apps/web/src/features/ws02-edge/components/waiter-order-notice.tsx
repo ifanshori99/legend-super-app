@@ -12,7 +12,7 @@ export function WaiterOrderNotice({ className }: { className?: string }) {
     <div
       data-edge-waiter-notice=""
       className={cn(
-        "flex flex-col gap-3 rounded-2xl border-(length:--border-w) border-warning bg-warning-subtle p-card",
+        "flex flex-col gap-3 rounded-container border-(length:--border-w) border-warning bg-warning-subtle p-card",
         className,
       )}
     >

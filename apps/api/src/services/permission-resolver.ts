@@ -22,6 +22,7 @@ import {
   PERMISSION_CODES,
   roleAssignmentSchema,
   roleIdSchema,
+  stationIdSchema,
   authorize,
   isAssignmentActive,
   outletReachOf,
@@ -40,9 +41,15 @@ import {
   type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
-import { brands, outlets, roleAssignments, roles } from "../db/schema";
+import {
+  brands,
+  outlets,
+  roleAssignments,
+  roles,
+  stations,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
 
 export type RoleGrantRow = RoleGrant & {
@@ -135,6 +142,28 @@ export async function loadTenantAccessInTransaction(
             eq(outlets.brandId, context.tenant.brandId),
           ),
     );
+  // Stations (WS-03 menu schema) make station-scoped assignments resolvable.
+  // The org index is brand-filtered like the outlets above, so a brand pinned
+  // by the domain cannot see another brand's stations. Soft-deleted (edge
+  // tombstone) stations grant nothing.
+  const stationRows =
+    context.tenant.brandId !== null && outletRows.length === 0
+      ? []
+      : await tx
+          .select({ id: stations.id, outletId: stations.outletId })
+          .from(stations)
+          .where(
+            and(
+              eq(stations.tenantId, context.tenant.tenantId),
+              isNull(stations.deletedAt),
+              context.tenant.brandId === null
+                ? undefined
+                : inArray(
+                    stations.outletId,
+                    outletRows.map((row) => row.id),
+                  ),
+            ),
+          );
   return {
     assignments: assignmentRows.map(toAssignment),
     roles: roleRows.map(toRoleGrant),
@@ -144,8 +173,11 @@ export async function loadTenantAccessInTransaction(
         id: outletIdSchema.parse(row.id),
         brandId: brandIdSchema.parse(row.brandId),
       })),
-      // WS-03 owns `stations`; until it lands no station scope can match.
-      stations: [],
+      // WS-03 menu schema (legend-lmk): station-scoped assignments resolve.
+      stations: stationRows.map((row) => ({
+        id: stationIdSchema.parse(row.id),
+        outletId: outletIdSchema.parse(row.outletId),
+      })),
     },
   };
 }

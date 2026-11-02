@@ -2,10 +2,14 @@
 // OperationsShell has no navigation chrome (it owns the whole screen), so the
 // kitchen screens carry their own two-item switch (docs/frontend.md, area
 // `kitchen`: /kds/*, /expo, /pickup).
+//
+// v3: the switch is a tab group (DESIGN.md §4 Tabs, §5 Operations) — the same
+// bordered surface-2 track and card chip as <Tabs>, with the current screen in
+// ink. It is navigation, not the screen's one accent action (Q21).
 import { Link } from "@tanstack/react-router";
-import { cn } from "cn";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 
 export type KitchenScreen = "expo" | "pickup";
 
@@ -21,25 +25,17 @@ const SCREENS: readonly {
 export function KitchenScreenNav({ current }: { current: KitchenScreen }) {
   const t = useT();
   return (
-    <nav aria-label={t("expo.screens")} className="flex flex-wrap gap-1">
-      {SCREENS.map(({ key, to, labelKey }) => {
-        const active = key === current;
-        return (
-          <Link
-            key={key}
-            to={to}
-            aria-current={active ? "page" : undefined}
-            className={cn(
-              "inline-flex min-h-control-sm items-center rounded-control px-3 text-sm font-semibold transition-colors duration-(--duration-fast)",
-              active
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground",
-            )}
-          >
-            {t(labelKey)}
-          </Link>
-        );
-      })}
+    <nav aria-label={t("expo.screens")} className={tabsListClass}>
+      {SCREENS.map(({ key, to, labelKey }) => (
+        <Link
+          key={key}
+          to={to}
+          aria-current={key === current ? "page" : undefined}
+          className={tabsTriggerClass}
+        >
+          {t(labelKey)}
+        </Link>
+      ))}
     </nav>
   );
 }

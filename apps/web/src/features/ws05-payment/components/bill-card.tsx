@@ -32,9 +32,7 @@ export function BillCard({ bill }: { bill: CustomerPaymentBill }) {
   return (
     <Card>
       <div className="grid gap-1">
-        <h2 className="text-lg leading-7 font-semibold">
-          {t("payment.billTitle")}
-        </h2>
+        <h2 className="type-title">{t("payment.billTitle")}</h2>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("payment.reference", { reference: bill.reference })}
         </p>
@@ -81,15 +79,16 @@ export function BillCard({ bill }: { bill: CustomerPaymentBill }) {
             <AmountRow label={t("payment.paid")} amount={totals.paidIdr} />
           </dl>
         )}
-        {/* A fully settled bill drops the redundant "Sisa tagihan Rp 0" row. */}
+        {/* A fully settled bill drops the redundant "Sisa tagihan Rp 0" row.
+            v3: the amount to pay is the screen's hero figure (DESIGN.md §3). */}
         {(totals.paidIdr === 0 || totals.outstandingIdr > 0) && (
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="font-semibold">
+          <div className="grid gap-1">
+            <span className="type-eyebrow text-muted-foreground">
               {totals.paidIdr > 0
                 ? t("payment.outstanding")
                 : t("payment.total")}
             </span>
-            <Money amount={totals.outstandingIdr} size="lg" />
+            <Money amount={totals.outstandingIdr} size="hero" />
           </div>
         )}
       </div>

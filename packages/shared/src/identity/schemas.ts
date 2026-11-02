@@ -126,11 +126,20 @@ export const whatsAppNumberSchema = z
   .string()
   .regex(/^[1-9]\d{7,14}$/, "Expected a WhatsApp number in digits");
 
-/** Where the user goes after signing in: a path on this app, never another origin. */
+/**
+ * Where the user goes after signing in: a path on this app, never another
+ * origin. Browsers turn `\` into `/` and drop tab/CR/LF inside URLs, so
+ * `/\evil.example` and `/<TAB>/evil.example` both become `//evil.example`
+ * (open redirect); backslashes and whitespace are refused like
+ * notification `inAppLinkSchema`.
+ */
 export const returnPathSchema = z
   .string()
   .max(300)
-  .regex(/^\/(?!\/)/, "Expected a path on this app");
+  .regex(/^\/(?!\/)[^\s\\]*$/, "Expected a path on this app");
+
+/** A server-built URL the browser navigates to: https only (no `javascript:`). */
+const httpsUrlSchema = z.url({ protocol: /^https$/ });
 
 // ------------------------------------------------------- login challenges
 
@@ -219,7 +228,7 @@ export const loginChallengeIssuedSchema = z.strictObject({
   challenge: loginChallengeSchema,
   code: loginCodeSchema,
   codeFormatted: z.string().min(9).max(9),
-  whatsAppDeepLink: z.url(),
+  whatsAppDeepLink: httpsUrlSchema,
 });
 export type LoginChallengeIssued = z.infer<typeof loginChallengeIssuedSchema>;
 
@@ -235,7 +244,7 @@ export type MagicLinkRequested = z.infer<typeof magicLinkRequestedSchema>;
 
 /** Google OAuth start: the API builds the URL including its state (browser-bound). */
 export const googleLoginStartSchema = z.strictObject({
-  authorizationUrl: z.url(),
+  authorizationUrl: httpsUrlSchema,
 });
 
 // ---------------------------------------------------------------- sessions

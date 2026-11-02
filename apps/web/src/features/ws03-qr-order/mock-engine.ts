@@ -1,9 +1,15 @@
-// In-memory "server" behind VITE_API_MOCK for the QR order journey: sessions,
-// shared cart, server quote, orders, payments, split bill, waiter calls,
-// failed-item recovery, review and point claim. It enforces the same rules the
-// real API will (version conflicts, sold-out items, closed sessions, exact
-// split sums) and takes every fixture from @starter/shared/qr-order. Relative
-// imports only: Node tests load it directly.
+// In-memory "server" behind VITE_API_MOCK for the QR order journey: the guest
+// cart, quote, payments, split bill, waiter calls, failed-item recovery, review
+// and point claim. It enforces the same rules the real API will (version
+// conflicts, sold-out items, closed sessions, exact split sums) and takes every
+// fixture from @starter/shared/qr-order.
+//
+// Sessions, orders, splits, waiter calls and table QR are NOT private to this
+// file: they live in the shared WS-03 floor engine (../../lib/mock/ws03), the
+// same instance the floor board and floor editor mocks bind to, so a scan, a
+// merge or a layout edit is one truth (bead legend-jzud). This engine keeps the
+// guest-only state: menu, cart lines, payment intents, review and point claim.
+// Relative imports only: Node tests load it directly.
 import { allocateIdr, idr, type Idr } from "@starter/shared/core";
 import {
   buildQrMenu,
@@ -13,13 +19,11 @@ import {
   guestOrderIssueFixtures,
   pointClaimFixture,
   qrOrderFixtures as F,
-  qrTokenTableCodes,
   quoteConfigForZone,
   splitBill,
   tableSessionTokenExpiresAt,
   type BillSplit,
   type CartLine,
-  type FloorZone,
   type GuestOrderIssue,
   type GuestPayment,
   type GuestPaymentMethod,
@@ -35,6 +39,11 @@ import {
   type TableSessionView,
 } from "@starter/shared/qr-order";
 import { ApiError } from "../../lib/api/errors.ts";
+import {
+  createWs03Engine,
+  type FloorSnapshot,
+  type Ws03Engine,
+} from "../../lib/mock/ws03/engine.ts";
 import { orderHasPaidShare, splitScope } from "./domain.ts";
 
 const STAFF_USER = "00000000-0000-4000-8000-000000009001";
@@ -56,12 +65,6 @@ const uuid = () =>
   `${rand(HEX, 8)}-${rand(HEX, 4)}-4${rand(HEX, 3)}-8${rand(HEX, 3)}-${rand(HEX, 12)}`;
 const ulid = () => `0${rand(CROCKFORD, 25)}`;
 
-type OrderRec = QrOrder & {
-  firedAtMs: number | null;
-  /** New orders walk through the kitchen steps over time; fixtures stay put. */
-  simulate: boolean;
-};
-
 type PaymentRec = {
   payment: GuestPayment;
   createdMs: number;
@@ -74,20 +77,20 @@ type PlacedResult = {
   session: TableSession;
 };
 
-type SessionRec = {
-  session: TableSession;
-  table: Table;
-  zone: FloorZone;
-  menu: QrMenu;
+/** Mock-only kitchen simulation for orders the guest placed (not API state). */
+type OrderMeta = {
+  firedAtMs: number | null;
+  simulate: boolean;
+};
+
+/** Guest-only state for one table session. */
+type GuestRec = {
+  sessionId: string;
   cartVersion: number;
   lines: CartLine[];
-  orders: OrderRec[];
-  requests: { request: ServiceRequest; createdMs: number }[];
-  splits: BillSplit[];
   issues: GuestOrderIssue[];
   payments: Map<string, PaymentRec>;
   review: TableReview | null;
-  paidIdr: number;
   claimed: boolean;
   placed: Map<string, PlacedResult>;
 };
@@ -95,28 +98,29 @@ type SessionRec = {
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /** Bumped when the serialized shape changes; stale browser snapshots are dropped. */
-export const ENGINE_SNAPSHOT_VERSION = 1;
+export const ENGINE_SNAPSHOT_VERSION = 2;
+
+type GuestSnapshot = {
+  sessionId: string;
+  cartVersion: number;
+  lines: CartLine[];
+  issues: GuestOrderIssue[];
+  payments: PaymentRec[];
+  review: TableReview | null;
+  claimed: boolean;
+  placed: [string, PlacedResult][];
+};
 
 /** Serialized engine state kept in sessionStorage so a page reload keeps the table session. */
 export type QrEngineSnapshot = {
   version: typeof ENGINE_SNAPSHOT_VERSION;
   callerParticipantId: string | null;
   orderSeq: number;
-  records: {
-    session: TableSession;
-    tableCode: string;
-    cartVersion: number;
-    lines: CartLine[];
-    orders: OrderRec[];
-    requests: { request: ServiceRequest; createdMs: number }[];
-    splits: BillSplit[];
-    issues: GuestOrderIssue[];
-    payments: PaymentRec[];
-    review: TableReview | null;
-    paidIdr: number;
-    claimed: boolean;
-    placed: [string, PlacedResult][];
-  }[];
+  /** Sessions, orders, splits, calls and QR: one truth shared with the board. */
+  floor: FloorSnapshot;
+  guest: GuestSnapshot[];
+  /** Mock kitchen simulation, keyed by order id. */
+  orders: [string, OrderMeta][];
 };
 
 function clone<T>(value: T): T {
@@ -127,75 +131,82 @@ function conflict(code: string, message: string): never {
   throw new ApiError(409, code, message);
 }
 
-export function createEngine(clock: Clock = Date.now) {
-  const records = new Map<string, SessionRec>();
+function isActive(session: TableSession): boolean {
+  return session.status !== "closed" && session.status !== "voided";
+}
+
+/**
+ * The QR guest engine. Pass the shared floor engine in the browser mock; the
+ * default keeps one floor per engine for the Node contract test.
+ */
+export function createEngine(
+  clock: Clock = Date.now,
+  floor: Ws03Engine = createWs03Engine(clock),
+) {
+  const guest = new Map<string, GuestRec>();
+  /** Order id → mock kitchen simulation; the shared floor keeps plain orders. */
+  const orderMeta = new Map<string, OrderMeta>();
   let callerParticipantId: string | null = null;
   let orderSeq = 43;
 
-  const tableByCode = (code: string) => {
-    const table = F.tables.find((entry) => entry.code === code);
-    if (!table) throw new RangeError(`Unknown table ${code}`);
-    return table;
-  };
-  const zoneOf = (table: Table) => {
-    const zone = F.zones.find((entry) => entry.id === table.zoneId);
-    if (!zone) throw new RangeError(`Unknown zone for ${table.code}`);
-    return zone;
+  const tableOfSession = (session: TableSession): Table =>
+    floor.tableOfSession(session);
+  const zoneOfTable = (table: Table) => floor.zoneOf(table);
+  const menuOf = (session: TableSession): QrMenu => {
+    const table = tableOfSession(session);
+    return buildQrMenu({ table, zone: zoneOfTable(table) });
   };
 
-  function newRec(session: TableSession, table: Table): SessionRec {
-    const zone = zoneOf(table);
+  /** The session behind a guest call; closed sessions are gone for guests. */
+  function sessionOf(sessionId: string): TableSession {
+    const session = floor.state.sessions[sessionId];
+    if (!session || !isActive(session))
+      throw new ApiError(404, "NOT_FOUND", "Sesi meja tidak ditemukan.");
+    return session;
+  }
+
+  function emptyRec(sessionId: string): GuestRec {
     return {
-      session: clone(session),
-      table,
-      zone,
-      menu: buildQrMenu({ table, zone }),
+      sessionId,
       cartVersion: 0,
       lines: [],
-      orders: [],
-      requests: [],
-      splits: [],
       issues: [],
       payments: new Map(),
       review: null,
-      paidIdr: 0,
       claimed: false,
       placed: new Map(),
     };
   }
 
+  function recOf(sessionId: string): GuestRec {
+    sessionOf(sessionId); // 404 when the session is unknown or closed
+    let rec = guest.get(sessionId);
+    if (!rec) {
+      rec = emptyRec(sessionId);
+      guest.set(sessionId, rec);
+    }
+    return rec;
+  }
+
   // ---- Seed from the fixtures -------------------------------------------
   {
-    // The fixtures are dated, so a running mock shifts the seeded sessions to
-    // "opened N minutes ago": they stay live (session token < 12 h) whenever the
-    // demo runs, and the bill/status screens show sensible times.
-    const recent = (
-      session: TableSession,
-      minutesAgo: number,
-    ): TableSession => ({
-      ...clone(session),
-      openedAt: iso(clock() - minutesAgo * 60_000),
-      lastActivityAt: iso(clock()),
-    });
-    const [indoor, privateRoom, wfc] = [
-      recent(F.sessions[0], 90),
-      recent(F.sessions[1], 150),
-      recent(F.sessions[2], 30),
-    ];
-    const a03 = newRec(indoor, tableByCode("A03"));
-    a03.lines = clone(F.cart.lines);
-    a03.cartVersion = F.cart.version;
+    // The shared floor engine seeds the sessions/orders/splits; this adds the
+    // guest-only state the QR fixtures describe.
+    const a03 = floor.sessionOf(F.sessions[0].id);
+    const a03Rec = emptyRec(a03.id);
+    a03Rec.lines = clone(F.cart.lines);
+    a03Rec.cartVersion = F.cart.version;
     // A guest added "Sup Buntut" before it sold out: checkout removes it (ORD-05).
-    const soldOutItem = a03.menu.items.find(
+    const soldOutItem = menuOf(a03).items.find(
       (item) => item.status === "sold_out",
     );
     if (soldOutItem) {
       const at = "2026-11-01T05:08:00.000Z";
-      a03.lines.push({
+      a03Rec.lines.push({
         id: uuid() as CartLine["id"],
-        tenantId: indoor.tenantId,
-        outletId: indoor.outletId,
-        tableSessionId: indoor.id,
+        tenantId: a03.tenantId,
+        outletId: a03.outletId,
+        tableSessionId: a03.id,
         menuItemId: soldOutItem.id,
         variantId: null,
         name: soldOutItem.name,
@@ -205,57 +216,21 @@ export function createEngine(clock: Clock = Date.now) {
         unitPriceIdr: soldOutItem.priceIdr,
         modifiersTotalIdr: idr(0),
         lineTotalIdr: soldOutItem.priceIdr,
-        addedByParticipantId: indoor.participants[1]?.id ?? null,
+        addedByParticipantId: a03.participants[1]?.id ?? null,
         addedAt: at,
         updatedAt: at,
       } as CartLine);
-      a03.cartVersion += 1;
+      a03Rec.cartVersion += 1;
     }
-    a03.requests = clone(
-      F.serviceRequests.filter((r) => r.tableSessionId === indoor.id),
-    ).map((request) => ({ request, createdMs: clock() - 90_000 }));
-    records.set(indoor.id, a03);
+    guest.set(a03.id, a03Rec);
 
-    const p1 = newRec(privateRoom, tableByCode("P1"));
-    p1.cartVersion = 1;
-    p1.orders = [{ ...clone(F.orders[0]), firedAtMs: null, simulate: false }];
-    p1.splits = clone(F.billSplits);
-    p1.paidIdr = F.billSplits[0].amountIdr;
+    const p1 = emptyRec(F.sessions[1].id);
     p1.issues = clone(guestOrderIssueFixtures);
-    p1.requests = clone(
-      F.serviceRequests.filter((r) => r.tableSessionId === privateRoom.id),
-    ).map((request) => ({ request, createdMs: clock() - 600_000 }));
-    records.set(privateRoom.id, p1);
-
-    records.set(wfc.id, newRec(wfc, tableByCode("W01")));
+    guest.set(p1.sessionId, p1);
   }
 
-  function activeSessionFor(tableId: string): SessionRec | undefined {
-    for (const rec of records.values())
-      if (
-        rec.table.id === tableId &&
-        rec.session.status !== "closed" &&
-        rec.session.status !== "voided"
-      )
-        return rec;
-    return undefined;
-  }
-
-  function tableForToken(qrToken: string): Table {
-    const code = qrTokenTableCodes[qrToken];
-    if (!code) throw new ApiError(404, "NOT_FOUND", "QR meja tidak dikenali.");
-    return tableByCode(code);
-  }
-
-  function recOf(sessionId: string): SessionRec {
-    const rec = records.get(sessionId);
-    if (!rec)
-      throw new ApiError(404, "NOT_FOUND", "Sesi meja tidak ditemukan.");
-    return rec;
-  }
-
-  function usable(rec: SessionRec): void {
-    if (rec.session.status === "closed" || rec.session.status === "voided")
+  function usable(session: TableSession): void {
+    if (!isActive(session))
       conflict(
         "SESSION_CLOSED",
         "Sesi meja ini sudah ditutup. Scan ulang QR di meja.",
@@ -264,80 +239,41 @@ export function createEngine(clock: Clock = Date.now) {
 
   // ---- Scan -----------------------------------------------------------------
   function scan(input: { qrToken: string; pax: number; deviceHash: string }) {
-    const table = tableForToken(input.qrToken);
-    let rec = activeSessionFor(table.id);
-    const now = clock();
-    let outcome: "opened" | "joined" = "joined";
-    if (!rec) {
-      outcome = "opened";
-      const zone = zoneOf(table);
-      const base = F.sessions[0];
-      const session: TableSession = {
-        ...base,
-        id: uuid() as TableSession["id"],
-        tableId: table.id,
-        pax: input.pax,
-        paymentMode: zone.paymentMode,
-        status:
-          zone.paymentMode === "open_bill" ? "pending_confirmation" : "open",
-        confirmedBy: null,
-        participants: [],
-        openedAt: iso(now),
-        closedAt: null,
-        lastActivityAt: iso(now),
-        billRequestedAt: null,
-        closedReason: null,
-      };
-      rec = newRec(session, table);
-      records.set(session.id, rec);
-    }
-    let me = rec.session.participants.find(
-      (participant) => participant.deviceHash === input.deviceHash,
-    );
-    if (!me) {
-      me = {
-        id: uuid() as TableSession["participants"][number]["id"],
-        tenantId: rec.session.tenantId,
-        tableSessionId: rec.session.id,
-        deviceHash: input.deviceHash,
-        userId: null,
-        joinedAt: iso(now),
-        lastSeenAt: iso(now),
-      };
-      rec.session.participants.push(me);
-    } else me.lastSeenAt = iso(now);
-    callerParticipantId = me.id;
+    const joined = floor.openOrJoinTableSession(input);
+    callerParticipantId = joined.participant.id;
+    const menu = buildQrMenu({ table: joined.table, zone: joined.zone });
+    const session = joined.session;
     return {
-      outcome,
-      table: rec.table,
-      zone: rec.zone,
+      outcome: joined.outcome,
+      table: joined.table,
+      zone: joined.zone,
       outlet: F.scanResult.outlet,
       brand: F.scanResult.brand,
-      session: clone(rec.session),
+      session: clone(session),
       sessionToken: `st_${rand("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789_-", 32)}`,
       // ORD-04: at most 12 h from the session open and never past the close.
-      sessionTokenExpiresAt: tableSessionTokenExpiresAt(rec.session),
-      menuUpdatedAt: rec.menu.menuUpdatedAt,
-      soldOutItemIds: rec.menu.items
+      sessionTokenExpiresAt: tableSessionTokenExpiresAt(session),
+      menuUpdatedAt: menu.menuUpdatedAt,
+      soldOutItemIds: menu.items
         .filter((item) => item.status === "sold_out")
         .map((item) => item.id),
-      serverTime: iso(now),
+      serverTime: iso(clock()),
     };
   }
 
   function menuFor(qrToken: string): QrMenu {
-    const table = tableForToken(qrToken);
-    return clone(buildQrMenu({ table, zone: zoneOf(table) }));
+    const table = floor.tableForToken(qrToken);
+    return clone(buildQrMenu({ table, zone: zoneOfTable(table) }));
   }
 
   // ---- Cart -------------------------------------------------------------------
-  const itemOf = (rec: SessionRec, id: string): QrMenuItem => {
-    const item = rec.menu.items.find((entry) => entry.id === id);
+  const itemOf = (menu: QrMenu, id: string): QrMenuItem => {
+    const item = menu.items.find((entry) => entry.id === id);
     if (!item) throw new ApiError(404, "NOT_FOUND", "Menu tidak ditemukan.");
     return item;
   };
 
-  function checkVersion(rec: SessionRec, expected: number) {
+  function checkVersion(rec: GuestRec, expected: number) {
     if (expected !== rec.cartVersion)
       conflict(
         "CONFLICT",
@@ -394,18 +330,18 @@ export function createEngine(clock: Clock = Date.now) {
     return { unit, chosen, modifiersTotal };
   }
 
-  function cartOf(rec: SessionRec) {
+  function cartOf(rec: GuestRec) {
     return {
-      sessionId: rec.session.id,
+      sessionId: rec.sessionId,
       version: rec.cartVersion,
       lines: clone(rec.lines),
       updatedAt: iso(clock()),
     };
   }
 
-  function touch(rec: SessionRec) {
+  function touch(rec: GuestRec) {
     rec.cartVersion += 1;
-    rec.session.lastActivityAt = iso(clock());
+    floor.touchSession(rec.sessionId);
   }
 
   function addLine(
@@ -420,9 +356,10 @@ export function createEngine(clock: Clock = Date.now) {
     },
   ) {
     const rec = recOf(sessionId);
-    usable(rec);
+    const session = sessionOf(sessionId);
+    usable(session);
     checkVersion(rec, body.expectedCartVersion);
-    const item = itemOf(rec, body.menuItemId);
+    const item = itemOf(menuOf(session), body.menuItemId);
     const { unit, chosen, modifiersTotal } = resolveLine(
       item,
       body.variantId,
@@ -455,9 +392,9 @@ export function createEngine(clock: Clock = Date.now) {
     } else {
       line = {
         id: uuid() as CartLine["id"],
-        tenantId: rec.session.tenantId,
-        outletId: rec.session.outletId,
-        tableSessionId: rec.session.id,
+        tenantId: session.tenantId,
+        outletId: session.outletId,
+        tableSessionId: session.id,
         menuItemId: item.id,
         variantId: (body.variantId ?? null) as CartLine["variantId"],
         name,
@@ -478,7 +415,7 @@ export function createEngine(clock: Clock = Date.now) {
     return { cart: cartOf(rec), line: clone(line) };
   }
 
-  function lineOf(rec: SessionRec, lineId: string): CartLine {
+  function lineOf(rec: GuestRec, lineId: string): CartLine {
     const line = rec.lines.find((entry) => entry.id === lineId);
     if (!line)
       throw new ApiError(404, "NOT_FOUND", "Baris keranjang tidak ditemukan.");
@@ -495,7 +432,7 @@ export function createEngine(clock: Clock = Date.now) {
     },
   ) {
     const rec = recOf(sessionId);
-    usable(rec);
+    usable(sessionOf(sessionId));
     checkVersion(rec, body.expectedCartVersion);
     const line = lineOf(rec, lineId);
     if (body.quantity !== undefined) line.quantity = body.quantity;
@@ -515,7 +452,7 @@ export function createEngine(clock: Clock = Date.now) {
     expectedCartVersion: number,
   ) {
     const rec = recOf(sessionId);
-    usable(rec);
+    usable(sessionOf(sessionId));
     checkVersion(rec, expectedCartVersion);
     lineOf(rec, lineId);
     rec.lines = rec.lines.filter((entry) => entry.id !== lineId);
@@ -526,11 +463,12 @@ export function createEngine(clock: Clock = Date.now) {
   // ---- Quote ----------------------------------------------------------------
   const taxRuleId = cafeLegendTaxRules[0].id;
 
-  function orderableLines(rec: SessionRec) {
+  function orderableLines(session: TableSession, rec: GuestRec) {
+    const menu = menuOf(session);
     const live: CartLine[] = [];
     const removed: CartLine[] = [];
     for (const line of rec.lines) {
-      const item = rec.menu.items.find((entry) => entry.id === line.menuItemId);
+      const item = menu.items.find((entry) => entry.id === line.menuItemId);
       if (!item || item.status === "sold_out") removed.push(line);
       else live.push(line);
     }
@@ -546,8 +484,9 @@ export function createEngine(clock: Clock = Date.now) {
     sessionId: string,
     codes: { promoCode?: string; voucherCode?: string } = {},
   ) {
+    const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
-    const { live, removed } = orderableLines(rec);
+    const { live, removed } = orderableLines(session, rec);
     if (codes.promoCode)
       throw new ApiError(
         422,
@@ -574,7 +513,7 @@ export function createEngine(clock: Clock = Date.now) {
     }
     return clone(
       computeQuote({
-        sessionId: rec.session.id,
+        sessionId: session.id,
         cartVersion: rec.cartVersion,
         lines: live.map((line) => ({
           cartLineId: line.id,
@@ -585,7 +524,7 @@ export function createEngine(clock: Clock = Date.now) {
           modifiersTotalIdr: line.modifiersTotalIdr,
           taxRuleId,
         })),
-        config: quoteConfigForZone(rec.zone),
+        config: quoteConfigForZone(zoneOfTable(tableOfSession(session))),
         discounts,
         removedLines: removed.map((line) => ({
           cartLineId: line.id,
@@ -601,15 +540,11 @@ export function createEngine(clock: Clock = Date.now) {
   }
 
   // ---- Orders ---------------------------------------------------------------
-  function simulatedOrder(order: OrderRec): QrOrder {
-    const out = clone(order) as QrOrder & {
-      firedAtMs?: number;
-      simulate?: boolean;
-    };
-    delete out.firedAtMs;
-    delete out.simulate;
-    if (order.simulate && order.firedAtMs !== null) {
-      const elapsed = clock() - order.firedAtMs;
+  function simulatedOrder(order: QrOrder): QrOrder {
+    const out = clone(order);
+    const meta = orderMeta.get(order.id);
+    if (meta?.simulate && meta.firedAtMs !== null) {
+      const elapsed = clock() - meta.firedAtMs;
       const status: QrOrder["items"][number]["status"] =
         elapsed < 15_000
           ? "queued"
@@ -623,10 +558,10 @@ export function createEngine(clock: Clock = Date.now) {
     return out;
   }
 
-  function visibleRequests(rec: SessionRec): ServiceRequest[] {
+  function visibleRequests(sessionId: string): ServiceRequest[] {
     const now = clock();
     const out: ServiceRequest[] = [];
-    for (const entry of rec.requests) {
+    for (const entry of floor.requestsOf(sessionId)) {
       const age = now - entry.createdMs;
       if (
         entry.request.status === "resolved" ||
@@ -649,15 +584,18 @@ export function createEngine(clock: Clock = Date.now) {
 
   function view(sessionId: string, scenario?: string): TableSessionView {
     const rec = recOf(sessionId);
+    const session = sessionOf(sessionId);
     const empty = scenario === "empty";
     const lines = empty ? [] : rec.lines;
     const cart = { ...cartOf(rec), lines: clone(lines) };
     return {
-      session: clone(rec.session),
+      session: clone(session),
       cart,
       quote: lines.length > 0 ? quote(sessionId) : null,
-      orders: empty ? [] : rec.orders.map(simulatedOrder),
-      openServiceRequests: empty ? [] : visibleRequests(rec),
+      orders: empty
+        ? []
+        : floor.ordersOf(sessionId).map((order) => simulatedOrder(order)),
+      openServiceRequests: empty ? [] : visibleRequests(sessionId),
     } as unknown as TableSessionView;
   }
 
@@ -670,6 +608,7 @@ export function createEngine(clock: Clock = Date.now) {
     },
   ) {
     const rec = recOf(sessionId);
+    const session = sessionOf(sessionId);
     const replay = rec.placed.get(body.idempotencyKey);
     if (replay)
       return clone({
@@ -679,17 +618,18 @@ export function createEngine(clock: Clock = Date.now) {
             ? ("fired" as const)
             : ("held_for_payment" as const),
       });
-    usable(rec);
+    usable(session);
     checkVersion(rec, body.expectedCartVersion);
     if (
-      rec.session.paymentMode === "open_bill" &&
-      rec.session.status === "pending_confirmation"
+      session.paymentMode === "open_bill" &&
+      session.status === "pending_confirmation"
     )
       conflict(
         "SESSION_NOT_CONFIRMED",
         "Waiter belum mengonfirmasi meja ini. Tunggu sebentar.",
       );
-    const { live } = orderableLines(rec);
+    const menu = menuOf(session);
+    const { live } = orderableLines(session, rec);
     if (live.length === 0)
       throw new ApiError(
         422,
@@ -704,12 +644,12 @@ export function createEngine(clock: Clock = Date.now) {
         "Pesanan belum mencapai minimum belanja zona ini.",
       );
     const now = clock();
-    const payFirst = rec.session.paymentMode === "pay_first";
-    const orderId = ulid();
+    const payFirst = session.paymentMode === "pay_first";
+    const orderId = ulid() as QrOrder["id"];
     orderSeq += 1;
     const items = live.map((line) => ({
-      id: ulid(),
-      tenantId: rec.session.tenantId,
+      id: ulid() as QrOrder["items"][number]["id"],
+      tenantId: session.tenantId,
       orderId,
       menuItemId: line.menuItemId,
       variantId: line.variantId,
@@ -725,21 +665,21 @@ export function createEngine(clock: Clock = Date.now) {
       })),
       note: line.note,
       course:
-        rec.menu.items.find((entry) => entry.id === line.menuItemId)?.type ===
+        menu.items.find((entry) => entry.id === line.menuItemId)?.type ===
         "combo"
           ? null
           : null,
-      fireStatus: payFirst ? "held" : "fired",
-      status: "queued",
+      fireStatus: (payFirst ? "held" : "fired") as "held" | "fired",
+      status: "queued" as const,
     }));
-    const order = {
+    const order: QrOrder = {
       id: orderId,
-      tenantId: rec.session.tenantId,
-      outletId: rec.session.outletId,
+      tenantId: session.tenantId,
+      outletId: session.outletId,
       number: `QR-20261101-${String(orderSeq).padStart(4, "0")}`,
       channel: "qr",
       serviceType: "dine_in",
-      tableSessionId: rec.session.id,
+      tableSessionId: session.id,
       customerProfileId: null,
       subtotalIdr: q.subtotalIdr,
       discountIdr: q.discountIdr,
@@ -751,18 +691,18 @@ export function createEngine(clock: Clock = Date.now) {
       items,
       createdAt: iso(now),
       placedAt: iso(now),
+    };
+    floor.ordersOf(session.id).push(order);
+    orderMeta.set(order.id, {
       firedAtMs: payFirst ? null : now,
       simulate: true,
-    } as unknown as OrderRec;
-    rec.orders.push(order);
-    rec.lines = rec.lines.filter((line) => !live.includes(line));
-    // Sold-out lines are dropped with the order and reported in the quote.
+    });
     rec.lines = [];
     touch(rec);
     const result = {
       order: simulatedOrder(order),
       quote: q,
-      session: clone(rec.session),
+      session: clone(session),
     };
     rec.placed.set(body.idempotencyKey, result as never);
     return clone({
@@ -774,30 +714,14 @@ export function createEngine(clock: Clock = Date.now) {
 
   // ---- Bill and split -------------------------------------------------------
   /** The bill covers every placed order, paid or not (a pay-first order awaiting payment is still owed). */
-  const settledOrders = (rec: SessionRec) =>
-    rec.orders.filter((o) => o.status !== "voided");
+  const settledOrders = (sessionId: string) =>
+    floor.ordersOf(sessionId).filter((order) => order.status !== "voided");
 
   function bill(sessionId: string) {
-    const rec = recOf(sessionId);
-    const orders = settledOrders(rec).map(simulatedOrder);
-    const sum = (pick: (o: QrOrder) => number) =>
-      orders.reduce((s, o) => s + pick(o), 0);
-    const total = sum((o) => o.totalIdr);
+    const current = floor.billFor(sessionId);
     return clone({
-      sessionId: rec.session.id,
-      orders,
-      totals: {
-        subtotalIdr: sum((o) => o.subtotalIdr),
-        discountIdr: sum((o) => o.discountIdr),
-        serviceChargeIdr: sum((o) => o.serviceChargeIdr),
-        taxIdr: sum((o) => o.taxIdr),
-        roundingIdr: sum((o) => o.roundingIdr),
-        totalIdr: total,
-        paidIdr: rec.paidIdr,
-        outstandingIdr: Math.max(0, total - rec.paidIdr),
-      },
-      splits: rec.splits,
-      computedAt: iso(clock()),
+      ...current,
+      orders: current.orders.map((order) => simulatedOrder(order)),
     });
   }
 
@@ -807,28 +731,33 @@ export function createEngine(clock: Clock = Date.now) {
       ? never
       : Record<string, unknown>,
   ) {
-    const rec = recOf(sessionId);
-    usable(rec);
-    if (rec.splits.some((s) => s.status === "paid"))
+    const session = sessionOf(sessionId);
+    usable(session);
+    const splits = floor.splitsOf(sessionId);
+    if (splits.some((s) => s.status === "paid"))
       conflict(
         "SPLIT_LOCKED",
         "Sebagian bagian sudah dibayar, pembagian tidak bisa diubah.",
       );
-    if (settledOrders(rec).length === 0)
+    const allOrders = settledOrders(sessionId);
+    if (allOrders.length === 0)
       throw new ApiError(
         422,
         "NOTHING_TO_SPLIT",
         "Belum ada pesanan yang bisa dibagi.",
       );
     // Same scope as the bill screen's preview (domain.ts splitScope).
-    const scope = splitScope(rec.orders, rec.paidIdr);
+    const scope = splitScope(allOrders, floor.paidOf(sessionId));
     if (!scope)
       conflict(
         "SPLIT_LOCKED",
         "Sebagian tagihan sudah dibayar. Bayar sisanya sekaligus atau panggil waiter.",
       );
     const orders = scope.orders;
-    const target = orders[0].status === "awaiting_payment" ? orders[0] : null;
+    // ORD-06 pay-first: the split covers the order waiting for payment, even
+    // when an earlier order of the same session is already paid.
+    const target =
+      orders.find((order) => order.status === "awaiting_payment") ?? null;
     const totalIdr = idr(scope.totalIdr) as Idr;
     const lines = orders.flatMap((o) =>
       o.items.map((item) => ({
@@ -857,13 +786,13 @@ export function createEngine(clock: Clock = Date.now) {
         lines,
         assignments: body.assignments as never,
       });
-    for (const old of rec.splits)
+    for (const old of splits)
       if (old.status === "pending") old.status = "voided";
     const created: BillSplit[] = drafts.map((draft) => ({
       id: uuid() as BillSplit["id"],
-      tenantId: rec.session.tenantId,
-      outletId: rec.session.outletId,
-      tableSessionId: rec.session.id,
+      tenantId: session.tenantId,
+      outletId: session.outletId,
+      tableSessionId: session.id,
       orderId: target ? target.id : null,
       method: draft.method,
       shareIndex: draft.shareIndex,
@@ -874,7 +803,7 @@ export function createEngine(clock: Clock = Date.now) {
       participantId: draft.participantId as BillSplit["participantId"],
       createdAt: iso(clock()),
     }));
-    rec.splits.push(...created);
+    splits.push(...created);
     return clone({ bill: bill(sessionId), splits: created });
   }
 
@@ -887,46 +816,26 @@ export function createEngine(clock: Clock = Date.now) {
       message?: string;
     },
   ) {
-    const rec = recOf(sessionId);
-    usable(rec);
-    if (rec.session.status === "pending_confirmation")
-      conflict("SESSION_NOT_CONFIRMED", "Waiter belum mengonfirmasi meja ini.");
-    const now = clock();
-    const request: ServiceRequest = {
-      id: uuid() as ServiceRequest["id"],
-      tenantId: rec.session.tenantId,
-      outletId: rec.session.outletId,
-      tableSessionId: rec.session.id,
-      tableId: rec.table.id,
-      zoneId: rec.zone.id,
-      type: body.type,
-      reason: body.type === "call_waiter" ? (body.reason ?? "other") : null,
-      message: body.message ?? null,
-      status: "pending",
-      assignedTo: null,
-      createdAt: iso(now),
-      acknowledgedAt: null,
-      resolvedAt: null,
-    };
-    rec.requests.push({ request, createdMs: now });
-    if (body.type === "request_bill" && rec.session.status === "open") {
-      rec.session.status = "bill_requested";
-      rec.session.billRequestedAt = iso(now);
-    }
-    rec.session.lastActivityAt = iso(now);
-    return clone(request);
+    const session = sessionOf(sessionId);
+    usable(session);
+    return clone(floor.createServiceRequest(sessionId, body));
   }
 
   // ---- Payments -------------------------------------------------------------
-  function amountFor(rec: SessionRec, target: GuestPaymentTarget): number {
+  function amountFor(
+    session: TableSession,
+    target: GuestPaymentTarget,
+  ): number {
     if (target.kind === "order") {
-      const order = rec.orders.find((o) => o.id === target.orderId);
+      const order = floor
+        .ordersOf(session.id)
+        .find((o) => o.id === target.orderId);
       if (!order)
         throw new ApiError(404, "NOT_FOUND", "Pesanan tidak ditemukan.");
       if (order.status !== "awaiting_payment")
         conflict("ALREADY_PAID", "Pesanan ini sudah dibayar.");
       // A paid share means the order is being paid per person (ORD-06).
-      if (orderHasPaidShare(rec.splits, order.id))
+      if (orderHasPaidShare(floor.splitsOf(session.id), order.id))
         conflict(
           "SPLIT_LOCKED",
           "Pesanan ini sudah dibagi dan sebagian sudah dibayar. Bayar bagian Anda di Tagihan.",
@@ -934,14 +843,16 @@ export function createEngine(clock: Clock = Date.now) {
       return order.totalIdr;
     }
     if (target.kind === "split") {
-      const split = rec.splits.find((s) => s.id === target.billSplitId);
+      const split = floor
+        .splitsOf(session.id)
+        .find((s) => s.id === target.billSplitId);
       if (!split)
         throw new ApiError(404, "NOT_FOUND", "Bagian tagihan tidak ditemukan.");
       if (split.status !== "pending")
         conflict("ALREADY_PAID", "Bagian ini sudah dibayar.");
       return split.amountIdr;
     }
-    const outstanding = bill(rec.session.id).totals.outstandingIdr;
+    const outstanding = bill(session.id).totals.outstandingIdr;
     if (outstanding <= 0) conflict("ALREADY_PAID", "Tagihan sudah lunas.");
     return outstanding;
   }
@@ -954,14 +865,15 @@ export function createEngine(clock: Clock = Date.now) {
       idempotencyKey: string;
     },
   ) {
+    const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
-    usable(rec);
+    usable(session);
     for (const entry of rec.payments.values())
       if (
         (entry.payment as { idemKey?: string }).idemKey === body.idempotencyKey
       )
         return paymentView(entry);
-    const amount = amountFor(rec, body.target);
+    const amount = amountFor(session, body.target);
     const now = clock();
     const payment = {
       id: uuid(),
@@ -992,38 +904,40 @@ export function createEngine(clock: Clock = Date.now) {
     return out;
   }
 
-  function settle(rec: SessionRec, entry: PaymentRec, now: number) {
+  function settle(rec: GuestRec, entry: PaymentRec, now: number) {
     entry.applied = true;
     entry.payment = { ...entry.payment, status: "paid", paidAt: iso(now) };
     const target = entry.payment.target;
+    const orders = floor.ordersOf(rec.sessionId);
+    const splits = floor.splitsOf(rec.sessionId);
     if (target.kind === "order") {
-      const order = rec.orders.find((o) => o.id === target.orderId);
+      const order = orders.find((o) => o.id === target.orderId);
       if (order) {
         order.status = "sent";
-        order.firedAtMs = now;
+        orderMeta.set(order.id, { firedAtMs: now, simulate: true });
         order.items = order.items.map((item) => ({
           ...item,
           fireStatus: "fired" as const,
         }));
         // ORD-02: only now does the kitchen see the order.
       }
-      rec.paidIdr += entry.payment.amountIdr;
-      const share = rec.splits.filter(
+      floor.addPaid(rec.sessionId, entry.payment.amountIdr);
+      const share = splits.filter(
         (s) => s.orderId === target.orderId && s.status === "pending",
       );
       for (const s of share) s.status = "voided";
     } else if (target.kind === "split") {
-      const split = rec.splits.find((s) => s.id === target.billSplitId);
+      const split = splits.find((s) => s.id === target.billSplitId);
       if (split) {
         split.status = "paid";
-        const order = rec.orders.find((o) => o.id === split.orderId);
+        const order = orders.find((o) => o.id === split.orderId);
         if (order && order.status === "awaiting_payment") {
-          const allPaid = rec.splits
+          const allPaid = splits
             .filter((s) => s.orderId === order.id && s.status !== "voided")
             .every((s) => s.status === "paid");
           if (allPaid) {
             order.status = "sent";
-            order.firedAtMs = now;
+            orderMeta.set(order.id, { firedAtMs: now, simulate: true });
             order.items = order.items.map((item) => ({
               ...item,
               fireStatus: "fired" as const,
@@ -1031,10 +945,10 @@ export function createEngine(clock: Clock = Date.now) {
           }
         }
       }
-      rec.paidIdr += entry.payment.amountIdr;
+      floor.addPaid(rec.sessionId, entry.payment.amountIdr);
     } else {
-      rec.paidIdr += entry.payment.amountIdr;
-      for (const s of rec.splits) if (s.status === "pending") s.status = "paid";
+      floor.addPaid(rec.sessionId, entry.payment.amountIdr);
+      for (const s of splits) if (s.status === "pending") s.status = "paid";
     }
   }
 
@@ -1058,7 +972,7 @@ export function createEngine(clock: Clock = Date.now) {
     orderIssueId: string,
     body: { choice: "swap" | "voucher"; replacementItemId?: string },
   ) {
-    for (const rec of records.values()) {
+    for (const rec of guest.values()) {
       const issue = rec.issues.find((entry) => entry.id === orderIssueId);
       if (!issue) continue;
       if (issue.status !== "open")
@@ -1112,16 +1026,17 @@ export function createEngine(clock: Clock = Date.now) {
   }
 
   // ---- Review and point claim -----------------------------------------------
-  function settled(rec: SessionRec): boolean {
-    const b = bill(rec.session.id);
+  function settled(sessionId: string): boolean {
+    const b = bill(sessionId);
     return b.orders.length > 0 && b.totals.outstandingIdr === 0;
   }
 
   function reviewEligibility(sessionId: string) {
     const rec = recOf(sessionId);
+    const session = sessionOf(sessionId);
     return {
-      sessionId: rec.session.id,
-      eligible: settled(rec),
+      sessionId: session.id,
+      eligible: settled(session.id),
       alreadySubmitted: rec.review !== null,
       googleReviewUrl: F.reviewEligibility.googleReviewUrl,
     };
@@ -1132,7 +1047,8 @@ export function createEngine(clock: Clock = Date.now) {
     body: { rating: number; comment?: string },
   ) {
     const rec = recOf(sessionId);
-    if (!settled(rec))
+    const session = sessionOf(sessionId);
+    if (!settled(session.id))
       conflict(
         "REVIEW_NOT_AVAILABLE",
         "Ulasan bisa diberikan setelah tagihan lunas.",
@@ -1145,9 +1061,9 @@ export function createEngine(clock: Clock = Date.now) {
     const prompt = body.rating >= GOOGLE_REVIEW_MIN_RATING;
     rec.review = {
       id: uuid() as TableReview["id"],
-      tenantId: rec.session.tenantId,
-      outletId: rec.session.outletId,
-      tableSessionId: rec.session.id,
+      tenantId: session.tenantId,
+      outletId: session.outletId,
+      tableSessionId: session.id,
       participantId: callerParticipantId as TableReview["participantId"],
       rating: body.rating,
       comment: body.comment?.trim() ? body.comment.trim() : null,
@@ -1158,30 +1074,39 @@ export function createEngine(clock: Clock = Date.now) {
     return clone(rec.review);
   }
 
-  function pointClaim(sessionId: string, guest: boolean): PointClaim {
+  function pointClaim(sessionId: string, guestUser: boolean): PointClaim {
+    const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
     if (
-      rec.session.id === pointClaimFixture.sessionId &&
+      session.id === pointClaimFixture.sessionId &&
       !rec.claimed &&
-      !guest
+      !guestUser
     )
-      return clone(pointClaimFixture);
-    const ok = settled(rec) && rec.paidIdr > 0;
+      // The shared fixture is a static contract example, so its deadline is a
+      // fixed instant that the wall clock eventually passes. Serve it with the
+      // same live 24 h window as every other claim, or the mock ages into
+      // "expired" and the bill stops offering the claim (legend-woz ORD-06).
+      return {
+        ...clone(pointClaimFixture),
+        claimableUntil: iso(clock() + 24 * 3_600_000),
+      };
+    const paidIdr = floor.paidOf(session.id);
+    const ok = settled(session.id) && paidIdr > 0;
     const status = rec.claimed ? "claimed" : ok ? "available" : "unavailable";
     return {
-      sessionId: rec.session.id,
+      sessionId: session.id,
       status,
-      paidIdr: idr(rec.paidIdr),
-      points: Math.floor(rec.paidIdr / EARN_SPEND_IDR),
+      paidIdr: idr(paidIdr),
+      points: Math.floor(paidIdr / EARN_SPEND_IDR),
       claimableUntil:
         status === "available" ? iso(clock() + 24 * 3_600_000) : null,
-      requiresLogin: guest,
+      requiresLogin: guestUser,
     } as PointClaim;
   }
 
-  function claim(sessionId: string, guest: boolean): PointClaim {
+  function claim(sessionId: string, guestUser: boolean): PointClaim {
     const rec = recOf(sessionId);
-    if (guest)
+    if (guestUser)
       throw new ApiError(
         401,
         "UNAUTHENTICATED",
@@ -1199,13 +1124,13 @@ export function createEngine(clock: Clock = Date.now) {
 
   // ---- Suggestions (AI-01) ----------------------------------------------------
   function suggestions(sessionId: string, menuItemId?: string) {
+    const session = sessionOf(sessionId);
     const rec = recOf(sessionId);
-    const orderable = rec.menu.items.filter(
-      (item) => item.status === "available",
-    );
+    const menu = menuOf(session);
+    const orderable = menu.items.filter((item) => item.status === "available");
     const categoryOf = (id: string) =>
-      rec.menu.categories.find(
-        (c) => c.id === rec.menu.items.find((i) => i.id === id)?.categoryId,
+      menu.categories.find(
+        (c) => c.id === menu.items.find((i) => i.id === id)?.categoryId,
       )?.name;
     const anchorIds = menuItemId
       ? [menuItemId]
@@ -1250,15 +1175,16 @@ export function createEngine(clock: Clock = Date.now) {
   }
 
   function orderEtas(sessionId: string) {
-    const rec = recOf(sessionId);
     const out = [];
-    for (const order of rec.orders) {
+    for (const order of floor.ordersOf(sessionId)) {
       const live = simulatedOrder(order);
       const items = live.items.filter((item) => item.status !== "voided");
       if (items.length === 0 || items.every((item) => item.status === "served"))
         continue;
       const min = 8 + Math.min(items.length, 12) * 2;
-      const from = order.firedAtMs ?? new Date(order.placedAt).getTime();
+      const from =
+        orderMeta.get(order.id)?.firedAtMs ??
+        new Date(order.placedAt).getTime();
       out.push({
         orderId: order.id,
         minMinutes: min,
@@ -1280,18 +1206,15 @@ export function createEngine(clock: Clock = Date.now) {
       version: ENGINE_SNAPSHOT_VERSION,
       callerParticipantId,
       orderSeq,
-      records: [...records.values()].map((rec) => ({
-        session: clone(rec.session),
-        tableCode: rec.table.code,
+      floor: floor.snapshot(),
+      orders: [...orderMeta.entries()],
+      guest: [...guest.values()].map((rec) => ({
+        sessionId: rec.sessionId,
         cartVersion: rec.cartVersion,
         lines: clone(rec.lines),
-        orders: clone(rec.orders),
-        requests: clone(rec.requests),
-        splits: clone(rec.splits),
         issues: clone(rec.issues),
         payments: clone([...rec.payments.values()]),
         review: clone(rec.review),
-        paidIdr: rec.paidIdr,
         claimed: rec.claimed,
         placed: clone([...rec.placed.entries()]),
       })),
@@ -1302,32 +1225,27 @@ export function createEngine(clock: Clock = Date.now) {
   function restore(saved: QrEngineSnapshot) {
     if (saved.version !== ENGINE_SNAPSHOT_VERSION)
       throw new RangeError("Snapshot mock QR tidak dikenal.");
-    const next = new Map<string, SessionRec>();
-    for (const entry of saved.records) {
-      const table = tableByCode(entry.tableCode);
-      const zone = zoneOf(table);
-      next.set(entry.session.id, {
-        session: clone(entry.session),
-        table,
-        zone,
-        menu: buildQrMenu({ table, zone }),
+    floor.restore(saved.floor);
+    const next = new Map<string, GuestRec>();
+    for (const entry of saved.guest) {
+      if (!floor.state.sessions[entry.sessionId]) continue;
+      next.set(entry.sessionId, {
+        sessionId: entry.sessionId,
         cartVersion: entry.cartVersion,
         lines: clone(entry.lines),
-        orders: clone(entry.orders),
-        requests: clone(entry.requests),
-        splits: clone(entry.splits),
         issues: clone(entry.issues),
         payments: new Map(
           clone(entry.payments).map((rec) => [rec.payment.id, rec]),
         ),
         review: clone(entry.review),
-        paidIdr: entry.paidIdr,
         claimed: entry.claimed,
         placed: new Map(clone(entry.placed)),
       });
     }
-    records.clear();
-    for (const [id, rec] of next) records.set(id, rec);
+    guest.clear();
+    for (const [id, rec] of next) guest.set(id, rec);
+    orderMeta.clear();
+    for (const [id, meta] of saved.orders ?? []) orderMeta.set(id, meta);
     callerParticipantId = saved.callerParticipantId;
     orderSeq = saved.orderSeq;
   }

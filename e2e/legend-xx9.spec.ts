@@ -18,8 +18,10 @@ test.describe("legend-xx9 · menu back office", () => {
     page.on("pageerror", (error) => errors.push(error.message));
 
     await page.goto("/kelola/menu?mock=normal", NAV);
+    // v3: the management topbar owns the page title; the feature frame only
+    // renders the section tab group (DESIGN.md §5, bead legend-tqnd).
     await expect(
-      page.getByRole("heading", { name: "Master menu" }),
+      page.getByRole("heading", { level: 1, name: "Menu" }),
     ).toBeVisible();
     await expect(page.getByText("Espresso").first()).toBeVisible();
 
@@ -80,6 +82,40 @@ test.describe("legend-xx9 · menu back office", () => {
       page.getByText("Espresso ditandai habis.").first(),
     ).toBeVisible();
     await expect(row.getByText("Habis (86)")).toBeVisible();
+  });
+
+  test("F8 Ketersediaan: restore needs the photo (Q23)", async ({ page }) => {
+    await page.goto("/kelola/menu/ketersediaan?mock=normal", NAV);
+    async function toggle(name: string, action: string) {
+      const row = page.getByRole("row").filter({ hasText: name }).first();
+      await row.getByRole("button", { name: action }).click();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: action })
+        .click();
+      return row;
+    }
+    // A demo item with its sample photo goes back on sale.
+    const cappuccino = await toggle("Cappuccino", "Tandai habis");
+    await expect(cappuccino.getByText("Habis (86)")).toBeVisible();
+    await toggle("Cappuccino", "Aktifkan lagi");
+    await expect(
+      page.getByText("Cappuccino aktif lagi.").first(),
+    ).toBeVisible();
+    // A photo-less item stays sold out and the reason is stated.
+    const espresso = await toggle("Espresso", "Tandai habis");
+    await expect(espresso.getByText("Habis (86)")).toBeVisible();
+    await toggle("Espresso", "Aktifkan lagi");
+    await expect(
+      page
+        .getByText("Unggah foto item sebelum menampilkannya di menu.")
+        .first(),
+    ).toBeVisible();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Batal" })
+      .click();
+    await expect(espresso.getByText("Habis (86)")).toBeVisible();
   });
 
   test("F8 Harga per Kanal: edit the dine-in price grid", async ({ page }) => {

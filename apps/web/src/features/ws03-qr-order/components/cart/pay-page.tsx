@@ -9,11 +9,11 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
+import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
 import { useGuestPayment, useRefreshSession } from "../../hooks";
-import { QrCodeImage } from "./qr-code";
 
 function timeOf(iso: string): string {
   const d = new Date(new Date(iso).getTime() + 7 * 3_600_000);
@@ -82,7 +82,7 @@ export function PayPage({ paymentId }: { paymentId: string }) {
       <div aria-busy="true" className="grid justify-items-center gap-3">
         <span className="sr-only">{t("qrCart.pay.loadingTitle")}</span>
         <Skeleton className="h-9 w-1/2" />
-        <Skeleton className="size-64 rounded-xl" />
+        <Skeleton className="size-64 rounded-container" />
       </div>
     );
 
@@ -149,26 +149,24 @@ export function PayPage({ paymentId }: { paymentId: string }) {
   return (
     <div className="grid justify-items-center gap-5 text-center">
       <header className="grid gap-1">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrCart.pay.title")}
-        </h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="type-display-xl">{t("qrCart.pay.title")}</h1>
+        <p className="type-eyebrow text-muted-foreground">
           {t("qrCart.pay.amount")}
         </p>
-        <Money amount={payment.amountIdr} size="xl" />
+        <Money amount={payment.amountIdr} size="hero" />
       </header>
 
       {payment.method === "qris" && payment.qrisPayload ? (
         <section className="grid justify-items-center gap-3">
-          <h2 className="text-lg leading-7 font-semibold">
-            {t("qrCart.pay.qrisTitle")}
-          </h2>
-          <QrCodeImage
-            payload={payment.qrisPayload}
+          <h2 className="type-title">{t("qrCart.pay.qrisTitle")}</h2>
+          <QrCode
+            value={payment.qrisPayload}
             label={t("qrCart.pay.qrisAlt", {
               amount: formatRupiah(payment.amountIdr),
             })}
-            className="size-64"
+            margin={3}
+            svgClassName="size-full"
+            className="size-64 rounded-container border-(length:--border-w) p-2"
           />
           <p className="max-w-xs text-sm leading-5 text-muted-foreground">
             {t("qrCart.pay.qrisHint")}
@@ -176,9 +174,7 @@ export function PayPage({ paymentId }: { paymentId: string }) {
         </section>
       ) : (
         <section className="grid justify-items-center gap-3">
-          <h2 className="text-lg leading-7 font-semibold">
-            {t("qrCart.pay.ewalletTitle")}
-          </h2>
+          <h2 className="type-title">{t("qrCart.pay.ewalletTitle")}</h2>
           <p className="max-w-xs text-sm leading-5 text-muted-foreground">
             {t("qrCart.pay.ewalletHint")}
           </p>
@@ -196,7 +192,7 @@ export function PayPage({ paymentId }: { paymentId: string }) {
       <div
         role="status"
         aria-live="polite"
-        className="flex items-start gap-3 rounded-xl bg-info-subtle p-3 text-left"
+        className="flex items-start gap-3 rounded-container bg-info-subtle p-3 text-left"
       >
         <Clock
           className="mt-0.5 size-5 shrink-0 text-info"

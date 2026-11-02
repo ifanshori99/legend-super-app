@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
+import { Badge, StatusPill } from "@/components/ui/badge";
 import {
   TABLE_BOARD_STATUSES,
   type TableBoardStatus,
@@ -29,7 +29,8 @@ const STYLE: Record<TableBoardStatus, Style> = {
   available: { tone: "success", icon: CircleCheck },
   seated: { tone: "info", icon: Users },
   awaiting_order: { tone: "warning", icon: ClipboardList },
-  awaiting_bill: { tone: "danger", icon: ReceiptText },
+  // A requested bill is calm attention, not the urgent state (Q25).
+  awaiting_bill: { tone: "warning", icon: ReceiptText },
   needs_cleaning: { tone: "neutral", icon: Sparkles },
   reserved: { tone: "brand", icon: CalendarClock },
   awaiting_confirmation: { tone: "warning", icon: CircleAlert },
@@ -80,5 +81,43 @@ export function BoardLegend({
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * Status bar on `surface-2` (DESIGN v2 "Operations — status hierarchy"):
+ * "Perlu tindakan" first, with the solid pill for open waiter calls (Q25),
+ * then the full legend with tinted status pills.
+ */
+export function BoardStatusBar({
+  counts,
+  urgent,
+}: {
+  counts: Record<TableBoardStatus, number>;
+  /** Tables with an open waiter call. */
+  urgent: number;
+}) {
+  const t = useT();
+  return (
+    <div
+      data-slot="board-status-bar"
+      className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-container bg-surface-2 p-3"
+    >
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="type-eyebrow text-muted-foreground">
+          {t("floor.attention.title")}
+        </span>
+        {urgent > 0 ? (
+          <StatusPill status="danger" solid>
+            {t("floor.attention.urgent", { count: urgent })}
+          </StatusPill>
+        ) : (
+          <span className="text-sm text-muted-foreground">
+            {t("floor.attention.clear")}
+          </span>
+        )}
+      </span>
+      <BoardLegend counts={counts} />
+    </div>
   );
 }

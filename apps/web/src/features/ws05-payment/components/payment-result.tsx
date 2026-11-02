@@ -55,13 +55,11 @@ export function PaymentPaid({
   return (
     <Card>
       <div className="flex items-start gap-3">
-        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-success-subtle text-success">
+        <span className="grid size-11 shrink-0 place-items-center rounded-container bg-success-subtle text-success">
           <CircleCheck className="size-6" aria-hidden="true" />
         </span>
         <div className="grid gap-1">
-          <h2 className="text-lg leading-7 font-semibold">
-            {t("payment.paidTitle")}
-          </h2>
+          <h2 className="type-title">{t("payment.paidTitle")}</h2>
           <p className="text-sm leading-5 text-muted-foreground">
             {isRefunded(intent)
               ? t("payment.refundedHint")
@@ -86,7 +84,7 @@ export function PaymentPaid({
       </dl>
 
       {intent.paidAfterExpiry && (
-        <p className="rounded-lg bg-warning-subtle p-3 text-sm leading-5 text-warning">
+        <p className="rounded-container bg-warning-subtle p-3 text-sm leading-5 text-warning">
           {t("payment.paidLate")}
         </p>
       )}
@@ -167,11 +165,11 @@ export function PaymentCashier({
   return (
     <Card>
       <div className="flex items-start gap-3">
-        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-danger-subtle text-danger">
+        <span className="grid size-11 shrink-0 place-items-center rounded-container bg-danger-subtle text-danger">
           <TriangleAlert className="size-6" aria-hidden="true" />
         </span>
         <div className="grid gap-1">
-          <h2 className="text-lg leading-7 font-semibold">
+          <h2 className="type-title">
             {gatewayDown
               ? t("payment.gatewayDownTitle")
               : t("payment.unavailableTitle")}
@@ -193,7 +191,7 @@ export function PaymentCashier({
       {notified ? (
         <p
           role="status"
-          className="rounded-lg bg-success-subtle p-3 text-sm leading-5 text-success"
+          className="rounded-container bg-success-subtle p-3 text-sm leading-5 text-success"
         >
           {t("payment.payAtCashierDone", { reference: bill.reference })}
         </p>
@@ -238,7 +236,7 @@ export function OfflineNotice({
   return (
     <div
       role="status"
-      className="flex flex-wrap items-start gap-3 rounded-xl border-(length:--border-w) border-border bg-muted p-3"
+      className="flex flex-wrap items-start gap-3 rounded-container border-(length:--border-w) border-border bg-surface-2 p-3"
     >
       <WifiOff
         className="mt-0.5 size-5 shrink-0 text-muted-foreground"

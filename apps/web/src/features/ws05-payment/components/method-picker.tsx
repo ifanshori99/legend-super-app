@@ -50,8 +50,8 @@ function MethodOption({
   return (
     <label
       className={cn(
-        "relative flex min-h-control cursor-pointer items-start gap-3 rounded-xl border-(length:--border-w) border-input bg-background p-3 transition-colors duration-(--duration-fast)",
-        checked && "border-primary bg-brand-subtle",
+        "relative flex min-h-control cursor-pointer items-start gap-3 rounded-container border-(length:--border-w) border-input bg-background p-3 transition-colors duration-(--duration-fast)",
+        checked && "border-primary bg-primary-tint ring-1 ring-primary",
         disabled && "cursor-not-allowed opacity-60",
       )}
     >
@@ -117,9 +117,7 @@ export function MethodPicker({
   return (
     <Card>
       <div className="grid gap-1">
-        <h2 className="text-lg leading-7 font-semibold">
-          {t("payment.chooseTitle")}
-        </h2>
+        <h2 className="type-title">{t("payment.chooseTitle")}</h2>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("payment.chooseHint")}
         </p>

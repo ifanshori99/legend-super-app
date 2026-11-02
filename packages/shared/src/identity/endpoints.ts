@@ -164,6 +164,12 @@ export const deleteMfaFactor = defineEndpoint({
 
 // ---------------------------------------------------------------- sessions
 
+/** Explicit staff activity extends an active idle session (AUTH-05). */
+export const extendCurrentSession = defineEndpoint({
+  method: "POST",
+  path: "/api/auth/sessions/current/activity",
+});
+
 /** The owner's device list; `current` marks this session. */
 export const listSessions = defineEndpoint({
   method: "GET",

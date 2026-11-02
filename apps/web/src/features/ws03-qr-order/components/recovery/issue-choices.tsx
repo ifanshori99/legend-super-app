@@ -127,15 +127,17 @@ export function IssueChoices({
       >
         <div
           className={cn(
-            "rounded-xl border-(length:--border-w)",
-            choice === "swap" ? "border-primary" : "border-input",
+            "rounded-container border-(length:--border-w)",
+            choice === "swap"
+              ? "border-primary bg-primary-tint"
+              : "border-input",
           )}
         >
           <RadioGroup.Item
             value="swap"
             disabled={!swapAvailable}
             aria-describedby="issue-swap-hint"
-            className={cn(ITEM_CLASS, "rounded-xl")}
+            className={cn(ITEM_CLASS, "rounded-container")}
           >
             <Indicator />
             <span className="grid gap-0.5">
@@ -190,15 +192,17 @@ export function IssueChoices({
 
         <div
           className={cn(
-            "rounded-xl border-(length:--border-w)",
-            choice === "voucher" ? "border-primary" : "border-input",
+            "rounded-container border-(length:--border-w)",
+            choice === "voucher"
+              ? "border-primary bg-primary-tint"
+              : "border-input",
           )}
         >
           <RadioGroup.Item
             value="voucher"
             disabled={!voucher.allowed}
             aria-describedby="issue-voucher-hint"
-            className={cn(ITEM_CLASS, "rounded-xl")}
+            className={cn(ITEM_CLASS, "rounded-container")}
           >
             <Indicator />
             <span className="grid gap-0.5">
@@ -230,7 +234,7 @@ export function IssueChoices({
       {errorKey && (
         <div
           role="alert"
-          className="flex flex-wrap items-start gap-2 rounded-xl border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
+          className="flex flex-wrap items-start gap-2 rounded-container border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
         >
           <CircleAlert
             className="mt-0.5 size-4 shrink-0 text-danger"
@@ -281,7 +285,7 @@ export function IssueChoices({
               {t("qrRecovery.issue.confirmDialog.body")}
             </DialogDescription>
           </DialogHeader>
-          {selected && <Money amount={selected.differenceIdr} size="xl" />}
+          {selected && <Money amount={selected.differenceIdr} size="stat" />}
           <DialogFooter>
             <Button
               type="button"
