@@ -42,9 +42,9 @@ import {
 import { upsertRoutingRule } from "../services/payment-routing.service";
 import {
   listUnallocatedFunds,
-  resolveUnallocatedFund,
   unallocatedFundsOfIntent,
 } from "../services/payment-unallocated.service";
+import * as unallocatedService from "../services/payment-unallocated.service";
 import { agent, signUp } from "./helpers";
 
 const app = createApp();
@@ -785,7 +785,7 @@ describe("PAY-04 unallocated funds", () => {
     expect(rows[0]?.count).toBe("1");
   });
 
-  it("PAY-04 a resolution needs payment.reconcile and an approval reference", async () => {
+  it("PAY-04 records unallocated funds and exposes no in-process resolver", async () => {
     const { token } = await openBill({
       subtotalIdr: 100_000,
       serviceChargeIdr: 0,
@@ -808,49 +808,23 @@ describe("PAY-04 unallocated funds", () => {
       created.body.data.id,
     );
     expect(funds).toHaveLength(1);
+    expect(funds[0]).toMatchObject({ amountIdr: 20_000, resolution: null });
+    // Resolution only runs through the approval-gated admin endpoint
+    // (payment-admin-funds.service.ts); an approval reference is never trusted.
+    expect("resolveUnallocatedFund" in unallocatedService).toBe(false);
 
     const { userId } = await signedIn("Finance");
     await expect(
-      resolveUnallocatedFund(
+      listUnallocatedFunds(
         contextFor(),
-        funds[0]!.id,
-        { resolution: "refund", approvalRef: "APR-1" },
+        { limit: 10, resolved: "false", outletId: outletA },
         userId,
       ),
     ).rejects.toThrow();
-    // Missing approval reference is refused before any write.
     await assign(userId, "finance");
-    await expect(
-      resolveUnallocatedFund(
-        contextFor(),
-        funds[0]!.id,
-        { resolution: "refund", approvalRef: "" },
-        userId,
-      ),
-    ).rejects.toThrow();
-    const resolved = await resolveUnallocatedFund(
-      contextFor(),
-      funds[0]!.id,
-      { resolution: "refund", approvalRef: "APR-1" },
-      userId,
-    );
-    expect(resolved).toMatchObject({
-      resolution: "refund",
-      resolvedBy: userId,
-      approvalRef: "APR-1",
-    });
-    await expect(
-      resolveUnallocatedFund(
-        contextFor(),
-        funds[0]!.id,
-        { resolution: "credit", approvalRef: "APR-2" },
-        userId,
-      ),
-    ).rejects.toMatchObject({ status: 409 });
-
     const list = await listUnallocatedFunds(
       contextFor(),
-      { limit: 10, resolved: "true", outletId: outletA },
+      { limit: 10, resolved: "false", outletId: outletA },
       userId,
     );
     expect(list.data.some((fund) => fund.id === funds[0]!.id)).toBe(true);

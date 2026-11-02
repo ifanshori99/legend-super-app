@@ -1531,6 +1531,9 @@ export const id = {
       openCases: "Kasus terbuka",
       variance: "Total selisih",
       summaryLabel: "Ringkasan rekonsiliasi",
+      summaryUnavailableTitle: "Ringkasan belum tersedia",
+      summaryUnavailableHint:
+        "Data impor settlement belum tersambung. Kasus selisih di bawah tetap bisa diselesaikan.",
       source: "Sumber",
       sourceGateway: "Gateway",
       sourceEdc: "EDC",

@@ -1,0 +1,254 @@
+// WS-05 administration (PRD v1.7 §3 F13, PAY-04, EDC-06/07).
+// All money is whole rupiah; every row belongs to a tenant and is RLS protected.
+import { sql } from "drizzle-orm";
+import {
+  check,
+  foreignKey,
+  index,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
+import {
+  idrColumn,
+  outletIdColumn,
+  tenantIdColumn,
+  businessDate,
+} from "../columns";
+import { outlets, tenants } from "./platform-org";
+import { paymentIntents, paymentUnallocatedFunds } from "./payment";
+
+export const paymentEdcTerminals = pgTable(
+  "payment_edc_terminals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    bankCode: varchar("bank_code", { length: 20 }).notNull(),
+    terminalId: varchar("terminal_id", { length: 100 }).notNull(),
+    merchantId: varchar("merchant_id", { length: 100 }).notNull(),
+    model: varchar("model", { length: 100 }).notNull(),
+    connection: varchar("connection", { length: 20 }).notNull(),
+    ipAddress: varchar("ip_address", { length: 45 }),
+    supportedMethods: text("supported_methods").array().notNull(),
+    assignedDeviceId: uuid("assigned_device_id"),
+    status: varchar("status", { length: 20 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("payment_edc_terminals_tenant_id_key").on(t.tenantId, t.id),
+    unique("payment_edc_terminals_tenant_outlet_id_key").on(
+      t.tenantId,
+      t.outletId,
+      t.id,
+    ),
+    unique("payment_edc_terminals_external_key").on(
+      t.tenantId,
+      t.bankCode,
+      t.terminalId,
+    ),
+    foreignKey({
+      name: "payment_edc_terminals_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    check(
+      "payment_edc_terminals_bank_check",
+      sql`${t.bankCode} IN ('bca','mandiri','bni','bjb')`,
+    ),
+    check(
+      "payment_edc_terminals_connection_check",
+      sql`${t.connection} IN ('lan','usb','bluetooth')`,
+    ),
+    check(
+      "payment_edc_terminals_status_check",
+      sql`${t.status} IN ('active','inactive')`,
+    ),
+    check(
+      "payment_edc_terminals_methods_check",
+      sql`cardinality(${t.supportedMethods}) > 0 AND ${t.supportedMethods} <@ ARRAY['card','qris']::text[]`,
+    ),
+  ],
+);
+
+export const paymentCashierDefaults = pgTable(
+  "payment_cashier_defaults",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    cashierId: uuid("cashier_id").notNull(),
+    terminalId: uuid("terminal_id"),
+    defaultMethod: varchar("default_method", { length: 20 }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("payment_cashier_defaults_tenant_id_key").on(t.tenantId, t.id),
+    unique("payment_cashier_defaults_cashier_key").on(
+      t.tenantId,
+      t.outletId,
+      t.cashierId,
+    ),
+    foreignKey({
+      name: "payment_cashier_defaults_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "payment_cashier_defaults_terminal_fk",
+      columns: [t.tenantId, t.outletId, t.terminalId],
+      foreignColumns: [
+        paymentEdcTerminals.tenantId,
+        paymentEdcTerminals.outletId,
+        paymentEdcTerminals.id,
+      ],
+    }),
+    check(
+      "payment_cashier_defaults_method_check",
+      sql`${t.defaultMethod} IN ('edc_card','edc_qris','qris_doit')`,
+    ),
+  ],
+);
+
+export const paymentRefunds = pgTable(
+  "payment_refunds",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    paymentIntentId: uuid("payment_intent_id").notNull(),
+    unallocatedFundId: uuid("unallocated_fund_id"),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    reason: text("reason").notNull(),
+    providerRef: varchar("provider_ref", { length: 100 }),
+    note: text("note"),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    requestedBy: text("requested_by").notNull(),
+    approvedBy: text("approved_by"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("payment_refunds_tenant_id_key").on(t.tenantId, t.id),
+    foreignKey({
+      name: "payment_refunds_intent_fk",
+      columns: [t.tenantId, t.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
+    foreignKey({
+      name: "payment_refunds_unallocated_fk",
+      columns: [t.tenantId, t.unallocatedFundId],
+      foreignColumns: [
+        paymentUnallocatedFunds.tenantId,
+        paymentUnallocatedFunds.id,
+      ],
+    }),
+    foreignKey({
+      name: "payment_refunds_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("payment_refunds_intent_idx").on(
+      t.tenantId,
+      t.paymentIntentId,
+      t.status,
+    ),
+    check("payment_refunds_amount_check", sql`${t.amountIdr} > 0`),
+    check(
+      "payment_refunds_status_check",
+      sql`${t.status} IN ('pending','approved','completed','failed')`,
+    ),
+    check(
+      "payment_refunds_distinct_approver_check",
+      sql`${t.approvedBy} IS NULL OR ${t.approvedBy} <> ${t.requestedBy}`,
+    ),
+  ],
+);
+
+export const paymentReconciliationCases = pgTable(
+  "payment_reconciliation_cases",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    settlementId: uuid("settlement_id").notNull(),
+    settlementLineId: uuid("settlement_line_id"),
+    source: varchar("source", { length: 20 }).notNull(),
+    provider: varchar("provider", { length: 100 }).notNull(),
+    reference: varchar("reference", { length: 100 }).notNull(),
+    periodStart: businessDate("period_start").notNull(),
+    periodEnd: businessDate("period_end").notNull(),
+    expectedIdr: idrColumn("expected_idr").notNull(),
+    receivedIdr: idrColumn("received_idr").notNull(),
+    varianceIdr: idrColumn("variance_idr").notNull(),
+    reason: text("reason").notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("open"),
+    resolvedBy: text("resolved_by"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    unique("payment_reconciliation_cases_tenant_id_key").on(t.tenantId, t.id),
+    foreignKey({
+      name: "payment_reconciliation_cases_outlet_fk",
+      columns: [t.tenantId, t.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("payment_reconciliation_cases_status_idx").on(
+      t.tenantId,
+      t.outletId,
+      t.status,
+    ),
+    check(
+      "payment_reconciliation_cases_source_check",
+      sql`${t.source} IN ('gateway','edc')`,
+    ),
+    check(
+      "payment_reconciliation_cases_status_check",
+      sql`${t.status} IN ('open','resolved')`,
+    ),
+    check(
+      "payment_reconciliation_cases_amount_check",
+      sql`${t.expectedIdr} >= 0 AND ${t.receivedIdr} >= 0 AND ${t.varianceIdr} = ${t.receivedIdr} - ${t.expectedIdr}`,
+    ),
+    check(
+      "payment_reconciliation_cases_period_check",
+      sql`${t.periodStart} <= ${t.periodEnd}`,
+    ),
+  ],
+);
+
+// The fingerprint binds each tenant-scoped mutation key to the operation and body.
+export const paymentAdminIdempotency = pgTable(
+  "payment_admin_idempotency",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    key: varchar("key", { length: 255 }).notNull(),
+    fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+    response: jsonb("response").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [unique("payment_admin_idempotency_key").on(t.tenantId, t.key)],
+);
