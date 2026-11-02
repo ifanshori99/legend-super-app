@@ -20,9 +20,7 @@ function ScreenHeader({ outletName }: { outletName?: string }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-2xl leading-8 font-bold">
-          {t("reservation.title")}
-        </h1>
+        <h1 className="type-display">{t("reservation.title")}</h1>
         <p className="text-sm text-muted-foreground">
           {t("reservation.subtitle")}
         </p>
@@ -71,7 +69,7 @@ export function ReservationsScreen({
         </span>
         <Skeleton className="h-10 w-64" />
         <Skeleton className="h-10 w-96 max-w-full" />
-        <Skeleton className="h-24 w-full rounded-xl" />
+        <Skeleton className="h-24 w-full rounded-container" />
       </div>
     );
 
@@ -124,6 +122,7 @@ export function ReservationsScreen({
             timeZone={outlet.timeZone}
             date={date}
             status={status}
+            selectedId={reservationId}
             onDateChange={onDateChange}
             onStatusChange={onStatusChange}
             onOpen={onOpenReservation}

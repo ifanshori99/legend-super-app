@@ -118,6 +118,13 @@ test("RSV-03 closing a reservation reports what the frozen policy does with the 
   // A cancelled booking without a paid DP says so plainly.
   await page.goto(`${DESK}?reservationId=00000000-0000-4000-8000-000000005001`);
   const pendingDialog = page.getByRole("dialog");
+  // The open reservation's row is the selected row: accent tint + start rule
+  // (DESIGN.md §4 Table, owner Q29).
+  await expect(
+    page.locator(
+      '[data-reservation-id="00000000-0000-4000-8000-000000005001"]',
+    ),
+  ).toHaveAttribute("data-state", "selected");
   await pendingDialog.getByRole("button", { name: "Batalkan" }).click();
   await pendingDialog
     .getByLabel("Alasan pembatalan")

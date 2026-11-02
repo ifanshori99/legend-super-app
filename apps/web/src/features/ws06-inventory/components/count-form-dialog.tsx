@@ -221,7 +221,7 @@ export function CountFormDialog({
             )}
           </p>
 
-          <div className="flex items-start justify-between gap-4 rounded-xl border p-3">
+          <div className="flex items-start justify-between gap-4 rounded-container border p-3">
             <div className="grid gap-0.5">
               <Label htmlFor="count-blind">{t("opname.create.blind")}</Label>
               <p className="text-sm leading-5 text-muted-foreground">
@@ -303,7 +303,7 @@ export function CountFormDialog({
                   </Button>
                 </div>
               </div>
-              <ul className="max-h-56 divide-y overflow-y-auto rounded-xl border">
+              <ul className="max-h-56 divide-y overflow-y-auto rounded-container border">
                 {filteredItems.map((item) => (
                   <li
                     key={item.id}

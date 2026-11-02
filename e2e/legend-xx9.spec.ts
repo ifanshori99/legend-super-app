@@ -18,8 +18,10 @@ test.describe("legend-xx9 · menu back office", () => {
     page.on("pageerror", (error) => errors.push(error.message));
 
     await page.goto("/kelola/menu?mock=normal", NAV);
+    // v3: the management topbar owns the page title; the feature frame only
+    // renders the section tab group (DESIGN.md §5, bead legend-tqnd).
     await expect(
-      page.getByRole("heading", { name: "Master menu" }),
+      page.getByRole("heading", { level: 1, name: "Menu" }),
     ).toBeVisible();
     await expect(page.getByText("Espresso").first()).toBeVisible();
 

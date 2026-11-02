@@ -28,21 +28,18 @@ export function SecurityStatusBand({
     ? "border-warning bg-warning-subtle text-warning"
     : state.required
       ? "border-success bg-success-subtle text-success"
-      : "border-border bg-muted text-muted-foreground";
+      : "border-border bg-surface-2 text-muted-foreground";
 
   return (
     <section
       aria-labelledby="security-status-title"
-      className={`flex flex-col gap-3 rounded-xl border-(length:--border-w) p-card sm:flex-row sm:items-start ${tone}`}
+      className={`flex flex-col gap-3 rounded-container border-(length:--border-w) p-card shadow-hairline sm:flex-row sm:items-start ${tone}`}
     >
       <span className="grid size-9 shrink-0 place-items-center rounded-full bg-card">
         <Icon className="size-5" aria-hidden="true" />
       </span>
       <div className="grid min-w-0 flex-1 gap-1">
-        <h2
-          id="security-status-title"
-          className="text-base leading-6 font-semibold text-foreground"
-        >
+        <h2 id="security-status-title" className="type-heading text-foreground">
           {blocked
             ? t("staffAuth.status.requiredTitle")
             : state.required

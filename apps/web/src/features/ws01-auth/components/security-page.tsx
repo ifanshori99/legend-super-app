@@ -3,6 +3,7 @@ import { LogIn } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -28,32 +29,26 @@ export function SecurityPage() {
   return (
     <section
       aria-labelledby="security-title"
-      className="mx-auto grid w-full max-w-5xl gap-6"
+      className="grid grid-cols-[minmax(0,1fr)] gap-5"
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <h2 id="security-title" className="sr-only">
-            {t("staffAuth.title")}
-          </h2>
-          <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-            {t("staffAuth.description")}
-          </p>
+      <h2 id="security-title" className="sr-only">
+        {t("staffAuth.title")}
+      </h2>
+      {API_MOCK && (
+        <div>
+          <Badge tone="neutral">{t("common.sampleData")}</Badge>
         </div>
-        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-      </div>
+      )}
 
       {auth.isPending ? (
-        <div
-          className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
-          aria-busy="true"
-        >
+        <Card className="gap-4" aria-busy="true">
           <span className="sr-only">{t("common.loading")}</span>
           <Skeleton className="h-14 w-full" />
           <Skeleton className="h-40 w-full" />
           <Skeleton className="h-40 w-full" />
-        </div>
+        </Card>
       ) : auth.isError ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <ErrorState
             title={
               auth.error instanceof ApiError &&
@@ -69,9 +64,9 @@ export function SecurityPage() {
             }
             onRetry={() => void auth.refetch()}
           />
-        </div>
+        </Card>
       ) : state === null ? null : state.ended ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <EmptyState
             title={t("staffAuth.status.endedTitle")}
             description={t("staffAuth.status.endedHint")}
@@ -84,7 +79,7 @@ export function SecurityPage() {
               </Button>
             }
           />
-        </div>
+        </Card>
       ) : (
         <>
           <SecurityStatusBand
@@ -92,7 +87,7 @@ export function SecurityPage() {
             verifiedAt={auth.data.session.mfaVerifiedAt}
             returnTo={pathname}
           />
-          <div className="grid gap-6">
+          <div className="grid gap-5">
             <MfaPanel mfaRequired={auth.data.mfaRequired} />
             <SessionsPanel mfaRequired={auth.data.mfaRequired} />
           </div>

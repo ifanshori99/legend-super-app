@@ -3,7 +3,7 @@
 // what to do and how long the code lives (PRD §3.13 "QRIS Dinamis", ~10 min).
 import { Clock, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -32,7 +32,7 @@ function QrisCode({ payload, label }: { payload: string; label: string }) {
         value={payload}
         label={label}
         size={236}
-        className="rounded-xl border-(length:--border-w) border-border p-3"
+        className="rounded-container border-(length:--border-w) border-border p-3"
       />
       <p className="max-w-sm text-center text-sm leading-5 text-muted-foreground">
         {t("payment.qrisHint")}
@@ -61,10 +61,9 @@ export function PaymentCode({
     <Card>
       <div className="grid gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Badge tone="warning">
-            <Clock aria-hidden="true" />
+          <StatusPill status="warning" icon={Clock}>
             {t("payment.statusPending")}
-          </Badge>
+          </StatusPill>
           {remaining > 0 && !refreshing && (
             <p
               className="text-sm leading-5 text-muted-foreground tabular"
@@ -74,9 +73,7 @@ export function PaymentCode({
             </p>
           )}
         </div>
-        <h2 className="text-lg leading-7 font-semibold">
-          {t("payment.pendingTitle")}
-        </h2>
+        <h2 className="type-title">{t("payment.pendingTitle")}</h2>
       </div>
 
       {instructions.method === "qris" && (
@@ -138,7 +135,7 @@ export function PaymentCode({
             label={t("payment.uniqueCode")}
             value={instructions.uniqueCode}
           />
-          <div className="rounded-lg bg-brand-subtle p-3">
+          <div className="rounded-container bg-surface-2 p-3">
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-sm font-medium">
                 {t("payment.transferTotal")}

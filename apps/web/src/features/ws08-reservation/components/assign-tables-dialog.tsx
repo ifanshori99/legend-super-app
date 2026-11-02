@@ -103,7 +103,7 @@ export function AssignTablesDialog({
               {t("reservation.assign.loading")}
             </span>
             {Array.from({ length: 6 }, (_, index) => (
-              <Skeleton key={index} className="h-16 w-full rounded-xl" />
+              <Skeleton key={index} className="h-16 w-full rounded-container" />
             ))}
           </div>
         ) : floor.error ? (

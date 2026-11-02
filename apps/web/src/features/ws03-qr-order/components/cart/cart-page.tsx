@@ -42,9 +42,7 @@ export function CartPage() {
   const heading = (
     <header className="grid gap-1">
       <div className="flex items-center gap-2">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrCart.cart.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("qrCart.cart.title")}</h1>
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
       </div>
       <p className="text-sm leading-5 text-muted-foreground">
@@ -210,13 +208,13 @@ export function CartPage() {
           <div className="sticky bottom-0 z-10 -mx-gutter grid gap-2 border-t bg-background px-gutter py-3">
             <div className="flex items-baseline justify-between gap-3">
               <div>
-                <p className="font-semibold">{t("qrCart.cart.subtotal")}</p>
+                <p className="type-heading">{t("qrCart.cart.subtotal")}</p>
                 <p className="text-sm text-muted-foreground">
                   {t("qrCart.cart.itemCount", { count })} ·{" "}
                   {t("qrCart.cart.subtotalHint")}
                 </p>
               </div>
-              <Money amount={subtotal} size="lg" />
+              <Money amount={subtotal} size="stat" />
             </div>
             <Button asChild size="lg" className="w-full">
               <Link to="/t/$token/checkout" params={{ token: qrToken }}>

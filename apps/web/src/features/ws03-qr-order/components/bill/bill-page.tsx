@@ -7,8 +7,9 @@ import { CircleCheck, ReceiptText, WifiOff } from "lucide-react";
 import type { BillSplit, GuestPaymentTarget } from "@starter/shared/qr-order";
 import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOnline } from "@/lib/use-online";
@@ -27,7 +28,7 @@ function BillSkeleton() {
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("qrOrders.bill.loading")}</span>
       <Skeleton className="h-7 w-40" />
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) p-card">
+      <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
         {[0, 1, 2, 3, 4].map((row) => (
           <div key={row} className="flex items-center justify-between gap-3">
             <Skeleton className="h-4 w-1/3" />
@@ -54,9 +55,7 @@ export function BillPage() {
   } | null>(null);
 
   const heading = (
-    <h1 className="text-2xl leading-8 font-semibold">
-      {t("qrOrders.bill.title")}
-    </h1>
+    <h1 className="type-display-xl">{t("qrOrders.bill.title")}</h1>
   );
 
   if (guest === null || sessionId === null)
@@ -145,14 +144,14 @@ export function BillPage() {
       {!online && (
         <p
           role="status"
-          className="flex items-start gap-2 rounded-xl bg-warning-subtle p-3 text-sm text-warning"
+          className="flex items-start gap-2 rounded-container bg-warning-subtle p-3 text-sm text-warning"
         >
           <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           {t("qrOrders.bill.offline")}
         </p>
       )}
       {closed && (
-        <p role="status" className="rounded-xl bg-muted p-3 text-sm">
+        <p role="status" className="rounded-container bg-surface-2 p-3 text-sm">
           {t("qrOrders.bill.sessionClosed")}
         </p>
       )}
@@ -169,10 +168,9 @@ export function BillPage() {
         <div className="grid gap-2" aria-live="polite">
           {sessionStatus === "bill_requested" ? (
             <>
-              <Badge tone="success" className="w-fit">
-                <CircleCheck aria-hidden="true" />
+              <StatusPill status="success">
                 {t("qrOrders.bill.billRequested")}
-              </Badge>
+              </StatusPill>
               <p className="text-sm text-muted-foreground">
                 {t("qrOrders.bill.billRequestedHint")}
               </p>
@@ -198,10 +196,10 @@ export function BillPage() {
       )}
 
       {settled ? (
-        <section className="grid gap-3 rounded-xl border-(length:--border-w) p-card">
+        <Card className="grid gap-3">
           <div className="flex items-center gap-2">
             <CircleCheck className="size-5 text-success" aria-hidden="true" />
-            <h2 className="font-semibold">{t("qrOrders.bill.settledTitle")}</h2>
+            <h2 className="type-title">{t("qrOrders.bill.settledTitle")}</h2>
           </div>
           <p className="text-sm text-muted-foreground">
             {t("qrOrders.bill.settledHint")}
@@ -211,7 +209,7 @@ export function BillPage() {
               {t("qrOrders.bill.reviewAction")}
             </Link>
           </Button>
-        </section>
+        </Card>
       ) : (
         !closed && (
           <>

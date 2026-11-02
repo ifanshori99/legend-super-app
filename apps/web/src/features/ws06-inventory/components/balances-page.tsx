@@ -8,6 +8,7 @@ import { ArrowRight, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CardShell, CardShellBody } from "@/components/ui/card";
 import {
   DataTableShell,
   type DataState,
@@ -183,7 +184,7 @@ export function BalancesPage() {
   const showCount = !pending && !failed;
 
   return (
-    <div className="grid min-w-0 gap-4">
+    <div className="grid min-w-0 gap-5">
       {/* Owner Q30 (DESIGN.md v2): one strip, hairline dividers. */}
       <StatStrip label={t("inventoryStock.balances.summaryLabel")} columns={3}>
         <StatTile
@@ -221,78 +222,74 @@ export function BalancesPage() {
         />
       </StatStrip>
 
-      <section
-        aria-labelledby="stock-alerts-title"
-        className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h2
-              id="stock-alerts-title"
-              className="text-base leading-6 font-semibold"
-            >
-              {t("inventoryStock.balances.alertsTitle")}
-            </h2>
+      <CardShell aria-labelledby="stock-alerts-title">
+        <CardShellBody className="gap-3 p-card">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h2 id="stock-alerts-title" className="type-title">
+                {t("inventoryStock.balances.alertsTitle")}
+              </h2>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("inventoryStock.balances.alertsHint")}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {showCount && (
+                <Badge tone={alerts.length > 0 ? "danger" : "neutral"}>
+                  {alerts.length > 0 && <TriangleAlert aria-hidden="true" />}
+                  {t("inventoryStock.balances.alertsCount", {
+                    count: alerts.length,
+                  })}
+                </Badge>
+              )}
+              <Button asChild variant="outline" size="sm">
+                <Link to="/kelola/inventori/saran">
+                  {t("inventoryStock.balances.suggestionsLink")}
+                  <ArrowRight aria-hidden="true" />
+                </Link>
+              </Button>
+            </div>
+          </div>
+          {pending ? (
+            <div className="grid gap-2">
+              <span className="sr-only">{t("common.loading")}</span>
+              <Skeleton className="h-control" />
+              <Skeleton className="h-control" />
+              <Skeleton className="h-control" />
+            </div>
+          ) : failed ? (
+            <ErrorState onRetry={retry} />
+          ) : alerts.length === 0 ? (
             <p className="text-sm leading-5 text-muted-foreground">
-              {t("inventoryStock.balances.alertsHint")}
+              {t("inventoryStock.balances.alertsEmpty")}
             </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {showCount && (
-              <Badge tone={alerts.length > 0 ? "danger" : "neutral"}>
-                {alerts.length > 0 && <TriangleAlert aria-hidden="true" />}
-                {t("inventoryStock.balances.alertsCount", {
-                  count: alerts.length,
-                })}
-              </Badge>
-            )}
-            <Button asChild variant="outline" size="sm">
-              <Link to="/kelola/inventori/saran">
-                {t("inventoryStock.balances.suggestionsLink")}
-                <ArrowRight aria-hidden="true" />
-              </Link>
-            </Button>
-          </div>
-        </div>
-        {pending ? (
-          <div className="grid gap-2">
-            <span className="sr-only">{t("common.loading")}</span>
-            <Skeleton className="h-control" />
-            <Skeleton className="h-control" />
-            <Skeleton className="h-control" />
-          </div>
-        ) : failed ? (
-          <ErrorState onRetry={retry} />
-        ) : alerts.length === 0 ? (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("inventoryStock.balances.alertsEmpty")}
-          </p>
-        ) : (
-          <ul className="grid gap-2 divide-y divide-border">
-            {alerts.map((alert) => (
-              <li
-                key={alert.key}
-                className="flex flex-wrap items-center justify-between gap-2 pt-2 first:pt-0"
-              >
-                <div className="min-w-0">
-                  <p className="font-medium">{alert.item.name}</p>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {alert.location?.name ?? "—"} ·{" "}
-                    {t("inventoryStock.balances.alertDetail", {
-                      onHand: formatQuantity(alert.onHand),
-                      unit: alert.unit,
-                      parMin: formatQuantity(alert.parMin),
-                    })}
-                  </p>
-                </div>
-                <StatusPill status="danger">
-                  {t("inventoryStock.parStatus.below_min")}
-                </StatusPill>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+          ) : (
+            <ul className="grid gap-2 divide-y divide-border">
+              {alerts.map((alert) => (
+                <li
+                  key={alert.key}
+                  className="flex flex-wrap items-center justify-between gap-2 pt-2 first:pt-0"
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium">{alert.item.name}</p>
+                    <p className="text-sm leading-5 text-muted-foreground">
+                      {alert.location?.name ?? "—"} ·{" "}
+                      {t("inventoryStock.balances.alertDetail", {
+                        onHand: formatQuantity(alert.onHand),
+                        unit: alert.unit,
+                        parMin: formatQuantity(alert.parMin),
+                      })}
+                    </p>
+                  </div>
+                  <StatusPill status="danger">
+                    {t("inventoryStock.parStatus.below_min")}
+                  </StatusPill>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardShellBody>
+      </CardShell>
 
       <div className="flex flex-wrap gap-2">
         <Select

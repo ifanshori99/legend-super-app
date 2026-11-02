@@ -98,7 +98,7 @@ export function UnitsPage() {
       </DataTableShell>
 
       {state === "ready" && items.length === 0 && (
-        <div className="rounded-xl border bg-card">
+        <div className="rounded-container border bg-card">
           <EmptyState
             title={t("inventory.units.noItems")}
             description={t("inventory.units.noItemsHint")}
@@ -107,7 +107,7 @@ export function UnitsPage() {
       )}
 
       {state === "ready" && selectedItem && (
-        <section className="grid gap-4 rounded-xl border bg-card p-card">
+        <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
           <div className="grid gap-2 sm:max-w-sm">
             <label
               className="text-sm font-semibold"

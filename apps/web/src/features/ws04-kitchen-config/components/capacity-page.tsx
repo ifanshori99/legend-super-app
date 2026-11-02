@@ -16,6 +16,7 @@ import type { Station } from "@starter/shared/menu";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardShell } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -159,7 +160,7 @@ export function CapacityPage() {
       <section aria-busy="true" className="grid gap-3">
         <span className="sr-only">{t("kitchenConfig.capacity.loading")}</span>
         {[0, 1, 2].map((card) => (
-          <Skeleton key={card} className="h-52 w-full rounded-xl" />
+          <Skeleton key={card} className="h-52 w-full rounded-container" />
         ))}
       </section>
     );
@@ -201,170 +202,173 @@ export function CapacityPage() {
           );
           const current = pacingById.get(config.stationId);
           return (
-            <article
-              key={config.id}
-              className="grid min-w-0 gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
-            >
-              <header className="flex flex-wrap items-start justify-between gap-2">
-                <div className="grid min-w-0 gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-lg leading-7 font-semibold">
-                      {station?.name ??
-                        t("kitchenConfig.capacity.unknownStation")}
-                    </h2>
-                    {!config.isActive && (
-                      <Badge tone="neutral">
-                        {t("kitchenConfig.capacity.inactive")}
-                      </Badge>
+            <article key={config.id}>
+              <CardShell>
+                <Card className="gap-4">
+                  <header className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="grid min-w-0 gap-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="type-title">
+                          {station?.name ??
+                            t("kitchenConfig.capacity.unknownStation")}
+                        </h2>
+                        {!config.isActive && (
+                          <Badge tone="neutral">
+                            {t("kitchenConfig.capacity.inactive")}
+                          </Badge>
+                        )}
+                        {current && <CapacityStatus level={current.status} />}
+                      </div>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("kitchenConfig.capacity.displayOrder", {
+                          order: config.displayOrder + 1,
+                        })}
+                        {" · "}
+                        {config.autoPrintFallback
+                          ? t("kitchenConfig.capacity.autoPrint")
+                          : t("kitchenConfig.capacity.noAutoPrint")}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openEditor(config)}
+                    >
+                      {stationRules.length === 0 ? (
+                        <Plus aria-hidden="true" />
+                      ) : (
+                        <Pencil aria-hidden="true" />
+                      )}
+                      {stationRules.length === 0
+                        ? t("kitchenConfig.capacity.addRules")
+                        : t("kitchenConfig.capacity.editRules")}
+                    </Button>
+                  </header>
+
+                  <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="grid min-w-0 gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("kitchenConfig.capacity.targetLabel")}
+                      </dt>
+                      <dd className="text-sm font-medium">
+                        {station?.targetSeconds != null
+                          ? t("kitchenConfig.capacity.targetValue", {
+                              seconds: station.targetSeconds,
+                            })
+                          : t("kitchenConfig.capacity.noTarget")}
+                      </dd>
+                    </div>
+                    <div className="grid min-w-0 gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("kitchenConfig.capacity.pacingTitle")}
+                      </dt>
+                      <dd className="text-sm font-medium tabular">
+                        {current
+                          ? t("kitchenConfig.capacity.pacingUsed", {
+                              used: formatNumber(current.usedPoints),
+                              capacity: formatNumber(current.capacityPoints),
+                            })
+                          : t("kitchenConfig.remake.none")}
+                      </dd>
+                    </div>
+                    <div className="grid min-w-0 gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("kitchenConfig.capacity.dialog.window")}
+                      </dt>
+                      <dd className="text-sm font-medium tabular">
+                        {current
+                          ? t("kitchenConfig.capacity.pacingWindow", {
+                              minutes: current.windowMinutes,
+                            })
+                          : t("kitchenConfig.remake.none")}
+                      </dd>
+                    </div>
+                    <div className="grid min-w-0 gap-0.5">
+                      <dt className="type-eyebrow text-muted-foreground">
+                        {t("kitchenConfig.capacity.rulesTitle")}
+                      </dt>
+                      <dd className="text-sm font-medium tabular">
+                        {stationRules.length}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <section aria-label={t("kitchenConfig.capacity.rulesTitle")}>
+                    {stationRules.length === 0 ? (
+                      <div className="grid gap-1 rounded-container bg-surface-2 p-3">
+                        <p className="text-sm font-medium">
+                          {t("kitchenConfig.capacity.noRules")}
+                        </p>
+                        <p className="text-sm leading-5 text-muted-foreground">
+                          {t("kitchenConfig.capacity.noRulesHint")}
+                        </p>
+                      </div>
+                    ) : (
+                      <ul className="grid gap-2">
+                        {stationRules.map((rule) => (
+                          <li
+                            key={rule.id}
+                            className="grid gap-1 rounded-container bg-surface-2 p-3"
+                          >
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                              <span className="font-semibold tabular">
+                                {t("kitchenConfig.capacity.ruleWindow", {
+                                  minutes: rule.windowMinutes,
+                                })}
+                              </span>
+                              <span className="tabular">
+                                {t("kitchenConfig.capacity.ruleCapacity", {
+                                  points: formatNumber(rule.capacityPoints),
+                                })}
+                              </span>
+                              <span className="text-muted-foreground tabular">
+                                {t("kitchenConfig.capacity.ruleNear", {
+                                  percent: formatNumber(
+                                    rule.nearCapacityBp / 100,
+                                  ),
+                                })}
+                              </span>
+                            </div>
+                            <div className="grid gap-1 text-sm text-muted-foreground">
+                              {rule.schedule.map((entry, index) => (
+                                <span key={index} className="tabular">
+                                  {t("kitchenConfig.capacity.ruleSchedule", {
+                                    days: entry.daysOfWeek
+                                      .slice()
+                                      .sort(
+                                        (a, b) =>
+                                          DAY_NUMBERS.indexOf(
+                                            a as (typeof DAY_NUMBERS)[number],
+                                          ) -
+                                          DAY_NUMBERS.indexOf(
+                                            b as (typeof DAY_NUMBERS)[number],
+                                          ),
+                                      )
+                                      .map((day) => t(DAY_SHORT[day]))
+                                      .join(", "),
+                                    start: entry.start,
+                                    end: entry.end,
+                                  })}
+                                </span>
+                              ))}
+                              <span>
+                                {t("kitchenConfig.capacity.ruleChannels", {
+                                  channels: rule.channelPriority
+                                    .map((channel) =>
+                                      t(`menu.prices.channels.${channel}`),
+                                    )
+                                    .join(" → "),
+                                })}
+                              </span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                    {current && <CapacityStatus level={current.status} />}
-                  </div>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {t("kitchenConfig.capacity.displayOrder", {
-                      order: config.displayOrder + 1,
-                    })}
-                    {" · "}
-                    {config.autoPrintFallback
-                      ? t("kitchenConfig.capacity.autoPrint")
-                      : t("kitchenConfig.capacity.noAutoPrint")}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => openEditor(config)}
-                >
-                  {stationRules.length === 0 ? (
-                    <Plus aria-hidden="true" />
-                  ) : (
-                    <Pencil aria-hidden="true" />
-                  )}
-                  {stationRules.length === 0
-                    ? t("kitchenConfig.capacity.addRules")
-                    : t("kitchenConfig.capacity.editRules")}
-                </Button>
-              </header>
-
-              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="grid min-w-0 gap-0.5">
-                  <dt className="text-sm text-muted-foreground">
-                    {t("kitchenConfig.capacity.targetLabel")}
-                  </dt>
-                  <dd className="text-sm font-medium">
-                    {station?.targetSeconds != null
-                      ? t("kitchenConfig.capacity.targetValue", {
-                          seconds: station.targetSeconds,
-                        })
-                      : t("kitchenConfig.capacity.noTarget")}
-                  </dd>
-                </div>
-                <div className="grid min-w-0 gap-0.5">
-                  <dt className="text-sm text-muted-foreground">
-                    {t("kitchenConfig.capacity.pacingTitle")}
-                  </dt>
-                  <dd className="text-sm font-medium tabular">
-                    {current
-                      ? t("kitchenConfig.capacity.pacingUsed", {
-                          used: formatNumber(current.usedPoints),
-                          capacity: formatNumber(current.capacityPoints),
-                        })
-                      : t("kitchenConfig.remake.none")}
-                  </dd>
-                </div>
-                <div className="grid min-w-0 gap-0.5">
-                  <dt className="text-sm text-muted-foreground">
-                    {t("kitchenConfig.capacity.dialog.window")}
-                  </dt>
-                  <dd className="text-sm font-medium tabular">
-                    {current
-                      ? t("kitchenConfig.capacity.pacingWindow", {
-                          minutes: current.windowMinutes,
-                        })
-                      : t("kitchenConfig.remake.none")}
-                  </dd>
-                </div>
-                <div className="grid min-w-0 gap-0.5">
-                  <dt className="text-sm text-muted-foreground">
-                    {t("kitchenConfig.capacity.rulesTitle")}
-                  </dt>
-                  <dd className="text-sm font-medium tabular">
-                    {stationRules.length}
-                  </dd>
-                </div>
-              </dl>
-
-              <section aria-label={t("kitchenConfig.capacity.rulesTitle")}>
-                {stationRules.length === 0 ? (
-                  <div className="grid gap-1 rounded-lg bg-muted/60 p-3">
-                    <p className="text-sm font-medium">
-                      {t("kitchenConfig.capacity.noRules")}
-                    </p>
-                    <p className="text-sm leading-5 text-muted-foreground">
-                      {t("kitchenConfig.capacity.noRulesHint")}
-                    </p>
-                  </div>
-                ) : (
-                  <ul className="grid gap-2">
-                    {stationRules.map((rule) => (
-                      <li
-                        key={rule.id}
-                        className="grid gap-1 rounded-lg bg-muted/60 p-3"
-                      >
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-                          <span className="font-semibold tabular">
-                            {t("kitchenConfig.capacity.ruleWindow", {
-                              minutes: rule.windowMinutes,
-                            })}
-                          </span>
-                          <span className="tabular">
-                            {t("kitchenConfig.capacity.ruleCapacity", {
-                              points: formatNumber(rule.capacityPoints),
-                            })}
-                          </span>
-                          <span className="text-muted-foreground tabular">
-                            {t("kitchenConfig.capacity.ruleNear", {
-                              percent: formatNumber(rule.nearCapacityBp / 100),
-                            })}
-                          </span>
-                        </div>
-                        <div className="grid gap-1 text-sm text-muted-foreground">
-                          {rule.schedule.map((entry, index) => (
-                            <span key={index} className="tabular">
-                              {t("kitchenConfig.capacity.ruleSchedule", {
-                                days: entry.daysOfWeek
-                                  .slice()
-                                  .sort(
-                                    (a, b) =>
-                                      DAY_NUMBERS.indexOf(
-                                        a as (typeof DAY_NUMBERS)[number],
-                                      ) -
-                                      DAY_NUMBERS.indexOf(
-                                        b as (typeof DAY_NUMBERS)[number],
-                                      ),
-                                  )
-                                  .map((day) => t(DAY_SHORT[day]))
-                                  .join(", "),
-                                start: entry.start,
-                                end: entry.end,
-                              })}
-                            </span>
-                          ))}
-                          <span>
-                            {t("kitchenConfig.capacity.ruleChannels", {
-                              channels: rule.channelPriority
-                                .map((channel) =>
-                                  t(`menu.prices.channels.${channel}`),
-                                )
-                                .join(" → "),
-                            })}
-                          </span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+                  </section>
+                </Card>
+              </CardShell>
             </article>
           );
         })}

@@ -105,6 +105,12 @@ Code: `packages/shared/src/adapters`. Tests: `tests/adapters-contract.test.mjs`.
 - **Outbound safety.** Push endpoints and the tenant-configured LLM `baseUrl` must be public `https` DNS names (no IP literals, credentials, `localhost`, `.local`, `.internal`); the real adapter must also refuse private DNS answers at connect time (rebinding). Email subjects are single-line. Storage keys are relative portable paths without `.` or `..` segments; the real adapter prefixes `tenant/outlet`. `redactLlmConfig` is the only form of an LLM config that may be logged. Lock credentials (door codes) are secrets: never logged, audited or put in an event payload.
 - **Not in the contract.** DOIT's `PayBridge-Signature` verifier (header format not yet confirmed) belongs to the WS-05 DOIT adapter.
 
+## Typed web client & idempotency headers (bead `legend-8tv6`)
+
+Code: `apps/web/src/lib/api/endpoint-core.ts`, `apps/web/src/lib/api/client.ts`. Tests: `tests/api-client.test.mjs`, `tests/legend-8tv6-mock.test.mjs`.
+
+Some API writes take their retry identity from an `Idempotency-Key` request header instead of the body, so their strict body contracts stay unchanged. This is the case for the five payment-admin configuration mutations: routing (`PUT`), EDC terminal create (`POST`) and update (`PATCH`), cashier default (`PUT`), and reconciliation resolve (`POST`). Callers pass it per call: `callEndpoint(endpoint, input, { headers: { "Idempotency-Key": key } })`. The optional `headers` object is strictly allow-listed to that one header and validated by `idempotencyKeySchema` before the transport runs; an unknown header or an invalid key is `VALIDATION_ERROR` and never reaches the network. Body `idempotencyKey` contracts are unchanged. Features use the `useAttemptKey` pattern: the same payload keeps its key across retries of one user attempt, while a changed payload or a successful save starts a new attempt with a new key. Mock handlers for header-based mutations require the header and replay the first result, failing `IDEMPOTENCY_KEY_REUSED` on a changed request. The API CORS preflight allows `PUT` and `Idempotency-Key`, for `WEB_URL`/`TRUSTED_ORIGINS` only (`apps/api/src/test/http.test.ts`).
+
 ## Facility & WFC (`@starter/shared/facility`, bead `legend-lmmn`, reviewed in `legend-cyu.7`)
 
 Code: `packages/shared/src/facility`. Tests: `tests/facility-contract.test.mjs`. PRD §3 F22/F39, §6 K, FAC-01..14, D37/D38.

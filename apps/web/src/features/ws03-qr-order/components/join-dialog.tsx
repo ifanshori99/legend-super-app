@@ -28,7 +28,7 @@ export function JoinDialog() {
     <Dialog open={open} onOpenChange={(next) => !next && closeJoin()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="text-xl leading-7">
+          <DialogTitle className="type-title">
             {t("qrMenu.join.title", { brand: menu.brand.name })}
           </DialogTitle>
           <DialogDescription>
@@ -47,7 +47,7 @@ export function JoinDialog() {
               join.mutate(pax, { onSuccess: () => closeJoin() });
             }}
           >
-            <div className="flex flex-col items-start gap-3 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div className="flex flex-col items-start gap-3 rounded-container border-(length:--border-w) p-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
               <div className="min-w-0">
                 <p id="pax-label" className="font-semibold">
                   {t("qrMenu.join.paxLabel")}
@@ -66,7 +66,7 @@ export function JoinDialog() {
                 valueLabel={t("qrMenu.join.paxValue", { count: pax })}
               />
             </div>
-            <div className="rounded-xl bg-muted p-3 text-sm leading-5">
+            <div className="rounded-container bg-surface-2 p-3 text-sm leading-5">
               <p className="font-semibold">
                 {menu.zone.paymentMode === "pay_first"
                   ? t("qrMenu.mode.payFirst")

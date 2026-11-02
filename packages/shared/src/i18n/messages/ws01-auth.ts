@@ -146,6 +146,7 @@ export const ws01AuthMessages = {
       minutesLeft: "Sisa waktu sekitar {minutes} menit.",
       stay: "Lanjut bekerja",
       dismiss: "Tutup",
+      extendFailed: "Sesi belum diperbarui. Periksa koneksi, lalu coba lagi.",
     },
 
     errors: {

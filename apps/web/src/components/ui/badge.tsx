@@ -98,10 +98,14 @@ const SOLID: Record<Tone, string> = {
 function StatusPill({
   status,
   solid = false,
+  icon,
   children,
   className,
 }: {
   status: StatusKind;
+  /** Overrides the catalog icon when a generic tone needs a specific glyph,
+   *  e.g. a clock for "waiting" on a `warning` tone. */
+  icon?: LucideIcon;
   /** Solid fill for the urgent state only (DESIGN.md §4 Status). */
   solid?: boolean;
   /** Overrides the catalog label, e.g. "Siap · 2 item". */
@@ -109,7 +113,8 @@ function StatusPill({
   className?: string;
 }) {
   const t = useT();
-  const { tone, icon: Icon, label } = STATUS[status];
+  const { tone, icon: catalogIcon, label } = STATUS[status];
+  const Icon = icon ?? catalogIcon;
   return (
     <span
       data-slot="status-pill"

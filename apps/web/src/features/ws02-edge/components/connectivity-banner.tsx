@@ -112,7 +112,7 @@ export function ConnectivityBanner() {
     <div
       data-edge-banner={state.kind}
       className={cn(
-        "mb-4 flex flex-col gap-3 rounded-xl border-(length:--border-w) p-3 text-foreground sm:flex-row sm:items-start sm:gap-4",
+        "mb-4 flex flex-col gap-3 rounded-container border-(length:--border-w) p-3 text-foreground sm:flex-row sm:items-start sm:gap-4",
         view.tone,
       )}
     >

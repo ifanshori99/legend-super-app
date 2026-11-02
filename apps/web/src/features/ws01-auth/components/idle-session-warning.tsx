@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Clock } from "lucide-react";
-import { useLocation } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,7 +11,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useCurrentAuth } from "../hooks";
+import { ApiError } from "@/lib/api/errors";
+import { safeReturnPath } from "@/features/ws01-login/flow";
+import { useCurrentAuth, useExtendStaffSession } from "../hooks";
 import { idleWarningVisible, minutesUntilExpiry } from "../state";
 
 /**
@@ -49,9 +51,12 @@ export function IdleSessionWarning() {
   // 30-minute idle end (§3 F6) would never come. The view refreshes on real
   // activity instead: each navigation, and the "stay" button.
   const auth = useCurrentAuth();
+  const extend = useExtendStaffSession();
   const [dismissedFor, setDismissedFor] = React.useState<string | null>(null);
+  const [stayFailed, setStayFailed] = React.useState(false);
   const { refetch } = auth;
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const firstPath = React.useRef(true);
   React.useEffect(() => {
     if (firstPath.current) {
@@ -69,10 +74,24 @@ export function IdleSessionWarning() {
   if (!session || !now) return null;
   if (!idleWarningVisible({ session, now, dismissedFor })) return null;
 
-  function stay() {
-    setDismissedFor(session?.expiresAt ?? null);
-    // Any user activity pushes the idle deadline server-side.
-    void refetch();
+  async function stay() {
+    setStayFailed(false);
+    try {
+      await extend.mutateAsync();
+      await refetch({ throwOnError: true });
+      setDismissedFor(session?.expiresAt ?? null);
+    } catch (error) {
+      // AUTH-05: an ended session (idle, revoked, expired) cannot be revived;
+      // send the user to sign-in and back here. Other failures keep the
+      // warning open with an error so the user can retry.
+      if (error instanceof ApiError && error.status === 401)
+        void navigate({
+          to: "/masuk",
+          search: { lanjut: safeReturnPath(pathname) },
+          replace: true,
+        });
+      else setStayFailed(true);
+    }
   }
 
   return (
@@ -97,6 +116,11 @@ export function IdleSessionWarning() {
             minutes: minutesUntilExpiry(session, now),
           })}
         </p>
+        {stayFailed && (
+          <p role="alert" className="text-sm text-destructive">
+            {t("staffAuth.idle.extendFailed")}
+          </p>
+        )}
         <DialogFooter>
           <Button
             variant="outline"
@@ -104,7 +128,9 @@ export function IdleSessionWarning() {
           >
             {t("staffAuth.idle.dismiss")}
           </Button>
-          <Button onClick={stay}>{t("staffAuth.idle.stay")}</Button>
+          <Button onClick={() => void stay()} loading={extend.isPending}>
+            {t("staffAuth.idle.stay")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

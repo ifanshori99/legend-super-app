@@ -180,7 +180,7 @@ export function PickupScreen() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-6">
+    <div className="flex w-full flex-col gap-5">
       {header}
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {called.length > 0

@@ -37,7 +37,7 @@ export function Notice({
   return (
     <div
       role="status"
-      className={cn("flex gap-3 rounded-xl p-3", box, className)}
+      className={cn("flex gap-3 rounded-container p-3", box, className)}
     >
       <Icon
         className={cn("mt-0.5 size-5 shrink-0", iconClass)}
