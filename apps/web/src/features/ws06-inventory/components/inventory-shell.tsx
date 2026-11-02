@@ -1,6 +1,6 @@
-// Shared frame for the stock-control screens: page title, the tab strip
-// between sections, and the content slot. Tabs are links, not Radix tabs,
-// because each section has its own URL (docs/frontend.md "Add a page").
+// Shared frame for every inventory back-office screen: page title, the tab
+// strip between sections, and the content slot. Tabs are links, not Radix
+// tabs, because each section has its own URL (docs/frontend.md "Add a page").
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -9,6 +9,28 @@ import { Badge } from "@/components/ui/badge";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS = [
+  { key: "items", labelKey: "inventory.tabs.items", to: "/kelola/inventori" },
+  {
+    key: "categories",
+    labelKey: "inventory.tabs.categories",
+    to: "/kelola/inventori/kategori",
+  },
+  {
+    key: "units",
+    labelKey: "inventory.tabs.units",
+    to: "/kelola/inventori/satuan",
+  },
+  {
+    key: "locations",
+    labelKey: "inventory.tabs.locations",
+    to: "/kelola/inventori/lokasi",
+  },
+  {
+    key: "transfers",
+    labelKey: "inventory.tabs.transfers",
+    to: "/kelola/inventori/transfer",
+  },
+  // Stock control (legend-vxj): stock card, balances & par, expiry, AI-08.
   {
     key: "stock",
     labelKey: "inventoryStock.tabs.stock",
@@ -37,12 +59,12 @@ export function InventoryTabs({ active }: { active: InventorySection }) {
   const t = useT();
   return (
     <nav
-      aria-label={t("inventoryStock.title")}
+      aria-label={t("inventory.title")}
       className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
     >
       {TABS.map((tab) => {
         // Each screen names its own section; a pathname prefix would mark
-        // "Kartu Stok" current on every /kelola/inventori/* page.
+        // "Item" current on every /kelola/inventori/* page.
         const current = tab.key === active;
         return (
           <Link
@@ -85,12 +107,12 @@ export function InventoryPage({
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl leading-7 font-semibold">
-            {t("inventoryStock.title")}
+            {t("inventory.title")}
           </h1>
           {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
         </div>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("inventoryStock.subtitle")}
+          {t("inventory.subtitle")}
         </p>
       </header>
       <InventoryTabs active={active} />

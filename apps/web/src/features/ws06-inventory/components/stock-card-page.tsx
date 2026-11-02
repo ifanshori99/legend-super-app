@@ -39,7 +39,7 @@ import {
   useStockLedger,
   useStockLocations,
   useUnits,
-} from "../hooks";
+} from "../stock-hooks";
 import {
   PAGE_SIZE,
   STOCK_LIST_LIMIT,
@@ -52,7 +52,7 @@ import {
   movementDirection,
   shortId,
   sourceKey,
-} from "../lib";
+} from "../stock-lib";
 import { MOVEMENT_LABEL, SOURCE_LABEL } from "./stock-status";
 
 const ALL = "all";
@@ -338,6 +338,16 @@ export function StockCardPage() {
           </div>
         )}
       </div>
+
+      {ledgerQuery.data?.meta.nextCursor ? (
+        // The ledger is one server page (newest first). Say so instead of
+        // letting an older movement silently disappear from the card.
+        <p role="status" className="text-sm leading-5 text-muted-foreground">
+          {t("inventoryStock.stock.truncated", {
+            count: ledgerQuery.data.data.length,
+          })}
+        </p>
+      ) : null}
 
       <DataTableShell
         title={t("inventoryStock.stock.title")}

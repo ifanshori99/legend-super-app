@@ -60,10 +60,15 @@ import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
 import { Route as KelolaKelolaInventoriIndexRouteImport } from './routes/_kelola/kelola.inventori.index'
+import { Route as KelolaKelolaInventoriItemIdRouteImport } from './routes/_kelola/kelola.inventori.$itemId'
+import { Route as KelolaKelolaInventoriKategoriRouteImport } from './routes/_kelola/kelola.inventori.kategori'
 import { Route as KelolaKelolaInventoriKedaluwarsaRouteImport } from './routes/_kelola/kelola.inventori.kedaluwarsa'
+import { Route as KelolaKelolaInventoriLokasiRouteImport } from './routes/_kelola/kelola.inventori.lokasi'
 import { Route as KelolaKelolaInventoriSaldoRouteImport } from './routes/_kelola/kelola.inventori.saldo'
 import { Route as KelolaKelolaInventoriSaranRouteImport } from './routes/_kelola/kelola.inventori.saran'
+import { Route as KelolaKelolaInventoriSatuanRouteImport } from './routes/_kelola/kelola.inventori.satuan'
 import { Route as KelolaKelolaInventoriStokRouteImport } from './routes/_kelola/kelola.inventori.stok'
+import { Route as KelolaKelolaInventoriTransferRouteImport } from './routes/_kelola/kelola.inventori.transfer'
 import { Route as KelolaKelolaMejaIndexRouteImport } from './routes/_kelola/kelola.meja.index'
 import { Route as KelolaKelolaMejaQrRouteImport } from './routes/_kelola/kelola.meja.qr'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
@@ -80,6 +85,8 @@ import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_ke
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
+import { Route as KelolaKelolaInventoriTransferIndexRouteImport } from './routes/_kelola/kelola.inventori.transfer.index'
+import { Route as KelolaKelolaInventoriTransferBaruRouteImport } from './routes/_kelola/kelola.inventori.transfer.baru'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -330,10 +337,28 @@ const KelolaKelolaInventoriIndexRoute =
     path: '/kelola/inventori/',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaInventoriItemIdRoute =
+  KelolaKelolaInventoriItemIdRouteImport.update({
+    id: '/kelola/inventori/$itemId',
+    path: '/kelola/inventori/$itemId',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaInventoriKategoriRoute =
+  KelolaKelolaInventoriKategoriRouteImport.update({
+    id: '/kelola/inventori/kategori',
+    path: '/kelola/inventori/kategori',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaInventoriKedaluwarsaRoute =
   KelolaKelolaInventoriKedaluwarsaRouteImport.update({
     id: '/kelola/inventori/kedaluwarsa',
     path: '/kelola/inventori/kedaluwarsa',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaInventoriLokasiRoute =
+  KelolaKelolaInventoriLokasiRouteImport.update({
+    id: '/kelola/inventori/lokasi',
+    path: '/kelola/inventori/lokasi',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaInventoriSaldoRoute =
@@ -348,10 +373,22 @@ const KelolaKelolaInventoriSaranRoute =
     path: '/kelola/inventori/saran',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaInventoriSatuanRoute =
+  KelolaKelolaInventoriSatuanRouteImport.update({
+    id: '/kelola/inventori/satuan',
+    path: '/kelola/inventori/satuan',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaInventoriStokRoute =
   KelolaKelolaInventoriStokRouteImport.update({
     id: '/kelola/inventori/stok',
     path: '/kelola/inventori/stok',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaInventoriTransferRoute =
+  KelolaKelolaInventoriTransferRouteImport.update({
+    id: '/kelola/inventori/transfer',
+    path: '/kelola/inventori/transfer',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaMejaIndexRoute = KelolaKelolaMejaIndexRouteImport.update({
@@ -440,6 +477,18 @@ const CustomerTTokenPayPaymentIdRoute =
     path: '/pay/$paymentId',
     getParentRoute: () => CustomerTTokenRoute,
   } as any)
+const KelolaKelolaInventoriTransferIndexRoute =
+  KelolaKelolaInventoriTransferIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => KelolaKelolaInventoriTransferRoute,
+  } as any)
+const KelolaKelolaInventoriTransferBaruRoute =
+  KelolaKelolaInventoriTransferBaruRouteImport.update({
+    id: '/baru',
+    path: '/baru',
+    getParentRoute: () => KelolaKelolaInventoriTransferRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -479,10 +528,15 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
+  '/kelola/inventori/kategori': typeof KelolaKelolaInventoriKategoriRoute
   '/kelola/inventori/kedaluwarsa': typeof KelolaKelolaInventoriKedaluwarsaRoute
+  '/kelola/inventori/lokasi': typeof KelolaKelolaInventoriLokasiRoute
   '/kelola/inventori/saldo': typeof KelolaKelolaInventoriSaldoRoute
   '/kelola/inventori/saran': typeof KelolaKelolaInventoriSaranRoute
+  '/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
+  '/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferRouteWithChildren
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -502,6 +556,8 @@ export interface FileRoutesByFullPath {
   '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
+  '/kelola/inventori/transfer/': typeof KelolaKelolaInventoriTransferIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -539,9 +595,13 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
+  '/kelola/inventori/kategori': typeof KelolaKelolaInventoriKategoriRoute
   '/kelola/inventori/kedaluwarsa': typeof KelolaKelolaInventoriKedaluwarsaRoute
+  '/kelola/inventori/lokasi': typeof KelolaKelolaInventoriLokasiRoute
   '/kelola/inventori/saldo': typeof KelolaKelolaInventoriSaldoRoute
   '/kelola/inventori/saran': typeof KelolaKelolaInventoriSaranRoute
+  '/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
@@ -562,6 +622,8 @@ export interface FileRoutesByTo {
   '/pos/meja': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
+  '/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -613,10 +675,15 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_kelola/kelola/inventori/$itemId': typeof KelolaKelolaInventoriItemIdRoute
+  '/_kelola/kelola/inventori/kategori': typeof KelolaKelolaInventoriKategoriRoute
   '/_kelola/kelola/inventori/kedaluwarsa': typeof KelolaKelolaInventoriKedaluwarsaRoute
+  '/_kelola/kelola/inventori/lokasi': typeof KelolaKelolaInventoriLokasiRoute
   '/_kelola/kelola/inventori/saldo': typeof KelolaKelolaInventoriSaldoRoute
   '/_kelola/kelola/inventori/saran': typeof KelolaKelolaInventoriSaranRoute
+  '/_kelola/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/_kelola/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
+  '/_kelola/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferRouteWithChildren
   '/_kelola/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -636,6 +703,8 @@ export interface FileRoutesById {
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/_kelola/kelola/inventori/transfer/baru': typeof KelolaKelolaInventoriTransferBaruRoute
+  '/_kelola/kelola/inventori/transfer/': typeof KelolaKelolaInventoriTransferIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -677,10 +746,15 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/inventori/$itemId'
+    | '/kelola/inventori/kategori'
     | '/kelola/inventori/kedaluwarsa'
+    | '/kelola/inventori/lokasi'
     | '/kelola/inventori/saldo'
     | '/kelola/inventori/saran'
+    | '/kelola/inventori/satuan'
     | '/kelola/inventori/stok'
+    | '/kelola/inventori/transfer'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
@@ -700,6 +774,8 @@ export interface FileRouteTypes {
     | '/pos/meja/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/inventori/transfer/baru'
+    | '/kelola/inventori/transfer/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -737,9 +813,13 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/kelola/inventori/$itemId'
+    | '/kelola/inventori/kategori'
     | '/kelola/inventori/kedaluwarsa'
+    | '/kelola/inventori/lokasi'
     | '/kelola/inventori/saldo'
     | '/kelola/inventori/saran'
+    | '/kelola/inventori/satuan'
     | '/kelola/inventori/stok'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
@@ -760,6 +840,8 @@ export interface FileRouteTypes {
     | '/pos/meja'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/inventori/transfer/baru'
+    | '/kelola/inventori/transfer'
   id:
     | '__root__'
     | '/_auth'
@@ -810,10 +892,15 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_kelola/kelola/inventori/$itemId'
+    | '/_kelola/kelola/inventori/kategori'
     | '/_kelola/kelola/inventori/kedaluwarsa'
+    | '/_kelola/kelola/inventori/lokasi'
     | '/_kelola/kelola/inventori/saldo'
     | '/_kelola/kelola/inventori/saran'
+    | '/_kelola/kelola/inventori/satuan'
     | '/_kelola/kelola/inventori/stok'
+    | '/_kelola/kelola/inventori/transfer'
     | '/_kelola/kelola/meja/qr'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
@@ -833,6 +920,8 @@ export interface FileRouteTypes {
     | '/_ops/pos/meja/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
+    | '/_kelola/kelola/inventori/transfer/baru'
+    | '/_kelola/kelola/inventori/transfer/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1209,11 +1298,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaInventoriIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/inventori/$itemId': {
+      id: '/_kelola/kelola/inventori/$itemId'
+      path: '/kelola/inventori/$itemId'
+      fullPath: '/kelola/inventori/$itemId'
+      preLoaderRoute: typeof KelolaKelolaInventoriItemIdRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/inventori/kategori': {
+      id: '/_kelola/kelola/inventori/kategori'
+      path: '/kelola/inventori/kategori'
+      fullPath: '/kelola/inventori/kategori'
+      preLoaderRoute: typeof KelolaKelolaInventoriKategoriRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/inventori/kedaluwarsa': {
       id: '/_kelola/kelola/inventori/kedaluwarsa'
       path: '/kelola/inventori/kedaluwarsa'
       fullPath: '/kelola/inventori/kedaluwarsa'
       preLoaderRoute: typeof KelolaKelolaInventoriKedaluwarsaRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/inventori/lokasi': {
+      id: '/_kelola/kelola/inventori/lokasi'
+      path: '/kelola/inventori/lokasi'
+      fullPath: '/kelola/inventori/lokasi'
+      preLoaderRoute: typeof KelolaKelolaInventoriLokasiRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/inventori/saldo': {
@@ -1230,11 +1340,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaInventoriSaranRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/inventori/satuan': {
+      id: '/_kelola/kelola/inventori/satuan'
+      path: '/kelola/inventori/satuan'
+      fullPath: '/kelola/inventori/satuan'
+      preLoaderRoute: typeof KelolaKelolaInventoriSatuanRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/inventori/stok': {
       id: '/_kelola/kelola/inventori/stok'
       path: '/kelola/inventori/stok'
       fullPath: '/kelola/inventori/stok'
       preLoaderRoute: typeof KelolaKelolaInventoriStokRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/inventori/transfer': {
+      id: '/_kelola/kelola/inventori/transfer'
+      path: '/kelola/inventori/transfer'
+      fullPath: '/kelola/inventori/transfer'
+      preLoaderRoute: typeof KelolaKelolaInventoriTransferRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/meja/': {
@@ -1349,6 +1473,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerTTokenPayPaymentIdRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
+    '/_kelola/kelola/inventori/transfer/': {
+      id: '/_kelola/kelola/inventori/transfer/'
+      path: '/'
+      fullPath: '/kelola/inventori/transfer/'
+      preLoaderRoute: typeof KelolaKelolaInventoriTransferIndexRouteImport
+      parentRoute: typeof KelolaKelolaInventoriTransferRoute
+    }
+    '/_kelola/kelola/inventori/transfer/baru': {
+      id: '/_kelola/kelola/inventori/transfer/baru'
+      path: '/baru'
+      fullPath: '/kelola/inventori/transfer/baru'
+      preLoaderRoute: typeof KelolaKelolaInventoriTransferBaruRouteImport
+      parentRoute: typeof KelolaKelolaInventoriTransferRoute
+    }
   }
 }
 
@@ -1454,13 +1592,36 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
   KaryawanRouteChildren,
 )
 
+interface KelolaKelolaInventoriTransferRouteChildren {
+  KelolaKelolaInventoriTransferBaruRoute: typeof KelolaKelolaInventoriTransferBaruRoute
+  KelolaKelolaInventoriTransferIndexRoute: typeof KelolaKelolaInventoriTransferIndexRoute
+}
+
+const KelolaKelolaInventoriTransferRouteChildren: KelolaKelolaInventoriTransferRouteChildren =
+  {
+    KelolaKelolaInventoriTransferBaruRoute:
+      KelolaKelolaInventoriTransferBaruRoute,
+    KelolaKelolaInventoriTransferIndexRoute:
+      KelolaKelolaInventoriTransferIndexRoute,
+  }
+
+const KelolaKelolaInventoriTransferRouteWithChildren =
+  KelolaKelolaInventoriTransferRoute._addFileChildren(
+    KelolaKelolaInventoriTransferRouteChildren,
+  )
+
 interface KelolaRouteChildren {
   KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
+  KelolaKelolaInventoriItemIdRoute: typeof KelolaKelolaInventoriItemIdRoute
+  KelolaKelolaInventoriKategoriRoute: typeof KelolaKelolaInventoriKategoriRoute
   KelolaKelolaInventoriKedaluwarsaRoute: typeof KelolaKelolaInventoriKedaluwarsaRoute
+  KelolaKelolaInventoriLokasiRoute: typeof KelolaKelolaInventoriLokasiRoute
   KelolaKelolaInventoriSaldoRoute: typeof KelolaKelolaInventoriSaldoRoute
   KelolaKelolaInventoriSaranRoute: typeof KelolaKelolaInventoriSaranRoute
+  KelolaKelolaInventoriSatuanRoute: typeof KelolaKelolaInventoriSatuanRoute
   KelolaKelolaInventoriStokRoute: typeof KelolaKelolaInventoriStokRoute
+  KelolaKelolaInventoriTransferRoute: typeof KelolaKelolaInventoriTransferRouteWithChildren
   KelolaKelolaMejaQrRoute: typeof KelolaKelolaMejaQrRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
@@ -1480,10 +1641,16 @@ interface KelolaRouteChildren {
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
+  KelolaKelolaInventoriItemIdRoute: KelolaKelolaInventoriItemIdRoute,
+  KelolaKelolaInventoriKategoriRoute: KelolaKelolaInventoriKategoriRoute,
   KelolaKelolaInventoriKedaluwarsaRoute: KelolaKelolaInventoriKedaluwarsaRoute,
+  KelolaKelolaInventoriLokasiRoute: KelolaKelolaInventoriLokasiRoute,
   KelolaKelolaInventoriSaldoRoute: KelolaKelolaInventoriSaldoRoute,
   KelolaKelolaInventoriSaranRoute: KelolaKelolaInventoriSaranRoute,
+  KelolaKelolaInventoriSatuanRoute: KelolaKelolaInventoriSatuanRoute,
   KelolaKelolaInventoriStokRoute: KelolaKelolaInventoriStokRoute,
+  KelolaKelolaInventoriTransferRoute:
+    KelolaKelolaInventoriTransferRouteWithChildren,
   KelolaKelolaMejaQrRoute: KelolaKelolaMejaQrRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,

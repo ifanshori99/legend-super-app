@@ -5,7 +5,7 @@ import { inventoryGuard } from "@/features/ws06-inventory/guard";
 import {
   STOCK_LIST_LIMIT,
   isMockScenarioRequest,
-} from "@/features/ws06-inventory/lib";
+} from "@/features/ws06-inventory/stock-lib";
 import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import {
   balancesQuery,
@@ -14,7 +14,7 @@ import {
   locationsQuery,
   parLevelsQuery,
   unitsQuery,
-} from "@/features/ws06-inventory/queries";
+} from "@/features/ws06-inventory/stock-queries";
 
 // /kelola/inventori/saldo — balances per location, par levels and critical
 // alerts (PRD §16 "Lokasi Stok", "Metode Biaya", "Par Level").

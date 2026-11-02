@@ -5,7 +5,7 @@ import { inventoryGuard } from "@/features/ws06-inventory/guard";
 import {
   STOCK_LIST_LIMIT,
   isMockScenarioRequest,
-} from "@/features/ws06-inventory/lib";
+} from "@/features/ws06-inventory/stock-lib";
 import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import {
   batchesQuery,
@@ -13,7 +13,7 @@ import {
   ledgerQuery,
   locationsQuery,
   unitsQuery,
-} from "@/features/ws06-inventory/queries";
+} from "@/features/ws06-inventory/stock-queries";
 
 // /kelola/inventori/stok — stock card / ledger (PRD §16 "Kartu Stok
 // Append-only", INV-01).

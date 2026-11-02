@@ -17,7 +17,7 @@ async function open(page: Page, path: string) {
   await expect(
     page
       .locator("#main-content")
-      .getByRole("heading", { level: 1, name: "Kendali stok" }),
+      .getByRole("heading", { level: 1, name: "Inventori" }),
   ).toBeVisible();
 }
 
@@ -128,7 +128,8 @@ test("AI-08 purchase suggestions create a draft purchase request", async ({
   await expect(
     page.getByText("Draf PR dibuat.", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("3 baris", { exact: true })).toBeVisible();
+  // Susu UHT is short in two locations: one outlet-level PR line (review fix).
+  await expect(page.getByText("2 baris", { exact: true })).toBeVisible();
 });
 
 test("F16 empty and error states are reachable in mock mode", async ({

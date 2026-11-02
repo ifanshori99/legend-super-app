@@ -37,7 +37,7 @@ import {
   useStockBatches,
   useStockLocations,
   useUnits,
-} from "../hooks";
+} from "../stock-hooks";
 import {
   EXPIRY_WARN_DAYS,
   PAGE_SIZE,
@@ -49,7 +49,7 @@ import {
   closestExpiryBatches,
   matchesQuery,
   type ExpiryRow,
-} from "../lib";
+} from "../stock-lib";
 import { ExpiryStatusPill } from "./stock-status";
 
 const ALL = "all";

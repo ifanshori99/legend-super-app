@@ -41,7 +41,7 @@ import {
   useStockBalances,
   useStockLocations,
   useUnits,
-} from "../hooks";
+} from "../stock-hooks";
 import {
   STOCK_LIST_LIMIT,
   addDays,
@@ -49,10 +49,11 @@ import {
   formatBusinessDate,
   formatQuantity,
   parRows,
+  purchaseRequestLines,
   purchaseSuggestions,
   shortId,
   type PurchaseSuggestion,
-} from "../lib";
+} from "../stock-lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
 
 export function SuggestionsPage() {
@@ -154,11 +155,7 @@ export function SuggestionsPage() {
       {
         outletId: INVENTORY_OUTLET_ID,
         neededBy,
-        lines: selectedSuggestions.map((row) => ({
-          inventoryItemId: row.item.id,
-          quantity: row.suggestedQty,
-          uomId: row.item.baseUomId,
-        })),
+        lines: purchaseRequestLines(selectedSuggestions),
         note: note.trim() === "" ? null : note.trim(),
         idempotencyKey: crypto.randomUUID(),
       },
@@ -387,15 +384,20 @@ export function SuggestionsPage() {
                 {t("inventoryStock.suggestions.dialog.linesTitle")}
               </p>
               <ul className="grid gap-1 text-sm text-muted-foreground">
-                {selectedSuggestions.map((row) => (
-                  <li key={row.key} className="tabular">
-                    {t("inventoryStock.suggestions.dialog.line", {
-                      item: row.item.name,
-                      quantity: formatQuantity(row.suggestedQty),
-                      unit: row.unit,
-                    })}
-                  </li>
-                ))}
+                {purchaseRequestLines(selectedSuggestions).map((line) => {
+                  const row = selectedSuggestions.find(
+                    (suggestion) => suggestion.item.id === line.inventoryItemId,
+                  );
+                  return (
+                    <li key={line.inventoryItemId} className="tabular">
+                      {t("inventoryStock.suggestions.dialog.line", {
+                        item: row?.item.name ?? "",
+                        quantity: formatQuantity(line.quantity),
+                        unit: row?.unit ?? "",
+                      })}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
             {mutation.isError && (

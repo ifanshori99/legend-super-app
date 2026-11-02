@@ -98,6 +98,8 @@ export const inventoryStockMessages = {
       "Baris muncul setelah penerimaan barang, penjualan, atau penyesuaian pertama.",
     emptyFilterTitle: "Tidak ada baris untuk filter ini",
     emptyFilterHint: "Longgarkan filter item, lokasi, gerakan, atau tanggal.",
+    truncated:
+      "Menampilkan {count} pergerakan terbaru. Persempit filter item, lokasi, atau tanggal untuk melihat baris yang lebih lama.",
   },
   balances: {
     title: "Saldo per lokasi",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as core from "../packages/shared/src/core/index.ts";
 import * as inventory from "../packages/shared/src/inventory/index.ts";
-import * as lib from "../apps/web/src/features/ws06-inventory/lib.ts";
+import * as lib from "../apps/web/src/features/ws06-inventory/stock-lib.ts";
 
 // Acceptance tests for the WS-06 stock-control screens (legend-vxj; PRD v1.7
 // §16 "Inventori & Gudang", INV-01, AI-08). The joins and derivations under
@@ -189,4 +189,20 @@ test("legend-vxj · F16 business dates and quantities follow the catalog format"
   );
   assert.equal(page.page, 2);
   assert.equal(page.rows.length, 5);
+});
+
+test("legend-vxj · AI-08 PR lines merge one item short in two locations", () => {
+  const milk = { id: "item-milk", baseUomId: "uom-l" };
+  const coffee = { id: "item-coffee", baseUomId: "uom-kg" };
+  assert.deepEqual(
+    lib.purchaseRequestLines([
+      { item: milk, suggestedQty: "51.9000" },
+      { item: coffee, suggestedQty: "22.2000" },
+      { item: milk, suggestedQty: "46.0000" },
+    ]),
+    [
+      { inventoryItemId: "item-milk", quantity: "97.9000", uomId: "uom-l" },
+      { inventoryItemId: "item-coffee", quantity: "22.2000", uomId: "uom-kg" },
+    ],
+  );
 });

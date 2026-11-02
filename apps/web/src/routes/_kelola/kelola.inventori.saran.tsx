@@ -5,7 +5,7 @@ import { inventoryGuard } from "@/features/ws06-inventory/guard";
 import {
   STOCK_LIST_LIMIT,
   isMockScenarioRequest,
-} from "@/features/ws06-inventory/lib";
+} from "@/features/ws06-inventory/stock-lib";
 import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import {
   balancesQuery,
@@ -13,7 +13,7 @@ import {
   locationsQuery,
   parLevelsQuery,
   unitsQuery,
-} from "@/features/ws06-inventory/queries";
+} from "@/features/ws06-inventory/stock-queries";
 
 // /kelola/inventori/saran — AI-08 purchase suggestions and the draft PR
 // (PRD §16 "Par Level & Saran Pembelian", §4 Alur I step 1).
