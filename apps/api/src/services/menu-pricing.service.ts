@@ -982,11 +982,16 @@ export async function setAvailabilityStatus(
     // The event carries the client key: a retry must not emit a second event.
     const outletId = existing.outletId;
     {
+      // The aggregate is the availability row (one item at one outlet), not
+      // the menu item: the outbox keeps every event of an aggregate on one
+      // outlet (app.enforce_outbox_aggregate_outlet), so keying on the item
+      // made the same item's 86 at a second outlet fail (legend-0gvh, Opus
+      // review). The payload still names the item for consumers.
       const sequence = await nextSequence(
         tx,
         context.tenant.tenantId,
-        "item",
-        existing.menuItemId,
+        definition.entry.aggregateType,
+        existing.id,
       );
       const event = definition.envelopeSchema.parse({
         id: createUlid(now.getTime()),
@@ -995,7 +1000,7 @@ export async function setAvailabilityStatus(
         name: definition.name,
         version: definition.version,
         aggregateType: definition.entry.aggregateType,
-        aggregateId: existing.menuItemId,
+        aggregateId: existing.id,
         sequence,
         occurredAt: now.toISOString(),
         actor: { type: "user", id: actorUserId },

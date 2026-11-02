@@ -741,6 +741,53 @@ describe("legend-lmk menu API", () => {
     expect(body(repriced).error).toMatchObject({ code: "PERMISSION_DENIED" });
   });
 
+  it("review legend-0gvh the same item can be 86'd at two outlets (one outbox stream per availability row)", async () => {
+    const { client, userId } = await menuClient("owner", {
+      type: "tenant",
+      id: null,
+    });
+    createdUserIds.push(userId);
+    const category = await client
+      .post("/api/menu/categories")
+      .set(originHeader)
+      .send({ brandId, name: `Dua Outlet ${randomBytes(2).toString("hex")}` });
+    const item = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({
+        brandId,
+        categoryId: data(category).id as string,
+        name: "Latte Dua Outlet",
+      });
+    const itemId = data(item).id as string;
+    for (const outletId of [outletA, outletB]) {
+      const list = page(
+        await client.get(
+          `/api/menu/availability?limit=100&outletId=${outletId}`,
+        ),
+      );
+      const row = list.data.find((entry) => entry.menuItemId === itemId);
+      expect(row).toBeDefined();
+      const soldOut = await client
+        .post(`/api/menu/availability/${row?.id as string}/status`)
+        .set(originHeader)
+        .send({ action: "sell_out", idempotencyKey: `86-${randomUUID()}` });
+      expect(soldOut.status).toBe(200);
+      expect(data(soldOut).status).toBe("sold_out");
+    }
+    const events = await asOwnerTenant(tenantId, (db) =>
+      db.query<{ outlet: string }>(
+        `SELECT outlet_id::text AS outlet FROM domain_event_outbox
+         WHERE tenant_id = $1 AND event->>'name' = 'item.sold_out'
+           AND event->'payload'->>'itemId' = $2`,
+        [tenantId, itemId],
+      ),
+    );
+    expect(events.rows.map((r) => r.outlet).sort()).toEqual(
+      [outletA, outletB].map((id) => id.toLowerCase()).sort(),
+    );
+  });
+
   it("finding HIGH menu-pricing.service.ts:861 the idempotency key is bound to the request fingerprint", async () => {
     const owner = await menuClient("owner", { type: "tenant", id: null });
     createdUserIds.push(owner.userId);
