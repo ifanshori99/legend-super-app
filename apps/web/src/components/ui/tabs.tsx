@@ -8,6 +8,17 @@ import { Tabs as TabsPrimitive } from "radix-ui";
 // a hairline ring — selected in ink, never in accent (accent budget, Q21).
 const Tabs = TabsPrimitive.Root;
 
+/**
+ * The tab-group look as classes, for link sub-navigation (a <nav> of router
+ * Links between sibling pages): put `tabsListClass` on the list and
+ * `tabsTriggerClass` on each link with `aria-current="page"` on the current
+ * one. Same look as <Tabs>, so a section's page tabs and in-page tabs match.
+ */
+const tabsListClass =
+  "inline-flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1 [scrollbar-width:none]";
+const tabsTriggerClass =
+  "inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-2 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3.5 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-card data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)] aria-[current=page]:bg-card aria-[current=page]:font-semibold aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)] [&_svg]:size-4";
+
 function TabsList({
   className,
   ...props
@@ -15,10 +26,7 @@ function TabsList({
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
-      className={cn(
-        "inline-flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1 [scrollbar-width:none]",
-        className,
-      )}
+      className={cn(tabsListClass, className)}
       {...props}
     />
   );
@@ -31,10 +39,7 @@ function TabsTrigger({
   return (
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
-      className={cn(
-        "inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-2 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3.5 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-card data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)] [&_svg]:size-4",
-        className,
-      )}
+      className={cn(tabsTriggerClass, className)}
       {...props}
     />
   );
@@ -53,4 +58,11 @@ function TabsContent({
   );
 }
 
-export { Tabs, TabsContent, TabsList, TabsTrigger };
+export {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  tabsListClass,
+  tabsTriggerClass,
+};
