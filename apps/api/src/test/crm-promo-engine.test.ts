@@ -785,3 +785,214 @@ describe("Money invariants over generated bills", () => {
     }
   });
 });
+
+describe("legend-7x4g application order: item-level promotions first, then bill-level on the remainder", () => {
+  // Bill: 2 × A at Rp30.000 + 1 × B at Rp40.000 = Rp100.000.
+  const lines = [
+    {
+      menuItemId: ITEM_A,
+      quantity: 2,
+      unitPriceIdr: idr(30_000),
+      lineTotalIdr: idr(60_000),
+    },
+    {
+      menuItemId: ITEM_B,
+      quantity: 1,
+      unitPriceIdr: idr(40_000),
+      lineTotalIdr: idr(40_000),
+    },
+  ];
+  const b1g1 = (priority: number, extra: Partial<Promotion> = {}) =>
+    promo({
+      priority,
+      conditions: [
+        { kind: "item_quantity", menuItemIds: [ITEM_A], minQuantity: 1 },
+      ],
+      benefit: {
+        kind: "free_items",
+        menuItemIds: [ITEM_A],
+        quantityPerMultiple: 1,
+      },
+      ...extra,
+    });
+  const bundleAB = (priority: number) =>
+    promo({
+      priority,
+      benefit: {
+        kind: "bundle_price",
+        menuItemIds: [ITEM_A, ITEM_B],
+        bundlePriceIdr: idr(50_000),
+      },
+    });
+  const percent = (
+    bp: number,
+    priority: number,
+    extra: Partial<Promotion> = {},
+  ) =>
+    promo({
+      priority,
+      benefit: { kind: "percent_off", percentBp: bp, maxDiscountIdr: null },
+      ...extra,
+    });
+  const nominal = (amount: number, priority: number) =>
+    promo({
+      priority,
+      benefit: { kind: "nominal_off", amountIdr: idr(amount) },
+    });
+
+  it.each([
+    // [label, promotions, total discount]
+    [
+      "free item (low priority) runs before a higher-priority 10%: 30.000 + 10% of 70.000",
+      () => [percent(1000, 10), b1g1(0)],
+      37_000,
+    ],
+    [
+      "bundle (low priority) runs before a higher-priority 50%: 20.000 + 50% of 80.000",
+      () => [percent(5000, 9), bundleAB(0)],
+      60_000,
+    ],
+    [
+      "two item-level promotions both use the full lines: 30.000 + 20.000",
+      () => [bundleAB(2), b1g1(1)],
+      50_000,
+    ],
+    [
+      "two bill-level percentages keep priority order (Q20): 20% then 10% of the rest",
+      () => [percent(1000, 1), percent(2000, 2)],
+      28_000,
+    ],
+    [
+      "item-level, then nominal, then percent by priority: 30.000, 10.000, 10% of 60.000",
+      () => [percent(1000, 1), nominal(10_000, 5), b1g1(0)],
+      46_000,
+    ],
+  ])("[Q20] %s", (_label, build, total) => {
+    const promotions = build();
+    for (const order of [promotions, [...promotions].reverse()]) {
+      const result = applyPromotions(order, bill(100_000, { lines }), [], {
+        mode: "stackable",
+        maxStacked: 5,
+        allowSameGroup: false,
+      });
+      expect(result.totalDiscountIdr).toBe(total);
+    }
+  });
+
+  it("[Q20] selection still follows priority: a higher-priority non-stackable promotion stands alone", () => {
+    const solo = percent(5000, 99, { stackable: false });
+    const free = b1g1(0);
+    const result = applyPromotions([free, solo], bill(100_000, { lines }), [], {
+      mode: "stackable",
+      maxStacked: 5,
+      allowSameGroup: false,
+    });
+    expect(result.totalDiscountIdr).toBe(50_000);
+    expect(
+      result.evaluations.find((entry) => entry.promotionId === free.id),
+    ).toMatchObject({ applied: false, reason: "not_stackable" });
+  });
+
+  it("[Q20] maxStacked picks by priority, then the picked stack prices item-level first", () => {
+    // maxStacked 2: 10% (p10) and 20% (p5) are picked over the free item (p0);
+    // with no item-level promotion in the stack the percentages compound.
+    const result = applyPromotions(
+      [b1g1(0), percent(1000, 10), percent(2000, 5)],
+      bill(100_000, { lines }),
+      [],
+      { mode: "stackable", maxStacked: 2, allowSameGroup: false },
+    );
+    expect(result.totalDiscountIdr).toBe(28_000);
+  });
+});
+
+describe("legend-w3zf free and bundled units are valued at what the line is worth", () => {
+  it("[ORD-03] a free unit on a member-priced line is worth lineTotal / quantity, rounded down", () => {
+    const promotion = promo({
+      conditions: [
+        { kind: "item_quantity", menuItemIds: [ITEM_A], minQuantity: 1 },
+      ],
+      benefit: {
+        kind: "free_items",
+        menuItemIds: [ITEM_A],
+        quantityPerMultiple: 1,
+      },
+    });
+    const result = evaluatePromotion(
+      promotion,
+      bill(50_001, {
+        lines: [
+          {
+            menuItemId: ITEM_A,
+            quantity: 2,
+            unitPriceIdr: idr(30_000),
+            lineTotalIdr: idr(50_001),
+          },
+        ],
+      }),
+    );
+    expect(result).toMatchObject({ applied: true, discountIdr: 25_000 });
+  });
+
+  it("[ORD-03] a bundle on a discounted line uses the discounted unit value", () => {
+    const promotion = promo({
+      benefit: {
+        kind: "bundle_price",
+        menuItemIds: [ITEM_A, ITEM_B],
+        bundlePriceIdr: idr(50_000),
+      },
+    });
+    const result = evaluatePromotion(
+      promotion,
+      bill(65_000, {
+        lines: [
+          {
+            menuItemId: ITEM_A,
+            quantity: 1,
+            unitPriceIdr: idr(30_000),
+            lineTotalIdr: idr(25_000),
+          },
+          {
+            menuItemId: ITEM_B,
+            quantity: 1,
+            unitPriceIdr: idr(40_000),
+            lineTotalIdr: idr(40_000),
+          },
+        ],
+      }),
+    );
+    expect(result).toMatchObject({ applied: true, discountIdr: 15_000 });
+  });
+
+  it("[§3.21] a mixed free list (buy item + other item) stays conservative: under-awards, never over-discounts", () => {
+    const promotion = promo({
+      conditions: [
+        { kind: "item_quantity", menuItemIds: [ITEM_A], minQuantity: 1 },
+      ],
+      benefit: {
+        kind: "free_items",
+        menuItemIds: [ITEM_A, ITEM_C],
+        quantityPerMultiple: 1,
+      },
+    });
+    const lines = [
+      {
+        menuItemId: ITEM_A,
+        quantity: 1,
+        unitPriceIdr: idr(30_000),
+        lineTotalIdr: idr(30_000),
+      },
+      {
+        menuItemId: ITEM_C,
+        quantity: 1,
+        unitPriceIdr: idr(20_000),
+        lineTotalIdr: idr(20_000),
+      },
+    ];
+    // One paid A could earn a free C, but the list may also free the A itself,
+    // so the engine waits for a second A: nothing here, never 100% off one A.
+    expect(evaluatePromotion(promotion, bill(50_000, { lines }))).toMatchObject(
+      { applied: false, reason: "no_matching_items" },
+    );
+  });
+});

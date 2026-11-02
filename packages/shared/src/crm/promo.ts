@@ -375,6 +375,21 @@ function conditionFailure(
   return null;
 }
 
+/**
+ * What one unit of a line is worth on this bill: its unit price, or less when
+ * the line already carries an item-level discount (member price, manual line
+ * discount), so `lineTotalIdr < unitPriceIdr * quantity`. Rounded down, so a
+ * free or bundled unit can never be valued above what the guest would pay
+ * (bead legend-w3zf; PRD §3.21, ORD-03).
+ */
+function unitValueIdr(line: PromoLine): number {
+  if (line.quantity <= 0) return 0;
+  return Math.min(
+    line.unitPriceIdr,
+    Math.floor(line.lineTotalIdr / line.quantity),
+  );
+}
+
 function freeItemBenefit(
   promotion: Promotion,
   benefit: Extract<PromotionBenefit, { kind: "free_items" }>,
@@ -418,7 +433,7 @@ function freeItemBenefit(
     if (quantity <= 0) continue;
     allowance -= quantity;
     freeItems.push({ menuItemId: line.menuItemId, quantity });
-    discountIdr += quantity * line.unitPriceIdr;
+    discountIdr += quantity * unitValueIdr(line);
   }
   if (freeItems.length === 0) return null;
   return { freeItems, discountIdr };
@@ -442,7 +457,7 @@ function bundleDiscount(
       bundles,
       lines.reduce((sum, line) => sum + line.quantity, 0),
     );
-    unitTotal += Math.min(...lines.map((line) => line.unitPriceIdr));
+    unitTotal += Math.min(...lines.map((line) => unitValueIdr(line)));
   }
   const discount = bundles * (unitTotal - benefit.bundlePriceIdr);
   return discount > 0 ? discount : null;
@@ -598,7 +613,9 @@ export type PromotionApplicationResult = z.infer<
  * never picks a voucher-required promotion; pass its id in
  * `input.voucherPromotionId` to apply it explicitly.
  *
- * Stackable promotions are ordered by priority (higher first) then id, and a
+ * Stackable promotions are selected by priority (higher first) then id; the
+ * chosen stack is then priced item-level first (free items, bundle price),
+ * bill-level after (percentage, nominal, facility reward), and a
  * percentage discount is computed on the amount still discountable after the
  * promotions before it, so two percentages compound instead of adding up:
  * 10% then 20% of Rp100.000 is Rp28.000, not Rp30.000 (owner decision Q20,
@@ -751,6 +768,53 @@ export function applyPromotions(
     usedGroups.add(group);
     if (!promotion.stackable) exclusiveUsed = true;
   }
+  // Application order of the chosen stack (coordinator decision,
+  // legend-7x4g): the selection above (who joins, non-stackable, group,
+  // maxStacked) follows priority; the amounts are then computed item-level
+  // first (free items, bundle price), bill-level after (percentage, nominal,
+  // facility reward) on what remains, each tier by priority then id, each step
+  // on the amount still discountable (owner Q20).
+  const tierOf = (promotion: Promotion) =>
+    promotion.benefit.kind === "free_items" ||
+    promotion.benefit.kind === "bundle_price"
+      ? 0
+      : 1;
+  const stack = ordered
+    .filter((evaluation) => chosen.get(evaluation.promotionId)?.applied)
+    .map((evaluation) => promotionById.get(evaluation.promotionId) as Promotion)
+    .sort((left, right) => {
+      const tier = tierOf(left) - tierOf(right);
+      if (tier !== 0) return tier;
+      const priority = right.priority - left.priority;
+      if (priority !== 0) return priority;
+      return left.id < right.id ? -1 : 1;
+    });
+  let left: number = input.subtotalIdr;
+  for (const promotion of stack) {
+    const priced =
+      left > 0
+        ? evaluatePromotion(promotion, input, usageOf(promotion.id), {
+            discountableIdr: idr(left),
+          })
+        : null;
+    if (
+      priced === null ||
+      !priced.applied ||
+      (priced.discountIdr <= 0 &&
+        priced.freeItems.length === 0 &&
+        priced.facilityEntitlement === null)
+    ) {
+      chosen.set(promotion.id, {
+        applied: false,
+        promotionId: promotion.id,
+        reason: "not_selected",
+      });
+      continue;
+    }
+    chosen.set(promotion.id, priced);
+    left -= priced.discountIdr;
+  }
+
   let totalDiscountIdr = 0;
   const result: PromotionEvaluation[] = evaluations.map((evaluation) => {
     const decision = chosen.get(evaluation.promotionId) ?? evaluation;
