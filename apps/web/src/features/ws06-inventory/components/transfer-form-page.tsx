@@ -86,6 +86,10 @@ export function TransferFormPage() {
   const [note, setNote] = React.useState("");
   const [lineError, setLineError] = React.useState<string | undefined>();
   const [formError, setFormError] = React.useState<string | undefined>();
+  // One idempotency key per draft: a retry after a timeout or network error
+  // reuses it, so the API cannot book the same stock move twice. Any edit to
+  // the draft starts a new key (the body changed, so it is a new request).
+  const draftKey = React.useRef<string | null>(null);
 
   const remainingItems = React.useMemo(
     () =>
@@ -113,6 +117,10 @@ export function TransferFormPage() {
     const item = itemOf(id);
     return units.find((unit) => unit.id === item?.baseUomId)?.code ?? "—";
   };
+  React.useEffect(() => {
+    draftKey.current = null;
+  }, [fromValue, toValue, lines, note]);
+
   const pendingItem = itemOf(pendingItemId);
   const available = balances.find(
     (balance) =>
@@ -170,6 +178,7 @@ export function TransferFormPage() {
       return;
     }
     setFormError(undefined);
+    draftKey.current ??= crypto.randomUUID();
     createTransfer.mutate(
       {
         outletId: INVENTORY_OUTLET_ID,
@@ -180,7 +189,7 @@ export function TransferFormPage() {
           quantity: line.quantity,
         })),
         note: parsedNote.data === "" ? null : parsedNote.data,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: draftKey.current,
       },
       {
         onSuccess: () => {
