@@ -115,6 +115,11 @@ import { Route as KelolaKelolaPajakIndexRouteImport } from './routes/_kelola/kel
 import { Route as KelolaKelolaPajakLaporanRouteImport } from './routes/_kelola/kelola.pajak.laporan'
 import { Route as KelolaKelolaPajakOpsiRouteImport } from './routes/_kelola/kelola.pajak.opsi'
 import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_kelola/kelola.pajak.service-charge'
+import { Route as KelolaKelolaPromoIndexRouteImport } from './routes/_kelola/kelola.promo.index'
+import { Route as KelolaKelolaPromoPromotionIdRouteImport } from './routes/_kelola/kelola.promo.$promotionId'
+import { Route as KelolaKelolaPromoRoiRouteImport } from './routes/_kelola/kelola.promo.roi'
+import { Route as KelolaKelolaPromoTumpangTindihRouteImport } from './routes/_kelola/kelola.promo.tumpang-tindih'
+import { Route as KelolaKelolaPromoVoucherRouteImport } from './routes/_kelola/kelola.promo.voucher'
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
@@ -680,6 +685,34 @@ const KelolaKelolaPajakServiceChargeRoute =
     path: '/kelola/pajak/service-charge',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPromoIndexRoute = KelolaKelolaPromoIndexRouteImport.update({
+  id: '/kelola/promo/',
+  path: '/kelola/promo/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPromoPromotionIdRoute =
+  KelolaKelolaPromoPromotionIdRouteImport.update({
+    id: '/kelola/promo/$promotionId',
+    path: '/kelola/promo/$promotionId',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPromoRoiRoute = KelolaKelolaPromoRoiRouteImport.update({
+  id: '/kelola/promo/roi',
+  path: '/kelola/promo/roi',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPromoTumpangTindihRoute =
+  KelolaKelolaPromoTumpangTindihRouteImport.update({
+    id: '/kelola/promo/tumpang-tindih',
+    path: '/kelola/promo/tumpang-tindih',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPromoVoucherRoute =
+  KelolaKelolaPromoVoucherRouteImport.update({
+    id: '/kelola/promo/voucher',
+    path: '/kelola/promo/voucher',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
   id: '/pos/meja/',
   path: '/pos/meja/',
@@ -856,6 +889,10 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
+  '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
+  '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
+  '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -866,6 +903,7 @@ export interface FileRoutesByFullPath {
   '/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
+  '/kelola/promo/': typeof KelolaKelolaPromoIndexRoute
   '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -965,6 +1003,10 @@ export interface FileRoutesByTo {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
+  '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
+  '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
+  '/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/karyawan/absensi': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -975,6 +1017,7 @@ export interface FileRoutesByTo {
   '/kelola/meja': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
   '/kelola/pajak': typeof KelolaKelolaPajakIndexRoute
+  '/kelola/promo': typeof KelolaKelolaPromoIndexRoute
   '/pos/meja': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -1089,6 +1132,10 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/_kelola/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/_kelola/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
+  '/_kelola/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
+  '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
+  '/_kelola/kelola/promo/voucher': typeof KelolaKelolaPromoVoucherRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_karyawan/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -1099,6 +1146,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/_kelola/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
+  '/_kelola/kelola/promo/': typeof KelolaKelolaPromoIndexRoute
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
@@ -1203,6 +1251,10 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/promo/$promotionId'
+    | '/kelola/promo/roi'
+    | '/kelola/promo/tumpang-tindih'
+    | '/kelola/promo/voucher'
     | '/member/fasilitas/'
     | '/t/$token/'
     | '/karyawan/absensi/'
@@ -1213,6 +1265,7 @@ export interface FileRouteTypes {
     | '/kelola/meja/'
     | '/kelola/menu/'
     | '/kelola/pajak/'
+    | '/kelola/promo/'
     | '/pos/meja/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
@@ -1312,6 +1365,10 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/promo/$promotionId'
+    | '/kelola/promo/roi'
+    | '/kelola/promo/tumpang-tindih'
+    | '/kelola/promo/voucher'
     | '/member/fasilitas'
     | '/t/$token'
     | '/karyawan/absensi'
@@ -1322,6 +1379,7 @@ export interface FileRouteTypes {
     | '/kelola/meja'
     | '/kelola/menu'
     | '/kelola/pajak'
+    | '/kelola/promo'
     | '/pos/meja'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
@@ -1435,6 +1493,10 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/laporan'
     | '/_kelola/kelola/pajak/opsi'
     | '/_kelola/kelola/pajak/service-charge'
+    | '/_kelola/kelola/promo/$promotionId'
+    | '/_kelola/kelola/promo/roi'
+    | '/_kelola/kelola/promo/tumpang-tindih'
+    | '/_kelola/kelola/promo/voucher'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_karyawan/karyawan/absensi/'
@@ -1445,6 +1507,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/meja/'
     | '/_kelola/kelola/menu/'
     | '/_kelola/kelola/pajak/'
+    | '/_kelola/kelola/promo/'
     | '/_ops/pos/meja/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
@@ -2224,6 +2287,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPajakServiceChargeRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/promo/': {
+      id: '/_kelola/kelola/promo/'
+      path: '/kelola/promo'
+      fullPath: '/kelola/promo/'
+      preLoaderRoute: typeof KelolaKelolaPromoIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/promo/$promotionId': {
+      id: '/_kelola/kelola/promo/$promotionId'
+      path: '/kelola/promo/$promotionId'
+      fullPath: '/kelola/promo/$promotionId'
+      preLoaderRoute: typeof KelolaKelolaPromoPromotionIdRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/promo/roi': {
+      id: '/_kelola/kelola/promo/roi'
+      path: '/kelola/promo/roi'
+      fullPath: '/kelola/promo/roi'
+      preLoaderRoute: typeof KelolaKelolaPromoRoiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/promo/tumpang-tindih': {
+      id: '/_kelola/kelola/promo/tumpang-tindih'
+      path: '/kelola/promo/tumpang-tindih'
+      fullPath: '/kelola/promo/tumpang-tindih'
+      preLoaderRoute: typeof KelolaKelolaPromoTumpangTindihRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/promo/voucher': {
+      id: '/_kelola/kelola/promo/voucher'
+      path: '/kelola/promo/voucher'
+      fullPath: '/kelola/promo/voucher'
+      preLoaderRoute: typeof KelolaKelolaPromoVoucherRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_ops/pos/meja/': {
       id: '/_ops/pos/meja/'
       path: '/pos/meja'
@@ -2492,6 +2590,10 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakLaporanRoute: typeof KelolaKelolaPajakLaporanRoute
   KelolaKelolaPajakOpsiRoute: typeof KelolaKelolaPajakOpsiRoute
   KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
+  KelolaKelolaPromoPromotionIdRoute: typeof KelolaKelolaPromoPromotionIdRoute
+  KelolaKelolaPromoRoiRoute: typeof KelolaKelolaPromoRoiRoute
+  KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
+  KelolaKelolaPromoVoucherRoute: typeof KelolaKelolaPromoVoucherRoute
   KelolaKelolaAksesIndexRoute: typeof KelolaKelolaAksesIndexRoute
   KelolaKelolaAkuntansiIndexRoute: typeof KelolaKelolaAkuntansiIndexRoute
   KelolaKelolaInventoriIndexRoute: typeof KelolaKelolaInventoriIndexRoute
@@ -2499,6 +2601,7 @@ interface KelolaRouteChildren {
   KelolaKelolaMejaIndexRoute: typeof KelolaKelolaMejaIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
   KelolaKelolaPajakIndexRoute: typeof KelolaKelolaPajakIndexRoute
+  KelolaKelolaPromoIndexRoute: typeof KelolaKelolaPromoIndexRoute
   KelolaKelolaAksesRoleRoleIdRoute: typeof KelolaKelolaAksesRoleRoleIdRoute
   KelolaKelolaAkuntansiJurnalManualBaruRoute: typeof KelolaKelolaAkuntansiJurnalManualBaruRoute
   KelolaKelolaAkuntansiJurnalJournalEntryIdRoute: typeof KelolaKelolaAkuntansiJurnalJournalEntryIdRoute
@@ -2549,6 +2652,10 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakLaporanRoute: KelolaKelolaPajakLaporanRoute,
   KelolaKelolaPajakOpsiRoute: KelolaKelolaPajakOpsiRoute,
   KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
+  KelolaKelolaPromoPromotionIdRoute: KelolaKelolaPromoPromotionIdRoute,
+  KelolaKelolaPromoRoiRoute: KelolaKelolaPromoRoiRoute,
+  KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,
+  KelolaKelolaPromoVoucherRoute: KelolaKelolaPromoVoucherRoute,
   KelolaKelolaAksesIndexRoute: KelolaKelolaAksesIndexRoute,
   KelolaKelolaAkuntansiIndexRoute: KelolaKelolaAkuntansiIndexRoute,
   KelolaKelolaInventoriIndexRoute: KelolaKelolaInventoriIndexRoute,
@@ -2556,6 +2663,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaMejaIndexRoute: KelolaKelolaMejaIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
   KelolaKelolaPajakIndexRoute: KelolaKelolaPajakIndexRoute,
+  KelolaKelolaPromoIndexRoute: KelolaKelolaPromoIndexRoute,
   KelolaKelolaAksesRoleRoleIdRoute: KelolaKelolaAksesRoleRoleIdRoute,
   KelolaKelolaAkuntansiJurnalManualBaruRoute:
     KelolaKelolaAkuntansiJurnalManualBaruRoute,

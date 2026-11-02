@@ -73,6 +73,7 @@ import {
   toVoucher,
   type PromotionRow,
 } from "./crm-promo-engine";
+import { promotionDisabledAtOutlet } from "./crm-promo-outlets";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -672,6 +673,9 @@ export async function validateVoucherCode(
     } else {
       promotion = resolved.promotion;
     }
+    // legend-e5it: a promotion switched off at this outlet does not apply.
+    if (await promotionDisabledAtOutlet(tx, context, promotion.id, outletKey))
+      return { valid: false, reason: "not_applicable" };
     const usage = {
       promotionId: promotion.id,
       totalUses: 0,

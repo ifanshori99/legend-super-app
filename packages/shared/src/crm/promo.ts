@@ -390,10 +390,25 @@ function unitValueIdr(line: PromoLine): number {
   );
 }
 
+/**
+ * Free units of a "buy X get Y free" promotion (PRD §3.21, ORD-03; bead
+ * legend-w3zf, coordinator decision): the CHEAPEST eligible units are freed
+ * first, each valued at `unitValueIdr` (line total / quantity, rounded down).
+ * Ties are broken by menu item id, then by line position, and units of one
+ * menu item are reported as one entry, so the result does not depend on the
+ * order the checkout lists its lines.
+ *
+ * `capIdr` is the amount still discountable (the stack's remaining amount).
+ * Only whole units whose total value fits it are freed, so `freeItems` always
+ * names exactly what `discountIdr` paid for and never overstates it. Returns
+ * an empty list when not even the cheapest unit fits, and null when the bill
+ * has no matching units at all.
+ */
 function freeItemBenefit(
   promotion: Promotion,
   benefit: Extract<PromotionBenefit, { kind: "free_items" }>,
   input: PromoEvaluationInput,
+  capIdr: number,
 ): { freeItems: PromoFreeItem[]; discountIdr: number } | null {
   const buyCondition = promotion.conditions.find(
     (
@@ -421,21 +436,45 @@ function freeItemBenefit(
     (freeFromBuySet ? benefit.quantityPerMultiple : 0);
   const multiples = Math.floor(bought / unitsPerMultiple);
   if (multiples <= 0) return null;
-  const freeItems: PromoFreeItem[] = [];
+  const eligible = input.lines
+    .map((line, index) => ({ line, index, unitIdr: unitValueIdr(line) }))
+    .filter(({ line }) => benefit.menuItemIds.includes(line.menuItemId))
+    .sort(
+      (left, right) =>
+        left.unitIdr - right.unitIdr ||
+        (left.line.menuItemId < right.line.menuItemId
+          ? -1
+          : left.line.menuItemId > right.line.menuItemId
+            ? 1
+            : left.index - right.index),
+    );
+  if (eligible.length === 0) return null;
+  const quantities = new Map<string, number>();
   let discountIdr = 0;
   // The allowance (Y per multiple) is shared by every matching line, so two
   // lines of the free item never double it.
   let allowance = multiples * benefit.quantityPerMultiple;
-  for (const line of input.lines) {
+  for (const { line, unitIdr } of eligible) {
     if (allowance <= 0) break;
-    if (!benefit.menuItemIds.includes(line.menuItemId)) continue;
-    const quantity = Math.min(line.quantity, allowance);
-    if (quantity <= 0) continue;
-    allowance -= quantity;
-    freeItems.push({ menuItemId: line.menuItemId, quantity });
-    discountIdr += quantity * unitValueIdr(line);
+    const wanted = Math.min(line.quantity, allowance);
+    // Units are visited cheapest first, so once one does not fit the cap no
+    // later (equal or dearer) unit fits either.
+    const fits =
+      unitIdr > 0 ? Math.floor((capIdr - discountIdr) / unitIdr) : wanted;
+    const quantity = Math.max(0, Math.min(wanted, fits));
+    if (quantity > 0) {
+      allowance -= quantity;
+      discountIdr += quantity * unitIdr;
+      quantities.set(
+        line.menuItemId,
+        (quantities.get(line.menuItemId) ?? 0) + quantity,
+      );
+    }
+    if (quantity < wanted) break;
   }
-  if (freeItems.length === 0) return null;
+  const freeItems: PromoFreeItem[] = [...quantities].map(
+    ([menuItemId, quantity]) => ({ menuItemId, quantity }),
+  );
   return { freeItems, discountIdr };
 }
 
@@ -541,8 +580,17 @@ export function evaluatePromotion(
       discountIdr = benefit.amountIdr;
       break;
     case "free_items": {
-      const result = freeItemBenefit(promotion, benefit, input);
+      // Capped here, not by the generic clamp below, so the free units named
+      // on the redemption match the discount actually given (legend-w3zf).
+      const result = freeItemBenefit(
+        promotion,
+        benefit,
+        input,
+        discountableIdr,
+      );
       if (result === null) return rejected("no_matching_items");
+      // Not even the cheapest unit fits what is left of the bill.
+      if (result.freeItems.length === 0) return rejected("not_selected");
       freeItems = result.freeItems;
       discountIdr = result.discountIdr;
       break;

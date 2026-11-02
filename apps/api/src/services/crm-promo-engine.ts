@@ -13,10 +13,11 @@
 //
 // Race safety (LOY-03, "quota/budget caps race-safe"):
 // - an advisory lock per (tenant, order) serializes redeem/release of one order;
-// - candidate promotions are locked FOR UPDATE in id order (one global order,
-//   so two checkouts can never deadlock on each other), then re-evaluated with
-//   the locked counters, so the second of two concurrent redemptions sees the
-//   first one's use;
+// - only the candidate promotions for this bill (not every active promotion of
+//   the tenant, legend-9w77) are locked FOR UPDATE in id order (one global
+//   order, so two checkouts can never deadlock on each other), re-read and
+//   re-evaluated with the locked counters, so the second of two concurrent
+//   redemptions sees the first one's use;
 // - the counter UPDATEs repeat the cap in their WHERE clause and the table
 //   CHECKs repeat it again, so an over-redemption is impossible even if a
 //   future caller skipped the lock;
@@ -35,6 +36,7 @@ import {
   crmErrorMessages,
   crmEvents,
   defaultPromoStackingPolicy,
+  evaluatePromotion,
   outletLocalClock,
   promoStackingPolicySchema,
   promotionApplicationResultSchema,
@@ -90,6 +92,12 @@ import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import type { Tx } from "./permission-resolver";
+// Per-outlet switch + same-day min-spend reward (bead legend-e5it).
+import {
+  promotionDisabledAtOutlet,
+  promotionEnabledAtOutlet,
+} from "./crm-promo-outlets";
+import { loadSameDayMinSpend, sameDayRewardDate } from "./crm-promo-minspend";
 
 export type PromotionRow = typeof promotions.$inferSelect;
 export type VoucherRow = typeof vouchers.$inferSelect;
@@ -508,12 +516,146 @@ type Prepared = {
   voucher: VoucherRow | null;
   /** Evaluation id the voucher (or promo code) unlocks. */
   voucherEvaluationId: string | null;
+  /**
+   * Promotion rows held FOR UPDATE by this transaction (redeem path only;
+   * null for a quote). Every promotion redeem counts must be in it.
+   */
+  lockedPromotionIds: ReadonlySet<string> | null;
 };
 
 /**
- * Loads everything the pure evaluator needs. With `lock`, the voucher, every
- * candidate promotion (id order) and the customer's usage rows are locked
- * FOR UPDATE, so the result stays true until the transaction commits.
+ * Rejections that read only the promotion's own rules and the bill (status,
+ * validity, voucher, channel, member/tier, min spend, items, time window),
+ * never the quota/budget/per-customer counters or the stacking outcome. A
+ * promotion rejected for one of these cannot apply to this bill whatever the
+ * counters say, so redeem does not lock it (bead legend-9w77). Any other
+ * outcome — applied, quota/budget exhausted, or a reason added later — counts
+ * as a candidate and is locked (unknown reasons fail toward locking).
+ */
+const COUNTER_INDEPENDENT_REJECTIONS: ReadonlySet<PromoRejectionReason> =
+  new Set<PromoRejectionReason>([
+    "not_started",
+    "ended",
+    "paused",
+    "draft",
+    "channel_mismatch",
+    "member_only",
+    "tier_mismatch",
+    "min_spend_not_met",
+    "item_mismatch",
+    "time_window_mismatch",
+    "voucher_required",
+    "no_matching_items",
+  ]);
+
+/**
+ * Redeem-path lock set (bead legend-9w77; LOY-03 race safety; PRD §3.21).
+ *
+ * `prepare` first reads the tenant's active promotions WITHOUT locks. Each one
+ * is evaluated on its own (no stacking): those rejected for a
+ * counter-independent reason can never apply to this bill and stay unlocked,
+ * so an admin edit or another outlet's checkout on an unrelated promotion is
+ * never blocked by this order. The rest — the candidates — are locked
+ * `SELECT ... FOR UPDATE ORDER BY id` (one global id order, so concurrent
+ * checkouts and releases cannot deadlock), then re-read: their counters and
+ * rules come from the locked rows, and the customer's usage rows for them are
+ * locked the same way. The final evaluation therefore uses exact counters for
+ * every promotion that can apply, and the guarded counter UPDATEs in redeem
+ * remain the backstop.
+ *
+ * Stacking is deliberately ignored when picking candidates: a promotion that
+ * loses on priority now may win once a locked winner turns out exhausted, so
+ * every individually eligible promotion is locked, not just the top ones.
+ */
+async function lockCandidatePromotions(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: PromoEvaluationInput,
+  candidates: readonly Promotion[],
+  usage: readonly PromoUsage[],
+  customerId: string | null,
+): Promise<{
+  candidates: Promotion[];
+  usage: PromoUsage[];
+  lockedIds: ReadonlySet<string>;
+}> {
+  const usageById = new Map(usage.map((entry) => [entry.promotionId, entry]));
+  const lockIds = candidates
+    .filter((promotion) => {
+      const evaluation = evaluatePromotion(
+        promotion,
+        input,
+        usageById.get(promotion.id) ?? {
+          promotionId: promotion.id,
+          totalUses: 0,
+          customerUses: 0,
+        },
+      );
+      return (
+        evaluation.applied ||
+        !COUNTER_INDEPENDENT_REJECTIONS.has(evaluation.reason)
+      );
+    })
+    .map((promotion) => promotion.id);
+  const lockedIds = new Set<string>();
+  if (lockIds.length === 0)
+    return { candidates: [...candidates], usage: [...usage], lockedIds };
+
+  const tenantId = context.tenant.tenantId;
+  // A value voucher's id is not a promotion row: it simply matches nothing
+  // here (the voucher row lock taken in resolveCode covers it).
+  const rows = await tx
+    .select()
+    .from(promotions)
+    .where(
+      and(eq(promotions.tenantId, tenantId), inArray(promotions.id, lockIds)),
+    )
+    .orderBy(asc(promotions.id))
+    .for("update");
+  const fresh = new Map(rows.map((row) => [row.id, row]));
+  for (const row of rows) lockedIds.add(row.id);
+
+  const customerUses = new Map<string, number>();
+  if (customerId !== null && rows.length > 0) {
+    const usageRows = await tx
+      .select()
+      .from(promotionCustomerUsage)
+      .where(
+        and(
+          eq(promotionCustomerUsage.tenantId, tenantId),
+          eq(promotionCustomerUsage.customerProfileId, customerId),
+          inArray(promotionCustomerUsage.promotionId, [...lockedIds]),
+        ),
+      )
+      .orderBy(asc(promotionCustomerUsage.promotionId))
+      .for("update");
+    for (const row of usageRows) customerUses.set(row.promotionId, row.uses);
+  }
+
+  return {
+    candidates: candidates.map((promotion) => {
+      const row = fresh.get(promotion.id);
+      return row ? toPromotion(row) : promotion;
+    }),
+    usage: usage.map((entry) => {
+      const row = fresh.get(entry.promotionId);
+      if (!row) return entry;
+      return {
+        promotionId: entry.promotionId,
+        totalUses: row.usesTotal,
+        customerUses: customerUses.get(entry.promotionId) ?? 0,
+      };
+    }),
+    lockedIds,
+  };
+}
+
+/**
+ * Loads everything the pure evaluator needs. With `lock`, the voucher, the
+ * candidate promotions for this bill (id order; see lockCandidatePromotions)
+ * and the customer's usage rows for them are locked FOR UPDATE, so the result
+ * stays true until the transaction commits. Promotions that cannot apply to
+ * this bill are read but never locked (bead legend-9w77).
  */
 async function prepare(
   tx: Tx,
@@ -550,6 +692,17 @@ async function prepare(
     }
     voucherEvaluationId = codePromotion.id;
   }
+  // legend-e5it: a code for a promotion switched off at this outlet is refused.
+  if (
+    codePromotion !== null &&
+    (await promotionDisabledAtOutlet(
+      tx,
+      context,
+      codePromotion.id,
+      checkout.outletId,
+    ))
+  )
+    throw crmHttpError("VOUCHER_INVALID");
 
   const at = checkout.at;
   const query = tx
@@ -564,10 +717,14 @@ async function prepare(
         voucherEvaluationId === null
           ? eq(promotions.voucherRequired, false)
           : sql`(${promotions.voucherRequired} = false OR ${promotions.id} = ${voucherEvaluationId})`,
+        // legend-e5it: skip promotions switched off at this outlet.
+        promotionEnabledAtOutlet(checkout.outletId),
       ),
     )
     .orderBy(asc(promotions.id));
-  const rows = lock ? await query.for("update") : await query;
+  // Never locked here: redeem locks only the candidates for this bill below
+  // (lockCandidatePromotions), not every active promotion of the tenant.
+  const rows = await query;
   const candidates = rows.map(toPromotion);
   // A value voucher, or a code promotion that is not active right now, still
   // goes to the evaluator so the caller sees why it does not apply.
@@ -576,6 +733,16 @@ async function prepare(
     !candidates.some((promotion) => promotion.id === codePromotion.id)
   )
     candidates.push(codePromotion);
+  // Q40 (legend-e5it): a member's same-day minimum-spend facility reward
+  // counts the day's earlier bills (crm-promo-minspend.ts).
+  const sameDay = await loadSameDayMinSpend(tx, context, {
+    promotions: candidates,
+    customer: checkout.customer,
+    outlet,
+    at,
+    lock,
+  });
+  candidates.splice(0, candidates.length, ...candidates.map(sameDay));
 
   const customerId = checkout.customer?.customerProfileId ?? null;
   const customerUses = new Map<string, number>();
@@ -592,7 +759,7 @@ async function prepare(
         ),
       )
       .orderBy(asc(promotionCustomerUsage.promotionId));
-    const usageRows = lock ? await usageQuery.for("update") : await usageQuery;
+    const usageRows = await usageQuery;
     for (const row of usageRows) customerUses.set(row.promotionId, row.uses);
   }
   const usesById = new Map(rows.map((row) => [row.id, row.usesTotal]));
@@ -613,13 +780,33 @@ async function prepare(
     customer: checkout.customer,
     voucherPromotionId: voucherEvaluationId,
   };
-  return {
+  const policy = await loadStackingPolicy(tx, context);
+  if (!lock)
+    return {
+      input,
+      candidates,
+      usage,
+      policy,
+      voucher,
+      voucherEvaluationId,
+      lockedPromotionIds: null,
+    };
+  const locked = await lockCandidatePromotions(
+    tx,
+    context,
     input,
     candidates,
     usage,
-    policy: await loadStackingPolicy(tx, context),
+    customerId,
+  );
+  return {
+    input,
+    candidates: locked.candidates.map(sameDay),
+    usage: locked.usage,
+    policy,
     voucher,
     voucherEvaluationId,
+    lockedPromotionIds: locked.lockedIds,
   };
 }
 
@@ -747,7 +934,10 @@ type PromoEventName =
   | "promotion.updated"
   | "promo_application.redeemed"
   | "promo_application.released"
-  | "voucher.issued";
+  | "voucher.issued"
+  // legend-e5it: per-outlet switch and partial-refund withdrawal.
+  | "promotion_outlet.changed"
+  | "promo_application.adjusted";
 
 /** Append one catalogued promo event inside the caller's transaction. */
 export async function appendPromoEvent(
@@ -819,6 +1009,19 @@ export type RedeemPromotionsInput = PromoCheckoutInput & {
  * Commits the promotions of one order inside the caller's order transaction
  * (LOY-03). Idempotent per order: a retry with the same request returns the
  * stored result; a different request for the same order is refused.
+ *
+ * Cross-module lock order (bead legend-9w77; every caller must follow it so
+ * order and promo transactions never deadlock):
+ *   1. the order row (the checkout inserts it / the void path locks it
+ *      FOR UPDATE) — the caller does this BEFORE calling redeem/release;
+ *   2. the per-order advisory lock (`lockOrder`);
+ *   3. the presented voucher row;
+ *   4. candidate promotion rows, `ORDER BY id` (only the promotions that can
+ *      apply to this bill — see lockCandidatePromotions);
+ *   5. the customer's `promotion_customer_usage` rows, by promotion id.
+ * `releasePromotions` (void/refund, legend-souz) takes the same order. Never
+ * lock a promotion row before the order row, and never lock promotions out of
+ * id order.
  */
 export async function redeemPromotions(
   tx: Tx,
@@ -947,6 +1150,10 @@ export async function redeemPromotions(
         : null;
 
     if (promotionId !== null) {
+      // Invariant (legend-9w77): only a locked candidate can apply, because
+      // an unlocked promotion was rejected for a counter-independent reason.
+      if (!prepared.lockedPromotionIds?.has(promotionId))
+        throw new Error("Applied promotion was not locked");
       // Global quota + budget, atomically and guarded (CHECKs back this up).
       const counted = await tx
         .update(promotions)
@@ -1036,6 +1243,8 @@ export async function redeemPromotions(
           sourceOrderId: orderId,
           issuedAt: now,
           expiresAt,
+          // Q40 once-per-day key (legend-e5it); null without a min spend.
+          businessDate: sameDayRewardDate(promotion, now, outlet.timezone),
         })
         .returning({ id: facilityRewards.id });
       if (!reward) throw new Error("Facility reward insert returned no row");
@@ -1088,8 +1297,10 @@ export type ReleasePromotionsResult = {
  * Gives back what a voided order consumed: global uses and budget, the
  * customer's use, the voucher (back to issued) and the facility rewards
  * (revoked; WS-09 revokes the entitlement from the event). Idempotent: a
- * second release is a no-op. Partial refunds keep the promotion (the bill's
- * promo stays valid for the items kept); a full void releases it.
+ * second release is a no-op. A full void releases everything; a partial
+ * refund calls `recomputeAfterPartialRefund` (crm-promo-refund.ts, owner
+ * Q41) instead, which withdraws only the promotions the reduced bill no
+ * longer earns.
  */
 export async function releasePromotions(
   tx: Tx,
