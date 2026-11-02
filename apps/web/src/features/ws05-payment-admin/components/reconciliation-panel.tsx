@@ -4,6 +4,7 @@
 // (per bank) live in the same queue.
 import * as React from "react";
 import { useT } from "@/components/i18n";
+import { ApiError } from "@/lib/api/errors";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
@@ -15,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ErrorState } from "@/components/ui/feedback-state";
+import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Money } from "@/components/ui/money";
 import {
@@ -103,6 +104,17 @@ export function ReconciliationPanel() {
             <Skeleton key={index} className="h-24" />
           ))}
           <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
+        </div>
+      ) : summary.error instanceof ApiError && summary.error.status === 503 ? (
+        // The API fails closed until settlement import exists (legend-jlqi):
+        // say so plainly instead of offering a retry that cannot succeed.
+        <div className="rounded-xl border-(length:--border-w) bg-card">
+          <EmptyState
+            title={t("paymentAdmin.reconciliation.summaryUnavailableTitle")}
+            description={t(
+              "paymentAdmin.reconciliation.summaryUnavailableHint",
+            )}
+          />
         </div>
       ) : summary.isError ? (
         <div className="rounded-container border-(length:--border-w) bg-card">

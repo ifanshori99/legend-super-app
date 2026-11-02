@@ -102,6 +102,12 @@ export function minutesUntilExpiry(session: Session, now: Date): number {
  * Show the idle dialog once per session end: dismissing it hides the warning
  * until the session's expiry moves (a later activity pushes it, so a new
  * warning is warranted then).
+ *
+ * The dismissal key is safe against the real API (legend-dw4d): a refetch
+ * either returns the same deadline (GET /api/auth/me is not activity), or a
+ * recorded activity (`touchSession`) moved it to now + 30 idle minutes — far
+ * outside the 2-minute warning window — so a changed value inside the window
+ * cannot occur. A mock that recomputed a near deadline per fetch broke that.
  */
 export function idleWarningVisible(input: {
   readonly session: Session;
