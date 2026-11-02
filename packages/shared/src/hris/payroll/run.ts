@@ -392,6 +392,11 @@ export const payrollRunSchema = z
       issue("reversal", "A reversed run has an approved reversal");
     if (run.status === "locked" && run.reversal?.status === "approved")
       issue("reversal", "An approved reversal moves the run to reversed");
+    if (run.status === "paid" && run.reversal?.status === "approved")
+      issue(
+        "reversal",
+        "A paid run cannot carry an approved reversal (correct it in a later run)",
+      );
   });
 export type PayrollRun = z.infer<typeof payrollRunSchema>;
 

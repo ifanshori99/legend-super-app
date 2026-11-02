@@ -64,8 +64,9 @@ const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const userId = id;
 const employeeRef = (n: number) => employeeIdSchema.parse(id(n));
+// 23-char prefix + 3 digits = the canonical 26-char ULID (ulidIdSchema).
 const ulid = (n: number) =>
-  `01JBQ7Z8K3M4N5P6Q7R8S9T${String(n).padStart(2, "0")}`;
+  `01JBQ7Z8K3M4N5P6Q7R8S9T${String(n).padStart(3, "0")}`;
 const masked = (raw: string, rule: "last4" | "name" | "email" = "last4") => ({
   masked: maskPiiValue(raw, rule),
   keyVersion: 1,

@@ -9,8 +9,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as payroll from "../packages/shared/src/hris/payroll/index.ts";
+import { bankTransferRowSchema } from "../packages/shared/src/hris/payroll/server.ts";
 import { eventCatalogByName } from "../packages/shared/src/events/index.ts";
+import { ulidSchema } from "../packages/shared/src/core/index.ts";
 import { ptkpStatusSchema } from "../packages/shared/src/hris/index.ts";
+import { cafeLegendHrisFixtures } from "../packages/shared/src/hris/fixtures.ts";
 
 const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const tenantId = uuid(1);
@@ -358,6 +361,22 @@ test("PAYR-01 state machine: every transition follows the PRD status list", () =
         at: at(29),
       }),
     "PAYROLL_RUN_INVALID_TRANSITION",
+  );
+  // A stored paid row cannot carry an approved reversal: approving one moves
+  // the run to reversed, and a paid run is corrected in a later run.
+  assert.equal(
+    payroll.payrollRunSchema.safeParse({
+      ...paid,
+      reversal: {
+        status: "approved",
+        reason: "Salah input",
+        requestedBy: hrUser,
+        requestedAt: at(29),
+        decidedBy: financeUser,
+        decidedAt: at(29, 3),
+      },
+    }).success,
+    false,
   );
   throwsCode(
     () => payroll.assertPayrollRunEditable(paid.status),
@@ -1161,6 +1180,37 @@ test("payslip arithmetic: gross, deductions and net must add up", () => {
     payroll.payslipCalculationSchema.safeParse(taxableDeduction).success,
     false,
   );
+  // An earning cannot masquerade as the PPh 21 withholding: gross 5,150,000 =
+  // base + overtime + the "tax" earning, so the arithmetic alone adds up.
+  const disguisedWithholding = {
+    ...good,
+    grossIdr: 5_150_000,
+    deductionsIdr: 100_000,
+    netIdr: 5_050_000,
+    lines: good.lines.map((l) =>
+      l.category === "pph21" ? { ...l, kind: "earning" } : l,
+    ),
+  };
+  assert.equal(
+    payroll.payslipCalculationSchema.safeParse(disguisedWithholding).success,
+    false,
+  );
+  assert.ok(
+    payroll
+      .payslipTotalsIssues(disguisedWithholding)
+      .some((issue) => issue.includes("kind")),
+  );
+  // A reimbursement repays an expense; it cannot be deducted from salary.
+  const deductedReimbursement = {
+    ...good,
+    lines: [...good.lines, line("reimbursement", "deduction", 10_000)],
+    deductionsIdr: good.deductionsIdr + 10_000,
+    netIdr: good.netIdr - 10_000,
+  };
+  assert.equal(
+    payroll.payslipCalculationSchema.safeParse(deductedReimbursement).success,
+    false,
+  );
 });
 
 test("PAYR-04 bank transfer file total equals bank-paid net pay", () => {
@@ -1208,7 +1258,7 @@ test("PAYR-04 bank transfer file total equals bank-paid net pay", () => {
   );
   // The raw bank row is digits-only and positive.
   assert.equal(
-    payroll.bankTransferRowSchema.safeParse({
+    bankTransferRowSchema.safeParse({
       employeeId: uuid(1004),
       employeeNo: "EMP-1004",
       accountHolderName: "Dewi",
@@ -1360,6 +1410,8 @@ test("payroll endpoints: unique ids, strict bodies, tenant id rejected (TEN-02)"
   // The PWA list exposes no amounts before the PIN.
   const summaryKeys = Object.keys(payroll.myPayslipSummarySchema.shape);
   assert.ok(summaryKeys.every((key) => !key.endsWith("Idr")));
+  // HR-03: the decrypted account number's schema is not in the client barrel.
+  assert.equal("bankTransferRowSchema" in payroll, false);
 });
 
 test("payroll fixtures parse and satisfy PAYR-04 invariants", () => {
@@ -1398,4 +1450,14 @@ test("payroll fixtures parse and satisfy PAYR-04 invariants", () => {
   for (const run of Object.values(f.payrollRuns))
     payroll.payrollRunSchema.parse(run);
   payroll.payrollLocked.envelopeSchema.parse(f.events.payrollLocked);
+});
+
+test("fixture ids that PRD marks ULID are canonical 26-char ULIDs", () => {
+  // attendance_logs.id is ULID (PK) in the HRIS contract; the payroll event
+  // envelope id is a ULID too. A 25-char fixture id would be rejected (the
+  // hris helper pads to 3 digits, so every call site is 26 chars).
+  for (const log of cafeLegendHrisFixtures.attendanceLogs)
+    assert.equal(ulidSchema.safeParse(log.id).success, true, log.id);
+  for (const event of Object.values(payroll.cafeLegendPayrollFixtures.events))
+    assert.equal(ulidSchema.safeParse(event.id).success, true, event.id);
 });

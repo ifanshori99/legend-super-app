@@ -31,9 +31,11 @@ import {
 import type { Idr } from "../../core/index.ts";
 import { legalEntityIdSchema } from "../../accounting/ids.ts";
 import { employeeIdSchema } from "../ids.ts";
+import type { EmployeeId } from "../ids.ts";
 import { ptkpStatusSchema } from "../organization.ts";
 import {
   payComponentCategorySchema,
+  payComponentKindOf,
   payComponentKindSchema,
 } from "./components.ts";
 import { PayrollError } from "./errors.ts";
@@ -46,7 +48,6 @@ import {
 import { BPJS_TABLE_TYPES, terCategorySchema } from "./statutory.ts";
 
 const nonNegativeIdr = idrSchema.refine((v) => v >= 0, "Must not be negative");
-const positiveIdr = idrSchema.refine((v) => v > 0, "Must be positive");
 
 // ---- Lines and calculation --------------------------------------------
 
@@ -173,9 +174,17 @@ export function payslipTotalsIssues(slip: CalculationLike): string[] {
     sumWhere(slip.lines, (l) => l.category === "overtime") !== slip.overtimeIdr
   )
     issues.push("overtimeIdr != overtime lines");
-  for (const line of slip.lines)
+  for (const line of slip.lines) {
+    // A line's kind must follow its category (the rule payComponentSchema
+    // enforces), otherwise an earning could masquerade as a PPh 21/BPJS/kasbon
+    // deduction (or a reimbursement as a deduction) and still add up.
+    if (line.kind !== payComponentKindOf(line.category))
+      issues.push(
+        `line ${line.componentCode} kind does not match its category`,
+      );
     if (line.kind === "deduction" && line.taxable)
       issues.push(`deduction line ${line.componentCode} marked taxable`);
+  }
   if (new Set(slip.bpjs.map((b) => b.type)).size !== slip.bpjs.length)
     issues.push("duplicate BPJS programme");
   return issues;
@@ -360,23 +369,6 @@ export const BANK_TRANSFER_FORMATS = [
 export const bankTransferFormatSchema = z.enum(BANK_TRANSFER_FORMATS);
 export type BankTransferFormat = z.infer<typeof bankTransferFormatSchema>;
 
-/**
- * SERVER-ONLY row (contains the decrypted account number): built inside the
- * API when the file is generated, written to the private bucket, never sent
- * to a browser, logged, audited or put in an event.
- */
-export const bankTransferRowSchema = z.strictObject({
-  employeeId: employeeIdSchema,
-  employeeNo: z.string().min(2).max(30),
-  accountHolderName: z.string().trim().min(1).max(150),
-  bankCode: z.string().regex(/^[0-9A-Z]{3,11}$/, "Bank code or SWIFT"),
-  accountNumber: z.string().regex(/^\d{5,34}$/, "Digits only"),
-  amountIdr: positiveIdr,
-  /** Transfer remark, e.g. "GAJI 2026-11 EMP-1004". */
-  reference: z.string().regex(/^[A-Z0-9 .:/-]{1,40}$/),
-});
-export type BankTransferRow = z.infer<typeof bankTransferRowSchema>;
-
 export const bankTransferFileSchema = z.strictObject({
   id: bankTransferFileIdSchema,
   tenantId: tenantIdSchema,
@@ -397,7 +389,7 @@ export type BankTransferFile = z.infer<typeof bankTransferFileSchema>;
  * its total equals their net pay (= run net - cash). Throws on mismatch.
  */
 export function assertBankFileMatchesRun(
-  rows: readonly Pick<BankTransferRow, "employeeId" | "amountIdr">[],
+  rows: readonly { employeeId: EmployeeId; amountIdr: Idr }[],
   slips: readonly Pick<
     PayslipCalculation,
     "employeeId" | "netIdr" | "paymentMethod"
