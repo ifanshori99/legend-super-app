@@ -80,7 +80,7 @@ export function TablePicker({
       </Tabs>
 
       {visible.length === 0 ? (
-        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+        <p className="rounded-container bg-muted p-3 text-sm text-muted-foreground">
           {t("reservation.assign.emptyZoneHint")}
         </p>
       ) : (
@@ -110,9 +110,9 @@ export function TablePicker({
                     state: stateLabel,
                   })}
                   className={cn(
-                    "flex min-h-16 w-full flex-col gap-1 rounded-xl border-(length:--border-w) bg-card p-2.5 text-left text-foreground transition-colors duration-(--duration-fast)",
+                    "flex min-h-16 w-full flex-col gap-1 rounded-container border-(length:--border-w) bg-card p-2.5 text-left text-foreground transition-colors duration-(--duration-fast)",
                     "hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                    isSelected && "border-primary bg-accent",
+                    isSelected && "border-primary bg-primary-tint",
                     row.state === "conflict" &&
                       !isSelected &&
                       "border-danger bg-danger-subtle",

@@ -72,7 +72,7 @@ function WaitlistRow({
     <li
       data-waitlist-id={entry.id}
       data-status={entry.status}
-      className="grid gap-2 rounded-xl border-(length:--border-w) bg-card p-card sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+      className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-card sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
     >
       <div className="grid min-w-0 gap-1">
         <div className="flex flex-wrap items-center gap-2">
@@ -234,7 +234,7 @@ export function WaitlistTab({
           {t("reservation.waitlist.loading")}
         </span>
         {Array.from({ length: 3 }, (_, index) => (
-          <Skeleton key={index} className="h-24 w-full rounded-xl" />
+          <Skeleton key={index} className="h-24 w-full rounded-container" />
         ))}
       </div>
     );
@@ -271,16 +271,14 @@ export function WaitlistTab({
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-base font-semibold">
-          {t("reservation.waitlist.queue")}
-        </h2>
+        <h2 className="type-title">{t("reservation.waitlist.queue")}</h2>
         <p className="text-sm text-muted-foreground tabular">
           {t("reservation.waitlist.queueCount", { count: active.length })}
         </p>
       </div>
 
       {active.length === 0 ? (
-        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+        <p className="rounded-container bg-muted p-3 text-sm text-muted-foreground">
           {t("reservation.waitlist.emptyHint")}
         </p>
       ) : (
@@ -303,7 +301,7 @@ export function WaitlistTab({
 
       {done.length > 0 && (
         <section className="grid gap-2">
-          <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          <h2 className="type-eyebrow text-muted-foreground">
             {t("reservation.waitlist.done")}
           </h2>
           <ul className="grid list-none gap-2 p-0">
