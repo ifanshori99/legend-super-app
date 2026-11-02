@@ -103,7 +103,6 @@ function CodeChallenge({
           inputMode="numeric"
           autoComplete="one-time-code"
           autoFocus
-          maxLength={6}
           className="max-w-40 text-center font-mono text-lg tracking-[0.3em] tabular"
         />
       </FormField>
@@ -179,7 +178,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
                 description={t("staffAuth.verify.noSessionHint")}
                 action={
                   <Button asChild>
-                    <Link to="/sign-in">
+                    <Link to="/masuk">
                       {t("staffAuth.verify.backToSignIn")}
                     </Link>
                   </Button>
@@ -211,9 +210,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
               description={t("staffAuth.verify.noSessionHint")}
               action={
                 <Button asChild>
-                  <Link to="/sign-in">
-                    {t("staffAuth.verify.backToSignIn")}
-                  </Link>
+                  <Link to="/masuk">{t("staffAuth.verify.backToSignIn")}</Link>
                 </Button>
               }
             />
@@ -306,7 +303,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
         <p className="mx-auto max-w-md text-center text-sm leading-5 text-muted-foreground">
           {t("staffAuth.verify.notYou")}{" "}
           <Link
-            to="/sign-in"
+            to="/masuk"
             className="font-semibold text-primary underline-offset-4 hover:underline"
           >
             {t("staffAuth.verify.backToSignIn")}

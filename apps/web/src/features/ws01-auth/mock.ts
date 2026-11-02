@@ -129,7 +129,12 @@ function totpSecret(): string {
   return Array.from(bytes, (byte) => BASE32[byte % 32]).join("");
 }
 
-registerMock(getCurrentAuth, ({ scenario }) => {
+/**
+ * The staff side of GET /api/auth/me (owner owing a second factor). Exported
+ * for lib/mock/handlers/current-auth.ts, which arbitrates with the customer
+ * sign-in mock of the same endpoint.
+ */
+export function staffCurrentAuthMock({ scenario }: { scenario: string }) {
   const base = cafeLegendIdentityFixtures;
   const owner = base.usersByKey.owner;
   const auth = state.get();
@@ -150,7 +155,9 @@ registerMock(getCurrentAuth, ({ scenario }) => {
       ),
     },
   };
-});
+}
+
+registerMock(getCurrentAuth, staffCurrentAuthMock);
 
 registerMock(listMfaFactors, ({ scenario }) => ({
   data: scenario === "empty" ? [] : state.get().factors,

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Clock } from "lucide-react";
+import { useLocation } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,9 +43,23 @@ function useClientNow(intervalMs: number): Date | null {
  */
 export function IdleSessionWarning() {
   const t = useT();
-  const auth = useCurrentAuth({ refetchInterval: 30_000 });
+  // No background polling (Opus review, legend-9bh): the API's identity
+  // middleware records activity on authenticated requests, so a timer that
+  // re-reads the session every 30 s would keep an unattended tab alive and the
+  // 30-minute idle end (§3 F6) would never come. The view refreshes on real
+  // activity instead: each navigation, and the "stay" button.
+  const auth = useCurrentAuth();
   const [dismissedFor, setDismissedFor] = React.useState<string | null>(null);
   const { refetch } = auth;
+  const { pathname } = useLocation();
+  const firstPath = React.useRef(true);
+  React.useEffect(() => {
+    if (firstPath.current) {
+      firstPath.current = false;
+      return;
+    }
+    void refetch();
+  }, [pathname, refetch]);
 
   // Client-only clock: the server has no user activity to measure, and a
   // rendered date during SSR would hydrate with a different minute.

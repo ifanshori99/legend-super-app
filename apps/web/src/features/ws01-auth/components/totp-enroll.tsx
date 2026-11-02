@@ -154,7 +154,6 @@ export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
           inputMode="numeric"
           autoComplete="one-time-code"
           autoFocus
-          maxLength={6}
           className="max-w-40 text-center font-mono text-lg tracking-[0.3em] tabular"
         />
       </FormField>

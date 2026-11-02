@@ -11,15 +11,16 @@ export const staffAuthKeys = {
 };
 
 /**
- * AUTH-05 state of this session. The idle warning needs a fresh value, so the
- * caller chooses a refetch interval; the default matches the 30-second query
- * freshness of the app.
+ * AUTH-05 state of this session. Never polled on a timer and never refetched
+ * on window focus: reading it can count as session activity server-side, which
+ * would defeat the 30-minute idle end (§3 F6). Callers refetch on user action.
  */
 export function currentAuthQuery(options?: { refetchInterval?: number }) {
   return queryOptions({
     queryKey: staffAuthKeys.current(),
     queryFn: ({ signal }) => fetchCurrentAuth(signal),
     refetchInterval: options?.refetchInterval,
+    refetchOnWindowFocus: false,
   });
 }
 

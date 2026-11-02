@@ -77,7 +77,7 @@ export function SecurityPage() {
             description={t("staffAuth.status.endedHint")}
             action={
               <Button asChild>
-                <Link to="/sign-in">
+                <Link to="/masuk">
                   <LogIn aria-hidden="true" />
                   {t("staffAuth.verify.backToSignIn")}
                 </Link>
