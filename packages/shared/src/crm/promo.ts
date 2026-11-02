@@ -287,6 +287,38 @@ const ZERO_USAGE: PromoUsage = {
   customerUses: 0,
 };
 
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/**
+ * Day of week (0 = Sunday) and "HH:mm" of an instant in the outlet's IANA time
+ * zone: the server derives `localDayOfWeek` / `localTime` with this, never
+ * from the client's clock (PRD §6 business dates in the outlet zone).
+ */
+export function outletLocalClock(
+  at: string | Date,
+  timeZone: string,
+): { localDayOfWeek: number; localTime: string } {
+  const instant = typeof at === "string" ? new Date(at) : at;
+  if (Number.isNaN(instant.getTime())) throw new RangeError("Invalid date");
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const part = (type: string) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  const localDayOfWeek = WEEKDAYS.indexOf(
+    part("weekday") as (typeof WEEKDAYS)[number],
+  );
+  if (localDayOfWeek < 0) throw new RangeError("Unknown weekday");
+  return {
+    localDayOfWeek,
+    localTime: `${part("hour").padStart(2, "0")}:${part("minute")}`,
+  };
+}
+
 function withinTimeWindow(
   condition: Extract<PromotionCondition, { kind: "time_window" }>,
   day: number,
@@ -343,6 +375,21 @@ function conditionFailure(
   return null;
 }
 
+/**
+ * What one unit of a line is worth on this bill: its unit price, or less when
+ * the line already carries an item-level discount (member price, manual line
+ * discount), so `lineTotalIdr < unitPriceIdr * quantity`. Rounded down, so a
+ * free or bundled unit can never be valued above what the guest would pay
+ * (bead legend-w3zf; PRD §3.21, ORD-03).
+ */
+function unitValueIdr(line: PromoLine): number {
+  if (line.quantity <= 0) return 0;
+  return Math.min(
+    line.unitPriceIdr,
+    Math.floor(line.lineTotalIdr / line.quantity),
+  );
+}
+
 function freeItemBenefit(
   promotion: Promotion,
   benefit: Extract<PromotionBenefit, { kind: "free_items" }>,
@@ -358,7 +405,21 @@ function freeItemBenefit(
   const bought = input.lines
     .filter((line) => buyCondition.menuItemIds.includes(line.menuItemId))
     .reduce((sum, line) => sum + line.quantity, 0);
-  const multiples = Math.floor(bought / buyCondition.minQuantity);
+  // A free unit that is also one of the buy items is not a paid unit, so one
+  // multiple needs `minQuantity` paid units PLUS the free units it gives away.
+  // Otherwise "buy 1 get 1 free" would make a single unit free (100% off) and
+  // "buy 2 get 1 free" would free one of only two units. When the free items
+  // are different items ("buy 2 coffee, get 1 croissant") they never take a
+  // paid unit, so the threshold stays `minQuantity`. A mixed free list is
+  // treated conservatively (the free unit may be a buy item) and can only
+  // under-award, never over-discount.
+  const freeFromBuySet = benefit.menuItemIds.some((menuItemId) =>
+    buyCondition.menuItemIds.includes(menuItemId),
+  );
+  const unitsPerMultiple =
+    buyCondition.minQuantity +
+    (freeFromBuySet ? benefit.quantityPerMultiple : 0);
+  const multiples = Math.floor(bought / unitsPerMultiple);
   if (multiples <= 0) return null;
   const freeItems: PromoFreeItem[] = [];
   let discountIdr = 0;
@@ -372,7 +433,7 @@ function freeItemBenefit(
     if (quantity <= 0) continue;
     allowance -= quantity;
     freeItems.push({ menuItemId: line.menuItemId, quantity });
-    discountIdr += quantity * line.unitPriceIdr;
+    discountIdr += quantity * unitValueIdr(line);
   }
   if (freeItems.length === 0) return null;
   return { freeItems, discountIdr };
@@ -396,7 +457,7 @@ function bundleDiscount(
       bundles,
       lines.reduce((sum, line) => sum + line.quantity, 0),
     );
-    unitTotal += Math.min(...lines.map((line) => line.unitPriceIdr));
+    unitTotal += Math.min(...lines.map((line) => unitValueIdr(line)));
   }
   const discount = bundles * (unitTotal - benefit.bundlePriceIdr);
   return discount > 0 ? discount : null;
@@ -446,6 +507,10 @@ export function evaluatePromotion(
     return rejected("voucher_required");
   if (promotion.quotaTotal !== null && usage.totalUses >= promotion.quotaTotal)
     return rejected("quota_exhausted");
+  // A per-customer quota cannot be counted on an anonymous bill, so it fails
+  // closed instead of letting a walk-in reuse a once-per-customer promotion.
+  if (promotion.quotaPerCustomer !== null && input.customer === null)
+    return rejected("member_only");
   if (
     promotion.quotaPerCustomer !== null &&
     usage.customerUses >= promotion.quotaPerCustomer
@@ -489,6 +554,9 @@ export function evaluatePromotion(
       break;
     }
     case "facility_entitlement":
+      // PRD §3.25 "Titik Masuk": facility access is bound to an identified
+      // customer, so the minimum-spend reward needs one.
+      if (input.customer === null) return rejected("member_only");
       facilityEntitlement = {
         facilityProductId: benefit.facilityProductId,
         quantity: benefit.quantity,
@@ -545,7 +613,9 @@ export type PromotionApplicationResult = z.infer<
  * never picks a voucher-required promotion; pass its id in
  * `input.voucherPromotionId` to apply it explicitly.
  *
- * Stackable promotions are ordered by priority (higher first) then id, and a
+ * Stackable promotions are selected by priority (higher first) then id; the
+ * chosen stack is then priced item-level first (free items, bundle price),
+ * bill-level after (percentage, nominal, facility reward), and a
  * percentage discount is computed on the amount still discountable after the
  * promotions before it, so two percentages compound instead of adding up:
  * 10% then 20% of Rp100.000 is Rp28.000, not Rp30.000 (owner decision Q20,
@@ -698,6 +768,53 @@ export function applyPromotions(
     usedGroups.add(group);
     if (!promotion.stackable) exclusiveUsed = true;
   }
+  // Application order of the chosen stack (coordinator decision,
+  // legend-7x4g): the selection above (who joins, non-stackable, group,
+  // maxStacked) follows priority; the amounts are then computed item-level
+  // first (free items, bundle price), bill-level after (percentage, nominal,
+  // facility reward) on what remains, each tier by priority then id, each step
+  // on the amount still discountable (owner Q20).
+  const tierOf = (promotion: Promotion) =>
+    promotion.benefit.kind === "free_items" ||
+    promotion.benefit.kind === "bundle_price"
+      ? 0
+      : 1;
+  const stack = ordered
+    .filter((evaluation) => chosen.get(evaluation.promotionId)?.applied)
+    .map((evaluation) => promotionById.get(evaluation.promotionId) as Promotion)
+    .sort((left, right) => {
+      const tier = tierOf(left) - tierOf(right);
+      if (tier !== 0) return tier;
+      const priority = right.priority - left.priority;
+      if (priority !== 0) return priority;
+      return left.id < right.id ? -1 : 1;
+    });
+  let left: number = input.subtotalIdr;
+  for (const promotion of stack) {
+    const priced =
+      left > 0
+        ? evaluatePromotion(promotion, input, usageOf(promotion.id), {
+            discountableIdr: idr(left),
+          })
+        : null;
+    if (
+      priced === null ||
+      !priced.applied ||
+      (priced.discountIdr <= 0 &&
+        priced.freeItems.length === 0 &&
+        priced.facilityEntitlement === null)
+    ) {
+      chosen.set(promotion.id, {
+        applied: false,
+        promotionId: promotion.id,
+        reason: "not_selected",
+      });
+      continue;
+    }
+    chosen.set(promotion.id, priced);
+    left -= priced.discountIdr;
+  }
+
   let totalDiscountIdr = 0;
   const result: PromotionEvaluation[] = evaluations.map((evaluation) => {
     const decision = chosen.get(evaluation.promotionId) ?? evaluation;

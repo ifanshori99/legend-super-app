@@ -56,6 +56,7 @@ import {
 } from "./crm.ts";
 import {
   promoEvaluationRequestSchema,
+  promoStackingPolicySchema,
   promotionApplicationResultSchema,
   promotionObjectSchema,
   promotionRoiSchema,
@@ -376,6 +377,29 @@ export const getPromotionRoi = defineEndpoint({
   path: "/api/promotions/:promotionId/roi",
   params: promotionIdParams,
   response: dataResponseSchema(promotionRoiSchema),
+});
+
+/**
+ * Tenant stacking policy ("aturan tumpang tindih", PRD §3.21). Until a tenant
+ * saves one, the API answers `defaultPromoStackingPolicy` (exclusive). Bead
+ * legend-7x4g: without it, stacked promotions (owner decision Q20) could never
+ * be switched on.
+ */
+export const getPromoStackingPolicy = defineEndpoint({
+  method: "GET",
+  path: "/api/promotions/stacking-policy",
+  response: dataResponseSchema(promoStackingPolicySchema),
+});
+
+export const updatePromoStackingPolicyInputSchema = clientInputSchema(
+  promoStackingPolicySchema.shape,
+);
+
+export const updatePromoStackingPolicy = defineEndpoint({
+  method: "PUT",
+  path: "/api/promotions/stacking-policy",
+  body: updatePromoStackingPolicyInputSchema,
+  response: dataResponseSchema(promoStackingPolicySchema),
 });
 
 export const validateVoucher = defineEndpoint({
