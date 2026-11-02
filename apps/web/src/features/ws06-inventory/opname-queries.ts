@@ -8,17 +8,20 @@ import {
   listWasteLogs,
 } from "@starter/shared/inventory";
 import { listItems as listMenuItemsEndpoint } from "@starter/shared/menu";
-import { endpointQueryKey, endpointQueryOptions } from "@/lib/api/endpoint";
+import { endpointQueryKey } from "@/lib/api/endpoint";
 import { getCount } from "./opname-api";
+import { allPagesQuery } from "./queries";
 
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 
+// These lists grow over time, so they follow the cursor to the last page
+// (docs: allPagesQuery) instead of silently stopping after 100 rows.
 export const menuQuery = (query: Query<typeof listMenuItemsEndpoint>) =>
-  endpointQueryOptions(listMenuItemsEndpoint, { query });
+  allPagesQuery(listMenuItemsEndpoint, query);
 
 export const countsQuery = (query: Query<typeof listStockCounts>) =>
-  endpointQueryOptions(listStockCounts, { query });
+  allPagesQuery(listStockCounts, query);
 
 /** The detail call unwraps `{ data }`, so its key is built by hand. */
 export function countQuery(params: Params<typeof getStockCount>) {
@@ -29,4 +32,4 @@ export function countQuery(params: Params<typeof getStockCount>) {
 }
 
 export const wasteQuery = (query: Query<typeof listWasteLogs>) =>
-  endpointQueryOptions(listWasteLogs, { query });
+  allPagesQuery(listWasteLogs, query);
