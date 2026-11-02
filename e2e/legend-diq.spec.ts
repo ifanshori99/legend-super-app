@@ -6,6 +6,13 @@ import { expect, test } from "@playwright/test";
 // These specs run against the web app in mock mode (VITE_API_MOCK=true), so
 // they need no API or database. The mock link state is seeded through
 // localStorage before the first load (see features/ws02-edge/mock.ts).
+//
+// First assertion = explicit timeout (bead legend-1336): `pnpm test:e2e:mock`
+// warms every route first (e2e/mock-global-setup.ts), but a dev server started
+// by hand is cold and needs 20-35 s for the first route compile.
+
+/** Cold Vite dev server: the first SSR hit can take >20 s (legend-1336). */
+const COLD_START_TIMEOUT_MS = 30_000;
 
 test("Alur F: a lost cloud link shows the offline banner and the waiter fallback", async ({
   page,
@@ -16,7 +23,9 @@ test("Alur F: a lost cloud link shows the offline banner and the waiter fallback
   await page.goto("/operasional/koneksi");
 
   const banner = page.locator("[data-edge-banner]");
-  await expect(banner).toContainText("Koneksi cloud terputus");
+  await expect(banner).toContainText("Koneksi cloud terputus", {
+    timeout: COLD_START_TIMEOUT_MS,
+  });
   await expect(banner).toContainText("Pesanan QR dialihkan ke waiter");
   await expect(banner).toContainText("menunggu sinkron");
 
