@@ -70,8 +70,8 @@ function CodeChallenge({
 
   return (
     <form className="grid gap-4" onSubmit={submit}>
-      <div className="flex items-center gap-3 rounded-lg border-(length:--border-w) px-3 py-2">
-        <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+      <div className="flex items-center gap-3 rounded-container border-(length:--border-w) px-3 py-2">
+        <span className="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-muted-foreground">
           <Smartphone className="size-4" aria-hidden="true" />
         </span>
         <div className="grid min-w-0 gap-0.5">
@@ -152,9 +152,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
       className="grid min-h-dvh grid-rows-[auto_1fr_auto]"
     >
       <header className="flex items-center justify-between gap-3 px-gutter py-4">
-        <p className="text-base leading-6 font-bold tracking-tight">
-          {t("app.defaultBrand")}
-        </p>
+        <p className="type-title">{t("app.defaultBrand")}</p>
         <ThemeToggle />
       </header>
 
@@ -233,7 +231,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
         ) : (
           <Card>
             <CardHeader>
-              <h1 className="text-xl leading-7 font-semibold">
+              <h1 className="type-title">
                 {state.enrollmentRequired
                   ? t("staffAuth.verify.enrollTitle")
                   : t("staffAuth.verify.title")}
@@ -245,14 +243,14 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4">
-              <div className="grid gap-0.5">
-                <p className="text-sm leading-5 text-muted-foreground">
+              <div className="grid gap-1">
+                <p className="text-sm leading-5">
                   {t("staffAuth.verify.signedInAs", {
                     name: auth.data?.user.displayName ?? "",
                   })}
                 </p>
                 {identity && (
-                  <p className="text-xs leading-4 text-muted-foreground">
+                  <p className="text-sm leading-5 text-muted-foreground">
                     {t("staffAuth.verify.identityHint", {
                       value: identity.valueMasked,
                     })}
@@ -280,7 +278,7 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
                 />
               )}
 
-              <div className="flex items-start gap-3 rounded-lg border border-dashed p-3">
+              <div className="flex items-start gap-3 rounded-container border-(length:--border-w) border-dashed p-3">
                 <Info
                   className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                   aria-hidden="true"
