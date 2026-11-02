@@ -2,6 +2,8 @@
 // papan bilik. Full screen, no navigation chrome: a status bar with where
 // you are, the connection state, and the time; the work area owns the rest.
 // Kitchen screens pass mode="dark" (PRD: mode gelap untuk dapur).
+// v3 (Metoric topbar): the status bar sits on the shell tone with a 21px
+// bold screen title; the work area keeps the page tone.
 import { useSyncExternalStore, type ReactNode } from "react";
 import { cn } from "cn";
 import { Wifi, WifiOff } from "lucide-react";
@@ -85,9 +87,9 @@ export function OperationsShell({
         embedded ? "h-full" : "h-dvh",
       )}
     >
-      <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-surface-2 px-4 py-2">
+      <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 py-2">
         <div className="min-w-0">
-          <p className="truncate text-xl leading-7 font-bold">{title}</p>
+          <p className="truncate type-title">{title}</p>
           <p className="truncate text-sm leading-5 text-muted-foreground">
             {[outlet, station].filter(Boolean).join(" · ")}
           </p>

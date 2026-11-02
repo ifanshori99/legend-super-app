@@ -1,6 +1,9 @@
 // Customer shell (Hangat & Visual): QR order, member, shower, WFC. Mobile
 // first: header with outlet context, one scrolling column, bottom nav in
 // thumb reach with safe-area padding. Wider screens keep the same column.
+// v3: page stays white (Legend); the active bottom-nav item gets Metoric's
+// active-nav treatment as an accent-tint pill behind the icon (one accent
+// detail, Q21). Max 5 items; more go behind "Lainnya" in the feature nav.
 import type { ReactNode } from "react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
@@ -48,9 +51,7 @@ export function CustomerShell({
           {logoUrl ? (
             <img src={logoUrl} alt={brandName} className="h-8 w-auto" />
           ) : (
-            <span className="truncate font-brand text-lg leading-6 font-bold tracking-tight">
-              {brandName}
-            </span>
+            <span className="truncate font-brand type-title">{brandName}</span>
           )}
           {context && (
             <span className="min-w-0 truncate text-sm text-muted-foreground">
@@ -89,11 +90,18 @@ export function CustomerShell({
                   href={href}
                   aria-current={current ? "page" : undefined}
                   className={cn(
-                    "relative flex min-h-16 flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors duration-(--duration-fast) pressable hover:text-foreground",
+                    "group relative flex min-h-16 flex-col items-center justify-center gap-0.5 text-xs leading-4 font-medium text-muted-foreground transition-colors duration-(--duration-fast) pressable hover:text-foreground",
                     current && "font-semibold text-primary hover:text-primary",
                   )}
                 >
-                  <Icon className="size-6" aria-hidden="true" />
+                  <span
+                    className={cn(
+                      "grid h-8 w-14 place-items-center rounded-full transition-colors duration-(--duration-fast)",
+                      current && "bg-primary-tint",
+                    )}
+                  >
+                    <Icon className="size-6" aria-hidden="true" />
+                  </span>
                   {label}
                   {count !== undefined && count > 0 && (
                     <span className="absolute top-2 left-1/2 ml-2 min-w-5 rounded-full bg-primary px-1.5 text-center text-xs leading-5 font-semibold text-primary-foreground tabular">

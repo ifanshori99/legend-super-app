@@ -28,7 +28,7 @@ function SegmentedControl<T extends string>({
       aria-label={label}
       orientation="horizontal"
       className={cn(
-        "inline-flex w-fit max-w-full gap-1 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1",
+        "inline-flex w-fit max-w-full gap-0.5 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1",
         className,
       )}
     >
@@ -36,7 +36,7 @@ function SegmentedControl<T extends string>({
         <RadioGroup.Item
           key={optionValue}
           value={optionValue}
-          className="inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-control px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:bg-background data-[state=checked]:font-semibold data-[state=checked]:text-foreground data-[state=checked]:shadow-raised"
+          className="inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:bg-card data-[state=checked]:font-semibold data-[state=checked]:text-foreground data-[state=checked]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]"
         >
           {Icon && <Icon className="size-4" aria-hidden="true" />}
           {optionLabel}

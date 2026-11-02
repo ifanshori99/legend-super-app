@@ -25,10 +25,7 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn(
-        "bg-surface-2 [&_tr]:border-b [&_tr]:hover:bg-transparent",
-        className,
-      )}
+      className={cn("[&_tr]:border-b [&_tr]:hover:bg-transparent", className)}
       {...props}
     />
   );
@@ -81,7 +78,8 @@ function TableHead({
       data-slot="table-head"
       scope="col"
       className={cn(
-        "h-row px-3 text-left align-middle type-eyebrow whitespace-nowrap text-muted-foreground",
+        // v3 (Metoric): sentence-case 14px medium header on the card, no band.
+        "h-row px-4 text-left align-middle text-sm font-medium whitespace-nowrap text-muted-foreground",
         numeric && "text-right",
         className,
       )}
@@ -100,7 +98,7 @@ function TableCell({
     <td
       data-slot="table-cell"
       className={cn(
-        "h-row px-3 align-middle",
+        "h-row px-4 align-middle",
         numeric && "text-right whitespace-nowrap tabular",
         className,
       )}

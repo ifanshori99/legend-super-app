@@ -4,6 +4,9 @@ import { cn } from "cn";
 import { LoaderCircle } from "lucide-react";
 import { Slot } from "radix-ui";
 
+// v3 (Metoric): primary = solid accent with a tinted hairline shadow;
+// outline = card fill, soft border, hairline shadow (the label identifies
+// the button, so its edge need not reach 3:1).
 // Heights, padding, and corner shape come from the density layer
 // (h-control, px-control-x, rounded-control), so one Button fits Hangat
 // (pill CTA, 48px), Kontras (60px targets), and Padat (36px, 44px on touch).
@@ -12,11 +15,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary-hover",
+        default:
+          "bg-primary text-primary-foreground shadow-primary hover:bg-primary-hover",
         brand: "bg-brand text-brand-foreground hover:bg-brand/90",
         secondary: "bg-secondary text-foreground hover:bg-accent",
         outline:
-          "border-(length:--border-w) border-input bg-background text-foreground hover:bg-accent",
+          "border-(length:--border-w) border-border bg-card text-foreground shadow-hairline hover:bg-surface-2",
         ghost: "text-foreground hover:bg-accent",
         destructive: "bg-danger text-danger-foreground hover:bg-danger/90",
         link: "h-auto! px-0! text-primary underline underline-offset-4 hover:decoration-2",
