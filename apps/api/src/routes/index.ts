@@ -11,6 +11,7 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { taxRouter } from "./tax.routes";
 import { createMenuRouter } from "./menu.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
@@ -59,3 +60,5 @@ apiRouter.use("/outlets", outletFloorRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/qr", qrRouter);
+// WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
+apiRouter.use("/tax", taxRouter);
