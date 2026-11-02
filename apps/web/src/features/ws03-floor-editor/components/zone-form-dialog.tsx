@@ -245,7 +245,7 @@ function ZoneFormBody({
         {formError && (
           <p
             role="alert"
-            className="rounded-lg bg-danger-subtle p-3 text-sm leading-5 font-medium text-danger"
+            className="rounded-control border-(length:--border-w) bg-danger-subtle p-3 text-sm leading-5 font-medium text-danger"
           >
             {formError.message}
           </p>

@@ -225,7 +225,7 @@ export function GrantRoleDialog({
               aria-current={step === index ? "step" : undefined}
               className={
                 step === index
-                  ? "flex items-center gap-2 rounded-md bg-accent px-2 py-1.5 font-semibold"
+                  ? "flex items-center gap-2 rounded-control bg-primary-tint px-2 py-1.5 font-semibold"
                   : "flex items-center gap-2 px-2 py-1.5 text-muted-foreground"
               }
             >
@@ -301,7 +301,7 @@ export function GrantRoleDialog({
                       htmlFor={id}
                       className={
                         allowed
-                          ? "flex min-h-control-sm cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent"
+                          ? "flex min-h-control-sm cursor-pointer items-center gap-2 rounded-control px-2 py-1.5 hover:bg-surface-2"
                           : "flex min-h-control-sm cursor-not-allowed items-center gap-2 rounded-md px-2 py-1.5 opacity-50"
                       }
                     >

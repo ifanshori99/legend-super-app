@@ -18,10 +18,8 @@ type Props = {
 function QrLabel({ qr, table, zone, brand }: Props) {
   const t = useT();
   return (
-    <article className="grid break-inside-avoid gap-2 overflow-hidden rounded-lg border-(length:--border-w) bg-card p-3">
-      <p className="text-xs leading-4 font-semibold tracking-wide text-muted-foreground uppercase">
-        {brand}
-      </p>
+    <article className="grid break-inside-avoid gap-2 overflow-hidden rounded-container border-(length:--border-w) bg-card p-3 shadow-hairline">
+      <p className="type-eyebrow text-muted-foreground">{brand}</p>
       <div className="flex flex-wrap items-start gap-3">
         <QrCode
           value={qr.url}

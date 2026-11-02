@@ -10,12 +10,14 @@ import type { TableQr } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DataTableShell,
   type DataState,
 } from "@/components/ui/data-table-shell";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   Table as TableView,
   TableBody,
@@ -120,12 +122,12 @@ function QrPage() {
   };
 
   return (
-    <div className="grid gap-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       <style>{PRINT_STYLE}</style>
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <h2 className="text-2xl font-semibold">{t("floorEditor.qrTitle")}</h2>
+          <h2 className="type-title">{t("floorEditor.qrTitle")}</h2>
           <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
             {t("floorEditor.qrDescription")}
           </p>
@@ -151,17 +153,17 @@ function QrPage() {
         </div>
       </header>
 
-      <p className="rounded-lg bg-info-subtle px-3 py-2 text-sm leading-5 font-medium text-info">
+      <p className="rounded-control bg-info-subtle px-3 py-2 text-sm leading-5 font-medium text-info">
         {t("floorEditor.qrHint")}
       </p>
 
       {floor.isError && (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <ErrorState
             description={(floor.error as ApiError | null)?.message}
             onRetry={() => void floor.refetch()}
           />
-        </div>
+        </Card>
       )}
 
       {!floor.isError && (
@@ -185,31 +187,22 @@ function QrPage() {
             ),
           }}
           actions={
-            <div
-              role="group"
-              aria-label={t("floorEditor.zonesTitle")}
-              className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]"
-            >
-              <Button
-                size="sm"
-                variant={activeZoneId === null ? "secondary" : "ghost"}
-                aria-pressed={activeZoneId === null}
-                onClick={() => setZoneFilter(null)}
-              >
-                {t("floorEditor.planAllZones")}
-              </Button>
-              {zones.map((zone) => (
-                <Button
-                  key={zone.id}
-                  size="sm"
-                  variant={activeZoneId === zone.id ? "secondary" : "ghost"}
-                  aria-pressed={activeZoneId === zone.id}
-                  onClick={() => setZoneFilter(zone.id)}
-                >
-                  {zone.name}
-                </Button>
-              ))}
-            </div>
+            zones.length > 0 ? (
+              <SegmentedControl
+                label={t("floorEditor.zonesTitle")}
+                value={activeZoneId ?? "all"}
+                onValueChange={(value) =>
+                  setZoneFilter(value === "all" ? null : value)
+                }
+                options={[
+                  { value: "all", label: t("floorEditor.planAllZones") },
+                  ...zones.map((zone) => ({
+                    value: zone.id,
+                    label: zone.name,
+                  })),
+                ]}
+              />
+            ) : undefined
           }
           loadingRows={6}
         >
@@ -297,21 +290,18 @@ function QrPage() {
       )}
 
       {state === "ready" && issued.length === 0 && (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <EmptyState
             title={t("floorEditor.qrPreviewEmptyTitle")}
             description={t("floorEditor.qrPreviewEmptyHint")}
           />
-        </div>
+        </Card>
       )}
 
       {issued.length > 0 && (
-        <ThemeScope
-          mode="light"
-          className="floor-print-sheet grid gap-3 rounded-xl"
-        >
+        <ThemeScope mode="light" className="floor-print-sheet grid gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
-            <h2 id="floor-labels-title" className="text-xl font-semibold">
+            <h2 id="floor-labels-title" className="type-title">
               {t("floorEditor.qrPreviewTitle")}
             </h2>
             <Button onClick={() => window.print()}>

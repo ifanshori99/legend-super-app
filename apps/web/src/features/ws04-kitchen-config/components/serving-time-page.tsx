@@ -7,6 +7,7 @@ import { formatNumber, type Translate } from "@starter/shared/i18n";
 import type { ServingTimeSummary } from "@starter/shared/kitchen";
 import { businessDateSchema } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
+import { Card } from "@/components/ui/card";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
@@ -120,10 +121,10 @@ export function ServingTimePage() {
   );
 
   return (
-    <div className="grid min-w-0 gap-4">
-      <section
+    <div className="grid min-w-0 gap-5">
+      <Card
         aria-label={t("kitchenConfig.serving.period")}
-        className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
+        className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
       >
         <div className="grid gap-3 sm:grid-cols-2">
           <FormField
@@ -173,7 +174,7 @@ export function ServingTimePage() {
             }))}
           />
         </div>
-      </section>
+      </Card>
 
       {summary.isError && !summary.data ? (
         <ErrorState

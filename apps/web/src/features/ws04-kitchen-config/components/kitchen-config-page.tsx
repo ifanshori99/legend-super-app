@@ -1,12 +1,15 @@
-// Shared frame for the kitchen back-office screens: page title, the tab strip
-// between kitchen sections, and the content slot. Each section has its own
-// URL, so the tabs are links (docs/frontend.md "Add a page").
+// Shared frame for the kitchen back-office screens: the tab strip between
+// kitchen sections and the content slot. v3 (DESIGN.md §5 Management): the
+// shell topbar owns the page title, so the frame only renders the section tab
+// group (same look as <Tabs>) with the "Contoh data" badge. Each section has
+// its own URL, so the tabs are links (docs/frontend.md "Add a page").
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS: readonly {
@@ -42,7 +45,7 @@ export function KitchenConfigTabs({
   return (
     <nav
       aria-label={t("kitchenConfig.title")}
-      className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+      className={cn(tabsListClass, "min-w-0")}
     >
       {TABS.map((tab) => {
         const current = tab.key === active;
@@ -60,10 +63,7 @@ export function KitchenConfigTabs({
                 : undefined
             }
             aria-current={current ? "page" : undefined}
-            className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-              current && "border-primary font-semibold text-foreground",
-            )}
+            className={tabsTriggerClass}
           >
             {t(tab.labelKey)}
           </Link>
@@ -82,20 +82,12 @@ export function KitchenConfigPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl leading-7 font-semibold">
-            {t("kitchenConfig.title")}
-          </h1>
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-        </div>
-        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("kitchenConfig.subtitle")}
-        </p>
-      </header>
-      <KitchenConfigTabs active={active} />
-      <div className="grid min-w-0 gap-4">{children}</div>
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <KitchenConfigTabs active={active} />
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }

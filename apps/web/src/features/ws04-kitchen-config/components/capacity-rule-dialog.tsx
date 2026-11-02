@@ -150,7 +150,7 @@ export function CapacityRuleEditor({
             <fieldset
               key={ruleId}
               aria-label={`${t("kitchenConfig.capacity.rulesTitle")} ${ruleIndex + 1}`}
-              className="grid min-w-0 gap-3 rounded-xl border-(length:--border-w) p-card"
+              className="grid min-w-0 gap-3 rounded-container border-(length:--border-w) p-card"
             >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-semibold">
@@ -246,7 +246,7 @@ export function CapacityRuleEditor({
                 {draft.schedules.map((schedule, scheduleIndex) => (
                   <div
                     key={`${ruleId}-schedule-${scheduleIndex}`}
-                    className="grid gap-2 rounded-lg bg-muted/60 p-3 sm:grid-cols-[minmax(0,1fr)_auto]"
+                    className="grid gap-2 rounded-container bg-surface-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto]"
                   >
                     <fieldset className="grid gap-1.5">
                       <legend className="text-sm font-semibold">

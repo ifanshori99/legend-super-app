@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card, CardShell } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -84,17 +85,17 @@ export function PreferencesPanel() {
   if (preference.isPending) return <PreferencesSkeleton />;
   if (preference.isError)
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <Card>
         <ErrorState
           title={t("notification.preferences.errorTitle")}
           description={t("notification.preferences.errorHint")}
           onRetry={() => void preference.refetch()}
         />
-      </div>
+      </Card>
     );
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start">
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start">
       <PreferencesForm
         preference={preference.data.data}
         whatsappCategories={
@@ -205,171 +206,170 @@ function PreferencesForm({
   };
 
   return (
-    <form onSubmit={submit} className="grid gap-4">
-      <section
-        aria-labelledby="notification-channel-matrix"
-        className="rounded-xl border-(length:--border-w) bg-card p-card"
-      >
-        <h3
-          id="notification-channel-matrix"
-          className="text-base leading-6 font-semibold"
-        >
-          {t("notification.preferences.categoriesHeading")}
-        </h3>
-        <p className="mt-1 text-sm leading-5 text-muted-foreground">
-          {t("notification.preferences.hint")}
-        </p>
-        <p className="mt-1 text-sm leading-5 text-muted-foreground">
-          {whatsappAllowed === false
-            ? t("notification.preferences.whatsappPolicyOff")
-            : t("notification.preferences.whatsappPolicyUnknown")}
-        </p>
-        {untouched && (
-          <p className="mt-1 text-sm leading-5 text-muted-foreground">
-            {t("notification.preferences.untouchedHint")}
-          </p>
-        )}
-
-        <div className="mt-4">
-          <div
-            aria-hidden="true"
-            className="hidden gap-3 border-b pb-2 text-xs leading-4 font-semibold text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)]"
-          >
-            <span />
-            {CHANNELS.map(({ key, labelKey }) => (
-              <span key={key} className="text-center">
-                {t(labelKey)}
-              </span>
-            ))}
-          </div>
-          <ul className="grid">
-            {STAFF_NOTIFICATION_CATEGORIES.map((category) => (
-              <li
-                key={category}
-                className="grid gap-2 border-b py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)] sm:items-center sm:gap-3"
-              >
-                <span className="text-sm leading-5 font-medium">
-                  {t(categoryLabelKey(category))}
-                </span>
-                <div className="grid grid-cols-3 gap-2 sm:contents">
-                  {CHANNELS.map(({ key, labelKey }) => {
-                    const id = `notification-${category}-${key}`;
-                    const disabled =
-                      key === "whatsapp" &&
-                      whatsappCategories !== null &&
-                      !whatsappCategories.includes(category);
-                    return (
-                      <div
-                        key={key}
-                        className="flex min-h-11 flex-col items-start gap-1 rounded-md px-1 py-1 sm:min-h-0 sm:flex-row sm:items-center sm:justify-center sm:gap-2 sm:p-0"
-                      >
-                        <Label
-                          htmlFor={id}
-                          className="font-normal text-muted-foreground sm:sr-only"
-                        >
-                          {t(labelKey)}
-                          <span className="sr-only">
-                            {" "}
-                            {t(categoryLabelKey(category))}
-                          </span>
-                        </Label>
-                        <Switch
-                          id={id}
-                          checked={channels[category][key]}
-                          disabled={disabled}
-                          onCheckedChange={(checked) =>
-                            setChannel(category, key, checked)
-                          }
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
-
-      <section
-        aria-labelledby="notification-quiet-hours"
-        className="rounded-xl border-(length:--border-w) bg-card p-card"
-      >
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3
-              id="notification-quiet-hours"
-              className="text-base leading-6 font-semibold"
-            >
-              {t("notification.preferences.quietHoursHeading")}
+    <form onSubmit={submit} className="grid gap-5">
+      <section aria-labelledby="notification-channel-matrix">
+        <CardShell>
+          <Card>
+            <h3 id="notification-channel-matrix" className="type-title">
+              {t("notification.preferences.categoriesHeading")}
             </h3>
             <p className="mt-1 text-sm leading-5 text-muted-foreground">
-              {t("notification.preferences.quietHoursHint")}
+              {t("notification.preferences.hint")}
             </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              id="notification-quiet-hours-enabled"
-              checked={quietEnabled}
-              onCheckedChange={(checked) => {
-                setQuietEnabled(checked);
-                setTimeError(null);
-              }}
-            />
-            <Label
-              htmlFor="notification-quiet-hours-enabled"
-              className="font-normal"
-            >
-              {t("notification.preferences.quietHoursEnable")}
-            </Label>
-          </div>
-        </div>
+            <p className="mt-1 text-sm leading-5 text-muted-foreground">
+              {whatsappAllowed === false
+                ? t("notification.preferences.whatsappPolicyOff")
+                : t("notification.preferences.whatsappPolicyUnknown")}
+            </p>
+            {untouched && (
+              <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                {t("notification.preferences.untouchedHint")}
+              </p>
+            )}
 
-        {quietEnabled && (
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-            <FormField
-              label={t("notification.preferences.quietHoursStart")}
-              required
-            >
-              <Input
-                type="time"
-                value={quietStart}
-                onChange={(event) => {
-                  setQuietStart(event.target.value);
-                  setTimeError(null);
-                }}
-              />
-            </FormField>
-            <FormField
-              label={t("notification.preferences.quietHoursEnd")}
-              required
-              error={timeError ?? undefined}
-            >
-              <Input
-                type="time"
-                value={quietEnd}
-                onChange={(event) => {
-                  setQuietEnd(event.target.value);
-                  setTimeError(null);
-                }}
-              />
-            </FormField>
-            <FormField label={t("notification.preferences.timeZone")} required>
-              <Select value={timeZone} onValueChange={setTimeZone}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {zoneOptions.map((zone) => (
-                    <SelectItem key={zone} value={zone}>
-                      {zone}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </FormField>
-          </div>
-        )}
+            <div className="mt-4">
+              <div
+                aria-hidden="true"
+                className="hidden gap-3 border-b pb-2 text-xs leading-4 font-semibold text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)]"
+              >
+                <span />
+                {CHANNELS.map(({ key, labelKey }) => (
+                  <span key={key} className="text-center">
+                    {t(labelKey)}
+                  </span>
+                ))}
+              </div>
+              <ul className="grid">
+                {STAFF_NOTIFICATION_CATEGORIES.map((category) => (
+                  <li
+                    key={category}
+                    className="grid gap-2 border-b py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)] sm:items-center sm:gap-3"
+                  >
+                    <span className="text-sm leading-5 font-medium">
+                      {t(categoryLabelKey(category))}
+                    </span>
+                    <div className="grid grid-cols-3 gap-2 sm:contents">
+                      {CHANNELS.map(({ key, labelKey }) => {
+                        const id = `notification-${category}-${key}`;
+                        const disabled =
+                          key === "whatsapp" &&
+                          whatsappCategories !== null &&
+                          !whatsappCategories.includes(category);
+                        return (
+                          <div
+                            key={key}
+                            className="flex min-h-11 flex-col items-start gap-1 rounded-md px-1 py-1 sm:min-h-0 sm:flex-row sm:items-center sm:justify-center sm:gap-2 sm:p-0"
+                          >
+                            <Label
+                              htmlFor={id}
+                              className="font-normal text-muted-foreground sm:sr-only"
+                            >
+                              {t(labelKey)}
+                              <span className="sr-only">
+                                {" "}
+                                {t(categoryLabelKey(category))}
+                              </span>
+                            </Label>
+                            <Switch
+                              id={id}
+                              checked={channels[category][key]}
+                              disabled={disabled}
+                              onCheckedChange={(checked) =>
+                                setChannel(category, key, checked)
+                              }
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </Card>
+        </CardShell>
+      </section>
+
+      <section aria-labelledby="notification-quiet-hours">
+        <CardShell>
+          <Card>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 id="notification-quiet-hours" className="type-title">
+                  {t("notification.preferences.quietHoursHeading")}
+                </h3>
+                <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                  {t("notification.preferences.quietHoursHint")}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="notification-quiet-hours-enabled"
+                  checked={quietEnabled}
+                  onCheckedChange={(checked) => {
+                    setQuietEnabled(checked);
+                    setTimeError(null);
+                  }}
+                />
+                <Label
+                  htmlFor="notification-quiet-hours-enabled"
+                  className="font-normal"
+                >
+                  {t("notification.preferences.quietHoursEnable")}
+                </Label>
+              </div>
+            </div>
+
+            {quietEnabled && (
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <FormField
+                  label={t("notification.preferences.quietHoursStart")}
+                  required
+                >
+                  <Input
+                    type="time"
+                    value={quietStart}
+                    onChange={(event) => {
+                      setQuietStart(event.target.value);
+                      setTimeError(null);
+                    }}
+                  />
+                </FormField>
+                <FormField
+                  label={t("notification.preferences.quietHoursEnd")}
+                  required
+                  error={timeError ?? undefined}
+                >
+                  <Input
+                    type="time"
+                    value={quietEnd}
+                    onChange={(event) => {
+                      setQuietEnd(event.target.value);
+                      setTimeError(null);
+                    }}
+                  />
+                </FormField>
+                <FormField
+                  label={t("notification.preferences.timeZone")}
+                  required
+                >
+                  <Select value={timeZone} onValueChange={setTimeZone}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {zoneOptions.map((zone) => (
+                        <SelectItem key={zone} value={zone}>
+                          {zone}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormField>
+              </div>
+            )}
+          </Card>
+        </CardShell>
       </section>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -398,22 +398,22 @@ function PreferencesSkeleton() {
   const t = useT();
   return (
     <div
-      className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start"
+      className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem] xl:items-start"
       aria-busy="true"
     >
       <span className="sr-only">{t("common.loading")}</span>
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card">
+      <Card className="gap-3">
         <Skeleton className="h-5 w-48" />
         <Skeleton className="h-4 w-full max-w-md" />
         {[0, 1, 2, 3, 4, 5].map((row) => (
           <Skeleton key={row} className="h-10 w-full" />
         ))}
-      </div>
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card">
+      </Card>
+      <Card className="gap-3">
         <Skeleton className="h-5 w-40" />
         <Skeleton className="h-4 w-full" />
         <Skeleton className="h-9 w-40" />
-      </div>
+      </Card>
     </div>
   );
 }
