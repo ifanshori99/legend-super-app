@@ -17,6 +17,7 @@ import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
+import { accountingRouter } from "./accounting.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -62,3 +63,5 @@ apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/qr", qrRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
+// Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
+apiRouter.use("/accounting", accountingRouter);

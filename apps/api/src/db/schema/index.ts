@@ -22,6 +22,7 @@ export * from "./notification";
 export * from "./inventory";
 export * from "./floor";
 export * from "./payment";
+export * from "./accounting";
 export * from "./identity";
 // WS-05 versioned tax / service-charge rules, calculation options, snapshots.
 export * from "./tax";
