@@ -107,6 +107,10 @@ test("AUTH-05: the idle warning appears before a management session ends", async
   await expect(page.getByText(/Sisa waktu sekitar/)).toBeVisible();
 
   await page.getByRole("button", { name: "Lanjut bekerja" }).click();
+  // The dismissal hides the dialog synchronously; the refetch lands on the next
+  // task. Wait for it so a mock that keeps moving `expiresAt` (legend-dw4d)
+  // cannot pass by closing the dialog only for a frame.
+  await page.waitForTimeout(300);
   await expect(
     page.getByRole("heading", { name: "Sesi akan segera berakhir" }),
   ).toHaveCount(0);

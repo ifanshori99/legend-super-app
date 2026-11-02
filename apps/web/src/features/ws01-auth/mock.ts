@@ -8,8 +8,10 @@
 //   ?mock=empty       no factor enrolled (enrollment) and no device sessions
 //   ?mock=error       every call fails (see lib/mock/control.ts)
 //
-// A mock-only knob shows the idle warning without waiting 22 minutes:
-//   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m
+// A mock-only knob shows the idle warning without waiting 28 minutes:
+//   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m;
+//   the next /me read ("Lanjut bekerja") moves the deadline once, like the
+//   real activity write on a guarded request
 //   localStorage.removeItem("legend-mock-session")
 //
 // Verification accepts any six digits except 000000 (wrong-code state).
@@ -19,8 +21,11 @@ import {
   enrollMfaFactor,
   listMfaFactors,
   listSessions,
+  MANAGEMENT_IDLE_MINUTES,
   mfaFactorIdSchema,
   mfaFactorSchema,
+  MINUTE_MS,
+  recordSessionActivity,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -39,10 +44,19 @@ export const MOCK_SESSION_KNOB = "legend-mock-session";
 
 type PendingFactor = { enrollment: MfaEnrollment; factor: MfaFactor };
 
+/** The idle knob's session; seeded once so every read sees the same deadline. */
+type IdleDemo = {
+  expiresAt: string;
+  lastSeenAt: string;
+  /** /me reads so far; the first one only presents the demo snapshot. */
+  reads: number;
+};
+
 type AuthMockState = {
   factors: MfaFactor[];
   sessions: SessionView[];
   pending: Map<string, PendingFactor>;
+  idle: IdleDemo | null;
 };
 
 const now = () => Date.now();
@@ -92,14 +106,76 @@ const seed = (): AuthMockState => ({
   ),
   sessions: seedSessions(),
   pending: new Map(),
+  idle: null,
 });
 
 const state = createMockStore<AuthMockState>(seed);
 
-/** The idle knob shortens this one session's idle end for a demo. */
+/**
+ * The idle knob's demo deadline, seeded once per mock session and kept in the
+ * store (bead legend-dw4d). Recomputing `now + 110s` on every fetch made the
+ * deadline a moving target: the warning's dismissal could never match it, so
+ * the dialog reopened after every refetch.
+ */
+function idleDeadline(): IdleDemo {
+  const auth = state.get();
+  if (auth.idle !== null) return auth.idle;
+  const expiresAt = at(110_000);
+  auth.idle = {
+    expiresAt,
+    // A management session's deadline is lastSeenAt + 30 minutes (§3 F6), so
+    // the demo starts from a genuinely idle session.
+    lastSeenAt: new Date(
+      Date.parse(expiresAt) - MANAGEMENT_IDLE_MINUTES * MINUTE_MS,
+    ).toISOString(),
+    reads: 0,
+  };
+  return auth.idle;
+}
+
+/**
+ * The current session as the idle knob presents it. Listing devices is a
+ * display read: it shows the demo deadline but never counts as activity.
+ */
 function withIdleKnob(session: Session): Session {
-  if (!idleKnobOn()) return session;
-  return { ...session, lastSeenAt: at(-3 * 60_000), expiresAt: at(110_000) };
+  if (!idleKnobOn()) {
+    state.get().idle = null; // leaving the demo starts a fresh one
+    return session;
+  }
+  const demo = idleDeadline();
+  return { ...session, lastSeenAt: demo.lastSeenAt, expiresAt: demo.expiresAt };
+}
+
+/**
+ * Reading /me counts as user activity once the demo snapshot has been shown:
+ * "Lanjut bekerja" refetches it, so the deadline moves to now + 30 idle minutes
+ * once, exactly like touchSession on a guarded request (§3 F6,
+ * recordSessionActivity). The contract throttles further writes for a minute.
+ */
+function withIdleActivity(session: Session): Session {
+  const shown = withIdleKnob(session);
+  const auth = state.get();
+  if (auth.idle === null) return shown; // knob off
+  if (auth.idle.reads === 0) {
+    // The first read is what shows the warning, not yet user activity.
+    auth.idle = { ...auth.idle, reads: 1 };
+    return shown;
+  }
+  const activity = recordSessionActivity({
+    session: { ...shown, kind: "management" },
+    now: new Date(),
+    kind: "user",
+  });
+  auth.idle = {
+    ...auth.idle,
+    lastSeenAt: activity.session.lastSeenAt,
+    expiresAt: activity.session.expiresAt,
+  };
+  return {
+    ...session,
+    lastSeenAt: auth.idle.lastSeenAt,
+    expiresAt: auth.idle.expiresAt,
+  };
 }
 
 function currentSession(): Session {
@@ -110,7 +186,7 @@ function currentSession(): Session {
       "UNAUTHORIZED",
       "Sesi tidak ditemukan. Masuk kembali.",
     );
-  return withIdleKnob(view.session);
+  return withIdleActivity(view.session);
 }
 
 function findFactor(factorId: string): MfaFactor {
