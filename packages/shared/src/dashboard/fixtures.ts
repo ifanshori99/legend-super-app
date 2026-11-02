@@ -33,7 +33,11 @@ import {
   createReportExportInputSchema,
   reportExportSchema,
 } from "./exports.ts";
-import { dashboardLayoutSchema, OWNER_DASHBOARD_TILES } from "./dashboards.ts";
+import {
+  dashboardLayoutSchema,
+  MANAGEMENT_DASHBOARD_TILES,
+  OWNER_DASHBOARD_TILES,
+} from "./dashboards.ts";
 
 const tenant = cafeLegendFixtures.tenant;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -89,6 +93,29 @@ export const cafeLegendDashboardFixtures = {
   }),
   businessDate: "2026-11-01",
 };
+
+/**
+ * Management home layout (PRD §3.36 "Beranda per Role", bead legend-6na6): the
+ * whole management tile catalog for one Cafe Legend outlet. The BE dashboard
+ * API (legend-1ye3) resolves this per caller role and outlet scope; mock mode
+ * serves it as-is so every role's composed home can be reviewed, and the web
+ * kit narrows it per role with `dashboardTilesFor`.
+ */
+export const cafeLegendManagementLayoutFixture = dashboardLayoutSchema.parse({
+  dashboard: "management",
+  title: "Dashboard Manajemen",
+  businessDate: "2026-11-01",
+  availableOutlets: [outlet.id],
+  tiles: MANAGEMENT_DASHBOARD_TILES,
+  generatedAt: "2026-11-01T22:45:00.000Z",
+  monitoringPeriod: {
+    startDate: "2026-11-01",
+    endDate: "2026-11-01",
+    bucket: "day",
+    status: "open",
+    accountingPeriodClosed: false,
+  },
+});
 
 export const reportCatalogPageFixture = reportCatalogPageSchema.parse({
   data: reportCatalog.slice(0, 5),
@@ -325,6 +352,7 @@ export const dashboardErrorFixtures = {
 
 export const cafeLegendReportFixtures = {
   dashboard: cafeLegendDashboardFixtures,
+  managementLayout: cafeLegendManagementLayoutFixture,
   catalogPage: reportCatalogPageFixture,
   report: reportDefinitionFixture,
   builderQuery: reportBuilderQueryFixture,
