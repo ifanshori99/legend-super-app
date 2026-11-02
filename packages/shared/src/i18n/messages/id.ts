@@ -13,6 +13,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 
 export const id = {
@@ -27,6 +28,9 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Staff second factor, security settings and device sessions (legend-9bh;
+  // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
+  ...ws01AuthMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
@@ -1214,6 +1218,7 @@ export const id = {
     mfaTitle: "Verifikasi dua langkah diperlukan",
     mfaHint:
       "Area ini hanya terbuka setelah verifikasi dua langkah selesai. Masuk ulang dan selesaikan verifikasi.",
+    mfaVerify: "Verifikasi sekarang",
     backHome: "Kembali ke beranda",
   },
   area: {
