@@ -1,11 +1,13 @@
-// Typed calls of the management home: one function per endpoint of the WS-11
-// dashboard contract (`@starter/shared/dashboard`, PRD v1.7 §3.36). The
-// response is unwrapped to the layout payload so components and query options
-// never see the `{ data }` envelope.
+// Typed calls of the management home (WS-11 dashboard & report contract,
+// `@starter/shared/dashboard`, PRD v1.7 §3.36). Responses are unwrapped to
+// their payload so components and query options never see `{ data }`.
 import { callEndpoint } from "@/lib/api/endpoint";
 import {
   getDashboardEndpoint,
+  runReportEndpoint,
   type DashboardQuery,
+  type ReportResult,
+  type ReportRunInput,
 } from "@starter/shared/dashboard";
 
 /**
@@ -20,6 +22,22 @@ export async function fetchManagementLayout(
   const response = await callEndpoint(
     getDashboardEndpoint,
     { params: { dashboard: "management" }, query },
+    { signal },
+  );
+  return response.data;
+}
+
+/**
+ * One KPI tile's source report, run with the dashboard's period and outlets
+ * (DASH-02: the tile and its drill-down read one result).
+ */
+export async function runManagementReport(
+  input: ReportRunInput,
+  signal?: AbortSignal,
+): Promise<ReportResult> {
+  const response = await callEndpoint(
+    runReportEndpoint,
+    { body: input },
     { signal },
   );
   return response.data;

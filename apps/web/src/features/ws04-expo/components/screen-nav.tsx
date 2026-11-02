@@ -31,8 +31,10 @@ export function KitchenScreenNav({ current }: { current: KitchenScreen }) {
             aria-current={active ? "page" : undefined}
             className={cn(
               "inline-flex min-h-control-sm items-center rounded-control px-3 text-sm font-semibold transition-colors duration-(--duration-fast)",
+              // Selection is ink, never the accent (DESIGN.md §2 accent budget):
+              // switching kitchen screens is navigation, not the screen's CTA.
               active
-                ? "bg-primary text-primary-foreground"
+                ? "bg-foreground text-background"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >

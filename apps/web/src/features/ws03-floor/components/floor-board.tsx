@@ -12,8 +12,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOnline } from "@/lib/use-online";
 import type { TableLiveStatus } from "@starter/shared/qr-order";
 import { useFloorBoard, useOutlets, useRefreshBoard } from "../hooks";
-import { boardCounts, filterBoard, zoneCounts, type ZoneFilter } from "../lib";
-import { BoardLegend } from "./board-status";
+import {
+  boardCounts,
+  filterBoard,
+  urgentTableCount,
+  zoneCounts,
+  type ZoneFilter,
+} from "../lib";
+import { BoardStatusBar } from "./board-status";
 import { TableActionsPanel } from "./table-actions-panel";
 import { TableCard } from "./table-card";
 
@@ -23,7 +29,7 @@ function PageHeading({ outlet }: { outlet?: string }) {
   const t = useT();
   return (
     <div className="min-w-0">
-      <h1 className="text-2xl leading-8 font-bold">{t("floor.title")}</h1>
+      <h1 className="type-display">{t("floor.title")}</h1>
       <p className="text-sm text-muted-foreground">{t("floor.subtitle")}</p>
       {outlet && <p className="text-sm font-semibold">{outlet}</p>}
     </div>
@@ -38,9 +44,9 @@ function BoardSkeleton() {
         {t("floor.loadingBoard")}
       </span>
       <Skeleton className="h-10 w-full max-w-md" />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 8 }, (_, index) => (
-          <Skeleton key={index} className="h-32 w-full rounded-xl" />
+          <Skeleton key={index} className="h-32 w-full rounded-container" />
         ))}
       </div>
     </div>
@@ -193,7 +199,7 @@ export function FloorBoardPage({ canManage }: { canManage: boolean }) {
         </div>
       </div>
 
-      <BoardLegend counts={counts} />
+      <BoardStatusBar counts={counts} urgent={urgentTableCount(data.tables)} />
 
       {visible.length === 0 ? (
         <EmptyState
@@ -209,7 +215,7 @@ export function FloorBoardPage({ canManage }: { canManage: boolean }) {
           )}
         />
       ) : (
-        <ul className="grid min-w-0 list-none grid-cols-2 gap-3 p-0 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
+        <ul className="grid min-w-0 list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
           {visible.map((row) => (
             <li key={row.table.id} className="min-w-0">
               <TableCard

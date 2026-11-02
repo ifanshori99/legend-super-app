@@ -44,10 +44,7 @@ export function Section({
       className="scroll-mt-28 border-t py-10 first:border-t-0"
     >
       <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
-        <h2
-          id={`${id}-title`}
-          className="text-2xl leading-8 font-semibold tracking-tight"
-        >
+        <h2 id={`${id}-title`} className="type-display">
           {title}
         </h2>
         {aside}
@@ -71,6 +68,8 @@ const GROUPS: {
       "background",
       "foreground",
       "card",
+      "surface-2",
+      "surface-3",
       "muted",
       "muted-foreground",
       "secondary",
@@ -316,6 +315,8 @@ const RADII = [
   ["rounded-2xl", "rounded-2xl"],
   ["rounded-control", "rounded-control"],
   ["rounded-field", "rounded-field"],
+  ["rounded-container", "rounded-container"],
+  ["rounded-shell", "rounded-shell"],
 ] as const;
 const SPACES = [1, 2, 3, 4, 6, 8, 12, 16] as const;
 
@@ -363,6 +364,12 @@ export function ShapeSection() {
         <div>
           <SubHeading>{t("designSystem.shape.elevation")}</SubHeading>
           <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-container border bg-card p-card text-sm shadow-hairline">
+              {t("designSystem.shape.hairline")}
+            </div>
+            <div className="rounded-control bg-primary p-card text-sm font-semibold text-primary-foreground shadow-primary">
+              {t("designSystem.shape.primaryShadow")}
+            </div>
             <div className="rounded-xl border bg-card p-card text-sm shadow-raised">
               {t("designSystem.shape.raised")}
             </div>

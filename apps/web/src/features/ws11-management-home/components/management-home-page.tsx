@@ -1,72 +1,45 @@
 // Management home per role (PRD v1.7 §3.36 "Dashboard Manajemen" → "Beranda
-// per Role", bead legend-6na6). The page is a composition of the dashboard
-// layout the API returns: the caller's work queue for the selected role, the
-// shared approval box, and the report/audit shortcuts. It renders no number
-// the layout does not define (DASH-01) and hides every tile whose extra
-// permission the visitor lacks (RBAC §3.7, presentation only).
-import { Building2, CalendarDays, Clock, LayoutDashboard, RefreshCw } from "lucide-react";
+// per Role", bead legend-6na6). DESIGN.md v3: the ManagementShell topbar owns
+// the page title and the canvas; the screen is a toolbar (role switch +
+// refresh) followed by the role's work queue — one StatStrip of KPI numbers
+// from the source report, then the queue cards — and the shared approval box
+// and report/audit links.
+//
+// It renders no number the contract does not define (DASH-01/DASH-02) and
+// hides every tile whose extra permission the visitor lacks (RBAC §3.7,
+// presentation only).
+import { cn } from "cn";
+import { CalendarDays, LayoutDashboard, RefreshCw } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AreaAccess } from "@/lib/areas/access";
 import { ApiError } from "@/lib/api/errors";
 import type { ManagementRole } from "@starter/shared/dashboard";
 import { formatBusinessDate, formatClock } from "../format";
-import { useManagementLayout, useRefreshManagementLayout } from "../hooks";
+import {
+  useManagementLayout,
+  useRefreshManagementHome,
+  useRoleKpiRun,
+} from "../hooks";
 import { ROLE_HINT_KEYS, ROLE_LABEL_KEYS } from "../labels";
 import {
   defaultRole,
+  kpiRunInput,
   permittedTiles,
-  roleWorkTiles,
+  roleKpiTile,
+  roleQueueTiles,
   rolesInLayout,
+  sectionQueueTiles,
   sectionTiles,
+  showsApprovalBox,
 } from "../lib";
-import { LinkTileRow } from "./link-row";
-import { TileCard } from "./tile-card";
-
-function SectionHeading({
-  id,
-  title,
-  hint,
-}: {
-  id: string;
-  title: string;
-  hint?: string;
-}) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)] gap-1">
-      <h3 id={id} className="text-base leading-6 font-semibold">
-        {title}
-      </h3>
-      {hint && (
-        <p className="text-sm leading-5 text-muted-foreground">{hint}</p>
-      )}
-    </div>
-  );
-}
-
-function HomeSkeleton() {
-  const t = useT();
-  return (
-    <div aria-busy="true" className="grid grid-cols-[minmax(0,1fr)] gap-6">
-      <span className="sr-only">{t("common.loading")}</span>
-      <div className="grid gap-1">
-        <Skeleton className="h-6 w-48" />
-        <Skeleton className="h-4 w-72 max-w-full" />
-      </div>
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
-        <Skeleton className="h-4 w-64 max-w-full" />
-        <Skeleton className="h-10 w-full" />
-      </div>
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2">
-        <Skeleton className="h-40" />
-        <Skeleton className="h-40" />
-      </div>
-    </div>
-  );
-}
+import { HomeSkeleton } from "./home-skeleton";
+import { KpiStrip } from "./kpi-strip";
+import { QueueCard } from "./queue-card";
+import { ReportLinks } from "./report-links";
+import { SectionHeading } from "./section-heading";
 
 export function ManagementHomePage({
   access,
@@ -79,7 +52,16 @@ export function ManagementHomePage({
 }) {
   const t = useT();
   const layout = useManagementLayout();
-  const refresh = useRefreshManagementLayout();
+  const refresh = useRefreshManagementHome();
+
+  const data = layout.data;
+  const visible = data ? permittedTiles(data.tiles, access.permissions) : [];
+  const roles = rolesInLayout(visible);
+  const activeRole =
+    role !== null && roles.includes(role) ? role : defaultRole(visible);
+  const kpiTile = activeRole === null ? null : roleKpiTile(visible, activeRole);
+  const kpiInput = data && kpiTile ? kpiRunInput(kpiTile, data) : null;
+  const kpiRun = useRoleKpiRun(kpiInput);
 
   if (layout.isPending) return <HomeSkeleton />;
 
@@ -97,56 +79,45 @@ export function ManagementHomePage({
     );
   }
 
-  const data = layout.data;
-  const visible = permittedTiles(data.tiles, access.permissions);
-  const roles = rolesInLayout(visible);
-  const activeRole =
-    role !== null && roles.includes(role) ? role : defaultRole(visible);
-  const workTiles =
-    activeRole === null ? [] : roleWorkTiles(visible, activeRole);
-  const approvals = sectionTiles(visible, "approvals");
-  const reports = sectionTiles(visible, "reports");
+  const layoutData = data;
+  if (!layoutData) return <HomeSkeleton />;
 
-  return (
-    <section aria-labelledby="management-home-title" className="grid grid-cols-[minmax(0,1fr)] gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
-          <h2
-            id="management-home-title"
-            className="text-xl leading-7 font-semibold tracking-tight"
-          >
-            {t("managementHome.title")}
-          </h2>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("managementHome.subtitle")}
-          </p>
-          <ul className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm leading-5 text-muted-foreground">
-            <li className="inline-flex items-center gap-1.5">
-              <CalendarDays className="size-4" aria-hidden="true" />
-              <span className="tabular">
-                {t("managementHome.businessDate", {
-                  date: formatBusinessDate(data.businessDate),
-                })}
-              </span>
-            </li>
-            <li className="inline-flex items-center gap-1.5">
-              <Building2 className="size-4" aria-hidden="true" />
-              <span className="tabular">
-                {t("managementHome.outletCount", {
-                  count: data.availableOutlets.length,
-                })}
-              </span>
-            </li>
-            <li className="inline-flex items-center gap-1.5">
-              <Clock className="size-4" aria-hidden="true" />
-              <span className="tabular">
-                {t("managementHome.generatedAt", {
-                  time: formatClock(data.generatedAt),
-                })}
-              </span>
-            </li>
-          </ul>
-        </div>
+  const queueTiles =
+    activeRole === null ? [] : roleQueueTiles(visible, activeRole);
+  const approvals = sectionQueueTiles(visible, "approvals");
+  const showApprovals = showsApprovalBox(queueTiles, approvals);
+  const reportTiles = sectionTiles(visible, "reports");
+  const reportLinks = reportTiles.flatMap((tile) =>
+    tile.kind === "link" ? [tile] : [],
+  );
+  const meta = [
+    t("managementHome.businessDate", {
+      date: formatBusinessDate(layoutData.businessDate),
+    }),
+    t("managementHome.outletCount", {
+      count: layoutData.availableOutlets.length,
+    }),
+    t("managementHome.generatedAt", {
+      time: formatClock(layoutData.generatedAt),
+    }),
+  ].join(" · ");
+
+  const toolbar = (
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
+      {activeRole !== null && (
+        <TabsList aria-label={t("managementHome.rolesLabel")}>
+          {roles.map((candidate) => (
+            <TabsTrigger key={candidate} value={candidate}>
+              {t(ROLE_LABEL_KEYS[candidate])}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex min-w-0 items-start gap-2 text-sm leading-5 text-muted-foreground tabular">
+          <CalendarDays className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span>{meta}</span>
+        </p>
         <Button
           variant="outline"
           size="sm"
@@ -161,94 +132,107 @@ export function ManagementHomePage({
           />
           {t("managementHome.refresh")}
         </Button>
-      </header>
+      </div>
+    </div>
+  );
 
-      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-3 xl:items-start">
-        <section
-          aria-labelledby="management-work-queue-title"
-          className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:col-span-2"
-        >
-          <SectionHeading
-            id="management-work-queue-title"
-            title={t("managementHome.section.workQueue")}
-            hint={t("managementHome.section.workQueueHint")}
-          />
-          {activeRole === null ? (
+  const workQueue = (
+    <section aria-labelledby="work-queue-title" className="grid gap-4">
+      <SectionHeading
+        id="work-queue-title"
+        title={t("managementHome.section.workQueue")}
+        hint={
+          activeRole === null
+            ? t("managementHome.section.workQueueHint")
+            : t(ROLE_HINT_KEYS[activeRole])
+        }
+      />
+      {activeRole === null ? (
+        <EmptyState
+          icon={LayoutDashboard}
+          title={t("managementHome.noRoles")}
+          description={t("managementHome.noRolesHint")}
+        />
+      ) : (
+        <>
+          {kpiTile !== null && (
+            <KpiStrip
+              tile={kpiTile}
+              layout={layoutData}
+              run={kpiInput === null ? undefined : kpiRun.data}
+              role={activeRole}
+            />
+          )}
+          {queueTiles.length === 0 ? (
             <EmptyState
-              icon={LayoutDashboard}
-              title={t("managementHome.noRoles")}
-              description={t("managementHome.noRolesHint")}
+              title={t("managementHome.emptyWorkQueue")}
+              description={t("managementHome.emptyWorkQueueHint")}
             />
           ) : (
-            <Tabs
-              value={activeRole}
-              onValueChange={(value) => onRoleChange(value as ManagementRole)}
-            >
-              <TabsList aria-label={t("managementHome.rolesLabel")}>
-                {roles.map((candidate) => (
-                  <TabsTrigger key={candidate} value={candidate}>
-                    {t(ROLE_LABEL_KEYS[candidate])}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              <TabsContent value={activeRole} className="grid grid-cols-[minmax(0,1fr)] gap-3">
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {t(ROLE_HINT_KEYS[activeRole])}
-                </p>
-                {workTiles.length === 0 ? (
-                  <EmptyState
-                    title={t("managementHome.emptyWorkQueue")}
-                    description={t("managementHome.emptyWorkQueueHint")}
-                  />
-                ) : (
-                  <div className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2">
-                    {workTiles.map((tile) => (
-                      <TileCard key={tile.key} tile={tile} />
-                    ))}
-                  </div>
-                )}
-              </TabsContent>
-            </Tabs>
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2">
+              {queueTiles.map((tile) => (
+                <QueueCard key={tile.key} tile={tile} />
+              ))}
+            </div>
           )}
-        </section>
+        </>
+      )}
+    </section>
+  );
 
-        <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
-          {approvals.length > 0 && (
-            <section aria-labelledby="management-approvals-title" className="grid gap-3">
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      {activeRole === null ? (
+        <>
+          {toolbar}
+          {workQueue}
+        </>
+      ) : (
+        <Tabs
+          value={activeRole}
+          onValueChange={(value) => onRoleChange(value as ManagementRole)}
+        >
+          {toolbar}
+          <TabsContent value={activeRole} className="mt-5 pt-0">
+            {workQueue}
+          </TabsContent>
+        </Tabs>
+      )}
+
+      {((approvals.length > 0 && showApprovals) || reportLinks.length > 0) && (
+        <div
+          className={cn(
+            "grid grid-cols-[minmax(0,1fr)] gap-5 lg:items-start",
+            approvals.length > 0 && showApprovals && reportLinks.length > 0
+              ? "lg:grid-cols-2"
+              : "lg:grid-cols-1",
+          )}
+        >
+          {approvals.length > 0 && showApprovals && (
+            <section aria-labelledby="approvals-title" className="grid gap-3">
               <SectionHeading
-                id="management-approvals-title"
+                id="approvals-title"
                 title={t("managementHome.section.approvals")}
               />
               <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
                 {approvals.map((tile) => (
-                  <TileCard key={tile.key} tile={tile} hideTitle />
+                  <QueueCard key={tile.key} tile={tile} hideTitle />
                 ))}
               </div>
             </section>
           )}
-
-          {reports.length > 0 && (
-            <section aria-labelledby="management-reports-title" className="grid gap-3">
+          {reportLinks.length > 0 && (
+            <section aria-labelledby="reports-title" className="grid gap-3">
               <SectionHeading
-                id="management-reports-title"
+                id="reports-title"
                 title={t("managementHome.section.reports")}
                 hint={t("managementHome.section.reportsHint")}
               />
-              <ul className="grid grid-cols-[minmax(0,1fr)] gap-2">
-                {reports.map((tile) =>
-                  tile.kind === "link" ? (
-                    <LinkTileRow key={tile.key} tile={tile} />
-                  ) : (
-                    <li key={tile.key}>
-                      <TileCard tile={tile} />
-                    </li>
-                  ),
-                )}
-              </ul>
+              <ReportLinks tiles={reportLinks} />
             </section>
           )}
         </div>
-      </div>
-    </section>
+      )}
+    </div>
   );
 }

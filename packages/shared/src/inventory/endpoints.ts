@@ -9,7 +9,6 @@
 // writes that create documents carry an idempotency key.
 
 import {
-  basisPointsSchema,
   brandIdSchema,
   businessDateSchema,
   clientInputSchema,
@@ -25,6 +24,8 @@ import {
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
 import {
+  inventoryItemAlternateIdSchema,
+  inventoryItemAlternateSchema,
   inventoryItemIdSchema,
   inventoryItemSchema,
   inventoryItemTypeSchema,
@@ -41,6 +42,7 @@ import {
   recipeDetailSchema,
   recipeIdSchema,
   recipeSchema,
+  recipeWastePctSchema,
   stockBatchSchema,
   stockBalanceSchema,
   stockCountActionSchema,
@@ -54,8 +56,12 @@ import {
   stockLedgerEntrySchema,
   stockLocationIdSchema,
   stockLocationSchema,
+  stockLocationTypeSchema,
   stockMovementTypeSchema,
+  stockTransferLineSchema,
+  stockTransferSchema,
   productionOrderIdSchema,
+  uomConversionIdSchema,
   uomConversionSchema,
   uomIdSchema,
   uomSchema,
@@ -153,6 +159,12 @@ export const recipeCoverageQuerySchema = cursorPageQuerySchema.extend({
   brandId: brandIdSchema.optional(),
 });
 
+export const stockTransferListQuerySchema = cursorPageQuerySchema.extend({
+  outletId: outletIdSchema,
+  /** Matches either side of the transfer (source or destination). */
+  locationId: stockLocationIdSchema.optional(),
+});
+
 // ---- Write inputs ---------------------------------------------------------
 
 export const createInventoryItemInputSchema = clientInputSchema({
@@ -183,6 +195,67 @@ export const updateInventoryItemInputSchema = clientInputSchema({
   parMax: nonnegativeDecimal4Schema.nullable().optional(),
   /** Optimistic concurrency (CORE PRECONDITION_FAILED on a stale value). */
   expectedUpdatedAt: isoDateTimeSchema,
+});
+
+/**
+ * Setup writes the back office needs (locations, alternates, conversions,
+ * transfers). PRD §16 "Lokasi Stok" ("transfer antarlokasi"), "Item Bahan &
+ * Satuan" ("kategori, dan bahan alternatif"), §6.E. Tracked as legend-gjmk.
+ */
+export const createStockLocationInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  name: z.string().min(1).max(150),
+  type: stockLocationTypeSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const updateStockLocationInputSchema = clientInputSchema({
+  name: z.string().min(1).max(150).optional(),
+  type: stockLocationTypeSchema.optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const createInventoryItemAlternateInputSchema = clientInputSchema({
+  alternateItemId: inventoryItemIdSchema,
+  /** Lower priority wins when a recipe suggests a substitute. */
+  priority: z.number().int().nonnegative().default(0),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+export const createUomConversionInputSchema = clientInputSchema({
+  fromUomId: uomIdSchema,
+  toUomId: uomIdSchema,
+  factor: positiveDecimal4Schema,
+  idempotencyKey: idempotencyKeySchema,
+}).refine((input) => input.fromUomId !== input.toUomId, {
+  path: ["toUomId"],
+  message: "A conversion needs two different units",
+});
+
+export const createStockTransferInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  fromLocationId: stockLocationIdSchema,
+  toLocationId: stockLocationIdSchema,
+  lines: z.array(stockTransferLineSchema).min(1),
+  note: z.string().max(300).nullable().optional(),
+  idempotencyKey: idempotencyKeySchema,
+}).superRefine((transfer, context) => {
+  if (transfer.fromLocationId === transfer.toLocationId)
+    context.addIssue({
+      code: "custom",
+      path: ["toLocationId"],
+      message: "A transfer needs two different locations",
+    });
+  const seen = new Set<string>();
+  transfer.lines.forEach((line, index) => {
+    if (seen.has(line.inventoryItemId))
+      context.addIssue({
+        code: "custom",
+        path: ["lines", index, "inventoryItemId"],
+        message: "An item appears once per transfer",
+      });
+    seen.add(line.inventoryItemId);
+  });
 });
 
 export const createStockCountInputSchema = clientInputSchema({
@@ -247,7 +320,7 @@ export const recipeLineInputSchema = z.strictObject({
   componentId: uuidSchema,
   quantity: positiveDecimal4Schema,
   uomId: uomIdSchema,
-  wastePctBp: basisPointsSchema,
+  wastePctBp: recipeWastePctSchema,
 });
 
 export const createRecipeInputSchema = clientInputSchema({
@@ -423,6 +496,78 @@ export const updateInventoryItem = defineEndpoint({
   response: dataResponseSchema(inventoryItemSchema),
 });
 
+// ---- Setup: locations, alternates, conversions, transfers -----------------
+
+export const createStockLocation = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/locations",
+  body: createStockLocationInputSchema,
+  response: dataResponseSchema(stockLocationSchema),
+});
+
+export const updateStockLocation = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/locations/:locationId",
+  params: z.strictObject({ locationId: stockLocationIdSchema }),
+  body: updateStockLocationInputSchema,
+  response: dataResponseSchema(stockLocationSchema),
+});
+
+export const listInventoryItemAlternates = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/items/:itemId/alternates",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  response: dataResponseSchema(z.array(inventoryItemAlternateSchema)),
+});
+
+export const createInventoryItemAlternate = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/items/:itemId/alternates",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  body: createInventoryItemAlternateInputSchema,
+  response: dataResponseSchema(inventoryItemAlternateSchema),
+});
+
+export const deleteInventoryItemAlternate = defineEndpoint({
+  method: "DELETE",
+  path: "/api/inventory/items/:itemId/alternates/:alternateId",
+  params: z.strictObject({
+    itemId: inventoryItemIdSchema,
+    alternateId: inventoryItemAlternateIdSchema,
+  }),
+});
+
+export const createUomConversion = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/items/:itemId/uom-conversions",
+  params: z.strictObject({ itemId: inventoryItemIdSchema }),
+  body: createUomConversionInputSchema,
+  response: dataResponseSchema(uomConversionSchema),
+});
+
+export const deleteUomConversion = defineEndpoint({
+  method: "DELETE",
+  path: "/api/inventory/items/:itemId/uom-conversions/:conversionId",
+  params: z.strictObject({
+    itemId: inventoryItemIdSchema,
+    conversionId: uomConversionIdSchema,
+  }),
+});
+
+export const listStockTransfers = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/transfers",
+  query: stockTransferListQuerySchema,
+  response: cursorPageSchema(stockTransferSchema),
+});
+
+export const createStockTransfer = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/transfers",
+  body: createStockTransferInputSchema,
+  response: dataResponseSchema(stockTransferSchema),
+});
+
 export const createStockCount = defineEndpoint({
   method: "POST",
   path: "/api/inventory/stock-counts",
@@ -515,6 +660,15 @@ export const inventoryEndpoints = [
   listRecipeCoverage,
   createInventoryItem,
   updateInventoryItem,
+  createStockLocation,
+  updateStockLocation,
+  listInventoryItemAlternates,
+  createInventoryItemAlternate,
+  deleteInventoryItemAlternate,
+  createUomConversion,
+  deleteUomConversion,
+  listStockTransfers,
+  createStockTransfer,
   createStockCount,
   updateStockCountLine,
   postStockCountTransition,

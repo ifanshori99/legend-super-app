@@ -1,6 +1,6 @@
-// Text catalog keys of the management home. The tile titles, report names and
-// metric names are contract data (server text); everything the page adds is a
-// key in `packages/shared/src/i18n/messages/id.ts` (PRD §7 "Katalog teks").
+// Text catalog keys of the management home. Tile titles, report names and
+// metric names are contract data; everything the page adds is a key in
+// `packages/shared/src/i18n/messages/id.ts` (PRD §7 "Katalog teks").
 import type { MessageKey } from "@starter/shared/i18n";
 import type {
   DashboardQueue,
@@ -8,7 +8,6 @@ import type {
   ManagementRole,
   ReportPeriodPreset,
 } from "@starter/shared/dashboard";
-import type { MetricUnit } from "@starter/shared/metrics";
 
 export const ROLE_LABEL_KEYS = {
   gm: "managementHome.role.gm",
@@ -44,14 +43,6 @@ export const PERIOD_LABEL_KEYS = {
   custom: "managementHome.period.custom",
 } as const satisfies Record<ReportPeriodPreset, MessageKey>;
 
-export const UNIT_LABEL_KEYS = {
-  idr: "managementHome.unit.idr",
-  count: "managementHome.unit.count",
-  percent: "managementHome.unit.percent",
-  decimal: "managementHome.unit.decimal",
-  seconds: "managementHome.unit.seconds",
-} as const satisfies Record<MetricUnit, MessageKey>;
-
 export const QUEUE_LABEL_KEYS = {
   approvals: "managementHome.queue.approvals",
   kitchen_queue: "managementHome.queue.kitchen_queue",
@@ -63,6 +54,19 @@ export const QUEUE_LABEL_KEYS = {
   documents: "managementHome.queue.documents",
   daily_summary: "managementHome.queue.daily_summary",
   facility_units: "managementHome.queue.facility_units",
+} as const satisfies Record<DashboardQueue, MessageKey>;
+
+export const QUEUE_HINT_KEYS = {
+  approvals: "managementHome.queueHint.approvals",
+  kitchen_queue: "managementHome.queueHint.kitchen_queue",
+  waiter_calls: "managementHome.queueHint.waiter_calls",
+  reviews: "managementHome.queueHint.reviews",
+  alerts: "managementHome.queueHint.alerts",
+  critical_stock: "managementHome.queueHint.critical_stock",
+  devices: "managementHome.queueHint.devices",
+  documents: "managementHome.queueHint.documents",
+  daily_summary: "managementHome.queueHint.daily_summary",
+  facility_units: "managementHome.queueHint.facility_units",
 } as const satisfies Record<DashboardQueue, MessageKey>;
 
 /**

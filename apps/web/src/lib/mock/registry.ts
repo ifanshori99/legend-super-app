@@ -22,47 +22,65 @@ export type MockContext<E extends AnyEndpoint> = {
 };
 
 /**
- * A handler answers `MOCK_UNHANDLED` when the request belongs to another
- * screen that mocks the same endpoint — one endpoint can serve several
- * screens (`GET /api/dashboards/:dashboard` feeds owner, shareholder and
- * management). The runtime then asks the next registration for that endpoint,
- * so parallel FE beads never take each other's screens out of mock mode.
- */
-export const MOCK_UNHANDLED: unique symbol = Symbol("mock-unhandled");
-
-/**
  * Returns the response body (wire shape; it is validated against the
  * endpoint's schema) or throws `ApiError(status, CODE, message)` to simulate
- * a failure such as `CONFLICT`. Returns `MOCK_UNHANDLED` to decline.
+ * a failure such as `CONFLICT`.
  */
 export type MockHandler<E extends AnyEndpoint> = (
   context: MockContext<E>,
-) => WireOut<E> | typeof MOCK_UNHANDLED | Promise<WireOut<E> | typeof MOCK_UNHANDLED>;
+) => WireOut<E> | Promise<WireOut<E>>;
 
 export type { EndpointOutput };
 
 type Entry = {
   endpoint: AnyEndpoint;
   handler: MockHandler<AnyEndpoint>;
-  /** Registration order; the newest registration is asked first. */
-  sequence: number;
+  /** Where it was registered, so a duplicate names both owners. */
+  origin: string;
 };
-const entries = new Map<string, Entry[]>();
-let sequence = 0;
+const entries = new Map<string, Entry>();
 
-/** Registers (or replaces, for hot reload) the mock for one endpoint. */
+/** The first stack frame outside this file, e.g. `mock.ts:87:1`. */
+function originOf(): string {
+  const stack = new Error().stack?.split("\n").slice(2) ?? [];
+  const frame = stack.find((line) => !line.includes("registry.ts"));
+  return frame?.trim().replace(/^at\s+/, "") ?? "unknown";
+}
+
+/**
+ * Registers the one mock for an endpoint. A second registration of the same
+ * endpoint is a bug: the registry used to keep whichever module loaded last, so
+ * two features silently fought over one route and the UI showed the loser's
+ * fixtures (review legend-7ko, bead legend-jzud). Own the endpoint in one
+ * feature (or a shared module in `lib/mock/handlers/`) and import the other
+ * feature's handler function instead of registering again.
+ *
+ * `replace` is only for an arbiter that deliberately re-registers a default a
+ * shared module already registered (GET /api/auth/me, current-auth.ts); it must
+ * not be used to paper over two features owning one endpoint.
+ *
+ * Hot reload: `transport.ts` clears the registry when Vite disposes the mock
+ * module graph, so a re-evaluated module registers into an empty registry
+ * rather than throwing at itself.
+ */
 export function registerMock<E extends AnyEndpoint>(
   endpoint: E,
   handler: MockHandler<E>,
+  options: { replace?: boolean } = {},
 ) {
-  const previous = entries.get(endpoint.id) ?? [];
-  // Hot reload re-registers the same handler; keep only the newest per id and
-  // order every registration so a declining handler falls through.
-  const kept = previous.filter((entry) => entry.handler !== handler);
-  entries.set(endpoint.id, [
-    ...kept,
-    { endpoint, handler, sequence: ++sequence } as unknown as Entry,
-  ]);
+  const existing = entries.get(endpoint.id);
+  if (existing && !options.replace)
+    throw new Error(
+      `[mock] Duplicate handler for "${endpoint.id}".\n` +
+        `  first:  ${existing.origin}\n` +
+        `  second: ${originOf()}\n` +
+        "One owner per endpoint: export the handler and import it instead of calling registerMock twice.",
+    );
+  entries.set(endpoint.id, {
+    endpoint,
+    handler,
+    origin: originOf(),
+  } as unknown as Entry);
 }
 
 export function clearMocks() {
@@ -73,35 +91,19 @@ export function registeredMockIds(): string[] {
   return [...entries.keys()];
 }
 
-export type FoundMock = {
-  entry: Entry;
-  params: Record<string, string>;
-  weight: number;
-};
-
-function matches(method: string, pathname: string): FoundMock[] {
-  const found: FoundMock[] = [];
-  for (const group of entries.values())
-    for (const entry of group) {
-      if (entry.endpoint.method !== method) continue;
-      const params = matchEndpointPath(entry.endpoint.path, pathname);
-      if (!params) continue;
-      found.push({ entry, params, weight: Object.keys(params).length });
-    }
-  return found;
-}
-
-/**
- * Every mock for a request, in the order to try them: a static path beats one
- * with `:params`, and for the same path the newest registration goes first.
- */
-export function findMocks(method: string, pathname: string): FoundMock[] {
-  return matches(method, pathname).sort(
-    (a, b) => a.weight - b.weight || b.entry.sequence - a.entry.sequence,
-  );
-}
-
-/** Finds the first mock for a request; see `findMocks` for the order. */
+/** Finds the mock for a request; a static path beats one with `:params`. */
 export function findMock(method: string, pathname: string) {
-  return findMocks(method, pathname)[0] ?? null;
+  let best: {
+    entry: Entry;
+    params: Record<string, string>;
+    weight: number;
+  } | null = null;
+  for (const entry of entries.values()) {
+    if (entry.endpoint.method !== method) continue;
+    const params = matchEndpointPath(entry.endpoint.path, pathname);
+    if (!params) continue;
+    const weight = Object.keys(params).length;
+    if (!best || weight < best.weight) best = { entry, params, weight };
+  }
+  return best;
 }

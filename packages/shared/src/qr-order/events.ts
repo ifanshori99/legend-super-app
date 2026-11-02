@@ -41,6 +41,19 @@ export const tableSessionOpenedPayloadSchema = z.strictObject({
   participantId: sessionParticipantIdSchema,
 });
 
+/**
+ * A later guest scanned the table QR and joined the active session (PRD
+ * "Scan & Sesi Meja"). Emitted only when a new participant row is created; a
+ * rescan by the same device just refreshes lastSeenAt. The name is catalogued
+ * on the WS-03 line (`table_session.joined`) but had no payload schema yet.
+ */
+export const tableSessionJoinedPayloadSchema = z.strictObject({
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  zoneId: floorZoneIdSchema,
+  participantId: sessionParticipantIdSchema,
+});
+
 export const tableSessionClosedPayloadSchema = z.strictObject({
   sessionId: tableSessionIdSchema,
   tableId: tableIdSchema,
@@ -83,6 +96,7 @@ export const serviceRequestCreatedPayloadSchema = z.strictObject({
 /** Events owned and emitted by this contract (WS-03 catalog line). */
 export const qrOrderEventNames = [
   "table_session.opened",
+  "table_session.joined",
   "table_session.closed",
   "order.placed",
   "item.failed",
@@ -97,6 +111,7 @@ export const qrOrderEventPayloads: Record<
   z.ZodType<Record<string, unknown>>
 > = {
   "table_session.opened": tableSessionOpenedPayloadSchema,
+  "table_session.joined": tableSessionJoinedPayloadSchema,
   "table_session.closed": tableSessionClosedPayloadSchema,
   "order.placed": orderPlacedPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
@@ -138,6 +153,9 @@ export type QrOrderEvent = EventEnvelope;
 
 export type TableSessionOpenedPayload = z.infer<
   typeof tableSessionOpenedPayloadSchema
+>;
+export type TableSessionJoinedPayload = z.infer<
+  typeof tableSessionJoinedPayloadSchema
 >;
 export type TableSessionClosedPayload = z.infer<
   typeof tableSessionClosedPayloadSchema

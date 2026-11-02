@@ -12,8 +12,7 @@ import {
   resetControl,
   takeFailure,
 } from "./control.ts";
-import { findMocks } from "./registry.ts";
-import { MOCK_UNHANDLED } from "./registry.ts";
+import { findMock } from "./registry.ts";
 import { resetMockStores } from "./store.ts";
 
 export type MockRequest = {
@@ -86,14 +85,14 @@ export async function dispatchMock(request: MockRequest): Promise<unknown> {
       "Terjadi kesalahan pada server. Coba lagi sebentar lagi.",
     );
 
-  const found = findMocks(request.method, request.path)[0];
+  const found = findMock(request.method, request.path);
   if (!found)
     throw new ApiError(
       404,
       "NOT_FOUND",
       `Mock belum terdaftar untuk ${request.method} ${request.path}. Tambahkan registerMock di features/<fitur>/mock.ts.`,
     );
-  const { endpoint } = found.entry;
+  const { endpoint, handler } = found.entry;
 
   const forced = takeFailure(endpoint.id);
   if (forced)
@@ -113,30 +112,12 @@ export async function dispatchMock(request: MockRequest): Promise<unknown> {
     ? validate(endpoint.body, request.body, "body")
     : undefined;
 
-  let output: unknown = MOCK_UNHANDLED;
+  let output: unknown;
   try {
-    // A handler may decline (`MOCK_UNHANDLED`) when the request belongs to a
-    // screen another feature mocks on the same endpoint; keep asking.
-    for (const candidate of findMocks(request.method, request.path)) {
-      output = await candidate.entry.handler({
-        endpoint,
-        params,
-        query,
-        body,
-        scenario,
-        signal,
-      });
-      if (output !== MOCK_UNHANDLED) break;
-    }
+    output = await handler({ endpoint, params, query, body, scenario, signal });
   } catch (error) {
     throw toApiError(error);
   }
-  if (output === MOCK_UNHANDLED)
-    throw new ApiError(
-      404,
-      "NOT_FOUND",
-      `Tidak ada mock yang menangani ${request.method} ${request.path}.`,
-    );
   await delay(0, signal);
 
   if (!endpoint.response) return undefined;
