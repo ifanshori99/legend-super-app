@@ -266,8 +266,9 @@ export const paymentRoutingRules = pgTable(
     /** NULL is the tenant default, which an outlet row can override. */
     outletId: uuid("outlet_id"),
     method: varchar("method", { length: 20 }).$type<PaymentMethod>().notNull(),
-    provider: varchar("provider", { length: 20 }).notNull(),
-    fallbackProvider: varchar("fallback_provider", { length: 20 }),
+    // Provider codes follow the WS-05 admin contract (max 100, PRD §3.13).
+    provider: varchar("provider", { length: 100 }).notNull(),
+    fallbackProvider: varchar("fallback_provider", { length: 100 }),
     enabled: boolean("enabled").notNull().default(true),
     updatedBy: text("updated_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })

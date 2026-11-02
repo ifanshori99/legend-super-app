@@ -1,0 +1,2 @@
+ALTER TABLE "payment_routing_rules" ALTER COLUMN "provider" SET DATA TYPE varchar(100);--> statement-breakpoint
+ALTER TABLE "payment_routing_rules" ALTER COLUMN "fallback_provider" SET DATA TYPE varchar(100);

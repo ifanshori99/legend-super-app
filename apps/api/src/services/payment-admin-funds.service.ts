@@ -172,11 +172,6 @@ export async function resolveUnallocatedFund(
       { type: "outlet", id: fund.outletId },
       new Date(),
     );
-    const locked = await tx.execute(
-      sql`SELECT amount_idr FROM payment_intents WHERE tenant_id = ${context.tenant.tenantId} AND id = ${fund.paymentIntentId}::uuid FOR UPDATE`,
-    );
-    if (!locked.rows[0])
-      throw new HttpError(404, "NOT_FOUND", "Payment not found.");
     return idempotentPaymentAdminWrite(
       tx,
       context,
@@ -210,27 +205,9 @@ export async function resolveUnallocatedFund(
             "CONFLICT",
             "A refund is already pending for these funds.",
           );
-        const [reserved] = await tx
-          .select({
-            total: sql<number>`coalesce(sum(${paymentRefunds.amountIdr}), 0)`,
-          })
-          .from(paymentRefunds)
-          .where(
-            and(
-              eq(paymentRefunds.tenantId, context.tenant.tenantId),
-              eq(paymentRefunds.paymentIntentId, fund.paymentIntentId),
-              sql`${paymentRefunds.status} <> 'failed'`,
-            ),
-          );
-        if (
-          Number(reserved?.total ?? 0) + fund.amountIdr >
-          Number(locked.rows[0]!.amount_idr)
-        )
-          throw new HttpError(
-            409,
-            "CONFLICT",
-            "Refund exceeds available paid amount.",
-          );
+        // The excess is capped by this fund row (locked above, at most one
+        // live refund per fund). It never consumes the bill's refundable
+        // amount: the guest paid it on top of the intent (PAY-04).
         const now = new Date();
         const [refund] = await tx
           .insert(paymentRefunds)

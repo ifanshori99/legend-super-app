@@ -7,7 +7,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import * as contract from "@starter/shared/payment/admin";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
@@ -197,6 +197,9 @@ export async function createRefund(
               eq(paymentRefunds.tenantId, context.tenant.tenantId),
               eq(paymentRefunds.paymentIntentId, intent.id),
               sql`${paymentRefunds.status} <> 'failed'`,
+              // Excess (unallocated) money is refunded against its own fund
+              // row, never against the bill's paid amount (PAY-04).
+              isNull(paymentRefunds.unallocatedFundId),
             ),
           );
         if (Number(reserved?.total ?? 0) + body.amountIdr > intent.amountIdr)
@@ -272,6 +275,7 @@ export async function listRefundablePayments(
             eq(paymentRefunds.tenantId, intent.tenantId),
             eq(paymentRefunds.paymentIntentId, intent.id),
             sql`${paymentRefunds.status} <> 'failed'`,
+            isNull(paymentRefunds.unallocatedFundId),
           ),
         );
       const reserved = Number(sum?.total ?? 0);

@@ -5,17 +5,16 @@
 // settled, and a payment above the amount due. The money is never deleted or
 // silently absorbed; a resolution is either a refund or a credit, and it needs
 // an approval reference (PRD: "diselesaikan melalui refund atau kredit dengan
-// approval"). The generic approval inbox (legend-y5q) supplies that reference;
-// this service refuses a resolution without one.
+// approval"). Resolution goes only through the HTTP payment admin endpoint
+// (payment-admin-funds.service.ts), which opens a pending refund for approval;
+// the former in-process resolver accepted any approval reference and was
+// removed in the Opus review of legend-2lq0 (fail closed).
 
 import {
-  createUlid,
   cursorPageQuerySchema,
   decodeCursor,
   encodeCursor,
-  isoDateTimeSchema,
   outletIdSchema,
-  uuidSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { asc, and, desc, eq, isNull, sql } from "drizzle-orm";
@@ -24,7 +23,6 @@ import { db } from "../db";
 import { paymentUnallocatedFunds } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
-import { recordAudit } from "./core-audit";
 import { assertPaymentPermission } from "./payment-support";
 
 export const listUnallocatedFundsQuerySchema = cursorPageQuerySchema
@@ -35,15 +33,6 @@ export const listUnallocatedFundsQuerySchema = cursorPageQuerySchema
   .strict();
 export type ListUnallocatedFundsQuery = z.infer<
   typeof listUnallocatedFundsQuerySchema
->;
-
-export const resolveUnallocatedFundInputSchema = z.strictObject({
-  resolution: z.enum(["refund", "credit"]),
-  /** Approval request/case that authorized this resolution (PRD PAY-04). */
-  approvalRef: z.string().min(1).max(100),
-});
-export type ResolveUnallocatedFundInput = z.input<
-  typeof resolveUnallocatedFundInputSchema
 >;
 
 /** Wire shape for the payment admin screens (contract endpoint pending). */
@@ -145,89 +134,6 @@ export async function listUnallocatedFunds(
             : null,
       },
     };
-  });
-}
-
-/** Closes one row as refunded or credited; audited with the approval reference. */
-export async function resolveUnallocatedFund(
-  context: ScopedTenantContext,
-  fundId: string,
-  input: ResolveUnallocatedFundInput,
-  actorUserId: string,
-  now = new Date(),
-): Promise<UnallocatedFund> {
-  const id = uuidSchema.parse(fundId);
-  const parsed = resolveUnallocatedFundInputSchema.parse(input);
-  return withTenant(db, context, async (tx) => {
-    const [existing] = await tx
-      .select()
-      .from(paymentUnallocatedFunds)
-      .where(
-        and(
-          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
-          eq(paymentUnallocatedFunds.id, id),
-        ),
-      );
-    if (!existing)
-      throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
-    await assertPaymentPermission(
-      tx,
-      context,
-      actorUserId,
-      "payment.reconcile",
-      { type: "outlet", id: existing.outletId },
-      now,
-    );
-    if (existing.resolvedAt !== null)
-      throw new HttpError(409, "CONFLICT", "These funds are already resolved.");
-    const [row] = await tx
-      .update(paymentUnallocatedFunds)
-      .set({
-        resolution: parsed.resolution,
-        resolvedBy: actorUserId,
-        approvalRef: parsed.approvalRef,
-        resolvedAt: now,
-      })
-      .where(
-        and(
-          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
-          eq(paymentUnallocatedFunds.id, id),
-          isNull(paymentUnallocatedFunds.resolvedAt),
-        ),
-      )
-      .returning();
-    if (!row)
-      throw new HttpError(409, "CONFLICT", "These funds are already resolved.");
-    await recordAudit(
-      tx,
-      context,
-      {
-        id: createUlid(now.getTime()),
-        tenantId: context.tenant.tenantId,
-        outletId: row.outletId,
-        actorType: "user",
-        actorId: actorUserId,
-        deviceId: null,
-        action: "payment.unallocated_funds_resolved",
-        objectType: "payment_unallocated_funds",
-        objectId: row.id,
-        reason: parsed.approvalRef,
-        maskedChanges: {
-          before: { resolution: null, resolvedBy: null },
-          after: {
-            resolution: row.resolution,
-            amountIdr: row.amountIdr,
-            approvalRef: row.approvalRef,
-          },
-        },
-        ipHash: null,
-        sensitiveAccess: false,
-        retentionClass: "audit_2y",
-        createdAt: isoDateTimeSchema.parse(now.toISOString()),
-      },
-      ["resolution", "amountIdr", "approvalRef"],
-    );
-    return toFund(row);
   });
 }
 

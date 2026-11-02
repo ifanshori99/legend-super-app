@@ -27,6 +27,7 @@ const otherLink = randomUUID();
 const otherIntent = randomUUID();
 const caseId = randomUUID();
 const userIds: string[] = [];
+const terminalIds: string[] = [];
 let manager: ReturnType<typeof agent>;
 let scoped: ReturnType<typeof agent>;
 
@@ -129,6 +130,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await owner.query(
+    "DELETE FROM payment_cashier_defaults WHERE terminal_id = ANY($1::uuid[])",
+    [terminalIds],
+  );
+  await owner.query(
+    "DELETE FROM payment_edc_terminals WHERE id = ANY($1::uuid[])",
+    [terminalIds],
+  );
   await owner.query(
     "DELETE FROM payment_refunds WHERE payment_intent_id = $1",
     [intentId],
@@ -296,6 +305,34 @@ describe("WS-05 payment administration", () => {
       [fundId],
     );
     expect(refunds.rows).toEqual([{ status: "pending", amount_idr: "20000" }]);
+    // The excess is held on its own fund: the bill's refundable amount (40000
+    // after the 60000 pending refund above) is untouched (PAY-04).
+    const list = await manager.get(
+      `/api/payments/admin/refunds/refundable?outletId=${outletA}`,
+    );
+    expect(
+      list.body.data.payments.find(
+        (p: { paymentIntentId: string }) => p.paymentIntentId === intentId,
+      ),
+    ).toMatchObject({ refundedAmountIdr: 60000, refundableAmountIdr: 40000 });
+    const again = await manager
+      .post(`/api/payments/admin/unallocated-funds/${fundId}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: `fund-${randomUUID()}`,
+        resolution: "refund",
+        note: "Second attempt",
+      });
+    expect(again.status).toBe(409);
+    const credit = await manager
+      .post(`/api/payments/admin/unallocated-funds/${fundId}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: `fund-${randomUUID()}`,
+        resolution: "credit",
+        note: "Credit not wired",
+      });
+    expect(credit.status).toBe(503);
   });
 
   it("EDC-06 resolves a settlement difference only with a note", async () => {
@@ -349,5 +386,109 @@ describe("WS-05 payment administration", () => {
     await owner.query("DELETE FROM payment_edc_terminals WHERE id = $1", [
       created.body.data.id,
     ]);
+  });
+  it("EDC-07 config writes need an Idempotency-Key, replay it and reject reuse", async () => {
+    const body = {
+      outletId: outletA,
+      bankCode: "bni",
+      terminalId: `T-${randomUUID()}`,
+      merchantId: "MID-BNI",
+      model: "Replay terminal",
+      connection: "lan",
+      ipAddress: "10.0.0.20",
+      supportedMethods: ["card"],
+      status: "active",
+    };
+    const noKey = await manager
+      .post("/api/payments/admin/edc/terminals")
+      .set(originHeader)
+      .send(body);
+    expect(noKey.status).toBeGreaterThanOrEqual(400);
+    expect(noKey.status).toBeLessThan(500);
+    const key = `edc-${randomUUID()}`;
+    const first = await manager
+      .post("/api/payments/admin/edc/terminals")
+      .set(originHeader)
+      .set("Idempotency-Key", key)
+      .send(body);
+    expect(first.status).toBe(201);
+    terminalIds.push(first.body.data.id);
+    const replay = await manager
+      .post("/api/payments/admin/edc/terminals")
+      .set(originHeader)
+      .set("Idempotency-Key", key)
+      .send(body);
+    expect(replay.status).toBe(201);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const reused = await manager
+      .post("/api/payments/admin/edc/terminals")
+      .set(originHeader)
+      .set("Idempotency-Key", key)
+      .send({ ...body, merchantId: "MID-OTHER" });
+    expect(reused.status).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const rows = await owner.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_edc_terminals WHERE tenant_id = $1 AND terminal_id = $2",
+      [tenantId, body.terminalId],
+    );
+    expect(rows.rows[0]?.count).toBe("1");
+    // Audit + outbox in the same transaction as the write.
+    const outbox = await owner.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM domain_event_outbox WHERE tenant_id = $1 AND aggregate_id = $2 AND event->>'name' = 'edc_terminal.created'",
+      [tenantId, first.body.data.id],
+    );
+    expect(outbox.rows[0]?.count).toBe("1");
+  });
+
+  it("EDC-07 terminals of two banks coexist in one outlet and route per cashier", async () => {
+    const make = async (bankCode: string, supportedMethods: string[]) => {
+      const response = await manager
+        .post("/api/payments/admin/edc/terminals")
+        .set(originHeader)
+        .set("Idempotency-Key", `edc-${randomUUID()}`)
+        .send({
+          outletId: outletA,
+          bankCode,
+          terminalId: `T-${randomUUID()}`,
+          merchantId: `MID-${bankCode}`,
+          model: `${bankCode} terminal`,
+          connection: "usb",
+          ipAddress: null,
+          supportedMethods,
+          status: "active",
+        });
+      expect(response.status).toBe(201);
+      terminalIds.push(response.body.data.id);
+      return response.body.data.id as string;
+    };
+    const bca = await make("bca", ["card"]);
+    const mandiri = await make("mandiri", ["qris"]);
+    const listed = await manager.get(
+      `/api/payments/admin/edc/terminals?outletId=${outletA}&limit=100`,
+    );
+    expect(listed.status).toBe(200);
+    const banks = listed.body.data
+      .filter((t: { id: string }) => t.id === bca || t.id === mandiri)
+      .map((t: { bankCode: string }) => t.bankCode)
+      .sort();
+    expect(banks).toEqual(["bca", "mandiri"]);
+    const cashierId = userIds[0]!;
+    const put = (terminalId: string, defaultMethod: string) =>
+      manager
+        .put(`/api/payments/admin/edc/cashier-defaults/${cashierId}`)
+        .set(originHeader)
+        .set("Idempotency-Key", `cashier-${randomUUID()}`)
+        .send({ outletId: outletA, terminalId, defaultMethod });
+    // A card default cannot point at the QRIS-only Mandiri terminal.
+    expect((await put(mandiri, "edc_card")).status).toBe(400);
+    const card = await put(bca, "edc_card");
+    expect(card.status).toBe(200);
+    expect(card.body.data).toMatchObject({ terminalId: bca });
+    const qris = await put(mandiri, "edc_qris");
+    expect(qris.status).toBe(200);
+    expect(qris.body.data).toMatchObject({
+      terminalId: mandiri,
+      defaultMethod: "edc_qris",
+    });
   });
 });

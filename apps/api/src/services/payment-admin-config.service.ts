@@ -34,7 +34,7 @@ import { withTenant } from "../db/tenant";
 import { recordAudit } from "./core-audit";
 import { paymentGateway } from "./payment-gateway";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
-import { assertPaymentPermission } from "./payment-support";
+import { appendPaymentEvent, assertPaymentPermission } from "./payment-support";
 import type { Tx } from "./permission-resolver";
 import type { z } from "zod";
 
@@ -65,33 +65,74 @@ async function outletName(tx: Tx, ctx: ScopedTenantContext, outletId: string) {
   if (!row) throw new CoreError("NOT_FOUND", "Outlet not found.");
   return row.name;
 }
-async function audit(
+type ConfigEvent =
+  | "payment_route.updated"
+  | "edc_terminal.created"
+  | "edc_terminal.updated"
+  | "cashier_payment_default.updated";
+type Changes = Record<string, string | number | boolean | null | string[]>;
+/** Every configuration write leaves an audit row and an outbox event in the
+ * same transaction (PRD §3.13 PAY-05; WS-00 outbox). Values are config only. */
+async function record(
   tx: Tx,
   ctx: ScopedTenantContext,
   actor: string,
   outletId: string | null,
-  action: string,
+  event: ConfigEvent,
   objectId: string,
+  before: Changes | null,
+  after: Changes,
 ) {
   const now = new Date();
-  await recordAudit(tx, ctx, {
-    id: createUlid(now.getTime()),
-    tenantId: ctx.tenant.tenantId,
+  await recordAudit(
+    tx,
+    ctx,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: ctx.tenant.tenantId,
+      outletId,
+      actorType: "user",
+      actorId: actor,
+      deviceId: null,
+      action: event,
+      objectType: event.split(".")[0]!,
+      objectId,
+      reason: null,
+      maskedChanges: { before, after },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    Object.keys(after),
+  );
+  await appendPaymentEvent(tx, ctx, {
+    name: event,
+    aggregateId: objectId,
     outletId,
-    actorType: "user",
-    actorId: actor,
-    deviceId: null,
-    action,
-    objectType: "payment_admin",
-    objectId,
-    reason: null,
-    maskedChanges: { before: null, after: null },
-    ipHash: null,
-    sensitiveAccess: false,
-    retentionClass: "audit_2y",
-    createdAt: now.toISOString(),
+    actor: { type: "user", id: actor },
+    payload: { id: objectId, ...after },
+    now,
   });
 }
+const routeChanges = (r: typeof paymentRoutingRules.$inferSelect) => ({
+  method: r.method,
+  provider: r.provider,
+  fallbackProvider: r.fallbackProvider,
+  enabled: r.enabled,
+});
+const terminalChanges = (r: typeof paymentEdcTerminals.$inferSelect) => ({
+  bankCode: r.bankCode,
+  terminalId: r.terminalId,
+  merchantId: r.merchantId,
+  supportedMethods: r.supportedMethods,
+  status: r.status,
+});
+const defaultChanges = (r: typeof paymentCashierDefaults.$inferSelect) => ({
+  cashierId: r.cashierId,
+  terminalId: r.terminalId,
+  defaultMethod: r.defaultMethod,
+});
 const routeView = (r: typeof paymentRoutingRules.$inferSelect) =>
   paymentRouteSchema.parse({
     id: r.id,
@@ -281,13 +322,15 @@ export async function updatePaymentRoute(
               })
               .returning();
         if (!row) throw new Error("Routing write failed");
-        await audit(
+        await record(
           tx,
           ctx,
           actor,
           body.outletId,
-          "payment.routing_updated",
+          "payment_route.updated",
           row.id,
+          old ? routeChanges(old) : null,
+          routeChanges(row),
         );
         return routeView(row);
       },
@@ -360,13 +403,15 @@ export async function createEdcTerminal(
           .values({ ...body, tenantId: ctx.tenant.tenantId })
           .returning();
         if (!row) throw new Error("Terminal write failed");
-        await audit(
+        await record(
           tx,
           ctx,
           actor,
           body.outletId,
-          "payment.edc_created",
+          "edc_terminal.created",
           row.id,
+          null,
+          terminalChanges(row),
         );
         return terminalView(row, name);
       },
@@ -408,13 +453,15 @@ export async function updateEdcTerminal(
           .where(eq(paymentEdcTerminals.id, old.id))
           .returning();
         if (!row) throw new Error("Terminal write failed");
-        await audit(
+        await record(
           tx,
           ctx,
           actor,
           old.outletId,
-          "payment.edc_updated",
+          "edc_terminal.updated",
           row.id,
+          terminalChanges(old),
+          terminalChanges(row),
         );
         return terminalView(row, name);
       },
@@ -548,13 +595,15 @@ export async function updateEdcCashierDefault(
               })
               .returning();
         if (!row) throw new Error("Cashier default write failed");
-        await audit(
+        await record(
           tx,
           ctx,
           actor,
           body.outletId,
-          "payment.cashier_default_updated",
+          "cashier_payment_default.updated",
           row.id,
+          old ? defaultChanges(old) : null,
+          defaultChanges(row),
         );
         return defaultView(row, cashier.name);
       },

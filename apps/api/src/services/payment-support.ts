@@ -135,10 +135,14 @@ export async function appendPaymentEvent(
       | "payment.paid"
       | "payment.refund_requested"
       | "payment.expired"
-      | "payment.failed";
+      | "payment.failed"
+      | "payment_route.updated"
+      | "edc_terminal.created"
+      | "edc_terminal.updated"
+      | "cashier_payment_default.updated";
     aggregateId: string;
-    /** The intent's outlet; must be inside the caller's scope. */
-    outletId: string;
+    /** The row's outlet (inside the caller's scope); null for tenant config. */
+    outletId: string | null;
     actor: { type: "user"; id: string } | { type: "system" };
     payload: Record<string, unknown>;
     now: Date;
