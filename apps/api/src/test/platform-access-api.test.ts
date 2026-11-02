@@ -18,7 +18,13 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import { setAuditWriter, type AuditEntry } from "../services/audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
-import { agent, originHeader, setRole, signUp } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 const app = createApp();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -38,13 +44,17 @@ function scopedContext(tenantId = seededTenantId): ScopedTenantContext {
   );
 }
 
-async function signedIn(name = "RBAC user") {
+async function signedIn(name = "RBAC user", options: { mfa?: boolean } = {}) {
   const client = agent(app);
-  await signUp(client, name);
+  const email = await signUp(client, name);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   createdUserIds.push(userId);
-  return { client, userId };
+  // AUTH-05: /api/access and /api/org are closed until this session verified a
+  // second factor (legend-qfvu mounted the gate). Suites about the pre-MFA
+  // snapshot opt out with { mfa: false }.
+  if (options.mfa ?? true) await verifySessionMfa(email);
+  return { client, userId, email };
 }
 
 async function roleIdOf(
@@ -114,7 +124,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
   it("TEN-03 fails closed without an assignment and lists effective codes with one", async () => {
     expect((await agent(app).get("/api/me/access")).status).toBe(401);
 
-    const plain = await signedIn("No role");
+    const plain = await signedIn("No role", { mfa: false });
     const empty = await plain.client.get("/api/me/access");
     expect(empty.status).toBe(200);
     expect(empty.body.data).toEqual({
@@ -123,7 +133,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
       mfaVerified: false,
     });
 
-    const ownerUser = await signedIn("Owner Access");
+    const ownerUser = await signedIn("Owner Access", { mfa: false });
     await assign(ownerUser.userId, "owner");
     const access = await ownerUser.client.get("/api/me/access");
     expect(access.status).toBe(200);
@@ -327,6 +337,70 @@ describe("§3.7 no self-elevation through role edits or assignment ends", () => 
     expect(byOwner.body.data.permissions).toContain("audit.log.view");
   });
 
+  it("§3.7 a role editor may add a permission they hold but not one they lack", async () => {
+    const boss = await signedIn("Held Permission Owner");
+    await assign(boss.userId, "owner");
+    const target = await boss.client
+      .post("/api/access/roles")
+      .set(originHeader)
+      .send({
+        name: `Held target ${unique()}`,
+        permissions: ["access.role.view", "access.role.manage"],
+        allowedScopeTypes: ["tenant"],
+      });
+    expect(target.status).toBe(201);
+    const targetId = target.body.data.id as string;
+    createdRoleIds.push(targetId);
+    const editorRole = await boss.client
+      .post("/api/access/roles")
+      .set(originHeader)
+      .send({
+        name: `Held editor ${unique()}`,
+        permissions: ["access.role.manage", "report.operational.view"],
+        allowedScopeTypes: ["tenant"],
+      });
+    expect(editorRole.status).toBe(201);
+    createdRoleIds.push(editorRole.body.data.id);
+
+    const editor = await signedIn("Held Permission Editor");
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $4)`,
+      [seededTenantId, editor.userId, editorRole.body.data.id, boss.userId],
+    );
+
+    // The editor holds report.operational.view through their own role, so the
+    // grant rule allows adding it to another custom role.
+    const held = await editor.client
+      .patch(`/api/access/roles/${targetId}`)
+      .set(originHeader)
+      .send({
+        permissions: [
+          "access.role.view",
+          "access.role.manage",
+          "report.operational.view",
+        ],
+      });
+    expect(held.status).toBe(200);
+    expect(held.body.data.permissions).toContain("report.operational.view");
+
+    // payroll.view is not held and the session has no re-auth, so still 403.
+    const unheld = await editor.client
+      .patch(`/api/access/roles/${targetId}`)
+      .set(originHeader)
+      .send({
+        permissions: [
+          "access.role.view",
+          "access.role.manage",
+          "report.operational.view",
+          "payroll.view",
+        ],
+      });
+    expect(unheld.status).toBe(403);
+    expect(unheld.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
+  });
+
   it("§3.7 ending an assignment never extends or re-activates it", async () => {
     const grantor = await signedIn("End Grantor");
     await assign(grantor.userId, "owner");
@@ -377,8 +451,10 @@ describe("§3.7 Pemberian Role", () => {
     expect(self.status).toBe(403);
     expect(self.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
 
+    // A session whose second factor was verified within the 5-minute window
+    // is the re-authentication (legend-ma2v): the grant goes through over HTTP.
     const grantee = await signedIn("Grantee");
-    const noReauth = await grantor.client
+    const granted = await grantor.client
       .post("/api/access/role-assignments")
       .set(originHeader)
       .send({
@@ -386,9 +462,34 @@ describe("§3.7 Pemberian Role", () => {
         roleId: cashierRole,
         scope: { type: "outlet", id: bandung },
       });
-    // No factor store yet (lib/mfa.ts), so re-auth is absent and denied.
-    expect(noReauth.status).toBe(401);
-    expect(noReauth.body.error.code).toBe("REAUTH_REQUIRED");
+    expect(granted.status).toBe(201);
+    expect(granted.body.data).toMatchObject({
+      userId: grantee.userId,
+      scope: { type: "outlet", id: bandung },
+    });
+
+    // The same session past the window cannot grant again.
+    await owner.query(
+      // The session must stay internally consistent (sessionSchema), so age
+      // its creation and activity along with the verification.
+      `UPDATE "session"
+       SET created_at = now() - interval '10 minutes',
+           last_seen_at = now() - interval '6 minutes',
+           mfa_verified_at = now() - interval '6 minutes'
+       WHERE user_id = $1`,
+      [grantor.userId],
+    );
+    const staleGrantee = await signedIn("Grantee Stale");
+    const stale = await grantor.client
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId: staleGrantee.userId,
+        roleId: cashierRole,
+        scope: { type: "outlet", id: bandung },
+      });
+    expect(stale.status).toBe(401);
+    expect(stale.body.error.code).toBe("REAUTH_REQUIRED");
   });
 
   it("TEN-03 a verified grant is scoped, audited, emitted and revocable", async () => {
