@@ -17,7 +17,6 @@ import {
   cafeLegendIdentityFixtures,
   deleteMfaFactor,
   enrollMfaFactor,
-  getCurrentAuth,
   listMfaFactors,
   listSessions,
   mfaFactorIdSchema,
@@ -156,8 +155,6 @@ export function staffCurrentAuthMock({ scenario }: { scenario: string }) {
     },
   };
 }
-
-registerMock(getCurrentAuth, staffCurrentAuthMock);
 
 registerMock(listMfaFactors, ({ scenario }) => ({
   data: scenario === "empty" ? [] : state.get().factors,

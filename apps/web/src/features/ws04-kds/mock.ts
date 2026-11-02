@@ -2,7 +2,6 @@
 import {
   cafeLegendKitchenFixtures,
   kitchenFixtureSchema,
-  listKitchenStations,
   getKitchenBoard,
   startKitchenTicket,
   bumpKitchenTicket,
@@ -132,9 +131,8 @@ function transition(id: string, action: KitchenTicketAction) {
     };
   });
 }
-registerMock(listKitchenStations, ({ scenario }) => ({
-  data: scenario === "empty" ? [] : fixtures.stationConfigs,
-}));
+// listKitchenStations is owned by ws04-kitchen-config/mock.ts (the station
+// settings screen); both features read the same fixture list (bead legend-jzud).
 registerMock(getKitchenBoard, ({ params, scenario }) => {
   const board = boards
     .get()
