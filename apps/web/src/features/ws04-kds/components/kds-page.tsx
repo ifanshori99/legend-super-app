@@ -28,6 +28,7 @@ import {
   useMenuStations,
   useStations,
 } from "../hooks.ts";
+import { kdsTimerStatus } from "../timer.ts";
 
 type StationId = StationConfig["stationId"];
 
@@ -207,9 +208,9 @@ function StationBoard({
                 ),
               );
               const status =
-                targetSeconds !== null && elapsed >= targetSeconds
-                  ? "late"
-                  : "onTrack";
+                targetSeconds === null
+                  ? "onTrack"
+                  : kdsTimerStatus(elapsed, targetSeconds);
               return (
                 <Card
                   key={ticket.id}
@@ -233,6 +234,12 @@ function StationBoard({
                           {t("kds.elapsed", {
                             minutes: Math.floor(elapsed / 60),
                           })}
+                          {/* Children replace the pill label; keep the timer
+                              status for screen readers (WCAG 1.4.1). */}
+                          <span className="sr-only">
+                            {" · "}
+                            {t(`timer.${status}`)}
+                          </span>
                         </StatusPill>
                       )}
                       {ticket.priority > 0 && (
