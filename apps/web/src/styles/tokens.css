@@ -26,32 +26,33 @@
   --muted-foreground: #5f5b55;
   --secondary: #f0eeeb;
   --accent: #efedea;
-  --border: #e3e0dc;
+  --border: #e8e5e1;
   --input: #8a857d;
-  --ring: #1f5fbf;
+  --ring: #0f5e68;
   --primary: #0f5e68;
   --primary-foreground: #ffffff;
   --brand: #3d3a35;
   --brand-foreground: #ffffff;
   --brand-subtle: #f3f1ee;
-  --success: #18794e;
+  --success: #147a41;
   --success-foreground: #ffffff;
-  --success-subtle: #e9f5ee;
-  --warning: #9a5b06;
+  --success-subtle: #e4f5eb;
+  --warning: #8f5800;
   --warning-foreground: #ffffff;
-  --warning-subtle: #fdf3e2;
-  --danger: #b42318;
+  --warning-subtle: #fcf1dc;
+  --danger: #c02c31;
   --danger-foreground: #ffffff;
-  --danger-subtle: #fdecea;
-  --info: #1f5fbf;
+  --danger-subtle: #fdebeb;
+  --info: #245bd1;
   --info-foreground: #ffffff;
-  --info-subtle: #eaf1fc;
+  --info-subtle: #e9f0fd;
 }
 /* @end */
 
 :root,
 [data-theme="light"] {
   color-scheme: light;
+  --shadow-faint: rgb(28 27 25 / 0.04);
   --shadow-soft: rgb(28 27 25 / 0.08);
   --shadow-strong: rgb(28 27 25 / 0.14);
   --scrim: rgb(28 27 25 / 0.48);
@@ -72,24 +73,24 @@
   --accent: #2c2a27;
   --border: #2f2c29;
   --input: #7c776f;
-  --ring: #7aaaf0;
+  --ring: #5ec2cc;
   --primary: #5ec2cc;
   --primary-foreground: #04262a;
   --brand: #d9d5cf;
   --brand-foreground: #1c1b19;
   --brand-subtle: #262421;
-  --success: #4cc38a;
+  --success: #55c98a;
   --success-foreground: #05251a;
-  --success-subtle: #132a1f;
-  --warning: #eea64a;
+  --success-subtle: #14291d;
+  --warning: #f0b04f;
   --warning-foreground: #2a1803;
-  --warning-subtle: #2e2312;
-  --danger: #f47b70;
+  --warning-subtle: #2f2513;
+  --danger: #f5787c;
   --danger-foreground: #2b0805;
-  --danger-subtle: #341815;
-  --info: #7aaaf0;
+  --danger-subtle: #361a1a;
+  --info: #82a9f5;
   --info-foreground: #0a1a33;
-  --info-subtle: #15223a;
+  --info-subtle: #18233a;
 }
 /* @end */
 
@@ -97,6 +98,7 @@
 [data-theme="dark"] {
   color-scheme: dark;
   /* Shadows barely read on dark; overlays also carry a border. */
+  --shadow-faint: rgb(0 0 0 / 0.24);
   --shadow-soft: rgb(0 0 0 / 0.4);
   --shadow-strong: rgb(0 0 0 / 0.6);
   --scrim: rgb(0 0 0 / 0.64);
@@ -108,6 +110,9 @@
  * themed subtree so a dark island gets dark shadows. */
 :root,
 [data-theme] {
+  /* v3 (Metoric): resting cards, shells, fields and outline buttons carry
+   * a 1px hairline shadow under their border; nothing else rests raised. */
+  --elevation-hairline: 0 1px 2px var(--shadow-faint);
   --elevation-raised:
     0 1px 2px var(--shadow-soft), 0 1px 3px var(--shadow-soft);
   --elevation-card: 0 1px 2px var(--shadow-soft), 0 6px 16px var(--shadow-soft);
@@ -138,6 +143,14 @@
   --chart-neutral: color-mix(in srgb, var(--foreground) 55%, var(--background));
   --chart-accent: var(--primary);
   --chart-grid: var(--border);
+  /* v3 double-shell card (Metoric): the outer shell sits between the
+   * canvas (surface-2) and the inner card. Neutral, not tenant-driven. */
+  --shell: color-mix(in srgb, var(--surface-2) 55%, var(--card));
+  /* v3: the primary button's tinted hairline shadow and the field focus
+   * halo, both mixed from the accent so a Tenant Theme follows. */
+  --elevation-primary: 0 1px 2px
+    color-mix(in srgb, var(--primary) 35%, transparent);
+  --focus-halo: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
 }
 
 /* ------------------------------------------- Semantic aliases (all modes) */
@@ -167,7 +180,12 @@
   --ff-brand:
     "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui,
     sans-serif;
-  --ff-ui: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* v3: one family everywhere (Metoric). Fixed for operations and
+   * management; tenants change only --ff-brand (customer surfaces). Inter
+   * stays loadable as a tenant brand choice (BRAND_FONTS). */
+  --ff-ui:
+    "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui,
+    sans-serif;
   --ff-mono:
     ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
 
@@ -236,8 +254,9 @@
   --control-h-sm: 2rem;
   --control-h-lg: 2.5rem;
   --control-x: 0.875rem;
-  --control-radius: calc(var(--radius-unit) * 1.5);
-  --field-radius: calc(var(--radius-unit) * 1.5);
+  /* v3: 10px controls and fields (Metoric radius-md on a 36px control). */
+  --control-radius: calc(var(--radius-unit) * 2.5);
+  --field-radius: calc(var(--radius-unit) * 2.5);
   --density-text: 1rem;
   --density-text-data: 0.875rem;
   --row-h: 2.5rem;

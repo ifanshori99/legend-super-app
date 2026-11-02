@@ -14,13 +14,13 @@ import { Slot } from "radix-ui";
 import { useT } from "@/components/i18n";
 
 // Badge: a short label or count the user acts on. Tinted fill, strong text
-// (every pair is in the contrast check).
+// (every pair is in the contrast check). v3 (Metoric): always a pill.
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs leading-5 font-semibold whitespace-nowrap tabular [&_svg]:size-3.5 [&_svg]:shrink-0",
+  "inline-flex w-fit shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs leading-5 font-semibold whitespace-nowrap tabular [&_svg]:size-3.5 [&_svg]:shrink-0",
   {
     variants: {
       tone: {
-        neutral: "bg-muted text-foreground",
+        neutral: "bg-surface-3 text-foreground",
         brand: "bg-brand-subtle text-foreground",
         success: "bg-success-subtle text-success",
         warning: "bg-warning-subtle text-warning",

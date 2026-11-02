@@ -106,4 +106,5 @@ export const sampleOutlet = "Outlet contoh";
 export const sampleStation = "Bar kopi";
 export const sampleSalesToday = 18450000;
 export const sampleOpenOrders = 23;
+export const sampleGuestsToday = 412;
 export const sampleTimeZone = "Asia/Jakarta";

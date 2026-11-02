@@ -5,6 +5,10 @@
 // v2 (DESIGN.md §4, owner Q30): related metrics sit in one <StatStrip> —
 // one container, hairline dividers — instead of a row of separate cards. A
 // lone StatTile outside a strip keeps its own border.
+//
+// v3 (Metoric KPI card): uppercase label, 26px bold figure; the strip is a
+// double shell (18px shell, 12px inner card). Metoric's four separate KPI
+// cards lose to Q30: the cells share one inner card, split by hairlines.
 import * as React from "react";
 import { cn } from "cn";
 import { ChevronRight } from "lucide-react";
@@ -29,13 +33,11 @@ function StatTile({
     <div
       data-slot="stat-tile"
       className={cn(
-        "flex min-w-0 flex-col gap-1 rounded-container border-(length:--border-w) bg-card p-card",
+        "flex min-w-0 flex-col gap-1.5 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline",
         className,
       )}
     >
-      <p className="text-sm leading-5 font-medium text-muted-foreground">
-        {label}
-      </p>
+      <p className="type-eyebrow text-muted-foreground">{label}</p>
       <div className="truncate type-money-display">{value}</div>
       {context && (
         <p className="text-xs leading-4 text-muted-foreground">{context}</p>
@@ -72,14 +74,20 @@ function StatStrip({
       aria-label={label}
       data-slot="stat-strip"
       className={cn(
-        "grid gap-(--border-w) overflow-hidden rounded-container border-(length:--border-w) bg-border sm:grid-cols-2",
-        columns === 3 && "lg:grid-cols-3",
-        columns === 4 && "lg:grid-cols-4",
-        "*:data-[slot=stat-tile]:rounded-none *:data-[slot=stat-tile]:border-0 sm:max-lg:[&>:last-child:nth-child(odd)]:col-span-2",
+        "rounded-shell border-(length:--border-w) bg-shell p-2 shadow-hairline",
         className,
       )}
     >
-      {children}
+      <div
+        className={cn(
+          "grid gap-(--border-w) overflow-hidden rounded-container border-(length:--border-w) bg-border shadow-hairline sm:grid-cols-2",
+          columns === 3 && "lg:grid-cols-3",
+          columns === 4 && "lg:grid-cols-4",
+          "*:data-[slot=stat-tile]:rounded-none *:data-[slot=stat-tile]:border-0 *:data-[slot=stat-tile]:shadow-none sm:max-lg:[&>:last-child:nth-child(odd)]:col-span-2",
+        )}
+      >
+        {children}
+      </div>
     </section>
   );
 }
