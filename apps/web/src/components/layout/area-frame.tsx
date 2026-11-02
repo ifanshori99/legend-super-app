@@ -115,11 +115,15 @@ export function AreaFrame({
     );
   }
 
-  const signIn = signOut ?? (
-    <Button asChild variant="outline" size="sm">
-      <Link to="/sign-in">{t("auth.signIn")}</Link>
-    </Button>
-  );
+  // Never offer sign-in to a visitor the guard already treats as signed in
+  // (mock mode has access without a real session; the API still authorizes).
+  const signIn =
+    signOut ??
+    (access.authenticated ? null : (
+      <Button asChild variant="outline" size="sm">
+        <Link to="/sign-in">{t("auth.signIn")}</Link>
+      </Button>
+    ));
 
   // A table QR journey (/t/$token/*, PRD §3 F10) brings its own shell parts:
   // the tenant brand, "Meja A03 · 4 tamu" and the Menu/Keranjang/Pesanan/Tagihan nav.

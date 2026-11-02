@@ -1,5 +1,5 @@
 {
-  "id": "de86302e-ea5d-42bc-8925-f21566c46a22",
+  "id": "15db83da-5eac-437b-b84c-18374a7c5677",
   "prevId": "fc0c0edd-bea9-4bce-865f-29f8c214d1df",
   "version": "7",
   "dialect": "postgresql",
@@ -152,6 +152,44 @@
         "impersonated_by": {
           "name": "impersonated_by",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'customer'"
+        },
+        "device_label": {
+          "name": "device_label",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "mfa_verified_at": {
+          "name": "mfa_verified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         }
@@ -374,6 +412,97 @@
           "columns": [
             {
               "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.mfa_factors": {
+      "name": "mfa_factors",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_encrypted": {
+          "name": "secret_encrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verified_at": {
+          "name": "verified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_used_step": {
+          "name": "last_used_step",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failed_attempts": {
+          "name": "failed_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "mfa_factors_user_id_idx": {
+          "name": "mfa_factors_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3961,1110 +4090,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.service_charge_rules": {
-      "name": "service_charge_rules",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(40)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(150)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rate_bp": {
-          "name": "rate_bp",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "zone_id": {
-          "name": "zone_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "order_types": {
-          "name": "order_types",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_classes": {
-          "name": "item_classes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "is_active": {
-          "name": "is_active",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_by": {
-          "name": "published_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "service_charge_rules_tenant_outlet_code_version_key": {
-          "name": "service_charge_rules_tenant_outlet_code_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "code",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"service_charge_rules\".\"outlet_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "service_charge_rules_tenant_code_version_key": {
-          "name": "service_charge_rules_tenant_code_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "code",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"service_charge_rules\".\"outlet_id\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "service_charge_rules_lookup_idx": {
-          "name": "service_charge_rules_lookup_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "effective_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "service_charge_rules_tenant_id_tenants_id_fk": {
-          "name": "service_charge_rules_tenant_id_tenants_id_fk",
-          "tableFrom": "service_charge_rules",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "service_charge_rules_outlet_id_outlets_id_fk": {
-          "name": "service_charge_rules_outlet_id_outlets_id_fk",
-          "tableFrom": "service_charge_rules",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "service_charge_rules_outlet_fk": {
-          "name": "service_charge_rules_outlet_fk",
-          "tableFrom": "service_charge_rules",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "service_charge_rules_tenant_id_id_key": {
-          "name": "service_charge_rules_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "service_charge_rules_rate_bp_check": {
-          "name": "service_charge_rules_rate_bp_check",
-          "value": "\"service_charge_rules\".\"rate_bp\" BETWEEN 0 AND 10000"
-        },
-        "service_charge_rules_version_check": {
-          "name": "service_charge_rules_version_check",
-          "value": "\"service_charge_rules\".\"version\" > 0"
-        },
-        "service_charge_rules_status_check": {
-          "name": "service_charge_rules_status_check",
-          "value": "\"service_charge_rules\".\"status\" IN ('draft', 'published', 'archived')"
-        },
-        "service_charge_rules_published_meta_check": {
-          "name": "service_charge_rules_published_meta_check",
-          "value": "(\"service_charge_rules\".\"status\" = 'published') = (\"service_charge_rules\".\"published_at\" IS NOT NULL)\n        AND (\"service_charge_rules\".\"status\" = 'published') = (\"service_charge_rules\".\"published_by\" IS NOT NULL)"
-        },
-        "service_charge_rules_order_types_array_check": {
-          "name": "service_charge_rules_order_types_array_check",
-          "value": "jsonb_typeof(\"service_charge_rules\".\"order_types\") = 'array'"
-        },
-        "service_charge_rules_item_classes_array_check": {
-          "name": "service_charge_rules_item_classes_array_check",
-          "value": "jsonb_typeof(\"service_charge_rules\".\"item_classes\") = 'array'\n        AND jsonb_array_length(\"service_charge_rules\".\"item_classes\") > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tax_rules": {
-      "name": "tax_rules",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(40)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(150)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_type": {
-          "name": "tax_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rate_bp": {
-          "name": "rate_bp",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "region_code": {
-          "name": "region_code",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "channels": {
-          "name": "channels",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "applies_to": {
-          "name": "applies_to",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "price_includes_tax": {
-          "name": "price_includes_tax",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "include_service_in_base": {
-          "name": "include_service_in_base",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "is_active": {
-          "name": "is_active",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_by": {
-          "name": "published_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "tax_rules_tenant_outlet_code_version_key": {
-          "name": "tax_rules_tenant_outlet_code_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "code",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tax_rules\".\"outlet_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tax_rules_tenant_code_version_key": {
-          "name": "tax_rules_tenant_code_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "code",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tax_rules\".\"outlet_id\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tax_rules_lookup_idx": {
-          "name": "tax_rules_lookup_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "effective_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tax_rules_tenant_id_tenants_id_fk": {
-          "name": "tax_rules_tenant_id_tenants_id_fk",
-          "tableFrom": "tax_rules",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_rules_outlet_id_outlets_id_fk": {
-          "name": "tax_rules_outlet_id_outlets_id_fk",
-          "tableFrom": "tax_rules",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_rules_outlet_fk": {
-          "name": "tax_rules_outlet_fk",
-          "tableFrom": "tax_rules",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "tax_rules_tenant_id_id_key": {
-          "name": "tax_rules_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "tax_rules_tax_type_check": {
-          "name": "tax_rules_tax_type_check",
-          "value": "\"tax_rules\".\"tax_type\" IN ('pbjt', 'ppn', 'other')"
-        },
-        "tax_rules_rate_bp_check": {
-          "name": "tax_rules_rate_bp_check",
-          "value": "\"tax_rules\".\"rate_bp\" BETWEEN 0 AND 10000"
-        },
-        "tax_rules_version_check": {
-          "name": "tax_rules_version_check",
-          "value": "\"tax_rules\".\"version\" > 0"
-        },
-        "tax_rules_status_check": {
-          "name": "tax_rules_status_check",
-          "value": "\"tax_rules\".\"status\" IN ('draft', 'published', 'archived')"
-        },
-        "tax_rules_published_meta_check": {
-          "name": "tax_rules_published_meta_check",
-          "value": "(\"tax_rules\".\"status\" = 'published') = (\"tax_rules\".\"published_at\" IS NOT NULL)\n        AND (\"tax_rules\".\"status\" = 'published') = (\"tax_rules\".\"published_by\" IS NOT NULL)"
-        },
-        "tax_rules_channels_array_check": {
-          "name": "tax_rules_channels_array_check",
-          "value": "jsonb_typeof(\"tax_rules\".\"channels\") = 'array'"
-        },
-        "tax_rules_applies_to_object_check": {
-          "name": "tax_rules_applies_to_object_check",
-          "value": "jsonb_typeof(\"tax_rules\".\"applies_to\") = 'object'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tax_settings": {
-      "name": "tax_settings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "calculation_order": {
-          "name": "calculation_order",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prices_include_tax": {
-          "name": "prices_include_tax",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "service_rounding_mode": {
-          "name": "service_rounding_mode",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_rounding_mode": {
-          "name": "tax_rounding_mode",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "inclusive_base_rounding_mode": {
-          "name": "inclusive_base_rounding_mode",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bill_rounding": {
-          "name": "bill_rounding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "package_allocation": {
-          "name": "package_allocation",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_by": {
-          "name": "published_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "tax_settings_tenant_outlet_version_key": {
-          "name": "tax_settings_tenant_outlet_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tax_settings\".\"outlet_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tax_settings_tenant_version_key": {
-          "name": "tax_settings_tenant_version_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tax_settings\".\"outlet_id\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "tax_settings_lookup_idx": {
-          "name": "tax_settings_lookup_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "effective_from",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tax_settings_tenant_id_tenants_id_fk": {
-          "name": "tax_settings_tenant_id_tenants_id_fk",
-          "tableFrom": "tax_settings",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_settings_outlet_id_outlets_id_fk": {
-          "name": "tax_settings_outlet_id_outlets_id_fk",
-          "tableFrom": "tax_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_settings_outlet_fk": {
-          "name": "tax_settings_outlet_fk",
-          "tableFrom": "tax_settings",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "tax_settings_tenant_id_id_key": {
-          "name": "tax_settings_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "tax_settings_calculation_order_check": {
-          "name": "tax_settings_calculation_order_check",
-          "value": "\"tax_settings\".\"calculation_order\" IN ('discount_service_tax')"
-        },
-        "tax_settings_service_rounding_check": {
-          "name": "tax_settings_service_rounding_check",
-          "value": "\"tax_settings\".\"service_rounding_mode\" IN ('half_up', 'half_even', 'down', 'floor', 'ceil')"
-        },
-        "tax_settings_tax_rounding_check": {
-          "name": "tax_settings_tax_rounding_check",
-          "value": "\"tax_settings\".\"tax_rounding_mode\" IN ('half_up', 'half_even', 'down', 'floor', 'ceil')"
-        },
-        "tax_settings_inclusive_rounding_check": {
-          "name": "tax_settings_inclusive_rounding_check",
-          "value": "\"tax_settings\".\"inclusive_base_rounding_mode\" IN ('half_up', 'half_even', 'down', 'floor', 'ceil')"
-        },
-        "tax_settings_package_allocation_check": {
-          "name": "tax_settings_package_allocation_check",
-          "value": "\"tax_settings\".\"package_allocation\" IN ('fixed_bp', 'standalone_price_ratio')"
-        },
-        "tax_settings_bill_rounding_check": {
-          "name": "tax_settings_bill_rounding_check",
-          "value": "\"tax_settings\".\"bill_rounding\" IS NULL OR jsonb_typeof(\"tax_settings\".\"bill_rounding\") = 'object'"
-        },
-        "tax_settings_version_check": {
-          "name": "tax_settings_version_check",
-          "value": "\"tax_settings\".\"version\" > 0"
-        },
-        "tax_settings_status_check": {
-          "name": "tax_settings_status_check",
-          "value": "\"tax_settings\".\"status\" IN ('draft', 'published', 'archived')"
-        },
-        "tax_settings_published_meta_check": {
-          "name": "tax_settings_published_meta_check",
-          "value": "(\"tax_settings\".\"status\" = 'published') = (\"tax_settings\".\"published_at\" IS NOT NULL)\n        AND (\"tax_settings\".\"status\" = 'published') = (\"tax_settings\".\"published_by\" IS NOT NULL)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tax_snapshots": {
-      "name": "tax_snapshots",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_type": {
-          "name": "source_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_id": {
-          "name": "source_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "business_date": {
-          "name": "business_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_rule_id": {
-          "name": "tax_rule_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_rule_code": {
-          "name": "tax_rule_code",
-          "type": "varchar(40)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_rule_version": {
-          "name": "tax_rule_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_type": {
-          "name": "tax_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rate_bp": {
-          "name": "rate_bp",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "price_includes_tax": {
-          "name": "price_includes_tax",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "gross_idr": {
-          "name": "gross_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_base_idr": {
-          "name": "tax_base_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "service_charge_idr": {
-          "name": "service_charge_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tax_idr": {
-          "name": "tax_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "tax_snapshots_recap_idx": {
-          "name": "tax_snapshots_recap_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "business_date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tax_snapshots_tenant_id_tenants_id_fk": {
-          "name": "tax_snapshots_tenant_id_tenants_id_fk",
-          "tableFrom": "tax_snapshots",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_snapshots_outlet_id_outlets_id_fk": {
-          "name": "tax_snapshots_outlet_id_outlets_id_fk",
-          "tableFrom": "tax_snapshots",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_snapshots_outlet_fk": {
-          "name": "tax_snapshots_outlet_fk",
-          "tableFrom": "tax_snapshots",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "tax_snapshots_rule_fk": {
-          "name": "tax_snapshots_rule_fk",
-          "tableFrom": "tax_snapshots",
-          "tableTo": "tax_rules",
-          "columnsFrom": [
-            "tenant_id",
-            "tax_rule_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "tax_snapshots_source_rule_key": {
-          "name": "tax_snapshots_source_rule_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "source_type",
-            "source_id",
-            "tax_rule_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "tax_snapshots_source_type_check": {
-          "name": "tax_snapshots_source_type_check",
-          "value": "\"tax_snapshots\".\"source_type\" IN ('order', 'pos_sale', 'facility_ticket', 'preorder')"
-        },
-        "tax_snapshots_amounts_check": {
-          "name": "tax_snapshots_amounts_check",
-          "value": "\"tax_snapshots\".\"gross_idr\" >= 0 AND \"tax_snapshots\".\"tax_base_idr\" >= 0\n        AND \"tax_snapshots\".\"service_charge_idr\" >= 0 AND \"tax_snapshots\".\"tax_idr\" >= 0"
-        },
-        "tax_snapshots_rate_bp_check": {
-          "name": "tax_snapshots_rate_bp_check",
-          "value": "\"tax_snapshots\".\"rate_bp\" BETWEEN 0 AND 10000"
-        },
-        "tax_snapshots_version_check": {
-          "name": "tax_snapshots_version_check",
-          "value": "\"tax_snapshots\".\"tax_rule_version\" > 0"
-        }
-      },
       "isRLSEnabled": false
     }
   },

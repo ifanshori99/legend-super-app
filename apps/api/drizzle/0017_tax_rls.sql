@@ -3,10 +3,10 @@
 -- Every table is tenant-owned: tenant_id NOT NULL with a RESTRICTIVE
 -- tenant_isolation policy, plus the DML grants to the non-bypass application
 -- role. The composite (tenant_id, outlet_id) and (tenant_id, tax_rule_id)
--- foreign keys in 0014 already stop a privileged writer from pointing a rule
+-- foreign keys in 0016 already stop a privileged writer from pointing a rule
 -- or a snapshot at another tenant's outlet or rule.
 --
--- Run order: after the generated tables migration (0014). Never replay the
+-- Run order: after the generated tables migration (0016). Never replay the
 -- 119connect migrations; this is the Legend policy.
 SELECT app.enforce_tenant_rls('public.tax_rules'::regclass);
 --> statement-breakpoint
