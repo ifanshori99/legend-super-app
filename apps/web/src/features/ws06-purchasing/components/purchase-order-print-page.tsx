@@ -36,9 +36,7 @@ export function PurchaseOrderPrintPage({ id }: { id: string }) {
       <style>{PRINT_STYLE}</style>
       <div className="print-controls flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">
-            {t("purchasing.printTitle")}
-          </h1>
+          <h1 className="type-display">{t("purchasing.printTitle")}</h1>
           <p className="text-muted-foreground">{t("purchasing.printHelp")}</p>
         </div>
         <Button onClick={() => window.print()} disabled={loading || failed}>
@@ -68,7 +66,7 @@ export function PurchaseOrderPrintPage({ id }: { id: string }) {
             <p className="text-sm font-semibold text-muted-foreground">
               {t("purchasing.orders")}
             </p>
-            <h2 className="text-2xl font-semibold">
+            <h2 className="type-display">
               {order.data.data.purchaseOrder.number}
             </h2>
             <dl className="grid gap-3 sm:grid-cols-2">

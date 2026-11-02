@@ -7,6 +7,7 @@ import { ArrowLeft, CircleAlert } from "lucide-react";
 import { z } from "zod";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card, CardShell } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fieldErrors, FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -336,7 +337,7 @@ function ItemEditor({
   );
 
   return (
-    <div className="grid gap-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       <div className="flex items-center gap-2">
         <Button asChild variant="ghost" size="icon-sm">
           <Link to="/kelola/menu" aria-label={t("menu.list.title")}>
@@ -344,7 +345,7 @@ function ItemEditor({
           </Link>
         </Button>
         <div className="min-w-0">
-          <h2 className="truncate text-xl leading-7 font-semibold">
+          <h2 className="truncate type-title">
             {item ? item.name : t("menu.editor.createTitle")}
           </h2>
           <p className="text-sm leading-5 text-muted-foreground">
@@ -372,246 +373,259 @@ function ItemEditor({
         <TabsContent value="content">
           <form onSubmit={submit} className="grid gap-4">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-              <div className="grid gap-4 rounded-xl border bg-card p-card">
-                <FormField
-                  label={t("menu.editor.fields.name")}
-                  hint={t("menu.editor.fields.nameHint")}
-                  error={errors.name}
-                  required
-                >
-                  <Input
-                    value={values.name}
-                    onChange={(event) => update({ name: event.target.value })}
-                    autoComplete="off"
-                  />
-                </FormField>
-
-                <div className="grid gap-4 sm:grid-cols-2">
+              <CardShell>
+                <Card className="gap-4">
                   <FormField
-                    label={t("menu.editor.fields.category")}
-                    error={errors.categoryId}
+                    label={t("menu.editor.fields.name")}
+                    hint={t("menu.editor.fields.nameHint")}
+                    error={errors.name}
                     required
                   >
-                    <Select
-                      value={values.categoryId}
-                      onValueChange={(value) => update({ categoryId: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue
-                          placeholder={t("menu.list.filters.category")}
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.map((category) => (
-                          <SelectItem key={category.id} value={category.id}>
-                            {category.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Input
+                      value={values.name}
+                      onChange={(event) => update({ name: event.target.value })}
+                      autoComplete="off"
+                    />
                   </FormField>
-                  <FormField label={t("menu.editor.fields.type")} required>
-                    <Select
-                      value={values.type}
-                      onValueChange={(value) =>
-                        update({ type: value as FormValues["type"] })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="single">
-                          {t("menu.editor.type.single")}
-                        </SelectItem>
-                        <SelectItem value="combo">
-                          {t("menu.editor.type.combo")}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </FormField>
-                </div>
 
-                <FormField
-                  label={t("menu.editor.fields.description")}
-                  hint={t("menu.editor.fields.descriptionHint")}
-                  error={errors.description}
-                >
-                  <Textarea
-                    value={values.description}
-                    onChange={(event) =>
-                      update({ description: event.target.value })
-                    }
-                    rows={3}
-                  />
-                </FormField>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField label={t("menu.editor.fields.station")}>
-                    <Select
-                      value={values.stationId}
-                      onValueChange={(value) => update({ stationId: value })}
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField
+                      label={t("menu.editor.fields.category")}
+                      error={errors.categoryId}
+                      required
                     >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE}>
-                          {t("menu.list.noStation")}
-                        </SelectItem>
-                        {stations.map((station) => (
-                          <SelectItem key={station.id} value={station.id}>
-                            {station.name}
+                      <Select
+                        value={values.categoryId}
+                        onValueChange={(value) => update({ categoryId: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue
+                            placeholder={t("menu.list.filters.category")}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {categories.map((category) => (
+                            <SelectItem key={category.id} value={category.id}>
+                              {category.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormField>
+                    <FormField label={t("menu.editor.fields.type")} required>
+                      <Select
+                        value={values.type}
+                        onValueChange={(value) =>
+                          update({ type: value as FormValues["type"] })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="single">
+                            {t("menu.editor.type.single")}
                           </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormField>
+                          <SelectItem value="combo">
+                            {t("menu.editor.type.combo")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </FormField>
+                  </div>
+
                   <FormField
-                    label={t("menu.editor.fields.course")}
-                    hint={t("menu.editor.courseHint")}
+                    label={t("menu.editor.fields.description")}
+                    hint={t("menu.editor.fields.descriptionHint")}
+                    error={errors.description}
                   >
-                    <Select
-                      value={values.course}
-                      onValueChange={(value) => update({ course: value })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE}>
-                          {t("menu.editor.course.none")}
-                        </SelectItem>
-                        {COURSES.map((course) => (
-                          <SelectItem key={course} value={course}>
-                            {t(`menu.editor.course.${course}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <Textarea
+                      value={values.description}
+                      onChange={(event) =>
+                        update({ description: event.target.value })
+                      }
+                      rows={3}
+                    />
                   </FormField>
-                </div>
 
-                <fieldset className="grid gap-2">
-                  <legend className="text-sm font-semibold">
-                    {t("menu.editor.fields.labels")}
-                  </legend>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {t("menu.editor.labelHint")}
-                  </p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {labelOptions.map((label) => {
-                      const id = `item-label-${label}`;
-                      return (
-                        <div key={label} className="flex items-center gap-2">
-                          <Checkbox
-                            id={id}
-                            checked={values.labels.includes(label)}
-                            onCheckedChange={() =>
-                              update({ labels: toggle(values.labels, label) })
-                            }
-                          />
-                          <Label htmlFor={id} className="font-normal">
-                            {label in LABEL_KEYS
-                              ? t(LABEL_KEYS[label as keyof typeof LABEL_KEYS])
-                              : label}
-                          </Label>
-                        </div>
-                      );
-                    })}
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <FormField label={t("menu.editor.fields.station")}>
+                      <Select
+                        value={values.stationId}
+                        onValueChange={(value) => update({ stationId: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE}>
+                            {t("menu.list.noStation")}
+                          </SelectItem>
+                          {stations.map((station) => (
+                            <SelectItem key={station.id} value={station.id}>
+                              {station.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormField>
+                    <FormField
+                      label={t("menu.editor.fields.course")}
+                      hint={t("menu.editor.courseHint")}
+                    >
+                      <Select
+                        value={values.course}
+                        onValueChange={(value) => update({ course: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE}>
+                            {t("menu.editor.course.none")}
+                          </SelectItem>
+                          {COURSES.map((course) => (
+                            <SelectItem key={course} value={course}>
+                              {t(`menu.editor.course.${course}`)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </FormField>
                   </div>
-                </fieldset>
 
-                <fieldset className="grid gap-2">
-                  <legend className="text-sm font-semibold">
-                    {t("menu.editor.fields.allergens")}
-                  </legend>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {t("menu.editor.allergenHint")}
-                  </p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {allergenOptions.map((allergen) => {
-                      const id = `item-allergen-${allergen}`;
-                      return (
-                        <div key={allergen} className="flex items-center gap-2">
-                          <Checkbox
-                            id={id}
-                            checked={values.allergens.includes(allergen)}
-                            onCheckedChange={() =>
-                              update({
-                                allergens: toggle(values.allergens, allergen),
-                              })
-                            }
-                          />
-                          <Label htmlFor={id} className="font-normal">
-                            {allergen in ALLERGEN_KEYS
-                              ? t(
-                                  ALLERGEN_KEYS[
-                                    allergen as keyof typeof ALLERGEN_KEYS
-                                  ],
-                                )
-                              : allergen}
-                          </Label>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              </div>
+                  <fieldset className="grid gap-2">
+                    <legend className="text-sm font-semibold">
+                      {t("menu.editor.fields.labels")}
+                    </legend>
+                    <p className="text-sm leading-5 text-muted-foreground">
+                      {t("menu.editor.labelHint")}
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {labelOptions.map((label) => {
+                        const id = `item-label-${label}`;
+                        return (
+                          <div key={label} className="flex items-center gap-2">
+                            <Checkbox
+                              id={id}
+                              checked={values.labels.includes(label)}
+                              onCheckedChange={() =>
+                                update({ labels: toggle(values.labels, label) })
+                              }
+                            />
+                            <Label htmlFor={id} className="font-normal">
+                              {label in LABEL_KEYS
+                                ? t(
+                                    LABEL_KEYS[
+                                      label as keyof typeof LABEL_KEYS
+                                    ],
+                                  )
+                                : label}
+                            </Label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
 
-              <div className="grid gap-4 self-start rounded-xl border bg-card p-card">
-                <div className="grid gap-1.5">
-                  <Label>{t("menu.editor.fields.photo")}</Label>
-                  <ImageField
-                    value={values.image}
-                    onChange={(image) => update({ image })}
-                  />
-                  {/* Q23: "Tampil di menu" needs the photo, so the reason is
+                  <fieldset className="grid gap-2">
+                    <legend className="text-sm font-semibold">
+                      {t("menu.editor.fields.allergens")}
+                    </legend>
+                    <p className="text-sm leading-5 text-muted-foreground">
+                      {t("menu.editor.allergenHint")}
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {allergenOptions.map((allergen) => {
+                        const id = `item-allergen-${allergen}`;
+                        return (
+                          <div
+                            key={allergen}
+                            className="flex items-center gap-2"
+                          >
+                            <Checkbox
+                              id={id}
+                              checked={values.allergens.includes(allergen)}
+                              onCheckedChange={() =>
+                                update({
+                                  allergens: toggle(values.allergens, allergen),
+                                })
+                              }
+                            />
+                            <Label htmlFor={id} className="font-normal">
+                              {allergen in ALLERGEN_KEYS
+                                ? t(
+                                    ALLERGEN_KEYS[
+                                      allergen as keyof typeof ALLERGEN_KEYS
+                                    ],
+                                  )
+                                : allergen}
+                            </Label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                </Card>
+              </CardShell>
+
+              <CardShell className="self-start">
+                <Card className="gap-4">
+                  <div className="grid gap-1.5">
+                    <Label>{t("menu.editor.fields.photo")}</Label>
+                    <ImageField
+                      value={values.image}
+                      onChange={(image) => update({ image })}
+                    />
+                    {/* Q23: "Tampil di menu" needs the photo, so the reason is
                       stated where the manager can fix it. A legacy active row
                       keeps the note as a warning: it is readable and editable,
                       but it cannot be published again until it has a photo. */}
-                  {photoRequired && (
-                    <p
-                      role={publishBlocked ? "alert" : undefined}
-                      className={
-                        publishBlocked
-                          ? "flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
-                          : "flex items-start gap-1.5 text-sm leading-5 text-warning"
-                      }
-                    >
-                      <CircleAlert
-                        className="mt-0.5 size-4 shrink-0"
-                        aria-hidden="true"
-                      />
-                      <span>
-                        {t("menu.editor.photoRequired")}.{" "}
-                        {t("menu.editor.photoRequiredHint")}
-                      </span>
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-start justify-between gap-3 border-t pt-4">
-                  <div className="min-w-0">
-                    <Label htmlFor="item-active">
-                      {t("menu.editor.fields.active")}
-                    </Label>
-                    <p className="text-sm leading-5 text-muted-foreground">
-                      {t("menu.editor.activeHint")}
-                    </p>
+                    {photoRequired && (
+                      <p
+                        role={publishBlocked ? "alert" : undefined}
+                        className={
+                          publishBlocked
+                            ? "flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
+                            : "flex items-start gap-1.5 text-sm leading-5 text-warning"
+                        }
+                      >
+                        <CircleAlert
+                          className="mt-0.5 size-4 shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span>
+                          {t("menu.editor.photoRequired")}.{" "}
+                          {t("menu.editor.photoRequiredHint")}
+                        </span>
+                      </p>
+                    )}
                   </div>
-                  <Switch
-                    id="item-active"
-                    checked={values.isActive}
-                    onCheckedChange={(checked) => update({ isActive: checked })}
-                  />
-                </div>
-              </div>
+                  <div className="flex items-start justify-between gap-3 border-t pt-4">
+                    <div className="min-w-0">
+                      <Label htmlFor="item-active">
+                        {t("menu.editor.fields.active")}
+                      </Label>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("menu.editor.activeHint")}
+                      </p>
+                    </div>
+                    <Switch
+                      id="item-active"
+                      checked={values.isActive}
+                      onCheckedChange={(checked) =>
+                        update({ isActive: checked })
+                      }
+                    />
+                  </div>
+                </Card>
+              </CardShell>
             </div>
 
             {formError && (
               <p
                 role="alert"
-                className="rounded-lg border border-danger bg-danger-subtle px-3 py-2 text-sm font-medium text-danger"
+                className="rounded-control border-(length:--border-w) border-danger bg-danger-subtle px-3 py-2 text-sm font-medium text-danger"
               >
                 {formError}
               </p>
@@ -635,7 +649,7 @@ function ItemEditor({
           {itemId ? (
             <VariantSection itemId={itemId} />
           ) : (
-            <p className="rounded-xl border bg-card p-card text-sm text-muted-foreground">
+            <p className="rounded-container border-(length:--border-w) bg-card p-card text-sm text-muted-foreground shadow-hairline">
               {t("menu.editor.savedFirst")}
             </p>
           )}
@@ -645,7 +659,7 @@ function ItemEditor({
           {itemId ? (
             <ModifierSection itemId={itemId} />
           ) : (
-            <p className="rounded-xl border bg-card p-card text-sm text-muted-foreground">
+            <p className="rounded-container border-(length:--border-w) bg-card p-card text-sm text-muted-foreground shadow-hairline">
               {t("menu.editor.savedFirst")}
             </p>
           )}

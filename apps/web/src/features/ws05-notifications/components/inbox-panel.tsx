@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Inbox } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { Card, CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -57,7 +58,7 @@ export function InboxPanel() {
   };
 
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
       <div className="flex flex-wrap items-center gap-3">
         {unreadCount.isPending ? (
           <Skeleton className="h-4 w-28" />
@@ -131,10 +132,7 @@ export function InboxPanel() {
       </div>
 
       {pages.isLoading ? (
-        <div
-          className="rounded-xl border-(length:--border-w) bg-card p-2"
-          aria-busy="true"
-        >
+        <Card className="p-2" aria-busy="true">
           <span className="sr-only">{t("common.loading")}</span>
           {[0, 1, 2, 3, 4].map((row) => (
             <div
@@ -149,17 +147,17 @@ export function InboxPanel() {
               </div>
             </div>
           ))}
-        </div>
+        </Card>
       ) : pages.error ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <ErrorState
             title={t("notification.inbox.errorTitle")}
             description={t("notification.inbox.errorHint")}
             onRetry={() => void pages.refetch()}
           />
-        </div>
+        </Card>
       ) : pages.items.length === 0 ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <EmptyState
             icon={Inbox}
             title={
@@ -180,31 +178,33 @@ export function InboxPanel() {
               ) : undefined
             }
           />
-        </div>
+        </Card>
       ) : (
-        <div className="rounded-xl border-(length:--border-w) bg-card px-1 py-1 sm:px-2">
-          <ul aria-label={t("notification.inbox.heading")}>
-            {pages.items.map((item) => (
-              <NotificationRow key={item.id} item={item} />
-            ))}
-          </ul>
-          <div className="flex flex-wrap items-center gap-3 border-t px-1 py-3 sm:px-2">
-            {pages.hasMore ? (
-              <Button
-                variant="outline"
-                size="sm"
-                loading={pages.isFetchingMore}
-                onClick={pages.loadMore}
-              >
-                {t("notification.inbox.loadMore")}
-              </Button>
-            ) : (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("notification.inbox.allShown")}
-              </p>
-            )}
-          </div>
-        </div>
+        <CardShell>
+          <CardShellBody className="px-1 py-1 sm:px-2">
+            <ul aria-label={t("notification.inbox.heading")}>
+              {pages.items.map((item) => (
+                <NotificationRow key={item.id} item={item} />
+              ))}
+            </ul>
+            <div className="flex flex-wrap items-center gap-3 border-t px-1 py-3 sm:px-2">
+              {pages.hasMore ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={pages.isFetchingMore}
+                  onClick={pages.loadMore}
+                >
+                  {t("notification.inbox.loadMore")}
+                </Button>
+              ) : (
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("notification.inbox.allShown")}
+                </p>
+              )}
+            </div>
+          </CardShellBody>
+        </CardShell>
       )}
     </div>
   );

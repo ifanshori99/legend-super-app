@@ -1,0 +1,176 @@
+// Mock handlers for VITE_API_MOCK=true: the paired second screen reads the
+// customer-display state from the POS fixtures (@starter/shared/pos), so the
+// screen works without an API (docs/frontend.md, "Typed endpoints and mock
+// mode"). The handler behaves like the live service:
+//   - the QRIS is a dynamic DOIT code that expires; a read after expiry
+//     returns a fresh code (PRD §3 F13 "QRIS Dinamis"),
+//   - the state machine only offers the four states the contract allows,
+//   - totals stay the fixture's: subtotal − discount + service + tax + rounding.
+//
+// Demo switch (browser only, same idea as the edge mock override): set
+//   localStorage["legend-display-mock"] = "idle" | "ordering" |
+//     "awaiting_payment" | "awaiting_expired" | "paid"
+// and reload. The default is a live bill awaiting QRIS payment — the screen's
+// main purpose. "awaiting_expired" serves one expired code so the refresh path
+// can be exercised, then continues with a fresh one.
+import {
+  cafeLegendPosFixtures,
+  getCustomerDisplayState,
+} from "@starter/shared/pos";
+import type {
+  customerDisplayQrisSchema,
+  customerDisplayStateSchema,
+} from "@starter/shared/pos";
+import type { z } from "zod";
+import { qrisPendingIntentFixture } from "@starter/shared/payment";
+import { registerMock } from "../../lib/mock/registry.ts";
+import { createMockStore } from "../../lib/mock/store.ts";
+
+/** Wire shapes: the handler returns the input side of the response schema. */
+type DisplayStateWire = z.input<typeof customerDisplayStateSchema>;
+type DisplayQrisWire = z.input<typeof customerDisplayQrisSchema>;
+
+const fixture = cafeLegendPosFixtures.customerDisplayState;
+
+/** DOIT's dynamic QRIS lives about ten minutes (PRD §3 F13). */
+const QRIS_LIFETIME_MS = 10 * 60_000;
+/** EMVCo payload from the payment fixtures; the display only renders it. */
+const QRIS_PAYLOAD = qrisPendingIntentFixture.instructions.qrPayload;
+
+const DEMO_KEY = "legend-display-mock";
+const DEMO_STATES = [
+  "idle",
+  "ordering",
+  "awaiting_payment",
+  "awaiting_expired",
+  "paid",
+] as const;
+type DemoState = (typeof DEMO_STATES)[number];
+
+function readDemo(): DemoState {
+  if (typeof window === "undefined") return "awaiting_payment";
+  try {
+    const value = window.localStorage.getItem(DEMO_KEY);
+    return DEMO_STATES.includes(value as DemoState)
+      ? (value as DemoState)
+      : "awaiting_payment";
+  } catch {
+    // Storage blocked: the screen still works on the default state.
+    return "awaiting_payment";
+  }
+}
+
+type DisplayStore = {
+  demo: DemoState;
+  /** One expired read is enough to prove the refresh; then go live again. */
+  expiredServed: boolean;
+  version: number;
+};
+
+const store = createMockStore<DisplayStore>(() => ({
+  demo: readDemo(),
+  expiredServed: false,
+  version: fixture.version,
+}));
+
+const billTotals = {
+  lines: fixture.lines,
+  subtotalIdr: fixture.subtotalIdr,
+  discountIdr: fixture.discountIdr,
+  serviceChargeIdr: fixture.serviceChargeIdr,
+  taxIdr: fixture.taxIdr,
+  roundingIdr: fixture.roundingIdr,
+  totalIdr: fixture.totalIdr,
+};
+
+function qrisAt(nowMs: number, expired: boolean): DisplayQrisWire {
+  return {
+    provider: "doit",
+    amountIdr: fixture.totalIdr,
+    payload: QRIS_PAYLOAD,
+    expiresAt: new Date(
+      nowMs + (expired ? -1_000 : QRIS_LIFETIME_MS),
+    ).toISOString(),
+  };
+}
+
+/** The snapshot the service would push to the paired display. */
+function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
+  const base = {
+    tenantId: fixture.tenantId,
+    outletId: fixture.outletId,
+    terminalDeviceId: fixture.terminalDeviceId,
+    displayDeviceId: fixture.displayDeviceId,
+    version: entry.version,
+    updatedAt: new Date(nowMs).toISOString(),
+  };
+  if (entry.demo === "idle")
+    return {
+      ...base,
+      state: "idle",
+      orderId: null,
+      orderNumber: null,
+      lines: [],
+      subtotalIdr: 0,
+      discountIdr: 0,
+      serviceChargeIdr: 0,
+      taxIdr: 0,
+      roundingIdr: 0,
+      totalIdr: 0,
+      qris: null,
+      tenders: [],
+      changeIdr: null,
+    };
+  if (entry.demo === "paid")
+    return {
+      ...base,
+      state: "paid",
+      orderId: fixture.orderId,
+      orderNumber: fixture.orderNumber,
+      ...billTotals,
+      qris: null,
+      tenders: fixture.tenders,
+      changeIdr: fixture.changeIdr,
+    };
+  if (entry.demo === "ordering")
+    return {
+      ...base,
+      state: "ordering",
+      orderId: fixture.orderId,
+      orderNumber: fixture.orderNumber,
+      ...billTotals,
+      qris: null,
+      tenders: [],
+      changeIdr: null,
+    };
+  const expired = entry.demo === "awaiting_expired" && !entry.expiredServed;
+  return {
+    ...base,
+    state: "awaiting_payment",
+    orderId: fixture.orderId,
+    orderNumber: fixture.orderNumber,
+    ...billTotals,
+    qris: qrisAt(nowMs, expired),
+    tenders: [],
+    changeIdr: null,
+  };
+}
+
+registerMock(getCustomerDisplayState, ({ scenario }) => {
+  const nowMs = Date.now();
+  if (scenario === "empty") {
+    // The idle screen: no bill open on the paired terminal.
+    return { data: buildState({ ...store.get(), demo: "idle" }, nowMs) };
+  }
+  const entry = store.get();
+  const state = buildState(entry, nowMs);
+  if (entry.demo === "awaiting_expired" && !entry.expiredServed)
+    // The next read (the screen refetches at expiry) gets a live code.
+    store.set({
+      ...entry,
+      demo: "awaiting_payment",
+      expiredServed: true,
+      version: entry.version + 1,
+    });
+  return { data: state };
+});

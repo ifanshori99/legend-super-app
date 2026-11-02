@@ -59,7 +59,7 @@ function Chip({
       variant={pressed ? "secondary" : "outline"}
       aria-pressed={pressed}
       onClick={onClick}
-      className={cn(pressed && "border-(length:--border-w) border-primary")}
+      className={cn(pressed && "font-semibold")}
     >
       {pressed && <Check aria-hidden="true" />}
       {children}

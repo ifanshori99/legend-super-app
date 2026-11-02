@@ -162,7 +162,11 @@ function outletsOfScope(
         ? [scope.id]
         : [];
     case "station":
-      // An outlet-only filter cannot enforce a station restriction.
+      // Deliberate: an outlet-only filter cannot enforce a station
+      // restriction, so a station assignment contributes no outlet-wide query
+      // reach here. Station-bound routes get their RLS reach from
+      // `contextFor(permission, { type: "station" })` (the station's outlet)
+      // and re-assert the station on every service call (legend-fsb7).
       return [];
   }
 }
@@ -372,7 +376,10 @@ export function outletReachOf(input: {
 /**
  * Stations the caller may work on for `permission` (KDS: "Hanya KDS stasiun
  * yang ditugaskan"). Station assignments give that station; wider scopes give
- * every station of the outlets they reach.
+ * every station of the outlets they reach. This is the authoritative list
+ * station-bound services filter and assert against (legend-fsb7): an id
+ * missing from it is denied, and an unknown or soft-deleted station is never
+ * in it (the org index only carries live stations of the caller's brand).
  */
 export function stationReachOf(input: {
   readonly principal: AccessPrincipal;

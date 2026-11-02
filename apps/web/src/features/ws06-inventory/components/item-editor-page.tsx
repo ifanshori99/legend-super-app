@@ -40,6 +40,7 @@ import {
 import { decimalFromInput, LIST_LIMIT } from "../lib";
 import { AlternatesEditor } from "./alternates-editor";
 import { ConversionsEditor } from "./conversions-editor";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const TYPE_LABEL: Record<InventoryItemType, MessageKey> = {
   raw_material: "inventory.types.raw_material",
@@ -171,7 +172,7 @@ function ItemForm({
           isPerishable: values.isPerishable,
           parMin,
           parMax,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
         {
           onSuccess: (result) => {
@@ -228,7 +229,7 @@ function ItemForm({
           alternates editors below own their own forms (a nested <form> is
           invalid HTML and the browser drops it). */}
       <form onSubmit={submit} noValidate>
-        <section className="grid gap-4 rounded-xl border bg-card p-card">
+        <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
           <h2 className="text-base leading-6 font-semibold">
             {t("inventory.editor.sections.identity")}
           </h2>
@@ -425,7 +426,7 @@ function ItemForm({
       </form>
 
       {item && (
-        <section className="grid gap-4 rounded-xl border bg-card p-card">
+        <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
           <h2 className="text-base leading-6 font-semibold">
             {t("inventory.editor.sections.units")}
           </h2>
@@ -438,7 +439,7 @@ function ItemForm({
       )}
 
       {item && (
-        <section className="grid gap-4 rounded-xl border bg-card p-card">
+        <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
           <div className="grid gap-1">
             <h2 className="text-base leading-6 font-semibold">
               {t("inventory.editor.sections.alternates")}
@@ -478,7 +479,7 @@ export function ItemEditorPage({ itemId }: { itemId: string }) {
   return (
     <div className="grid min-w-0 gap-4">
       <div className="grid gap-1">
-        <h2 className="text-xl leading-7 font-semibold">
+        <h2 className="type-title">
           {isNew
             ? t("inventory.editor.createTitle")
             : t("inventory.editor.editTitle")}
@@ -490,7 +491,7 @@ export function ItemEditorPage({ itemId }: { itemId: string }) {
         </p>
       </div>
       {loading ? (
-        <div className="grid gap-3 rounded-xl border bg-card p-card">
+        <div className="grid gap-3 rounded-container border bg-card p-card shadow-hairline">
           <span className="sr-only">{t("common.loading")}</span>
           <Skeleton className="h-row" />
           <Skeleton className="h-row" />
@@ -498,7 +499,7 @@ export function ItemEditorPage({ itemId }: { itemId: string }) {
           <Skeleton className="h-row" />
         </div>
       ) : failed || (!isNew && !item) ? (
-        <div className="rounded-xl border bg-card">
+        <div className="rounded-container border bg-card">
           <ErrorState onRetry={retry} />
         </div>
       ) : (

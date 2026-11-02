@@ -154,14 +154,88 @@ describe("TEN-03 permission resolver", () => {
     expect(
       barista.allows("kds.ticket.process", { type: "outlet", id: bandung }),
     ).toBe(false);
-    // A station-only grant cannot produce an outlet-wide RLS context; the
-    // caller must fail closed until a station-aware context exists (WS-03).
+    // A station-only grant cannot produce outlet-wide reach: no tenant,
+    // brand or outlet target mints a context, so a non-station route stays
+    // closed (TEN-03). A station target is the one exception: the context's
+    // RLS reach is that station's outlet and the service re-asserts the
+    // station itself (legend-fsb7).
+    expect(
+      barista.contextFor("kds.ticket.process", { type: "tenant" }),
+    ).toBeNull();
+    expect(
+      barista.contextFor("kds.ticket.process", { type: "outlet", id: bandung }),
+    ).toBeNull();
+    const stationContext = barista.contextFor("kds.ticket.process", {
+      type: "station",
+      id: stationBarKopi,
+    });
+    expect(
+      stationContext?.outletScope.kind === "outlets"
+        ? stationContext.outletScope.outletIds
+        : null,
+    ).toEqual([station.outletId]);
+    // Another station is outside the assignment and mints nothing.
     expect(
       barista.contextFor("kds.ticket.process", {
         type: "station",
-        id: stationBarKopi,
+        id: fx.stations.find((row) => row.code === "dapur_panas")!.id,
       }),
     ).toBeNull();
+  });
+
+  it("a station target mints exactly that station's outlet, even beside an outlet grant elsewhere (legend-fsb7)", () => {
+    // Kitchen Lead holds kds.ticket.process for the whole of Bandung; give it
+    // one more station-scoped grant at Bandung 2. The station target must run
+    // with Bandung 2's reach, not the unrelated Bandung outlet reach.
+    const stationAtBandung2 = fx.stations.find(
+      (row) => row.code === "bar_kopi_2",
+    )!;
+    const barista = fx.assignments.find(
+      (row) => row.userId === fx.users.barista.id,
+    )!;
+    const extra = {
+      ...barista,
+      id: "00000000-0000-4000-8000-00000000f5b7" as typeof barista.id,
+      userId: fx.users.kitchenLead.id,
+      scope: { type: "station" as const, id: stationAtBandung2.id },
+    } as unknown as (typeof fx.assignments)[number];
+    const lead = snapshotFor("kitchenLead", {
+      assignments: [...fx.assignments, extra],
+    });
+    const context = lead.contextFor("kds.ticket.process", {
+      type: "station",
+      id: stationAtBandung2.id,
+    });
+    expect(
+      context?.outletScope.kind === "outlets"
+        ? context.outletScope.outletIds
+        : null,
+    ).toEqual([bandung2]);
+  });
+
+  it("station reach lists only the stations a permission reaches (legend-fsb7)", () => {
+    expect(snapshotFor("barista").stationsFor("kds.ticket.process")).toEqual([
+      stationBarKopi,
+    ]);
+    expect(snapshotFor("cook").stationsFor("kds.ticket.process")).toEqual([
+      fx.stations.find((row) => row.code === "dapur_panas")!.id,
+    ]);
+    // An outlet-scoped role reaches every station of its outlet, not others.
+    // Kitchen Lead holds kds.ticket.process at outlet scope (fixture user
+    // kitchenLead); Outlet Manager has no ticket permission, so it reaches no
+    // station for it.
+    expect(
+      snapshotFor("kitchenLead").stationsFor("kds.ticket.process"),
+    ).toEqual(
+      fx.stations
+        .filter((row) => row.outletId === bandung)
+        .map((row) => row.id),
+    );
+    expect(
+      snapshotFor("outletManager").stationsFor("kds.ticket.process"),
+    ).toEqual([]);
+    // No permission, no station.
+    expect(snapshotFor("barista").stationsFor("menu.item.view")).toEqual([]);
   });
 
   it("AUTH-05 reports mfa_required per §6 B without granting the factor", () => {

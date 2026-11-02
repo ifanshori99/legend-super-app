@@ -3,6 +3,7 @@
 // outlet, and each cashier has a default method/terminal without retyping the
 // amount at the EDC. The amount itself always comes from POS (EDC-01).
 import * as React from "react";
+import { useAttemptKey } from "../use-attempt-key";
 import { Pencil, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
@@ -77,7 +78,7 @@ export function EdcPanel() {
   if (routing.isPending && outlets.length === 0) return <EdcSkeleton />;
   if (routing.isError) {
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <div className="rounded-container border-(length:--border-w) bg-card">
         <ErrorState
           title={t("paymentAdmin.loadErrorTitle")}
           description={t("paymentAdmin.loadErrorHint")}
@@ -88,7 +89,7 @@ export function EdcPanel() {
   }
   if (selectedOutletId === null) {
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <div className="rounded-container border-(length:--border-w) bg-card">
         <Skeleton className="h-40" />
       </div>
     );
@@ -99,9 +100,9 @@ export function EdcPanel() {
       aria-labelledby="edc-title"
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card sm:flex sm:items-end sm:justify-between">
+      <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline sm:flex sm:items-end sm:justify-between">
         <div className="grid min-w-0 gap-1">
-          <h2 id="edc-title" className="text-base leading-6 font-semibold">
+          <h2 id="edc-title" className="type-title">
             {t("paymentAdmin.tabs.edc")}
           </h2>
           <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
@@ -332,6 +333,7 @@ function TerminalDialog({
   const t = useT();
   const create = useCreateEdcTerminal();
   const update = useUpdateEdcTerminal();
+  const attempt = useAttemptKey();
   const [bankCode, setBankCode] = React.useState<EdcTerminalView["bankCode"]>(
     terminal?.bankCode ?? "bca",
   );
@@ -390,9 +392,16 @@ function TerminalDialog({
 
     if (terminal) {
       const body: UpdateEdcTerminalInput = { ...common, status };
+      const input = { terminalId: terminal.id, body };
       update.mutate(
-        { terminalId: terminal.id, body },
-        { onSuccess: (result) => onSaved(result.data), onError },
+        { ...input, idempotencyKey: attempt.keyFor(input) },
+        {
+          onSuccess: (result) => {
+            attempt.settle();
+            onSaved(result.data);
+          },
+          onError,
+        },
       );
       return;
     }
@@ -401,10 +410,16 @@ function TerminalDialog({
       outletId: outletId as OutletId,
       status,
     };
-    create.mutate(body, {
-      onSuccess: (result) => onSaved(result.data),
-      onError,
-    });
+    create.mutate(
+      { body, idempotencyKey: attempt.keyFor(body) },
+      {
+        onSuccess: (result) => {
+          attempt.settle();
+          onSaved(result.data);
+        },
+        onError,
+      },
+    );
   };
 
   return (
@@ -621,6 +636,7 @@ function CashierRow({
   const t = useT();
   const toast = useToast();
   const update = useUpdateEdcCashierDefault();
+  const attempt = useAttemptKey();
   const [method, setMethod] = React.useState<CashierDefaultMethod>(
     cashier.defaultMethod,
   );
@@ -660,15 +676,18 @@ function CashierRow({
       terminalId: needsTerminal ? terminalId : null,
       defaultMethod: method,
     };
+    const input = { cashierId: cashier.cashierId, body };
     update.mutate(
-      { cashierId: cashier.cashierId, body },
+      { ...input, idempotencyKey: attempt.keyFor(input) },
       {
-        onSuccess: () =>
+        onSuccess: () => {
+          attempt.settle();
           toast({
             title: t("paymentAdmin.edc.defaultSaved", {
               cashier: cashier.cashierName,
             }),
-          }),
+          });
+        },
         onError: (error) => toast({ title: error.message, tone: "danger" }),
       },
     );

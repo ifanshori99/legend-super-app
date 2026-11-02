@@ -34,6 +34,7 @@ import {
   PaymentRetry,
 } from "./payment-result";
 import { PaymentSkeleton } from "./payment-skeleton";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function PaymentPage({ token }: { token: string }) {
   const t = useT();
@@ -126,7 +127,7 @@ export function PaymentPage({ token }: { token: string }) {
       idempotency.current.channel !== selectedChannel
     )
       idempotency.current = {
-        key: crypto.randomUUID(),
+        key: newIdempotencyKey(),
         method: selectedMethod,
         channel: selectedChannel,
       };
@@ -148,7 +149,7 @@ export function PaymentPage({ token }: { token: string }) {
         : intent.instructions.channelCode
       : selectedChannel;
     idempotency.current = {
-      key: crypto.randomUUID(),
+      key: newIdempotencyKey(),
       method,
       channel,
     };
@@ -186,9 +187,7 @@ export function PaymentPage({ token }: { token: string }) {
             {t("payment.back")}
           </a>
         )}
-        <h1 className="text-xl leading-7 font-semibold">
-          {t("payment.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("payment.title")}</h1>
       </header>
 
       {!online && phase !== "paid" && (

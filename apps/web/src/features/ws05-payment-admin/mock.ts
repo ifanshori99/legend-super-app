@@ -34,11 +34,12 @@ import {
   type RefundablePayment,
   type UnallocatedFundView,
 } from "@starter/shared/payment/admin";
-import { idr } from "@starter/shared/core";
-import { ApiError } from "@/lib/api/errors";
-import { paginateFixture } from "@/lib/mock/paginate";
-import { registerMock } from "@/lib/mock/registry";
-import { createMockStore } from "@/lib/mock/store";
+import { idempotencyKeySchema, idr } from "@starter/shared/core";
+import { ApiError } from "../../lib/api/errors.ts";
+import { paginateFixture } from "../../lib/mock/paginate.ts";
+import { registerMock } from "../../lib/mock/registry.ts";
+import { createMockStore } from "../../lib/mock/store.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** The signed-in supervisor the mock records as the actor (mock mode only). */
 const ACTOR = {
@@ -102,6 +103,24 @@ function replay<T>(key: string, fingerprint: string, run: () => T): T {
   return data;
 }
 
+/** Configuration writes use the same validated header and replay semantics as the API. */
+function replayHeader<T>(
+  headers: { "Idempotency-Key"?: string } | undefined,
+  endpoint: string,
+  params: unknown,
+  body: unknown,
+  run: () => T,
+): T {
+  const key = idempotencyKeySchema.safeParse(headers?.["Idempotency-Key"]);
+  if (!key.success)
+    throw new ApiError(
+      400,
+      "VALIDATION_ERROR",
+      "Kunci idempotensi tidak valid.",
+    );
+  return replay(key.data, JSON.stringify({ endpoint, params, body }), run);
+}
+
 const outlets = fixtures.outlets.map((outlet) => ({
   id: outlet.id,
   name: outlet.name,
@@ -150,45 +169,71 @@ registerMock(getPaymentRouting, ({ query, scenario }) => {
   };
 });
 
-registerMock(updatePaymentRoute, ({ params, body }) => {
-  const state = store.get();
-  const provider = fixtures.providers.find(
-    (entry) => entry.code === body.provider,
-  );
-  if (!provider)
-    throw new ApiError(400, "VALIDATION_ERROR", "Gateway tidak dikenal.");
-  if (body.provider === body.fallbackProvider)
-    throw new ApiError(
-      400,
-      "VALIDATION_ERROR",
-      "Gateway cadangan harus berbeda dari gateway utama.",
+registerMock(updatePaymentRoute, ({ endpoint, headers, params, body }) =>
+  replayHeader(headers, endpoint.id, params, body, () => {
+    const state = store.get();
+    const provider = fixtures.providers.find(
+      (entry) => entry.code === body.provider,
     );
-  const fallback =
-    body.fallbackProvider === null
-      ? null
-      : fixtures.providers.find(
-          (entry) => entry.code === body.fallbackProvider,
-        );
-  if (body.fallbackProvider !== null && !fallback)
-    throw new ApiError(
-      400,
-      "VALIDATION_ERROR",
-      "Gateway cadangan tidak dikenal.",
-    );
-  if (fallback && !fallback.enabled)
-    throw new ApiError(
-      409,
-      "CONFLICT",
-      "Gateway cadangan belum aktif. Aktifkan gateway kedua lebih dulu.",
-    );
+    if (!provider)
+      throw new ApiError(400, "VALIDATION_ERROR", "Gateway tidak dikenal.");
+    if (body.provider === body.fallbackProvider)
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Gateway cadangan harus berbeda dari gateway utama.",
+      );
+    const fallback =
+      body.fallbackProvider === null
+        ? null
+        : fixtures.providers.find(
+            (entry) => entry.code === body.fallbackProvider,
+          );
+    if (body.fallbackProvider !== null && !fallback)
+      throw new ApiError(
+        400,
+        "VALIDATION_ERROR",
+        "Gateway cadangan tidak dikenal.",
+      );
+    if (fallback && !fallback.enabled)
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        "Gateway cadangan belum aktif. Aktifkan gateway kedua lebih dulu.",
+      );
 
-  const updatedAt = now();
-  if (body.outletId === null) {
-    const route = state.routes.find((entry) => entry.method === params.method);
-    if (!route)
-      throw new ApiError(404, "NOT_FOUND", "Routing metode tidak ditemukan.");
+    const updatedAt = now();
+    if (body.outletId === null) {
+      const route = state.routes.find(
+        (entry) => entry.method === params.method,
+      );
+      if (!route)
+        throw new ApiError(404, "NOT_FOUND", "Routing metode tidak ditemukan.");
+      const updated: PaymentRoute = {
+        ...route,
+        provider: body.provider,
+        fallbackProvider: body.fallbackProvider,
+        enabled: body.enabled,
+        updatedAt,
+      };
+      store.set({
+        ...state,
+        routes: state.routes.map((entry) =>
+          entry.id === updated.id ? updated : entry,
+        ),
+      });
+      return { data: updated };
+    }
+
+    const outlet = findOutlet(body.outletId);
+    const existing = state.outletRoutes.find(
+      (entry) => entry.outletId === outlet.id && entry.method === params.method,
+    );
     const updated: PaymentRoute = {
-      ...route,
+      id: existing?.id ?? newIdempotencyKey(),
+      tenantId: fixtures.tenantId,
+      outletId: outlet.id,
+      method: params.method,
       provider: body.provider,
       fallbackProvider: body.fallbackProvider,
       enabled: body.enabled,
@@ -196,37 +241,15 @@ registerMock(updatePaymentRoute, ({ params, body }) => {
     };
     store.set({
       ...state,
-      routes: state.routes.map((entry) =>
-        entry.id === updated.id ? updated : entry,
-      ),
+      outletRoutes: existing
+        ? state.outletRoutes.map((entry) =>
+            entry.id === updated.id ? updated : entry,
+          )
+        : [...state.outletRoutes, updated],
     });
     return { data: updated };
-  }
-
-  const outlet = findOutlet(body.outletId);
-  const existing = state.outletRoutes.find(
-    (entry) => entry.outletId === outlet.id && entry.method === params.method,
-  );
-  const updated: PaymentRoute = {
-    id: existing?.id ?? crypto.randomUUID(),
-    tenantId: fixtures.tenantId,
-    outletId: outlet.id,
-    method: params.method,
-    provider: body.provider,
-    fallbackProvider: body.fallbackProvider,
-    enabled: body.enabled,
-    updatedAt,
-  };
-  store.set({
-    ...state,
-    outletRoutes: existing
-      ? state.outletRoutes.map((entry) =>
-          entry.id === updated.id ? updated : entry,
-        )
-      : [...state.outletRoutes, updated],
-  });
-  return { data: updated };
-});
+  }),
+);
 
 // ---- EDC terminals -------------------------------------------------------
 
@@ -238,81 +261,85 @@ registerMock(listEdcTerminals, ({ query, scenario }) => {
   return paginateFixture(filtered, query, (terminal) => terminal.id, scenario);
 });
 
-registerMock(createEdcTerminal, ({ body }) => {
-  const state = store.get();
-  const outlet = findOutlet(body.outletId);
-  const duplicate = state.terminals.some(
-    (terminal) =>
-      terminal.outletId === outlet.id &&
-      terminal.terminalId === body.terminalId,
-  );
-  if (duplicate)
-    throw new ApiError(
-      409,
-      "CONFLICT",
-      `Terminal ${body.terminalId} sudah terdaftar di outlet ini.`,
+registerMock(createEdcTerminal, ({ endpoint, headers, body }) =>
+  replayHeader(headers, endpoint.id, undefined, body, () => {
+    const state = store.get();
+    const outlet = findOutlet(body.outletId);
+    const duplicate = state.terminals.some(
+      (terminal) =>
+        terminal.outletId === outlet.id &&
+        terminal.terminalId === body.terminalId,
     );
-  const created: EdcTerminalView = {
-    id: crypto.randomUUID(),
-    tenantId: fixtures.tenantId,
-    outletId: outlet.id,
-    outletName: outlet.name,
-    bankCode: body.bankCode,
-    terminalId: body.terminalId,
-    merchantId: body.merchantId,
-    model: body.model,
-    connection: body.connection,
-    ipAddress: body.ipAddress,
-    supportedMethods: [...body.supportedMethods],
-    assignedDeviceId: null,
-    status: body.status,
-  };
-  store.set({ ...state, terminals: [...state.terminals, created] });
-  return { data: created };
-});
+    if (duplicate)
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        `Terminal ${body.terminalId} sudah terdaftar di outlet ini.`,
+      );
+    const created: EdcTerminalView = {
+      id: newIdempotencyKey(),
+      tenantId: fixtures.tenantId,
+      outletId: outlet.id,
+      outletName: outlet.name,
+      bankCode: body.bankCode,
+      terminalId: body.terminalId,
+      merchantId: body.merchantId,
+      model: body.model,
+      connection: body.connection,
+      ipAddress: body.ipAddress,
+      supportedMethods: [...body.supportedMethods],
+      assignedDeviceId: null,
+      status: body.status,
+    };
+    store.set({ ...state, terminals: [...state.terminals, created] });
+    return { data: created };
+  }),
+);
 
-registerMock(updateEdcTerminal, ({ params, body }) => {
-  const state = store.get();
-  const terminal = state.terminals.find(
-    (entry) => entry.id === params.terminalId,
-  );
-  if (!terminal)
-    throw new ApiError(404, "NOT_FOUND", "Terminal tidak ditemukan.");
-  if (
-    body.terminalId !== undefined &&
-    state.terminals.some(
-      (entry) =>
-        entry.id !== terminal.id &&
-        entry.outletId === terminal.outletId &&
-        entry.terminalId === body.terminalId,
-    )
-  )
-    throw new ApiError(
-      409,
-      "CONFLICT",
-      `Terminal ${body.terminalId} sudah terdaftar di outlet ini.`,
+registerMock(updateEdcTerminal, ({ endpoint, headers, params, body }) =>
+  replayHeader(headers, endpoint.id, params, body, () => {
+    const state = store.get();
+    const terminal = state.terminals.find(
+      (entry) => entry.id === params.terminalId,
     );
-  const updated: EdcTerminalView = {
-    ...terminal,
-    ...(body.bankCode === undefined ? {} : { bankCode: body.bankCode }),
-    ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }),
-    ...(body.merchantId === undefined ? {} : { merchantId: body.merchantId }),
-    ...(body.model === undefined ? {} : { model: body.model }),
-    ...(body.connection === undefined ? {} : { connection: body.connection }),
-    ...(body.ipAddress === undefined ? {} : { ipAddress: body.ipAddress }),
-    ...(body.supportedMethods === undefined
-      ? {}
-      : { supportedMethods: [...body.supportedMethods] }),
-    ...(body.status === undefined ? {} : { status: body.status }),
-  };
-  store.set({
-    ...state,
-    terminals: state.terminals.map((entry) =>
-      entry.id === updated.id ? updated : entry,
-    ),
-  });
-  return { data: updated };
-});
+    if (!terminal)
+      throw new ApiError(404, "NOT_FOUND", "Terminal tidak ditemukan.");
+    if (
+      body.terminalId !== undefined &&
+      state.terminals.some(
+        (entry) =>
+          entry.id !== terminal.id &&
+          entry.outletId === terminal.outletId &&
+          entry.terminalId === body.terminalId,
+      )
+    )
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        `Terminal ${body.terminalId} sudah terdaftar di outlet ini.`,
+      );
+    const updated: EdcTerminalView = {
+      ...terminal,
+      ...(body.bankCode === undefined ? {} : { bankCode: body.bankCode }),
+      ...(body.terminalId === undefined ? {} : { terminalId: body.terminalId }),
+      ...(body.merchantId === undefined ? {} : { merchantId: body.merchantId }),
+      ...(body.model === undefined ? {} : { model: body.model }),
+      ...(body.connection === undefined ? {} : { connection: body.connection }),
+      ...(body.ipAddress === undefined ? {} : { ipAddress: body.ipAddress }),
+      ...(body.supportedMethods === undefined
+        ? {}
+        : { supportedMethods: [...body.supportedMethods] }),
+      ...(body.status === undefined ? {} : { status: body.status }),
+    };
+    store.set({
+      ...state,
+      terminals: state.terminals.map((entry) =>
+        entry.id === updated.id ? updated : entry,
+      ),
+    });
+    return { data: updated };
+  }),
+);
 
 // ---- Cashier defaults ----------------------------------------------------
 
@@ -335,59 +362,63 @@ registerMock(getEdcCashierDefaults, ({ query, scenario }) => {
   };
 });
 
-registerMock(updateEdcCashierDefault, ({ params, body }) => {
-  const state = store.get();
-  const cashier = state.cashiers.find(
-    (entry) =>
-      entry.cashierId === params.cashierId && entry.outletId === body.outletId,
-  );
-  if (!cashier) throw new ApiError(404, "NOT_FOUND", "Kasir tidak ditemukan.");
-
-  if (body.defaultMethod === "qris_doit") {
-    if (body.terminalId !== null)
-      throw new ApiError(
-        400,
-        "VALIDATION_ERROR",
-        "QRIS DOIT tidak memakai terminal EDC.",
-      );
-  } else {
-    if (body.terminalId === null)
-      throw new ApiError(
-        400,
-        "VALIDATION_ERROR",
-        "Pilih terminal EDC untuk metode ini.",
-      );
-    const terminal = state.terminals.find(
+registerMock(updateEdcCashierDefault, ({ endpoint, headers, params, body }) =>
+  replayHeader(headers, endpoint.id, params, body, () => {
+    const state = store.get();
+    const cashier = state.cashiers.find(
       (entry) =>
-        entry.id === body.terminalId && entry.outletId === body.outletId,
+        entry.cashierId === params.cashierId &&
+        entry.outletId === body.outletId,
     );
-    if (!terminal)
-      throw new ApiError(404, "NOT_FOUND", "Terminal EDC tidak ditemukan.");
-    if (terminal.status !== "active")
-      throw new ApiError(409, "CONFLICT", "Terminal EDC sedang nonaktif.");
-    const need = body.defaultMethod === "edc_card" ? "card" : "qris";
-    if (!terminal.supportedMethods.includes(need))
-      throw new ApiError(
-        400,
-        "VALIDATION_ERROR",
-        "Terminal ini tidak mendukung metode yang dipilih.",
-      );
-  }
+    if (!cashier)
+      throw new ApiError(404, "NOT_FOUND", "Kasir tidak ditemukan.");
 
-  const updated: EdcCashierDefault = {
-    ...cashier,
-    terminalId: body.terminalId,
-    defaultMethod: body.defaultMethod,
-    updatedAt: now(),
-  };
-  store.set({
-    ...state,
-    cashiers: state.cashiers.map((entry) =>
-      entry.id === updated.id ? updated : entry,
-    ),
-  });
-  return { data: updated };
-});
+    if (body.defaultMethod === "qris_doit") {
+      if (body.terminalId !== null)
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "QRIS DOIT tidak memakai terminal EDC.",
+        );
+    } else {
+      if (body.terminalId === null)
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "Pilih terminal EDC untuk metode ini.",
+        );
+      const terminal = state.terminals.find(
+        (entry) =>
+          entry.id === body.terminalId && entry.outletId === body.outletId,
+      );
+      if (!terminal)
+        throw new ApiError(404, "NOT_FOUND", "Terminal EDC tidak ditemukan.");
+      if (terminal.status !== "active")
+        throw new ApiError(409, "CONFLICT", "Terminal EDC sedang nonaktif.");
+      const need = body.defaultMethod === "edc_card" ? "card" : "qris";
+      if (!terminal.supportedMethods.includes(need))
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "Terminal ini tidak mendukung metode yang dipilih.",
+        );
+    }
+
+    const updated: EdcCashierDefault = {
+      ...cashier,
+      terminalId: body.terminalId,
+      defaultMethod: body.defaultMethod,
+      updatedAt: now(),
+    };
+    store.set({
+      ...state,
+      cashiers: state.cashiers.map((entry) =>
+        entry.id === updated.id ? updated : entry,
+      ),
+    });
+    return { data: updated };
+  }),
+);
 
 // ---- Refunds -------------------------------------------------------------
 
@@ -438,7 +469,7 @@ function createRefundOnce(body: CreateRefundInput) {
       ],
     );
   const created: RefundView = {
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: fixtures.tenantId,
     outletId: payment.outletId,
     outletName: payment.outletName,
@@ -605,23 +636,29 @@ registerMock(getReconciliationSummary, ({ scenario }) => {
   };
 });
 
-registerMock(resolveReconciliationCase, ({ params, body }) => {
-  const state = store.get();
-  const entry = state.cases.find((row) => row.id === params.caseId);
-  if (!entry)
-    throw new ApiError(404, "NOT_FOUND", "Kasus rekonsiliasi tidak ditemukan.");
-  if (entry.status === "resolved")
-    throw new ApiError(409, "CONFLICT", "Kasus ini sudah ditutup.");
-  const updated: ReconciliationCaseView = {
-    ...entry,
-    status: "resolved",
-    resolvedByName: ACTOR.name,
-    resolvedAt: now(),
-    note: body.note,
-  };
-  store.set({
-    ...state,
-    cases: state.cases.map((row) => (row.id === updated.id ? updated : row)),
-  });
-  return { data: updated };
-});
+registerMock(resolveReconciliationCase, ({ endpoint, headers, params, body }) =>
+  replayHeader(headers, endpoint.id, params, body, () => {
+    const state = store.get();
+    const entry = state.cases.find((row) => row.id === params.caseId);
+    if (!entry)
+      throw new ApiError(
+        404,
+        "NOT_FOUND",
+        "Kasus rekonsiliasi tidak ditemukan.",
+      );
+    if (entry.status === "resolved")
+      throw new ApiError(409, "CONFLICT", "Kasus ini sudah ditutup.");
+    const updated: ReconciliationCaseView = {
+      ...entry,
+      status: "resolved",
+      resolvedByName: ACTOR.name,
+      resolvedAt: now(),
+      note: body.note,
+    };
+    store.set({
+      ...state,
+      cases: state.cases.map((row) => (row.id === updated.id ? updated : row)),
+    });
+    return { data: updated };
+  }),
+);

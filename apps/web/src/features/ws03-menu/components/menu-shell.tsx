@@ -1,11 +1,15 @@
-// Shared frame for every menu back-office screen: page title, the tab strip
-// between menu sections, and the content slot. Tabs are links, not Radix
-// tabs, because each section has its own URL (docs/frontend.md "Add a page").
+// Shared frame for every menu back-office screen: the tab strip between menu
+// sections and the content slot. v3 (DESIGN.md §5 Management): the shell
+// topbar owns the page title, so the frame only renders the section tab group
+// (same look as <Tabs>, tabsListClass/tabsTriggerClass) with the "Contoh
+// data" badge. Tabs are links, not Radix tabs, because each section has its
+// own URL (docs/frontend.md "Add a page").
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS = [
@@ -34,10 +38,7 @@ export type MenuSection = (typeof TABS)[number]["key"];
 export function MenuTabs({ active }: { active: MenuSection }) {
   const t = useT();
   return (
-    <nav
-      aria-label={t("menu.title")}
-      className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
-    >
+    <nav aria-label={t("menu.title")} className={cn(tabsListClass, "min-w-0")}>
       {TABS.map((tab) => {
         // Each screen names its own section. A pathname prefix match marked
         // "Item" current on every /kelola/menu/* page (review legend-cyu.12).
@@ -61,10 +62,7 @@ export function MenuTabs({ active }: { active: MenuSection }) {
                 : undefined
             }
             aria-current={current ? "page" : undefined}
-            className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-              current && "border-primary font-semibold text-foreground",
-            )}
+            className={tabsTriggerClass}
           >
             {t(tab.labelKey)}
           </Link>
@@ -83,18 +81,12 @@ export function MenuPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl leading-7 font-semibold">{t("menu.title")}</h1>
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-        </div>
-        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("menu.subtitle")}
-        </p>
-      </header>
-      <MenuTabs active={active} />
-      <div className="grid min-w-0 gap-4">{children}</div>
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <MenuTabs active={active} />
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }

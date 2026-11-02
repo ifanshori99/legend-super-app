@@ -6,6 +6,7 @@ import { Link } from "@tanstack/react-router";
 import { CircleAlert, CircleCheck, ExternalLink, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -79,11 +80,8 @@ function ThankYou({
   const t = useT();
   const toGoogle = review.googleReviewPrompt && googleUrl !== null;
   return (
-    <section
-      aria-live="polite"
-      className="grid gap-3 rounded-xl border-(length:--border-w) p-card"
-    >
-      <h1 className="flex items-start gap-2 text-lg leading-7 font-semibold">
+    <Card aria-live="polite" className="grid gap-3">
+      <h1 className="type-title flex items-start gap-2">
         <CircleCheck className="mt-1 size-icon shrink-0" aria-hidden="true" />
         {t("qrRecovery.review.thanks.title")}
       </h1>
@@ -106,7 +104,7 @@ function ThankYou({
       ) : (
         <p>{t("qrRecovery.review.thanks.low")}</p>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -149,9 +147,7 @@ export function ReviewPage() {
 
   const header = (
     <header className="grid gap-1">
-      <h1 className="text-2xl leading-8 font-semibold">
-        {t("qrRecovery.review.title")}
-      </h1>
+      <h1 className="type-display-xl">{t("qrRecovery.review.title")}</h1>
       <p className="text-muted-foreground">{t("qrRecovery.review.hint")}</p>
     </header>
   );
@@ -172,8 +168,8 @@ export function ReviewPage() {
   if (state.alreadySubmitted)
     return (
       <div className="grid gap-4">
-        <section className="grid gap-1 rounded-xl border-(length:--border-w) p-card">
-          <h1 className="flex items-start gap-2 text-lg leading-7 font-semibold">
+        <Card className="grid gap-1">
+          <h1 className="type-title flex items-start gap-2">
             <CircleCheck
               className="mt-1 size-icon shrink-0"
               aria-hidden="true"
@@ -183,7 +179,7 @@ export function ReviewPage() {
           <p className="text-muted-foreground">
             {t("qrRecovery.review.already.hint")}
           </p>
-        </section>
+        </Card>
       </div>
     );
 
@@ -286,7 +282,7 @@ export function ReviewPage() {
       {key && (
         <div
           role="alert"
-          className="flex flex-wrap items-start gap-2 rounded-xl border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
+          className="flex flex-wrap items-start gap-2 rounded-container border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
         >
           <CircleAlert
             className="mt-0.5 size-4 shrink-0 text-danger"

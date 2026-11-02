@@ -176,7 +176,12 @@ Use `tenantIdColumn(() => tenants.id).notNull()` and, for outlet-owned tables,
 appropriate tenant-scoped composite foreign keys where needed to prevent
 cross-tenant references; these single-column references alone do not establish
 that relationship. Apply `app.enforce_tenant_rls` in the migration for every
-tenant table and use `withTenant` for its queries.
+tenant table and use `withTenant` for its queries. When `outlet_id` is NOT
+NULL, also apply `app.enforce_outlet_rls` right after it (TEN-03, bead
+legend-tjey): `withTenant` sets `app.outlet_ids` from the scope, and the guard
+test `src/db/outlet-rls.test.ts` fails CI for an outlet-owned table without the
+policy. Code that sets `app.tenant_id` by hand must also set `app.outlet_ids`
+(`'*'` for tenant-wide). See docs/plan/contracts.md D-CORE-3.
 
 The error middleware converts `CoreError` and recognized domain error classes
 with declared HTTP statuses into `apiErrorBody`, including the request ID.

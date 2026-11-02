@@ -96,9 +96,10 @@ async function asTenantOwner<T>(
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-      tenantId,
-    ]);
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
     const result = await run(client);
     await client.query("COMMIT");
     return result;

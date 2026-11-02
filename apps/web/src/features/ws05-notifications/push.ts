@@ -1,5 +1,6 @@
 import { API_MOCK } from "@/lib/api/mock-flag";
 import type { PushSubscriptionInput } from "./api";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 // Web push opt-in (PRD v1.7 §2 "PWA", §3.15 "Urutan Kanal"). This module only
 // talks to the browser: ask permission, register the service worker, subscribe
@@ -159,7 +160,7 @@ export async function subscribeThisBrowser(
   const label = deviceLabel();
   if (API_MOCK) {
     return {
-      endpoint: `https://push.legend.mock/subscription/${crypto.randomUUID()}`,
+      endpoint: `https://push.legend.mock/subscription/${newIdempotencyKey()}`,
       keys: { p256dh: MOCK_P256DH, auth: MOCK_AUTH },
       deviceLabel: label,
     };

@@ -2,9 +2,10 @@
 // most 1200px and re-encodes to JPEG before upload, so a phone photo stays
 // under the contract's 600 KB body limit; the API answers mediaId + URL.
 import * as React from "react";
-import { ImagePlus, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { MediaPlate } from "@/components/ui/media-plate";
 import { useUploadMenuImage } from "../hooks";
 
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
@@ -89,20 +90,15 @@ export function ImageField({
   return (
     <div className="grid gap-2">
       <div className="flex items-center gap-3">
-        <span className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-lg border bg-muted">
-          {value ? (
-            <img
-              src={value.mediaUrl}
-              alt={t("menu.editor.fields.photo")}
-              className="size-full object-cover"
-            />
-          ) : (
-            <ImagePlus
-              className="size-6 text-muted-foreground"
-              aria-hidden="true"
-            />
-          )}
-        </span>
+        {/* Q23: a menu item cannot be published without a photo, so the empty
+            state is the back-office "Foto wajib" plate (DESIGN.md §4 Media). */}
+        <MediaPlate
+          src={value?.mediaUrl ?? null}
+          alt={t("menu.editor.fields.photo")}
+          ratio="thumb"
+          missing="required"
+          className="w-24 shrink-0"
+        />
         <div className="grid gap-1.5">
           <div className="flex flex-wrap gap-2">
             <Button

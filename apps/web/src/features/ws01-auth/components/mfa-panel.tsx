@@ -93,9 +93,9 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
               return (
                 <li
                   key={factor.id}
-                  className="flex flex-wrap items-center gap-3 rounded-lg border-(length:--border-w) px-3 py-2"
+                  className="flex flex-wrap items-center gap-3 rounded-container border-(length:--border-w) px-3 py-2"
                 >
-                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-muted-foreground">
                     <Icon className="size-4" aria-hidden="true" />
                   </span>
                   <div className="grid min-w-0 flex-1 gap-0.5">
@@ -134,7 +134,7 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
           </p>
         )}
 
-        <div className="mt-4 flex items-start gap-3 rounded-lg border border-dashed p-3">
+        <div className="mt-4 flex items-start gap-3 rounded-container border-(length:--border-w) border-dashed p-3">
           <KeyRound
             className="mt-0.5 size-4 shrink-0 text-muted-foreground"
             aria-hidden="true"
@@ -191,7 +191,7 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
                 </span>
               </span>
             </Button>
-            <div className="flex items-start gap-3 rounded-lg border border-dashed p-3">
+            <div className="flex items-start gap-3 rounded-container border-(length:--border-w) border-dashed p-3">
               <KeyRound
                 className="mt-0.5 size-5 shrink-0 text-muted-foreground"
                 aria-hidden="true"

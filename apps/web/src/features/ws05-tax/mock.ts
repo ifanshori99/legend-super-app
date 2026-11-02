@@ -43,6 +43,7 @@ import {
   nextVersionNumber,
   sortRuleVersions,
 } from "./lib.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendTaxFixtures;
 /** The finance user the fixture rules were published by (publishedBy). */
@@ -138,7 +139,7 @@ registerMock(createTaxRule, ({ body }) => {
   const outletId = body.outletId ?? null;
   const today = businessDateToday();
   const rule = taxRuleSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: fixtures.taxRules[0].tenantId,
     outletId,
     code: body.code,
@@ -235,7 +236,7 @@ registerMock(createServiceChargeRule, ({ body }) => {
   const state = store.get();
   const outletId = body.outletId ?? null;
   const rule = serviceChargeRuleSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: fixtures.serviceChargeRules[0].tenantId,
     outletId,
     code: body.code,
@@ -334,7 +335,7 @@ registerMock(createTaxSettings, ({ body }) => {
       .filter((row) => row.outletId === outletId)
       .reduce((max, row) => Math.max(max, row.version), 0) + 1;
   const row = taxSettingsSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: fixtures.settings[0].tenantId,
     outletId,
     calculationOrder: body.calculationOrder,

@@ -7,6 +7,7 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS = [
@@ -80,7 +81,7 @@ export function InventoryTabs({ active }: { active: InventorySection }) {
   return (
     <nav
       aria-label={t("inventory.title")}
-      className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+      className={cn(tabsListClass, "[scrollbar-width:none]")}
     >
       {TABS.map((tab) => {
         // Each screen names its own section; a pathname prefix would mark
@@ -90,12 +91,12 @@ export function InventoryTabs({ active }: { active: InventorySection }) {
           <Link
             key={tab.key}
             to={tab.to}
+            // Exact match only: the parent link must not keep its own
+            // aria-current on a child section (two current tabs, legend-jda7).
+            activeOptions={{ exact: true }}
             ref={current ? activeRef : undefined}
             aria-current={current ? "page" : undefined}
-            className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-2 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-              current && "border-primary font-semibold text-foreground",
-            )}
+            className={tabsTriggerClass}
           >
             {t(tab.labelKey)}
           </Link>
@@ -114,20 +115,17 @@ export function InventoryPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl leading-7 font-semibold">
-            {t("inventory.title")}
-          </h1>
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-        </div>
+    // The management topbar owns the page title (DESIGN.md v3 §5): no second
+    // h1 and no extra gutter here.
+    <div className="grid min-w-0 gap-5">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
           {t("inventory.subtitle")}
         </p>
-      </header>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
       <InventoryTabs active={active} />
-      <div className="grid min-w-0 gap-4">{children}</div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }

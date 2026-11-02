@@ -23,7 +23,10 @@ function OrdersSkeleton() {
         {t("common.loading")}
       </span>
       {[0, 1].map((key) => (
-        <div key={key} className="grid gap-4 rounded-xl border p-card">
+        <div
+          key={key}
+          className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
+        >
           <div className="flex justify-between gap-3">
             <div className="grid gap-2">
               <Skeleton className="h-6 w-32" />
@@ -135,9 +138,7 @@ export function OrdersPage() {
   return (
     <section className="grid gap-4">
       <header className="grid gap-1">
-        <h1 className="text-2xl leading-8 font-bold tracking-tight">
-          {t("qrOrders.status.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("qrOrders.status.title")}</h1>
         <p className="text-sm leading-5 text-muted-foreground">
           {t(
             paymentMode === "pay_first"
@@ -150,7 +151,7 @@ export function OrdersPage() {
       {!online && (
         <p
           role="status"
-          className="flex items-start gap-2 rounded-lg bg-muted p-3 text-sm leading-5"
+          className="flex items-start gap-2 rounded-container bg-surface-2 p-3 text-sm leading-5"
         >
           <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           {t("qrOrders.status.offlineNotice")}

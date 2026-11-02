@@ -13,8 +13,9 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
+  CardShell,
+  CardShellFooter,
   CardTitle,
 } from "@/components/ui/card";
 import { DataTableShell } from "@/components/ui/data-table-shell";
@@ -38,6 +39,7 @@ import {
 import { PublishDialog } from "./publish-dialog";
 import { TaxSettingsDialog } from "./tax-settings-dialog";
 import { VersionStatusBadge } from "./version-badges";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function TaxSettingsPage() {
   const t = useT();
@@ -73,7 +75,7 @@ export function TaxSettingsPage() {
     publishSettings.mutate(
       {
         params: { taxSettingsId: publishing.id },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: () => {
@@ -89,78 +91,83 @@ export function TaxSettingsPage() {
   return (
     <>
       {current && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("tax.settings.currentTitle")}</CardTitle>
-            <CardDescription>
-              {t("tax.settings.currentSince", {
-                date: formatBusinessDate(current.effectiveFrom),
-                version: current.version,
-              })}
-            </CardDescription>
-            <CardAction>
-              <Badge tone="success">{t("tax.effective.now")}</Badge>
-            </CardAction>
-          </CardHeader>
-          <CardContent>
-            <dl className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.pricesIncludeTax")}
-                </dt>
-                <dd className="font-medium">
-                  {current.pricesIncludeTax
-                    ? t("tax.settings.included")
-                    : t("tax.settings.excluded")}
-                </dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.order")}
-                </dt>
-                <dd className="font-medium">{t("tax.settings.orderValue")}</dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.serviceRounding")}
-                </dt>
-                <dd className="font-medium">
-                  {t(ROUNDING_KEYS[current.serviceRoundingMode])}
-                </dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.taxRounding")}
-                </dt>
-                <dd className="font-medium">
-                  {t(ROUNDING_KEYS[current.taxRoundingMode])}
-                </dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.inclusiveBaseRounding")}
-                </dt>
-                <dd className="font-medium">
-                  {t(ROUNDING_KEYS[current.inclusiveBaseRoundingMode])}
-                </dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.billRounding")}
-                </dt>
-                <dd className="font-medium">{billRoundingLabel(current)}</dd>
-              </div>
-              <div className="grid gap-0.5">
-                <dt className="text-sm text-muted-foreground">
-                  {t("tax.settings.packageAllocation")}
-                </dt>
-                <dd className="font-medium">
-                  {t(PACKAGE_ALLOCATION_KEYS[current.packageAllocation])}
-                </dd>
-              </div>
-            </dl>
-          </CardContent>
-        </Card>
+        // v3 double shell: the current version is the screen's summary card.
+        <CardShell>
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("tax.settings.currentTitle")}</CardTitle>
+              <CardAction>
+                <Badge tone="success">{t("tax.effective.now")}</Badge>
+              </CardAction>
+            </CardHeader>
+            <CardContent>
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.pricesIncludeTax")}
+                  </dt>
+                  <dd className="font-medium">
+                    {current.pricesIncludeTax
+                      ? t("tax.settings.included")
+                      : t("tax.settings.excluded")}
+                  </dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.order")}
+                  </dt>
+                  <dd className="font-medium">
+                    {t("tax.settings.orderValue")}
+                  </dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.serviceRounding")}
+                  </dt>
+                  <dd className="font-medium">
+                    {t(ROUNDING_KEYS[current.serviceRoundingMode])}
+                  </dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.taxRounding")}
+                  </dt>
+                  <dd className="font-medium">
+                    {t(ROUNDING_KEYS[current.taxRoundingMode])}
+                  </dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.inclusiveBaseRounding")}
+                  </dt>
+                  <dd className="font-medium">
+                    {t(ROUNDING_KEYS[current.inclusiveBaseRoundingMode])}
+                  </dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.billRounding")}
+                  </dt>
+                  <dd className="font-medium">{billRoundingLabel(current)}</dd>
+                </div>
+                <div className="grid gap-0.5">
+                  <dt className="text-sm text-muted-foreground">
+                    {t("tax.settings.packageAllocation")}
+                  </dt>
+                  <dd className="font-medium">
+                    {t(PACKAGE_ALLOCATION_KEYS[current.packageAllocation])}
+                  </dd>
+                </div>
+              </dl>
+            </CardContent>
+          </Card>
+          <CardShellFooter>
+            {t("tax.settings.currentSince", {
+              date: formatBusinessDate(current.effectiveFrom),
+              version: current.version,
+            })}
+          </CardShellFooter>
+        </CardShell>
       )}
 
       <DataTableShell

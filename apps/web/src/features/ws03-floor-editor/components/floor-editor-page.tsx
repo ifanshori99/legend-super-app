@@ -7,7 +7,9 @@ import { Plus, QrCode, Save, Undo2 } from "lucide-react";
 import type { FloorZone, TableLayout } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { ErrorState, EmptyState } from "@/components/ui/feedback-state";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/lib/api/errors";
@@ -107,13 +109,26 @@ function FloorEditorPage() {
   const error = floor.error as ApiError | null;
 
   return (
-    <div className="grid gap-4">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        {/* The management shell's topbar already renders the page title as
-            the document h1, so this screen only adds context and actions. */}
-        <p className="max-w-2xl text-sm leading-5 text-muted-foreground">
-          {t("floorEditor.description")}
-        </p>
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      {/* v3 toolbar (DESIGN.md §5 Management): the shell topbar owns the page
+          title, so this row is the zone filter (segmented, ink on the track —
+          never accent-filled chips) plus the page actions. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {zones.length > 0 ? (
+          <SegmentedControl
+            label={t("floorEditor.zonesTitle")}
+            value={activeZoneId ?? "all"}
+            onValueChange={(value) =>
+              setZoneFilter(value === "all" ? null : value)
+            }
+            options={[
+              { value: "all", label: t("floorEditor.planAllZones") },
+              ...zones.map((zone) => ({ value: zone.id, label: zone.name })),
+            ]}
+          />
+        ) : (
+          <span />
+        )}
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
             <Link to="/kelola/meja/qr">
@@ -136,26 +151,26 @@ function FloorEditorPage() {
             </Button>
           )}
         </div>
-      </header>
+      </div>
 
       {floor.isPending && (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
           <Skeleton className="h-[420px]" />
           <Skeleton className="h-[280px]" />
         </div>
       )}
 
       {floor.isError && (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <ErrorState
             description={error?.message ?? t("state.errorHint")}
             onRetry={() => void floor.refetch()}
           />
-        </div>
+        </Card>
       )}
 
       {floor.isSuccess && zones.length === 0 && (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <Card>
           <EmptyState
             title={t("floorEditor.zonesEmptyTitle")}
             description={t("floorEditor.zonesEmptyHint")}
@@ -166,7 +181,7 @@ function FloorEditorPage() {
               </Button>
             }
           />
-        </div>
+        </Card>
       )}
 
       {floor.isSuccess && zones.length > 0 && (
@@ -174,7 +189,7 @@ function FloorEditorPage() {
           {changes.length > 0 && (
             <div
               role="status"
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-warning-subtle px-3 py-2 text-sm font-medium text-warning"
+              className="flex flex-wrap items-center justify-between gap-2 rounded-control bg-warning-subtle px-3 py-2 text-sm font-medium text-warning"
             >
               <span>{t("floorEditor.unsaved", { count: changes.length })}</span>
               <Button
@@ -189,33 +204,8 @@ function FloorEditorPage() {
             </div>
           )}
 
-          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="grid min-w-0 content-start gap-3 self-start">
-              <div
-                role="group"
-                aria-label={t("floorEditor.zonesTitle")}
-                className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]"
-              >
-                <Button
-                  size="sm"
-                  variant={activeZoneId === null ? "secondary" : "ghost"}
-                  aria-pressed={activeZoneId === null}
-                  onClick={() => setZoneFilter(null)}
-                >
-                  {t("floorEditor.planAllZones")}
-                </Button>
-                {zones.map((zone) => (
-                  <Button
-                    key={zone.id}
-                    size="sm"
-                    variant={activeZoneId === zone.id ? "secondary" : "ghost"}
-                    aria-pressed={activeZoneId === zone.id}
-                    onClick={() => setZoneFilter(zone.id)}
-                  >
-                    {zone.name}
-                  </Button>
-                ))}
-              </div>
               <p className="text-sm leading-5 text-muted-foreground">
                 {t("floorEditor.planHint")}
               </p>

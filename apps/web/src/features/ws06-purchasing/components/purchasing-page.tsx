@@ -12,7 +12,7 @@ import {
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Card, CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
@@ -45,6 +45,7 @@ import {
   useUoms,
 } from "../hooks";
 import { purchaseSuggestions } from "../suggestions";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const statusKeys = {
   draft: "purchasing.status.draft",
@@ -110,7 +111,7 @@ function useAttemptKey() {
       keyFor(payload: unknown): string {
         const signature = JSON.stringify(payload);
         if (attempt.current?.signature !== signature)
-          attempt.current = { signature, key: crypto.randomUUID() };
+          attempt.current = { signature, key: newIdempotencyKey() };
         return attempt.current.key;
       },
       settle() {
@@ -191,7 +192,7 @@ function RequestForm({
   }
   return (
     <Card className="min-w-0">
-      <h2 className="text-lg font-semibold">{t("purchasing.requestForm")}</h2>
+      <h2 className="type-title">{t("purchasing.requestForm")}</h2>
       <form onSubmit={submit} className="grid min-w-0 gap-4">
         <section
           aria-labelledby="purchase-suggestions"
@@ -538,7 +539,7 @@ function OrderForm({
   }
   return (
     <Card>
-      <h2 className="text-lg font-semibold">{t("purchasing.orderForm")}</h2>
+      <h2 className="type-title">{t("purchasing.orderForm")}</h2>
       <form onSubmit={submit} className="grid gap-4">
         <FormField label={t("purchasing.supplier")} required>
           <Select value={supplierId} onValueChange={setSupplierId}>
@@ -664,7 +665,7 @@ function OrderDetail({
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">{order.number}</h2>
+          <h2 className="type-title">{order.number}</h2>
           <p className="text-sm text-muted-foreground">
             {suppliers.find((s) => s.id === order.supplierId)?.name} ·{" "}
             {order.expectedDate}
@@ -831,14 +832,13 @@ export function PurchasingPage() {
   const supplierRows = suppliers.data?.data ?? [];
   const units = uoms.data?.data ?? [];
   return (
-    <div className="mx-auto grid w-full max-w-7xl gap-6 [&_button]:min-h-11 [&_input]:min-h-11 [&_textarea]:min-h-11">
+    // The management topbar owns the page title (DESIGN.md v3 §5) and the
+    // shell owns the gutter: no second h1, no max-width wrapper here.
+    <div className="grid w-full gap-5 [&_button]:min-h-11 [&_input]:min-h-11 [&_textarea]:min-h-11">
       <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("purchasing.title")}</h1>
-          <p className="mt-1 text-muted-foreground">
-            {t("purchasing.subtitle")}
-          </p>
-        </div>
+        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+          {t("purchasing.subtitle")}
+        </p>
         {view === "list" && (
           <Button onClick={() => setView("new")}>
             <FilePlus2 aria-hidden="true" />
@@ -958,41 +958,43 @@ function DocumentList({
 }) {
   const t = useT();
   return (
-    <section className="overflow-hidden rounded-xl border bg-card">
-      <div className="flex items-center gap-2 border-b px-4 py-4">
-        <ClipboardList
-          className="size-5 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <h2 className="font-semibold">{title}</h2>
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState title={empty} description={t("purchasing.emptyHint")} />
-      ) : (
-        <ul className="divide-y">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <button
-                type="button"
-                onClick={() => onSelect(row.id)}
-                className="flex min-h-16 w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
-              >
-                <span>
-                  <span className="block font-semibold">
-                    {"number" in row ? row.number : row.neededBy}
+    <CardShell>
+      <CardShellBody>
+        <div className="flex items-center gap-2 border-b p-card">
+          <ClipboardList
+            className="size-5 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <h2 className="type-title">{title}</h2>
+        </div>
+        {rows.length === 0 ? (
+          <EmptyState title={empty} description={t("purchasing.emptyHint")} />
+        ) : (
+          <ul className="divide-y">
+            {rows.map((row) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(row.id)}
+                  className="flex min-h-16 w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+                >
+                  <span>
+                    <span className="block font-semibold">
+                      {"number" in row ? row.number : row.neededBy}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      {"number" in row
+                        ? row.expectedDate
+                        : t("purchasing.neededBy")}
+                    </span>
                   </span>
-                  <span className="text-sm text-muted-foreground">
-                    {"number" in row
-                      ? row.expectedDate
-                      : t("purchasing.neededBy")}
-                  </span>
-                </span>
-                <Status value={row.status} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                  <Status value={row.status} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardShellBody>
+    </CardShell>
   );
 }

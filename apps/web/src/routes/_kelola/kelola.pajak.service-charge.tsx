@@ -24,7 +24,6 @@ function ServiceChargeRoute() {
   return (
     <TaxPage
       active="service-charge"
-      title={t("tax.title")}
       description={t("tax.subtitle")}
       canConfigure
       canReport={canReport}

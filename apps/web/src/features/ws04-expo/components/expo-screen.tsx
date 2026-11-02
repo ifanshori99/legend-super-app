@@ -112,7 +112,7 @@ export function ExpoScreen() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-6">
+    <div className="flex w-full flex-col gap-5">
       {header}
 
       {ready.length > 0 && (

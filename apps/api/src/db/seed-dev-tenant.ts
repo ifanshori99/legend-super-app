@@ -75,9 +75,10 @@ try {
   );
 
   // Tenant-owned rows need the tenant context even for the seeding login.
-  await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-    tenant.id,
-  ]);
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [tenant.id],
+  );
 
   const brand = fixtures.brand;
   await client.query(

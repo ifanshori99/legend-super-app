@@ -55,6 +55,7 @@ import {
   type PurchaseSuggestion,
 } from "../stock-lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function SuggestionsPage() {
   const t = useT();
@@ -157,7 +158,7 @@ export function SuggestionsPage() {
         neededBy,
         lines: purchaseRequestLines(selectedSuggestions),
         note: note.trim() === "" ? null : note.trim(),
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: (result) => {
@@ -177,9 +178,7 @@ export function SuggestionsPage() {
   return (
     <div className="grid min-w-0 gap-4">
       <header className="grid gap-1">
-        <h2 className="text-lg leading-7 font-semibold">
-          {t("inventoryStock.suggestions.title")}
-        </h2>
+        <h2 className="type-title">{t("inventoryStock.suggestions.title")}</h2>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
           {t("inventoryStock.suggestions.description")}
         </p>
@@ -247,11 +246,11 @@ export function SuggestionsPage() {
         >
           <span className="sr-only">{t("common.loading")}</span>
           {[0, 1, 2].map((index) => (
-            <Skeleton key={index} className="h-44 rounded-xl" />
+            <Skeleton key={index} className="h-44 rounded-container" />
           ))}
         </div>
       ) : failed ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <div className="rounded-container border-(length:--border-w) bg-card">
           <ErrorState
             title={t("inventoryStock.errors.load")}
             description={
@@ -263,7 +262,7 @@ export function SuggestionsPage() {
           />
         </div>
       ) : suggestions.length === 0 ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <div className="rounded-container border-(length:--border-w) bg-card">
           <EmptyState
             icon={PackageCheck}
             title={t("inventoryStock.suggestions.emptyTitle")}
