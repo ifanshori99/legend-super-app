@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import {
   Table,
   TableBody,
@@ -184,7 +184,8 @@ export function BalancesPage() {
 
   return (
     <div className="grid min-w-0 gap-4">
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+      {/* Owner Q30 (DESIGN.md v2): one strip, hairline dividers. */}
+      <StatStrip label={t("inventoryStock.balances.summaryLabel")} columns={3}>
         <StatTile
           label={t("inventoryStock.balances.statBelowPar")}
           value={stat(<NumberDisplay value={alerts.length} />)}
@@ -214,12 +215,11 @@ export function BalancesPage() {
           }
         />
         <StatTile
-          className="col-span-2 xl:col-span-1"
           label={t("inventoryStock.balances.statValue")}
           value={stat(<Money amount={totalStockValueIdr(rows)} />)}
           context={statContext(t("inventoryStock.balances.statValueContext"))}
         />
-      </div>
+      </StatStrip>
 
       <section
         aria-labelledby="stock-alerts-title"
