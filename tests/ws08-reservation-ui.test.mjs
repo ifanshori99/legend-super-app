@@ -24,6 +24,7 @@ import {
   waitlistActions,
 } from "../apps/web/src/features/ws08-reservation/lib.ts";
 import "../apps/web/src/features/ws08-reservation/mock.ts";
+import { reservationMessages } from "../packages/shared/src/i18n/messages/reservation.ts";
 
 const fixtures = reservation.cafeLegendReservationFixtures;
 const ids = reservation.reservationFixtureIds;
@@ -192,13 +193,11 @@ describe("RSV-03 closing follows the frozen policy snapshot", () => {
     );
     assert.equal(closed.data.reservation.status, "cancelled");
     assert.ok(closed.data.reservation.closedAt);
-    // The split depends on how long before arrival this runs; what must hold
-    // is that it comes from the frozen snapshot and never exceeds the DP.
-    assert.ok(
-      ["refund_full", "refund_partial"].includes(
-        closed.data.depositOutcome.resolution,
-      ),
-    );
+    // The mock clock is anchored on the fixture day (1 Nov 12.10 WIB), so the
+    // cancellation lands well outside the snapshot's 48-hour window whatever
+    // the wall clock says: a full refund, deterministically.
+    assert.equal(closed.data.depositOutcome.resolution, "refund_full");
+    assert.equal(closed.data.depositOutcome.refundIdr, 100_000);
     assert.equal(
       closed.data.depositOutcome.refundIdr +
         closed.data.depositOutcome.forfeitedIdr,
@@ -270,6 +269,8 @@ describe("Waitlist queue", () => {
     );
     assert.equal(called.data.status, "called");
     assert.ok(called.data.calledAt);
+    // Mock time runs from the fixture day, not the calendar (no time bomb).
+    assert.equal(businessDateOf(called.data.calledAt, tz), "2026-11-01");
   });
 
   test("a called guest is seated with the chosen tables", async () => {
@@ -373,5 +374,13 @@ describe("Schedule derivations", () => {
     });
     assert.deepEqual(page.data, []);
     assert.equal(page.meta.nextCursor, null);
+  });
+});
+
+describe("Policy wording", () => {
+  test("refund percentages are not doubled (percentLabel already adds %)", () => {
+    const { policyLateCancel, policyNoShow } = reservationMessages.detail;
+    for (const template of [policyLateCancel, policyNoShow])
+      assert.ok(!template.includes("{percent}%"), template);
   });
 });

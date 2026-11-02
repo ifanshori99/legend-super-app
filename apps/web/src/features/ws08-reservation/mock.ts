@@ -63,7 +63,18 @@ const fixtures = cafeLegendReservationFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
 const outletId = outlet.id;
 const tenantId = outlet.tenantId;
-const nowIso = () => new Date().toISOString();
+/**
+ * Mock clock anchored on the fixture day (Opus review, legend-oye8). The
+ * fixtures are dated 1–8 Nov 2026; against the wall clock the cancel window,
+ * the pre-order lead time and "all upcoming" would expire with the calendar
+ * and break the mock desk and its tests. The clock starts at the fixture
+ * "now" (the latest waitlist join, 1 Nov 12.10 WIB — the same reference the
+ * WS-03 floor mock uses) and advances in real time from module load.
+ */
+export const MOCK_FIXTURE_NOW = "2026-11-01T05:10:00.000Z";
+const bootMs = Date.now();
+const nowMs = () => Date.parse(MOCK_FIXTURE_NOW) + (Date.now() - bootMs);
+const nowIso = () => new Date(nowMs()).toISOString();
 const mintId = () => crypto.randomUUID();
 
 function fail(code: ReservationErrorCode): never {
@@ -162,7 +173,7 @@ function menuItemName(menuItemId: string): string {
 
 registerMock(listReservations, ({ params, query, scenario }) => {
   requireOutlet(params.outletId);
-  const today = todayInZone(outlet.timeZone);
+  const today = todayInZone(outlet.timeZone, new Date(nowMs()));
   const rows = reservations
     .get()
     .filter((row) => {
@@ -308,8 +319,7 @@ registerMock(placeReservationPreOrder, ({ params, body }) => {
   if (current.pax < pack.minPax || current.pax > pack.maxPax)
     fail("RESERVATION_PACKAGE_UNAVAILABLE");
   // §3.22 "sebelum hari H": the package's lead time must still be met.
-  const hoursToEvent =
-    (Date.parse(current.reservedFor) - Date.parse(nowIso())) / 3_600_000;
+  const hoursToEvent = (Date.parse(current.reservedFor) - nowMs()) / 3_600_000;
   if (hoursToEvent < pack.leadTimeHours)
     fail("RESERVATION_PACKAGE_UNAVAILABLE");
   const existing = preOrders

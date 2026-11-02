@@ -130,6 +130,7 @@ function WaitlistRow({
             size="sm"
             variant="outline"
             className="w-full sm:w-auto"
+            disabled={busy}
             onClick={onSeat}
           >
             {t("reservation.waitlist.seat")}
@@ -141,6 +142,7 @@ function WaitlistRow({
             size="sm"
             variant="ghost"
             className="w-full sm:w-auto"
+            disabled={busy}
             onClick={onLeave}
           >
             {t("reservation.waitlist.leave")}
@@ -152,6 +154,7 @@ function WaitlistRow({
             size="sm"
             variant="ghost"
             className="w-full text-danger sm:w-auto"
+            disabled={busy}
             onClick={onCancel}
           >
             {t("reservation.waitlist.cancel")}
@@ -251,7 +254,11 @@ export function WaitlistTab({
   const done = rows.filter(
     (entry) => entry.status !== "waiting" && entry.status !== "called",
   );
-  const busyId = call.isPending ? call.variables?.entryId : undefined;
+  const busyId = call.isPending
+    ? call.variables?.entryId
+    : resolve.isPending
+      ? resolve.variables?.entryId
+      : undefined;
 
   if (rows.length === 0)
     return (

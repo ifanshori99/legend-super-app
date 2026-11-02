@@ -55,7 +55,10 @@ function useReservationMutation<TVariables, TResult>(
   mutationFn: (variables: TVariables) => Promise<TResult>,
 ) {
   const refresh = useInvalidate(RESERVATION_WRITES);
-  return useMutation({ mutationFn, onSuccess: () => refresh() });
+  // Settled, not only success (Opus review): a 409 such as
+  // RESERVATION_SLOT_TAKEN means the desk's view is stale, so the conflict
+  // map and the detail must refetch before the host tries again (RSV-01).
+  return useMutation({ mutationFn, onSettled: () => refresh() });
 }
 
 /** Accessible outlets until the outlet-context bead supplies the assignment. */
@@ -189,8 +192,15 @@ export function usePlacePreOrder() {
 function useWaitlistMutation<TVariables>(
   mutationFn: (variables: TVariables) => Promise<unknown>,
 ) {
-  const refresh = useInvalidate([listWaitlist]);
-  return useMutation({ mutationFn, onSuccess: () => refresh() });
+  // Seating a walk-in opens a table session, so the floor board and the
+  // reservation conflict view change too; refresh on errors as well, since a
+  // 409 means the queue moved under the host.
+  const refresh = useInvalidate([
+    listWaitlist,
+    getFloorBoard,
+    listReservations,
+  ]);
+  return useMutation({ mutationFn, onSettled: () => refresh() });
 }
 
 export function useCallWaitlistEntry() {
