@@ -56,7 +56,7 @@ function DataTableShell({
       aria-labelledby={title ? headingId : undefined}
       aria-busy={state === "loading" || undefined}
       className={cn(
-        "flex min-w-0 flex-col rounded-xl border-(length:--border-w) bg-card",
+        "flex min-w-0 flex-col overflow-hidden rounded-container border-(length:--border-w) bg-card",
         className,
       )}
     >
@@ -64,7 +64,7 @@ function DataTableShell({
         <header className="flex flex-col gap-3 border-b p-card sm:flex-row sm:items-center sm:justify-between">
           {title && (
             <div className="min-w-0">
-              <h2 id={headingId} className="text-base leading-6 font-semibold">
+              <h2 id={headingId} className="type-heading">
                 {title}
               </h2>
               {description && (
@@ -87,7 +87,7 @@ function DataTableShell({
                   onChange={(event) => search.onChange(event.target.value)}
                   placeholder={t("table.searchPlaceholder")}
                   aria-label={search.label ?? t("common.search")}
-                  className="h-control-sm pl-10"
+                  className="h-control-sm border-transparent bg-surface-2 pl-10 hover:border-input"
                 />
               </div>
             )}
@@ -131,7 +131,7 @@ function DataTableShell({
       </div>
 
       {state === "ready" && !noResults && (page || rowCount !== undefined) && (
-        <footer className="flex items-center justify-between gap-3 border-t px-card py-2 text-sm text-muted-foreground">
+        <footer className="flex items-center justify-between gap-3 border-t bg-surface-2 px-card py-2 text-sm text-muted-foreground">
           <span className="tabular">
             {rowCount !== undefined && t("table.rowCount", { count: rowCount })}
           </span>

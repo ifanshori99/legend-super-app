@@ -4,7 +4,14 @@
 // Playwright config (playwright.config.ts) builds the real API; run this file
 // with a config whose webServer is `pnpm --filter @starter/web dev` in mock
 // mode until the e2e runner is repaired (bead legend-y8n9).
+//
+// First assertion = explicit timeout (bead legend-b0kq): `pnpm test:e2e:mock`
+// warms every route first (e2e/mock-global-setup.ts), but a dev server started
+// by hand is cold and needs 20-35 s for the first route compile.
 import { expect, test } from "@playwright/test";
+
+/** Cold Vite dev server: the first SSR hit can take >20 s (legend-1336). */
+const COLD_START_TIMEOUT_MS = 30_000;
 
 const token = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // table A01, pay-first, free
 const soldOutToken = token;
@@ -27,7 +34,7 @@ test.describe("QR customer journey (mock)", () => {
     await page.goto(`/t/${token}`);
     await expect(
       page.getByRole("heading", { name: /Selamat datang di Cafe Legend/ }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
     await page.getByRole("button", { name: "Mulai pesan" }).click();
     await expect(
       page.getByText("Indoor Reguler · Bayar di muka · 2 tamu"),

@@ -1165,7 +1165,14 @@ export function createEngine(clock: Clock = Date.now) {
       !rec.claimed &&
       !guest
     )
-      return clone(pointClaimFixture);
+      // The shared fixture is a static contract example, so its deadline is a
+      // fixed instant that the wall clock eventually passes. Serve it with the
+      // same live 24 h window as every other claim, or the mock ages into
+      // "expired" and the bill stops offering the claim (legend-woz ORD-06).
+      return {
+        ...clone(pointClaimFixture),
+        claimableUntil: iso(clock() + 24 * 3_600_000),
+      };
     const ok = settled(rec) && rec.paidIdr > 0;
     const status = rec.claimed ? "claimed" : ok ? "available" : "unavailable";
     return {

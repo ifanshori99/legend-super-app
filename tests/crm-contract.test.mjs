@@ -579,7 +579,7 @@ test("promo stacking is deterministic and never exceeds the bill (PRD §3.21)", 
     maxStacked: 3,
     allowSameGroup: false,
   });
-  assert.equal(stackable.totalDiscountIdr, 57_500); // facility + Gold 15% + 10%
+  assert.equal(stackable.totalDiscountIdr, 54_050); // facility + Gold 15% + 10% of the rest
   assert.ok(stackable.totalDiscountIdr <= context.subtotalIdr);
 
   const groups = crm.applyPromotions(f.promotions, context, [], {
@@ -600,6 +600,73 @@ test("promo stacking is deterministic and never exceeds the bill (PRD §3.21)", 
     allowSameGroup: true,
   });
   assert.ok(all.totalDiscountIdr <= context.subtotalIdr);
+});
+
+test("stacked percentage promos apply sequentially on the remaining bill (owner Q20)", () => {
+  const make = (id, name, percentBp, priority, stackGroup) =>
+    crm.promotionSchema.parse({
+      ...promotion("Diskon 10% Semua Menu"),
+      id,
+      name,
+      stackGroup,
+      priority,
+      quotaTotal: null,
+      quotaPerCustomer: null,
+      budgetIdr: null,
+      benefit: { kind: "percent_off", percentBp, maxDiscountIdr: null },
+    });
+  const ten = make(
+    "00000000-0000-4000-8000-000000000101",
+    "Sepuluh persen",
+    1_000,
+    20,
+    "order_discount",
+  );
+  const twenty = make(
+    "00000000-0000-4000-8000-000000000102",
+    "Dua puluh persen",
+    2_000,
+    10,
+    "member",
+  );
+  const context = promoContext({ subtotalIdr: 100_000 });
+  const policy = { mode: "stackable", maxStacked: 2, allowSameGroup: false };
+  const discountOf = (result, promotionId) =>
+    result.evaluations.find((row) => row.promotionId === promotionId)
+      .discountIdr;
+
+  // 10% first (priority 20): 10.000, then 20% of the remaining 90.000: 18.000.
+  // The input order must not change the outcome.
+  for (const list of [
+    [ten, twenty],
+    [twenty, ten],
+  ]) {
+    const result = crm.applyPromotions(list, context, [], policy);
+    assert.equal(result.totalDiscountIdr, 28_000);
+    assert.equal(discountOf(result, ten.id), 10_000);
+    assert.equal(discountOf(result, twenty.id), 18_000);
+  }
+
+  // Equal priority breaks the tie by id (…101 before …102).
+  const tied = [{ ...ten, priority: 10 }, twenty];
+  const result = crm.applyPromotions(tied, context, [], policy);
+  assert.equal(result.totalDiscountIdr, 28_000);
+  assert.equal(discountOf(result, ten.id), 10_000);
+  assert.equal(discountOf(result, twenty.id), 18_000);
+
+  // A percentage still uses the full bill for its minimum-spend condition.
+  const gated = crm.promotionSchema.parse({
+    ...ten,
+    conditions: [{ kind: "min_spend", amountIdr: 150_000 }],
+  });
+  const smallBill = crm.applyPromotions(
+    [gated, twenty],
+    promoContext({ subtotalIdr: 100_000 }),
+    [],
+    policy,
+  );
+  assert.equal(discountOf(smallBill, gated.id), undefined);
+  assert.equal(discountOf(smallBill, twenty.id), 20_000);
 });
 
 test("a non-stackable promotion chosen first stays alone (PRD §3.21 aturan tumpang tindih)", () => {

@@ -48,7 +48,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
               key={id}
               type={tone === "danger" ? "foreground" : "background"}
               onOpenChange={(open) => !open && remove(id)}
-              className="flex items-start gap-3 rounded-xl border bg-card p-4 text-foreground shadow-overlay data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out data-[swipe=move]:translate-y-(--radix-toast-swipe-move-y)"
+              className="flex items-start gap-3 rounded-container border bg-card p-4 text-foreground shadow-overlay data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out data-[swipe=move]:translate-y-(--radix-toast-swipe-move-y)"
             >
               <Icon
                 className={cn("mt-0.5 size-5 shrink-0", ICON_COLOR[tone])}

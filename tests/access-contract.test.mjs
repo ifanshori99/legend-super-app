@@ -736,6 +736,52 @@ describe("role grants (§3.7 Pemberian Role)", () => {
     );
   });
 
+  test("§3.7 custom-role edits may only add permissions the editor holds", () => {
+    const edit = (userKey, addedPermissions, overrides = {}) =>
+      access.assertCanEditCustomRole({
+        grantor: principal(userKey),
+        grantorRoles: fx.roleGrants,
+        grantorMfaVerified: true,
+        grantorReauthenticatedAt: null,
+        addedPermissions,
+        org: fx.org,
+        now: fx.now,
+        ...overrides,
+      });
+    // The Owner holds every tenant permission, so no re-auth is needed.
+    assert.doesNotThrow(() => edit("owner", ["audit.log.view"]));
+    // Admin Tenant does not hold finance permissions...
+    throwsCode(
+      () => edit("tenantAdmin", ["payroll.view"]),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // ...unless MFA is verified and it re-authenticated within five minutes.
+    assert.doesNotThrow(() =>
+      edit("tenantAdmin", ["payroll.view"], {
+        grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      }),
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorMfaVerified: false,
+          grantorReauthenticatedAt: fx.now,
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // Without access.role.manage there is no edit path at all.
+    throwsCode(() => edit("cashier", ["pos.sale.create"]), "PERMISSION_DENIED");
+    // No added permission means no grant decision (rename / remove only).
+    assert.doesNotThrow(() => edit("tenantAdmin", []));
+  });
+
   test("client inputs never carry the tenant (TEN-02)", () => {
     const input = {
       userId: fx.users.employee.id,
