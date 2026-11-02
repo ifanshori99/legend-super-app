@@ -3,6 +3,7 @@ export * from "./user";
 export * from "./session";
 export * from "./account";
 export * from "./verification";
+export * from "./identity-mfa";
 export * from "./notes";
 
 export * from "./core-events";
@@ -18,3 +19,4 @@ export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";
 export * from "./accounting";
+export * from "./identity";

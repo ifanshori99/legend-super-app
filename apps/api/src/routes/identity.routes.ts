@@ -1,0 +1,122 @@
+// Legend identity routes under /api/auth (identity/endpoints.ts in the shared
+// contract): second factors and the per-device session list.
+//
+// They share the prefix with Better Auth, so app.ts mounts this router BEFORE
+// the Better Auth handler; every route here is explicit and authenticates with
+// requireAuth. Tenant ids never appear in the path or body (TEN-02).
+//
+// The remaining identity endpoints (sign-in challenges, /api/auth/me, staff
+// pins, approvals, roles) belong to sibling WS-01 beads and are not mounted
+// here. Revoking a session ends it immediately for every route because Better
+// Auth reads the same row on each request.
+
+import { Router } from "express";
+import {
+  mfaEnrollSchema,
+  mfaFactorParamsSchema,
+  mfaVerifySchema,
+  sessionParamsSchema,
+} from "@starter/shared/identity";
+import { getAuth, requireAuth } from "../middleware/auth";
+import { jsonBody } from "../middleware/body";
+import { requireTrustedOrigin } from "../middleware/origin";
+import {
+  deleteMfaFactor,
+  enrollMfaFactor,
+  listMfaFactors,
+  verifyMfaFactor,
+} from "../services/identity-mfa.service";
+import {
+  listOwnSessions,
+  loadSessionRow,
+  revokeOwnSession,
+} from "../services/identity-session.service";
+
+/** Product name shown in authenticator apps (PRD v1.7: Legend). */
+const MFA_ISSUER = "Legend";
+
+export const identityAuthRouter = Router();
+
+/** True once this session verified a second factor (AUTH-05 step-up). */
+async function sessionMfaVerified(sessionId: string): Promise<boolean> {
+  const row = await loadSessionRow(sessionId);
+  return row !== null && row.mfaVerifiedAt !== null;
+}
+
+identityAuthRouter.get("/mfa/factors", requireAuth, async (req, res) => {
+  res.json({ data: await listMfaFactors(getAuth(req).user.id) });
+});
+
+identityAuthRouter.post(
+  "/mfa/factors",
+  requireAuth,
+  requireTrustedOrigin,
+  jsonBody,
+  async (req, res) => {
+    const input = mfaEnrollSchema.parse(req.body);
+    const auth = getAuth(req);
+    const enrollment = await enrollMfaFactor({
+      userId: auth.user.id,
+      accountName: auth.user.email,
+      type: input.type,
+      issuer: MFA_ISSUER,
+      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+    });
+    res.status(201).json({ data: enrollment });
+  },
+);
+
+identityAuthRouter.post(
+  "/mfa/verify",
+  requireAuth,
+  requireTrustedOrigin,
+  jsonBody,
+  async (req, res) => {
+    const input = mfaVerifySchema.parse(req.body);
+    const auth = getAuth(req);
+    const result = await verifyMfaFactor({
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      factorId: input.factorId,
+      code: input.code,
+    });
+    res.json({ data: result });
+  },
+);
+
+identityAuthRouter.delete(
+  "/mfa/factors/:factorId",
+  requireAuth,
+  requireTrustedOrigin,
+  async (req, res) => {
+    const { factorId } = mfaFactorParamsSchema.parse(req.params);
+    const auth = getAuth(req);
+    await deleteMfaFactor({
+      userId: auth.user.id,
+      factorId,
+      sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+    });
+    res.status(204).end();
+  },
+);
+
+identityAuthRouter.get("/sessions", requireAuth, async (req, res) => {
+  const auth = getAuth(req);
+  res.json({
+    data: await listOwnSessions({
+      userId: auth.user.id,
+      currentSessionId: auth.session.id,
+    }),
+  });
+});
+
+identityAuthRouter.delete(
+  "/sessions/:sessionId",
+  requireAuth,
+  requireTrustedOrigin,
+  async (req, res) => {
+    const { sessionId } = sessionParamsSchema.parse(req.params);
+    await revokeOwnSession({ userId: getAuth(req).user.id, sessionId });
+    res.status(204).end();
+  },
+);
