@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,9 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Stock opname and waste screens (legend-fzx), also in their own file.
+  opname: opnameMessages,
+  waste: wasteMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
