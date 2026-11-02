@@ -55,6 +55,7 @@ import {
   type PurchaseSuggestion,
 } from "../stock-lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function SuggestionsPage() {
   const t = useT();
@@ -157,7 +158,7 @@ export function SuggestionsPage() {
         neededBy,
         lines: purchaseRequestLines(selectedSuggestions),
         note: note.trim() === "" ? null : note.trim(),
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: (result) => {

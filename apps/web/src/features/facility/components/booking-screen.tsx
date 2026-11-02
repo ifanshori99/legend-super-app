@@ -37,6 +37,7 @@ import { LoginStep } from "./login-step";
 import { ReviewStep } from "./review-step";
 import { ScheduleStep } from "./schedule-step";
 import { JourneyStepper, LoadingCard, type BookingStep } from "./shared";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Phase = BookingStep | "issued";
 
@@ -75,7 +76,7 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
 
   function idempotencyKeyFor(current: BookingDraft): string {
     if (attempt.current?.draft !== current)
-      attempt.current = { draft: current, key: crypto.randomUUID() };
+      attempt.current = { draft: current, key: newIdempotencyKey() };
     return attempt.current.key;
   }
 

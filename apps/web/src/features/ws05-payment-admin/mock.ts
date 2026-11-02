@@ -39,6 +39,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** The signed-in supervisor the mock records as the actor (mock mode only). */
 const ACTOR = {
@@ -229,7 +230,7 @@ registerMock(updatePaymentRoute, ({ endpoint, headers, params, body }) =>
       (entry) => entry.outletId === outlet.id && entry.method === params.method,
     );
     const updated: PaymentRoute = {
-      id: existing?.id ?? crypto.randomUUID(),
+      id: existing?.id ?? newIdempotencyKey(),
       tenantId: fixtures.tenantId,
       outletId: outlet.id,
       method: params.method,
@@ -276,7 +277,7 @@ registerMock(createEdcTerminal, ({ endpoint, headers, body }) =>
         `Terminal ${body.terminalId} sudah terdaftar di outlet ini.`,
       );
     const created: EdcTerminalView = {
-      id: crypto.randomUUID(),
+      id: newIdempotencyKey(),
       tenantId: fixtures.tenantId,
       outletId: outlet.id,
       outletName: outlet.name,
@@ -468,7 +469,7 @@ function createRefundOnce(body: CreateRefundInput) {
       ],
     );
   const created: RefundView = {
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: fixtures.tenantId,
     outletId: payment.outletId,
     outletName: payment.outletName,

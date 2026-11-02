@@ -31,6 +31,7 @@ import { ApiError } from "@/lib/api/errors";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendCrmFixtures;
 const memberId = fixtures.memberOverview.profile.id;
@@ -198,7 +199,7 @@ registerMock(redeemReward, ({ params, body }) => {
 
   const at = nowIso();
   const redemption = rewardRedemptionSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     rewardId: reward.id,
     customerProfileId: memberId,
@@ -260,7 +261,7 @@ registerMock(updateMemberConsent, ({ body }) => {
       list[list.indexOf(active)] = saved;
     } else {
       saved = customerConsentSchema.parse({
-        id: crypto.randomUUID(),
+        id: newIdempotencyKey(),
         tenantId,
         customerProfileId: memberId,
         purpose: body.purpose,
@@ -279,7 +280,7 @@ registerMock(updateMemberConsent, ({ body }) => {
     saved =
       list.findLast((item) => item.purpose === body.purpose) ??
       customerConsentSchema.parse({
-        id: crypto.randomUUID(),
+        id: newIdempotencyKey(),
         tenantId,
         customerProfileId: memberId,
         purpose: body.purpose,

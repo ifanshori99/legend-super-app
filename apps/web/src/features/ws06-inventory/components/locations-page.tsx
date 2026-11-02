@@ -53,6 +53,7 @@ import {
 } from "../hooks";
 import { locationStock } from "../lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const LOCATION_TYPES: StockLocationType[] = [
   "warehouse",
@@ -143,7 +144,7 @@ function LocationDialog({
         outletId: INVENTORY_OUTLET_ID,
         name: parsed.data.name,
         type,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: () => {

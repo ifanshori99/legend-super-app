@@ -19,6 +19,7 @@ import {
 import { ApiError } from "../../api/errors.ts";
 import { registerMock } from "../registry.ts";
 import { createMockStore } from "../store.ts";
+import { newIdempotencyKey } from "../../idempotency.ts";
 
 /** The identity customer (Sari): a verified WhatsApp number. */
 const customerUser = idFx.usersByKey.sari;
@@ -30,7 +31,7 @@ export const auth = createMockStore<MockAuth>(() => "fixture");
 /** A fresh session for the customer who just signed in (90 days, §3 F3). */
 export function newCustomerSession(at: Date): Session {
   return sessionSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     userId: customerUser.id,
     tenantId: idFx.tenantId,
     kind: "customer",

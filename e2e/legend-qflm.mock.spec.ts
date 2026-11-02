@@ -154,15 +154,18 @@ test("F21 menu search filters items and offers a way back to the full list", asy
   ).toBeVisible();
 });
 
-test("F21 sitemap.xml lists the four public routes and robots.txt points at it", async ({
+test("F21 sitemap.xml lists the three public routes and robots.txt points at it (legend-d6g5)", async ({
   request,
 }) => {
   const sitemap = await request.get("/sitemap.xml");
   expect(sitemap.status()).toBe(200);
   expect(sitemap.headers()["content-type"]).toContain("application/xml");
   const xml = await sitemap.text();
-  for (const path of ["/", "/menu", "/reservation", "/member"])
+  for (const path of ["/", "/menu", "/reservation"])
     expect(xml).toContain(`<loc>https://cafelegend.id${path}</loc>`);
+  // PRD §5: /member needs sign-in and is disallowed in robots.txt below, so the
+  // sitemap must not submit it (Search Console "blocked by robots.txt").
+  expect(xml).not.toContain("<loc>https://cafelegend.id/member</loc>");
   expect(xml).toContain("<lastmod>2026-11-01T02:00:00.000Z</lastmod>");
 
   const robots = await request.get("/robots.txt");

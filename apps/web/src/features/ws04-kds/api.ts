@@ -15,6 +15,7 @@ import type {
 } from "@starter/shared/kitchen";
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import { KITCHEN_OUTLET_ID } from "../ws04-expo/outlet.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 export async function fetchStations(signal?: AbortSignal) {
   return (
@@ -109,7 +110,7 @@ export async function markUnavailable(menuItemId: string) {
       return (
         await callEndpoint(setAvailabilityStatus, {
           params: { availabilityId: row.id },
-          body: { action: "sell_out", idempotencyKey: crypto.randomUUID() },
+          body: { action: "sell_out", idempotencyKey: newIdempotencyKey() },
         })
       ).data;
     }

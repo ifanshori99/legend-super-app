@@ -37,6 +37,7 @@ import { INVENTORY_OUTLET_ID } from "../outlet";
 import { businessDateToday } from "../stock-lib";
 import { LIST_LIMIT } from "../lib";
 import { typeLabelKey } from "../opname-lib";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
@@ -72,7 +73,7 @@ export function CountFormDialog({
     Record<string, string | undefined>
   >({});
   const [formError, setFormError] = React.useState<string>();
-  const idempotencyKey = React.useRef(crypto.randomUUID());
+  const idempotencyKey = React.useRef(newIdempotencyKey());
 
   const locationRows = React.useMemo(
     () => locations.data?.data ?? [],
@@ -104,7 +105,7 @@ export function CountFormDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current = newIdempotencyKey();
   }, [open]);
 
   function toggleItem(itemId: string, checked: boolean) {
