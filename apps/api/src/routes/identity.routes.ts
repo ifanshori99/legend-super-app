@@ -27,6 +27,7 @@ import {
   verifyMfaFactor,
 } from "../services/identity-mfa.service";
 import {
+  extendCurrentSession,
   listOwnSessions,
   loadSessionRow,
   revokeOwnSession,
@@ -95,6 +96,20 @@ identityAuthRouter.delete(
       userId: auth.user.id,
       factorId,
       sessionMfaVerified: await sessionMfaVerified(auth.session.id),
+    });
+    res.status(204).end();
+  },
+);
+
+identityAuthRouter.post(
+  "/sessions/current/activity",
+  requireAuth,
+  requireTrustedOrigin,
+  async (req, res) => {
+    const auth = getAuth(req);
+    await extendCurrentSession({
+      sessionId: auth.session.id,
+      userId: auth.user.id,
     });
     res.status(204).end();
   },

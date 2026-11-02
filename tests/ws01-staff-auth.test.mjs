@@ -5,9 +5,16 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { describe, test } from "node:test";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier.startsWith("@/"))
+      return nextResolve(
+        pathToFileURL(resolve("apps/web/src", specifier.slice(2)) + ".ts").href,
+        context,
+      );
     try {
       return nextResolve(specifier, context);
     } catch (error) {
@@ -248,4 +255,67 @@ describe("AUTH-05 return path and code entry", () => {
     assert.equal(state.isTotpCodeComplete("12345"), false);
     assert.equal(state.isTotpCodeComplete(""), false);
   });
+});
+
+test("AUTH-05: mock reads do not extend; activity extends once and cannot revive an idle session", async () => {
+  const { dispatchMock, resetMocks } =
+    await import("../apps/web/src/lib/mock/runtime.ts");
+  const { staffCurrentAuthMock } =
+    await import("../apps/web/src/features/ws01-auth/mock.ts");
+  const originalStorage = globalThis.localStorage;
+  const originalLocation = globalThis.location;
+  const OriginalDate = globalThis.Date;
+  let time = OriginalDate.now();
+  globalThis.localStorage = { getItem: () => "idle" };
+  globalThis.Date = class extends OriginalDate {
+    constructor(...args) {
+      super(...(args.length ? args : [time]));
+    }
+    static now() {
+      return time;
+    }
+  };
+  try {
+    resetMocks();
+    const read = () =>
+      staffCurrentAuthMock({ scenario: "normal" }).data.session;
+    const before = read();
+    time += 1_000;
+    assert.equal(read().expiresAt, before.expiresAt);
+    await dispatchMock({
+      method: "POST",
+      path: "/api/auth/sessions/current/activity",
+    });
+    const extended = read();
+    assert.ok(Date.parse(extended.expiresAt) > Date.parse(before.expiresAt));
+    time += 1_000;
+    assert.equal(read().expiresAt, extended.expiresAt);
+    await dispatchMock({
+      method: "POST",
+      path: "/api/auth/sessions/current/activity",
+    });
+    assert.equal(read().expiresAt, extended.expiresAt);
+    globalThis.location = { pathname: "/masuk" };
+    await assert.rejects(
+      dispatchMock({
+        method: "POST",
+        path: "/api/auth/sessions/current/activity",
+      }),
+      { status: 401 },
+    );
+    globalThis.location = originalLocation;
+    time = Date.parse(extended.lastSeenAt) + 30 * 60_000;
+    await assert.rejects(
+      dispatchMock({
+        method: "POST",
+        path: "/api/auth/sessions/current/activity",
+      }),
+      { status: 401 },
+    );
+  } finally {
+    globalThis.Date = OriginalDate;
+    globalThis.localStorage = originalStorage;
+    globalThis.location = originalLocation;
+    resetMocks();
+  }
 });

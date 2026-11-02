@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MfaEnrollInput, MfaVerifyInput } from "@starter/shared/identity";
 import {
+  extendStaffSession,
   removeMfaFactor,
   revokeDeviceSession,
   startMfaEnrollment,
@@ -72,4 +73,9 @@ export function useRevokeSession() {
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: staffAuthKeys.all }),
   });
+}
+
+/** AUTH-05: only an explicit action extends the current staff session. */
+export function useExtendStaffSession() {
+  return useMutation({ mutationFn: extendStaffSession });
 }
