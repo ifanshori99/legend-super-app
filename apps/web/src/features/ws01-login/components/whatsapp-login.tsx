@@ -254,7 +254,10 @@ export function WhatsAppLogin({
         >
           {t("login.whatsapp.codeLabel")}
         </h2>
-        <p className="font-mono type-display tabular" aria-live="polite">
+        <p
+          className="font-mono type-display tracking-widest tabular"
+          aria-live="polite"
+        >
           {issued.codeFormatted}
         </p>
         <p className="text-sm leading-5 text-muted-foreground tabular">
