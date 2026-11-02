@@ -12,7 +12,7 @@ export function PickupPromoCard({ promotion }: { promotion: PickupPromotion }) {
     <aside
       data-slot="pickup-promo"
       aria-label={t("pickup.promoLabel")}
-      className="flex flex-col gap-2 rounded-xl border-(length:--border-w) bg-brand-subtle p-card"
+      className="flex flex-col gap-2 rounded-container border-(length:--border-w) bg-brand-subtle p-card"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="brand">{t("pickup.promoLabel")}</Badge>
@@ -24,7 +24,7 @@ export function PickupPromoCard({ promotion }: { promotion: PickupPromotion }) {
           </span>
         )}
       </div>
-      <p className="text-lg leading-7 font-semibold">{promotion.title}</p>
+      <p className="type-title">{promotion.title}</p>
       <p className="text-sm leading-5 text-muted-foreground">
         {promotion.body}
       </p>
