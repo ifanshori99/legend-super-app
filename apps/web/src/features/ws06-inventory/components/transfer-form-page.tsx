@@ -44,6 +44,7 @@ import {
   quantityFromInput,
 } from "../lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Line = { key: string; inventoryItemId: string; quantity: string };
 
@@ -145,7 +146,7 @@ export function TransferFormPage() {
     setLines((current) => [
       ...current,
       {
-        key: crypto.randomUUID(),
+        key: newIdempotencyKey(),
         inventoryItemId: pendingItemId,
         quantity: parsed,
       },
@@ -178,7 +179,7 @@ export function TransferFormPage() {
       return;
     }
     setFormError(undefined);
-    draftKey.current ??= crypto.randomUUID();
+    draftKey.current ??= newIdempotencyKey();
     createTransfer.mutate(
       {
         outletId: INVENTORY_OUTLET_ID,

@@ -30,6 +30,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock, type MockContext } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 type LoyaltyMockState = {
   program: LoyaltyProgram;
@@ -50,7 +51,7 @@ function sortedTiers(): LoyaltyTier[] {
 }
 
 function newId(): string {
-  return crypto.randomUUID();
+  return newIdempotencyKey();
 }
 
 function findTier(id: string): LoyaltyTier {

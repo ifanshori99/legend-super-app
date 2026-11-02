@@ -13,6 +13,7 @@ import {
   type WifiPolicy,
   type WifiSpeedTier,
 } from "@starter/shared/facility";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** PRD §3 "Wi-Fi Berbasis Belanja": reminder 15 minutes before the quota ends. */
 export const WIFI_REMINDER_MINUTES = 15;
@@ -168,9 +169,7 @@ export function buildDeviceFingerprint(input: {
 }
 
 function randomDeviceId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto)
-    return crypto.randomUUID();
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return newIdempotencyKey();
 }
 
 /** Browser only (called from the connect mutation, never during render). */

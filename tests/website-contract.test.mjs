@@ -116,12 +116,18 @@ test("F21 JSON-LD serialization is safe inside an SSR script tag", () => {
   assert.deepEqual(JSON.parse(serialized), hostile);
 });
 
-test("F21 sitemap entries cover the home, menu, reservation and member routes", () => {
+test("F21 sitemap entries cover the home, menu and reservation routes, never the sign-in member page (legend-d6g5)", () => {
   const entries = site.sitemapEntriesFor(homepage);
   for (const entry of entries) site.sitemapEntrySchema.parse(entry);
   assert.deepEqual(
     entries.map((entry) => new URL(entry.loc).pathname),
-    ["/", "/menu", "/reservation", "/member"],
+    ["/", "/menu", "/reservation"],
+  );
+  // PRD §5: /member needs sign-in and robots.txt disallows it, so submitting it
+  // would only report "Submitted URL blocked by robots.txt" (legend-d6g5).
+  assert.equal(
+    entries.some((entry) => new URL(entry.loc).pathname === "/member"),
+    false,
   );
   assert.equal(entries[0].priority, 1);
   for (const entry of entries) {

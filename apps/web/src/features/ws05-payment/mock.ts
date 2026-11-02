@@ -38,6 +38,7 @@ import { idr } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** QRIS codes live about 10 minutes (PRD §3.13 "QRIS Dinamis"). */
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
@@ -168,7 +169,7 @@ function mintIntent(
           };
 
   return {
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     method,
     status: "pending",
     amountIdr,

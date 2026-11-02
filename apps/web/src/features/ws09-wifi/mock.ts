@@ -27,6 +27,7 @@ import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { dailyQuotaMinutes } from "./state.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** Server clock the mock reports; the fixture instant keeps screenshots stable. */
 const SERVER_TIME = cafeLegendWifiQuotaView.serverTime;
@@ -212,7 +213,7 @@ registerMock(startWifiSession, async ({ body, scenario }) => {
 
   const session: WifiSession = {
     ...seed,
-    id: wifiSessionIdSchema.parse(crypto.randomUUID()),
+    id: wifiSessionIdSchema.parse(newIdempotencyKey()),
     zoneId: policy.zoneId,
     policyId: policy.id,
     deviceHash: digest,

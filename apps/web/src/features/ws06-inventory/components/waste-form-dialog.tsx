@@ -39,6 +39,7 @@ import {
   WASTE_PHOTO_MAX_BYTES,
   WASTE_PHOTO_TYPES,
 } from "./photo-field";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const QTY_PATTERN = /^\d{1,10}(\.\d{1,4})?$/;
 
@@ -74,7 +75,7 @@ export function WasteFormDialog({
     Record<string, string | undefined>
   >({});
   const [formError, setFormError] = React.useState<string>();
-  const idempotencyKey = React.useRef(crypto.randomUUID());
+  const idempotencyKey = React.useRef(newIdempotencyKey());
 
   const activeItems = React.useMemo(
     () =>
@@ -112,7 +113,7 @@ export function WasteFormDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current = newIdempotencyKey();
   }, [open]);
 
   React.useEffect(
@@ -197,7 +198,7 @@ export function WasteFormDialog({
         reason: reason as WasteReason,
         // The media transport is not built yet (bead legend-7nv1): mock mode
         // mints the id the contract expects and keeps the preview local.
-        mediaId: photo && API_MOCK ? crypto.randomUUID() : null,
+        mediaId: photo && API_MOCK ? newIdempotencyKey() : null,
         note: note.trim() === "" ? null : note.trim(),
         idempotencyKey: idempotencyKey.current,
       },

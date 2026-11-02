@@ -199,8 +199,9 @@ export function serializeJsonLd(value: unknown): string {
 }
 
 /**
- * Sitemap entries for the brand site (PRD F21 "sitemap"): home, online menu,
- * reservation and member entry, absolute from the canonical URL.
+ * Sitemap entries for the brand site (PRD F21 "sitemap"): home, online menu
+ * and reservation, absolute from the canonical URL. The member page is a
+ * sign-in door that robots.txt disallows (PRD §5), so it is never submitted.
  */
 export function sitemapEntriesFor(site: PublicSite): SitemapEntry[] {
   const canonical = z.url().parse(site.seo.canonicalUrl);
@@ -224,13 +225,6 @@ export function sitemapEntriesFor(site: PublicSite): SitemapEntry[] {
       lastModified,
       changeFrequency: "monthly",
       priority: 0.9,
-    }),
-    // A member page is a login entry, not a landing page.
-    sitemapEntrySchema.parse({
-      loc: `${origin}${PUBLIC_SITE_ROUTES.member}`,
-      lastModified,
-      changeFrequency: "monthly",
-      priority: 0.3,
     }),
   ];
 }

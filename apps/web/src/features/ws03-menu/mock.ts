@@ -74,6 +74,7 @@ import {
   type Station,
   type Variant,
 } from "@starter/shared/menu";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const { brand, outlets } = cafeLegendFixtures;
 const fixtureBrandId = brand.id;
@@ -81,7 +82,7 @@ const fixtureOutletId = outlets[0].id;
 
 // Contract ids are RFC 9562 UUIDs (z.uuid rejects a ULID's version nibble),
 // so the mock mints real v4 ids instead of the ULID-in-uuid production form.
-const nextId = () => crypto.randomUUID();
+const nextId = () => newIdempotencyKey();
 
 type MenuState = MenuFixture & {
   /** Item ↔ modifier group links (PRD §8 modifier groups per item). */
