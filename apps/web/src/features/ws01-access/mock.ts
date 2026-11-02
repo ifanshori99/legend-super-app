@@ -20,30 +20,21 @@ import {
   type RoleAssignment,
 } from "@starter/shared/access";
 import {
-  cafeLegendIdentityFixtures,
   createCustomRole,
   endRoleAssignment,
   getApprovalMatrix,
   grantRole,
-  listMfaFactors,
   listRoleAssignments,
   listRoles,
   replaceApprovalMatrix,
   updateCustomRole,
-  verifyMfaFactor,
 } from "@starter/shared/identity";
-import { cafeLegendMenuFixtures, listStations } from "@starter/shared/menu";
 import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
 } from "@starter/shared/platform";
 import { ApiError } from "@/lib/api/errors";
-import type { AnyEndpoint } from "@starter/shared/api";
-import {
-  registerMock,
-  registeredMockIds,
-  type MockHandler,
-} from "@/lib/mock/registry";
+import { registerMock } from "@/lib/mock/registry";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { createMockStore } from "@/lib/mock/store";
 
@@ -88,15 +79,6 @@ function roleById(roleId: string): Role {
       { field: "roleId", message: "Peran tidak ditemukan." },
     ]);
   return role;
-}
-
-/** Registers only when no other feature owns the endpoint yet. */
-function registerIfAbsent(
-  endpoint: AnyEndpoint,
-  handler: MockHandler<AnyEndpoint>,
-) {
-  if (!registeredMockIds().includes(endpoint.id))
-    registerMock(endpoint, handler as MockHandler<typeof endpoint>);
 }
 
 // -------------------------------------------------------------------- roles
@@ -245,47 +227,10 @@ registerMock(replaceApprovalMatrix, ({ body }) => {
   return { data: parsed.data };
 });
 
-// ---------------------------------------------------------- re-authentication
-
-registerIfAbsent(listMfaFactors, ({ scenario }) =>
-  scenario === "empty"
-    ? { data: [] }
-    : {
-        data: cafeLegendIdentityFixtures.mfaFactors.filter(
-          (factor) => factor.userId === cafeLegendAccessFixtures.users.owner.id,
-        ),
-      },
-);
-
-registerIfAbsent(verifyMfaFactor, ({ body }) => {
-  const factor = cafeLegendIdentityFixtures.mfaFactors.find(
-    (row) => row.id === body.factorId,
-  );
-  if (!factor)
-    throw new ApiError(404, "NOT_FOUND", "Faktor kedua tidak ditemukan.");
-  return { data: { factorId: factor.id, verifiedAt: NOW() } };
-});
-
 // -------------------------------------------------------- scope name lookups
-
-registerIfAbsent(orgEndpoints.listBrands, () => ({
+// Only the brand lookup is still owned here: the MFA endpoints belong to
+// ws01-auth, listOutlets to ws07-accounting and listStations to ws03-menu, and
+// the registry now refuses a second registration (bead legend-jzud).
+registerMock(orgEndpoints.listBrands, () => ({
   data: [cafeLegendPlatformFixtures.brand],
 }));
-
-registerIfAbsent(orgEndpoints.listOutlets, ({ query, scenario }) =>
-  paginateFixture(
-    cafeLegendPlatformFixtures.outlets,
-    query,
-    (row) => row.id,
-    scenario,
-  ),
-);
-
-registerIfAbsent(listStations, ({ query, scenario }) =>
-  paginateFixture(
-    cafeLegendMenuFixtures.stations,
-    query,
-    (row) => row.id,
-    scenario,
-  ),
-);

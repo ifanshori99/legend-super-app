@@ -37,7 +37,6 @@ import {
   joinFacilityQueue,
   leaveFacilityQueue,
   listAccessTickets,
-  listSubscriptionPlans,
   startFacilitySubscription,
   updateFacilitySubscription,
   type AccessTicket,
@@ -51,21 +50,11 @@ import {
   type FacilityUnitStatus,
   type SubscriptionInvoice,
 } from "@starter/shared/facility";
-import {
-  cafeLegendIdentityFixtures as idFx,
-  cancelLoginChallenge,
-  CUSTOMER_SESSION_DAYS,
-  formatLoginCode,
-  generateLoginCode,
-  getLoginChallenge,
-  LOGIN_CODE_TTL_MINUTES,
-  loginChallengeSchema,
-  requestWhatsAppLoginChallenge,
-  whatsAppLoginDeepLink,
-  type LoginChallenge,
-} from "@starter/shared/identity";
 import { createUlidFactory } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
+// Shared registrations other features also import (one mock per endpoint).
+import "../../lib/mock/handlers/login-challenge.ts";
+import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { businessDateInOutletZone } from "./flow.ts";
@@ -712,14 +701,6 @@ registerMock(leaveFacilityQueue, ({ params }) => {
   queue.set(queue.get().filter((entry) => entry.id !== params.entryId));
 });
 
-registerMock(listSubscriptionPlans, ({ query, scenario }) => {
-  const facility = facilityById(query.facilityId);
-  const plans = fx.subscriptionPlans.filter(
-    (plan) => plan.facilityId === facility.id && plan.isActive,
-  );
-  return { data: { plans: scenario === "empty" ? [] : plans } };
-});
-
 registerMock(getCurrentFacilitySubscription, ({ scenario }) => ({
   data: scenario === "empty" ? null : currentSubscriptionView(),
 }));
@@ -794,106 +775,9 @@ registerMock(updateFacilitySubscription, ({ params, body }) => {
   return { data: updated };
 });
 
-// ---- WhatsApp login (identity contract, AUTH-01/AUTH-03) --------------------
+// ---- Identity + subscription plans ------------------------------------------
 //
-// The facility gate is the first customer screen that signs a guest in, so it
-// serves the identity endpoints it calls until the customer-login FE bead owns
-// them (registerMock replaces, so that bead's handlers win when it lands). The
-// mock plays the KirimDev webhook: the guest "sends" the message by waiting,
-// and the challenge completes on the second poll from this browser.
-
-type MockChallenge = { challenge: LoginChallenge; polls: number };
-const loginChallenges = createMockStore<Map<string, MockChallenge>>(
-  () => new Map(),
-);
-const LOGIN_POLLS_TO_COMPLETE = 2;
-/** The fixture customer session (Sari, kind "customer"). */
-const customerSession = idFx.sessions.find(
-  (session) => session.kind === "customer",
-);
-
-function saveChallenge(entry: MockChallenge): void {
-  loginChallenges.set(
-    new Map(loginChallenges.get()).set(entry.challenge.id, entry),
-  );
-}
-
-registerMock(requestWhatsAppLoginChallenge, () => {
-  const createdAt = new Date();
-  const challenge = loginChallengeSchema.parse({
-    id: crypto.randomUUID(),
-    tenantId: idFx.tenantId,
-    brandId: idFx.brandId,
-    channel: "whatsapp_inbound",
-    status: "pending",
-    expiresAt: new Date(
-      createdAt.getTime() + LOGIN_CODE_TTL_MINUTES * MINUTE,
-    ).toISOString(),
-    completedAt: null,
-    matchedUserId: null,
-    createdAt: createdAt.toISOString(),
-  });
-  saveChallenge({ challenge, polls: 0 });
-  const code = generateLoginCode();
-  return {
-    data: {
-      challenge,
-      code,
-      codeFormatted: formatLoginCode(code),
-      whatsAppDeepLink: whatsAppLoginDeepLink({
-        numberDigits: idFx.login.number,
-        code,
-        keyword: idFx.login.keyword,
-      }),
-    },
-  };
-});
-
-registerMock(getLoginChallenge, ({ params }) => {
-  const entry = loginChallenges.get().get(params.challengeId);
-  if (!entry)
-    throw new ApiError(404, "NOT_FOUND", "Permintaan masuk tidak ditemukan.");
-  const now = new Date();
-  let { challenge } = entry;
-  const polls = entry.polls + 1;
-  if (challenge.status === "pending") {
-    if (now.getTime() >= Date.parse(challenge.expiresAt))
-      challenge = { ...challenge, status: "expired" };
-    else if (polls >= LOGIN_POLLS_TO_COMPLETE)
-      challenge = loginChallengeSchema.parse({
-        ...challenge,
-        status: "completed",
-        completedAt: now.toISOString(),
-        matchedUserId: customerSession?.userId ?? null,
-      });
-  }
-  saveChallenge({ challenge, polls });
-  const session =
-    challenge.status === "completed" && customerSession
-      ? {
-          ...customerSession,
-          createdAt: challenge.completedAt ?? now.toISOString(),
-          lastSeenAt: challenge.completedAt ?? now.toISOString(),
-          expiresAt: new Date(
-            now.getTime() + CUSTOMER_SESSION_DAYS * 24 * 60 * MINUTE,
-          ).toISOString(),
-        }
-      : null;
-  return {
-    data: {
-      challenge,
-      session,
-      mfaRequired: false,
-      mfaEnrollmentRequired: false,
-    },
-  };
-});
-
-registerMock(cancelLoginChallenge, ({ params }) => {
-  const entry = loginChallenges.get().get(params.challengeId);
-  if (!entry || entry.challenge.status !== "pending") return;
-  saveChallenge({
-    ...entry,
-    challenge: { ...entry.challenge, status: "cancelled" },
-  });
-});
+// The facility gate signs the guest in, but the WhatsApp challenge endpoints and
+// the plan list are also used by the /masuk screens and the Wi-Fi portal. Their
+// single implementations live in lib/mock/handlers/ and are imported above, so
+// each route has one registered mock (bead legend-jzud).

@@ -32,15 +32,55 @@ export type MockHandler<E extends AnyEndpoint> = (
 
 export type { EndpointOutput };
 
-type Entry = { endpoint: AnyEndpoint; handler: MockHandler<AnyEndpoint> };
+type Entry = {
+  endpoint: AnyEndpoint;
+  handler: MockHandler<AnyEndpoint>;
+  /** Where it was registered, so a duplicate names both owners. */
+  origin: string;
+};
 const entries = new Map<string, Entry>();
 
-/** Registers (or replaces, for hot reload) the mock for one endpoint. */
+/** The first stack frame outside this file, e.g. `mock.ts:87:1`. */
+function originOf(): string {
+  const stack = new Error().stack?.split("\n").slice(2) ?? [];
+  const frame = stack.find((line) => !line.includes("registry.ts"));
+  return frame?.trim().replace(/^at\s+/, "") ?? "unknown";
+}
+
+/**
+ * Registers the one mock for an endpoint. A second registration of the same
+ * endpoint is a bug: the registry used to keep whichever module loaded last, so
+ * two features silently fought over one route and the UI showed the loser's
+ * fixtures (review legend-7ko, bead legend-jzud). Own the endpoint in one
+ * feature (or a shared module in `lib/mock/handlers/`) and import the other
+ * feature's handler function instead of registering again.
+ *
+ * `replace` is only for an arbiter that deliberately re-registers a default a
+ * shared module already registered (GET /api/auth/me, current-auth.ts); it must
+ * not be used to paper over two features owning one endpoint.
+ *
+ * Hot reload: `transport.ts` clears the registry when Vite disposes the mock
+ * module graph, so a re-evaluated module registers into an empty registry
+ * rather than throwing at itself.
+ */
 export function registerMock<E extends AnyEndpoint>(
   endpoint: E,
   handler: MockHandler<E>,
+  options: { replace?: boolean } = {},
 ) {
-  entries.set(endpoint.id, { endpoint, handler } as unknown as Entry);
+  const existing = entries.get(endpoint.id);
+  if (existing && !options.replace)
+    throw new Error(
+      `[mock] Duplicate handler for "${endpoint.id}".\n` +
+        `  first:  ${existing.origin}\n` +
+        `  second: ${originOf()}\n` +
+        "One owner per endpoint: export the handler and import it instead of calling registerMock twice.",
+    );
+  entries.set(endpoint.id, {
+    endpoint,
+    handler,
+    origin: originOf(),
+  } as unknown as Entry);
 }
 
 export function clearMocks() {
