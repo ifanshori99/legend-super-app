@@ -33,6 +33,13 @@ import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
+import { Route as CustomerMemberDaftarRouteImport } from './routes/_customer/member.daftar'
+import { Route as CustomerMemberFavoritRouteImport } from './routes/_customer/member.favorit'
+import { Route as CustomerMemberKunjunganRouteImport } from './routes/_customer/member.kunjungan'
+import { Route as CustomerMemberMisiRouteImport } from './routes/_customer/member.misi'
+import { Route as CustomerMemberPoinRouteImport } from './routes/_customer/member.poin'
+import { Route as CustomerMemberRewardRouteImport } from './routes/_customer/member.reward'
+import { Route as CustomerMemberVoucherRouteImport } from './routes/_customer/member.voucher'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
@@ -172,6 +179,41 @@ const CustomerFFacilityRoute = CustomerFFacilityRouteImport.update({
 const CustomerMemberIndexRoute = CustomerMemberIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberDaftarRoute = CustomerMemberDaftarRouteImport.update({
+  id: '/daftar',
+  path: '/daftar',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberFavoritRoute = CustomerMemberFavoritRouteImport.update({
+  id: '/favorit',
+  path: '/favorit',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberKunjunganRoute = CustomerMemberKunjunganRouteImport.update({
+  id: '/kunjungan',
+  path: '/kunjungan',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberMisiRoute = CustomerMemberMisiRouteImport.update({
+  id: '/misi',
+  path: '/misi',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberPoinRoute = CustomerMemberPoinRouteImport.update({
+  id: '/poin',
+  path: '/poin',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberRewardRoute = CustomerMemberRewardRouteImport.update({
+  id: '/reward',
+  path: '/reward',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberVoucherRoute = CustomerMemberVoucherRouteImport.update({
+  id: '/voucher',
+  path: '/voucher',
   getParentRoute: () => CustomerMemberRoute,
 } as any)
 const CustomerTTokenRoute = CustomerTTokenRouteImport.update({
@@ -351,6 +393,13 @@ export interface FileRoutesByFullPath {
   '/notes': typeof ProtectedNotesRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
+  '/member/daftar': typeof CustomerMemberDaftarRoute
+  '/member/favorit': typeof CustomerMemberFavoritRoute
+  '/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/member/misi': typeof CustomerMemberMisiRoute
+  '/member/poin': typeof CustomerMemberPoinRoute
+  '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/voucher': typeof CustomerMemberVoucherRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -396,6 +445,13 @@ export interface FileRoutesByTo {
   '/notes': typeof ProtectedNotesRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
+  '/member/daftar': typeof CustomerMemberDaftarRoute
+  '/member/favorit': typeof CustomerMemberFavoritRoute
+  '/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/member/misi': typeof CustomerMemberMisiRoute
+  '/member/poin': typeof CustomerMemberPoinRoute
+  '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/voucher': typeof CustomerMemberVoucherRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -453,6 +509,13 @@ export interface FileRoutesById {
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
+  '/_customer/member/daftar': typeof CustomerMemberDaftarRoute
+  '/_customer/member/favorit': typeof CustomerMemberFavoritRoute
+  '/_customer/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/_customer/member/misi': typeof CustomerMemberMisiRoute
+  '/_customer/member/poin': typeof CustomerMemberPoinRoute
+  '/_customer/member/reward': typeof CustomerMemberRewardRoute
+  '/_customer/member/voucher': typeof CustomerMemberVoucherRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
@@ -501,6 +564,13 @@ export interface FileRouteTypes {
     | '/notes'
     | '/bayar/$token'
     | '/f/$facility'
+    | '/member/daftar'
+    | '/member/favorit'
+    | '/member/kunjungan'
+    | '/member/misi'
+    | '/member/poin'
+    | '/member/reward'
+    | '/member/voucher'
     | '/t/$token'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
@@ -546,6 +616,13 @@ export interface FileRouteTypes {
     | '/notes'
     | '/bayar/$token'
     | '/f/$facility'
+    | '/member/daftar'
+    | '/member/favorit'
+    | '/member/kunjungan'
+    | '/member/misi'
+    | '/member/poin'
+    | '/member/reward'
+    | '/member/voucher'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
     | '/member'
@@ -602,6 +679,13 @@ export interface FileRouteTypes {
     | '/_public/'
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
+    | '/_customer/member/daftar'
+    | '/_customer/member/favorit'
+    | '/_customer/member/kunjungan'
+    | '/_customer/member/misi'
+    | '/_customer/member/poin'
+    | '/_customer/member/reward'
+    | '/_customer/member/voucher'
     | '/_customer/t/$token'
     | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
@@ -819,6 +903,55 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/member/'
       preLoaderRoute: typeof CustomerMemberIndexRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/daftar': {
+      id: '/_customer/member/daftar'
+      path: '/daftar'
+      fullPath: '/member/daftar'
+      preLoaderRoute: typeof CustomerMemberDaftarRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/favorit': {
+      id: '/_customer/member/favorit'
+      path: '/favorit'
+      fullPath: '/member/favorit'
+      preLoaderRoute: typeof CustomerMemberFavoritRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/kunjungan': {
+      id: '/_customer/member/kunjungan'
+      path: '/kunjungan'
+      fullPath: '/member/kunjungan'
+      preLoaderRoute: typeof CustomerMemberKunjunganRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/misi': {
+      id: '/_customer/member/misi'
+      path: '/misi'
+      fullPath: '/member/misi'
+      preLoaderRoute: typeof CustomerMemberMisiRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/poin': {
+      id: '/_customer/member/poin'
+      path: '/poin'
+      fullPath: '/member/poin'
+      preLoaderRoute: typeof CustomerMemberPoinRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/reward': {
+      id: '/_customer/member/reward'
+      path: '/reward'
+      fullPath: '/member/reward'
+      preLoaderRoute: typeof CustomerMemberRewardRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/voucher': {
+      id: '/_customer/member/voucher'
+      path: '/voucher'
+      fullPath: '/member/voucher'
+      preLoaderRoute: typeof CustomerMemberVoucherRouteImport
       parentRoute: typeof CustomerMemberRoute
     }
     '/_customer/t/$token': {
@@ -1054,6 +1187,13 @@ const AuthRouteChildren: AuthRouteChildren = {
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
 interface CustomerMemberRouteChildren {
+  CustomerMemberDaftarRoute: typeof CustomerMemberDaftarRoute
+  CustomerMemberFavoritRoute: typeof CustomerMemberFavoritRoute
+  CustomerMemberKunjunganRoute: typeof CustomerMemberKunjunganRoute
+  CustomerMemberMisiRoute: typeof CustomerMemberMisiRoute
+  CustomerMemberPoinRoute: typeof CustomerMemberPoinRoute
+  CustomerMemberRewardRoute: typeof CustomerMemberRewardRoute
+  CustomerMemberVoucherRoute: typeof CustomerMemberVoucherRoute
   CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
   CustomerMemberFasilitasTicketIdRoute: typeof CustomerMemberFasilitasTicketIdRoute
   CustomerMemberFasilitasLanggananRoute: typeof CustomerMemberFasilitasLanggananRoute
@@ -1061,6 +1201,13 @@ interface CustomerMemberRouteChildren {
 }
 
 const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
+  CustomerMemberDaftarRoute: CustomerMemberDaftarRoute,
+  CustomerMemberFavoritRoute: CustomerMemberFavoritRoute,
+  CustomerMemberKunjunganRoute: CustomerMemberKunjunganRoute,
+  CustomerMemberMisiRoute: CustomerMemberMisiRoute,
+  CustomerMemberPoinRoute: CustomerMemberPoinRoute,
+  CustomerMemberRewardRoute: CustomerMemberRewardRoute,
+  CustomerMemberVoucherRoute: CustomerMemberVoucherRoute,
   CustomerMemberIndexRoute: CustomerMemberIndexRoute,
   CustomerMemberFasilitasTicketIdRoute: CustomerMemberFasilitasTicketIdRoute,
   CustomerMemberFasilitasLanggananRoute: CustomerMemberFasilitasLanggananRoute,
