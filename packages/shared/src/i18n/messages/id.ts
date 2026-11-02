@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { posDisplayMessages } from "./pos-display.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // POS customer display (PRD §3 F11 "Customer Display"), bead legend-azt.
+  posDisplay: posDisplayMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
