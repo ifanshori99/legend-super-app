@@ -38,6 +38,28 @@ export type ResolvedNavItem = {
   group?: string;
 };
 
+/**
+ * Bottom nav slots (DESIGN.md v2 §5: CustomerShell keeps ≤5 items, 64px, safe
+ * area). A sixth destination squeezes every label on a 390px phone, so the
+ * shell shows the first four and moves the rest into a "Lainnya" sheet
+ * (bead legend-oibk).
+ */
+export const BOTTOM_NAV_MAX_SLOTS = 5;
+
+/** First `maxSlots - 1` items stay in the bar; the rest go behind "Lainnya". */
+export function splitBottomNav<T>(
+  items: readonly T[],
+  maxSlots: number = BOTTOM_NAV_MAX_SLOTS,
+): { primary: readonly T[]; overflow: readonly T[] } {
+  if (maxSlots < 2)
+    throw new RangeError("splitBottomNav needs room for one item plus More");
+  if (items.length <= maxSlots) return { primary: items, overflow: [] };
+  return {
+    primary: items.slice(0, maxSlots - 1),
+    overflow: items.slice(maxSlots - 1),
+  };
+}
+
 function groupRank(entry: AreaNavEntry): number {
   return entry.group ? NAV_GROUPS.indexOf(entry.group) + 1 : 0;
 }
