@@ -231,10 +231,14 @@ const errorCode = (reason: unknown) =>
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  // Copy the seeded tenant's plan/flags/limits: the platform tenant list
+  // validates every row against tenantSchema, so a minimal tenant would break
+  // an unrelated suite (same approach as accounting-core.test.ts).
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Promo RLS tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
-    [otherTenant, `promo-rls-${otherTenant}`, actor],
+     SELECT $1, $2, 'Promo RLS tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [otherTenant, `promo-rls-${otherTenant.slice(0, 8)}`, tenantId],
   );
   await asOwner(otherTenant, async (client) => {
     await client.query(
@@ -272,6 +276,21 @@ afterAll(async () => {
       tenantId,
     ]);
   });
+  await asOwner(otherTenant, async (client) => {
+    await client.query("DELETE FROM promotions WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
+    await client.query("DELETE FROM outlets WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
+    await client.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
+    await client.query("DELETE FROM brands WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
+  });
+  await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
   await owner.end();
 });
 

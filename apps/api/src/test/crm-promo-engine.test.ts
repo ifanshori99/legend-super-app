@@ -631,12 +631,11 @@ describe("Outlet time zone (validity in outlet business time)", () => {
 describe("legend-559 calc order: promo discount comes before service charge and tax", () => {
   it("[ORD-03] the engine's total feeds the tax engine as the order discount (prices exclude tax and service)", () => {
     const taxBill = cafeLegendTaxFixtures.privateRoomBill;
-    const lines = taxBill.lines.map((line, index) => ({
+    const lines = taxBill.lines.map((line) => ({
       menuItemId: line.itemId,
       quantity: 1,
       unitPriceIdr: idr(line.grossIdr - line.discountIdr),
       lineTotalIdr: idr(line.grossIdr - line.discountIdr),
-      index,
     }));
     const subtotal = lines.reduce((sum, line) => sum + line.lineTotalIdr, 0);
     const first = percent(1000, { priority: 2 });
@@ -645,7 +644,7 @@ describe("legend-559 calc order: promo discount comes before service charge and 
       [first, second],
       bill(subtotal, {
         subtotalIdr: idr(subtotal),
-        lines: lines.map(({ index: _index, ...line }) => line),
+        lines,
       }),
       [],
       stackable(),
