@@ -57,6 +57,7 @@ import {
 import { ConfirmDialog } from "./confirm-dialog";
 import { ReorderButtons } from "./reorder-buttons";
 import { ItemStatusBadge } from "./status-badge";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const PAGE_SIZE = 20;
 const ALL = "all";
@@ -281,7 +282,7 @@ export function ItemListPage() {
     setStatus.mutate(
       {
         availabilityId: row.availability.id,
-        body: { action: "sell_out", idempotencyKey: crypto.randomUUID() },
+        body: { action: "sell_out", idempotencyKey: newIdempotencyKey() },
       },
       {
         onSuccess: () =>
@@ -300,7 +301,7 @@ export function ItemListPage() {
     setStatus.mutate(
       {
         availabilityId: restoring.availability.id,
-        body: { action: "restore", idempotencyKey: crypto.randomUUID() },
+        body: { action: "restore", idempotencyKey: newIdempotencyKey() },
       },
       {
         onSuccess: () => {

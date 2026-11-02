@@ -158,8 +158,9 @@ function escapeXml(value: string): string {
 }
 
 /**
- * `/sitemap.xml` body for the brand site: home, online menu, reservation and
- * member entry, absolute from the canonical URL (contract `sitemapEntriesFor`).
+ * `/sitemap.xml` body for the brand site: home, online menu and reservation,
+ * absolute from the canonical URL (contract `sitemapEntriesFor`). `/member` is
+ * left out because it needs sign-in and robots.txt disallows it (PRD §5).
  */
 export function sitemapXml(site: PublicSite): string {
   const entries: SitemapEntry[] = sitemapEntriesFor(site);

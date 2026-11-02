@@ -103,8 +103,3 @@ export const createSessionSplits = async (
 ) =>
   (await callEndpoint(createSessionSplitsEndpoint, { params, body }, options))
     .data;
-
-/** One idempotency key per user intent (retries reuse it, new clicks do not). */
-export function newIdempotencyKey(): string {
-  return crypto.randomUUID();
-}

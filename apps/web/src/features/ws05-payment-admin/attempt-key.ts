@@ -2,6 +2,7 @@
 // idempotency headers"). The API replays a repeated key, so a retry after a
 // timeout must reuse its key; a changed payload is a different request and a
 // successful save ends the attempt. Pure so Node tests can cover it.
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 export type AttemptKeyTracker = {
   keyFor(payload: unknown): string;
@@ -9,7 +10,7 @@ export type AttemptKeyTracker = {
 };
 
 export function createAttemptKeyTracker(
-  createKey: () => string = () => crypto.randomUUID(),
+  createKey: () => string = () => newIdempotencyKey(),
 ): AttemptKeyTracker {
   let attempt: { signature: string; key: string } | null = null;
   return {

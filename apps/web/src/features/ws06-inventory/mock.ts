@@ -75,6 +75,7 @@ import {
 } from "@starter/shared/inventory";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 import { businessDateOf } from "./stock-lib.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendInventoryFixtures;
 const inventory = cafeLegendInventoryFixtures;
@@ -176,7 +177,7 @@ registerMock(createInventoryItem, ({ body }) => {
     if (!uoms.some((row) => row.id === body.baseUomId))
       invalid("baseUomId", "Satuan dasar tidak dikenal.");
     const created = inventoryItemSchema.parse({
-      id: crypto.randomUUID(),
+      id: newIdempotencyKey(),
       tenantId,
       name: body.name,
       category: body.category,
@@ -259,7 +260,7 @@ registerMock(createInventoryItemAlternate, ({ params, body }) => {
   )
     conflict("Bahan alternatif itu sudah ada di daftar.");
   const created = inventoryItemAlternateSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     inventoryItemId: item.id,
     alternateItemId: alternate.id,
@@ -318,7 +319,7 @@ registerMock(createUomConversion, ({ params, body }) => {
       "Konversi untuk pasangan satuan itu sudah ada. Hapus dulu yang lama.",
     );
   const created = uomConversionSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     inventoryItemId: item.id,
     fromUomId: body.fromUomId,
@@ -360,7 +361,7 @@ registerMock(createStockLocation, ({ body }) => {
     if (!knownOutlets.has(body.outletId))
       invalid("outletId", "Outlet tidak dikenal.");
     const created = stockLocationSchema.parse({
-      id: crypto.randomUUID(),
+      id: newIdempotencyKey(),
       tenantId,
       outletId: body.outletId,
       name: body.name,
@@ -823,7 +824,7 @@ function opnameLine(
   unitCostIdr: string,
 ): StockCountLine {
   return stockCountLineSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     stockCountId,
     inventoryItemId,
@@ -958,7 +959,7 @@ registerMock(createStockCount, ({ body }) => {
     if (itemIds.length === 0)
       invalid("inventoryItemIds", "Pilih minimal satu item.");
     for (const itemId of itemIds) requireItem(itemId);
-    const id = crypto.randomUUID();
+    const id = newIdempotencyKey();
     const count = stockCountSchema.parse({
       id,
       tenantId,
@@ -1101,7 +1102,7 @@ registerMock(createWasteLog, ({ body }) => {
 
     const occurredAt = body.occurredAt ?? now();
     const created = wasteLogSchema.parse({
-      id: crypto.randomUUID(),
+      id: newIdempotencyKey(),
       tenantId,
       outletId: fixtureOutletId,
       locationId: body.locationId,
