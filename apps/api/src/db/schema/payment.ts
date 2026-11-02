@@ -325,6 +325,7 @@ export const paymentUnallocatedFunds = pgTable(
     resolvedBy: text("resolved_by"),
     /** Reference of the approved refund/credit request (PRD PAY-04). */
     approvalRef: varchar("approval_ref", { length: 100 }),
+    note: text("note"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()

@@ -133,6 +133,7 @@ export async function appendPaymentEvent(
     name:
       | "payment_intent.created"
       | "payment.paid"
+      | "payment.refund_requested"
       | "payment.expired"
       | "payment.failed";
     aggregateId: string;
