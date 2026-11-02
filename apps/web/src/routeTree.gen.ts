@@ -45,6 +45,7 @@ import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/ka
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
 import { Route as KelolaKelolaDapurRouteImport } from './routes/_kelola/kelola.dapur'
 import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
+import { Route as KelolaKelolaPembayaranRouteImport } from './routes/_kelola/kelola.pembayaran'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
@@ -270,6 +271,11 @@ const KelolaKelolaDapurRoute = KelolaKelolaDapurRouteImport.update({
 const KelolaKelolaNotifikasiRoute = KelolaKelolaNotifikasiRouteImport.update({
   id: '/kelola/notifikasi',
   path: '/kelola/notifikasi',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPembayaranRoute = KelolaKelolaPembayaranRouteImport.update({
+  id: '/kelola/pembayaran',
+  path: '/kelola/pembayaran',
   getParentRoute: () => KelolaRoute,
 } as any)
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
@@ -614,6 +620,7 @@ export interface FileRoutesByFullPath {
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
+  '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -696,6 +703,7 @@ export interface FileRoutesByTo {
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
+  '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
@@ -791,6 +799,7 @@ export interface FileRoutesById {
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_kelola/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
+  '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -877,6 +886,7 @@ export interface FileRouteTypes {
     | '/t/$token'
     | '/kelola/dapur'
     | '/kelola/notifikasi'
+    | '/kelola/pembayaran'
     | '/operasional/koneksi'
     | '/member/'
     | '/karyawan/'
@@ -959,6 +969,7 @@ export interface FileRouteTypes {
     | '/member/voucher'
     | '/kelola/dapur'
     | '/kelola/notifikasi'
+    | '/kelola/pembayaran'
     | '/operasional/koneksi'
     | '/member'
     | '/karyawan'
@@ -1053,6 +1064,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token'
     | '/_kelola/kelola/dapur'
     | '/_kelola/kelola/notifikasi'
+    | '/_kelola/kelola/pembayaran'
     | '/_ops/operasional/koneksi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
@@ -1382,6 +1394,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/notifikasi'
       fullPath: '/kelola/notifikasi'
       preLoaderRoute: typeof KelolaKelolaNotifikasiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pembayaran': {
+      id: '/_kelola/kelola/pembayaran'
+      path: '/kelola/pembayaran'
+      fullPath: '/kelola/pembayaran'
+      preLoaderRoute: typeof KelolaKelolaPembayaranRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kitchen/kds/': {
@@ -1909,6 +1928,7 @@ const KelolaKelolaInventoriTransferRouteWithChildren =
 interface KelolaRouteChildren {
   KelolaKelolaDapurRoute: typeof KelolaKelolaDapurRoute
   KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
+  KelolaKelolaPembayaranRoute: typeof KelolaKelolaPembayaranRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
   KelolaKelolaAkuntansiJurnalBerulangRoute: typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   KelolaKelolaDapurLaporanRoute: typeof KelolaKelolaDapurLaporanRoute
@@ -1952,6 +1972,7 @@ interface KelolaRouteChildren {
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaDapurRoute: KelolaKelolaDapurRoute,
   KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
+  KelolaKelolaPembayaranRoute: KelolaKelolaPembayaranRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
   KelolaKelolaAkuntansiJurnalBerulangRoute:
     KelolaKelolaAkuntansiJurnalBerulangRoute,
