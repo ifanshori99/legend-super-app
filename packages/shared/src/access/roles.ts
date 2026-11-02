@@ -120,6 +120,9 @@ const templates: readonly RoleTemplate[] = [
     level: "tenant",
     allowedScopeTypes: ["tenant"],
     permissions: [
+      // Coordinator decision (C10, legend-g6d): the tenant admin manages access
+      // from the /kelola area, so it must be able to enter it.
+      "dashboard.management.view",
       "org.structure.manage",
       "org.settings.manage",
       "org.integration.manage",
