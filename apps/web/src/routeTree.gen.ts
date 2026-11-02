@@ -47,6 +47,7 @@ import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kel
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
+import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
@@ -251,6 +252,11 @@ const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
   path: '/pos/',
   getParentRoute: () => OpsRoute,
 } as any)
+const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
+  id: '/pos/reservasi',
+  path: '/pos/reservasi',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OwnerOwnerIndexRoute = OwnerOwnerIndexRouteImport.update({
   id: '/owner/',
   path: '/owner/',
@@ -403,6 +409,7 @@ export interface FileRoutesByFullPath {
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/reservasi': typeof OpsPosReservasiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -454,6 +461,7 @@ export interface FileRoutesByTo {
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/reservasi': typeof OpsPosReservasiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -519,6 +527,7 @@ export interface FileRoutesById {
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -574,6 +583,7 @@ export interface FileRouteTypes {
     | '/t/$token'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/pos/reservasi'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -625,6 +635,7 @@ export interface FileRouteTypes {
     | '/member/voucher'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/pos/reservasi'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -689,6 +700,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token'
     | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
+    | '/_ops/pos/reservasi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -1001,6 +1013,13 @@ declare module '@tanstack/react-router' {
       path: '/pos'
       fullPath: '/pos/'
       preLoaderRoute: typeof OpsPosIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/reservasi': {
+      id: '/_ops/pos/reservasi'
+      path: '/pos/reservasi'
+      fullPath: '/pos/reservasi'
+      preLoaderRoute: typeof OpsPosReservasiRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_owner/owner/': {
@@ -1324,12 +1343,14 @@ const KitchenRouteWithChildren =
 
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
+  OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
+  OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
 }

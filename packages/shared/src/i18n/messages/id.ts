@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { reservationMessages } from "./reservation.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
+  reservation: reservationMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -530,6 +533,7 @@ export const id = {
     },
     operations: {
       floor: "Papan Meja",
+      reservations: "Reservasi",
     },
     management: {
       dashboard: "Dasbor",
