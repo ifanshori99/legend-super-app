@@ -17,6 +17,7 @@ import { qrRecoveryMessages } from "./qr-recovery.ts";
 import { reservationMessages } from "./reservation.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
+import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -40,6 +41,9 @@ export const id = {
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
+  // WS-06 stock opname and waste screens (legend-fzx), also in their own file.
+  opname: opnameMessages,
+  waste: wasteMessages,
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
@@ -2726,13 +2730,15 @@ export const id = {
   inventory: {
     title: "Inventori",
     subtitle:
-      "Bahan, satuan, lokasi, transfer, kartu stok, saldo dan par level, kedaluwarsa, serta saran pembelian per outlet.",
+      "Bahan, satuan, lokasi, transfer, kartu stok, saldo dan par level, kedaluwarsa, saran pembelian, stok opname, serta waste per outlet.",
     tabs: {
       items: "Item",
       categories: "Kategori",
       units: "Satuan",
       locations: "Lokasi",
       transfers: "Transfer",
+      opname: "Stok opname",
+      waste: "Waste & susut",
     },
     types: {
       raw_material: "Bahan baku",
