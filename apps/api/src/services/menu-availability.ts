@@ -444,7 +444,15 @@ async function readCurrentQuantity(
   return row?.quantity ?? 0;
 }
 
-/** Gives reserved units back (void, cancellation, refund). Never below zero. */
+/**
+ * Gives reserved units back (void, cancellation, refund). Never below zero.
+ *
+ * Not idempotent by itself: calling it twice gives the units back twice and
+ * can hand out stock another order holds. Callers (legend-e2x POS, legend-kk7
+ * ojol, QR order) must release exactly once per order-line transition, inside
+ * the transaction that moves the line to void/cancelled — the line state is
+ * the idempotency key. Release on the business date the line was reserved on.
+ */
 export async function releaseMenuItemDailyLimit(
   tx: Tx,
   context: ScopedTenantContext,

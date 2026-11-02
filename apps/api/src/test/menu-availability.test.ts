@@ -676,6 +676,33 @@ describe("legend-h2a 86 deadline broadcast", () => {
       ),
     );
     expect(again.rows[0]?.count).toBe("1");
+
+    // Concurrent board reads race the same expired 86: the sweep locks with
+    // SKIP LOCKED, so exactly one transaction restores it and one event leaves.
+    await asOwnerTenant(tenantId, (client) =>
+      client.query(
+        `UPDATE item_availability
+         SET status = 'sold_out', sold_out_until = now() - interval '1 minute'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, availabilityId],
+      ),
+    );
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        manager.client
+          .get(`/api/menu/availability?limit=100&outletId=${outletA}`)
+          .expect(200),
+      ),
+    );
+    const raced = await asOwnerTenant(tenantId, (client) =>
+      client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM domain_event_outbox
+         WHERE tenant_id = $1 AND event->>'name' = 'item.restored'
+           AND event->'payload'->>'availabilityId' = $2`,
+        [tenantId, availabilityId],
+      ),
+    );
+    expect(raced.rows[0]?.count).toBe("2");
   });
 });
 
