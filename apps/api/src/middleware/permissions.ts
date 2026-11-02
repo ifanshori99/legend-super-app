@@ -8,14 +8,22 @@
 // checks agree on the caller's scope.
 //
 // AUTH-05: the snapshot carries `mfaRequired` / `mfaVerified` for the web area
-// guards and `/api/me/access`. The API-side second-factor gate is bead
-// legend-6xf (`assertSurfaceAccess` from @starter/shared/access); this
-// middleware enforces permission + scope + time only, which keeps every other
-// BE route usable until the MFA factor store lands.
+// guards and `/api/me/access`, read from the same session row the API gate
+// enforces (legend-6xf, mounted by legend-qfvu). This middleware itself
+// enforces permission + scope + time; the second-factor gate runs once per
+// guarded router (requireIdentitySurface / requireSessionMfa).
 
 import type { Request, RequestHandler } from "express";
-import { AccessError, type PermissionCode } from "@starter/shared/access";
-import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  AccessError,
+  outletReachOf,
+  type PermissionCode,
+} from "@starter/shared/access";
+import {
+  outletIdSchema,
+  userIdSchema,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "./auth";
 import { sessionMfaVerifiedAt } from "../lib/mfa";
@@ -24,9 +32,11 @@ import {
   loadTenantAccess,
   resolveAccessSnapshot,
   type AccessSnapshot,
+  type TenantAccessData,
 } from "../services/permission-resolver";
 
 const snapshots = new WeakMap<Request, AccessSnapshot>();
+const dataByRequest = new WeakMap<Request, TenantAccessData>();
 const contexts = new WeakMap<Request, ScopedTenantContext>();
 
 /**
@@ -54,6 +64,7 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     now: new Date(),
   });
   snapshots.set(req, snapshot);
+  dataByRequest.set(req, data);
   return snapshot;
 }
 
@@ -94,6 +105,51 @@ export function requireTenantPermission(
       throw new AccessError(
         "PERMISSION_DENIED",
         "Your account cannot perform this action in this tenant.",
+      );
+    contexts.set(req, context);
+    res.setHeader("Cache-Control", "private, no-store");
+    next();
+  };
+}
+
+/**
+ * Menu routes (legend-lmk): brand-owned records need a brand target and
+ * outlet-owned records an outlet target, so a tenant-wide check alone would
+ * deny a general manager assigned at brand scope or an outlet manager toggling
+ * 86. This mints the caller's reachable scope for the permission: tenant-wide
+ * when the caller reaches the whole tenant, otherwise the union of the outlets
+ * their applicable assignments reach (TEN-03). Services still re-check the
+ * permission against the concrete brand/outlet of every record, so this is a
+ * cheap gate and never widens the data RLS shows.
+ */
+export function requireMenuPermission(
+  permission: PermissionCode,
+): RequestHandler {
+  return async (req, res, next) => {
+    const snapshot = await loadRequestAccess(req);
+    let context = snapshot.contextFor(permission, { type: "tenant" });
+    if (!context) {
+      const tenant = getTenantContext(req);
+      const data = dataByRequest.get(req);
+      if (!data) throw new Error("requireMenuPermission() without access data");
+      const reach = outletReachOf({
+        principal: {
+          tenantId: tenant.tenantId,
+          userId: userIdSchema.parse(getAuth(req).user.id),
+          assignments: data.assignments,
+        },
+        roles: data.roles,
+        org: data.org,
+        now: new Date(),
+        permission,
+      });
+      // null = no outlet reach for this permission (deny by default).
+      if (reach !== null) context = establishScopedTenantContext(tenant, reach);
+    }
+    if (!context)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Your account cannot manage the menu in this tenant.",
       );
     contexts.set(req, context);
     res.setHeader("Cache-Control", "private, no-store");

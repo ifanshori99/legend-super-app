@@ -6,6 +6,7 @@
 import { Pool } from "pg";
 import request from "supertest";
 import { afterAll, describe, expect, it } from "vitest";
+import { SESSION_ACTIVITY_WRITE_SECONDS } from "@starter/shared/identity";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import {
@@ -155,9 +156,47 @@ describe("session policy (§3 F6 Sesi & Perangkat)", () => {
     const { cookie } = await signIn(email);
     const sessionId = await sessionIdOf(cookie);
     const row = await loadSessionRow(sessionId);
-    const later = new Date(row!.lastSeenAt.getTime() + MINUTE_MS);
+    expect(row).not.toBeNull();
+    expect(row!.kind).toBe("customer");
+    // touchSession decides on the wire clock, which clamps last_seen_at up to
+    // created_at when the database clock trails the API clock (toWireSession).
+    // Measure the injected activity instant from that same clock and step a
+    // whole window past the activity throttle, so neither clock skew nor the
+    // exact `elapsed >= 60 s` boundary can decide whether the write happens.
+    // A write is required: the test asserts the activity was recorded.
+    const lastSeenAt = Date.parse(toWireSession(row!).lastSeenAt);
+    const later = new Date(
+      lastSeenAt + 2 * SESSION_ACTIVITY_WRITE_SECONDS * 1000,
+    );
     await touchSession({ row: row!, management: false, now: later });
     const touched = await loadSessionRow(sessionId);
+    expect(touched).not.toBeNull();
+    expect(touched!.expiresAt.getTime()).toBe(row!.expiresAt.getTime());
+    expect(touched!.lastSeenAt.getTime()).toBe(later.getTime());
+  });
+
+  it("F6 a database clock behind the API clock still records customer activity without moving the 90-day end", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Jam Bergeser Aktif");
+    const { cookie } = await signIn(email);
+    const sessionId = await sessionIdOf(cookie);
+    // Reproduce the skew the flaky run hit: last_seen_at (DB clock) is stamped
+    // before created_at (API clock), so the wire clamp raises the value the
+    // activity throttle measures from.
+    await owner.query(
+      "UPDATE session SET last_seen_at = created_at - interval '5 milliseconds' WHERE id = $1",
+      [sessionId],
+    );
+    const row = await loadSessionRow(sessionId);
+    expect(row).not.toBeNull();
+    expect(row!.kind).toBe("customer");
+    const lastSeenAt = Date.parse(toWireSession(row!).lastSeenAt);
+    const later = new Date(
+      lastSeenAt + 2 * SESSION_ACTIVITY_WRITE_SECONDS * 1000,
+    );
+    await touchSession({ row: row!, management: false, now: later });
+    const touched = await loadSessionRow(sessionId);
+    expect(touched).not.toBeNull();
     expect(touched!.expiresAt.getTime()).toBe(row!.expiresAt.getTime());
     expect(touched!.lastSeenAt.getTime()).toBe(later.getTime());
   });
