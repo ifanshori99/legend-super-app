@@ -1,7 +1,7 @@
 // The pending code: QRIS, Virtual Account or bank transfer instructions. The
 // code's status is the provider's, polled by the page; this card only shows
 // what to do and how long the code lives (PRD §3.13 "QRIS Dinamis", ~10 min).
-import { Lock } from "lucide-react";
+import { Clock, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,7 +61,9 @@ export function PaymentCode({
     <Card>
       <div className="grid gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <StatusPill status="warning">{t("payment.statusPending")}</StatusPill>
+          <StatusPill status="warning" icon={Clock}>
+            {t("payment.statusPending")}
+          </StatusPill>
           {remaining > 0 && !refreshing && (
             <p
               className="text-sm leading-5 text-muted-foreground tabular"

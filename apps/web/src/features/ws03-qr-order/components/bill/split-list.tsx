@@ -1,6 +1,6 @@
 // The created split parts and the "pay my share" action (ORD-06: the parts add
 // up exactly to the bill total, shown as a check line).
-import { CircleCheck } from "lucide-react";
+import { CircleCheck, Clock } from "lucide-react";
 import type { BillSplit, SessionBill } from "@starter/shared/qr-order";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -65,7 +65,7 @@ export function SplitList({
                     {t("qrOrders.bill.sharePaid")}
                   </StatusPill>
                 ) : (
-                  <StatusPill status="warning">
+                  <StatusPill status="warning" icon={Clock}>
                     {t("qrOrders.bill.sharePending")}
                   </StatusPill>
                 )}

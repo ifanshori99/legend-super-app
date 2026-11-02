@@ -2,6 +2,7 @@
 // optional serving estimate (PRD §3 F10 "Estimasi Waktu Saji"). One bordered
 // container per order; rows are separated by dividers, no card inside a card.
 import { Link } from "@tanstack/react-router";
+import { Ban, Wallet } from "lucide-react";
 import type { QrOrder } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
@@ -19,13 +20,13 @@ function PhaseBadge({ phase }: { phase: ReturnType<typeof orderPhase> }) {
   switch (phase) {
     case "awaiting_payment":
       return (
-        <StatusPill status="warning">
+        <StatusPill status="warning" icon={Wallet}>
           {t("qrOrders.status.phase.awaitingPayment")}
         </StatusPill>
       );
     case "voided":
       return (
-        <StatusPill status="danger">
+        <StatusPill status="danger" icon={Ban}>
           {t("qrOrders.status.phase.voided")}
         </StatusPill>
       );
@@ -78,7 +79,11 @@ export function OrderCard({
       : null;
 
   return (
-    <Card aria-labelledby={`order-${order.id}`} className="grid gap-3">
+    <Card
+      role="article"
+      aria-labelledby={`order-${order.id}`}
+      className="grid gap-3"
+    >
       <header className="flex flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="grid gap-0.5">
           <h2 id={`order-${order.id}`} className="type-title tabular">

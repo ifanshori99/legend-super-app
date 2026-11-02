@@ -343,7 +343,7 @@ export function CheckoutPage() {
         onApply={setCode}
         onRemove={() => setCode(null)}
       />
-      <PriceBreakdown quote={quote} />{" "}
+      <PriceBreakdown quote={quote} />
       {shortfall > 0 && (
         <Notice
           tone="danger"

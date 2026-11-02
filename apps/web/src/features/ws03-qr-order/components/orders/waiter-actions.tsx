@@ -3,7 +3,7 @@
 // closed or voided session cannot send, ORD-04).
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { Receipt } from "lucide-react";
+import { Clock, Receipt } from "lucide-react";
 import type {
   ServiceRequest,
   TableSessionStatus,
@@ -39,7 +39,10 @@ function RequestRow({ request }: { request: ServiceRequest }) {
       <span className="text-sm leading-5 font-medium">
         {t(requestKind(request))}
       </span>
-      <StatusPill status={acknowledged ? "success" : "warning"}>
+      <StatusPill
+        status={acknowledged ? "success" : "warning"}
+        icon={acknowledged ? undefined : Clock}
+      >
         {acknowledged
           ? t("qrOrders.status.waiter.acknowledged")
           : t("qrOrders.status.waiter.pending")}
@@ -72,7 +75,11 @@ export function WaiterActions({
     requests.some((request) => request.type === "request_bill");
 
   return (
-    <Card aria-labelledby="waiter-actions-heading" className="grid gap-3">
+    <Card
+      role="region"
+      aria-labelledby="waiter-actions-heading"
+      className="grid gap-3"
+    >
       <h2 id="waiter-actions-heading" className="type-title">
         {t("qrOrders.status.waiter.heading")}
       </h2>
