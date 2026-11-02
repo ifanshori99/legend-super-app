@@ -278,15 +278,8 @@
     {
       "idx": 39,
       "version": "7",
-      "when": 1793659760904,
-      "tag": "0039_promo_outlets_minspend_refund",
-      "breakpoints": true
-    },
-    {
-      "idx": 40,
-      "version": "7",
-      "when": 1793659766685,
-      "tag": "0040_promo_outlets_rls",
+      "when": 1793659557415,
+      "tag": "0039_special_lake",
       "breakpoints": true
     }
   ]
