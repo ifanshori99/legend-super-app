@@ -3,8 +3,9 @@
 // groups/modifiers, combos and item↔group links.
 //
 // Every function takes the server-minted ScopedTenantContext and runs inside
-// `withTenant`, so Postgres RLS applies (`app.tenant_id`/`app.outlet_ids`) on
-// top of explicit tenant filters. The tenant never comes from the request
+// `withTenant`, so Postgres RLS applies on top of explicit tenant filters:
+// `app.tenant_id` on every menu table, and `app.outlet_ids` on the outlet-owned
+// ones (stations, price_lists, item_availability; migration 0032, legend-tjey). The tenant never comes from the request
 // (TEN-02). Each mutating function re-checks the RBAC permission against the
 // target brand/outlet inside the same transaction (service-layer authority,
 // not only the route middleware), and outlet-owned records assert the caller's

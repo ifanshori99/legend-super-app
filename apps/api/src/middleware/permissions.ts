@@ -4,8 +4,11 @@
 //
 // The route names the permission it needs; the resolver answers with the
 // server-minted ScopedTenantContext the handler passes to services. Its outlet
-// reach is what `withTenant` installs as app.outlet_ids, so RLS and the service
-// checks agree on the caller's scope.
+// reach is what `withTenant` installs as app.outlet_ids. Postgres enforces it
+// with the `outlet_isolation` policy on outlet-owned tables only (outlet_id
+// NOT NULL, migration 0032, legend-tjey); tables with a nullable outlet_id and
+// station-level narrowing rely on the service checks. See docs/plan/contracts.md
+// "TEN-03 outlet isolation layers".
 //
 // AUTH-05: the snapshot carries `mfaRequired` / `mfaVerified` for the web area
 // guards and `/api/me/access`, read from the same session row the API gate
@@ -45,12 +48,12 @@ const contexts = new WeakMap<Request, ScopedTenantContext>();
  * Station-scoped list routes (legend-fsb7) keep their context apart from
  * `contexts`: the outlet-wide RLS reach is only safe together with the
  * station narrowing, so `getScopedTenantContext` refuses these routes and the
- * handler must take `getStationScope` (context + permitted stations) instead.
+ * handler must take `getStationScope` instead. The permitted stations are not
+ * carried here: the service computes them with `permittedStationIds` inside
+ * its own tenant transaction, so the decision and the rows share one snapshot.
  */
 export type StationScope = {
   readonly context: ScopedTenantContext;
-  /** Stations the caller may see for the route's permission; filter by these. */
-  readonly stationIds: readonly string[];
 };
 const stationScopes = new WeakMap<Request, StationScope>();
 
@@ -145,7 +148,7 @@ export function requireTenantPermission(
  * when the caller reaches the whole tenant, otherwise the union of the outlets
  * their applicable assignments reach (TEN-03). Services still re-check the
  * permission against the concrete brand/outlet of every record, so this is a
- * cheap gate and never widens the data RLS shows.
+ * cheap gate and never widens the data the outlet RLS policy shows.
  */
 export function requireMenuPermission(
   permission: PermissionCode,
@@ -248,12 +251,9 @@ export function requireStationScopePermission(
         "PERMISSION_DENIED",
         "Anda hanya dapat mengakses stasiun yang ditugaskan.",
       );
-    // Not `contexts`: see StationScope. The handler gets the context only
-    // together with the stations it must filter by.
-    stationScopes.set(req, {
-      context,
-      stationIds: snapshot.stationsFor(permission),
-    });
+    // Not `contexts`: see StationScope. The handler must take the station
+    // getter, whose service narrows to `permittedStationIds`.
+    stationScopes.set(req, { context });
     res.setHeader("Cache-Control", "private, no-store");
     next();
   };
@@ -302,11 +302,13 @@ export function requireStationPermission(
 
 /**
  * Requires `permission` on one outlet and mints an outlet-scoped context, so
- * `withTenant` installs `app.outlet_ids` and RLS limits every query to that
- * outlet (TEN-03). The outlet id must come from the verified request (path or
- * body) and is schema-validated; a role that only holds another outlet, or a
- * station-only grant, is denied. No route uses it yet (POS/KDS land with
- * WS-04); the resolver half is covered by permission-resolver.test.ts.
+ * `withTenant` installs `app.outlet_ids` = that outlet (TEN-03). The
+ * `outlet_isolation` RLS policy then limits outlet-owned tables (outlet_id NOT
+ * NULL) to it; tables with a nullable outlet_id still need the service's
+ * `outletIdsForQuery` / `assertOutletInScope` filter. The outlet id must come
+ * from the verified request (path or body) and is schema-validated; a role
+ * that only holds another outlet, or a station-only grant, is denied. Used by
+ * the inventory, tax and payment-admin routes.
  */
 export function requireOutletPermission(
   permission: PermissionCode,
