@@ -68,6 +68,8 @@ export function CustomerShell({
   // On an overflow screen no bar link is current, so "Lainnya" carries the
   // active state (the member PWA reaches /member/fasilitas this way).
   const moreCurrent = overflow.some((item) => item.current);
+  // A count on a sheet item must still be visible from the bar.
+  const moreCount = overflow.reduce((sum, item) => sum + (item.count ?? 0), 0);
   const slots = primary.length + (overflow.length > 0 ? 1 : 0);
   const Main = embedded ? "div" : "main";
   return (
@@ -142,6 +144,7 @@ export function CustomerShell({
                     >
                       <MoreHorizontal className="size-6" aria-hidden="true" />
                       {t("common.more")}
+                      <CountBadge count={moreCount} />
                     </button>
                   </SheetTrigger>
                   <SheetContent side="bottom">
