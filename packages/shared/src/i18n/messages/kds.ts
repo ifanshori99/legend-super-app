@@ -1,11 +1,13 @@
 export const kdsMessages = {
-  title: "Dapur",
+  // The shell already names the area ("Dapur"); the page names the board.
+  title: "Papan tiket",
   intro: "Pantau dan kerjakan tiket di setiap stasiun.",
   stations: "Stasiun",
   queue: "Jumlah antrean",
   queueEmpty: "Tidak ada item dalam antrean.",
   tickets: "Tiket",
   order: "Pesanan {id}",
+  orderCode: "Pesanan",
   start: "Mulai",
   bump: "Selesai",
   startItem: "Mulai item",

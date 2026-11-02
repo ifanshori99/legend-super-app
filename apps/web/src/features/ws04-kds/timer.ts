@@ -15,3 +15,14 @@ export function kdsTimerStatus(
     return "near";
   return "onTrack";
 }
+
+/**
+ * 18:04 — the elapsed time a ticket band shows (DESIGN.md §5: 30px tabular).
+ * A kitchen reads minutes and seconds, not a rounded "18 menit".
+ */
+export function formatElapsedSeconds(elapsedSeconds: number): string {
+  const total = Math.max(0, Math.floor(elapsedSeconds));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}

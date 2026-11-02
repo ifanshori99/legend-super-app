@@ -1648,6 +1648,11 @@ export const id = {
     waitingTitle: "Menunggu siap",
     waitingHint: "Panggil setelah pesanan siap dan driver menunggu.",
     pickedUpTitle: "Sudah diambil",
+    // The state words on a pickup tile's header band (DESIGN.md §5).
+    status: {
+      waiting: "Menunggu siap",
+      called: "Dipanggil",
+    },
     call: "Panggil",
     callAgain: "Panggil ulang",
     callFor: "Panggil nomor {number}",
