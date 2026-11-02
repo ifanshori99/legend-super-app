@@ -20,11 +20,24 @@ meRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
 meRouter.get("/access", async (req, res) => {
   const snapshot = await loadRequestAccess(req);
+  // Station reach (legend-fsb7): the stations the caller may work on for at
+  // least one permission they hold, from the same assignments the API
+  // enforces with `stationReachOf`. A station-scoped account sees only its own
+  // station(s); a wider scope sees every station it reaches. A KDS client uses
+  // this so it never polls a board the API would deny.
+  const stations = [
+    ...new Set(
+      snapshot.permissions.flatMap((permission) =>
+        snapshot.stationsFor(permission),
+      ),
+    ),
+  ].sort();
   res.json({
     data: myAccessViewSchema.parse({
       permissions: snapshot.permissions,
       mfaRequired: snapshot.mfaRequired,
       mfaVerified: snapshot.mfaVerified,
+      stations,
     }),
   });
 });
