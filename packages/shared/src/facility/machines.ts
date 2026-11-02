@@ -19,6 +19,7 @@ import {
   multiplyIdr,
   businessDateOf,
   toIsoDateTime,
+  type BusinessDayClock,
 } from "../core/index.ts";
 import { FacilityError } from "./errors.ts";
 import type {
@@ -567,10 +568,18 @@ export function subscriptionQuotaState(
   }
 }
 
-/** Sessions already consumed on one business date (subscription max-per-day). */
+/**
+ * Sessions already consumed on one business date (subscription max-per-day).
+ * The day follows the outlet business-day cutoff (owner Q39), so a 01:00
+ * session after a late night counts toward the previous business date.
+ */
 export function sessionsOnBusinessDate(
   tickets: readonly AccessTicket[],
-  input: { businessDate: string; customerProfileId: string; timeZone: string },
+  input: {
+    businessDate: string;
+    customerProfileId: string;
+    clock: BusinessDayClock;
+  },
 ): number {
   return tickets.filter(
     (ticket) =>
@@ -578,8 +587,7 @@ export function sessionsOnBusinessDate(
       (ticket.status === "issued" ||
         ticket.status === "in_use" ||
         ticket.status === "completed") &&
-      businessDateOf(ticket.slot.startsAt, input.timeZone) ===
-        input.businessDate,
+      businessDateOf(ticket.slot.startsAt, input.clock) === input.businessDate,
   ).length;
 }
 

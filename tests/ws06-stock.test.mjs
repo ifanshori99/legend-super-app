@@ -170,11 +170,17 @@ test("legend-vxj · F16 balances value stock with the location moving average", 
   );
 });
 
-test("legend-vxj · F16 business dates and quantities follow the catalog format", () => {
+test("legend-vxj · F16 Q39 business dates and quantities follow the catalog format", () => {
+  // 04:30 WIB on 2 Nov is business date 2 Nov; 00:30 WIB is still 1 Nov (Q39).
   assert.equal(
-    lib.businessDateToday(new Date("2026-11-01T17:30:00.000Z"), "Asia/Jakarta"),
+    lib.businessDateToday(new Date("2026-11-01T21:30:00.000Z"), "Asia/Jakarta"),
     "2026-11-02",
   );
+  assert.equal(
+    lib.businessDateToday(new Date("2026-11-01T17:30:00.000Z"), "Asia/Jakarta"),
+    "2026-11-01",
+  );
+  assert.equal(lib.businessDateOf("2026-11-01T17:30:00.000Z"), "2026-11-01");
   assert.equal(lib.addDays("2026-11-01", 3), "2026-11-04");
   assert.equal(lib.daysBetween("2026-11-01", "2026-11-08"), 7);
   assert.equal(lib.daysBetween("2026-11-08", "2026-11-01"), -7);

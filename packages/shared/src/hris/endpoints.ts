@@ -173,7 +173,7 @@ export const getEmploymentContract = defineEndpoint({
  * employee id in the input — the API resolves it from the signed-in session,
  * so one employee can never read another's profile through this route. The
  * outlet comes along because the Beranda names "today" in the outlet's time
- * zone (core `businessDateOf`), exactly like the attendance service.
+ * zone (core `localDateOf`), exactly like the attendance service.
  *
  * Added by the employee PWA bead (legend-nv3y); the HRIS API bead wires it.
  */

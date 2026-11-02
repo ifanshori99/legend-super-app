@@ -7,7 +7,11 @@
 // No React and no `@/` alias, so tests/ws05-tax.test.mjs loads this file with
 // plain Node ESM.
 
-import type { BusinessDate } from "@starter/shared/core";
+import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  businessDateOf,
+  type BusinessDate,
+} from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 import type {
   PbjtMonthlyRecap,
@@ -19,15 +23,16 @@ import type {
 /** Outlet business dates use the outlet time zone (PRD §6); one outlet today. */
 export const TAX_TIME_ZONE = "Asia/Jakarta";
 
-/** "2026-11-02" for the outlet's business date (never the device clock). */
+/**
+ * "2026-11-02" for the outlet's business date (never the device's calendar):
+ * core `businessDateOf` with the outlet cutoff (owner Q39, default 04:00).
+ */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = TAX_TIME_ZONE,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): BusinessDate {
-  // en-CA formats as YYYY-MM-DD.
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-  }).format(now) as BusinessDate;
+  return businessDateOf(now, { timeZone, cutoff });
 }
 
 /** "2026-11-01" → "1 Nov 2026" for table cells (locale-stable, id-ID). */

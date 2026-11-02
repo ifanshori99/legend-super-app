@@ -69,6 +69,7 @@ import {
   type Tx,
 } from "./menu-internals";
 import { readAvailabilityDecisions, withinWindows } from "./menu-availability";
+import { outletBusinessDayClock } from "./outlet-clock";
 import { readChannelPriceGrid } from "./menu-pricing.service";
 import { verifyTableQrToken } from "./qr-token";
 
@@ -124,13 +125,18 @@ async function readGuestCatalogue(
     brandId: BrandId;
     outletId: OutletId;
     now: Date;
-    /** The outlet's IANA zone: price lists start on its business date. */
+    /** The outlet's IANA zone: schedules follow its wall clock. */
     timeZone: string;
+    /** Owner Q39: price lists and daily limits follow the business date. */
+    businessDayCutoff: string;
   },
   resolveMediaUrls: MenuMediaUrls,
 ): Promise<GuestCatalogue> {
   const tenantId = context.tenant.tenantId;
-  const today = businessDateOf(input.now, input.timeZone);
+  const today = businessDateOf(input.now, {
+    timeZone: input.timeZone,
+    cutoff: input.businessDayCutoff,
+  });
 
   const categories = await tx
     .select({
@@ -526,6 +532,7 @@ export async function getQrMenu(
         outletId: outletIdSchema.parse(outlet.id),
         now,
         timeZone: outlet.timezone,
+        businessDayCutoff: outlet.businessDayCutoff,
       },
       resolveMediaUrls,
     );
@@ -533,7 +540,7 @@ export async function getQrMenu(
       tx,
       context.tenant.tenantId,
       outletIdSchema.parse(outlet.id),
-      businessDateOf(now, outlet.timezone),
+      businessDateOf(now, outletBusinessDayClock(outlet)),
     );
 
     return qrMenuSchema.parse({
@@ -550,6 +557,7 @@ export async function getQrMenu(
         code: outlet.code,
         name: outlet.name,
         timeZone: outlet.timezone,
+        businessDayCutoff: outlet.businessDayCutoff,
         status: outlet.status,
       },
       table: {
@@ -627,6 +635,7 @@ export async function getPublicMenuPage(
         outletId: outletIdSchema.parse(outlet.id),
         now,
         timeZone: outlet.timezone,
+        businessDayCutoff: outlet.businessDayCutoff,
       },
       resolveMediaUrls,
     );
