@@ -1152,17 +1152,28 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       permissions: ["org.structure.manage", "access.role.assign"],
       mfaRequired: true,
       mfaVerified: false,
+      stations: [],
     });
     assert.deepEqual(view.permissions, [
       "org.structure.manage",
       "access.role.assign",
     ]);
+    // Station reach travels with the same view so a KDS client only polls
+    // boards the API would authorize (legend-fsb7).
+    const withStation = access.myAccessViewSchema.parse({
+      permissions: ["kds.ticket.process"],
+      mfaRequired: false,
+      mfaVerified: true,
+      stations: [station("bar_kopi")],
+    });
+    assert.deepEqual(withStation.stations, [station("bar_kopi")]);
     // Platform codes are never part of a tenant view.
     assert.equal(
       access.myAccessViewSchema.safeParse({
         permissions: ["platform.tenant.manage"],
         mfaRequired: true,
         mfaVerified: true,
+        stations: [],
       }).success,
       false,
     );
@@ -1170,6 +1181,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       access.myAccessViewSchema.safeParse({
         permissions: [],
         mfaRequired: false,
+        stations: [],
       }).success,
       false,
     );

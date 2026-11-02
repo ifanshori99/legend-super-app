@@ -111,7 +111,12 @@ import type { AnyEndpoint } from "@starter/shared/api";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
-import { requireMenuPermission } from "../middleware/permissions";
+import {
+  requireMenuPermission,
+  requireStationPermission,
+  requireStationScopePermission,
+  getStationScope,
+} from "../middleware/permissions";
 import { getScopedTenantContext } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import { HttpError } from "../lib/http-error";
@@ -161,6 +166,14 @@ export function createMenuRouter(
   const priceView = requireMenuPermission("menu.price.view");
   const priceManage = requireMenuPermission("menu.price.manage");
   const availabilityToggle = requireMenuPermission("menu.availability.toggle");
+  // Station-bound list: also admits a station-scoped grant; the service
+  // narrows the rows to the caller's stations (legend-fsb7).
+  const viewStations = requireStationScopePermission("menu.item.view");
+  // Station-bound config routes authorize the station target itself, so a
+  // station-scoped grant manages only its own station (legend-fsb7, TEN-03).
+  const manageStation = requireStationPermission("menu.item.manage", (req) =>
+    typeof req.params.stationId === "string" ? req.params.stationId : undefined,
+  );
 
   // ------------------------------------------------------------ categories
 
@@ -238,11 +251,13 @@ export function createMenuRouter(
 
   // -------------------------------------------------------------- stations
 
-  router.get(relative(listStationsEndpoint), view, async (req, res) => {
+  router.get(relative(listStationsEndpoint), viewStations, async (req, res) => {
     const query = listStationsEndpoint.query.parse(req.query);
+    // Station scope, not getScopedTenantContext: listStations narrows the
+    // rows to the caller's stations (legend-fsb7).
     res.json(
       await listStations(
-        getScopedTenantContext(req),
+        getStationScope(req).context,
         getAuth(req).user.id,
         query,
       ),
@@ -269,7 +284,7 @@ export function createMenuRouter(
 
   router.patch(
     relative(updateStationEndpoint),
-    manage,
+    manageStation,
     jsonBody,
     async (req, res) => {
       const params = updateStationEndpoint.params.parse(req.params);
@@ -285,15 +300,19 @@ export function createMenuRouter(
     },
   );
 
-  router.delete(relative(deleteStationEndpoint), manage, async (req, res) => {
-    const params = deleteStationEndpoint.params.parse(req.params);
-    await deleteStation(
-      getScopedTenantContext(req),
-      getAuth(req).user.id,
-      params.stationId,
-    );
-    res.status(204).end();
-  });
+  router.delete(
+    relative(deleteStationEndpoint),
+    manageStation,
+    async (req, res) => {
+      const params = deleteStationEndpoint.params.parse(req.params);
+      await deleteStation(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        params.stationId,
+      );
+      res.status(204).end();
+    },
+  );
 
   // ----------------------------------------------------------------- items
 

@@ -17,7 +17,7 @@ import {
   approvalActionTypeSchema,
   approvalPolicySchema,
 } from "./approval.ts";
-import { roleIdSchema } from "./ids.ts";
+import { roleIdSchema, stationIdSchema } from "./ids.ts";
 import { tenantPermissionCodeSchema } from "./permissions.ts";
 import { ROLE_TEMPLATE_KEYS } from "./roles.ts";
 import {
@@ -99,11 +99,18 @@ export const roleAssignmentListItemSchema = roleAssignmentSchema;
  * permissions in the resolved tenant, plus `users.mfa_required` (§6 B) and
  * whether this session passed a second factor (AUTH-05). Presentation and
  * route-guard data only; the API authorizes every request again.
+ *
+ * `stations` (legend-fsb7) is the station reach of those assignments: the
+ * stations the caller may work on for at least one permission they hold. A
+ * station-scoped account gets only its own station(s), a wider scope every
+ * station it reaches. The same list the API enforces with
+ * `stationReachOf`, so a KDS client can avoid polling a board it may not read.
  */
 export const myAccessViewSchema = z.strictObject({
   permissions: z.array(tenantPermissionCodeSchema),
   mfaRequired: z.boolean(),
   mfaVerified: z.boolean(),
+  stations: z.array(stationIdSchema),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
 

@@ -131,6 +131,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       permissions: [],
       mfaRequired: false,
       mfaVerified: false,
+      // No assignment, no station reach (legend-fsb7).
+      stations: [],
     });
 
     const ownerUser = await signedIn("Owner Access", { mfa: false });

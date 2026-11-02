@@ -102,16 +102,24 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
     /\/sample\/menu\/cappuccino\.jpg$/,
   );
   // 3:2, and flush with the sheet edge (only the 1px border of the sheet is
-  // allowed between them).
-  const [heroBox, sheetBox] = await Promise.all([
-    hero.boundingBox(),
-    sheet.boundingBox(),
-  ]);
-  expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
-  expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
-    (sheetBox?.width ?? 0) - 4,
-  );
-  expect(heroBox?.height ?? 0).toBeCloseTo((heroBox?.width ?? 0) * (2 / 3), 0);
+  // allowed between them). The sheet animates open, and a measurement taken
+  // mid-transition sees a narrower hero (seen once in a sharded run: 487 vs
+  // 495), so retry the measurement until the geometry settles — the contract
+  // below is unchanged.
+  await expect(async () => {
+    const [heroBox, sheetBox] = await Promise.all([
+      hero.boundingBox(),
+      sheet.boundingBox(),
+    ]);
+    expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
+    expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
+      (sheetBox?.width ?? 0) - 4,
+    );
+    expect(heroBox?.height ?? 0).toBeCloseTo(
+      (heroBox?.width ?? 0) * (2 / 3),
+      0,
+    );
+  }).toPass({ timeout: 5_000 });
   await expect(
     sheet.getByRole("button", { name: "Tutup", exact: true }),
   ).toBeVisible();

@@ -68,9 +68,10 @@ describe("TEN-03 access storage tenant isolation", () => {
       try {
         await client.query("BEGIN");
         await client.query("SET LOCAL ROLE legend_app");
-        await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-          tenantA,
-        ]);
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantA],
+        );
         expect(
           (await client.query(`SELECT id FROM ${table} WHERE id = $1`, [id]))
             .rowCount,

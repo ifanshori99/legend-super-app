@@ -41,6 +41,7 @@ import {
 import { HttpError } from "../lib/http-error";
 import { appendOutbox } from "./core-outbox";
 import {
+  accessSnapshotInTransaction,
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
   type AccessSnapshot,
@@ -68,14 +69,7 @@ export async function accessSnapshot(
   actorUserId: string,
   now: Date,
 ): Promise<AccessSnapshot> {
-  const data = await loadTenantAccessInTransaction(tx, context, actorUserId);
-  return resolveAccessSnapshot({
-    tenant: context.tenant,
-    userId: actorUserId,
-    ...data,
-    mfaVerified: false,
-    now,
-  });
+  return accessSnapshotInTransaction(tx, context, actorUserId, now);
 }
 
 export async function assertPermission(
