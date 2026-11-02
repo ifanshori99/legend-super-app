@@ -42,7 +42,7 @@ export function ReachableAreas({ access }: { access: AreaAccess }) {
   if (areas.length === 0) return null;
   return (
     <nav aria-label={t("area.reachable")} className="mt-6 grid gap-3">
-      <h2 className="text-lg leading-7 font-semibold">{t("area.reachable")}</h2>
+      <h2 className="type-heading">{t("area.reachable")}</h2>
       <ul className="grid gap-2 sm:grid-cols-2">
         {areas.map((definition) => {
           const Icon = AREA_ICONS[definition.key];
@@ -50,7 +50,7 @@ export function ReachableAreas({ access }: { access: AreaAccess }) {
             <li key={definition.key}>
               <Link
                 to={definition.indexPath as "/"}
-                className="flex min-h-control items-center gap-3 rounded-card border-(length:--border-w) bg-card px-4 py-3 font-medium transition-colors hover:bg-accent"
+                className="flex min-h-control items-center gap-3 rounded-container border-(length:--border-w) bg-card px-4 py-3 font-medium transition-[background-color,box-shadow] duration-(--duration-fast) hover:bg-surface-2 hover:shadow-card"
               >
                 <Icon
                   className="size-5 text-muted-foreground"

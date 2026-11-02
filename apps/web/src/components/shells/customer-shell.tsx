@@ -38,14 +38,17 @@ export function CustomerShell({
   return (
     <ThemeScope
       density="hangat"
-      className={cn("flex flex-col", embedded ? "h-full" : "h-dvh")}
+      className={cn(
+        "flex flex-col bg-background",
+        embedded ? "h-full" : "h-dvh",
+      )}
     >
       <header className="shrink-0 border-b bg-background">
         <div className="mx-auto flex h-14 w-full max-w-2xl items-center gap-3 px-gutter">
           {logoUrl ? (
             <img src={logoUrl} alt={brandName} className="h-8 w-auto" />
           ) : (
-            <span className="font-brand text-lg leading-6 font-bold tracking-tight">
+            <span className="truncate font-brand text-lg leading-6 font-bold tracking-tight">
               {brandName}
             </span>
           )}
@@ -86,7 +89,7 @@ export function CustomerShell({
                   href={href}
                   aria-current={current ? "page" : undefined}
                   className={cn(
-                    "relative flex min-h-16 flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors hover:text-foreground",
+                    "relative flex min-h-16 flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors duration-(--duration-fast) pressable hover:text-foreground",
                     current && "font-semibold text-primary hover:text-primary",
                   )}
                 >

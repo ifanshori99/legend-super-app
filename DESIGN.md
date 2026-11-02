@@ -2,9 +2,10 @@
 
 > Design System Platform, Base Theme (PRD v1.7 Kelompok A "Design System Platform", D42, R26).
 > **Version 2** (2026-11-02, bead legend-6be7): visual-quality upgrade from the getdesign.md
-> pattern study in `docs/design/references/README.md`. Before/after board: `/design-system/v2`;
-> screenshots `docs/design/screenshots/design-v2/`. Patterns only — never another brand's
-> colors, logo, type, or signature elements.
+> pattern study in `docs/design/references/README.md`. Owner answers to the review (Q21–Q33)
+> applied the same day in the tokens, `components/ui`, and the three shells. Screenshots:
+> `docs/design/screenshots/design-v2/` (before/after study) and `design-v2/phase2/` (shipped
+> screens). Patterns only — never another brand's colors, logo, type, or signature elements.
 > Every screen is built from these tokens and the shared component library. Read this file
 > before any UI work. Tenant Themes override a small, checked subset: see `themes/`.
 > Live reference: `/design-system` (all tokens, components, states, both modes, three
@@ -20,9 +21,9 @@
 ## 1. Visual Theme & Atmosphere
 
 Legend is a working tool for a 250–300 seat F&B outlet and the customers in it. The Base Theme
-is deliberately neutral: white page, warm greys from a single family, near-black ink, and
-no brand hue of its own. Color appears only to carry meaning (action, status, timer) or, in a
-Tenant Theme, the tenant's brand. It must work in sunlight on a phone at the table, on a
+is deliberately quiet: white page, warm greys from a single family, near-black ink, and one
+default accent hue (petrol, §2 Brand) that a Tenant Theme replaces with its own. Color appears
+only to carry meaning (action, status, timer) or the accent, within the accent budget. It must work in sunlight on a phone at the table, on a
 greasy kitchen tablet, and on a finance dashboard read for hours.
 
 - **Default:** light theme on pure white `#ffffff`. Full dark theme via `.dark` on `<html>`
@@ -44,11 +45,21 @@ logo, type, or signature elements (PRD "Batas referensi", D42, R26).
 Neutral stays neutral; what was missing was _systems_. v2 adds (in impact order): the tenant
 accent actually used, with a tint ramp derived from it (§2); a three-step surface ladder plus
 one interactive elevation (§2, §6); a type scale with display sizes, tracking, and money tiers
-(§3); photo-first cards with a warm placeholder instead of letter tiles (§4 Media); a band
+(§3); photo-first cards where every menu item has a photo (§4 Media); a band
 rhythm for customer pages, a status hierarchy for ops boards, and a grouped management shell
 (§5); purposeful empty/loading states, press feedback, a true dark ladder, a chart style, and
 an icon stroke rule (§4, §7, §10, §11). Densities, control heights, and the contrast gate are
 unchanged in contract; they now cover the new tokens.
+
+**Owner decisions (2026-11-02, review `docs/design/design-v2-review.html`):** accent scarce —
+one filled accent area plus at most two accent details per viewport (Q21); borderless
+photo-first menu cards (Q22); **every menu item has a photo** — no placeholder art, a skeleton
+while loading, and a "Foto wajib" state in back office; the menu contract refuses publishing
+without one (Q23); Unsplash sample photos only in mock/demo data (Q24); urgent ops state =
+solid pill + thick start rule (Q25); late KDS ticket = full red header (Q26); occupied table =
+warm grey (Q27); grouped management sidebar 256px + 64px icon rail (Q28); selected row = accent
+tint + start rule (Q29); related metrics in one stat strip (Q30); the Base Theme gets a default
+hue (Q31); warm dark ladder (Q32).
 
 ## 2. Color Palette & Roles
 
@@ -64,7 +75,7 @@ values. Use the Tailwind class (`bg-primary`, `text-muted-foreground`, …), nev
 | Text            | `foreground`                           | `#1c1b19` | `#f3f1ee` | body text, icons                                                              |
 | Surface         | `card` (`bg-card`, alias `bg-surface`) | `#ffffff` | `#1b1a18` | cards, popovers, sheets                                                       |
 | Band (step 2)   | `surface-2`                            | `#f7f6f4` | `#161513` | customer bands, management sidebar, table header, search pill, summary footer |
-| Raised (step 3) | `surface-3`                            | `#f1efec` | `#242220` | occupied table, hovered row, selected segment track, counters                 |
+| Raised (step 3) | `surface-3`                            | `#f1efec` | `#242220` | occupied table, hovered nav item, skeletons, media gaps, counters             |
 | Muted surface   | `muted`                                | `#f5f4f2` | `#211f1d` | disabled fields, skeleton                                                     |
 | Hint text       | `muted-foreground`                     | `#5f5b55` | `#aaa59d` | secondary text, captions (AA on all surfaces)                                 |
 | Secondary fill  | `secondary`                            | `#f0eeeb` | `#2a2825` | secondary button                                                              |
@@ -85,7 +96,7 @@ tenants cannot override them.
 
 | Role             | Token                            | Light                 | Dark                  | Use                                                        |
 | ---------------- | -------------------------------- | --------------------- | --------------------- | ---------------------------------------------------------- |
-| Main action      | `primary` / `primary-foreground` | `#1c1b19` / `#ffffff` | `#f3f1ee` / `#1c1b19` | the one primary CTA per view, links, checked controls      |
+| Main action      | `primary` / `primary-foreground` | `#0f5e68` / `#ffffff` | `#5ec2cc` / `#04262a` | the one primary CTA per view, links, checked controls      |
 | Supporting brand | `brand` / `brand-foreground`     | `#3d3a35` / `#ffffff` | `#d9d5cf` / `#1c1b19` | tenant's "warna pendukung": tier cards, secondary emphasis |
 | Brand tint       | `brand-subtle`                   | `#f3f1ee`             | `#262421`             | quiet brand backgrounds with `foreground` text             |
 
@@ -96,20 +107,26 @@ Owner decision (2026-11-02): one accent per tenant. Everything else in the ramp 
 TypeScript (`DERIVED_TOKENS`, `derivePalette`), so the contrast gate checks exactly what
 renders and a Tenant Theme gets the ramp for free. There is no second accent token.
 
-| Token / class         | Mix                            | Use                                                                                            |
-| --------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `primary-hover`       | 88% primary into background    | hover of filled primary buttons (replaces `/90`)                                               |
-| `primary-tint`        | 10% primary into background    | selected nav row, active bottom-nav pill, accent badge, empty-state glyph, selected option row |
-| `primary-tint-strong` | 18% primary into background    | warm media placeholder plate, stronger accent wash                                             |
-| `chart-accent`        | = primary                      | the one highlighted series                                                                     |
-| `chart-neutral`       | 55% foreground into background | comparison series, axis baseline (≥3:1 on cards)                                               |
-| `chart-grid`          | = border                       | horizontal gridlines only                                                                      |
+| Token / class         | Mix                            | Use                                                                     |
+| --------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| `primary-hover`       | 88% primary into background    | hover of filled primary buttons (replaces `/90`)                        |
+| `primary-tint`        | 10% primary into background    | selected nav row, selected table row, accent badge, selected option row |
+| `primary-tint-strong` | 18% primary into background    | stronger accent wash (accent label background)                          |
+| `chart-accent`        | = primary                      | the one highlighted series                                              |
+| `chart-neutral`       | 55% foreground into background | comparison series, axis baseline (≥3:1 on cards)                        |
+| `chart-grid`          | = border                       | horizontal gridlines only                                               |
 
 **Accent budget (per viewport):** one filled accent surface (the primary CTA, or the cart bar)
 plus at most two accent details (active nav, one accent badge or link). Filters and segmented
 controls select in **ink** (`bg-foreground text-background`) or white-on-`surface-2`, not in
-accent. The Base Theme primary is near-black, so the ramp is neutral grey until a tenant sets a
-hue — the system still reads, just quieter.
+accent. Empty-state glyphs, skeletons, and media gaps stay neutral so they never spend the
+budget.
+
+**Base Theme default hue (owner Q31): petrol** — light `#0f5e68` (7.4:1 on white, white text
+7.4:1), dark `#5ec2cc` with `#04262a` text (9.2:1 on the dark page). Chosen to sit far from the
+Cafe Legend copper placeholder (hue ~20° vs ~190°), away from the status hues (success green
+~150°, info blue ~215°), and outside the indigo/violet range that reads as generic AI UI. A
+Tenant Theme replaces it; the derived ramp follows automatically.
 
 ### Status (fixed across tenants so meaning never changes)
 
@@ -202,32 +219,32 @@ tracking** — size carries hierarchy, not weight.
 All components live in `apps/web/src/components/ui` (shadcn/ui pattern on Radix, owned in
 repo). Search there before creating anything; extend with a variant, never fork per screen.
 
-| Component              | File                            | Notes                                                                                                                                                                                                                                                                                                                     |
-| ---------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Button                 | `button.tsx`                    | variants `default` (primary), `brand`, `secondary`, `outline`, `ghost`, `destructive`, `link`; sizes `default/sm/lg/icon/icon-sm` from density; `loading` shows spinner + `aria-busy` and blocks repeats. One `default` button per view. v2: hover `primary-hover`, press `pressable` (scale 0.97).                       |
-| Input, Textarea        | `input.tsx`, `textarea.tsx`     | `fieldClass`: `input` border, `rounded-field`, 2px danger border when `aria-invalid`                                                                                                                                                                                                                                      |
-| Select                 | `select.tsx`                    | Radix Select; trigger looks like a field; popover `shadow-overlay`                                                                                                                                                                                                                                                        |
-| Checkbox, Switch       | `checkbox.tsx`, `switch.tsx`    | size from `--check-size` (16/20/28px); always pair with a `<Label htmlFor>` that is the touch target                                                                                                                                                                                                                      |
-| Label                  | `label.tsx`                     | 14px semibold                                                                                                                                                                                                                                                                                                             |
-| FormField              | `form-field.tsx`                | label + control + hint + error; wires `id`, `aria-describedby`, `aria-invalid`, `aria-required`; error announced via `aria-live`; optional fields marked "(opsional)". `fieldErrors(zodError)` maps a Zod error to messages. Zod built-ins speak Indonesian (`z.config(z.locales.id())`). Every error says how to fix it. |
-| Dialog                 | `dialog.tsx`                    | bottom sheet on phones, centered from `sm`; focus trap, Escape, focus returns to trigger                                                                                                                                                                                                                                  |
-| Sheet                  | `sheet.tsx`                     | right/left/bottom panel (cart, filters, mobile nav)                                                                                                                                                                                                                                                                       |
-| DropdownMenu           | `dropdown-menu.tsx`             | `destructive` items are red text; confirm destructive actions in a Dialog                                                                                                                                                                                                                                                 |
-| Tabs                   | `tabs.tsx`                      | underline tabs, arrow-key navigation                                                                                                                                                                                                                                                                                      |
-| Table                  | `table.tsx`                     | `h-row` rows, `numeric` cells right-aligned tabular; scrolls inside its container                                                                                                                                                                                                                                         |
-| DataTableShell         | `data-table-shell.tsx`          | every list: title, search, actions, **loading / empty / no-results / error**, row count, pagination                                                                                                                                                                                                                       |
-| Card                   | `card.tsx`                      | flat, 1px border, `rounded-xl`, `p-card`; no shadow; never nest cards                                                                                                                                                                                                                                                     |
-| Badge, StatusPill      | `badge.tsx`                     | Badge = short label/count (tint + strong text). StatusPill = order/timer/status with **icon + text**, never color alone                                                                                                                                                                                                   |
-| Toast                  | `toast.tsx`                     | `useToast()({ title, description, tone })` confirms finished actions only; errors the user must fix stay next to the field                                                                                                                                                                                                |
-| Skeleton               | `skeleton.tsx`                  | shaped like the content; the region sets `aria-busy` + sr-only "Memuat…"                                                                                                                                                                                                                                                  |
-| EmptyState, ErrorState | `feedback-state.tsx`            | functional glyph (56px circle, `primary-tint` + `text-primary` for empty, danger tint for error) + title + one-sentence hint + one next action; ErrorState has `role="alert"` and "Coba lagi"                                                                                                                             |
-| StatTile               | `stat-tile.tsx`                 | label, value, period, **link to source data** (PRD); no decorative deltas or sparklines                                                                                                                                                                                                                                   |
-| Money, NumberDisplay   | `money.tsx`                     | `<data value>` + tabular figures; v2 sizes `stat` / `hero` scale the `Rp` prefix (§3)                                                                                                                                                                                                                                     |
-| MediaPlate             | `media-plate.tsx`               | v2. Photo with locked aspect (`card` 1:1, `hero` 3:2, `thumb` 4:5), `rounded-media`, lazy `<img>`; warm placeholder (`primary-tint-strong` + category glyph) when there is no photo; overlay slots `topStart` (status badge), `topEnd` / `bottomEnd` (one action); `muted` for sold out; optional `scrim`                 |
-| QrCode                 | `qr-code.tsx`                   | the only QR renderer (`uqr`, bead legend-9fmm): one SVG path, `<title>` as accessible name, always-light plate in both modes so codes scan; `size`, `margin` (quiet zone), `level`                                                                                                                                        |
-| SegmentedControl       | `segmented-control.tsx`         | 2–4 options (theme, density, view); radio group semantics                                                                                                                                                                                                                                                                 |
-| ThemeSwitcher          | `components/theme-switcher.tsx` | Terang / Gelap / Ikuti perangkat                                                                                                                                                                                                                                                                                          |
-| ThemeScope             | `components/theme-scope.tsx`    | sets `data-density` / `data-theme` / `data-tenant` on a subtree **and** makes overlays portal into it                                                                                                                                                                                                                     |
+| Component              | File                            | Notes                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Button                 | `button.tsx`                    | variants `default` (primary), `brand`, `secondary`, `outline`, `ghost`, `destructive`, `link`; sizes `default/sm/lg/icon/icon-sm` from density; `loading` shows spinner + `aria-busy` and blocks repeats. One `default` button per view. v2: hover `primary-hover`, press `pressable` (scale 0.97).                                                                             |
+| Input, Textarea        | `input.tsx`, `textarea.tsx`     | `fieldClass`: `input` border, `rounded-field`, 2px danger border when `aria-invalid`                                                                                                                                                                                                                                                                                            |
+| Select                 | `select.tsx`                    | Radix Select; trigger looks like a field; popover `shadow-overlay`                                                                                                                                                                                                                                                                                                              |
+| Checkbox, Switch       | `checkbox.tsx`, `switch.tsx`    | size from `--check-size` (16/20/28px); always pair with a `<Label htmlFor>` that is the touch target                                                                                                                                                                                                                                                                            |
+| Label                  | `label.tsx`                     | 14px semibold                                                                                                                                                                                                                                                                                                                                                                   |
+| FormField              | `form-field.tsx`                | label + control + hint + error; wires `id`, `aria-describedby`, `aria-invalid`, `aria-required`; error announced via `aria-live`; optional fields marked "(opsional)". `fieldErrors(zodError)` maps a Zod error to messages. Zod built-ins speak Indonesian (`z.config(z.locales.id())`). Every error says how to fix it.                                                       |
+| Dialog                 | `dialog.tsx`                    | bottom sheet on phones, centered from `sm`; focus trap, Escape, focus returns to trigger                                                                                                                                                                                                                                                                                        |
+| Sheet                  | `sheet.tsx`                     | right/left/bottom panel (cart, filters, mobile nav)                                                                                                                                                                                                                                                                                                                             |
+| DropdownMenu           | `dropdown-menu.tsx`             | `destructive` items are red text; confirm destructive actions in a Dialog                                                                                                                                                                                                                                                                                                       |
+| Tabs                   | `tabs.tsx`                      | underline tabs, arrow-key navigation                                                                                                                                                                                                                                                                                                                                            |
+| Table                  | `table.tsx`                     | `h-row` rows, `numeric` cells right-aligned tabular; scrolls inside its container                                                                                                                                                                                                                                                                                               |
+| DataTableShell         | `data-table-shell.tsx`          | every list: title, search, actions, **loading / empty / no-results / error**, row count, pagination                                                                                                                                                                                                                                                                             |
+| Card                   | `card.tsx`                      | flat, 1px border, `rounded-container`, `p-card`, `type-heading` title; no shadow; never nest cards                                                                                                                                                                                                                                                                              |
+| Badge, StatusPill      | `badge.tsx`                     | Badge = short label/count (tint + strong text). StatusPill = order/timer/status with **icon + text**, never color alone; `solid` only for the one state that needs action now (late, waiter call; owner Q25)                                                                                                                                                                    |
+| Toast                  | `toast.tsx`                     | `useToast()({ title, description, tone })` confirms finished actions only; errors the user must fix stay next to the field                                                                                                                                                                                                                                                      |
+| Skeleton               | `skeleton.tsx`                  | shaped like the content; the region sets `aria-busy` + sr-only "Memuat…"                                                                                                                                                                                                                                                                                                        |
+| EmptyState, ErrorState | `feedback-state.tsx`            | functional glyph (56px circle, neutral `surface-3` for empty, danger tint for error) + title + one-sentence hint + one next action; ErrorState has `role="alert"` and "Coba lagi"                                                                                                                                                                                               |
+| StatTile, StatStrip    | `stat-tile.tsx`                 | label, `type-money-display` value, period, **link to source data** (PRD); no decorative deltas or sparklines. Related metrics go in one `StatStrip` (one container, hairline dividers, 1 / 2 / `columns` columns; owner Q30)                                                                                                                                                    |
+| Money, NumberDisplay   | `money.tsx`                     | `<data value>` + tabular figures; v2 sizes `stat` / `hero` scale the `Rp` prefix (§3)                                                                                                                                                                                                                                                                                           |
+| MediaPlate             | `media-plate.tsx`               | v2. Photo only (owner Q23): locked aspect (`card` 1:1, `hero` 3:2, `thumb` 4:5), `rounded-media`, lazy `<img>` behind a skeleton until loaded; a missing photo shows `missing="required"` ("Foto wajib", back office) or a quiet neutral plate (customer); overlay slots `topStart` (status badge), `topEnd` / `bottomEnd` (one action); `muted` for sold out; optional `scrim` |
+| QrCode                 | `qr-code.tsx`                   | the only QR renderer (`uqr`, bead legend-9fmm): one SVG path, `<title>` as accessible name, always-light plate in both modes so codes scan; `size`, `margin` (quiet zone), `level`                                                                                                                                                                                              |
+| SegmentedControl       | `segmented-control.tsx`         | 2–4 options (theme, density, view); radio group semantics                                                                                                                                                                                                                                                                                                                       |
+| ThemeSwitcher          | `components/theme-switcher.tsx` | Terang / Gelap / Ikuti perangkat                                                                                                                                                                                                                                                                                                                                                |
+| ThemeScope             | `components/theme-scope.tsx`    | sets `data-density` / `data-theme` / `data-tenant` on a subtree **and** makes overlays portal into it                                                                                                                                                                                                                                                                           |
 
 **States, defined once:** default · hover (`accent` fill or `/90`) · focus-visible (global 2px
 `ring` outline, 2px offset) · pressed · disabled (50–60% opacity, no pointer) · loading
@@ -248,14 +265,18 @@ The single biggest "plain" signal was letter tiles. Customer surfaces lead with 
   favorite buttons on the photo, then badges, `type-title` name, description, `<Money
 size="stat">`.
 - **Cart / list thumb:** 72px square plate, `rounded-media`.
-- **No photo:** warm plate (`primary-tint-strong`) with the category glyph in `text-primary` —
-  never a letter tile, never a stock "no image" icon.
+- **Photo required (owner Q23):** every menu item has a photo; publishing without one is
+  refused by the menu contract (separate contract/backend bead). Design the card for photos
+  only: a skeleton while the image loads, never a letter tile or decorative placeholder. Back
+  office shows the gap with `MediaPlate missing="required"` ("Foto wajib") next to the upload
+  action so it gets fixed.
 - **Sold out:** photo `muted` (greyscale, 55%), `Habis` badge, no add button, text muted.
 - **Text on a photo** only with `scrim` (`--scrim-media`, a functional bottom gradient); prefer
   text below the photo.
-- **Sample photos:** `apps/web/public/sample/menu/` — Unsplash License sample images for mock
-  mode and `/design-system/v2` only, always under a "Contoh data" label; real menus use the
-  tenant's uploads (storage pipeline strips EXIF, emits WebP).
+- **Sample photos (owner Q24):** Unsplash License sample images are allowed only in mock/demo
+  data, always under a "Contoh data" label (the eight used in the v2 study are in commit
+  `996bcfe`, `apps/web/public/sample/menu/`); real menus use the tenant's uploads (storage
+  pipeline strips EXIF, emits WebP).
 
 ### Empty and loading (v2)
 
@@ -279,10 +300,10 @@ KDS ticket composed this way.
 4px, bulat 6px): `rounded-xs` 4 · `sm` 6 · `md` 8 · `lg` 12 · `xl` 16 · `2xl` 24 ·
 `rounded-control` (pill in Hangat, 8px Kontras, 6px Padat) · `rounded-field` · `rounded-full`
 for pills/avatars. Shape lock: controls `rounded-control`, fields `rounded-field`, containers
-`rounded-xl`, sheets `rounded-t-2xl`.
+`rounded-container`, sheets `rounded-t-sheet`.
 
 **Radius intents (v2)** — aliases over the same scale, use these names in new code:
-`rounded-media` (3 units = 12px: photos, thumbs, placeholders; never pill) ·
+`rounded-media` (3 units = 12px: photos, thumbs, their skeletons; never pill) ·
 `rounded-container` (4 units = 16px: cards, panels, table wrappers, ops tiles) ·
 `rounded-control` (per density, above) · `rounded-sheet` (6 units = 24px: bottom sheets,
 `rounded-t-sheet`). Chips, search pills, steppers, and the cart bar are `rounded-full` in
@@ -290,11 +311,11 @@ Hangat. Aspect locks: `aspect-card` 1:1, `aspect-hero` 3:2, `aspect-thumb` 4:5.
 
 **App shells** (`apps/web/src/components/shells/`):
 
-| Shell             | Density | Structure                                                                                                                                                             |
-| ----------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CustomerShell`   | hangat  | header (tenant name/logo + context like "Meja 12 · 3 tamu"), one scrolling column `max-w-2xl`, bottom nav (≤5 items, 64px, safe-area padding)                         |
-| `OperationsShell` | kontras | full screen, status bar (screen, outlet · station, connection, outlet clock in its own time zone), work area owns the rest; `mode="dark"` for kitchen                 |
-| `ManagementShell` | padat   | sidebar 240px + topbar 56px from 64rem shell width; below that the sidebar moves into a Sheet behind a menu button (container queries, so it adapts to its own width) |
+| Shell             | Density | Structure                                                                                                                                                                 |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CustomerShell`   | hangat  | header (tenant name/logo + context like "Meja 12 · 3 tamu"), one scrolling column `max-w-2xl`, bottom nav (≤5 items, 64px, safe-area padding)                             |
+| `OperationsShell` | kontras | full screen, status bar (screen, outlet · station, connection, outlet clock in its own time zone), work area owns the rest; `mode="dark"` for kitchen                     |
+| `ManagementShell` | padat   | grouped sidebar 256px from 80rem shell width, 64px icon rail from 64rem, Sheet behind a menu button below; topbar 56px (container queries, so it adapts to its own width) |
 
 ### Surface composition (v2)
 
@@ -303,10 +324,11 @@ chips) → `surface-2` band for one featured carousel → white category section
 photo-first grids → the cart bar floats bottom (`bg-primary`, `rounded-full`, count disc +
 "Lihat keranjang" + total; the page's one filled accent surface). An optional ink band
 (`<ThemeScope mode="dark">` + `bg-surface-2`) is allowed **once** per page for a ceremony
-moment (tier upgrade, reward unlocked). Bottom nav: active item = `primary-tint` pill behind
-the icon + foreground label; count bubbles in ink. Page stays white by default.
+moment (tier upgrade, reward unlocked). Bottom nav: active item in `text-primary` semibold (one
+accent detail); count bubbles in `bg-primary`. Page stays white by default.
 
-**Operations (Kontras) — status hierarchy.** "Perlu tindakan" strip first (solid pill for the
+**Operations (Kontras) — status hierarchy (owner Q25–Q27).** Status bar on `surface-2`.
+"Perlu tindakan" strip first (solid pill for the
 urgent count, tints for the rest). Zones are a segmented control with counts (`surface-2`
 track, `bg-card` selected). Table tiles (`rounded-container`): empty = card + border; occupied
 = `surface-3`, no border; **urgent** (waiter call, late) = solid status pill + 2px border +
@@ -317,16 +339,19 @@ carry their timer state in a **full-width header band** (late = solid `danger`, 
 (30px tabular), and the state in words; quantities in a 44px `surface-3` square; critical
 modifiers ("Tanpa gula") as a warning flag, never color alone.
 
-**Management (Padat) — grouped shell.** Sidebar 256px on `surface-2`: outlet switcher on top
-(accent square + name + code), ungrouped Dasbor/Approval, then groups under `type-eyebrow`
-labels (Operasional, Keuangan, Tim), settings + account at the bottom. Selected row =
-`primary-tint` fill + 2px `primary` start rule + semibold `text-primary`. Below 64rem the
-sidebar becomes a 64px icon rail (labels as tooltips), then the existing Sheet. Topbar 56px:
-breadcrumb, global search (`surface-2`, ⌘K), page actions. Dashboard order: "Perlu perhatian"
+**Management (Padat) — grouped shell (owner Q28–Q30).** Sidebar 256px on `surface-2`: brand
+block on top (ink square + tenant name), ungrouped items (area index, notifications), then
+groups under `type-eyebrow` labels (Operasional, Keuangan, Tim), `footerNav` at the bottom.
+A feature puts its item in a group with `group: "operations" | "finance" | "team"` in its
+`features/<ws>-<name>/nav.ts` (`NAV_GROUPS` in `lib/areas/nav.ts`; labels `nav.group.*`).
+Selected row = `primary-tint` fill + 2px `primary` start rule + semibold `text-primary`.
+Between 64rem and 80rem the sidebar is a 64px icon rail (label as `title` + screen-reader
+text, groups split by hairlines); below 64rem it moves into the Sheet. Topbar 56px: page title,
+page actions, account. Dashboard order: "Perlu perhatian"
 (each row with its action) → one **stat strip** (one container, cells split by hairlines, each
 with period and a source link — not four identical cards) → chart → tables. Tables sit in a
 `rounded-container` with a toolbar (title, segmented filter, search), `surface-2` header in
-`type-eyebrow`, `surface-3` row hover, mono codes, `numeric` money.
+`type-eyebrow`, `surface-2` row hover, mono codes, `numeric` money.
 
 Routes pass `nav` items with `current` from the router and a `LinkComponent` wrapping the
 router `Link` for client navigation. Shells render `<main id="main-content">` (skip link target).
@@ -404,7 +429,8 @@ scroll-triggered decoration. Under `prefers-reduced-motion: reduce` every durati
 - No `text-<customname>` size classes (see Typography); no `dark:` overrides where a token
   already switches.
 - Never copy another brand's colors, logo, or signature elements.
-- No letter tiles for missing photos (use the warm `MediaPlate` placeholder); no accent fill on
+- No letter tiles or placeholder art for missing photos (menu items require a photo; back office
+  shows `MediaPlate missing="required"`); no accent fill on
   filters, chips, or more than one surface per viewport; no display sizes on task UI beyond
   `type-display` for the page title.
 
@@ -461,7 +487,7 @@ Quick picks:
 
 - Customer menu item (v2): `MediaPlate` 1:1 with badge top-left and round add button
   bottom-right, then name `font-semibold line-clamp-2`, description `text-sm
-text-muted-foreground line-clamp-1`, `<Money>` semibold. See `/design-system/v2`.
+text-muted-foreground line-clamp-1`, `<Money>` semibold. No card border or padding.
 - KDS ticket (v2): `OperationsShell mode="dark"`, `rounded-container border-(length:--border-w)
 bg-card`, full-width header band by timer state, table `text-3xl font-bold`, elapsed 30px
   tabular, qty squares on `surface-3`, full-width primary "Selesai".

@@ -6,6 +6,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
+    group: "operations",
     labelKey: "nav.management.floor",
     to: "/kelola/meja",
     icon: LayoutGrid,

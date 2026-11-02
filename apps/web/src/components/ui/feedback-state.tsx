@@ -64,7 +64,7 @@ function EmptyState({ title, description, icon = Inbox, ...rest }: StateProps) {
     <StateLayout
       data-slot="empty-state"
       icon={icon}
-      iconClass="bg-primary-tint text-primary"
+      iconClass="bg-surface-3 text-foreground"
       title={title ?? t("state.emptyTitle")}
       description={description ?? t("state.emptyHint")}
       {...rest}

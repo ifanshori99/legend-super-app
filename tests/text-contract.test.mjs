@@ -314,22 +314,6 @@ const STARTER_PAGES = new Map([
     "components/sign-out-button.tsx",
     "Starter sign-out button; WS-01 converts it to catalog text.",
   ],
-  [
-    "components/design-system/v2/customer.tsx",
-    "DESIGN.md v2 before/after board (legend-6be7): static mockup copy on labeled sample data; Phase 2 screens take their text from the catalog.",
-  ],
-  [
-    "components/design-system/v2/management.tsx",
-    "DESIGN.md v2 before/after board (legend-6be7): static mockup copy on labeled sample data; Phase 2 screens take their text from the catalog.",
-  ],
-  [
-    "components/design-system/v2/ops.tsx",
-    "DESIGN.md v2 before/after board (legend-6be7): static mockup copy on labeled sample data; Phase 2 screens take their text from the catalog.",
-  ],
-  [
-    "routes/design-system_.v2.tsx",
-    "DESIGN.md v2 before/after board (legend-6be7): static mockup copy on labeled sample data; Phase 2 screens take their text from the catalog.",
-  ],
   ["features/notes/components/note-form.tsx", "Starter Notes example feature."],
   ["routes/_protected/admin.tsx", "Starter admin example page."],
   ["routes/_protected/notes.tsx", "Starter Notes example page."],
