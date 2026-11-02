@@ -296,13 +296,17 @@ describe("§3.7 Owner assignments are protected (C6)", () => {
       endRoleAssignment(context, assignmentB, { reason: "Rotasi A." }, ownerA),
       endRoleAssignment(context, assignmentA, { reason: "Rotasi B." }, ownerB),
     ]);
-    // Exactly one wins; the other is refused cleanly (409), never a
-    // deadlock (40P01) surfacing as a 500.
+    // Exactly one wins; the loser waited on the per-tenant lock, then found
+    // it is no longer an Owner and is refused cleanly (403), never a deadlock
+    // (40P01) surfacing as a 500.
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find(
       (r): r is PromiseRejectedResult => r.status === "rejected",
     );
-    expect(rejected?.reason).toMatchObject({ status: 409, code: "CONFLICT" });
+    expect(rejected?.reason).toMatchObject({
+      status: 403,
+      code: "PERMISSION_DENIED",
+    });
     const { rows } = await owner.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM role_assignments
        WHERE tenant_id = $1 AND valid_until IS NULL`,
