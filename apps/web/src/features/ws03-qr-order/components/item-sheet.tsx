@@ -1,9 +1,11 @@
-// Item detail as a bottom sheet (dialog on wider screens): variant, modifier
-// groups with min/max rules, note, quantity (PRD §3 F10, ORD-01). The CTA is
-// never silently disabled: pressing it with an incomplete choice explains what
-// is missing next to the group. Prices shown are a preview; the server prices
-// the cart line (ORD-03).
+// Item detail as a bottom sheet (dialog on wider screens): full-bleed hero
+// photo, then variant, modifier groups with min/max rules, note and quantity
+// (PRD §3 F10, ORD-01; DESIGN.md v2 §4 "Media"). The CTA is never silently
+// disabled: pressing it with an incomplete choice explains what is missing next
+// to the group. Prices shown are a preview; the server prices the cart line
+// (ORD-03).
 import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { QrMenuItem } from "@starter/shared/qr-order";
 import { ApiError } from "@/lib/api/errors";
 import { useT } from "@/components/i18n";
@@ -11,12 +13,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
@@ -35,7 +39,6 @@ import {
 } from "../lib/item-options.ts";
 import { ChoiceGroup } from "./choice-group";
 import { labelText } from "./item-card";
-import { MenuMedia } from "./menu-media";
 import { Notice } from "./notice";
 import { Stepper } from "./stepper";
 
@@ -211,21 +214,32 @@ function SheetBody({
         : null;
 
   return (
-    <DialogContent className="gap-5 p-0 pb-0 sm:pb-0">
-      <div className="grid gap-4 px-card pt-card">
-        <MenuMedia
-          name={item.name}
-          photoUrl={item.photoUrl}
-          className="aspect-video w-full"
-        />
+    <DialogContent className="gap-0 p-0 sm:pb-0" hideClose>
+      {/* Full-bleed hero: cancel the dialog's card padding on three sides
+          (DESIGN.md v2 §4 "Media"); auto width plus equal negative margins
+          keeps the plate exactly as wide as the sheet. */}
+      <MediaPlate
+        ratio="hero"
+        src={item.photoUrl}
+        alt=""
+        muted={soldOut}
+        className="-mx-card -mt-card shrink-0 rounded-none"
+        topEnd={
+          <DialogClose className="grid size-10 place-items-center rounded-full bg-card text-foreground shadow-card">
+            <X className="size-5" aria-hidden="true" />
+            <span className="sr-only">{t("common.close")}</span>
+          </DialogClose>
+        }
+      />
+      <div className="grid gap-3 px-card pt-card">
         <DialogHeader>
-          <DialogTitle className="text-xl leading-7">{item.name}</DialogTitle>
+          <DialogTitle className="type-title">{item.name}</DialogTitle>
           <DialogDescription className="sr-only">
             {t("qrMenu.sheet.description")}
           </DialogDescription>
         </DialogHeader>
         {item.labels.length > 0 && (
-          <div className="-mt-3 flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
             {item.labels.map((label) => (
               <Badge key={label} tone="brand">
                 {labelText(t, label)}
@@ -234,10 +248,11 @@ function SheetBody({
           </div>
         )}
         {item.description && (
-          <p className="-mt-2 text-(length:--density-text) leading-6 text-muted-foreground">
+          <p className="text-(length:--density-text) leading-6 text-muted-foreground">
             {item.description}
           </p>
         )}
+        <Money amount={item.priceIdr} size="stat" />
         {item.allergens.length > 0 && (
           <p className="text-sm leading-5">
             {t("qrMenu.sheet.allergens", { list: item.allergens.join(", ") })}
@@ -249,7 +264,7 @@ function SheetBody({
       </div>
 
       {!soldOut && (
-        <div className="grid gap-5 px-card">
+        <div className="grid gap-5 px-card pt-5">
           {item.variants.length > 0 && (
             <fieldset
               className="grid gap-2"

@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { UtensilsCrossed } from "lucide-react";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTableJourney } from "../context";
 import { useAddToCart } from "../hooks";
 import {
@@ -73,9 +74,16 @@ function MenuSkeleton() {
       <span className="sr-only">{t("qrMenu.states.loading")}</span>
       <Skeleton className="h-12 w-full" />
       <Skeleton className="h-9 w-2/3" />
-      {Array.from({ length: 4 }, (_, index) => (
-        <Skeleton key={index} className="h-32 w-full rounded-2xl" />
-      ))}
+      {/* Mirrors the photo-first grid: a 1:1 plate and two text lines. */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-6">
+        {Array.from({ length: 4 }, (_, index) => (
+          <div key={index} className="grid content-start gap-2">
+            <Skeleton className="aspect-card w-full rounded-media" />
+            <Skeleton className="h-5 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -174,9 +182,10 @@ export function MenuPage({
   return (
     <div className="grid gap-4">
       <header className="grid gap-1">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrMenu.nav.menu")}
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="type-display-xl">{t("qrMenu.nav.menu")}</h1>
+          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+        </div>
         <p className="text-muted-foreground">
           {menu.zone.name}
           {" · "}
@@ -331,17 +340,14 @@ export function MenuPage({
             className="grid gap-3"
           >
             <div className="flex items-baseline justify-between gap-3">
-              <h2
-                id={`cat-${category.id}`}
-                className="text-2xl leading-8 font-semibold"
-              >
+              <h2 id={`cat-${category.id}`} className="type-title">
                 {category.name}
               </h2>
               <Badge tone="neutral">
                 {t("qrMenu.section.count", { count: items.length })}
               </Badge>
             </div>
-            <ul className="grid gap-3">
+            <ul className="grid grid-cols-2 gap-x-3 gap-y-6">
               {items.map((item) => (
                 <ItemCard
                   key={item.id}

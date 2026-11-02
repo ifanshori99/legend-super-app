@@ -469,8 +469,38 @@ const itemOverlays: Record<string, ItemOverlay> = {
   Cheesecake: { allergens: ["susu", "telur", "gluten"] },
   "Pie Apel": { labels: ["baru", "vegetarian"], allergens: ["gluten"] },
 };
-/** Sold out in the sample menu so every state is visible (ORD-05). */
-const soldOutNames = new Set(["Sup Buntut", "Cheesecake"]);
+/**
+ * Sold out in the sample menu so every state is visible (ORD-05). Mie Kuah is
+ * sold out too because it has a demo photo: the customer card shows the greyed
+ * photo state, which an item without a photo could not demonstrate.
+ */
+const soldOutNames = new Set(["Sup Buntut", "Cheesecake", "Mie Kuah"]);
+
+/**
+ * Demo photos for the sample catalogue (DESIGN.md §4 "Media", owner Q24):
+ * Unsplash-licensed images under `apps/web/public/sample/menu`, served only
+ * while the demo runs on fixtures (the screen carries the "Contoh data"
+ * label). Real outlets serve their own uploads, and the menu contract refuses
+ * publishing an item without a photo (owner Q23), so this map is never
+ * production data. An item that is not listed here keeps the designed
+ * missing-photo state of MediaPlate (`missing="quiet"`).
+ */
+const demoPhotos: Record<string, string> = {
+  // One latte-art cup stands in for the hot milk-espresso family, so the
+  // sample menu does not pretend to have eleven different photos.
+  Cappuccino: "/sample/menu/cappuccino.jpg",
+  "Cafe Latte": "/sample/menu/cappuccino.jpg",
+  "Flat White": "/sample/menu/cappuccino.jpg",
+  Piccolo: "/sample/menu/cappuccino.jpg",
+  Mocha: "/sample/menu/cappuccino.jpg",
+  "Caramel Latte": "/sample/menu/cappuccino.jpg",
+  "Vanilla Latte": "/sample/menu/cappuccino.jpg",
+  "Kopi Susu Aren": "/sample/menu/es-kopi-susu.jpg",
+  "Teh Tarik": "/sample/menu/teh-melati.jpg",
+  "Nasi Goreng Kampung": "/sample/menu/nasi-goreng.jpg",
+  "Nasi Goreng Ayam": "/sample/menu/nasi-goreng.jpg",
+  "Mie Kuah": "/sample/menu/mie-kuah.jpg",
+};
 
 const SUGAR_GROUP = fixtureId(4100);
 const TOPPING_GROUP = fixtureId(4401);
@@ -632,7 +662,7 @@ export function buildQrMenu(input: {
         priceIdr: idr(base),
         labels: overlay.labels ?? item.labels,
         allergens: overlay.allergens ?? item.allergens,
-        photoUrl: null,
+        photoUrl: demoPhotos[item.name] ?? null,
         variants,
         modifierGroups: modifierGroupsFor(category.name, item.name),
         status: soldOut ? ("sold_out" as const) : ("available" as const),
