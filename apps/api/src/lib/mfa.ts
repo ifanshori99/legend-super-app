@@ -10,6 +10,7 @@
 
 import type { Request } from "express";
 import { verifyMfaCodeForUser } from "../services/identity-mfa.service";
+import { loadSessionRow } from "../services/identity-session.service";
 
 /** When the second factor was verified in this request, or null. */
 export async function verifiedMfaAt(req: Request): Promise<string | null> {
@@ -25,4 +26,21 @@ export async function verifiedMfaAt(req: Request): Promise<string | null> {
     code,
   });
   return result?.verifiedAt ?? null;
+}
+
+/**
+ * When this session verified its second factor (AUTH-05), or null. This is
+ * the session state the RBAC snapshot and /api/me/access report; it never
+ * consumes a code. Revoked or expired sessions never count.
+ */
+export async function sessionMfaVerifiedAt(
+  req: Request,
+  now: Date = new Date(),
+): Promise<string | null> {
+  const auth = req.auth;
+  if (!auth) return null;
+  const row = await loadSessionRow(auth.session.id);
+  if (!row || row.mfaVerifiedAt === null || row.revokedAt !== null) return null;
+  if (row.expiresAt.getTime() <= now.getTime()) return null;
+  return row.mfaVerifiedAt.toISOString();
 }

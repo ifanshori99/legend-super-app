@@ -18,7 +18,7 @@ import { AccessError, type PermissionCode } from "@starter/shared/access";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { getAuth } from "./auth";
-import { loadSessionRow } from "../services/identity-session.service";
+import { sessionMfaVerifiedAt } from "../lib/mfa";
 import { getTenantContext } from "./tenant";
 import {
   loadTenantAccess,
@@ -42,16 +42,15 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     establishScopedTenantContext(tenant, { kind: "tenant" }),
     userId,
   );
-  const session = await loadSessionRow(getAuth(req).session.id);
   const snapshot = resolveAccessSnapshot({
     tenant,
     userId,
     ...data,
-    // AUTH-05: the same flag the API gate enforces (session.mfa_verified_at),
-    // so a session that verified a factor through /api/auth/mfa/verify opens
-    // the web area too. `verifiedMfaAt(req)` answers a different question — a
-    // fresh code for one support-access call (TEN-04) — and stays out of here.
-    mfaVerified: session?.mfaVerifiedAt != null,
+    // The session's verified second factor (lib/mfa.ts, bead legend-6xf).
+    // Never the per-request `mfaCode` check: that consumes a TOTP step and is
+    // reserved for TEN-04 support access. The web guard reads the same flag
+    // through /api/me/access.
+    mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
     now: new Date(),
   });
   snapshots.set(req, snapshot);

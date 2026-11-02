@@ -11,6 +11,7 @@ import { createApp } from "../app";
 import {
   loadSessionRow,
   sessionPolicy,
+  toWireSession,
   touchSession,
 } from "../services/identity-session.service";
 import { agent, originHeader, signUp } from "./helpers";
@@ -70,6 +71,21 @@ describe("session policy (§3 F6 Sesi & Perangkat)", () => {
     // 90 days, allowing a second of clock skew in the cookie round trip.
     expect(Math.abs(lifetime - 90 * DAY_MS)).toBeLessThan(2000);
     expect(row!.kind).toBe("customer");
+  });
+
+  it("F6 a database clock behind the API clock never fails the session contract", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Jam Bergeser");
+    const { cookie } = await signIn(email);
+    const row = await loadSessionRow(await sessionIdOf(cookie));
+    expect(row).not.toBeNull();
+    // last_seen_at (DB clock) a few ms before created_at (API clock).
+    const skewed = {
+      ...row!,
+      lastSeenAt: new Date(row!.createdAt.getTime() - 5),
+    };
+    const wire = toWireSession(skewed);
+    expect(wire.lastSeenAt).toBe(row!.createdAt.toISOString());
   });
 
   it("F6 management sessions end after 30 idle minutes", async () => {

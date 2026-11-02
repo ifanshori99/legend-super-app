@@ -391,4 +391,82 @@ describe("Staff MFA factors and the AUTH-05 gate", () => {
       [userId],
     );
   });
+
+  it("AUTH-05 adding or removing a factor needs a session that verified one (no password-only bypass)", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Manajer Step Up");
+    const verifiedCookie = await signInCookie(email);
+    const enrollment = await enrollTotp(verifiedCookie);
+    const step = totpStep(new Date());
+    expect(
+      (
+        await verifyCode(
+          verifiedCookie,
+          enrollment.factorId,
+          totpCode(enrollment.secretBase32, step),
+        )
+      ).status,
+    ).toBe(200);
+
+    // A second sign-in with only the password (e.g. a stolen password).
+    const passwordOnly = await signInCookie(email);
+    const enroll = await request(app)
+      .post("/api/auth/mfa/factors")
+      .set(originHeader)
+      .set("Cookie", passwordOnly)
+      .send({ type: "totp" });
+    expect(enroll.status).toBe(403);
+    expect(enroll.body.error.code).toBe("MFA_REQUIRED");
+    const remove = await request(app)
+      .delete(`/api/auth/mfa/factors/${enrollment.factorId}`)
+      .set(originHeader)
+      .set("Cookie", passwordOnly);
+    expect(remove.status).toBe(403);
+    expect(remove.body.error.code).toBe("MFA_REQUIRED");
+    const denied = await request(probeApp())
+      .get("/kelola/probe")
+      .set("Cookie", passwordOnly);
+    expect(denied.status).toBe(403);
+
+    // The session that proved the factor may manage factors.
+    const removed = await request(app)
+      .delete(`/api/auth/mfa/factors/${enrollment.factorId}`)
+      .set(originHeader)
+      .set("Cookie", verifiedCookie);
+    expect(removed.status).toBe(204);
+  });
+
+  it("AUTH-05 parallel guesses are all counted and a code is accepted once", async () => {
+    const client = agent(app);
+    const email = await signUp(client, "Kasir Paralel");
+    const cookie = await signInCookie(email);
+    const enrollment = await enrollTotp(cookie);
+    const step = totpStep(new Date());
+    const code = totpCode(enrollment.secretBase32, step);
+
+    // Racing requests with the same valid code: exactly one wins.
+    const same = await Promise.all(
+      [0, 1, 2].map(() => verifyCode(cookie, enrollment.factorId, code)),
+    );
+    expect(same.filter((response) => response.status === 200)).toHaveLength(1);
+
+    // Parallel wrong guesses cannot outrun the five-miss lock.
+    const wrong = code === "111111" ? "222222" : "111111";
+    await Promise.all(
+      Array.from({ length: 8 }, () =>
+        verifyCode(cookie, enrollment.factorId, wrong),
+      ),
+    );
+    const { rows } = await owner.query<{ locked_until: Date | null }>(
+      "SELECT locked_until FROM mfa_factors WHERE id = $1",
+      [enrollment.factorId],
+    );
+    expect(rows[0]?.locked_until).not.toBeNull();
+    const next = await verifyCode(
+      cookie,
+      enrollment.factorId,
+      totpCode(enrollment.secretBase32, step + 1),
+    );
+    expect(next.status).toBe(429);
+  });
 });

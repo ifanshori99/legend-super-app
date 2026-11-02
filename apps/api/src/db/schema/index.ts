@@ -18,3 +18,4 @@ export * from "./platform-access";
 export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";
+export * from "./identity";

@@ -24,6 +24,7 @@ import {
   type MfaFactorType,
   type MfaVerificationResult,
 } from "@starter/shared/identity";
+import { AccessError } from "@starter/shared/access";
 import { CoreError } from "@starter/shared/core";
 import { db } from "../db";
 import { mfaFactors, session } from "../db/schema";
@@ -65,6 +66,13 @@ function toWireFactor(row: FactorRow): MfaFactor {
   });
 }
 
+function lockedError(): CoreError {
+  return new CoreError(
+    "RATE_LIMITED",
+    "Terlalu banyak kode salah. Coba lagi dalam 15 menit.",
+  );
+}
+
 function isLocked(row: FactorRow, now: Date): boolean {
   return row.lockedUntil !== null && row.lockedUntil.getTime() > now.getTime();
 }
@@ -101,6 +109,8 @@ export async function enrollMfaFactor(input: {
   readonly accountName: string;
   readonly type: MfaFactorType;
   readonly issuer: string;
+  /** Whether the caller's session already verified a second factor. */
+  readonly sessionMfaVerified: boolean;
   readonly now?: Date;
 }): Promise<MfaEnrollment> {
   if (input.type === "passkey")
@@ -111,6 +121,11 @@ export async function enrollMfaFactor(input: {
     );
   const now = input.now ?? new Date();
   const verified = await listMfaFactors(input.userId);
+  // Step-up (AUTH-05): once a user has a factor, adding another needs a
+  // session that already proved one. Otherwise a stolen password alone could
+  // enroll the attacker's authenticator and mark the session MFA-verified.
+  if (verified.length > 0 && !input.sessionMfaVerified)
+    throw new AccessError("MFA_REQUIRED");
   if (verified.length >= MAX_VERIFIED_FACTORS)
     throw new CoreError(
       "CONFLICT",
@@ -166,80 +181,86 @@ export async function verifyMfaFactor(input: {
   readonly now?: Date;
 }): Promise<MfaVerificationResult> {
   const now = input.now ?? new Date();
-  const [factor] = await db
-    .select()
-    .from(mfaFactors)
-    .where(
-      and(
-        eq(mfaFactors.id, input.factorId),
-        eq(mfaFactors.userId, input.userId),
-      ),
-    )
-    .limit(1);
-  // A factor of another user is indistinguishable from a missing one.
-  if (!factor)
-    throw new HttpError(404, "NOT_FOUND", "Faktor kedua tidak ditemukan.");
-  if (factor.type !== "totp" || factor.secretEncrypted === null)
-    throw new HttpError(
-      409,
-      "MFA_FACTOR_UNSUPPORTED",
-      "Faktor ini tidak mendukung verifikasi kode.",
-    );
-  // The enrollment DTO promises a window; a pending secret older than it must
-  // be reissued instead of verified (the response is the only copy).
-  if (
-    factor.verifiedAt === null &&
-    now.getTime() >=
-      factor.createdAt.getTime() + MFA_ENROLLMENT_TTL_MINUTES * 60_000
-  )
-    throw new CoreError(
-      "CONFLICT",
-      "Pendaftaran faktor ini kedaluwarsa. Daftarkan ulang.",
-    );
-  if (isLocked(factor, now))
-    throw new CoreError(
-      "RATE_LIMITED",
-      "Terlalu banyak kode salah. Coba lagi dalam 15 menit.",
-    );
-
-  const secret = openSecret(
-    factor.secretEncrypted,
-    aad(factor.id, factor.userId),
-  );
-  const step = verifyTotpCode({
-    secretBase32: secret,
-    code: input.code,
-    now,
-    lastUsedStep: factor.lastUsedStep,
-  });
-
-  if (step === null) {
-    const failedAttempts = factor.failedAttempts + 1;
-    const locked = failedAttempts >= MAX_MFA_ATTEMPTS;
-    await db
-      .update(mfaFactors)
-      .set({
-        failedAttempts,
-        lockedUntil: locked
-          ? new Date(now.getTime() + MFA_LOCK_MINUTES * 60_000)
-          : factor.lockedUntil,
-      })
+  // One transaction with the factor row locked (SELECT … FOR UPDATE): parallel
+  // attempts are serialized, so the five-miss lock counts every guess and a
+  // code cannot be accepted twice by racing requests (single-use step). A
+  // wrong code must still commit its counter, so the outcome is returned and
+  // thrown only after the transaction commits.
+  const outcome = await db.transaction(async (tx) => {
+    const [factor] = await tx
+      .select()
+      .from(mfaFactors)
       .where(
-        and(eq(mfaFactors.id, factor.id), eq(mfaFactors.userId, input.userId)),
-      );
-    if (locked)
-      throw new CoreError(
-        "RATE_LIMITED",
-        "Terlalu banyak kode salah. Coba lagi dalam 15 menit.",
-      );
-    throw new HttpError(
-      401,
-      "MFA_CODE_INVALID",
-      "Kode faktor kedua salah atau sudah dipakai.",
-    );
-  }
+        and(
+          eq(mfaFactors.id, input.factorId),
+          eq(mfaFactors.userId, input.userId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    // A factor of another user is indistinguishable from a missing one.
+    if (!factor)
+      return {
+        error: new HttpError(404, "NOT_FOUND", "Faktor kedua tidak ditemukan."),
+      };
+    if (factor.type !== "totp" || factor.secretEncrypted === null)
+      return {
+        error: new HttpError(
+          409,
+          "MFA_FACTOR_UNSUPPORTED",
+          "Faktor ini tidak mendukung verifikasi kode.",
+        ),
+      };
+    // The enrollment DTO promises a window; a pending secret older than it
+    // must be reissued instead of verified (the response is the only copy).
+    if (
+      factor.verifiedAt === null &&
+      now.getTime() >=
+        factor.createdAt.getTime() + MFA_ENROLLMENT_TTL_MINUTES * 60_000
+    )
+      return {
+        error: new CoreError(
+          "CONFLICT",
+          "Pendaftaran faktor ini kedaluwarsa. Daftarkan ulang.",
+        ),
+      };
+    if (isLocked(factor, now)) return { error: lockedError() };
 
-  await db.transaction(async (tx) => {
+    const secret = openSecret(
+      factor.secretEncrypted,
+      aad(factor.id, factor.userId),
+    );
+    const step = verifyTotpCode({
+      secretBase32: secret,
+      code: input.code,
+      now,
+      lastUsedStep: factor.lastUsedStep,
+    });
+
+    if (step === null) {
+      const failedAttempts = factor.failedAttempts + 1;
+      const locked = failedAttempts >= MAX_MFA_ATTEMPTS;
+      await tx
+        .update(mfaFactors)
+        .set({
+          // Never reset by a lock: once it expires, the next miss relocks.
+          failedAttempts,
+          lockedUntil: locked
+            ? new Date(now.getTime() + MFA_LOCK_MINUTES * 60_000)
+            : factor.lockedUntil,
+        })
+        .where(eq(mfaFactors.id, factor.id));
+      return {
+        error: locked
+          ? lockedError()
+          : new HttpError(
+              401,
+              "MFA_CODE_INVALID",
+              "Kode faktor kedua salah atau sudah dipakai.",
+            ),
+      };
+    }
+
     await tx
       .update(mfaFactors)
       .set({
@@ -261,7 +282,10 @@ export async function verifyMfaFactor(input: {
             eq(session.userId, input.userId),
           ),
         );
+    return { factor };
   });
+  if ("error" in outcome) throw outcome.error;
+  const { factor } = outcome;
   return {
     factorId: mfaFactorIdSchema.parse(factor.id),
     verifiedAt: iso(now),
@@ -300,7 +324,15 @@ export async function verifyMfaCodeForUser(input: {
 export async function deleteMfaFactor(input: {
   readonly userId: string;
   readonly factorId: string;
+  /** Whether the caller's session already verified a second factor. */
+  readonly sessionMfaVerified: boolean;
 }): Promise<void> {
+  // Step-up (AUTH-05): removing a factor with only a password would let a
+  // stolen password strip MFA and enroll a new authenticator.
+  if (!input.sessionMfaVerified) {
+    const verified = await listMfaFactors(input.userId);
+    if (verified.length > 0) throw new AccessError("MFA_REQUIRED");
+  }
   const deleted = await db
     .delete(mfaFactors)
     .where(
