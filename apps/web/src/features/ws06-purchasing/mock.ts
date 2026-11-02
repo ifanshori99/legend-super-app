@@ -5,21 +5,15 @@ import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import { idr } from "@starter/shared/core";
 import {
-  cafeLegendInventoryFixtures as inventory,
   cafeLegendPurchasingFixtures as fixtures,
   createPurchaseOrder,
   createPurchaseRequest,
   getPurchaseOrder,
   getPurchaseRequest,
-  listInventoryItems,
-  listStockBalances,
-  listParLevels,
-  listStockLocations,
   listPurchaseOrders,
   listPurchaseRequests,
   listSupplierCatalog,
   listSuppliers,
-  listUoms,
   postPurchaseOrderTransition,
   postPurchaseRequestTransition,
   purchaseOrderDetailSchema,
@@ -32,6 +26,13 @@ import {
   transitionPurchaseOrder,
   transitionPurchaseRequest,
 } from "@starter/shared/inventory";
+// Inventory owns items, units, locations, balances and par levels (bead
+// legend-qdc). Registering them here as well left the mock registry with two
+// handlers per endpoint, so whichever feature module loaded last won — and this
+// copy returned fixture order instead of the contract's name order, which made
+// /kelola/inventori/satuan default to the wrong item. Importing the owning
+// feature keeps one handler per endpoint no matter which screen loads first.
+import "../ws06-inventory/mock.ts";
 
 const printStoragePrefix = "legend-mock-po-print:";
 const printStorageKey = (id: string) => `${printStoragePrefix}${id}`;
@@ -150,46 +151,7 @@ registerMock(listSuppliers, ({ query, scenario }) =>
     scenario,
   ),
 );
-registerMock(listStockBalances, ({ query, scenario }) =>
-  paginateFixture(
-    inventory.balances.filter(
-      (x) =>
-        x.outletId === query.outletId &&
-        (!query.locationId || x.locationId === query.locationId) &&
-        (!query.inventoryItemId || x.inventoryItemId === query.inventoryItemId),
-    ),
-    query,
-    (x) => `${x.locationId}:${x.inventoryItemId}`,
-    scenario,
-  ),
-);
-registerMock(listParLevels, ({ query, scenario }) =>
-  paginateFixture(
-    inventory.parLevels.filter(
-      (x) =>
-        x.outletId === query.outletId &&
-        (!query.locationId || x.locationId === query.locationId) &&
-        (!query.inventoryItemId || x.inventoryItemId === query.inventoryItemId),
-    ),
-    query,
-    (x) => x.id,
-    scenario,
-  ),
-);
-registerMock(listStockLocations, ({ query, scenario }) =>
-  paginateFixture(
-    inventory.locations.filter((x) => x.outletId === query.outletId),
-    query,
-    (x) => x.id,
-    scenario,
-  ),
-);
-registerMock(listInventoryItems, ({ query, scenario }) =>
-  paginateFixture(inventory.items, query, (x) => x.id, scenario),
-);
-registerMock(listUoms, ({ query, scenario }) =>
-  paginateFixture(inventory.uoms, query, (x) => x.id, scenario),
-);
+
 registerMock(listSupplierCatalog, ({ params, query, scenario }) =>
   paginateFixture(
     fixtures.supplierCatalog.filter((x) => x.supplierId === params.supplierId),
