@@ -12,7 +12,10 @@ import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
 import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
+import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
+import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 
@@ -35,7 +38,12 @@ function originalUrl(req: IncomingMessage) {
 
 export function createApp({
   logger = defaultLogger,
-}: { logger?: Logger } = {}) {
+  whatsappWebhookSecrets,
+}: {
+  logger?: Logger;
+  /** Test seam; production reads KIRIM_WEBHOOK_SECRET. */
+  whatsappWebhookSecrets?: readonly string[];
+} = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", trustProxySetting());
@@ -105,10 +113,63 @@ export function createApp({
     next();
   });
 
+  // Tenant resolution shared by the public login path below and /api (TEN-02):
+  // a registered, verified domain of an active tenant or a signed device
+  // token. Never a client-supplied id.
+  const resolveDomain = async (hostname: string) => {
+    const resolution = await resolveHostname(hostname);
+    return resolution.ok
+      ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
+      : null;
+  };
+  const firstSyntheticTenant = async () => {
+    // Development only: the first seeded tenant (the synthetic Cafe Legend
+    // seed). Never derived from request input, and no tenant name is
+    // hard-coded here (TEN-07).
+    const result = await pool.query<{ id: string }>(
+      "SELECT id FROM tenants WHERE status = 'active' ORDER BY created_at, id LIMIT 1",
+    );
+    const row = result.rows[0];
+    return row
+      ? { tenantId: row.id, brandId: null, source: "session" as const }
+      : null;
+  };
+
+  // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
+  // session to gate the development fallback on, and it must run before
+  // Better Auth's catch-all because the identity contract puts it under
+  // /api/auth/*. The tenant is the domain's (or device token's); in
+  // development with synthetic data only, the seeded tenant. Elsewhere an
+  // unresolved host answers TENANT_NOT_FOUND instead of guessing (TEN-02).
+  app.use(
+    "/api/auth/login-challenges",
+    tenantContext({
+      required: false,
+      resolveDomain,
+      verifyCredential: deviceTenantCredential,
+      fallback: developmentSyntheticTenant ? firstSyntheticTenant : undefined,
+    }),
+  );
+  app.use("/api/auth/login-challenges", identityLoginChallengeRouter);
+
+  // Legend identity routes (MFA factors, device sessions) share the /api/auth
+  // prefix with Better Auth. They are mounted here, before Better Auth's
+  // catch-all, so it does not swallow them; every other path falls through
+  // unchanged because each route authenticates on its own.
+  app.use("/api/auth", identityAuthRouter);
+
   // Better Auth owns /api/auth/*: sign-up, sign-in, session, sign-out, admin.
   // It reads the raw body itself, so no JSON parser may run before it, and
   // limitAuthBody caps that body's size first.
   app.all("/api/auth/*splat", limitAuthBody, toNodeHandler(auth));
+
+  // Provider webhooks are server-to-server: no session, no Origin, no tenant
+  // middleware. The tenant comes from the receiving number after the signature
+  // verifies (AUTH-02). Mounted before /api so nothing parses the body first.
+  app.use(
+    "/api/webhooks/whatsapp",
+    createWhatsAppWebhookRouter({ secrets: whatsappWebhookSecrets }),
+  );
 
   // Tenant resolution (TEN-02). In every deployment a registered, verified
   // domain of an active tenant or a signed device token names the tenant; the
@@ -118,31 +179,17 @@ export function createApp({
     "/api",
     tenantContext({
       required: false,
-      resolveDomain: async (hostname) => {
-        const resolution = await resolveHostname(hostname);
-        return resolution.ok
-          ? { tenantId: resolution.tenantId, brandId: resolution.brandId }
-          : null;
-      },
+      resolveDomain,
       verifyCredential: deviceTenantCredential,
+      // Development fallback only for a signed-in caller (the e2e/login flow);
+      // brands are read later inside the tenant transaction.
       fallback: developmentSyntheticTenant
         ? async (req) => {
             const session = await auth.api.getSession({
               headers: fromNodeHeaders(req.headers),
               query: { disableCookieCache: true },
             });
-            if (!session) return null;
-            // Development only: the first seeded tenant (the synthetic Cafe
-            // Legend seed). Never derived from request input, and no tenant
-            // name is hard-coded here (TEN-07); brands are read later inside
-            // the tenant transaction once the context exists.
-            const result = await pool.query<{ id: string }>(
-              "SELECT id FROM tenants WHERE status = 'active' ORDER BY created_at, id LIMIT 1",
-            );
-            const row = result.rows[0];
-            return row
-              ? { tenantId: row.id, brandId: null, source: "session" as const }
-              : null;
+            return session ? firstSyntheticTenant() : null;
           }
         : undefined,
     }),

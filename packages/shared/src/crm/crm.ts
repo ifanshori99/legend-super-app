@@ -19,6 +19,7 @@ import {
   customerProfileSchema,
   customerProfileDtoSchema,
   hasActiveConsent,
+  loyaltyProgramSchema,
   loyaltyTierSchema,
   missionProgressSchema,
   missionSchema,
@@ -497,6 +498,26 @@ export const customer360Schema = z.strictObject({
   activeVouchers: z.array(voucherDtoSchema),
 });
 export type Customer360 = z.infer<typeof customer360Schema>;
+
+/**
+ * Member PWA read model (PRD §3.20 "Halaman Member"): the signed-in customer's
+ * own profile, tier progress, rolling tier-evaluation stats and versioned
+ * consents. Staff-only fields (Customer 360 feedback, segments) stay out; the
+ * server derives every value for the customer in session, never from a body.
+ */
+export const memberOverviewSchema = z.strictObject({
+  profile: customerProfileDtoSchema,
+  /** Earn ratio, expiry and point value, for the points screen's explainer. */
+  program: loyaltyProgramSchema,
+  currentTier: loyaltyTierSchema.nullable(),
+  nextTier: loyaltyTierSchema.nullable(),
+  /** Display progress toward `nextTier` (10.000 = reached), from tierProgressBp. */
+  tierProgressBp: basisPointsSchema,
+  rollingSpendIdr: nonnegativeIdr,
+  rollingVisits: nonnegativeInt,
+  consents: z.array(customerConsentSchema),
+});
+export type MemberOverview = z.infer<typeof memberOverviewSchema>;
 
 /** One mission with the member's progress, for the member PWA. */
 export const missionWithProgressSchema = z.strictObject({
