@@ -116,8 +116,8 @@ export function CheckoutPage() {
           {t("qrCart.checkout.breakdown.loading")}
         </span>
         <Skeleton className="h-9 w-1/2" />
-        <Skeleton className="h-32 w-full rounded-2xl" />
-        <Skeleton className="h-48 w-full rounded-2xl" />
+        <Skeleton className="h-32 w-full rounded-container" />
+        <Skeleton className="h-48 w-full rounded-container" />
       </div>
     );
 
@@ -138,13 +138,11 @@ export function CheckoutPage() {
   if (!hasLines && awaitingOrder)
     return (
       <div className="grid gap-4">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrCart.checkout.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("qrCart.checkout.title")}</h1>
         <Card>
           <CardContent className="grid gap-3">
-            <p className="font-semibold">{awaitingOrder.number}</p>
-            <Money amount={awaitingOrder.totalIdr} size="xl" />
+            <p className="type-title tabular">{awaitingOrder.number}</p>
+            <Money amount={awaitingOrder.totalIdr} size="stat" />
             {orderHasPaidShare(
               bill.data?.data.splits ?? [],
               awaitingOrder.id,
@@ -251,16 +249,13 @@ export function CheckoutPage() {
   return (
     <div className="grid gap-5">
       <header className="grid gap-1">
-        <h1 className="text-3xl leading-9 font-bold tracking-tight">
-          {t("qrCart.checkout.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("qrCart.checkout.title")}</h1>
         <Button asChild variant="link" className="w-fit">
           <Link to="/t/$token/cart" params={{ token: qrToken }}>
             {t("qrCart.checkout.backToCart")}
           </Link>
         </Button>
       </header>
-
       {quote.removedLines.length > 0 && (
         <Notice tone="warning" title={t("qrCart.checkout.removedTitle")}>
           {t("qrCart.checkout.removedBody", { names })}
@@ -284,12 +279,11 @@ export function CheckoutPage() {
           {t("qrCart.checkout.awaitingHint")}
         </Notice>
       )}
-
       <section aria-labelledby="mode-title" className="grid gap-2">
         <h2 id="mode-title" className="sr-only">
           {t("qrCart.checkout.modeTitle")}
         </h2>
-        <div className="rounded-xl bg-muted p-3">
+        <div className="rounded-container bg-surface-2 p-3">
           <p className="font-semibold">
             {payFirst
               ? t("qrCart.checkout.modePayFirst")
@@ -302,9 +296,8 @@ export function CheckoutPage() {
           </p>
         </div>
       </section>
-
       {quote.servingEstimate && (
-        <div className="flex items-center gap-3 rounded-xl border p-3">
+        <div className="flex items-center gap-3 rounded-container border-(length:--border-w) p-3">
           <Clock
             className="size-6 shrink-0 text-muted-foreground"
             aria-hidden="true"
@@ -325,9 +318,8 @@ export function CheckoutPage() {
           </div>
         </div>
       )}
-
       <section aria-labelledby="items-title" className="grid gap-2">
-        <h2 id="items-title" className="text-lg leading-7 font-semibold">
+        <h2 id="items-title" className="type-title">
           {t("qrCart.checkout.itemsTitle")}
         </h2>
         <ul className="grid gap-2">
@@ -344,7 +336,6 @@ export function CheckoutPage() {
           ))}
         </ul>
       </section>
-
       <CodeField
         applied={codeApplied}
         invalid={codeInvalid}
@@ -352,9 +343,7 @@ export function CheckoutPage() {
         onApply={setCode}
         onRemove={() => setCode(null)}
       />
-
       <PriceBreakdown quote={quote} />
-
       {shortfall > 0 && (
         <Notice
           tone="danger"
@@ -364,7 +353,6 @@ export function CheckoutPage() {
           })}
         />
       )}
-
       <div className="sticky bottom-0 z-10 order-last -mx-gutter grid gap-2 border-t bg-background px-gutter py-3 sm:static sm:order-none">
         {place.isError && (
           <Notice tone="danger" title={errorText(t, place.error)} />
@@ -401,7 +389,6 @@ export function CheckoutPage() {
           </p>
         )}
       </div>
-
       {!session && (
         <Card>
           <CardContent className="grid gap-3">
@@ -415,7 +402,6 @@ export function CheckoutPage() {
           </CardContent>
         </Card>
       )}
-
       {payTarget && (
         <PayDialog
           open

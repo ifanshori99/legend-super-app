@@ -186,9 +186,7 @@ export function PaymentPage({ token }: { token: string }) {
             {t("payment.back")}
           </a>
         )}
-        <h1 className="text-xl leading-7 font-semibold">
-          {t("payment.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("payment.title")}</h1>
       </header>
 
       {!online && phase !== "paid" && (

@@ -25,7 +25,7 @@ export function CodeField({
   const [value, setValue] = useState("");
   if (applied && !invalid)
     return (
-      <div className="flex items-center justify-between gap-3 rounded-xl bg-success-subtle p-3">
+      <div className="flex items-center justify-between gap-3 rounded-container bg-success-subtle p-3">
         <p className="flex items-center gap-2 text-sm font-semibold">
           <Tag className="size-5 text-success" aria-hidden="true" />
           {t("qrCart.checkout.code.applied", { code: applied })}
