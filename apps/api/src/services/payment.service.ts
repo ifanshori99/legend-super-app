@@ -56,7 +56,6 @@ import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import {
   decidePaymentConfirmation,
-  type IntentSnapshot,
   type PaymentConfirmation,
 } from "./payment-lifecycle";
 import {
@@ -601,6 +600,27 @@ export async function createIntent(
         });
         return toCustomerIntent(existing);
       }
+      // One live code per bill: lock the bill row (same order as settlement:
+      // bill, then intents) so two creates with different keys serialize and
+      // the second supersedes the first. The balance is re-read under the lock;
+      // if a settlement landed since the plan, the code just minted at the old
+      // amount is never stored (PAY-01: the amount is the current outstanding).
+      const [lockedLink] = await tx
+        .select()
+        .from(paymentLinks)
+        .where(
+          and(
+            eq(paymentLinks.tenantId, context.tenant.tenantId),
+            eq(paymentLinks.id, plan.link.id),
+          ),
+        )
+        .for("update");
+      if (!lockedLink || outstandingIdr(lockedLink) !== amountIdr)
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "This bill changed while the payment was prepared. Reload and try again.",
+        );
       await supersedePending(tx, context, plan.link, now);
       const [row] = await tx
         .insert(paymentIntents)
@@ -773,13 +793,16 @@ async function syncPendingIntent(
     return intent;
   }
   if (providerStatus.status === "paid") {
+    // Fail closed: a status answer without the settled amount proves nothing
+    // about how much arrived; the verified webhook settles it instead (PAY-02).
+    if (providerStatus.amountIdr === null) return intent;
     return applyConfirmation(
       context,
       intent,
       {
         source: "gateway_status",
         method: intent.method,
-        amountIdr: providerStatus.amountIdr ?? intent.amountIdr,
+        amountIdr: providerStatus.amountIdr,
         providerRef: providerStatus.providerRef,
         at: now.toISOString(),
       },
@@ -992,8 +1015,15 @@ async function applyConfirmation(
   actor: PaymentActor,
   now: Date,
 ): Promise<PaymentIntentRow> {
-  const link = await withTenant(db, context, async (tx) => {
-    const [row] = await tx
+  const auditActor = auditActorOf(actor);
+  return withTenant(db, context, async (tx) => {
+    // PAY-04 concurrency: lock the bill row (FOR UPDATE) before reading its
+    // balance, then the intent row. Every settlement writer takes the locks in
+    // this order (bill, then intent), so two settlements for different intents
+    // serialize on the bill and two for the same intent serialize on both; the
+    // decision below is always made from the committed, locked state — never
+    // from a snapshot read before another delivery settled the intent.
+    const [freshLink] = await tx
       .select()
       .from(paymentLinks)
       .where(
@@ -1001,53 +1031,54 @@ async function applyConfirmation(
           eq(paymentLinks.tenantId, context.tenant.tenantId),
           eq(paymentLinks.id, intent.paymentLinkId),
         ),
-      );
-    return row ?? null;
-  });
-  if (!link) throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
-  const snapshot: IntentSnapshot = {
-    status: intent.status,
-    method: intent.method,
-    amountIdr: intent.amountIdr,
-    providerRef: intent.providerRef,
-    expiresAt: intent.expiresAt.toISOString(),
-    flags: intent.flags,
-  };
-  const decision = decidePaymentConfirmation(snapshot, confirmation);
-  if (decision.kind === "duplicate") return intent;
-  if (decision.kind === "reject")
-    throw new HttpError(409, "CONFLICT", decision.message);
-  const auditActor = auditActorOf(actor);
+      )
+      .for("update");
+    if (!freshLink)
+      throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
+    const current = await lockedIntent(tx, context, intent.id);
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    const decision = decidePaymentConfirmation(
+      {
+        status: current.status,
+        method: current.method,
+        amountIdr: current.amountIdr,
+        providerRef: current.providerRef,
+        expiresAt: current.expiresAt.toISOString(),
+        flags: current.flags,
+      },
+      confirmation,
+    );
+    if (decision.kind === "duplicate") return current;
+    if (decision.kind === "reject")
+      throw new HttpError(409, "CONFLICT", decision.message);
 
-  if (decision.kind === "double_payment") {
-    return withTenant(db, context, async (tx) => {
+    if (decision.kind === "double_payment") {
       // PAY-04 retries: one provider transaction must produce one unallocated
       // money row. The evidence identity decides; a replay returns the current
       // intent and writes nothing.
-      const recorded = await recordPaymentEvidence(tx, context, intent, {
+      const recorded = await recordPaymentEvidence(tx, context, current, {
         source: confirmation.source,
         method: confirmation.method,
         amountIdr: decision.amountIdr,
         providerRef: confirmation.providerRef,
         at: confirmation.at,
       });
-      if (!recorded)
-        return (await lockedIntent(tx, context, intent.id)) ?? intent;
+      if (!recorded) return current;
       const [row] = await tx
         .update(paymentIntents)
         .set({ flags: [...decision.flags], updatedAt: now })
         .where(
           and(
             eq(paymentIntents.tenantId, context.tenant.tenantId),
-            eq(paymentIntents.id, intent.id),
+            eq(paymentIntents.id, current.id),
           ),
         )
         .returning();
       if (!row) throw new Error("Payment intent update returned no row");
       await tx.insert(paymentUnallocatedFunds).values({
         tenantId: context.tenant.tenantId,
-        outletId: intent.outletId,
-        paymentIntentId: intent.id,
+        outletId: current.outletId,
+        paymentIntentId: current.id,
         amountIdr: idr(decision.amountIdr),
         reason: "double_payment",
       });
@@ -1057,15 +1088,15 @@ async function applyConfirmation(
         {
           id: createUlid(now.getTime()),
           tenantId: context.tenant.tenantId,
-          outletId: intent.outletId,
+          outletId: current.outletId,
           ...auditActor,
           deviceId: null,
           action: "payment.double_payment_flagged",
           objectType: "payment_intent",
-          objectId: intent.id,
+          objectId: current.id,
           reason: null,
           maskedChanges: {
-            before: { status: intent.status },
+            before: { status: current.status },
             after: {
               status: row.status,
               unallocatedIdr: decision.amountIdr,
@@ -1080,41 +1111,22 @@ async function applyConfirmation(
         ["status", "unallocatedIdr", "providerRef"],
       );
       return row;
-    });
-  }
+    }
 
-  // The bill may already be covered by another intent (a refreshed code paid
-  // late): only the remainder is allocated, the rest becomes unallocated.
-  return withTenant(db, context, async (tx) => {
-    // PAY-04 concurrency: lock the bill row (FOR UPDATE) before reading its
-    // balance. Two settlements for different intents then serialize; the
-    // second one sees the first allocation and turns its own money into
-    // unallocated funds instead of double-allocating the same remainder.
-    const [freshLink] = await tx
-      .select()
-      .from(paymentLinks)
-      .where(
-        and(
-          eq(paymentLinks.tenantId, context.tenant.tenantId),
-          eq(paymentLinks.id, link.id),
-        ),
-      )
-      .for("update");
-    if (!freshLink)
-      throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
+    // The bill may already be covered by another intent (a refreshed code
+    // paid late): only the remainder is allocated, the rest is unallocated.
     // Evidence identity before any money write: a replay of this provider
     // transaction returns the committed state and records nothing.
-    const recorded = await recordPaymentEvidence(tx, context, intent, {
+    const recorded = await recordPaymentEvidence(tx, context, current, {
       source: confirmation.source,
       method: confirmation.method,
       amountIdr: confirmation.amountIdr,
       providerRef: confirmation.providerRef,
       at: confirmation.at,
     });
-    if (!recorded)
-      return (await lockedIntent(tx, context, intent.id)) ?? intent;
+    if (!recorded) return current;
     const allocatableNow = Math.min(
-      intent.amountIdr,
+      current.amountIdr,
       outstandingIdr(freshLink),
     );
     const unallocatedNow = Math.max(0, confirmation.amountIdr - allocatableNow);
@@ -1141,8 +1153,8 @@ async function applyConfirmation(
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, intent.id),
-          eq(paymentIntents.status, intent.status),
+          eq(paymentIntents.id, current.id),
+          eq(paymentIntents.status, current.status),
         ),
       )
       .returning();
@@ -1168,8 +1180,8 @@ async function applyConfirmation(
     if (reasonNow !== null && unallocatedNow > 0)
       await tx.insert(paymentUnallocatedFunds).values({
         tenantId: context.tenant.tenantId,
-        outletId: intent.outletId,
-        paymentIntentId: intent.id,
+        outletId: current.outletId,
+        paymentIntentId: current.id,
         amountIdr: idr(unallocatedNow),
         reason: reasonNow,
       });
@@ -1211,7 +1223,7 @@ async function applyConfirmation(
         objectId: row.id,
         reason: null,
         maskedChanges: {
-          before: { status: intent.status },
+          before: { status: current.status },
           after: {
             status: row.status,
             amountIdr: row.amountIdr,

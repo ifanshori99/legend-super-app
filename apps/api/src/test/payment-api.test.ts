@@ -174,6 +174,13 @@ class FakeGateway implements PaymentGatewayPort {
     return method === "qris" ? [] : [{ code: "bca", name: "BCA" }];
   }
 
+  /** A status answer that omits the settled amount. */
+  forgetAmount(providerRef: string) {
+    const found = this.payments.get(providerRef);
+    if (!found) throw new Error(`No fake payment ${providerRef}`);
+    this.payments.set(providerRef, { ...found, amountIdr: null });
+  }
+
   settle(providerRef: string, amountIdr?: number) {
     const found = this.payments.get(providerRef);
     if (!found) throw new Error(`No fake payment ${providerRef}`);
@@ -666,6 +673,116 @@ describe("PAY-04 unallocated funds", () => {
       total: "144375",
       reason: "double_payment",
     });
+  });
+
+  it("PAY-04 review: two different payments for one pending intent settle once and park the second as unallocated", async () => {
+    const { token, linkId } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "va",
+        channelCode: "bca",
+        idempotencyKey: "same-intent-race",
+      });
+    const intentId = created.body.data.id as string;
+    // A VA can be paid twice; both verified deliveries race on the same
+    // pending intent. Both must be accepted: one allocates, one is parked.
+    const results = await Promise.allSettled([
+      confirmPayment(contextFor(), intentId, {
+        source: "verified_webhook",
+        method: "va",
+        amountIdr: 144_375,
+        providerRef: "VA-RACE-1",
+        at: new Date().toISOString(),
+      }),
+      confirmPayment(contextFor(), intentId, {
+        source: "verified_webhook",
+        method: "va",
+        amountIdr: 144_375,
+        providerRef: "VA-RACE-2",
+        at: new Date().toISOString(),
+      }),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+    ]);
+    const link = await owner.query<{ paid_idr: string }>(
+      "SELECT paid_idr::text AS paid_idr FROM payment_links WHERE id = $1",
+      [linkId],
+    );
+    expect(link.rows[0]?.paid_idr).toBe("144375");
+    const funds = await unallocatedFundsOfIntent(contextFor(), intentId);
+    expect(funds).toHaveLength(1);
+    expect(funds[0]).toMatchObject({
+      amountIdr: 144_375,
+      reason: "double_payment",
+    });
+  });
+
+  it("PAY-02 review: a gateway status of paid without an amount does not settle", async () => {
+    const { token } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "status-no-amount",
+      });
+    gateway.settle(gateway.lastCreated!);
+    gateway.forgetAmount(gateway.lastCreated!);
+    const polled = await agent(app).get(
+      `/api/payments/links/${token}/intents/${created.body.data.id}`,
+    );
+    expect(polled.body.data.status).toBe("pending");
+    const view = await agent(app).get(`/api/payments/links/${token}`);
+    expect(view.body.data.bill.totals.paidIdr).toBe(0);
+  });
+
+  it("PAY-01 review: concurrent creates with different keys leave one live code", async () => {
+    const { token, linkId } = await openBill();
+    const responses = await Promise.all(
+      ["live-code-a", "live-code-b", "live-code-c"].map((key) =>
+        agent(app)
+          .post(`/api/payments/links/${token}/intents`)
+          .send({ method: "qris", channelCode: null, idempotencyKey: key }),
+      ),
+    );
+    expect(responses.map((r) => r.status)).toEqual([201, 201, 201]);
+    const { rows } = await owner.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2 AND status = 'pending'",
+      [tenantId, linkId],
+    );
+    expect(rows[0]?.count).toBe("1");
+  });
+
+  it("PAY-01 review: a code is not stored for a bill settled while it was being prepared", async () => {
+    const { token, linkId } = await openBill();
+    const first = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({ method: "qris", channelCode: null, idempotencyKey: "prepare-a" });
+    // The gateway call for the second code happens after the plan was read;
+    // the first code settles in between.
+    const originalCreate = gateway.createIntent.bind(gateway);
+    gateway.createIntent = async (input) => {
+      await confirmPayment(contextFor(), first.body.data.id, {
+        source: "verified_webhook",
+        method: "qris",
+        amountIdr: 144_375,
+        providerRef: `PREP-${randomBytes(4).toString("hex")}`,
+        at: new Date().toISOString(),
+      });
+      return originalCreate(input);
+    };
+    const second = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({ method: "qris", channelCode: null, idempotencyKey: "prepare-b" });
+    expect(second.status).toBe(409);
+    const { rows } = await owner.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+      [tenantId, linkId],
+    );
+    expect(rows[0]?.count).toBe("1");
   });
 
   it("PAY-04 a resolution needs payment.reconcile and an approval reference", async () => {
