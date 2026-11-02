@@ -20,6 +20,7 @@ import {
 import { tenantIdSchema, z } from "@starter/shared/core";
 import { verifiedMfaAt } from "../lib/mfa";
 import { getAuth, requireAuth } from "../middleware/auth";
+import { requireSessionMfa } from "../middleware/identity";
 import { requirePlatformAdmin } from "../middleware/platform-admin";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -38,7 +39,16 @@ import {
 
 export const platformRouter = Router();
 
-platformRouter.use(requireAuth, requireTrustedOrigin, requirePlatformAdmin);
+// AUTH-05/§3 F4: the Super Admin panel is MFA-only, so every platform call
+// needs a second factor verified in this session, with the 30-minute
+// management idle policy (legend-qfvu mounts legend-6xf's gate). The registry
+// check runs first: a non-admin learns nothing about the MFA requirement.
+platformRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requirePlatformAdmin,
+  requireSessionMfa(),
+);
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
 const grantParams = z.strictObject({ grantId: supportAccessGrantIdSchema });

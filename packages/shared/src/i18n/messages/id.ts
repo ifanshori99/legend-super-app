@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { kdsMessages } from "./kds.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -14,6 +15,7 @@ export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
+  kds: kdsMessages,
   qrMenu: qrMenuMessages,
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
@@ -542,6 +544,8 @@ export const id = {
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",
+      tax: "Pajak & service charge",
+      taxReport: "Laporan pajak",
     },
   },
   // Notification center, preferences and web push opt-in (PRD §3.15, §2 PWA).
@@ -1948,6 +1952,263 @@ export const id = {
       allocationNotFull: "Alokasi pendapatan harus berjumlah 100%.",
       deleteInUse: "Masih dipakai data lain. Lepas dulu sebelum menghapus.",
       saveFailed: "Perubahan gagal disimpan. Periksa isian lalu coba lagi.",
+    },
+  },
+
+  // WS-05 tax & service charge (PRD v1.7 §3.14 F11, D13, R20/R21): versioned
+  // rules, calculation options and the monthly PBJT recap (bead legend-efr).
+  tax: {
+    title: "Pajak & service charge",
+    subtitle:
+      "Aturan pajak dan service charge berversi, opsi perhitungan, dan rekap PBJT bulanan. Harga menu belum termasuk pajak dan service charge; keduanya ditambahkan saat pembayaran.",
+    tabs: {
+      rules: "Aturan pajak",
+      serviceCharge: "Service charge",
+      settings: "Opsi perhitungan",
+      report: "Laporan PBJT",
+    },
+    versionLabel: "v{version}",
+    versionStatus: {
+      draft: "Draf",
+      published: "Terbit",
+      archived: "Arsip",
+    },
+    effective: {
+      now: "Berlaku sekarang",
+      scheduled: "Terjadwal",
+      ended: "Diakhiri",
+    },
+    taxType: {
+      pbjt: "PBJT",
+      ppn: "PPN",
+      other: "Pungutan lain",
+    },
+    itemClass: {
+      food_beverage: "Makanan & minuman",
+      facility: "Layanan fasilitas",
+    },
+    channels: {
+      all: "Semua kanal",
+      dine_in: "Dine-in",
+      takeaway: "Bawa pulang",
+      gofood: "GoFood",
+      grabfood: "GrabFood",
+      shopeefood: "ShopeeFood",
+      reservation: "Reservasi",
+    },
+    appliesTo: {
+      categories: "{count} kategori",
+      items: "{count} item",
+    },
+    rounding: {
+      half_up: "Setengah ke atas",
+      half_even: "Setengah ke genap",
+      down: "Menuju nol",
+      floor: "Ke bawah",
+      ceil: "Ke atas",
+    },
+    packageAllocation: {
+      fixed_bp: "Porsi tetap per komponen",
+      standalone_price_ratio: "Proporsi harga normal",
+    },
+    rules: {
+      title: "Aturan pajak",
+      description:
+        "Setiap perubahan dibuat sebagai versi baru dengan tanggal efektif. Versi yang sudah terbit tidak dapat diubah.",
+      add: "Aturan baru",
+      searchLabel: "Cari kode atau nama aturan",
+      filterStatus: "Saring status versi",
+      filterAll: "Semua status",
+      emptyTitle: "Belum ada aturan pajak",
+      emptyHint:
+        "Tambahkan aturan PBJT makanan dan minuman sebagai aturan pertama, lalu terbitkan.",
+      columns: {
+        rule: "Kode & nama",
+        rate: "Tarif",
+        appliesTo: "Cakupan",
+        channels: "Kanal",
+        effective: "Berlaku sejak",
+        status: "Versi",
+        actions: "Aksi",
+      },
+      effectiveFrom: "Efektif {date}",
+      newVersion: "Versi baru",
+      newVersionTitle: "Versi baru {code}",
+      editDraft: "Ubah draf",
+      publish: "Terbitkan",
+      createdToast: "Draf aturan pajak dibuat.",
+      updatedToast: "Draf aturan pajak diperbarui.",
+      publishedToast: "Aturan pajak diterbitkan.",
+    },
+    serviceCharge: {
+      title: "Service charge",
+      listDescription:
+        "Persentase service charge per zona atau tipe pesanan, berversi dengan tanggal efektif.",
+      description:
+        "Aturan service charge berversi dengan tanggal efektif; versi terbit tidak dapat diubah.",
+      add: "Aturan service charge baru",
+      editDraft: "Ubah draf",
+      newVersionTitle: "Versi baru {code}",
+      emptyTitle: "Belum ada aturan service charge",
+      emptyHint:
+        "Tambahkan aturan service charge untuk zona atau tipe pesanan tertentu.",
+      columns: { scope: "Zona & cakupan" },
+      allZones: "Semua zona",
+      zoneUnknown: "Zona tidak dikenal",
+      zone: "Zona",
+      zoneHint:
+        "Pilih zona tempat service charge berlaku, atau biarkan untuk semua zona.",
+      zoneUnavailable:
+        "Zona tidak dapat dimuat. Aturan tetap bisa dibuat untuk semua zona; muat ulang halaman untuk mencoba lagi.",
+      orderTypes: "Tipe pesanan",
+      orderTypesHint: "Kosongkan untuk semua tipe pesanan.",
+      allOrderTypes: "Semua tipe pesanan",
+      rateHint: "Persentase dari dasar sebelum pajak, misalnya 5 untuk 5%.",
+      createdToast: "Draf aturan service charge dibuat.",
+      updatedToast: "Draf aturan service charge diperbarui.",
+      publishedToast: "Aturan service charge diterbitkan.",
+    },
+    settings: {
+      currentTitle: "Opsi yang berlaku",
+      currentSince: "Versi {version}, berlaku sejak {date}.",
+      historyTitle: "Riwayat versi opsi",
+      historyDescription:
+        "Setiap perubahan opsi perhitungan adalah versi baru dengan tanggal efektif.",
+      newVersion: "Versi baru",
+      emptyTitle: "Belum ada opsi perhitungan",
+      emptyHint:
+        "Buat versi pertama: harga belum termasuk pajak, pembulatan setengah ke atas.",
+      description:
+        "Simpan sebagai draf, lalu terbitkan dari riwayat versi. Versi terbit tidak dapat diubah.",
+      pricesIncludeTax: "Harga termasuk pajak",
+      pricesIncludeTaxHint:
+        "Bawaan tenant: belum termasuk. Nyalakan hanya bila harga menu sudah termasuk pajak dan service charge (harga nett).",
+      included: "Termasuk",
+      excluded: "Belum termasuk",
+      order: "Urutan perhitungan",
+      orderValue: "Diskon → service charge → pajak",
+      serviceRounding: "Pembulatan service charge",
+      taxRounding: "Pembulatan pajak",
+      inclusiveBaseRounding: "Pembulatan dasar harga nett",
+      inclusiveBaseHint:
+        "Sisa pembulatan masuk ke pajak agar dasar + service + pajak sama dengan harga.",
+      roundingHint: "Berlaku untuk rupiah penuh.",
+      billRounding: "Pembulatan tunai",
+      billRoundingHint:
+        "Pembulatan total tagihan untuk pembayaran tunai; tidak menjadi bagian dasar pajak.",
+      billRoundingIncrement: "Kelipatan pembulatan",
+      billRoundingIncrementHint: "Dalam rupiah, misalnya 100 atau 500.",
+      billRoundingMode: "Cara pembulatan",
+      billRoundingValue: "Kelipatan {amount} ({mode})",
+      noBillRounding: "Tanpa pembulatan",
+      packageAllocation: "Alokasi paket campuran",
+      createdToast: "Draf opsi perhitungan dibuat.",
+      publishedToast: "Opsi perhitungan diterbitkan.",
+      publishTitle: "Terbitkan opsi versi {version}?",
+      columns: {
+        version: "Versi",
+        pricesIncludeTax: "Harga termasuk pajak",
+        taxRounding: "Pembulatan pajak",
+        packageAllocation: "Alokasi paket",
+      },
+    },
+    report: {
+      title: "Rekap PBJT bulanan",
+      subtitle:
+        "Rekap pajak per aturan untuk pelaporan ke pemerintah daerah. Angka berasal dari transaksi yang sudah diposting.",
+      period: "Periode",
+      export: "Unduh CSV",
+      tableTitle: "Rincian per aturan pajak",
+      tableDescription: "Pilih bulan untuk melihat rekap PBJT.",
+      generated: "Wilayah {region} · Dibuat {time}",
+      regionEmpty: "belum diatur",
+      emptyTitle: "Belum ada transaksi pada periode ini",
+      emptyHint:
+        "Pilih bulan lain, atau periksa transaksi yang sudah diposting.",
+      columns: {
+        rule: "Aturan pajak",
+        rate: "Tarif",
+        transactions: "Transaksi",
+        gross: "Penjualan bruto",
+        base: "Dasar pajak",
+        service: "Service charge",
+        tax: "Pajak",
+      },
+      totalRow: "Total",
+      totalTax: "Total pajak",
+      totalBase: "Total dasar pajak",
+      transactions: "Transaksi",
+      viewRows: "Lihat rincian",
+      csv: {
+        code: "Kode aturan",
+        rate: "Tarif (basis poin)",
+        transactions: "Transaksi",
+        gross: "Penjualan bruto (Rp)",
+        base: "Dasar pajak (Rp)",
+        service: "Service charge (Rp)",
+        tax: "Pajak (Rp)",
+        total: "Total",
+      },
+    },
+    publish: {
+      ruleTitle: "Terbitkan {code} versi {version}?",
+      serviceChargeTitle: "Terbitkan service charge {code} versi {version}?",
+      body: "Setelah terbit, versi ini tidak dapat diubah. Perubahan berikutnya dibuat sebagai versi baru dengan tanggal efektifnya sendiri.",
+      confirm: "Terbitkan",
+    },
+    form: {
+      description: "Isi data aturan. Draf dapat diubah sampai diterbitkan.",
+      code: "Kode aturan",
+      codeHint:
+        "Huruf besar, angka, _ dan - (2–40 karakter), misalnya PBJT-FNB.",
+      name: "Nama aturan",
+      taxType: "Jenis pajak",
+      rate: "Tarif (%)",
+      rateHint:
+        "Persentase dari dasar pengenaan; PBJT Kota Bandung 10%. Tulis 5,5 untuk 5,5%.",
+      region: "Wilayah",
+      regionHint:
+        "Opsional. Kode ISO provinsi + BPS, misalnya ID-JB-3273 (Kota Bandung). Kosong = semua wilayah.",
+      effectiveFrom: "Tanggal efektif",
+      appliesTo: "Cakupan item",
+      appliesToHint: "Pilih kelas item yang tercakup aturan ini.",
+      preservedTargets:
+        "Kategori ({categories}) dan item ({items}) yang sudah ditargetkan tetap dipertahankan.",
+      channels: "Kanal",
+      channelsHint: "Kosong = semua kanal.",
+      priceIncludesTax: "Harga termasuk pajak",
+      priceIncludesTaxHint:
+        "Harga item yang tercakup sudah termasuk pajak dan service charge (harga nett); mesin menghitung dasarnya mundur.",
+      includeServiceInBase: "Service charge masuk dasar pajak",
+      includeServiceInBaseHint:
+        "DPP pajak mencakup service charge. Pastikan perlakuan ini dengan konsultan pajak.",
+      isActive: "Aturan aktif",
+      isActiveHint:
+        "Matikan untuk mengakhiri aturan ini mulai tanggal efektif.",
+      saveDraft: "Simpan draf",
+    },
+    errors: {
+      required: "Wajib diisi.",
+      code: "Gunakan 2–40 karakter: huruf besar, angka, _ atau -.",
+      rate: "Tulis angka 0–100, maksimal dua desimal (misalnya 10 atau 5,5).",
+      region: "Format wilayah: ID-XX atau ID-XX-1234.",
+      itemClasses: "Pilih minimal satu kelas item.",
+      increment: "Tulis kelipatan rupiah 1–100.000.",
+      saveFailed: "Draf tidak tersimpan. Periksa isian, lalu coba lagi.",
+      ruleNotFound:
+        "Aturan pajak untuk item ini belum diatur. Lengkapi aturan pajak.",
+      ruleAmbiguous:
+        "Lebih dari satu aturan berlaku untuk item ini. Persempit cakupan aturan.",
+      ruleImmutable:
+        "Aturan yang sudah terbit tidak dapat diubah. Buat versi baru.",
+      ruleBackdated:
+        "Tanggal efektif tidak boleh sebelum hari ini. Pilih tanggal hari ini atau setelahnya.",
+      settingsNotFound:
+        "Opsi perhitungan outlet belum diatur. Buat dan terbitkan opsi perhitungan.",
+      packageAllocation:
+        "Alokasi harga paket tidak valid. Periksa porsi atau harga normal komponen.",
+      invalidTransition:
+        "Perubahan status aturan tidak diizinkan. Muat ulang lalu coba lagi.",
     },
   },
 
