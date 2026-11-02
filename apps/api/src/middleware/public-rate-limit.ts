@@ -47,6 +47,7 @@ export const PUBLIC_RATE_LIMIT_MESSAGE =
 export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   "/api/qr",
   "/api/public/site",
+  "/api/public/outlets",
   "/api/tenant",
   // Only the token-holding customer payment links. /api/payments/admin is
   // authenticated staff configuration and must never share the guests'

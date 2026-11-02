@@ -22,6 +22,9 @@ import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingRouter } from "./accounting.routes";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
+import { reservationRouter } from "./reservation.routes";
+import { facilityRouter } from "./facility.routes";
+import { hrisRouter } from "./hris.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -78,3 +81,9 @@ apiRouter.use("/accounting", accountingRouter);
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);
+// WS-08 reservations (legend-t8bz): full paths inside the router.
+apiRouter.use(reservationRouter);
+// WS-09 facility slots (legend-nm4f).
+apiRouter.use("/facility", facilityRouter);
+// WS-10 HRIS (legend-qe1z).
+apiRouter.use("/hris", hrisRouter);
