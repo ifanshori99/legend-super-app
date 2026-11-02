@@ -27,7 +27,7 @@ import {
   tileReportName,
   type KpiLine,
 } from "../lib";
-import { contractHref } from "./href";
+import { contractHref, useRouteAvailable } from "./href";
 
 /** One figure in the type tier of a stat value (§3 money display). */
 function KpiValue({ line }: { line: KpiLine }) {
@@ -70,17 +70,21 @@ export function KpiStrip({
   tile,
   layout,
   run,
+  failed = false,
   role,
 }: {
   tile: MetricDashboardTile;
   layout: DashboardLayout;
   run: ReportResult | undefined;
+  /** The source report run failed: say so instead of a skeleton or "no data". */
+  failed?: boolean;
   role: ManagementRole;
 }) {
   const t = useT();
+  const routeAvailable = useRouteAvailable();
   const lines = kpiLines(tile, run);
   const period = resolveTilePeriod(tile, layout);
-  const pending = run === undefined;
+  const pending = run === undefined && !failed;
   const empty = isRunEmpty(run);
   const context = `${t(PERIOD_LABEL_KEYS[period.preset])} · ${formatBusinessDate(layout.businessDate)}`;
   const href = tileDrillDownPath(tile, layout);
@@ -99,6 +103,10 @@ export function KpiStrip({
             value={
               pending ? (
                 <Skeleton className="h-7 w-28" />
+              ) : failed ? (
+                <span className="type-heading font-normal text-muted-foreground">
+                  {t("managementHome.kpiFailed")}
+                </span>
               ) : (
                 <KpiValue line={empty ? { ...line, value: null } : line} />
               )
@@ -110,16 +118,20 @@ export function KpiStrip({
       {href !== null && reportName !== null && (
         <p className="px-2 text-sm leading-5 text-muted-foreground">
           {t("managementHome.sourceLabel")}{" "}
-          <Link
-            to={contractHref(href)}
-            className="font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            {reportName}
-            <ArrowUpRight
-              className="ms-0.5 inline size-3.5"
-              aria-hidden="true"
-            />
-          </Link>
+          {!routeAvailable(href) ? (
+            <span className="font-medium text-foreground">{reportName}</span>
+          ) : (
+            <Link
+              to={contractHref(href)}
+              className="font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {reportName}
+              <ArrowUpRight
+                className="ms-0.5 inline size-3.5"
+                aria-hidden="true"
+              />
+            </Link>
+          )}
         </p>
       )}
     </div>

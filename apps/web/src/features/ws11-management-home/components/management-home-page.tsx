@@ -35,6 +35,7 @@ import {
   sectionTiles,
   showsApprovalBox,
 } from "../lib";
+import { useRouteAvailable } from "./href";
 import { HomeSkeleton } from "./home-skeleton";
 import { KpiStrip } from "./kpi-strip";
 import { QueueCard } from "./queue-card";
@@ -53,6 +54,7 @@ export function ManagementHomePage({
   const t = useT();
   const layout = useManagementLayout();
   const refresh = useRefreshManagementHome();
+  const routeAvailable = useRouteAvailable();
 
   const data = layout.data;
   const visible = data ? permittedTiles(data.tiles, access.permissions) : [];
@@ -87,8 +89,9 @@ export function ManagementHomePage({
   const approvals = sectionQueueTiles(visible, "approvals");
   const showApprovals = showsApprovalBox(queueTiles, approvals);
   const reportTiles = sectionTiles(visible, "reports");
+  // Catalog/audit links only once their screens exist (no 404 links).
   const reportLinks = reportTiles.flatMap((tile) =>
-    tile.kind === "link" ? [tile] : [],
+    tile.kind === "link" && routeAvailable(tile.targetPath) ? [tile] : [],
   );
   const meta = [
     t("managementHome.businessDate", {
@@ -104,7 +107,8 @@ export function ManagementHomePage({
 
   const toolbar = (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
-      {activeRole !== null && (
+      {/* A real API sends the caller's own role only: one role needs no switch. */}
+      {activeRole !== null && roles.length > 1 && (
         <TabsList aria-label={t("managementHome.rolesLabel")}>
           {roles.map((candidate) => (
             <TabsTrigger key={candidate} value={candidate}>
@@ -160,6 +164,7 @@ export function ManagementHomePage({
               tile={kpiTile}
               layout={layoutData}
               run={kpiInput === null ? undefined : kpiRun.data}
+              failed={kpiRun.isError && kpiRun.data === undefined}
               role={activeRole}
             />
           )}

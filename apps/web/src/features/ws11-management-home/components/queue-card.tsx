@@ -19,7 +19,7 @@ import {
 import { QUEUE_ICONS } from "../icons";
 import { tileKindKey, QUEUE_HINT_KEYS, QUEUE_LABEL_KEYS } from "../labels";
 import { queueOf } from "../lib";
-import { contractHref } from "./href";
+import { contractHref, useRouteAvailable } from "./href";
 
 export function QueueCard({
   tile,
@@ -30,6 +30,7 @@ export function QueueCard({
   hideTitle?: boolean;
 }) {
   const t = useT();
+  const routeAvailable = useRouteAvailable();
   const queue = queueOf(tile);
   const report = dashboardTileReport(tile);
   const Icon = queue !== null ? QUEUE_ICONS[queue] : FileText;
@@ -57,12 +58,16 @@ export function QueueCard({
       {report !== null && (
         <CardShellFooter>
           <span>{t("managementHome.sourceLabel")}</span>
-          <Link
-            to={contractHref(report.route)}
-            className="font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          >
-            {report.name}
-          </Link>
+          {!routeAvailable(report.route) ? (
+            <span className="font-medium text-foreground">{report.name}</span>
+          ) : (
+            <Link
+              to={contractHref(report.route)}
+              className="font-semibold text-primary underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            >
+              {report.name}
+            </Link>
+          )}
         </CardShellFooter>
       )}
     </CardShell>
