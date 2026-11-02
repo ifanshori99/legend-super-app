@@ -8,11 +8,11 @@ import { Slot } from "radix-ui";
 // (h-control, px-control-x, rounded-control), so one Button fits Hangat
 // (pill CTA, 48px), Kontras (60px targets), and Padat (36px, 44px on touch).
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-control font-semibold whitespace-nowrap transition-[background-color,color,border-color] duration-(--duration-fast) ease-standard select-none disabled:pointer-events-none disabled:opacity-50 aria-busy:cursor-progress [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-icon",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-control font-semibold whitespace-nowrap pressable select-none disabled:pointer-events-none disabled:opacity-50 aria-busy:cursor-progress [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-icon",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default: "bg-primary text-primary-foreground hover:bg-primary-hover",
         brand: "bg-brand text-brand-foreground hover:bg-brand/90",
         secondary: "bg-secondary text-foreground hover:bg-accent",
         outline:

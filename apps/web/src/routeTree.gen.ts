@@ -30,6 +30,7 @@ import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as DesignSystemV2RouteImport } from './routes/design-system_.v2'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
@@ -165,6 +166,11 @@ const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => PublicRoute,
+} as any)
+const DesignSystemV2Route = DesignSystemV2RouteImport.update({
+  id: '/design-system_/v2',
+  path: '/design-system/v2',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
   id: '/bayar/$token',
@@ -391,6 +397,7 @@ export interface FileRoutesByFullPath {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/design-system/v2': typeof DesignSystemV2Route
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -443,6 +450,7 @@ export interface FileRoutesByTo {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/design-system/v2': typeof DesignSystemV2Route
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -506,6 +514,7 @@ export interface FileRoutesById {
   '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
+  '/design-system_/v2': typeof DesignSystemV2Route
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
@@ -562,6 +571,7 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/design-system/v2'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -614,6 +624,7 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/design-system/v2'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -676,6 +687,7 @@ export interface FileRouteTypes {
     | '/_kitchen/pickup'
     | '/_protected/admin'
     | '/_protected/notes'
+    | '/design-system_/v2'
     | '/_public/'
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
@@ -733,6 +745,7 @@ export interface RootRouteChildren {
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  DesignSystemV2Route: typeof DesignSystemV2Route
 }
 
 declare module '@tanstack/react-router' {
@@ -883,6 +896,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof PublicIndexRouteImport
       parentRoute: typeof PublicRoute
+    }
+    '/design-system_/v2': {
+      id: '/design-system_/v2'
+      path: '/design-system/v2'
+      fullPath: '/design-system/v2'
+      preLoaderRoute: typeof DesignSystemV2RouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_customer/bayar/$token': {
       id: '/_customer/bayar/$token'
@@ -1408,6 +1428,7 @@ const rootRouteChildren: RootRouteChildren = {
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  DesignSystemV2Route: DesignSystemV2Route,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

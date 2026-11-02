@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Legend Design v2</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --band: #f7f6f4;
+        --raised: #f1efec;
+        --fg: #1c1b19;
+        --muted: #5f5b55;
+        --line: #e3e0dc;
+        --accent: #8a4423;
+        --accent-fg: #ffffff;
+        --tint: #f3ece9;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #0f0e0d;
+          --band: #161513;
+          --raised: #242220;
+          --fg: #f3f1ee;
+          --muted: #aaa59d;
+          --line: #2f2c29;
+          --accent: #e8a27a;
+          --accent-fg: #2a1206;
+          --tint: #251d18;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #0f0e0d;
+        --band: #161513;
+        --raised: #242220;
+        --fg: #f3f1ee;
+        --muted: #aaa59d;
+        --line: #2f2c29;
+        --accent: #e8a27a;
+        --accent-fg: #2a1206;
+        --tint: #251d18;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.5 "Plus Jakarta Sans",
+          "Inter",
+          ui-sans-serif,
+          system-ui,
+          sans-serif;
+      }
+      .wrap {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 0 16px 64px;
+      }
+      header.top {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+      }
+      header.top .wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+        padding-top: 12px;
+        padding-bottom: 12px;
+      }
+      .brand {
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      nav a {
+        color: var(--muted);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 6px 10px;
+        border-radius: 999px;
+      }
+      nav a:hover {
+        background: var(--band);
+        color: var(--fg);
+      }
+      .seg {
+        display: inline-flex;
+        background: var(--band);
+        border-radius: 999px;
+        padding: 3px;
+      }
+      .seg button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 6px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+        min-height: 36px;
+      }
+      .seg button[aria-pressed="true"] {
+        background: var(--fg);
+        color: var(--bg);
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-left: auto;
+      }
+      .eyebrow {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      h1 {
+        font-size: clamp(34px, 4vw, 44px);
+        line-height: 1.1;
+        letter-spacing: -0.025em;
+        font-weight: 600;
+        margin: 8px 0 12px;
+      }
+      h2 {
+        font-size: 32px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        font-weight: 600;
+        margin: 0;
+      }
+      .lead {
+        color: var(--muted);
+        font-size: 18px;
+        max-width: 760px;
+        margin: 0;
+      }
+      .intro {
+        padding: 40px 0 24px;
+      }
+      .moves {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+        gap: 0;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        overflow: hidden;
+        margin: 24px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .moves li {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        border-right: 1px solid var(--line);
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .moves b {
+        color: var(--fg);
+        display: block;
+        font-size: 15px;
+      }
+      section.surface {
+        padding-top: 56px;
+        scroll-margin-top: 72px;
+      }
+      .surface-head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: baseline;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .surface-head p {
+        margin: 0;
+        color: var(--muted);
+      }
+      .pair {
+        display: grid;
+        gap: 24px;
+        margin-top: 24px;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      @media (min-width: 1100px) {
+        .pair {
+          grid-template-columns: 1fr 1fr;
+        }
+        body[data-width="390"] .pair {
+          grid-template-columns: 1fr 1fr;
+          max-width: 900px;
+        }
+      }
+      figure {
+        margin: 0;
+        display: grid;
+        gap: 8px;
+        align-content: start;
+      }
+      figcaption {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-weight: 600;
+        font-size: 14px;
+      }
+      .tag {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 2px 10px;
+        border-radius: 999px;
+        background: var(--raised);
+        color: var(--muted);
+      }
+      .tag.after {
+        background: var(--accent);
+        color: var(--accent-fg);
+      }
+      .shot {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: auto;
+        max-height: 1100px;
+        background: var(--band);
+      }
+      .shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      body[data-width="390"] .shot img {
+        width: 390px;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+      .questions {
+        margin-top: 24px;
+        background: var(--band);
+        border-radius: 16px;
+        padding: 20px;
+      }
+      .questions h3 {
+        margin: 0 0 12px;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+      }
+      .questions ol {
+        margin: 0;
+        padding-left: 22px;
+        display: grid;
+        gap: 14px;
+      }
+      .questions li::marker {
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .questions .q {
+        font-weight: 600;
+      }
+      .questions ul {
+        margin: 6px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .rec {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--accent);
+        background: var(--tint);
+        border-radius: 999px;
+        padding: 0 8px;
+        margin-left: 4px;
+      }
+      footer {
+        margin-top: 64px;
+        color: var(--muted);
+        font-size: 14px;
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+      }
+      code {
+        font-size: 0.9em;
+      }
+      @media (max-width: 640px) {
+        h2 {
+          font-size: 26px;
+        }
+        .controls {
+          margin-left: 0;
+        }
+      }
+    </style>
+  </head>
+  <body data-width="1440" data-mode="light">
+    <header class="top">
+      <div class="wrap">
+        <span class="brand">Legend · Design v2</span>
+        <nav aria-label="Bagian">
+          <a href="#pelanggan">Pelanggan</a>
+          <a href="#operasional">Operasional</a>
+          <a href="#manajemen">Manajemen</a>
+          <a href="#global">Global</a>
+        </nav>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Lebar layar">
+            <button type="button" data-width="1440" aria-pressed="true">
+              Desktop 1440
+            </button>
+            <button type="button" data-width="390" aria-pressed="false">
+              Ponsel 390
+            </button>
+          </div>
+          <div class="seg" role="group" aria-label="Mode warna screenshot">
+            <button type="button" data-mode="light" aria-pressed="true">
+              Terang
+            </button>
+            <button type="button" data-mode="dark" aria-pressed="false">
+              Gelap
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div class="intro">
+        <p class="eyebrow">DESIGN.md v2 · untuk persetujuan owner</p>
+        <h1>Sebelum dan sesudah</h1>
+        <p class="lead">
+          Tiga permukaan Legend dirender ulang dengan token v2. "Sebelum" =
+          komposisi yang dikirim hari ini (Base Theme). "Sesudah" = arah v2
+          dengan tema placeholder Cafe Legend (copper). Semua isi adalah contoh
+          data; foto contoh berlisensi Unsplash. Jawab pertanyaan bernomor di
+          bawah tiap bagian — cukup tulis misalnya "P2: b".
+        </p>
+        <ul class="moves">
+          <li>
+            <b>Aksen benar-benar dipakai</b>Satu permukaan aksen per layar; tint
+            diturunkan otomatis dari warna utama tenant.
+          </li>
+          <li>
+            <b>Tangga permukaan</b>Halaman putih → band abu hangat → permukaan
+            naik; bayangan hanya untuk yang bisa diklik.
+          </li>
+          <li>
+            <b>Skala tipe baru</b>Display 44/56, tracking negatif, angka uang
+            berjenjang dengan "Rp" kecil.
+          </li>
+          <li>
+            <b>Kartu foto dulu</b>Tidak ada lagi kartu huruf; tanpa foto = pelat
+            hangat + ikon kategori.
+          </li>
+          <li>
+            <b>Hierarki status ops</b>Yang mendesak paling keras; meja terisi
+            naik satu tingkat; tiket KDS dengan header status.
+          </li>
+          <li>
+            <b>Shell manajemen</b>Sidebar dikelompokkan, "Perlu perhatian" di
+            depan, satu strip angka, grafik satu aksen.
+          </li>
+        </ul>
+      </div>
+
+      <section class="surface" id="pelanggan" data-surface="customer">
+        <div class="surface-head">
+          <h2>1 · Pelanggan — QR menu, detail item, keranjang</h2>
+          <p>
+            Kepadatan Hangat · referensi pola: pemesanan kafe, marketplace foto
+          </p>
+        </div>
+        <div class="pair"></div>
+        <div class="questions">
+          <h3>Pertanyaan pelanggan</h3>
+          <ol>
+            <li>
+              <span class="q">Intensitas aksen.</span> Sekarang hanya bilah
+              keranjang / tombol utama yang berwarna copper; chip filter memakai
+              tinta hitam.
+              <ul>
+                <li>
+                  a. Pertahankan seperti ini <span class="rec">disarankan</span>
+                </li>
+                <li>b. Lebih berani: chip aktif dan harga juga copper</li>
+                <li>
+                  c. Lebih tenang: bilah keranjang hitam, copper hanya di tombol
+                  checkout
+                </li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Gaya kartu menu.</span> Foto lepas tanpa bingkai,
+              tombol + di atas foto.
+              <ul>
+                <li>
+                  a. Foto lepas tanpa bingkai (seperti contoh)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Foto di dalam kartu berbingkai putih</li>
+                <li>
+                  c. Daftar baris (foto kecil kiri, teks kanan) untuk menu
+                  panjang
+                </li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Menu tanpa foto.</span> Pelat hangat + ikon
+              kategori (lihat Kopi Tubruk).
+              <ul>
+                <li>
+                  a. Boleh tampil dengan pelat hangat
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Menu wajib punya foto sebelum bisa diaktifkan</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Foto contoh.</span> Mode mock dan demo memakai
+              foto berlisensi Unsplash sampai foto menu asli tersedia. Setuju?
+              <ul>
+                <li>
+                  a. Ya, hanya untuk mock/demo dengan label "Contoh data"
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Tidak, pakai pelat hangat saja sampai ada foto asli</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="surface" id="operasional" data-surface="ops">
+        <div class="surface-head">
+          <h2>2 · Operasional — papan meja POS dan tiket KDS</h2>
+          <p>
+            Kepadatan Kontras · referensi pola: aplikasi operasional
+            transportasi
+          </p>
+        </div>
+        <div class="pair"></div>
+        <div class="questions">
+          <h3>Pertanyaan operasional</h3>
+          <ol>
+            <li>
+              <span class="q">Meja mendesak (panggil waiter).</span>
+              <ul>
+                <li>
+                  a. Pill merah solid + garis tebal merah di kiri (seperti
+                  contoh) <span class="rec">disarankan</span>
+                </li>
+                <li>b. Seluruh kartu meja berwarna gelap/terbalik</li>
+                <li>c. Seluruh kartu meja merah muda</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Tiket KDS lewat target.</span> Header merah penuh
+              — cukup keras di dapur malam?
+              <ul>
+                <li>
+                  a. Header merah penuh (seperti contoh)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Header gelap, hanya angka timer yang merah</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Meja terisi.</span>
+              <ul>
+                <li>
+                  a. Abu hangat (netral, aksen disimpan untuk aksi)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Tint copper tipis</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="surface" id="manajemen" data-surface="management">
+        <div class="surface-head">
+          <h2>3 · Manajemen — dasbor kelola dan tabel data</h2>
+          <p>
+            Kepadatan Padat · referensi pola: issue tracker, perbankan, dasbor
+            pembayaran
+          </p>
+        </div>
+        <div class="pair"></div>
+        <div class="questions">
+          <h3>Pertanyaan manajemen</h3>
+          <ol>
+            <li>
+              <span class="q">Gaya sidebar.</span>
+              <ul>
+                <li>
+                  a. Abu hangat terang, menu dikelompokkan (seperti contoh)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Putih dengan garis pemisah</li>
+                <li>c. Sidebar gelap</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Menu terpilih di sidebar.</span>
+              <ul>
+                <li>
+                  a. Tint copper + garis kiri (seperti contoh)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Abu netral tanpa warna</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Angka ringkasan.</span>
+              <ul>
+                <li>
+                  a. Satu strip dengan garis pemisah (seperti contoh)
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Kartu terpisah per angka (seperti sekarang)</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="surface" id="global">
+        <div class="surface-head">
+          <h2>4 · Global</h2>
+          <p>Berlaku untuk semua permukaan</p>
+        </div>
+        <div class="questions">
+          <h3>Pertanyaan global</h3>
+          <ol>
+            <li>
+              <span class="q">Warna utama Base Theme.</span> Tanpa tema tenant,
+              warna utama hampir hitam sehingga tint ikut abu-abu.
+              <ul>
+                <li>
+                  a. Biarkan netral; warna datang dari tema tenant
+                  <span class="rec">disarankan</span>
+                </li>
+                <li>b. Beri Base Theme satu warna default</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Mode gelap.</span> Lihat tombol "Gelap" di atas:
+              halaman <code>#0f0e0d</code>, band, kartu, permukaan naik makin
+              terang.
+              <ul>
+                <li>a. Setuju <span class="rec">disarankan</span></li>
+                <li>b. Lebih hangat/kecokelatan</li>
+                <li>c. Lebih netral/abu murni</li>
+              </ul>
+            </li>
+            <li>
+              <span class="q">Lanjut Fase 2?</span> Terapkan v2 ke komponen,
+              shell, dan semua layar yang sudah ada.
+              <ul>
+                <li>a. Ya, setelah jawaban di atas</li>
+                <li>b. Revisi arah dulu</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <footer>
+        Sumber: <code>DESIGN.md</code> (v2), papan langsung di
+        <code>/design-system/v2</code>, screenshot di
+        <code>docs/design/screenshots/design-v2/</code>. Bead legend-6be7.
+      </footer>
+    </main>
+
+    <script>
+      const state = { width: "1440", mode: "light" };
+      const LABEL = { before: "Sebelum · v1", after: "Sesudah · v2" };
+      function render() {
+        document.body.dataset.width = state.width;
+        document.body.dataset.mode = state.mode;
+        for (const section of document.querySelectorAll("[data-surface]")) {
+          const pair = section.querySelector(".pair");
+          pair.replaceChildren(
+            ...["before", "after"].map((view) => {
+              const fig = document.createElement("figure");
+              const cap = document.createElement("figcaption");
+              const tag = document.createElement("span");
+              tag.className = "tag" + (view === "after" ? " after" : "");
+              tag.textContent = LABEL[view];
+              cap.append(tag);
+              const box = document.createElement("div");
+              box.className = "shot";
+              const img = document.createElement("img");
+              const file = `${section.dataset.surface}-${view}-${state.width}-${state.mode}.png`;
+              img.src = `screenshots/design-v2/${file}`;
+              img.alt = `${LABEL[view]}: ${section.querySelector("h2").textContent}, ${state.width}px, mode ${state.mode === "dark" ? "gelap" : "terang"}`;
+              img.loading = "lazy";
+              box.append(img);
+              fig.append(cap, box);
+              return fig;
+            }),
+          );
+        }
+        for (const btn of document.querySelectorAll(".seg button")) {
+          const key = btn.dataset.width ? "width" : "mode";
+          btn.setAttribute(
+            "aria-pressed",
+            String(btn.dataset[key] === state[key]),
+          );
+        }
+      }
+      for (const btn of document.querySelectorAll(".seg button"))
+        btn.addEventListener("click", () => {
+          if (btn.dataset.width) state.width = btn.dataset.width;
+          else state.mode = btn.dataset.mode;
+          render();
+        });
+      render();
+    </script>
+  </body>
+</html>
