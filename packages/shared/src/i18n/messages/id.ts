@@ -9,6 +9,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { ws01AuthMessages } from "./ws01-auth.ts";
 
 export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
@@ -18,6 +19,9 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Staff second factor, security settings and device sessions (legend-9bh;
+  // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
+  ...ws01AuthMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -792,6 +796,7 @@ export const id = {
     mfaTitle: "Verifikasi dua langkah diperlukan",
     mfaHint:
       "Area ini hanya terbuka setelah verifikasi dua langkah selesai. Masuk ulang dan selesaikan verifikasi.",
+    mfaVerify: "Verifikasi sekarang",
     backHome: "Kembali ke beranda",
   },
   area: {

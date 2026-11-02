@@ -21,6 +21,7 @@ import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
+import { Route as VerifikasiRouteImport } from './routes/verifikasi'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
 import { Route as CustomerMemberRouteImport } from './routes/_customer/member'
@@ -43,13 +44,16 @@ import { Route as CustomerMemberVoucherRouteImport } from './routes/_customer/me
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KelolaKelolaKeamananRouteImport } from './routes/_kelola/kelola.keamanan'
 import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
+import { Route as PlatformPlatformKeamananRouteImport } from './routes/_platform/platform.keamanan'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
+import { Route as ShareholderShareholderKeamananRouteImport } from './routes/_shareholder/shareholder.keamanan'
 import { Route as CustomerMemberFasilitasIndexRouteImport } from './routes/_customer/member.fasilitas.index'
 import { Route as CustomerMemberFasilitasTicketIdRouteImport } from './routes/_customer/member.fasilitas.$ticketId'
 import { Route as CustomerMemberFasilitasLanggananRouteImport } from './routes/_customer/member.fasilitas.langganan'
@@ -119,6 +123,11 @@ const ShareholderRoute = ShareholderRouteImport.update({
 const DesignSystemRoute = DesignSystemRouteImport.update({
   id: '/design-system',
   path: '/design-system',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VerifikasiRoute = VerifikasiRouteImport.update({
+  id: '/verifikasi',
+  path: '/verifikasi',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthSignInRoute = AuthSignInRouteImport.update({
@@ -231,6 +240,11 @@ const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   path: '/kelola/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaKeamananRoute = KelolaKelolaKeamananRouteImport.update({
+  id: '/kelola/keamanan',
+  path: '/kelola/keamanan',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaNotifikasiRoute = KelolaKelolaNotifikasiRouteImport.update({
   id: '/kelola/notifikasi',
   path: '/kelola/notifikasi',
@@ -261,10 +275,22 @@ const PlatformPlatformIndexRoute = PlatformPlatformIndexRouteImport.update({
   path: '/platform/',
   getParentRoute: () => PlatformRoute,
 } as any)
+const PlatformPlatformKeamananRoute =
+  PlatformPlatformKeamananRouteImport.update({
+    id: '/platform/keamanan',
+    path: '/platform/keamanan',
+    getParentRoute: () => PlatformRoute,
+  } as any)
 const ShareholderShareholderIndexRoute =
   ShareholderShareholderIndexRouteImport.update({
     id: '/shareholder/',
     path: '/shareholder/',
+    getParentRoute: () => ShareholderRoute,
+  } as any)
+const ShareholderShareholderKeamananRoute =
+  ShareholderShareholderKeamananRouteImport.update({
+    id: '/shareholder/keamanan',
+    path: '/shareholder/keamanan',
     getParentRoute: () => ShareholderRoute,
   } as any)
 const CustomerMemberFasilitasIndexRoute =
@@ -383,6 +409,7 @@ const CustomerTTokenPayPaymentIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/member': typeof CustomerMemberRouteWithChildren
@@ -401,8 +428,11 @@ export interface FileRoutesByFullPath {
   '/member/reward': typeof CustomerMemberRewardRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -436,6 +466,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
   '/wifi': typeof CustomerWifiRoute
@@ -452,8 +483,11 @@ export interface FileRoutesByTo {
   '/member/poin': typeof CustomerMemberPoinRoute
   '/member/reward': typeof CustomerMemberRewardRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
+  '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -498,6 +532,7 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
+  '/verifikasi': typeof VerifikasiRoute
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
   '/_customer/member': typeof CustomerMemberRouteWithChildren
@@ -517,8 +552,11 @@ export interface FileRoutesById {
   '/_customer/member/reward': typeof CustomerMemberRewardRoute
   '/_customer/member/voucher': typeof CustomerMemberVoucherRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/_kelola/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/_shareholder/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -554,6 +592,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/design-system'
+    | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
     | '/member'
@@ -572,8 +611,11 @@ export interface FileRouteTypes {
     | '/member/reward'
     | '/member/voucher'
     | '/t/$token'
+    | '/kelola/keamanan'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/platform/keamanan'
+    | '/shareholder/keamanan'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -607,6 +649,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/design-system'
+    | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
     | '/wifi'
@@ -623,8 +666,11 @@ export interface FileRouteTypes {
     | '/member/poin'
     | '/member/reward'
     | '/member/voucher'
+    | '/kelola/keamanan'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/platform/keamanan'
+    | '/shareholder/keamanan'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -668,6 +714,7 @@ export interface FileRouteTypes {
     | '/_public'
     | '/_shareholder'
     | '/design-system'
+    | '/verifikasi'
     | '/_auth/sign-in'
     | '/_auth/sign-up'
     | '/_customer/member'
@@ -687,8 +734,11 @@ export interface FileRouteTypes {
     | '/_customer/member/reward'
     | '/_customer/member/voucher'
     | '/_customer/t/$token'
+    | '/_kelola/kelola/keamanan'
     | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
+    | '/_platform/platform/keamanan'
+    | '/_shareholder/shareholder/keamanan'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -733,6 +783,7 @@ export interface RootRouteChildren {
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  VerifikasiRoute: typeof VerifikasiRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -819,6 +870,13 @@ declare module '@tanstack/react-router' {
       path: '/design-system'
       fullPath: '/design-system'
       preLoaderRoute: typeof DesignSystemRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/verifikasi': {
+      id: '/verifikasi'
+      path: '/verifikasi'
+      fullPath: '/verifikasi'
+      preLoaderRoute: typeof VerifikasiRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_auth/sign-in': {
@@ -975,6 +1033,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/keamanan': {
+      id: '/_kelola/kelola/keamanan'
+      path: '/kelola/keamanan'
+      fullPath: '/kelola/keamanan'
+      preLoaderRoute: typeof KelolaKelolaKeamananRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/notifikasi': {
       id: '/_kelola/kelola/notifikasi'
       path: '/kelola/notifikasi'
@@ -1017,11 +1082,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformPlatformIndexRouteImport
       parentRoute: typeof PlatformRoute
     }
+    '/_platform/platform/keamanan': {
+      id: '/_platform/platform/keamanan'
+      path: '/platform/keamanan'
+      fullPath: '/platform/keamanan'
+      preLoaderRoute: typeof PlatformPlatformKeamananRouteImport
+      parentRoute: typeof PlatformRoute
+    }
     '/_shareholder/shareholder/': {
       id: '/_shareholder/shareholder/'
       path: '/shareholder'
       fullPath: '/shareholder/'
       preLoaderRoute: typeof ShareholderShareholderIndexRouteImport
+      parentRoute: typeof ShareholderRoute
+    }
+    '/_shareholder/shareholder/keamanan': {
+      id: '/_shareholder/shareholder/keamanan'
+      path: '/shareholder/keamanan'
+      fullPath: '/shareholder/keamanan'
+      preLoaderRoute: typeof ShareholderShareholderKeamananRouteImport
       parentRoute: typeof ShareholderRoute
     }
     '/_customer/member/fasilitas/': {
@@ -1277,6 +1356,7 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 )
 
 interface KelolaRouteChildren {
+  KelolaKelolaKeamananRoute: typeof KelolaKelolaKeamananRoute
   KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
   KelolaKelolaMejaQrRoute: typeof KelolaKelolaMejaQrRoute
@@ -1291,6 +1371,7 @@ interface KelolaRouteChildren {
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
+  KelolaKelolaKeamananRoute: KelolaKelolaKeamananRoute,
   KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
   KelolaKelolaMejaQrRoute: KelolaKelolaMejaQrRoute,
@@ -1347,10 +1428,12 @@ const OwnerRouteChildren: OwnerRouteChildren = {
 const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
 
 interface PlatformRouteChildren {
+  PlatformPlatformKeamananRoute: typeof PlatformPlatformKeamananRoute
   PlatformPlatformIndexRoute: typeof PlatformPlatformIndexRoute
 }
 
 const PlatformRouteChildren: PlatformRouteChildren = {
+  PlatformPlatformKeamananRoute: PlatformPlatformKeamananRoute,
   PlatformPlatformIndexRoute: PlatformPlatformIndexRoute,
 }
 
@@ -1384,10 +1467,12 @@ const PublicRouteWithChildren =
   PublicRoute._addFileChildren(PublicRouteChildren)
 
 interface ShareholderRouteChildren {
+  ShareholderShareholderKeamananRoute: typeof ShareholderShareholderKeamananRoute
   ShareholderShareholderIndexRoute: typeof ShareholderShareholderIndexRoute
 }
 
 const ShareholderRouteChildren: ShareholderRouteChildren = {
+  ShareholderShareholderKeamananRoute: ShareholderShareholderKeamananRoute,
   ShareholderShareholderIndexRoute: ShareholderShareholderIndexRoute,
 }
 
@@ -1408,6 +1493,7 @@ const rootRouteChildren: RootRouteChildren = {
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  VerifikasiRoute: VerifikasiRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
