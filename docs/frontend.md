@@ -327,4 +327,61 @@ A screen built against fixtures is reviewable before its API exists, so its Play
 - Run one spec: `pnpm test:e2e:mock e2e/legend-g9r3.spec.ts`. The mock runtime answers with zero latency in this project; ask for `?mock=slow` when a screen's loading state is the subject.
 - The first test on a route pays Vite's cold compile: SSR takes 20-35 s on a loaded machine (beads legend-1336, legend-b0kq), well past Playwright's 5 s assertion default. `e2e/mock-global-setup.ts` therefore opens every route area in a real browser once, after the web server starts and before the first test, so specs run warm and keep normal timeouts. New top-level areas go on its `WARM_ROUTES` list.
 - A spec must still survive a dev server started by hand (cold start), so give the **first assertion of the first test** an explicit `{ timeout: 30_000 }` and name the constant `COLD_START_TIMEOUT_MS`. Later tests on the same route rely on the warm-up — no per-spec sleeps.
-- CI runs it right after `pnpm test:e2e`, with the browser installed for that step. `e2e/mock-mode.mock.spec.ts` is the runner's own smoke test: it proves the dev server, the fixtures and both variable names work without an API.
+- CI shards the suite over two parallel jobs (bead legend-x5be): `mock-e2e` runs `--shard=1/2` on `LEGEND_MOCK_PORT=3225` and `--shard=2/2` on `3235`, then `mock-e2e-report` merges the two blob reports into the browsable `mock-e2e-report` artifact with `playwright merge-reports`. A shard is still one worker. `e2e/mock-mode.mock.spec.ts` is the runner's own smoke test: it proves the dev server, the fixtures and both variable names work without an API.
+
+### 7. Splitting a long mock run (shards)
+
+The mock suite is 224 tests in 41 files; the integrator's baseline is about 11 minutes on one worker (the shard measurement below is from bead legend-x5be). The local default stays one worker on purpose: this 16 GB machine is shared by several agents and two Playwright workers starve each other. Sharding is the opt-in escape hatch.
+
+- `pnpm test:e2e:mock:shard <index>/<total>` (for example `1/4`) validates the argument and runs that shard. It forwards any extra Playwright args, and each shard still uses one worker: `1/4` + `2/4` in parallel is two workers, not eight. `pnpm test:e2e:mock --shard=1/2` is the raw form CI uses.
+- Shards on one machine need distinct ports: `LEGEND_MOCK_PORT=3239 pnpm test:e2e:mock:shard 1/4` and `LEGEND_MOCK_PORT=3240 pnpm test:e2e:mock:shard 2/4`. Without a port they race for 3225. Running shards one after another can reuse the default port.
+- Every shard starts its own dev server and runs the full `WARM_ROUTES` warm-up, so the fixed cost repeats. Sharding cuts test time, not warm-up time; keep shard counts small (CI uses 2).
+- With `fullyParallel: false` (this config) Playwright shards whole spec files, never a file's tests across two shards, so shards hold different test counts (measured: 113 vs 111 for 1/2 and 2/2, 60 for 1/4). Shard boundaries are contiguous in file order, so an early shard runs the first files, not a random sample.
+- CI writes a blob report per shard (`reporter: blob` when `CI` is set, `blob-report/report-<shard>.zip`) and `mock-e2e-report` merges them; a local run keeps the list reporter.
+
+Measured on 2026-11-03 (M-series Mac, one worker; other agents were running work on the machine):
+
+| Run                                 | Tests           | Wall time                                                               |
+| ----------------------------------- | --------------- | ----------------------------------------------------------------------- |
+| Full suite (integrator baseline)    | 224 in 41 files | ~11 min                                                                 |
+| Shard 1/4 (`LEGEND_MOCK_PORT=3239`) | 60              | 174 s — 133 s in tests, ~30 s warm-up, ~11 s server/transition overhead |
+
+Two CI shards therefore spend about half the test time plus the repeated warm-up: roughly 6-7 minutes of wall time instead of 11, with the merged report still listing every test.
+
+#### Where the time goes
+
+Ten slowest tests in the shard 1/4 run (a whole-file sample, not a random one):
+
+| Time  | Spec                      | Test                                                                               |
+| ----- | ------------------------- | ---------------------------------------------------------------------------------- |
+| 8.8 s | `legend-10n.mock.spec.ts` | KDS mock shows empty, error and offline states                                     |
+| 7.6 s | `legend-2m4.spec.ts`      | ORD-01 ORD-02 ORD-03 ORD-11 order from the menu, pay first, see status             |
+| 4.9 s | `legend-1j7.mock.spec.ts` | PRD §3.18 / Alur I: empty and error states offer a way forward                     |
+| 4.8 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed refresh keeps the idle warning open with retry text              |
+| 4.7 s | `legend-azt.mock.spec.ts` | F11 customer display: offline is its own state                                     |
+| 4.5 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed load offers a retry instead of a blank page                      |
+| 4.5 s | `legend-azt.mock.spec.ts` | F11 customer display: an error says how to fix it                                  |
+| 4.4 s | `legend-1j7.spec.ts`      | PRD §3.18 / Alur I: request, approve, create a PO and generate a sample share link |
+| 3.2 s | `legend-2m4.spec.ts`      | ORD-01 ORD-03 a reload keeps the joined table and the shared cart                  |
+| 2.9 s | `legend-7ko.mock.spec.ts` | ORD-10 merging two unpaid open-bill tables puts them on one bill                   |
+
+Ten slowest spec files in the same sample (sum of test time):
+
+| Time   | Tests | Spec                       |
+| ------ | ----- | -------------------------- |
+| 21.0 s | 10    | `legend-7ko.mock.spec.ts`  |
+| 20.8 s | 9     | `legend-9bh.mock.spec.ts`  |
+| 19.7 s | 8     | `legend-azt.mock.spec.ts`  |
+| 15.8 s | 5     | `legend-2m4.spec.ts`       |
+| 11.7 s | 7     | `legend-2w5.spec.ts`       |
+| 10.8 s | 7     | `legend-8tv6.mock.spec.ts` |
+| 8.8 s  | 1     | `legend-10n.mock.spec.ts`  |
+| 6.8 s  | 5     | `legend-6irt.mock.spec.ts` |
+| 6.1 s  | 2     | `legend-1j7.spec.ts`       |
+| 5.4 s  | 4     | `legend-10n.spec.ts`       |
+
+Obvious waste, biggest first:
+
+1. The warm-up repeats for every shard and for every single-spec run: `globalSetup` warms all 41 routes (~30 s measured) even when a shard needs a fraction of them, and `pnpm test:e2e:mock e2e/one.spec.ts` pays the full warm-up for one test. Warming only the routes of the specs in the run would cut most of CI's fixed cost; an env opt-out would help the single-spec loop. (No change in this bead.)
+2. The slowest tests are multi-state journeys (`?mock=slow` latency, retry and offline paths) and multi-viewport visual checks. Those states are the subject of the specs, not waste — do not speed them up by dropping assertions.
+3. The two CI shards get 113 and 111 tests because whole files are assigned in file order; that is even enough that `PWTEST_SHARD_WEIGHTS` is not worth setting yet.
