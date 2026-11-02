@@ -476,6 +476,57 @@ describe("§3.21 rule DSL", () => {
   });
 
   it.each([
+    // [label, buy X, free Y, basket quantity, free units, discount]
+    ["buy 1 get 1 free on a single unit gives nothing", 1, 1, 1, 0, 0],
+    ["buy 1 get 1 free on two units frees one", 1, 1, 2, 1, 30_000],
+    ["buy 1 get 1 free on three units still frees one", 1, 1, 3, 1, 30_000],
+    ["buy 2 get 1 free needs a third unit", 2, 1, 2, 0, 0],
+    ["buy 2 get 1 free on three units", 2, 1, 3, 1, 30_000],
+    ["buy 2 get 1 free on six units frees two", 2, 1, 6, 2, 60_000],
+    ["buy 2 get 2 free on four units", 2, 2, 4, 2, 60_000],
+  ])(
+    "[§3.21] buy X get Y free of the same item: %s",
+    (_label, buyX, freeY, quantity, freeUnits, discount) => {
+      const promotion = promo({
+        conditions: [
+          { kind: "item_quantity", menuItemIds: [ITEM_A], minQuantity: buyX },
+        ],
+        benefit: {
+          kind: "free_items",
+          menuItemIds: [ITEM_A],
+          quantityPerMultiple: freeY,
+        },
+      });
+      const result = evaluatePromotion(
+        promotion,
+        bill(quantity * 30_000, {
+          lines: [
+            {
+              menuItemId: ITEM_A,
+              quantity,
+              unitPriceIdr: idr(30_000),
+              lineTotalIdr: idr(quantity * 30_000),
+            },
+          ],
+        }),
+      );
+      // The unit that becomes free is not paid, so it never counts towards the
+      // next "buy X": the promo needs paid units, not basket units.
+      if (freeUnits === 0)
+        expect(result).toMatchObject({
+          applied: false,
+          reason: "no_matching_items",
+        });
+      else
+        expect(result).toMatchObject({
+          applied: true,
+          discountIdr: discount,
+          freeItems: [{ menuItemId: ITEM_A, quantity: freeUnits }],
+        });
+    },
+  );
+
+  it.each([
     [
       "channel",
       [{ kind: "channel", channels: ["gofood"] }],

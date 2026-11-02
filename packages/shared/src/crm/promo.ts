@@ -390,7 +390,21 @@ function freeItemBenefit(
   const bought = input.lines
     .filter((line) => buyCondition.menuItemIds.includes(line.menuItemId))
     .reduce((sum, line) => sum + line.quantity, 0);
-  const multiples = Math.floor(bought / buyCondition.minQuantity);
+  // A free unit that is also one of the buy items is not a paid unit, so one
+  // multiple needs `minQuantity` paid units PLUS the free units it gives away.
+  // Otherwise "buy 1 get 1 free" would make a single unit free (100% off) and
+  // "buy 2 get 1 free" would free one of only two units. When the free items
+  // are different items ("buy 2 coffee, get 1 croissant") they never take a
+  // paid unit, so the threshold stays `minQuantity`. A mixed free list is
+  // treated conservatively (the free unit may be a buy item) and can only
+  // under-award, never over-discount.
+  const freeFromBuySet = benefit.menuItemIds.some((menuItemId) =>
+    buyCondition.menuItemIds.includes(menuItemId),
+  );
+  const unitsPerMultiple =
+    buyCondition.minQuantity +
+    (freeFromBuySet ? benefit.quantityPerMultiple : 0);
+  const multiples = Math.floor(bought / unitsPerMultiple);
   if (multiples <= 0) return null;
   const freeItems: PromoFreeItem[] = [];
   let discountIdr = 0;
