@@ -410,15 +410,6 @@ function periodsOf(report: ReportDefinition): DateRange[] {
   return periods;
 }
 
-/**
- * The shareholder home owns the unsplit closed-month `sales.daily` run: its
- * numbers tie to the profit-share books (SH-01), so this viewer serves the
- * shareholder's figures for that key instead of its own model.
- */
-const LAST_MONTH_END = new Date(`${MONTH_START}T00:00:00Z`);
-LAST_MONTH_END.setUTCDate(0);
-const SHAREHOLDER_KEY = `sales.daily||${LAST_MONTH_END.toISOString().slice(0, 8)}01|${LAST_MONTH_END.toISOString().slice(0, 10)}`;
-
 /** Runs another owner already serves (owner board, management KPIs) stay theirs. */
 const OTHER_OWNERS = new Set(
   [
@@ -426,7 +417,6 @@ const OTHER_OWNERS = new Set(
     ...Object.values(managementDashboardKpiRuns),
   ].map(runKey),
 );
-OTHER_OWNERS.add(SHAREHOLDER_KEY);
 
 export function buildSalesRuns(): ReportResult[] {
   const runs: ReportResult[] = [];

@@ -111,7 +111,9 @@ const MONTH_FIGURES = [
     labor: 27.6,
     waste: 4_180_000,
     promo: 9_810_000,
-    net: Number(cafeLegendAccountingFixtures.profitShare.runs.october.periodNetProfitIdr),
+    net: Number(
+      cafeLegendAccountingFixtures.profitShare.runs.october.periodNetProfitIdr,
+    ),
   },
   {
     netSales: 7_420_000,
