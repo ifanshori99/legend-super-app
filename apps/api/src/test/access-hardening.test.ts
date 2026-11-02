@@ -272,4 +272,42 @@ describe("§3.7 Owner assignments are protected (C6)", () => {
     );
     expect(rows[0]!.count).toBe(1);
   });
+
+  it("§3.7 two Owners ending each other at once never deadlock and one Owner remains", async () => {
+    const founder = await signedIn("Race Owner Founder");
+    const tenant = await createTenant(founder);
+    const ownerA = await signedIn("Race Owner A");
+    const ownerB = await signedIn("Race Owner B");
+    const assignmentA = await assign(
+      tenant.tenantId,
+      ownerA,
+      tenant.ownerRoleId,
+      founder,
+    );
+    const assignmentB = await assign(
+      tenant.tenantId,
+      ownerB,
+      tenant.ownerRoleId,
+      founder,
+    );
+    const context = scopedContext(tenant.tenantId);
+
+    const results = await Promise.allSettled([
+      endRoleAssignment(context, assignmentB, { reason: "Rotasi A." }, ownerA),
+      endRoleAssignment(context, assignmentA, { reason: "Rotasi B." }, ownerB),
+    ]);
+    // Exactly one wins; the other is refused cleanly (409), never a
+    // deadlock (40P01) surfacing as a 500.
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    expect(rejected?.reason).toMatchObject({ status: 409, code: "CONFLICT" });
+    const { rows } = await owner.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM role_assignments
+       WHERE tenant_id = $1 AND valid_until IS NULL`,
+      [tenant.tenantId],
+    );
+    expect(rows[0]!.count).toBe(1);
+  });
 });

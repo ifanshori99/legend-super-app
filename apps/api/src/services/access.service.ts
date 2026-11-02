@@ -782,11 +782,10 @@ async function assertCanEndOwnerAssignment(
           gt(roleAssignments.validUntil, now),
         ),
       ),
-    )
-    // Serialize concurrent "end Owner" calls: the second caller waits, then
-    // re-evaluates against the first caller's commit, so two Owners cannot
-    // both remove each other and leave the tenant without one.
-    .for("update", { of: roleAssignments });
+    );
+  // Concurrent "end Owner" calls are serialized by the per-tenant advisory
+  // lock in endRoleAssignment, so this read sees the previous caller's
+  // commit and two Owners cannot both remove each other.
   const actorIsOwner = activeOwners.some(
     (row) => row.userId.toLowerCase() === actorUserId.toLowerCase(),
   );
@@ -826,6 +825,14 @@ export async function endRoleAssignment(
       actorUserId,
       "access.role.assign",
       now,
+    );
+    // One lock per tenant for every "end assignment", taken BEFORE any row
+    // lock: two Owners ending each other's assignment would otherwise each
+    // hold their target row and wait for the other's in the Owner check
+    // (deadlock → 40P01 → 500). The second caller now waits here and
+    // re-reads the Owner set after the first commits (READ COMMITTED).
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
     );
     const [current] = await tx
       .select()
