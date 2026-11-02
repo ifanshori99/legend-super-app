@@ -416,6 +416,11 @@ export const id = {
     searchPlaceholder: "Cari kode meja…",
     legend: "Keterangan status",
     legendCount: "{status}: {count} meja",
+    attention: {
+      title: "Perlu tindakan",
+      clear: "Tidak ada yang mendesak",
+      urgent: "{count} meja perlu tindakan",
+    },
     tableCard: "Meja {code}, {status}, kapasitas {capacity}",
     openTable: "Buka aksi meja {code}",
     capacity: "{count} kursi",
