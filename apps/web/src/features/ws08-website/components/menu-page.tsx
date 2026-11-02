@@ -25,7 +25,7 @@ import type {
   PublicSite,
 } from "@starter/shared/website";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
-import { demoMenuPhoto } from "../lib/demo-media.ts";
+import { demoMenuPhoto } from "@/lib/demo-media.ts";
 import { formatIsoDate } from "../lib/hours.ts";
 import { PriceNote, SiteSection } from "./blocks.tsx";
 import { SiteFrame } from "./site-frame.tsx";
