@@ -36,7 +36,13 @@ export const fetchPaymentRouting = (
 export const savePaymentRoute = (
   params: Params<typeof updatePaymentRouteEndpoint>,
   body: Body<typeof updatePaymentRouteEndpoint>,
-) => callEndpoint(updatePaymentRouteEndpoint, { params, body });
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    updatePaymentRouteEndpoint,
+    { params, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
 
 // ---- EDC terminals and cashier defaults ----------------------------------
 
@@ -44,13 +50,26 @@ export const fetchEdcTerminals = (
   query: Query<typeof listEdcTerminalsEndpoint>,
 ) => callEndpoint(listEdcTerminalsEndpoint, { query });
 
-export const addEdcTerminal = (body: Body<typeof createEdcTerminalEndpoint>) =>
-  callEndpoint(createEdcTerminalEndpoint, { body });
+export const addEdcTerminal = (
+  body: Body<typeof createEdcTerminalEndpoint>,
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    createEdcTerminalEndpoint,
+    { body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
 
 export const patchEdcTerminal = (
   params: Params<typeof updateEdcTerminalEndpoint>,
   body: Body<typeof updateEdcTerminalEndpoint>,
-) => callEndpoint(updateEdcTerminalEndpoint, { params, body });
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    updateEdcTerminalEndpoint,
+    { params, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
 
 export const fetchEdcCashierDefaults = (
   query: Query<typeof getEdcCashierDefaultsEndpoint>,
@@ -59,7 +78,13 @@ export const fetchEdcCashierDefaults = (
 export const saveEdcCashierDefault = (
   params: Params<typeof updateEdcCashierDefaultEndpoint>,
   body: Body<typeof updateEdcCashierDefaultEndpoint>,
-) => callEndpoint(updateEdcCashierDefaultEndpoint, { params, body });
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    updateEdcCashierDefaultEndpoint,
+    { params, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
 
 // ---- Refunds -------------------------------------------------------------
 
@@ -102,4 +127,10 @@ export const fetchReconciliationSummary = (
 export const resolveReconciliationCase = (
   params: Params<typeof resolveReconciliationCaseEndpoint>,
   body: Body<typeof resolveReconciliationCaseEndpoint>,
-) => callEndpoint(resolveReconciliationCaseEndpoint, { params, body });
+  idempotencyKey: string,
+) =>
+  callEndpoint(
+    resolveReconciliationCaseEndpoint,
+    { params, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );

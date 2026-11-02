@@ -106,7 +106,17 @@ export function createApp({
     cors({
       origin: env.trustedOrigins,
       credentials: true,
-      methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+      // PUT carries payment-admin configuration writes (routing, EDC cashier
+      // defaults); their retry identity travels in Idempotency-Key, never a
+      // cookie or query string, so the browser preflight has to allow it.
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: [
+        "Accept",
+        "Content-Type",
+        "Authorization",
+        "Idempotency-Key",
+        "X-Request-Id",
+      ],
       exposedHeaders: ["X-Request-Id", "Location"],
       maxAge: 600,
     }),
