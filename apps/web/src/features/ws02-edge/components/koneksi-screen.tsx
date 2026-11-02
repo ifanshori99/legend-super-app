@@ -44,7 +44,7 @@ function StatusRow({
 function CardHeading({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="grid gap-1">
-      <h2 className="text-lg leading-7 font-semibold">{title}</h2>
+      <h2 className="type-title">{title}</h2>
       {hint && (
         <p className="text-sm leading-5 text-muted-foreground">{hint}</p>
       )}
@@ -75,9 +75,7 @@ export function KoneksiScreen({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
       <header className="grid gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-          {t("edge.pageTitle")}
-        </h1>
+        <h1 className="type-display">{t("edge.pageTitle")}</h1>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("edge.pageHint")}
         </p>
@@ -269,7 +267,7 @@ export function KoneksiScreen({
             title={t("edge.waiter.title")}
             hint={t("edge.waiter.previewHint")}
           />
-          <ThemeScope density="hangat" className="rounded-2xl">
+          <ThemeScope density="hangat" className="rounded-container">
             <WaiterOrderNotice />
           </ThemeScope>
         </Card>

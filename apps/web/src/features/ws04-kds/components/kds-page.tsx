@@ -1,6 +1,8 @@
 import { useState, useSyncExternalStore } from "react";
+import { useQueries } from "@tanstack/react-query";
 import type {
   KitchenTicketDetail,
+  StationBoard,
   StationConfig,
 } from "@starter/shared/kitchen";
 import { canTransitionKitchenTicket } from "@starter/shared/kitchen";
@@ -38,6 +40,7 @@ import {
   useMenuStations,
   useStations,
 } from "../hooks.ts";
+import { boardQuery } from "../queries.ts";
 import {
   formatElapsedSeconds,
   kdsTimerStatus,
@@ -82,6 +85,24 @@ export function KdsPage() {
     .sort((a, b) => a.displayOrder - b.displayOrder);
   const stationId = selected ?? active[0]?.stationId;
   const station = names.data?.find((row) => row.id === stationId);
+  // The station switch carries each station's live queue (DESIGN.md §5: zones
+  // and stations are a group with counts). Counts come from the same board
+  // endpoint at a slower poll than the open station, so a station that fills
+  // up shows it before the cook switches to it.
+  const stationBoards = useQueries({
+    queries: active.map((item) => ({
+      ...boardQuery(item.stationId),
+      refetchInterval: 5_000,
+      select: (board: StationBoard) =>
+        board.tickets.filter(
+          (ticket) => ticket.status !== "done" && ticket.status !== "cancelled",
+        ).length,
+    })),
+  });
+  const liveCount = (id: StationId) => {
+    const index = active.findIndex((item) => item.stationId === id);
+    return index === -1 ? 0 : (stationBoards[index]?.data ?? 0);
+  };
   const failure = stations.error ?? names.error;
   const offline =
     failure instanceof ApiError && failure.code === "NETWORK_ERROR";
@@ -125,9 +146,7 @@ export function KdsPage() {
                 selection="ink"
                 options={active.map((item) => ({
                   value: item.stationId,
-                  label:
-                    names.data?.find((row) => row.id === item.stationId)
-                      ?.name ?? item.stationId,
+                  label: `${names.data?.find((row) => row.id === item.stationId)?.name ?? item.stationId} (${liveCount(item.stationId)})`,
                 }))}
               />
               <StationBoard
