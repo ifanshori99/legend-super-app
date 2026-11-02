@@ -105,7 +105,11 @@ export function useOwnerBoard(layout: DashboardLayout): OwnerBoard {
 
   useEffect(() => {
     if (!hydrated) return;
-    const timer = window.setInterval(refresh, OWNER_BOARD_REFRESH_MS);
+    // Only while the tab is visible: a background tab must not keep firing
+    // the board's report runs at the API every minute.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, OWNER_BOARD_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [hydrated, refresh]);
 

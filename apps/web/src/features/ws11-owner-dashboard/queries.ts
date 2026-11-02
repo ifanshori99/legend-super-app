@@ -1,6 +1,7 @@
 // Query keys and options of the owner dashboard. One key per report run so a
 // manual or interval refresh re-reads the same source reports the tiles cite.
 import { queryOptions } from "@tanstack/react-query";
+import { retryOnceOnServerError } from "@/lib/api/retry";
 import type { ReportRunInput } from "@starter/shared/dashboard";
 import { fetchLatestRatings, fetchOwnerDashboard, runOwnerReport } from "./api";
 
@@ -21,6 +22,7 @@ export function ownerDashboardQuery() {
     queryKey: ownerDashboardKeys.layout(),
     queryFn: ({ signal }) => fetchOwnerDashboard({}, signal),
     staleTime: 30_000,
+    retry: retryOnceOnServerError,
   });
 }
 
@@ -34,6 +36,7 @@ export function ownerReportQuery(input: ReportRunInput, enabled: boolean) {
     queryFn: ({ signal }) => runOwnerReport(input, signal),
     enabled,
     staleTime: 0,
+    retry: retryOnceOnServerError,
   });
 }
 
@@ -43,5 +46,6 @@ export function latestRatingsQuery(enabled: boolean) {
     queryFn: ({ signal }) => fetchLatestRatings(signal),
     enabled,
     staleTime: 0,
+    retry: retryOnceOnServerError,
   });
 }

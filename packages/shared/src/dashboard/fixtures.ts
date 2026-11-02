@@ -204,12 +204,14 @@ export const managementDashboardKpiRuns: Readonly<
     managementDayPeriod,
     [
       {
+        // Same unsplit run, period and outlet as the owner board's
+        // operations.table_turnover, so the two dashboards agree (DASH-02).
         metricCode: "table_occupancy_pct",
-        value: { unit: "percent", value: "68.4000" },
+        value: { unit: "percent", value: "62.5000" },
       },
       {
         metricCode: "table_turnover",
-        value: { unit: "decimal", value: "2.3500" },
+        value: { unit: "decimal", value: "1.8400" },
       },
     ],
   ),

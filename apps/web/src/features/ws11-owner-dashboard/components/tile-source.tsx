@@ -2,6 +2,7 @@
 // period, outlets and split, so the owner can trace a figure (PRD §3 F34).
 // DESIGN.md v3 StatTile adds the chevron; the link text is the report name.
 import { useT } from "@/components/i18n";
+import { useRouteAvailable } from "@/lib/use-route-available";
 import type { DashboardTile } from "@starter/shared/dashboard";
 import { ownerBoardTilePath, ownerBoardTileReportName } from "../board";
 import { useOwnerBoardContext } from "../board-context";
@@ -14,10 +15,13 @@ export function TileSource({
   className?: string;
 }) {
   const t = useT();
+  const routeAvailable = useRouteAvailable();
   const { layout } = useOwnerBoardContext();
   const path = ownerBoardTilePath(tile, layout);
   const reportName = ownerBoardTileReportName(tile);
   if (path === null || reportName === null) return null;
+  // No report viewer route yet (legend-tp3x): no link that lands on a 404.
+  if (!routeAvailable(path)) return null;
   return (
     <a
       href={path}
