@@ -118,6 +118,19 @@ const schema = z
       .min(1)
       .max(10_000_000)
       .default(6000),
+    // The web server's address(es) as the API sees them (comma-separated). Its
+    // SSR calls carry no visitor IP, so they skip the per-IP public bucket and
+    // only count against the tenant bucket. Loopback by default (web and API
+    // on one VM); add the web container's address when they run in Docker.
+    PUBLIC_RATE_LIMIT_INTERNAL_IPS: z
+      .string()
+      .default("127.0.0.1,::1,::ffff:127.0.0.1")
+      .transform((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
     LOG_SQL: z
       .enum(["true", "false", "1", "0"])
       .optional()

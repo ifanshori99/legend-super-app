@@ -187,19 +187,21 @@ The API uses one node-postgres pool with at most ten connections per process. Mu
 
 ## Public API rate limits
 
-The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.
+The API's session-free reads — the guest QR scan and menu (`/api/qr/*`), the brand website and its menu (`/api/public/site/*`), the SSR brand context (`/api/tenant/*`) and customer payment links (`/api/payments/links/*`) — are capped by one in-memory limiter in the API. Authenticated routes are bounded by their session and permissions; these have no session at all, and the menu reads return the whole catalogue.
 
 Two fixed one-minute windows are charged on every public read: one per client IP and one per resolved tenant. A request over either limit answers `429` with `{"error":{"code":"RATE_LIMITED"}}`, a `Retry-After` header holding the whole seconds left in the window, and `Cache-Control: no-store`. Health, Better Auth (`/api/auth/*`), provider webhooks and the TLS ask are not mounted on the limiter.
 
-| Variable                              | Default | Meaning                                 |
-| ------------------------------------- | ------- | --------------------------------------- |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`   | Requests per client IP per minute       |
-| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`  | Requests per resolved tenant per minute |
+| Variable                              | Default  | Meaning                                                              |
+| ------------------------------------- | -------- | -------------------------------------------------------------------- |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE`        | `600`    | Requests per client IP per minute                                    |
+| `PUBLIC_RATE_LIMIT_TENANT_PER_MINUTE` | `6000`   | Requests per resolved tenant per minute                              |
+| `PUBLIC_RATE_LIMIT_INTERNAL_IPS`      | loopback | Web server address(es) that skip the per-IP bucket (comma-separated) |
 
 Sizing the defaults — they must not break legitimate traffic:
 
 - Guests on the venue Wi-Fi usually reach the API through **one NAT address**, so all their scans, menu reads and payment polls share one IP bucket. Payment status polls every 2 s while a payment is pending (30 requests a minute per guest).
-- The web server's **SSR fetches** (`/_public/` routes) also come from one address: the web container's. Set `API_INTERNAL_URL` so SSR calls the API privately, and remember that address still counts as one client IP.
+- The web server's **SSR fetches** (website pages, the brand context on every render) come from one address — the web server's — and carry no visitor IP. That address skips the per-IP bucket and only counts against the tenant bucket: list it in `PUBLIC_RATE_LIMIT_INTERNAL_IPS` (loopback by default, for web and API on one VM; add the web container's address under Docker). Without it every visitor would share one 600/min bucket.
+- Authenticated payment admin (`/api/payments/admin/*`) is not on the limiter: staff at the venue share the guests' NAT address.
 - The store is bounded (20 000 keys per bucket, least recently used evicted first) and lives in memory per API process. Several API instances each enforce their own window, so N instances allow up to N times the configured limit; the Cloudflare rule below is the shared edge layer.
 
 `TRUST_PROXY` decides which address is "the client": the limiter uses `req.ip` as Express resolved it, never a raw `X-Forwarded-For`. Behind Cloudflare in front of Caddy that is **two** hops (`TRUST_PROXY=2`); with a single reverse proxy it is `1`. If the hop count is too low, every client appears as the proxy's address and all of them share one bucket.

@@ -48,7 +48,10 @@ export const PUBLIC_RATE_LIMIT_PATHS: string[] = [
   "/api/qr",
   "/api/public/site",
   "/api/tenant",
-  "/api/payments",
+  // Only the token-holding customer payment links. /api/payments/admin is
+  // authenticated staff configuration and must never share the guests'
+  // per-IP budget at a venue NAT (Opus review legend-wd4b).
+  "/api/payments/links",
 ];
 
 export type PublicRateLimitOptions = {
@@ -56,6 +59,12 @@ export type PublicRateLimitOptions = {
   perIp: number;
   /** Requests allowed per resolved tenant in one window. */
   perTenant: number;
+  /**
+   * Addresses that skip the per-IP bucket (the tenant bucket still applies):
+   * the web server's own address, whose SSR calls carry no visitor IP and
+   * would otherwise put every visitor in one bucket.
+   */
+  internalIps?: readonly string[];
   windowMs?: number;
   capacity?: number;
   /** Test seam; production uses the wall clock. */
@@ -125,6 +134,9 @@ export function publicRateLimit(
   const windowMs = options.windowMs ?? PUBLIC_RATE_LIMIT_WINDOW_MS;
   const capacity = options.capacity ?? PUBLIC_RATE_LIMIT_CAPACITY;
   const clock = options.now ?? Date.now;
+  const internalIps = new Set(
+    options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
+  );
   const perIp = createFixedWindowCounter({
     limit: options.perIp ?? env.PUBLIC_RATE_LIMIT_PER_MINUTE,
     windowMs,
@@ -140,7 +152,11 @@ export function publicRateLimit(
     const now = clock();
     // Both buckets are charged, so one noisy IP cannot spend a tenant's whole
     // budget and one tenant's burst cannot hide behind many IPs.
-    const ipRetry = perIp.take(`ip:${clientIp(req)}`, now);
+    // SSR calls from the web server arrive from its own address with no
+    // visitor IP (apps/web upstream.server.ts), so that address skips the
+    // per-IP bucket; the tenant bucket below still caps it.
+    const ip = clientIp(req);
+    const ipRetry = internalIps.has(ip) ? null : perIp.take(`ip:${ip}`, now);
     const tenant = findTenantContext(req);
     const tenantRetry = tenant
       ? perTenant.take(`tenant:${tenant.tenantId}`, now)

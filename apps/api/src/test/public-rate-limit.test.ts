@@ -137,7 +137,7 @@ describe("public read rate limit wiring (legend-wd4b)", () => {
   it("legend-wd4b limits the SSR brand context in the real app and leaves health and auth alone", async () => {
     // One request per IP: a limiter mounted over the whole API would answer
     // the later probes with 429.
-    const app = createApp({ publicRateLimit: { perIp: 1 } });
+    const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
     const client = agent(app);
     await client.get("/api/health").expect(200);
     await client.get("/api/health").expect(200);
@@ -155,7 +155,7 @@ describe("public read rate limit wiring (legend-wd4b)", () => {
   });
 
   it("legend-wd4b limits the website menu in the real app", async () => {
-    const app = createApp({ publicRateLimit: { perIp: 1 } });
+    const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
     const client = agent(app);
     // The seeded test tenant has no published website menu yet, so the read
     // itself answers 404 — it was counted once, and the next read is limited,
@@ -171,8 +171,37 @@ describe("public read rate limit wiring (legend-wd4b)", () => {
     expect(limited.body.error.code).toBe("RATE_LIMITED");
   });
 
+  it("legend-wd4b lets the web server's SSR address skip the per-IP bucket, not the tenant one", async () => {
+    // SSR calls carry no visitor IP: without the exemption every visitor of
+    // the site would share the web server's one per-IP bucket.
+    const app = probeApp({
+      perIp: 1,
+      perTenant: 3,
+      internalIps: ["10.0.0.5"],
+    });
+    await publicRead(app, "10.0.0.5").expect(200);
+    await publicRead(app, "10.0.0.5").expect(200);
+    await publicRead(app, "10.0.0.5").expect(200);
+    // The tenant bucket still caps the SSR traffic.
+    await publicRead(app, "10.0.0.5").expect(429);
+    // A visitor address is still limited per IP (tenant B, fresh bucket).
+    await publicRead(app, "203.0.113.9", HOST_B).expect(200);
+    await publicRead(app, "203.0.113.9", HOST_B).expect(429);
+  });
+
+  it("legend-wd4b never limits authenticated payment admin routes", async () => {
+    const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
+    const client = agent(app);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await client
+        .get("/api/payments/admin/routing")
+        .set("Host", hostname);
+      expect(response.status).not.toBe(429);
+    }
+  });
+
   it("legend-wd4b limits the guest QR read in the real app", async () => {
-    const app = createApp({ publicRateLimit: { perIp: 1 } });
+    const app = createApp({ publicRateLimit: { perIp: 1, internalIps: [] } });
     const client = agent(app);
     // An unknown table token is NOT_FOUND/422, never 429: it was counted once.
     const first = await client
