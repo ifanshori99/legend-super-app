@@ -317,7 +317,9 @@ describe("floor editor (legend-irw)", () => {
       .post(`/api/tables/${otherTable.id}/status`)
       .set(originHeader)
       .send({ action: "mark_dirty" });
-    expect(denied.status).toBe(403);
+    // Outlet RLS (legend-tjey) hides the other outlet's table: not found,
+    // without revealing that it exists.
+    expect(denied.status).toBe(404);
 
     const board = await supervisor.client.get(
       `/api/outlets/${seededOutletB}/floor`,

@@ -12,7 +12,9 @@
 //    submitted tenantId is rejected rather than silently dropped.
 // 4. Database level: RLS + SET LOCAL app.tenant_id (bead legend-73d).
 // TEN-03: outlet-scoped roles see only their assigned outlets, including in
-// reports, exports, Tanya AI and MCP (isOutletInScope, outletIdsForQuery).
+// reports, exports, Tanya AI and MCP (isOutletInScope, outletIdsForQuery),
+// backed by the `outlet_isolation` RLS policy on outlet-owned tables
+// (SET LOCAL app.outlet_ids, bead legend-tjey; contracts.md D-CORE-3).
 
 import { z } from "zod";
 import { CoreError } from "./errors.ts";

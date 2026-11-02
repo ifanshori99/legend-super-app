@@ -4,8 +4,8 @@
 // One resolver turns a verified session into:
 // - the caller's effective permission codes (union of active assignments),
 // - a server-minted ScopedTenantContext whose outlet reach becomes the RLS
-//   `app.outlet_ids` filter (minted on the server, never from client input,
-//   TEN-02),
+//   `app.outlet_ids` filter on outlet-owned tables (minted on the server,
+//   never from client input, TEN-02; migration 0032),
 // - `mfaRequired` / `mfaVerified` for the web area guards (AUTH-05).
 //
 // Deny by default: assignments, roles and the org tree are loaded inside the

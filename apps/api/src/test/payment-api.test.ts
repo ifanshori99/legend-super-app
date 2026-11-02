@@ -1016,18 +1016,19 @@ describe("gateway outage and routing", () => {
 describe("isolation at the service boundary", () => {
   it("TEN-03 a link of another outlet is not reachable with an outlet-scoped context", async () => {
     const { token } = await openBill();
-    // The link belongs to outlet A: a context scoped to outlet B is denied at
-    // the service boundary (TEN-03), never silently served.
+    // The link belongs to outlet A: a context scoped to outlet B is denied
+    // (TEN-03), never silently served. Outlet RLS (legend-tjey) hides the row,
+    // so it is indistinguishable from a link that does not exist.
     await expect(
       getPaymentLinkView(contextFor([outletB]), token),
-    ).rejects.toMatchObject({ code: "OUTLET_OUT_OF_SCOPE" });
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(
       getIntentView(
         contextFor([outletB]),
         token,
         "00000000-0000-4000-8000-0000000000aa",
       ),
-    ).rejects.toMatchObject({ code: "OUTLET_OUT_OF_SCOPE" });
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("TEN-03 a link cannot be opened for an outlet outside the caller's scope", async () => {

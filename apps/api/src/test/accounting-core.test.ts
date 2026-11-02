@@ -650,9 +650,10 @@ describe("legend-kwxj accounting core", () => {
     try {
       await appPool.query("BEGIN");
       await appPool.query("SET LOCAL ROLE legend_app");
-      await appPool.query("SELECT set_config('app.tenant_id', $1, true)", [
-        tenantId,
-      ]);
+      await appPool.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
       const { rows } = await appPool.query(
         "SELECT id FROM chart_of_accounts WHERE id = $1",
         [otherAccount],
