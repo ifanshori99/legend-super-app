@@ -10,15 +10,18 @@
 // not only the route middleware), and outlet-owned records assert the caller's
 // outlet reach (TEN-03).
 //
-// Brand-owned records (categories, items, variants, modifier groups, combos)
-// default their brand to the domain-pinned brand; an unpinned tenant with more
-// than one brand must name one (the contract's optional `brandId`).
+// Brand-owned records (categories, items, variants, combos) default their brand
+// to the domain-pinned brand; an unpinned tenant with more than one brand must
+// name one (the contract's optional `brandId`). Modifier groups and modifiers
+// are tenant-shared (no brand column), so their writes need tenant/brand scope.
 //
 // Writes that change master data append an event through the transactional
 // outbox in the same transaction (`menu.updated`, `menu_item.updated`). The
-// edge down-sync (WS-02) consumes them; a brand/outlet-scoped caller emits the
-// event per reachable outlet because the outbox refuses tenant-wide events
-// from a non-tenant scope.
+// edge down-sync (WS-02) consumes them, routed by the affected record: a
+// brand-owned change reaches every outlet of its brand, outlet-owned data only
+// its outlet, and tenant-shared data the whole tenant (or, for a narrower
+// caller, every outlet it can address — the outbox refuses an outlet outside
+// the caller's scope).
 
 import { and, asc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import {
@@ -66,6 +69,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import {
   MENU_ITEM_PERMISSION,
+  MENU_PRICE_MANAGE_PERMISSION,
   MENU_VIEW_PERMISSION,
   appendMenuEvent,
   assertAnyPermission,
@@ -73,6 +77,7 @@ import {
   assertBrandReadPermission,
   assertOutletPermission,
   assertPermission,
+  assertSharedMasterDataPermission,
   cursorOf,
   keysetCondition,
   likePattern,
@@ -275,6 +280,7 @@ export async function createCategory(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "category", entityId: row.id, operation: "created" },
+      affects: { kind: "brand", brandId },
       now,
     });
     return toCategory(row);
@@ -353,6 +359,7 @@ export async function updateCategory(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "category", entityId: row.id, operation: "updated" },
+      affects: { kind: "brand", brandId: existing.brandId },
       now,
     });
     return toCategory(row);
@@ -426,6 +433,7 @@ export async function deleteCategory(
         entityId: categoryId,
         operation: "deleted",
       },
+      affects: { kind: "brand", brandId: existing.brandId },
       now,
     });
   });
@@ -483,6 +491,7 @@ export async function reorderCategories(
         aggregateId: id,
         actorUserId,
         payload: { entity: "category", entityId: id, operation: "updated" },
+        affects: { kind: "brand", brandId },
         now,
       });
     }
@@ -580,6 +589,7 @@ export async function createStation(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "station", entityId: row.id, operation: "created" },
+      affects: { kind: "outlet", outletId },
       now,
     });
     return toStation(row);
@@ -651,6 +661,7 @@ export async function updateStation(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "station", entityId: row.id, operation: "updated" },
+      affects: { kind: "outlet", outletId: existing.outletId },
       now,
     });
     return toStation(row);
@@ -714,6 +725,7 @@ export async function deleteStation(
       aggregateId: stationId,
       actorUserId,
       payload: { entity: "station", entityId: stationId, operation: "deleted" },
+      affects: { kind: "outlet", outletId: existing.outletId },
       now,
     });
   });
@@ -1040,6 +1052,7 @@ export async function createItem(
         isActive: row.isActive,
         operation: "created",
       },
+      affects: { kind: "brand", brandId },
       now,
     });
     const mediaUrls = row.mediaId
@@ -1141,6 +1154,7 @@ export async function updateItem(
         isActive: row.isActive,
         operation: "updated",
       },
+      affects: { kind: "brand", brandId: existing.brandId },
       now,
     });
     const mediaUrls = row.mediaId
@@ -1222,6 +1236,7 @@ export async function deleteItem(
         isActive: false,
         operation: "deleted",
       },
+      affects: { kind: "brand", brandId: existing.brandId },
       now,
     });
   });
@@ -1284,6 +1299,7 @@ export async function reorderItems(
           isActive: row.isActive,
           operation: "updated",
         },
+        affects: { kind: "brand", brandId: first.brandId },
         now,
       });
     }
@@ -1413,6 +1429,7 @@ export async function setItemModifierGroups(
         entityId: itemId,
         operation: "updated",
       },
+      affects: { kind: "brand", brandId: item.brandId },
       now,
     });
     return { groupIds: unique };
@@ -1493,6 +1510,7 @@ export async function createVariant(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "variant", entityId: row.id, operation: "created" },
+      affects: { kind: "brand", brandId: item.brandId },
       now,
     });
     return toVariant(row);
@@ -1556,6 +1574,7 @@ export async function updateVariant(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "variant", entityId: row.id, operation: "updated" },
+      affects: { kind: "brand", brandId: item.brandId },
       now,
     });
     return toVariant(row);
@@ -1609,6 +1628,7 @@ export async function deleteVariant(
       aggregateId: variantId,
       actorUserId,
       payload: { entity: "variant", entityId: variantId, operation: "deleted" },
+      affects: { kind: "brand", brandId: item.brandId },
       now,
     });
   });
@@ -1686,7 +1706,7 @@ export async function createModifierGroup(
   now = new Date(),
 ): Promise<ModifierGroup> {
   return withTenant(db, context, async (tx) => {
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
@@ -1712,6 +1732,7 @@ export async function createModifierGroup(
         entityId: row.id,
         operation: "created",
       },
+      affects: { kind: "shared" },
       now,
     });
     return toModifierGroup(row);
@@ -1735,7 +1756,7 @@ export async function updateModifierGroup(
         "VALIDATION_ERROR",
         "Jumlah maksimum tidak boleh kurang dari minimum.",
       );
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
@@ -1769,6 +1790,7 @@ export async function updateModifierGroup(
         entityId: row.id,
         operation: "updated",
       },
+      affects: { kind: "shared" },
       now,
     });
     return toModifierGroup(row);
@@ -1783,7 +1805,7 @@ export async function deleteModifierGroup(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     await requireModifierGroup(tx, context, groupId);
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
@@ -1834,6 +1856,7 @@ export async function deleteModifierGroup(
         entityId: groupId,
         operation: "deleted",
       },
+      affects: { kind: "shared" },
       now,
     });
   });
@@ -1894,11 +1917,18 @@ export async function createModifier(
 ): Promise<Modifier> {
   return withTenant(db, context, async (tx) => {
     await requireModifierGroup(tx, context, groupId);
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
+      now,
+    );
+    await assertSharedMasterDataPermission(
+      tx,
+      context,
+      actorUserId,
+      MENU_PRICE_MANAGE_PERMISSION,
       now,
     );
     if (input.stationId) {
@@ -1921,6 +1951,7 @@ export async function createModifier(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "modifier", entityId: row.id, operation: "created" },
+      affects: { kind: "shared" },
       now,
     });
     return toModifier(row);
@@ -1960,13 +1991,23 @@ export async function updateModifier(
 ): Promise<Modifier> {
   return withTenant(db, context, async (tx) => {
     await requireModifier(tx, context, modifierId);
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
       now,
     );
+    // A modifier price is shared by every outlet, so changing it needs the
+    // sell-price permission on the same tenant/brand reach.
+    if (input.priceIdr !== undefined)
+      await assertSharedMasterDataPermission(
+        tx,
+        context,
+        actorUserId,
+        MENU_PRICE_MANAGE_PERMISSION,
+        now,
+      );
     if (input.stationId !== undefined && input.stationId !== null)
       await requireStation(tx, context, input.stationId);
     const [row] = await tx
@@ -1993,6 +2034,7 @@ export async function updateModifier(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "modifier", entityId: row.id, operation: "updated" },
+      affects: { kind: "shared" },
       now,
     });
     return toModifier(row);
@@ -2007,7 +2049,7 @@ export async function deleteModifier(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     await requireModifier(tx, context, modifierId);
-    await assertAnyPermission(
+    await assertSharedMasterDataPermission(
       tx,
       context,
       actorUserId,
@@ -2031,6 +2073,7 @@ export async function deleteModifier(
         entityId: modifierId,
         operation: "deleted",
       },
+      affects: { kind: "shared" },
       now,
     });
   });
@@ -2259,6 +2302,7 @@ export async function createCombo(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "combo", entityId: row.id, operation: "created" },
+      affects: { kind: "brand", brandId: comboItem.brandId },
       now,
     });
     return toCombo(
@@ -2335,6 +2379,7 @@ export async function updateCombo(
       aggregateId: row.id,
       actorUserId,
       payload: { entity: "combo", entityId: row.id, operation: "updated" },
+      affects: { kind: "brand", brandId: comboItem.brandId },
       now,
     });
     return toCombo(
@@ -2386,6 +2431,7 @@ export async function deleteCombo(
       aggregateId: comboId,
       actorUserId,
       payload: { entity: "combo", entityId: comboId, operation: "deleted" },
+      affects: { kind: "brand", brandId: comboItem.brandId },
       now,
     });
   });

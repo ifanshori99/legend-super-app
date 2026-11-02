@@ -11,6 +11,7 @@
 // Price changes are sell-price sensitive (permission tag `sell_price`), so they
 // also write an audit row (PRD §3.7, §6 B audit_logs) in the same transaction.
 
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   createUlid,
@@ -47,6 +48,7 @@ import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import {
   EVENT_DESTINATION,
+  MENU_PRICE_MANAGE_PERMISSION,
   MENU_VIEW_PERMISSION,
   appendMenuEvent,
   assertOutletPermission,
@@ -61,7 +63,7 @@ import {
 } from "./menu-internals";
 
 const PRICE_VIEW = "menu.price.view" as const;
-const PRICE_MANAGE = "menu.price.manage" as const;
+const PRICE_MANAGE = MENU_PRICE_MANAGE_PERMISSION;
 const AVAILABILITY_VIEW = MENU_VIEW_PERMISSION;
 const AVAILABILITY_TOGGLE = "menu.availability.toggle" as const;
 
@@ -126,8 +128,9 @@ async function requireAvailability(
   tx: Tx,
   context: ScopedTenantContext,
   availabilityId: string,
+  forUpdate = false,
 ): Promise<typeof itemAvailability.$inferSelect> {
-  const [row] = await tx
+  const statement = tx
     .select()
     .from(itemAvailability)
     .where(
@@ -137,9 +140,38 @@ async function requireAvailability(
         isNull(itemAvailability.deletedAt),
       ),
     );
+  // The 86 toggle locks the row so two devices cannot both read "available"
+  // and each apply a transition.
+  const [row] = forUpdate ? await statement.for("update") : await statement;
   if (!row)
     throw new CoreError("NOT_FOUND", "Ketersediaan item tidak ditemukan.");
   return row;
+}
+
+/**
+ * The request a client idempotency key is bound to. A retry may replay only the
+ * same availability, action and deadline; the same key on a different request
+ * is a reuse (409 IDEMPOTENCY_KEY_REUSED), never a silent replay of the other
+ * request's outcome.
+ */
+function availabilityRequestFingerprint(input: {
+  availabilityId: string;
+  menuItemId: string;
+  outletId: string;
+  action: "sell_out" | "restore";
+  soldOutUntil: string | null;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.availabilityId,
+        input.menuItemId,
+        input.outletId,
+        input.action,
+        input.soldOutUntil,
+      ]),
+    )
+    .digest("hex");
 }
 
 async function auditPriceChange(
@@ -307,6 +339,7 @@ export async function createPriceList(
         effectiveFrom: row.effectiveFrom,
         operation: "created",
       },
+      affects: { kind: "outlet", outletId },
       now,
     });
     await auditPriceChange(tx, context, {
@@ -392,6 +425,7 @@ export async function updatePriceList(
         effectiveFrom: row.effectiveFrom,
         operation: "updated",
       },
+      affects: { kind: "outlet", outletId: row.outletId },
       now,
     });
     await auditPriceChange(tx, context, {
@@ -451,6 +485,7 @@ export async function deletePriceList(
         effectiveFrom: existing.effectiveFrom,
         operation: "deleted",
       },
+      affects: { kind: "outlet", outletId: existing.outletId },
       now,
     });
     await auditPriceChange(tx, context, {
@@ -685,6 +720,7 @@ export async function setPriceListItems(
         effectiveFrom: list.effectiveFrom,
         operation: "items_replaced",
       },
+      affects: { kind: "outlet", outletId: list.outletId },
       now,
     });
     await auditPriceChange(tx, context, {
@@ -824,6 +860,7 @@ export async function updateAvailability(
         entityId: row.id,
         operation: "updated",
       },
+      affects: { kind: "outlet", outletId: existing.outletId },
       now,
     });
     return toAvailability(row);
@@ -834,7 +871,9 @@ export async function updateAvailability(
  * 86 toggle. `transitionAvailability` is the contract's single state machine;
  * an action that the current status does not allow is a conflict, and a reused
  * idempotency key replays the recorded outcome instead of emitting a second
- * event (PRD §8 "Ketersediaan" broadcast to every channel).
+ * event (PRD §8 "Ketersediaan" broadcast to every channel). The key is bound to
+ * the request fingerprint, so the same key on a different availability, action
+ * or deadline is a reuse (409), not a replay.
  */
 export async function setAvailabilityStatus(
   context: ScopedTenantContext,
@@ -848,7 +887,19 @@ export async function setAvailabilityStatus(
   now = new Date(),
 ): Promise<Availability> {
   return withTenant(db, context, async (tx) => {
-    const existing = await requireAvailability(tx, context, availabilityId);
+    // A retry may arrive while the first request is still committing: the key
+    // lock makes it wait, then observe the recorded outcome instead of emitting
+    // a second event (two requests, one key, one event). The row lock then
+    // serialises the state transition of one availability row.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`menu-86:${context.tenant.tenantId}:${input.idempotencyKey}`}))`,
+    );
+    const existing = await requireAvailability(
+      tx,
+      context,
+      availabilityId,
+      true,
+    );
     await assertOutletPermission(
       tx,
       context,
@@ -859,6 +910,19 @@ export async function setAvailabilityStatus(
     );
     const expected =
       input.action === "sell_out" ? "item.sold_out" : "item.restored";
+    const soldOutUntil =
+      input.action === "sell_out" && input.soldOutUntil !== undefined
+        ? input.soldOutUntil === null
+          ? null
+          : new Date(input.soldOutUntil)
+        : null;
+    const fingerprint = availabilityRequestFingerprint({
+      availabilityId,
+      menuItemId: existing.menuItemId,
+      outletId: existing.outletId,
+      action: input.action,
+      soldOutUntil: soldOutUntil?.toISOString() ?? null,
+    });
     const [recorded] = await tx
       .select({ event: domainEventOutbox.event })
       .from(domainEventOutbox)
@@ -875,6 +939,22 @@ export async function setAvailabilityStatus(
           "IDEMPOTENCY_KEY_REUSED",
           "Kunci idempotensi sudah dipakai aksi lain.",
         );
+      const stored = recorded.event.payload;
+      const recordedFingerprint = availabilityRequestFingerprint({
+        availabilityId: String(stored.availabilityId ?? ""),
+        menuItemId: String(stored.itemId ?? ""),
+        outletId: String(stored.outletId ?? ""),
+        action: input.action,
+        soldOutUntil:
+          stored.soldOutUntil === undefined || stored.soldOutUntil === null
+            ? null
+            : String(stored.soldOutUntil),
+      });
+      if (recordedFingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai permintaan lain.",
+        );
       return toAvailability(existing);
     }
     let next: Availability["status"];
@@ -887,12 +967,6 @@ export async function setAvailabilityStatus(
         "Status ketersediaan tidak mendukung aksi ini.",
       );
     }
-    const soldOutUntil =
-      input.action === "sell_out" && input.soldOutUntil !== undefined
-        ? input.soldOutUntil === null
-          ? null
-          : new Date(input.soldOutUntil)
-        : null;
     const [row] = await tx
       .update(itemAvailability)
       .set({ status: next, soldOutUntil, updatedAt: now })

@@ -77,27 +77,62 @@ async function clearMenu(tenantOfRows: string) {
   });
 }
 
-/** Signed-in client holding one seeded role at one scope. */
+/** Signed-in client holding one seeded role (or a custom role id) at one scope. */
 async function menuClient(
-  templateKey: string,
-  scope: { type: "tenant"; id: null } | { type: "outlet"; id: string },
+  role: string | { roleId: string },
+  scope:
+    | { type: "tenant"; id: null }
+    | { type: "brand"; id: string }
+    | { type: "outlet"; id: string },
 ): Promise<{ client: ReturnType<typeof agent>; userId: string }> {
   const client = agent(app);
   await signUp(client, "Menu User");
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
-  await ownerPool.query(
-    `INSERT INTO role_assignments
-       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     SELECT $1, $2, id, $3, $4, now() - interval '1 minute', $2 FROM roles
-     WHERE tenant_id = $1 AND template_key = $5`,
-    [tenantId, userId, scope.type, scope.id, templateKey],
-  );
+  if (typeof role === "string")
+    await ownerPool.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       SELECT $1, $2, id, $3, $4, now() - interval '1 minute', $2 FROM roles
+       WHERE tenant_id = $1 AND template_key = $5`,
+      [tenantId, userId, scope.type, scope.id, role],
+    );
+  else
+    await ownerPool.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+      [tenantId, userId, role.roleId, scope.type, scope.id],
+    );
   return { client, userId };
+}
+
+/** A tenant-local custom role (no template) for narrow permission sets. */
+async function customRole(
+  name: string,
+  permissions: readonly string[],
+  allowedScopeTypes: readonly string[] = ["tenant", "brand", "outlet"],
+): Promise<{ roleId: string }> {
+  const roleId = randomUUID();
+  await ownerPool.query(
+    `INSERT INTO roles
+       (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, $3, false, NULL, $4::jsonb, false, $5::jsonb)`,
+    [
+      roleId,
+      tenantId,
+      name,
+      JSON.stringify(permissions),
+      JSON.stringify(allowedScopeTypes),
+    ],
+  );
+  createdRoleIds.push(roleId);
+  return { roleId };
 }
 
 const createdUserIds: string[] = [];
 const createdTenantIds: string[] = [];
+const createdRoleIds: string[] = [];
 
 afterAll(async () => {
   for (const tenantOfRows of [tenantId, ...createdTenantIds])
@@ -119,6 +154,10 @@ afterAll(async () => {
       "DELETE FROM role_assignments WHERE user_id = ANY($1::text[])",
       [createdUserIds],
     );
+  if (createdRoleIds.length > 0)
+    await ownerPool.query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
+      createdRoleIds,
+    ]);
   await ownerPool.end();
 });
 
@@ -569,6 +608,285 @@ describe("legend-lmk menu API", () => {
       await client.get(`/api/menu/items?limit=100&brandId=${brandId}`),
     );
     expect(items.data.some((row) => row.id === otherItem)).toBe(false);
+  });
+
+  it("finding HIGH menu-internals.ts:128 outlet-scoped manage cannot write shared modifiers", async () => {
+    const owner = await menuClient("owner", { type: "tenant", id: null });
+    createdUserIds.push(owner.userId);
+    const groupName = `Grup Bersama ${randomBytes(2).toString("hex")}`;
+    const group = await owner.client
+      .post("/api/menu/modifier-groups")
+      .set(originHeader)
+      .send({ name: groupName, minSelect: 0, maxSelect: 1 });
+    expect(group.status).toBe(201);
+    const groupId = data(group).id as string;
+    const modifier = await owner.client
+      .post(`/api/menu/modifier-groups/${groupId}/modifiers`)
+      .set(originHeader)
+      .send({ name: "Extra Shot", priceIdr: 0 });
+    expect(modifier.status).toBe(201);
+    const modifierId = data(modifier).id as string;
+
+    // A grant held only at one outlet must not rewrite data every outlet shares.
+    const outletManager = await menuClient("general_manager", {
+      type: "outlet",
+      id: outletA,
+    });
+    createdUserIds.push(outletManager.userId);
+    const rename = await outletManager.client
+      .patch(`/api/menu/modifier-groups/${groupId}`)
+      .set(originHeader)
+      .send({ name: "Dibajak" });
+    expect(rename.status).toBe(403);
+    expect(body(rename).error).toMatchObject({ code: "PERMISSION_DENIED" });
+    const repriced = await outletManager.client
+      .patch(`/api/menu/modifiers/${modifierId}`)
+      .set(originHeader)
+      .send({ priceIdr: 5_000 });
+    expect(repriced.status).toBe(403);
+    const created = await outletManager.client
+      .post("/api/menu/modifier-groups")
+      .set(originHeader)
+      .send({ name: "Grup Baru", minSelect: 0, maxSelect: 1 });
+    expect(created.status).toBe(403);
+    const groups = page(
+      await owner.client.get("/api/menu/modifier-groups?limit=100"),
+    );
+    expect(groups.data.find((row) => row.id === groupId)).toMatchObject({
+      name: groupName,
+    });
+
+    // Brand scope is still narrower than the tenant-shared record, so it is
+    // refused fail closed (its event could not enter the tenant-level stream).
+    const brandManager = await menuClient("general_manager", {
+      type: "brand",
+      id: brandId,
+    });
+    createdUserIds.push(brandManager.userId);
+    const brandRename = await brandManager.client
+      .patch(`/api/menu/modifier-groups/${groupId}`)
+      .set(originHeader)
+      .send({ name: "Grup Diubah" });
+    expect(brandRename.status).toBe(403);
+    expect(body(brandRename).error).toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    const brandRepriced = await brandManager.client
+      .patch(`/api/menu/modifiers/${modifierId}`)
+      .set(originHeader)
+      .send({ priceIdr: 5_000 });
+    expect(brandRepriced.status).toBe(403);
+
+    // A tenant-scoped grant may write the shared record (owner created it).
+    const tenantManager = await menuClient("general_manager", {
+      type: "tenant",
+      id: null,
+    });
+    createdUserIds.push(tenantManager.userId);
+    const tenantRename = await tenantManager.client
+      .patch(`/api/menu/modifier-groups/${groupId}`)
+      .set(originHeader)
+      .send({ name: "Grup Tenant" });
+    expect(tenantRename.status).toBe(200);
+    expect(data(tenantRename)).toMatchObject({
+      id: groupId,
+      name: "Grup Tenant",
+    });
+  });
+
+  it("finding HIGH menu.service.ts:1728 price-affecting modifier writes need menu.price.manage", async () => {
+    // A tenant-scoped role that may manage menu content but not sell prices.
+    const editor = await menuClient(
+      await customRole("Editor Menu Uji", [
+        "menu.item.view",
+        "menu.item.manage",
+      ]),
+      { type: "tenant", id: null },
+    );
+    createdUserIds.push(editor.userId);
+    const group = await editor.client
+      .post("/api/menu/modifier-groups")
+      .set(originHeader)
+      .send({ name: "Level Gula Editor", minSelect: 0, maxSelect: 1 });
+    expect(group.status).toBe(201);
+    const groupId = data(group).id as string;
+
+    // Creating a modifier sets its price, so the sell-price permission is needed.
+    const deniedCreate = await editor.client
+      .post(`/api/menu/modifier-groups/${groupId}/modifiers`)
+      .set(originHeader)
+      .send({ name: "Less Sugar", priceIdr: 0 });
+    expect(deniedCreate.status).toBe(403);
+
+    const owner = await menuClient("owner", { type: "tenant", id: null });
+    createdUserIds.push(owner.userId);
+    const modifier = await owner.client
+      .post(`/api/menu/modifier-groups/${groupId}/modifiers`)
+      .set(originHeader)
+      .send({ name: "Less Sugar", priceIdr: 2_000 });
+    expect(modifier.status).toBe(201);
+    const modifierId = data(modifier).id as string;
+
+    // Content edits stay allowed; only the price needs menu.price.manage.
+    const renamed = await editor.client
+      .patch(`/api/menu/modifiers/${modifierId}`)
+      .set(originHeader)
+      .send({ name: "Less Sugar 2" });
+    expect(renamed.status).toBe(200);
+    const repriced = await editor.client
+      .patch(`/api/menu/modifiers/${modifierId}`)
+      .set(originHeader)
+      .send({ priceIdr: 3_000 });
+    expect(repriced.status).toBe(403);
+    expect(body(repriced).error).toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+
+  it("finding HIGH menu-pricing.service.ts:861 the idempotency key is bound to the request fingerprint", async () => {
+    const owner = await menuClient("owner", { type: "tenant", id: null });
+    createdUserIds.push(owner.userId);
+    const category = await owner.client
+      .post("/api/menu/categories")
+      .set(originHeader)
+      .send({ brandId, name: `Idempotensi ${randomBytes(2).toString("hex")}` });
+    const categoryId = data(category).id as string;
+    const itemIds: string[] = [];
+    for (const name of ["Kopi Idem A", "Kopi Idem B"]) {
+      const item = await owner.client
+        .post("/api/menu/items")
+        .set(originHeader)
+        .send({ brandId, categoryId, name });
+      expect(item.status).toBe(201);
+      itemIds.push(data(item).id as string);
+    }
+    const list = page(
+      await owner.client.get(
+        `/api/menu/availability?limit=100&outletId=${outletA}`,
+      ),
+    );
+    const availabilityOf = (itemId: string): string => {
+      const row = list.data.find((entry) => entry.menuItemId === itemId);
+      expect(row).toBeDefined();
+      return row?.id as string;
+    };
+    const firstAvailability = availabilityOf(itemIds[0]);
+    const secondAvailability = availabilityOf(itemIds[1]);
+
+    const key = `86-${randomUUID()}`;
+    const deadline = "2026-11-02T12:00:00.000Z";
+    const soldOut = await owner.client
+      .post(`/api/menu/availability/${firstAvailability}/status`)
+      .set(originHeader)
+      .send({
+        action: "sell_out",
+        soldOutUntil: deadline,
+        idempotencyKey: key,
+      });
+    expect(soldOut.status).toBe(200);
+
+    // An exact retry replays the recorded outcome.
+    const replay = await owner.client
+      .post(`/api/menu/availability/${firstAvailability}/status`)
+      .set(originHeader)
+      .send({
+        action: "sell_out",
+        soldOutUntil: deadline,
+        idempotencyKey: key,
+      });
+    expect(replay.status).toBe(200);
+    expect(data(replay).status).toBe("sold_out");
+
+    // Same key, different payload (deadline) is a reuse, not a retry.
+    const otherDeadline = await owner.client
+      .post(`/api/menu/availability/${firstAvailability}/status`)
+      .set(originHeader)
+      .send({
+        action: "sell_out",
+        soldOutUntil: "2026-11-02T13:00:00.000Z",
+        idempotencyKey: key,
+      });
+    expect(otherDeadline.status).toBe(409);
+    expect(body(otherDeadline).error).toMatchObject({
+      code: "IDEMPOTENCY_KEY_REUSED",
+    });
+
+    // Same key on another record is a reuse as well, never a silent replay.
+    const otherRecord = await owner.client
+      .post(`/api/menu/availability/${secondAvailability}/status`)
+      .set(originHeader)
+      .send({ action: "sell_out", idempotencyKey: key });
+    expect(otherRecord.status).toBe(409);
+    expect(body(otherRecord).error).toMatchObject({
+      code: "IDEMPOTENCY_KEY_REUSED",
+    });
+
+    const events = await asOwnerTenant(tenantId, (db) =>
+      db.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM domain_event_outbox
+         WHERE tenant_id = $1 AND event->>'idempotencyKey' = $2`,
+        [tenantId, key],
+      ),
+    );
+    expect(events.rows[0].count).toBe("1");
+  });
+
+  it("finding MED menu-internals.ts:403 events route by the affected outlet, not the actor scope", async () => {
+    const owner = await menuClient("owner", { type: "tenant", id: null });
+    createdUserIds.push(owner.userId);
+
+    // Outlet-owned data: a tenant-wide caller's station change is outlet-local.
+    const station = await owner.client
+      .post("/api/menu/stations")
+      .set(originHeader)
+      .send({ outletId: outletA, name: "Bar Uji", type: "coffee_bar" });
+    expect(station.status).toBe(201);
+    const stationId = data(station).id as string;
+    const stationEvents = await asOwnerTenant(tenantId, (db) =>
+      db.query<{ outlet_id: string | null }>(
+        `SELECT outlet_id FROM domain_event_outbox
+         WHERE tenant_id = $1 AND destination = 'cloud-sync' AND aggregate_id = $2`,
+        [tenantId, stationId],
+      ),
+    );
+    expect(stationEvents.rows.map((row) => row.outlet_id)).toEqual([outletA]);
+
+    // Brand-owned data joins the brand's stream instead of a tenant-level one:
+    // the outbox requires one outlet per aggregate, so the deterministic anchor
+    // is the brand's first outlet — never the actor's scope.
+    const category = await owner.client
+      .post("/api/menu/categories")
+      .set(originHeader)
+      .send({ brandId, name: `Rute Brand ${randomBytes(2).toString("hex")}` });
+    expect(category.status).toBe(201);
+    const categoryId = data(category).id as string;
+    const categoryEvents = async () =>
+      asOwnerTenant(tenantId, (db) =>
+        db.query<{ outlet_id: string | null }>(
+          `SELECT outlet_id FROM domain_event_outbox
+           WHERE tenant_id = $1 AND destination = 'cloud-sync' AND aggregate_id = $2`,
+          [tenantId, categoryId],
+        ),
+      );
+    expect((await categoryEvents()).rows.map((row) => row.outlet_id)).toEqual([
+      outletA,
+    ]);
+
+    // A narrower (brand) writer updating the same aggregate must reuse the same
+    // stream — a second outlet would violate the outbox's aggregate guard.
+    const brandManager = await menuClient("general_manager", {
+      type: "brand",
+      id: brandId,
+    });
+    createdUserIds.push(brandManager.userId);
+    const renamed = await brandManager.client
+      .patch(`/api/menu/categories/${categoryId}`)
+      .set(originHeader)
+      .send({ name: "Rute Brand Diubah" });
+    expect(renamed.status).toBe(200);
+    const afterUpdate = await categoryEvents();
+    expect(afterUpdate.rows).toHaveLength(2);
+    expect(afterUpdate.rows.every((row) => row.outlet_id === outletA)).toBe(
+      true,
+    );
   });
 
   it("uploads a menu photo through the storage adapter and resolves its URL", async () => {

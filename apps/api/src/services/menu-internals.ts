@@ -44,6 +44,7 @@ export type AccessTarget = Parameters<AccessSnapshot["allows"]>[1];
 export const EVENT_DESTINATION = "cloud-sync";
 export const MENU_ITEM_PERMISSION = "menu.item.manage" as const;
 export const MENU_VIEW_PERMISSION = "menu.item.view" as const;
+export const MENU_PRICE_MANAGE_PERMISSION = "menu.price.manage" as const;
 
 // ---------------------------------------------------------------- authority
 
@@ -123,7 +124,8 @@ export async function assertBrandReadPermission(
 /**
  * Permission held with any reach. Modifier groups and modifiers are shared per
  * tenant (the PRD gives them no brand column), so there is no narrower target
- * to judge; data stays inside the tenant.
+ * to judge; data stays inside the tenant. Reads may use this reach check;
+ * writes must use assertSharedMasterDataPermission.
  */
 export async function assertAnyPermission(
   tx: Tx,
@@ -138,6 +140,29 @@ export async function assertAnyPermission(
       "PERMISSION_DENIED",
       "Anda tidak memiliki izin untuk mengelola menu ini.",
     );
+}
+
+/**
+ * Writes to tenant-shared master data. Modifier groups and modifiers carry no
+ * brand or outlet column (PRD v1.7 §6 C schema), so one change reaches every
+ * outlet of the tenant: the permission must be held at tenant scope. A brand
+ * grant would rewrite another brand's menu, and its event could not enter the
+ * tenant-level outbox stream (a narrower context may not emit tenant-wide
+ * events), so both are refused fail closed.
+ */
+export async function assertSharedMasterDataPermission(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  permission: PermissionCode,
+  now: Date,
+): Promise<void> {
+  const snapshot = await accessSnapshot(tx, context, actorUserId, now);
+  if (snapshot.allows(permission, { type: "tenant" })) return;
+  throw new AccessError(
+    "PERMISSION_DENIED",
+    "Data menu bersama hanya dapat diubah pada cakupan tenant.",
+  );
 }
 
 /**
@@ -384,6 +409,13 @@ export async function nextSequence(
   aggregateType: string,
   aggregateId: string,
 ): Promise<number> {
+  // Serialize the max+1 read for one aggregate: two concurrent changes of the
+  // same record would otherwise read the same maximum and collide on the
+  // outbox's (tenant, aggregate, sequence) unique key. The lock is released at
+  // commit, so it never outlives the transaction that reads it.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`menu-outbox:${tenantId}:${aggregateType}:${aggregateId}`}))`,
+  );
   const [row] = await tx
     .select({
       last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
@@ -400,19 +432,101 @@ export async function nextSequence(
   return Number(row?.last ?? 0) + 1;
 }
 
-/** Outlets a brand-wide change is announced for, from the caller's reach. */
-export function eventOutlets(
+/**
+ * The record a change affects, and therefore the outlet stream its event must
+ * join:
+ * - `outlet`: outlet-owned data (station, price list, availability);
+ * - `brand`: brand-owned data (category, item, variant, combo, item↔group
+ *   link), which concerns every outlet of that brand;
+ * - `shared`: tenant-shared data without a brand column (modifier groups,
+ *   modifiers), which concerns the whole tenant.
+ *
+ * Routing follows the affected record, not the actor: a tenant-wide caller that
+ * edits one outlet's row must not broadcast a tenant-level event.
+ */
+export type MenuEventAffects =
+  | { readonly kind: "outlet"; readonly outletId: string }
+  | { readonly kind: "brand"; readonly brandId: string }
+  | { readonly kind: "shared" };
+
+/**
+ * The one outlet stream an aggregate's events join. The outbox requires every
+ * event of an aggregate to share an outlet (`app.enforce_outbox_aggregate_outlet`),
+ * so routing is anchored, not fanned out:
+ * - an aggregate that already has events keeps the outlet of its first event,
+ *   whatever scope the current writer holds (this is what keeps sequence and
+ *   consumption consistent across actors);
+ * - a new aggregate starts at the affected record's outlet: its own outlet, or
+ *   the brand's first outlet for brand-owned data (all brand outlets share the
+ *   change; one deterministic stream keeps the invariant);
+ * - tenant-shared data uses the tenant-level stream, which only a tenant-scoped
+ *   context may write.
+ */
+async function eventTargetsFor(
+  tx: Tx,
   context: ScopedTenantContext,
-): readonly string[] | null {
-  return context.outletScope.kind === "tenant"
-    ? null
-    : context.outletScope.outletIds;
+  aggregateType: string,
+  aggregateId: string,
+  affects: MenuEventAffects,
+): Promise<readonly (string | null)[]> {
+  const [prior] = await tx
+    .select({ outletId: domainEventOutbox.outletId })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, context.tenant.tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateType, aggregateType),
+        eq(domainEventOutbox.aggregateId, aggregateId),
+      ),
+    )
+    .limit(1);
+  if (prior) {
+    if (prior.outletId === null) {
+      if (context.outletScope.kind !== "tenant")
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Event ini hanya dapat ditulis pada cakupan tenant.",
+        );
+      return [null];
+    }
+    return [prior.outletId];
+  }
+  switch (affects.kind) {
+    case "outlet":
+      return [affects.outletId];
+    case "brand": {
+      const [first] = await tx
+        .select({ id: outlets.id })
+        .from(outlets)
+        .where(
+          and(
+            eq(outlets.tenantId, context.tenant.tenantId),
+            eq(outlets.brandId, affects.brandId),
+          ),
+        )
+        .orderBy(asc(outlets.createdAt), asc(outlets.id))
+        .limit(1);
+      if (first) return [first.id];
+      // A brand without outlets has no edge node: a tenant-wide caller still
+      // records the change tenant-wide, a narrower caller has nowhere to send.
+      return context.outletScope.kind === "tenant" ? [null] : [];
+    }
+    case "shared":
+      if (context.outletScope.kind !== "tenant")
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Data menu bersama hanya dapat diubah pada cakupan tenant.",
+        );
+      return [null];
+  }
 }
 
 /**
- * Appends one master-data event. A brand/outlet-scoped caller emits one event
- * per reachable outlet (the outbox refuses tenant-wide events from a narrower
- * scope); a tenant-wide caller emits one tenant-level event.
+ * Appends one master-data event to the aggregate's outlet stream. The outbox
+ * refuses an outlet outside the caller's scope and a tenant-wide event from a
+ * narrower scope, so a narrower caller only ever addresses outlets inside its
+ * own reach.
  */
 export async function appendMenuEvent(
   tx: Tx,
@@ -428,10 +542,17 @@ export async function appendMenuEvent(
     aggregateId: string;
     actorUserId: string;
     payload: Record<string, unknown>;
+    affects: MenuEventAffects;
     now: Date;
   },
 ): Promise<void> {
-  const targets = eventOutlets(context) ?? [null];
+  const targets = await eventTargetsFor(
+    tx,
+    context,
+    definition.entry.aggregateType,
+    input.aggregateId,
+    input.affects,
+  );
   for (const outletId of targets) {
     const sequence = await nextSequence(
       tx,

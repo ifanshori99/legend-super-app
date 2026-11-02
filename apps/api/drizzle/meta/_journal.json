@@ -127,6 +127,20 @@
       "when": 1793579362795,
       "tag": "0017_inventory_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793589703907,
+      "tag": "0018_warm_deadpool",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793589704536,
+      "tag": "0019_menu_rls",
+      "breakpoints": true
     }
   ]
 }
