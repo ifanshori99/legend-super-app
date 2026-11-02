@@ -121,6 +121,15 @@ describe("role templates (PRD §3.7 table)", () => {
     // Admin Tenant: no automatic finance authority.
     for (const tag of ["finance", "payroll", "payment"])
       assert.deepEqual(tagged("tenant_admin", tag), [], `tenant_admin ${tag}`);
+    // ...but it reaches the /kelola area where access is managed (C10 decision).
+    assert.ok(
+      template("tenant_admin").permissions.includes(
+        "dashboard.management.view",
+      ),
+    );
+    assert.ok(
+      template("tenant_admin").permissions.includes("access.role.assign"),
+    );
     // General Manager: does not change payroll data.
     assert.deepEqual(tagged("general_manager", "payroll"), []);
     // Outlet Manager: assigned outlet only.
@@ -736,6 +745,52 @@ describe("role grants (§3.7 Pemberian Role)", () => {
     );
   });
 
+  test("§3.7 custom-role edits may only add permissions the editor holds", () => {
+    const edit = (userKey, addedPermissions, overrides = {}) =>
+      access.assertCanEditCustomRole({
+        grantor: principal(userKey),
+        grantorRoles: fx.roleGrants,
+        grantorMfaVerified: true,
+        grantorReauthenticatedAt: null,
+        addedPermissions,
+        org: fx.org,
+        now: fx.now,
+        ...overrides,
+      });
+    // The Owner holds every tenant permission, so no re-auth is needed.
+    assert.doesNotThrow(() => edit("owner", ["audit.log.view"]));
+    // Admin Tenant does not hold finance permissions...
+    throwsCode(
+      () => edit("tenantAdmin", ["payroll.view"]),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // ...unless MFA is verified and it re-authenticated within five minutes.
+    assert.doesNotThrow(() =>
+      edit("tenantAdmin", ["payroll.view"], {
+        grantorReauthenticatedAt: new Date(fx.now.getTime() - 60_000),
+      }),
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorReauthenticatedAt: new Date(fx.now.getTime() - 6 * 60_000),
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    throwsCode(
+      () =>
+        edit("tenantAdmin", ["payroll.view"], {
+          grantorMfaVerified: false,
+          grantorReauthenticatedAt: fx.now,
+        }),
+      "SELF_ELEVATION_FORBIDDEN",
+    );
+    // Without access.role.manage there is no edit path at all.
+    throwsCode(() => edit("cashier", ["pos.sale.create"]), "PERMISSION_DENIED");
+    // No added permission means no grant decision (rename / remove only).
+    assert.doesNotThrow(() => edit("tenantAdmin", []));
+  });
+
   test("client inputs never carry the tenant (TEN-02)", () => {
     const input = {
       userId: fx.users.employee.id,
@@ -1097,17 +1152,28 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       permissions: ["org.structure.manage", "access.role.assign"],
       mfaRequired: true,
       mfaVerified: false,
+      stations: [],
     });
     assert.deepEqual(view.permissions, [
       "org.structure.manage",
       "access.role.assign",
     ]);
+    // Station reach travels with the same view so a KDS client only polls
+    // boards the API would authorize (legend-fsb7).
+    const withStation = access.myAccessViewSchema.parse({
+      permissions: ["kds.ticket.process"],
+      mfaRequired: false,
+      mfaVerified: true,
+      stations: [station("bar_kopi")],
+    });
+    assert.deepEqual(withStation.stations, [station("bar_kopi")]);
     // Platform codes are never part of a tenant view.
     assert.equal(
       access.myAccessViewSchema.safeParse({
         permissions: ["platform.tenant.manage"],
         mfaRequired: true,
         mfaVerified: true,
+        stations: [],
       }).success,
       false,
     );
@@ -1115,6 +1181,7 @@ describe("legend-t4y7 GET /api/me/access contract", () => {
       access.myAccessViewSchema.safeParse({
         permissions: [],
         mfaRequired: false,
+        stations: [],
       }).success,
       false,
     );

@@ -14,13 +14,13 @@ import { Slot } from "radix-ui";
 import { useT } from "@/components/i18n";
 
 // Badge: a short label or count the user acts on. Tinted fill, strong text
-// (every pair is in the contrast check).
+// (every pair is in the contrast check). v3 (Metoric): always a pill.
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-xs leading-5 font-semibold whitespace-nowrap tabular [&_svg]:size-3.5 [&_svg]:shrink-0",
+  "inline-flex w-fit shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs leading-5 font-semibold whitespace-nowrap tabular [&_svg]:size-3.5 [&_svg]:shrink-0",
   {
     variants: {
       tone: {
-        neutral: "bg-muted text-foreground",
+        neutral: "bg-surface-3 text-foreground",
         brand: "bg-brand-subtle text-foreground",
         success: "bg-success-subtle text-success",
         warning: "bg-warning-subtle text-warning",
@@ -85,25 +85,45 @@ export const ORDER_STATUSES = [
 ] as const;
 export const TIMER_STATUSES = ["onTrack", "near", "late"] as const;
 
+// v2 (owner Q25): the one state that needs action now (late timer, table
+// waiting) uses the solid fill; everything else stays tinted.
+const SOLID: Record<Tone, string> = {
+  neutral: "bg-foreground text-background",
+  success: "bg-success text-success-foreground",
+  warning: "bg-warning text-warning-foreground",
+  danger: "bg-danger text-danger-foreground",
+  info: "bg-info text-info-foreground",
+};
+
 function StatusPill({
   status,
+  solid = false,
+  icon,
   children,
   className,
 }: {
   status: StatusKind;
+  /** Overrides the catalog icon when a generic tone needs a specific glyph,
+   *  e.g. a clock for "waiting" on a `warning` tone. */
+  icon?: LucideIcon;
+  /** Solid fill for the urgent state only (DESIGN.md §4 Status). */
+  solid?: boolean;
   /** Overrides the catalog label, e.g. "Siap · 2 item". */
   children?: React.ReactNode;
   className?: string;
 }) {
   const t = useT();
-  const { tone, icon: Icon, label } = STATUS[status];
+  const { tone, icon: catalogIcon, label } = STATUS[status];
+  const Icon = icon ?? catalogIcon;
   return (
     <span
       data-slot="status-pill"
       data-status={status}
+      data-solid={solid || undefined}
       className={cn(
         badgeVariants({ tone }),
         "rounded-full px-2.5 text-sm",
+        solid && SOLID[tone],
         className,
       )}
     >

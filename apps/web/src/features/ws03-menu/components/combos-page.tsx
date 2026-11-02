@@ -517,7 +517,7 @@ function ComboEditor({
           {components.map((component, index) => (
             <div
               key={component.key}
-              className="grid gap-2 rounded-lg border bg-background p-3"
+              className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-3"
             >
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
                 <FormField label={t("menu.combos.componentItem")} required>

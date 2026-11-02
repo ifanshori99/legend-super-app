@@ -469,8 +469,12 @@ const itemOverlays: Record<string, ItemOverlay> = {
   Cheesecake: { allergens: ["susu", "telur", "gluten"] },
   "Pie Apel": { labels: ["baru", "vegetarian"], allergens: ["gluten"] },
 };
-/** Sold out in the sample menu so every state is visible (ORD-05). */
-const soldOutNames = new Set(["Sup Buntut", "Cheesecake"]);
+/**
+ * Sold out in the sample menu so every state is visible (ORD-05). Mie Kuah is
+ * sold out too because it has a demo photo: the customer card shows the greyed
+ * photo state, which an item without a photo could not demonstrate.
+ */
+const soldOutNames = new Set(["Sup Buntut", "Cheesecake", "Mie Kuah"]);
 
 const SUGAR_GROUP = fixtureId(4100);
 const TOPPING_GROUP = fixtureId(4401);
@@ -575,12 +579,20 @@ function zoneIsOpen(zone: FloorZone, at: Date): boolean {
 /**
  * Builds the public menu read model of one table from the menu contract
  * fixtures: channel prices, availability, and the presentation overlays above.
+ *
+ * `photoFor` is the mock/demo seam: the sample catalogue has no uploaded media,
+ * so the demo layer supplies its Unsplash samples by item name (owner Q17/Q24).
+ * A real build passes nothing and every item keeps the designed missing-photo
+ * state (`MediaPlate missing="quiet"`) until its upload exists (owner Q23).
  */
-export function buildQrMenu(input: {
-  table: Pick<Table, "id" | "code" | "capacity">;
-  zone: FloorZone;
-  at?: Date;
-}): QrMenu {
+export function buildQrMenu(
+  input: {
+    table: Pick<Table, "id" | "code" | "capacity">;
+    zone: FloorZone;
+    at?: Date;
+  },
+  options: { photoFor?: (itemName: string) => string | null } = {},
+): QrMenu {
   const menu = cafeLegendMenuFixtures;
   const { brand, outlets } = cafeLegendFixtures;
   const outlet = outlets[0];
@@ -632,7 +644,7 @@ export function buildQrMenu(input: {
         priceIdr: idr(base),
         labels: overlay.labels ?? item.labels,
         allergens: overlay.allergens ?? item.allergens,
-        photoUrl: null,
+        photoUrl: options.photoFor?.(item.name) ?? null,
         variants,
         modifierGroups: modifierGroupsFor(category.name, item.name),
         status: soldOut ? ("sold_out" as const) : ("available" as const),
@@ -674,6 +686,21 @@ export function buildQrMenu(input: {
     items,
     menuUpdatedAt: "2026-11-01T05:00:00.000Z",
   });
+}
+
+/**
+ * Q23 (legend-qf0i): the guest copy of a menu never carries an active item
+ * without a photo. The API drops those rows in SQL (`guestMenuItemCondition`);
+ * a mock built from fixtures applies the same rule on the resolved read model,
+ * so the demo shows exactly what a guest would see once an outlet has a legacy
+ * row. Categories are kept: they are navigation, and the contract allows a
+ * category with no visible item.
+ */
+export function hidePhotoLessMenuItems(menu: QrMenu): QrMenu {
+  return {
+    ...menu,
+    items: menu.items.filter((item) => item.photoUrl !== null),
+  };
 }
 
 function tableByCode(code: string): Table {

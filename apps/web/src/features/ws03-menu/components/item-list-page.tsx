@@ -57,6 +57,7 @@ import {
 import { ConfirmDialog } from "./confirm-dialog";
 import { ReorderButtons } from "./reorder-buttons";
 import { ItemStatusBadge } from "./status-badge";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const PAGE_SIZE = 20;
 const ALL = "all";
@@ -281,7 +282,7 @@ export function ItemListPage() {
     setStatus.mutate(
       {
         availabilityId: row.availability.id,
-        body: { action: "sell_out", idempotencyKey: crypto.randomUUID() },
+        body: { action: "sell_out", idempotencyKey: newIdempotencyKey() },
       },
       {
         onSuccess: () =>
@@ -300,7 +301,7 @@ export function ItemListPage() {
     setStatus.mutate(
       {
         availabilityId: restoring.availability.id,
-        body: { action: "restore", idempotencyKey: crypto.randomUUID() },
+        body: { action: "restore", idempotencyKey: newIdempotencyKey() },
       },
       {
         onSuccess: () => {
@@ -539,6 +540,12 @@ export function ItemListPage() {
                             {label}
                           </Badge>
                         ))}
+                        {/* Q23: without a photo the item can never be shown. */}
+                        {!row.item.mediaId && (
+                          <Badge tone="warning">
+                            {t("menu.list.photoRequired")}
+                          </Badge>
+                        )}
                       </span>
                       {row.item.description && (
                         <span className="line-clamp-1 text-sm text-muted-foreground">
@@ -599,6 +606,11 @@ export function ItemListPage() {
                         {label}
                       </Badge>
                     ))}
+                    {!row.item.mediaId && (
+                      <Badge tone="warning">
+                        {t("menu.list.photoRequired")}
+                      </Badge>
+                    )}
                   </span>
                   <span className="text-sm text-muted-foreground">
                     {row.category?.name ?? t("menu.list.noCategory")} ·{" "}

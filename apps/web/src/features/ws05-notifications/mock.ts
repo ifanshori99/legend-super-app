@@ -3,6 +3,7 @@ import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import * as contract from "@starter/shared/notification";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 // Fixtures for the notification screens (docs/frontend.md "Mock mode"): the
 // Cafe Legend sample user's inbox, preferences and tenant channel policy come
@@ -136,7 +137,7 @@ registerMock(contract.registerPushSubscription, ({ body }) => {
   );
   if (existing) return { data: existing };
   const subscription: contract.PushSubscription = {
-    id: contract.pushSubscriptionIdSchema.parse(crypto.randomUUID()),
+    id: contract.pushSubscriptionIdSchema.parse(newIdempotencyKey()),
     tenantId: state.preference.tenantId,
     userId: state.preference.userId,
     deviceLabel: body.deviceLabel,

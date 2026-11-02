@@ -414,12 +414,35 @@ describe("typed endpoint caller", () => {
     resetMocks();
   });
 
+  test("legend-8tv6 sends a validated Idempotency-Key and rejects unsafe headers", async () => {
+    await call(api.listExampleOutlets, undefined, {
+      headers: { "Idempotency-Key": "attempt-123" },
+    });
+    assert.deepEqual(calls[0].request.headers, {
+      "Idempotency-Key": "attempt-123",
+    });
+    for (const headers of [
+      { "Idempotency-Key": "bad key" },
+      { Authorization: "secret" },
+    ]) {
+      const error = await failure(
+        call(api.listExampleOutlets, undefined, { headers }),
+      );
+      assert.equal(error.code, "VALIDATION_ERROR");
+    }
+    assert.equal(calls.length, 1);
+  });
+
   test("builds the path, sends parsed query and returns the typed page", async () => {
     // A handler registered here replaces the example one for this contract.
-    registerMock(api.listExampleOutlets, ({ query }) => ({
-      data: fx.outlets.slice(0, query.limit),
-      meta: { limit: query.limit, nextCursor: null },
-    }));
+    registerMock(
+      api.listExampleOutlets,
+      ({ query }) => ({
+        data: fx.outlets.slice(0, query.limit),
+        meta: { limit: query.limit, nextCursor: null },
+      }),
+      { replace: true },
+    );
     const page = await call(api.listExampleOutlets, { query: { limit: 1 } });
     assert.equal(calls[0].path, "/api/example/outlets");
     assert.deepEqual(calls[0].request.query, { limit: 1 });
@@ -427,9 +450,13 @@ describe("typed endpoint caller", () => {
   });
 
   test("applies schema defaults and sends the path with encoded params", async () => {
-    registerMock(api.getExampleOutlet, ({ params }) => ({
-      data: fx.outlets.find((o) => o.id === params.outletId),
-    }));
+    registerMock(
+      api.getExampleOutlet,
+      ({ params }) => ({
+        data: fx.outlets.find((o) => o.id === params.outletId),
+      }),
+      { replace: true },
+    );
     const defaults = await call(api.listExampleOutlets);
     assert.deepEqual(calls[0].request.query, { limit: 25 });
     assert.equal(defaults.meta.limit, 25);
@@ -467,7 +494,10 @@ describe("typed endpoint caller", () => {
   });
 
   test("a void endpoint resolves undefined", async () => {
-    registerMock(api.removeExampleOrderLine, () => undefined);
+    // The example handler owns the endpoint; this test overrides it on purpose.
+    registerMock(api.removeExampleOrderLine, () => undefined, {
+      replace: true,
+    });
     const lineId = fx.orderLinesPage.data[0].id;
     assert.equal(
       await call(api.removeExampleOrderLine, { params: { orderId, lineId } }),

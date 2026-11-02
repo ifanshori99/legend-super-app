@@ -9,6 +9,7 @@
 import { Pool } from "pg";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { cafeLegendTaxFixtures } from "@starter/shared/tax";
 import { databaseUrl } from "./connection";
 
 if (
@@ -74,9 +75,10 @@ try {
   );
 
   // Tenant-owned rows need the tenant context even for the seeding login.
-  await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-    tenant.id,
-  ]);
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [tenant.id],
+  );
 
   const brand = fixtures.brand;
   await client.query(
@@ -216,6 +218,123 @@ try {
         JSON.stringify(template.permissions),
         template.mfaRequired,
         JSON.stringify(template.allowedScopeTypes),
+      ],
+    );
+  }
+
+  // Tax configuration (PRD §3.14 F11/F14, bead legend-559): the default PBJT
+  // Bandung 10% F&B rule, a facility rule, the Private Room service charge and
+  // the exclusive-price calculation options. Tenants created from the panel get
+  // their defaults from the same fixtures once the tenant-create wiring lands;
+  // seeding them here makes dev and the API tests run against real rows.
+  const taxFixtures = cafeLegendTaxFixtures;
+  for (const rule of taxFixtures.taxRules) {
+    await client.query(
+      `INSERT INTO tax_rules
+         (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+          price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+          published_at, published_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         rate_bp = EXCLUDED.rate_bp,
+         region_code = EXCLUDED.region_code,
+         channels = EXCLUDED.channels,
+         applies_to = EXCLUDED.applies_to,
+         price_includes_tax = EXCLUDED.price_includes_tax,
+         include_service_in_base = EXCLUDED.include_service_in_base,
+         is_active = EXCLUDED.is_active,
+         effective_from = EXCLUDED.effective_from`,
+      [
+        rule.id,
+        tenant.id,
+        rule.outletId,
+        rule.code,
+        rule.name,
+        rule.taxType,
+        rule.rateBp,
+        rule.regionCode,
+        JSON.stringify(rule.channels),
+        JSON.stringify(rule.appliesTo),
+        rule.priceIncludesTax,
+        rule.includeServiceInBase,
+        rule.isActive,
+        rule.version,
+        rule.effectiveFrom,
+        rule.status,
+        rule.publishedAt,
+        rule.publishedBy,
+        rule.createdAt,
+      ],
+    );
+  }
+  for (const rule of taxFixtures.serviceChargeRules) {
+    await client.query(
+      `INSERT INTO service_charge_rules
+         (id, tenant_id, outlet_id, code, name, rate_bp, zone_id, order_types, item_classes, is_active,
+          version, effective_from, status, published_at, published_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         rate_bp = EXCLUDED.rate_bp,
+         zone_id = EXCLUDED.zone_id,
+         order_types = EXCLUDED.order_types,
+         item_classes = EXCLUDED.item_classes,
+         is_active = EXCLUDED.is_active,
+         effective_from = EXCLUDED.effective_from`,
+      [
+        rule.id,
+        tenant.id,
+        rule.outletId,
+        rule.code,
+        rule.name,
+        rule.rateBp,
+        rule.zoneId,
+        JSON.stringify(rule.orderTypes),
+        JSON.stringify(rule.itemClasses),
+        rule.isActive,
+        rule.version,
+        rule.effectiveFrom,
+        rule.status,
+        rule.publishedAt,
+        rule.publishedBy,
+        rule.createdAt,
+      ],
+    );
+  }
+  for (const row of taxFixtures.settings) {
+    await client.query(
+      `INSERT INTO tax_settings
+         (id, tenant_id, outlet_id, calculation_order, prices_include_tax, service_rounding_mode,
+          tax_rounding_mode, inclusive_base_rounding_mode, bill_rounding, package_allocation, version,
+          effective_from, status, published_at, published_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (id) DO UPDATE SET
+         calculation_order = EXCLUDED.calculation_order,
+         prices_include_tax = EXCLUDED.prices_include_tax,
+         service_rounding_mode = EXCLUDED.service_rounding_mode,
+         tax_rounding_mode = EXCLUDED.tax_rounding_mode,
+         inclusive_base_rounding_mode = EXCLUDED.inclusive_base_rounding_mode,
+         bill_rounding = EXCLUDED.bill_rounding,
+         package_allocation = EXCLUDED.package_allocation,
+         effective_from = EXCLUDED.effective_from`,
+      [
+        row.id,
+        tenant.id,
+        row.outletId,
+        row.calculationOrder,
+        row.pricesIncludeTax,
+        row.serviceRoundingMode,
+        row.taxRoundingMode,
+        row.inclusiveBaseRoundingMode,
+        row.billRounding === null ? null : JSON.stringify(row.billRounding),
+        row.packageAllocation,
+        row.version,
+        row.effectiveFrom,
+        row.status,
+        row.publishedAt,
+        row.publishedBy,
+        row.createdAt,
       ],
     );
   }

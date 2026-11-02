@@ -228,6 +228,12 @@ export const itemListQuerySchema = cursorPageQuerySchema.extend({
   sort: menuItemSortSchema.default("display"),
 });
 
+/**
+ * New items start as drafts (owner Q23): an item needs a photo before it can be
+ * active, and the import template has no photo column, so imported rows are
+ * drafts too. Sending `isActive: true` is the explicit publish action and fails
+ * with MENU_PHOTO_REQUIRED while `mediaId` is absent.
+ */
 export const createItemInputSchema = clientInputSchema({
   brandId: brandIdSchema.optional(),
   categoryId: uuidSchema,
@@ -241,10 +247,16 @@ export const createItemInputSchema = clientInputSchema({
   labels: z.array(name).max(20).default([]),
   allergens: z.array(name).max(30).default([]),
   mediaId: uuidSchema.nullable().optional(),
-  isActive: z.boolean().default(true),
+  isActive: z.boolean().default(false),
   sortOrder: z.number().int().nonnegative().optional(),
 });
 
+/**
+ * `isActive: true` is the activate/publish action and needs a photo (Q23): the
+ * item must end up with a `mediaId`, either the stored one or one sent in the
+ * same request. Clearing `mediaId` on an active item is refused until it is
+ * deactivated first (MENU_PHOTO_REQUIRED).
+ */
 export const updateItemInputSchema = clientInputSchema({
   categoryId: uuidSchema.optional(),
   name: name.optional(),

@@ -22,6 +22,7 @@ export type MockRequest = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal;
+  headers?: { "Idempotency-Key"?: string };
 };
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -114,7 +115,15 @@ export async function dispatchMock(request: MockRequest): Promise<unknown> {
 
   let output: unknown;
   try {
-    output = await handler({ endpoint, params, query, body, scenario, signal });
+    output = await handler({
+      endpoint,
+      params,
+      query,
+      body,
+      scenario,
+      signal,
+      headers: request.headers,
+    });
   } catch (error) {
     throw toApiError(error);
   }

@@ -39,7 +39,7 @@ function StateLayout({
     >
       <span
         className={cn(
-          "grid size-12 place-items-center rounded-full",
+          "grid size-12 place-items-center rounded-container border-(length:--border-w) shadow-hairline",
           iconClass,
         )}
       >
@@ -64,7 +64,7 @@ function EmptyState({ title, description, icon = Inbox, ...rest }: StateProps) {
     <StateLayout
       data-slot="empty-state"
       icon={icon}
-      iconClass="bg-muted text-muted-foreground"
+      iconClass="bg-shell text-muted-foreground"
       title={title ?? t("state.emptyTitle")}
       description={description ?? t("state.emptyHint")}
       {...rest}
@@ -86,7 +86,7 @@ function ErrorState({
       data-slot="error-state"
       role="alert"
       icon={icon}
-      iconClass="bg-danger-subtle text-danger"
+      iconClass="border-transparent bg-danger-subtle text-danger"
       title={title ?? t("state.errorTitle")}
       description={description ?? t("state.errorHint")}
       action={

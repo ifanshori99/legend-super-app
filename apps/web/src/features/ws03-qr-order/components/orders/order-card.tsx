@@ -2,39 +2,39 @@
 // optional serving estimate (PRD §3 F10 "Estimasi Waktu Saji"). One bordered
 // container per order; rows are separated by dividers, no card inside a card.
 import { Link } from "@tanstack/react-router";
-import { Ban, CircleCheck, Wallet } from "lucide-react";
+import { Ban, Wallet } from "lucide-react";
 import type { QrOrder } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
-import { Badge, StatusPill } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { orderPhase } from "../../domain";
 import { ItemStatusRow } from "./item-status-row";
 
 export type OrderEta = { minMinutes: number; maxMinutes: number };
 
+// v3: every order phase is a StatusPill (icon + text, DESIGN.md §4). The four
+// kitchen phases map to their aliases; the bill/void states reuse a tone.
 function PhaseBadge({ phase }: { phase: ReturnType<typeof orderPhase> }) {
   const t = useT();
   switch (phase) {
     case "awaiting_payment":
       return (
-        <Badge tone="warning">
-          <Wallet aria-hidden="true" />
+        <StatusPill status="warning" icon={Wallet}>
           {t("qrOrders.status.phase.awaitingPayment")}
-        </Badge>
+        </StatusPill>
       );
     case "voided":
       return (
-        <Badge tone="danger">
-          <Ban aria-hidden="true" />
+        <StatusPill status="danger" icon={Ban}>
           {t("qrOrders.status.phase.voided")}
-        </Badge>
+        </StatusPill>
       );
     case "completed":
       return (
-        <Badge tone="success">
-          <CircleCheck aria-hidden="true" />
+        <StatusPill status="success">
           {t("qrOrders.status.phase.completed")}
-        </Badge>
+        </StatusPill>
       );
     default:
       return <StatusPill status={phase} />;
@@ -79,16 +79,14 @@ export function OrderCard({
       : null;
 
   return (
-    <article
+    <Card
+      role="article"
       aria-labelledby={`order-${order.id}`}
-      className="grid gap-3 rounded-xl border bg-card p-card"
+      className="grid gap-3"
     >
       <header className="flex flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="grid gap-0.5">
-          <h2
-            id={`order-${order.id}`}
-            className="tabular text-lg leading-7 font-semibold"
-          >
+          <h2 id={`order-${order.id}`} className="type-title tabular">
             {t("qrOrders.status.order.heading", { number: order.number })}
           </h2>
           <p className="tabular text-sm leading-5 text-muted-foreground">
@@ -155,6 +153,6 @@ export function OrderCard({
           )}
         </div>
       )}
-    </article>
+    </Card>
   );
 }

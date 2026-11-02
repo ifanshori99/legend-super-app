@@ -5,7 +5,8 @@ import type {
   PathParamValue,
 } from "@starter/shared/api";
 import { buildEndpointPath, zodIssuesToDetails } from "@starter/shared/api";
-import type { z } from "zod";
+import { z } from "zod";
+import { idempotencyKeySchema } from "@starter/shared/core";
 import { ApiError } from "./errors.ts";
 
 // The typed layer over a transport (apiFetch). Pure: no framework imports, so
@@ -16,13 +17,21 @@ export type TransportRequest = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal;
+  headers?: CallOptions["headers"];
 };
 export type Transport = (
   path: string,
   request: TransportRequest,
 ) => Promise<unknown>;
 
-export type CallOptions = { signal?: AbortSignal };
+export type CallOptions = {
+  signal?: AbortSignal;
+  headers?: { "Idempotency-Key"?: string };
+};
+
+const headersSchema = z
+  .object({ "Idempotency-Key": idempotencyKeySchema.optional() })
+  .strict();
 
 /** `[input]` is required only when the endpoint declares params, query or body. */
 export type CallArgs<E extends AnyEndpoint> =
@@ -31,7 +40,11 @@ export type CallArgs<E extends AnyEndpoint> =
     ? [input?: EndpointInput<E>, options?: CallOptions]
     : [input: EndpointInput<E>, options?: CallOptions];
 
-function parseInput(schema: z.ZodType, value: unknown, where: string) {
+function parseInput<S extends z.ZodType>(
+  schema: S,
+  value: unknown,
+  where: string,
+): z.output<S> {
   const result = schema.safeParse(value);
   if (!result.success)
     throw new ApiError(
@@ -97,6 +110,10 @@ export function createEndpointCaller(
       query: primitiveQuery(query),
       body,
       signal: callOptions?.signal,
+      headers:
+        callOptions?.headers === undefined
+          ? undefined
+          : parseInput(headersSchema, callOptions.headers, "headers"),
     });
 
     if (!endpoint.response) return undefined as EndpointOutput<E>;

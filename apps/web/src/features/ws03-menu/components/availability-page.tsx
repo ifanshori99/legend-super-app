@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import {
   useAvailability,
   useItems,
@@ -44,6 +45,7 @@ import {
 import { describeSchedule } from "../lib";
 import { ConfirmDialog } from "./confirm-dialog";
 import { AvailabilityBadge } from "./status-badge";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const ALL = "all";
 const WEEK = [1, 2, 3, 4, 5, 6, 0] as const;
@@ -141,7 +143,7 @@ export function AvailabilityPage() {
         availabilityId: toggleTarget.id,
         body: {
           action: toggleTarget.status === "sold_out" ? "restore" : "sell_out",
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
       },
       {
@@ -159,8 +161,15 @@ export function AvailabilityPage() {
           });
           setToggleTarget(null);
         },
-        onError: () =>
-          toast({ title: t("menu.errors.saveFailed"), tone: "danger" }),
+        onError: (error) =>
+          toast({
+            // Q23: a restore republishes the item, so it needs its photo.
+            title:
+              error instanceof ApiError && error.code === "MENU_PHOTO_REQUIRED"
+                ? t("menu.errors.photoRequired")
+                : t("menu.errors.saveFailed"),
+            tone: "danger",
+          }),
       },
     );
   }

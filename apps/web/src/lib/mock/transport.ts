@@ -1,5 +1,6 @@
 import { API_MOCK } from "../api/mock-flag.ts";
 import { installBrowserControl, setLatencyMs } from "./control.ts";
+import { clearMocks } from "./registry.ts";
 import { dispatchMock, resetMocks } from "./runtime.ts";
 
 // Entry point apiFetch uses in mock mode. Every handler file is picked up by
@@ -9,6 +10,11 @@ const handlerModules = import.meta.glob(
   ["../../features/*/mock.ts", "./handlers/*.ts"],
   { eager: true },
 );
+
+// Vite re-evaluates the eager handler graph on a hot update. Empty the registry
+// first, or registerMock's duplicate guard would fire at the module that is
+// simply reloading itself (bead legend-jzud).
+import.meta.hot?.dispose(() => clearMocks());
 
 const DEFAULT_LATENCY_MS = 250;
 let ready = false;
@@ -41,6 +47,7 @@ export async function mockFetch<T>(
     query?: Record<string, string | number | boolean | undefined>;
     body?: unknown;
     signal?: AbortSignal;
+    headers?: { "Idempotency-Key"?: string };
   },
 ): Promise<T> {
   setup();
@@ -57,5 +64,6 @@ export async function mockFetch<T>(
     query,
     body: request.body,
     signal: request.signal,
+    headers: request.headers,
   })) as T;
 }

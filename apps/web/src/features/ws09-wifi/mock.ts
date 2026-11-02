@@ -9,13 +9,11 @@
 // GET /api/wifi/sessions/current report "not connected" so the connect screen
 // can be reviewed without a second browser profile.
 import {
-  cafeLegendSubscriptionPlans,
   cafeLegendWifiPolicies,
   cafeLegendWifiQuotaView,
   cafeLegendWifiSessions,
   getCurrentWifiSession,
   getWifiPolicyForZone,
-  listSubscriptionPlans,
   refreshWifiQuota,
   startWifiSession,
   wifiSessionIdSchema,
@@ -25,9 +23,11 @@ import {
   type WifiSession,
 } from "@starter/shared/facility";
 import { ApiError } from "../../lib/api/errors.ts";
+import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { dailyQuotaMinutes } from "./state.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** Server clock the mock reports; the fixture instant keeps screenshots stable. */
 const SERVER_TIME = cafeLegendWifiQuotaView.serverTime;
@@ -213,7 +213,7 @@ registerMock(startWifiSession, async ({ body, scenario }) => {
 
   const session: WifiSession = {
     ...seed,
-    id: wifiSessionIdSchema.parse(crypto.randomUUID()),
+    id: wifiSessionIdSchema.parse(newIdempotencyKey()),
     zoneId: policy.zoneId,
     policyId: policy.id,
     deviceHash: digest,
@@ -245,12 +245,4 @@ registerMock(refreshWifiQuota, () => {
   store.set({ ...state, sessions });
   const updated = sessions.find((session) => session.id === active.id);
   return { data: quotaView(updated ?? active) };
-});
-
-registerMock(listSubscriptionPlans, ({ query, scenario }) => {
-  if (scenario === "empty") return { data: { plans: [] } };
-  const plans = cafeLegendSubscriptionPlans.filter(
-    (plan) => plan.facilityId === query.facilityId && plan.isActive,
-  );
-  return { data: { plans } };
 });

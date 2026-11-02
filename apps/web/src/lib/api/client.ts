@@ -23,6 +23,7 @@ type ApiRequest = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   signal?: AbortSignal;
+  headers?: { "Idempotency-Key"?: string };
 };
 
 // Where and how to call the API from the current environment. The .server()
@@ -47,13 +48,25 @@ const target = createIsomorphicFn()
 
 export async function apiFetch<T>(
   path: string,
-  { method = "GET", query, body, signal }: ApiRequest = {},
+  {
+    method = "GET",
+    query,
+    body,
+    signal,
+    headers: callHeaders,
+  }: ApiRequest = {},
 ): Promise<T> {
   // Mock mode (VITE_API_MOCK): fixtures instead of the network. The dynamic
   // import is compiled out of builds that do not set the flag.
   if (import.meta.env.VITE_API_MOCK === "true") {
     const { mockFetch } = await import("@/lib/mock/transport");
-    return mockFetch<T>(path, { method, query, body, signal });
+    return mockFetch<T>(path, {
+      method,
+      query,
+      body,
+      signal,
+      headers: callHeaders,
+    });
   }
   const { baseUrl, headers, onFailure } = target();
   const url = new URL(path, baseUrl);
@@ -71,6 +84,12 @@ export async function apiFetch<T>(
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...bearerHeaderFor(path),
         ...headers,
+        // Per-call headers are allow-listed (contracts.md "Typed web client &
+        // idempotency headers"): only Idempotency-Key is forwarded, so no
+        // caller can override the cookie, request id or bearer set above.
+        ...(callHeaders?.["Idempotency-Key"] === undefined
+          ? {}
+          : { "Idempotency-Key": callHeaders["Idempotency-Key"] }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

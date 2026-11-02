@@ -18,6 +18,7 @@ import type {
 import type { ApiError } from "@/lib/api/errors";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card, CardShell } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -127,228 +128,228 @@ function TableInspectorBody({
     };
 
   return (
-    <section
-      aria-labelledby="floor-inspector-title"
-      className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2
-            id="floor-inspector-title"
-            className="text-base leading-6 font-semibold"
-          >
-            {t("floorEditor.tableTitle", { code: table.code })}
-          </h2>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t(`floorEditor.tableState.${table.status}`)} ·{" "}
-            {t("floorEditor.planSeats", { count: table.capacity })}
-          </p>
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t("floorEditor.tableDelete")}
-          onClick={() => setConfirmingDelete(true)}
-        >
-          <Trash2 aria-hidden="true" />
-        </Button>
-      </div>
-
-      <div className="grid gap-3 border-t pt-4">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">
-            {t("floorEditor.tablePosition")}
-          </h3>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => onLayoutChange(rotateLayout(layout))}
-          >
-            <RotateCw aria-hidden="true" />
-            {t("floorEditor.tableRotate")}
-          </Button>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <FormField label="X" required>
-            <Input
-              type="number"
-              inputMode="numeric"
-              step={10}
-              min={0}
-              max={PLAN_WIDTH}
-              value={Math.round(layout.x)}
-              onChange={setLayoutField("x")}
-            />
-          </FormField>
-          <FormField label="Y" required>
-            <Input
-              type="number"
-              inputMode="numeric"
-              step={10}
-              min={0}
-              max={PLAN_HEIGHT}
-              value={Math.round(layout.y)}
-              onChange={setLayoutField("y")}
-            />
-          </FormField>
-          <FormField label={t("floorEditor.tableWidth")} required>
-            <Input
-              type="number"
-              inputMode="numeric"
-              step={10}
-              min={10}
-              max={PLAN_WIDTH}
-              value={Math.round(layout.width)}
-              onChange={setLayoutField("width")}
-            />
-          </FormField>
-          <FormField label={t("floorEditor.tableHeight")} required>
-            <Input
-              type="number"
-              inputMode="numeric"
-              step={10}
-              min={10}
-              max={PLAN_HEIGHT}
-              value={Math.round(layout.height)}
-              onChange={setLayoutField("height")}
-            />
-          </FormField>
-        </div>
-        <div className="grid gap-1.5">
-          <span className="text-sm font-semibold">
-            {t("floorEditor.tableShape")}
-          </span>
-          <SegmentedControl
-            label={t("floorEditor.tableShape")}
-            value={layout.shape}
-            onValueChange={(shape) => onLayoutChange({ ...layout, shape })}
-            options={[
-              { value: "rect", label: t("floorEditor.shape.rect") },
-              { value: "round", label: t("floorEditor.shape.round") },
-            ]}
-          />
-        </div>
-        {dirty && (
-          <p className="text-sm leading-5 font-medium text-warning">
-            {t("floorEditor.tableDirty")}
-          </p>
-        )}
-      </div>
-
-      <form className="grid gap-4 border-t pt-4" onSubmit={save} noValidate>
-        <FormField
-          label={t("floorEditor.tableCode")}
-          hint={t("floorEditor.tableCodeHint")}
-          error={errors.code}
-          required
-        >
-          <Input
-            value={code}
-            autoComplete="off"
-            onChange={(event) => setCode(event.target.value.toUpperCase())}
-          />
-        </FormField>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField
-            label={t("floorEditor.tableCapacity")}
-            error={errors.capacity}
-            required
-          >
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={50}
-              value={capacity}
-              onChange={(event) => setCapacity(event.target.value)}
-            />
-          </FormField>
-          <FormField
-            label={t("floorEditor.tableType")}
-            error={errors.type}
-            required
-          >
-            <Select
-              value={type}
-              onValueChange={(value) => setType(tableTypeSchema.parse(value))}
+    <section aria-labelledby="floor-inspector-title">
+      <CardShell>
+        <Card className="gap-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 id="floor-inspector-title" className="type-title">
+                {t("floorEditor.tableTitle", { code: table.code })}
+              </h2>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t(`floorEditor.tableState.${table.status}`)} ·{" "}
+                {t("floorEditor.planSeats", { count: table.capacity })}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("floorEditor.tableDelete")}
+              onClick={() => setConfirmingDelete(true)}
             >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TABLE_TYPES.map((entry) => (
-                  <SelectItem key={entry} value={entry}>
-                    {t(`floorEditor.type.${entry}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-        </div>
-        <FormField
-          label={t("floorEditor.tableZone")}
-          error={errors.zoneId}
-          required
-        >
-          <Select value={zoneId} onValueChange={setZoneId}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {zones.map((zone) => (
-                <SelectItem key={zone.id} value={zone.id}>
-                  {zone.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </FormField>
-        <div className="grid gap-1.5">
-          <div className="flex items-center gap-3">
-            <Switch
-              id="table-active"
-              checked={active}
-              onCheckedChange={setActive}
-            />
-            <label htmlFor="table-active" className="text-sm font-medium">
-              {t("floorEditor.tableActiveSwitch")}
-            </label>
+              <Trash2 aria-hidden="true" />
+            </Button>
           </div>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("floorEditor.tableActiveHint")}
-          </p>
-        </div>
 
-        {formError && (
-          <p
-            role="alert"
-            className="rounded-lg bg-danger-subtle p-3 text-sm leading-5 font-medium text-danger"
-          >
-            {formError.message}
-          </p>
-        )}
+          <div className="grid gap-3 border-t pt-4">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="type-eyebrow text-muted-foreground">
+                {t("floorEditor.tablePosition")}
+              </h3>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => onLayoutChange(rotateLayout(layout))}
+              >
+                <RotateCw aria-hidden="true" />
+                {t("floorEditor.tableRotate")}
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="X" required>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  step={10}
+                  min={0}
+                  max={PLAN_WIDTH}
+                  value={Math.round(layout.x)}
+                  onChange={setLayoutField("x")}
+                />
+              </FormField>
+              <FormField label="Y" required>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  step={10}
+                  min={0}
+                  max={PLAN_HEIGHT}
+                  value={Math.round(layout.y)}
+                  onChange={setLayoutField("y")}
+                />
+              </FormField>
+              <FormField label={t("floorEditor.tableWidth")} required>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  step={10}
+                  min={10}
+                  max={PLAN_WIDTH}
+                  value={Math.round(layout.width)}
+                  onChange={setLayoutField("width")}
+                />
+              </FormField>
+              <FormField label={t("floorEditor.tableHeight")} required>
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  step={10}
+                  min={10}
+                  max={PLAN_HEIGHT}
+                  value={Math.round(layout.height)}
+                  onChange={setLayoutField("height")}
+                />
+              </FormField>
+            </div>
+            <div className="grid gap-1.5">
+              <span className="type-eyebrow text-muted-foreground">
+                {t("floorEditor.tableShape")}
+              </span>
+              <SegmentedControl
+                label={t("floorEditor.tableShape")}
+                value={layout.shape}
+                onValueChange={(shape) => onLayoutChange({ ...layout, shape })}
+                options={[
+                  { value: "rect", label: t("floorEditor.shape.rect") },
+                  { value: "round", label: t("floorEditor.shape.round") },
+                ]}
+              />
+            </div>
+            {dirty && (
+              <p className="text-sm leading-5 font-medium text-warning">
+                {t("floorEditor.tableDirty")}
+              </p>
+            )}
+          </div>
 
-        <Button
-          type="submit"
-          loading={updateTable.isPending}
-          disabled={!attributesChanged}
-        >
-          {t("floorEditor.tableSave")}
-        </Button>
-      </form>
+          <form className="grid gap-4 border-t pt-4" onSubmit={save} noValidate>
+            <FormField
+              label={t("floorEditor.tableCode")}
+              hint={t("floorEditor.tableCodeHint")}
+              error={errors.code}
+              required
+            >
+              <Input
+                value={code}
+                autoComplete="off"
+                onChange={(event) => setCode(event.target.value.toUpperCase())}
+              />
+            </FormField>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                label={t("floorEditor.tableCapacity")}
+                error={errors.capacity}
+                required
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={50}
+                  value={capacity}
+                  onChange={(event) => setCapacity(event.target.value)}
+                />
+              </FormField>
+              <FormField
+                label={t("floorEditor.tableType")}
+                error={errors.type}
+                required
+              >
+                <Select
+                  value={type}
+                  onValueChange={(value) =>
+                    setType(tableTypeSchema.parse(value))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TABLE_TYPES.map((entry) => (
+                      <SelectItem key={entry} value={entry}>
+                        {t(`floorEditor.type.${entry}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+            </div>
+            <FormField
+              label={t("floorEditor.tableZone")}
+              error={errors.zoneId}
+              required
+            >
+              <Select value={zoneId} onValueChange={setZoneId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {zones.map((zone) => (
+                    <SelectItem key={zone.id} value={zone.id}>
+                      {zone.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
+            <div className="grid gap-1.5">
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="table-active"
+                  checked={active}
+                  onCheckedChange={setActive}
+                />
+                <label htmlFor="table-active" className="text-sm font-medium">
+                  {t("floorEditor.tableActiveSwitch")}
+                </label>
+              </div>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("floorEditor.tableActiveHint")}
+              </p>
+            </div>
 
-      <ConfirmDialog
-        open={confirmingDelete}
-        onOpenChange={setConfirmingDelete}
-        title={t("floorEditor.tableDeleteTitle", { code: table.code })}
-        description={t("floorEditor.tableDeleteBody")}
-        confirmLabel={t("floorEditor.tableDeleteConfirm")}
-        pending={deleteTable.isPending}
-        error={deleteError}
-        onConfirm={remove}
-      />
+            {formError && (
+              <p
+                role="alert"
+                className="rounded-control border-(length:--border-w) bg-danger-subtle p-3 text-sm leading-5 font-medium text-danger"
+              >
+                {formError.message}
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              loading={updateTable.isPending}
+              disabled={!attributesChanged}
+            >
+              {t("floorEditor.tableSave")}
+            </Button>
+          </form>
+
+          <ConfirmDialog
+            open={confirmingDelete}
+            onOpenChange={setConfirmingDelete}
+            title={t("floorEditor.tableDeleteTitle", { code: table.code })}
+            description={t("floorEditor.tableDeleteBody")}
+            confirmLabel={t("floorEditor.tableDeleteConfirm")}
+            pending={deleteTable.isPending}
+            error={deleteError}
+            onConfirm={remove}
+          />
+        </Card>
+      </CardShell>
     </section>
   );
 }
@@ -357,14 +358,14 @@ function TableInspector({ table, ...rest }: Props) {
   const t = useT();
   if (!table)
     return (
-      <section className="grid h-fit gap-2 rounded-xl border-(length:--border-w) bg-card p-card">
-        <span className="grid size-9 place-items-center rounded-full bg-muted text-muted-foreground">
+      <Card className="h-fit gap-2">
+        <span className="grid size-12 place-items-center rounded-container border-(length:--border-w) bg-shell text-muted-foreground shadow-hairline">
           <MousePointerClick className="size-icon" aria-hidden="true" />
         </span>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("floorEditor.tableSelectHint")}
         </p>
-      </section>
+      </Card>
     );
   // Remount per table so the form always starts from the saved row.
   return <TableInspectorBody key={table.id} table={table} {...rest} />;

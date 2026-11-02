@@ -17,6 +17,7 @@
     "./events": "./src/events/index.ts",
     "./audit": "./src/audit/index.ts",
     "./payment": "./src/payment/index.ts",
+    "./payment/admin": "./src/payment/admin.ts",
     "./edge": "./src/edge/index.ts",
     "./adapters": "./src/adapters/index.ts",
     "./storage": "./src/storage/index.ts",
@@ -39,6 +40,8 @@
     "./delivery": "./src/delivery/index.ts",
     "./website": "./src/website/index.ts",
     "./hris": "./src/hris/index.ts",
+    "./hris/payroll": "./src/hris/payroll/index.ts",
+    "./hris/payroll/server": "./src/hris/payroll/server.ts",
     "./platform": "./src/platform/index.ts",
     "./dashboard": "./src/dashboard/index.ts",
     "./operations": "./src/operations/index.ts"

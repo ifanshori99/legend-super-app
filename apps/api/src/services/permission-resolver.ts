@@ -4,8 +4,8 @@
 // One resolver turns a verified session into:
 // - the caller's effective permission codes (union of active assignments),
 // - a server-minted ScopedTenantContext whose outlet reach becomes the RLS
-//   `app.outlet_ids` filter (minted on the server, never from client input,
-//   TEN-02),
+//   `app.outlet_ids` filter on outlet-owned tables (minted on the server,
+//   never from client input, TEN-02; migration 0032),
 // - `mfaRequired` / `mfaVerified` for the web area guards (AUTH-05).
 //
 // Deny by default: assignments, roles and the org tree are loaded inside the
@@ -13,24 +13,30 @@
 // `@starter/shared/access` (`authorize`, `outletReachOf`); nothing here
 // re-implements the catalog or the scope rules.
 //
-// Station scope: the menu/KDS schema (`stations`) belongs to WS-03 and has not
-// landed. The org index therefore reports no stations, so a station-scoped
-// assignment grants nothing yet (fail closed). The wiring bead must add the
-// stations query here; see the report.
+// Station scope: the org index carries the tenant's live stations (WS-03 menu
+// schema, legend-lmk), so a station-scoped assignment resolves to its station.
+// A station-only grant deliberately produces no outlet-wide reach in
+// `outletReachOf` (TEN-03): the only context it can mint is the station target
+// in `contextFor`, whose RLS reach is that station's outlet, and every
+// station-bound service re-asserts the station from this same snapshot
+// (legend-fsb7).
 
 import {
   PERMISSION_CODES,
   roleAssignmentSchema,
   roleIdSchema,
+  stationIdSchema,
   authorize,
   isAssignmentActive,
   outletReachOf,
+  stationReachOf,
   userRequiresMfa,
   type AccessTarget,
   type OrgIndex,
   type PermissionCode,
   type RoleAssignment,
   type RoleGrant,
+  type StationId,
 } from "@starter/shared/access";
 import {
   brandIdSchema,
@@ -40,9 +46,15 @@ import {
   type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
-import { brands, outlets, roleAssignments, roles } from "../db/schema";
+import {
+  brands,
+  outlets,
+  roleAssignments,
+  roles,
+  stations,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
 
 export type RoleGrantRow = RoleGrant & {
@@ -135,6 +147,28 @@ export async function loadTenantAccessInTransaction(
             eq(outlets.brandId, context.tenant.brandId),
           ),
     );
+  // Stations (WS-03 menu schema) make station-scoped assignments resolvable.
+  // The org index is brand-filtered like the outlets above, so a brand pinned
+  // by the domain cannot see another brand's stations. Soft-deleted (edge
+  // tombstone) stations grant nothing.
+  const stationRows =
+    context.tenant.brandId !== null && outletRows.length === 0
+      ? []
+      : await tx
+          .select({ id: stations.id, outletId: stations.outletId })
+          .from(stations)
+          .where(
+            and(
+              eq(stations.tenantId, context.tenant.tenantId),
+              isNull(stations.deletedAt),
+              context.tenant.brandId === null
+                ? undefined
+                : inArray(
+                    stations.outletId,
+                    outletRows.map((row) => row.id),
+                  ),
+            ),
+          );
   return {
     assignments: assignmentRows.map(toAssignment),
     roles: roleRows.map(toRoleGrant),
@@ -144,8 +178,11 @@ export async function loadTenantAccessInTransaction(
         id: outletIdSchema.parse(row.id),
         brandId: brandIdSchema.parse(row.brandId),
       })),
-      // WS-03 owns `stations`; until it lands no station scope can match.
-      stations: [],
+      // WS-03 menu schema (legend-lmk): station-scoped assignments resolve.
+      stations: stationRows.map((row) => ({
+        id: stationIdSchema.parse(row.id),
+        outletId: outletIdSchema.parse(row.outletId),
+      })),
     },
   };
 }
@@ -162,6 +199,27 @@ export async function loadTenantAccess(
   return withTenant(db, context, (tx) =>
     loadTenantAccessInTransaction(tx, context, userId),
   );
+}
+
+/**
+ * The caller's access snapshot read on an open tenant transaction, so a
+ * service write and its authorization see one snapshot. Shared by the menu
+ * internals and the station-bound services (legend-fsb7).
+ */
+export async function accessSnapshotInTransaction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  now: Date,
+): Promise<AccessSnapshot> {
+  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  return resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  });
 }
 
 export type AccessSnapshotInput = {
@@ -192,11 +250,21 @@ export type AccessSnapshot = {
   /**
    * The server-minted context for a permitted action, or null. Its outlet
    * reach is what `withTenant` installs as app.outlet_ids for RLS (TEN-03).
+   * A station target is the one exception to outlet reach: a station-scoped
+   * assignment mints the station's outlet here so the station-bound route can
+   * run, and the service must assert the station itself (legend-fsb7).
    */
   readonly contextFor: (
     permission: PermissionCode,
     target: AccessTarget,
   ) => ScopedTenantContext | null;
+  /**
+   * Stations the caller may work on for `permission` (§3.8: "Hanya KDS
+   * stasiun yang ditugaskan"). This is the list station-bound services filter
+   * and assert against; a station-scoped assignment yields only its own
+   * station(s), a wider scope every station it reaches (legend-fsb7).
+   */
+  readonly stationsFor: (permission: PermissionCode) => StationId[];
 };
 
 /**
@@ -254,6 +322,22 @@ export function resolveAccessSnapshot(
     target: AccessTarget,
   ): ScopedTenantContext | null => {
     if (!allows(permission, target)) return null;
+    // Station-bound route (legend-fsb7): RLS is outlet-level, so the context
+    // carries exactly the station's outlet — never the caller's other outlets
+    // (an outlet grant elsewhere must not replace or widen it). Minted only
+    // after the station target is authorized above; services assert the
+    // station on every query and mutation.
+    if (target.type === "station") {
+      const station = input.org.stations.find(
+        (row) => row.id.toLowerCase() === target.id.toLowerCase(),
+      );
+      return station
+        ? establishScopedTenantContext(input.tenant, {
+            kind: "outlets",
+            outletIds: [station.outletId],
+          })
+        : null;
+    }
     const reach = outletReachOf({
       principal,
       roles: input.roles,
@@ -261,9 +345,18 @@ export function resolveAccessSnapshot(
       now: input.now,
       permission,
     });
-    if (reach === null) return null;
-    return establishScopedTenantContext(input.tenant, reach);
+    return reach === null
+      ? null
+      : establishScopedTenantContext(input.tenant, reach);
   };
+  const stationsFor = (permission: PermissionCode): StationId[] =>
+    stationReachOf({
+      principal,
+      roles: input.roles,
+      org: input.org,
+      now: input.now,
+      permission,
+    });
 
   return {
     tenant: input.tenant,
@@ -274,5 +367,6 @@ export function resolveAccessSnapshot(
     templateKeys: [...templateKeys],
     allows,
     contextFor,
+    stationsFor,
   };
 }

@@ -214,7 +214,7 @@ export function PushPanel() {
         </div>
 
         {state === "ios-install" && (
-          <div className="grid gap-2 rounded-lg border-(length:--border-w) bg-muted p-3">
+          <div className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-3">
             <p className="flex items-center gap-2 text-sm leading-5 font-semibold">
               <Smartphone className="size-4" aria-hidden="true" />
               {t("notification.push.iosTitle")}

@@ -16,6 +16,7 @@ dist/
 *.sqlite-wal
 *.tsbuildinfo
 playwright-report/
+blob-report/
 test-results/
 coverage/
 .DS_Store

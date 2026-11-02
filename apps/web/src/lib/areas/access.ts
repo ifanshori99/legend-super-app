@@ -10,9 +10,12 @@ import {
   ROLE_TEMPLATE_KEYS,
   PERMISSION_CODES,
   roleTemplate,
+  stationIdSchema,
   type PermissionCode,
   type RoleTemplateKey,
+  type StationId,
 } from "@starter/shared/access";
+import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 
 export type AreaAccess = {
   readonly authenticated: boolean;
@@ -23,6 +26,12 @@ export type AreaAccess = {
   readonly mfaVerified: boolean;
   /** Display role name for the shell (role template default name). */
   readonly roleLabel?: string;
+  /**
+   * Stations the account may work on, from the assignments (legend-fsb7). The
+   * KDS only polls the boards in this list, so a station-scoped account never
+   * asks for another station's board. Empty = no station reach (fail closed).
+   */
+  readonly stations: readonly StationId[];
 };
 
 export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
@@ -30,6 +39,7 @@ export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
   permissions: Object.freeze([]) as readonly PermissionCode[],
   mfaRequired: false,
   mfaVerified: false,
+  stations: Object.freeze([]) as readonly StationId[],
 });
 
 /**
@@ -46,6 +56,7 @@ export function accessFromSession(
     permissions: [],
     mfaRequired: true,
     mfaVerified: false,
+    stations: [],
   };
 }
 
@@ -65,6 +76,23 @@ export function parseMockRole(value: string | undefined | null): MockRole {
     : "none";
 }
 
+/** Mock station reach: the kitchen fixtures' stations (menu fixtures, ids 200-203). */
+const MOCK_STATIONS: readonly StationId[] = cafeLegendMenuFixtures.stations.map(
+  (station) => stationIdSchema.parse(station.id),
+);
+
+function mockStationsFor(role: RoleTemplateKey): readonly StationId[] {
+  const template = roleTemplate(role);
+  if (!template.permissions.some((permission) => permission.startsWith("kds.")))
+    return [];
+  // A station-level template (Barista / Cook) works one station; mock data has
+  // no person-to-station link, so the first fixture station stands in for the
+  // assigned one (presentation only).
+  return template.allowedScopeTypes.includes("station")
+    ? MOCK_STATIONS.slice(0, 1)
+    : MOCK_STATIONS;
+}
+
 export function accessForMockRole(role: MockRole): AreaAccess {
   if (role === "none") return ANONYMOUS_ACCESS;
   if (role === "all")
@@ -74,6 +102,7 @@ export function accessForMockRole(role: MockRole): AreaAccess {
       mfaRequired: false,
       mfaVerified: true,
       roleLabel: undefined,
+      stations: MOCK_STATIONS,
     };
   const template = roleTemplate(role);
   return {
@@ -82,5 +111,6 @@ export function accessForMockRole(role: MockRole): AreaAccess {
     mfaRequired: template.mfaRequired,
     mfaVerified: true,
     roleLabel: template.defaultName,
+    stations: mockStationsFor(role),
   };
 }

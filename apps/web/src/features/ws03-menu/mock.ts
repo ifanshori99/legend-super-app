@@ -12,6 +12,7 @@ import { createMockStore } from "@/lib/mock/store";
 import { cafeLegendFixtures, type Idr } from "@starter/shared/core";
 import {
   MENU_IMAGE_MAX_BYTES,
+  MENU_PHOTO_REQUIRED_MESSAGE,
   cafeLegendMenuFixtures,
   createCategory,
   createCombo,
@@ -41,7 +42,11 @@ import {
   listPriceLists,
   listStations,
   listVariants,
+  legacyPhotoMissingItem,
+  legacyPhotoMissingPrice,
+  menuErrorHttpStatus,
   menuItemAdminSchema,
+  menuItemPhotoMissing,
   reorderCategories,
   reorderItems,
   setAvailabilityStatus,
@@ -71,6 +76,7 @@ import {
   type Station,
   type Variant,
 } from "@starter/shared/menu";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const { brand, outlets } = cafeLegendFixtures;
 const fixtureBrandId = brand.id;
@@ -78,7 +84,7 @@ const fixtureOutletId = outlets[0].id;
 
 // Contract ids are RFC 9562 UUIDs (z.uuid rejects a ULID's version nibble),
 // so the mock mints real v4 ids instead of the ULID-in-uuid production form.
-const nextId = () => crypto.randomUUID();
+const nextId = () => newIdempotencyKey();
 
 type MenuState = MenuFixture & {
   /** Item ↔ modifier group links (PRD §8 modifier groups per item). */
@@ -90,15 +96,28 @@ type MenuState = MenuFixture & {
 // The contract fixtures do not model the item↔group link yet (follow-up
 // bead), so the mock seeds two drinks with the sugar-level group to make the
 // screen reviewable.
+// The demo photo map lives in lib/mock so a normal build compiles the sample
+// paths out (legend-4pki): items with a photo get a mock media row so the demo
+// can restore them after an 86 (a restore needs the photo, Q23).
+import { demoPhotos } from "../../lib/mock/demo-photos.ts";
+
 function seedState(): MenuState {
   const fixtures = structuredClone(cafeLegendMenuFixtures);
+  const media: Record<string, string> = {};
+  for (const item of fixtures.items) {
+    const url = demoPhotos[item.name];
+    if (!url || item.mediaId) continue;
+    const mediaId = nextId();
+    media[mediaId] = url;
+    item.mediaId = mediaId;
+  }
   return {
     ...fixtures,
     itemGroups: {
       [fixtures.items[0].id]: [fixtures.modifierGroups[0].id],
       [fixtures.items[4].id]: [fixtures.modifierGroups[0].id],
     },
-    media: {},
+    media,
   };
 }
 
@@ -108,12 +127,66 @@ const broadcasts = createMockStore(() => new Map<string, string>());
 
 const state = () => store.get();
 
+/**
+ * legend-qf0i (owner Q23): every demo item now has a photo, so the "active row
+ * without a photo" case would disappear from the demo and its refusals would
+ * have no end-to-end test. `?mock=photo-missing` adds one legacy row (active,
+ * sellable, no photo): the back office lists it with the "Foto wajib" badge and
+ * refuses to republish it, while every guest read hides it. Idempotent, and no
+ * other scenario ever sees the row.
+ */
+function ensureLegacyItem(): void {
+  if (state().items.some((row) => row.id === legacyPhotoMissingItem.id)) return;
+  store.set({
+    ...state(),
+    items: [...state().items, structuredClone(legacyPhotoMissingItem)],
+    priceListItems: [
+      ...state().priceListItems,
+      structuredClone(legacyPhotoMissingPrice),
+    ],
+    availability: [
+      ...state().availability,
+      {
+        id: nextId(),
+        tenantId: legacyPhotoMissingItem.tenantId,
+        outletId: fixtureOutletId,
+        menuItemId: legacyPhotoMissingItem.id,
+        schedule: [],
+        dailyLimit: null,
+        soldOutUntil: null,
+        status: "available",
+      },
+    ],
+  });
+}
+
+/** The legacy row only exists in its scenario (see `ensureLegacyItem`). */
+function legacyItemVisible(scenario: string): boolean {
+  if (scenario !== "photo-missing") return false;
+  ensureLegacyItem();
+  return true;
+}
+
+/** True for the scenario-only row, so other scenarios can hide it again. */
+function isLegacyItem(itemId: string): boolean {
+  return itemId === legacyPhotoMissingItem.id;
+}
+
 function notFound(what: string): never {
   throw new ApiError(404, "NOT_FOUND", `${what} tidak ditemukan.`);
 }
 
 function conflict(message: string): never {
   throw new ApiError(409, "CONFLICT", message);
+}
+
+/** Q23: the API refuses an active item without a photo; so does the mock. */
+function photoRequired(): never {
+  throw new ApiError(
+    menuErrorHttpStatus.MENU_PHOTO_REQUIRED,
+    "MENU_PHOTO_REQUIRED",
+    MENU_PHOTO_REQUIRED_MESSAGE,
+  );
 }
 
 function requireItem(itemId: string): MenuItem {
@@ -297,9 +370,11 @@ const sortItems = (rows: MenuItem[], sort: "display" | "name" | "category") => {
 };
 
 registerMock(listItems, ({ query, scenario }) => {
+  const legacy = legacyItemVisible(scenario);
   const needle = query.search?.trim().toLocaleLowerCase("id-ID") ?? "";
   const rows = sortItems(
     state().items.filter((item) => {
+      if (isLegacyItem(item.id) && !legacy) return false;
       if (item.brandId !== (query.brandId ?? fixtureBrandId)) return false;
       if (query.categoryId && item.categoryId !== query.categoryId)
         return false;
@@ -324,6 +399,8 @@ registerMock(getItem, ({ params, scenario }) => {
   // The "empty" scenario has no items, so the detail screen can show its
   // honest not-found empty state.
   if (scenario === "empty") notFound("Item menu");
+  if (isLegacyItem(params.itemId) && !legacyItemVisible(scenario))
+    notFound("Item menu");
   return { data: adminItem(requireItem(params.itemId)) };
 });
 
@@ -332,6 +409,8 @@ registerMock(createItem, ({ body }) => {
     throw new ApiError(400, "VALIDATION_ERROR", "Kategori tidak dikenal.", [
       { field: "categoryId", message: "Pilih kategori yang ada." },
     ]);
+  // Q23: publishing a new item needs its photo; the default is a draft.
+  if (menuItemPhotoMissing(body)) photoRequired();
   const item: MenuItem = {
     id: nextId(),
     tenantId: state().items[0].tenantId,
@@ -376,7 +455,9 @@ registerMock(createItem, ({ body }) => {
   return { data: adminItem(item) };
 });
 
-registerMock(updateItem, ({ params, body }) => {
+registerMock(updateItem, ({ params, body, scenario }) => {
+  if (isLegacyItem(params.itemId) && !legacyItemVisible(scenario))
+    notFound("Item menu");
   const index = state().items.findIndex((row) => row.id === params.itemId);
   const item = state().items[index];
   if (!item) notFound("Item menu");
@@ -387,6 +468,15 @@ registerMock(updateItem, ({ params, body }) => {
     throw new ApiError(400, "VALIDATION_ERROR", "Kategori tidak dikenal.", [
       { field: "categoryId", message: "Pilih kategori yang ada." },
     ]);
+  // Q23: same rule as the API — activation and photo removal are the writes
+  // that could publish an item without a photo.
+  const isActive = body.isActive ?? item.isActive;
+  const mediaId = body.mediaId !== undefined ? body.mediaId : item.mediaId;
+  if (
+    menuItemPhotoMissing({ isActive, mediaId }) &&
+    (body.isActive === true || body.mediaId === null)
+  )
+    photoRequired();
   state().items[index] = { ...item, ...body };
   return { data: adminItem(state().items[index]) };
 });
@@ -843,11 +933,13 @@ registerMock(setPriceListItems, ({ params, body }) => {
 // ---- Availability --------------------------------------------------------
 
 registerMock(listAvailability, ({ query, scenario }) => {
+  const legacy = legacyItemVisible(scenario);
   const rows = state()
     .availability.filter(
       (row) =>
         row.outletId === (query.outletId ?? fixtureOutletId) &&
-        (!query.status || row.status === query.status),
+        (!query.status || row.status === query.status) &&
+        (!isLegacyItem(row.menuItemId) || legacy),
     )
     .sort((a, b) => a.menuItemId.localeCompare(b.menuItemId));
   return paginateFixture(rows, query, (row) => row.id, scenario);
@@ -858,7 +950,13 @@ const requireAvailability = (availabilityId: string): Availability => {
   return row ?? notFound("Ketersediaan");
 };
 
-registerMock(updateAvailability, ({ params, body }) => {
+registerMock(updateAvailability, ({ params, body, scenario }) => {
+  if (!legacyItemVisible(scenario)) {
+    const existing = state().availability.find(
+      (row) => row.id === params.availabilityId,
+    );
+    if (existing && isLegacyItem(existing.menuItemId)) notFound("Ketersediaan");
+  }
   const index = state().availability.findIndex(
     (row) => row.id === params.availabilityId,
   );
@@ -867,7 +965,13 @@ registerMock(updateAvailability, ({ params, body }) => {
   return { data: state().availability[index] };
 });
 
-registerMock(setAvailabilityStatus, ({ params, body }) => {
+registerMock(setAvailabilityStatus, ({ params, body, scenario }) => {
+  if (!legacyItemVisible(scenario)) {
+    const existing = state().availability.find(
+      (row) => row.id === params.availabilityId,
+    );
+    if (existing && isLegacyItem(existing.menuItemId)) notFound("Ketersediaan");
+  }
   const row = requireAvailability(params.availabilityId);
   const fingerprint = `${row.id}:${body.action}`;
   const seen = broadcasts.get().get(body.idempotencyKey);
@@ -879,6 +983,13 @@ registerMock(setAvailabilityStatus, ({ params, body }) => {
         "Kunci idempotensi sudah dipakai untuk aksi lain.",
       );
     return { data: row };
+  }
+  // Q23: a restore republishes the item, so it needs its photo (like the API,
+  // checked after an idempotent replay so a retry keeps its outcome).
+  if (body.action === "restore") {
+    const item = requireItem(row.menuItemId);
+    if (menuItemPhotoMissing({ isActive: true, mediaId: item.mediaId }))
+      photoRequired();
   }
   const status = transitionAvailability(row.status, body.action);
   const next: Availability = {

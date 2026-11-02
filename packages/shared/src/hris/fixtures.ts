@@ -64,8 +64,9 @@ const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const userId = id;
 const employeeRef = (n: number) => employeeIdSchema.parse(id(n));
+// 23-char prefix + 3 digits = the canonical 26-char ULID (ulidIdSchema).
 const ulid = (n: number) =>
-  `01JBQ7Z8K3M4N5P6Q7R8S9T${String(n).padStart(2, "0")}`;
+  `01JBQ7Z8K3M4N5P6Q7R8S9T${String(n).padStart(3, "0")}`;
 const masked = (raw: string, rule: "last4" | "name" | "email" = "last4") => ({
   masked: maskPiiValue(raw, rule),
   keyVersion: 1,
@@ -1135,6 +1136,10 @@ const shiftAssignments: ShiftAssignment[] = [
   makeAssignment(18, 1014, 8002, weekOne, "published"),
   makeAssignment(19, 1014, 8002, dayTwo, "published"),
   makeAssignment(20, 1015, 8001, dayThree, "cancelled"),
+  // The employee PWA opens on the fixture "now" (2026-11-01T02:00Z = 09:00 WIB),
+  // so the Beranda has a shift in progress to show (PRD §3 "HRIS Self-Service
+  // Karyawan" — Beranda: jadwal hari ini).
+  makeAssignment(21, 1003, 8001, "2026-11-01", "published"),
 ];
 
 const shiftCompliancePolicy = shiftCompliancePolicySchema.parse({

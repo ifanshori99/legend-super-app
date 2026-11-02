@@ -1,0 +1,925 @@
+// Back-office contracts for payment orchestration (PRD v1.7 §3 F13):
+// gateway routing per tenant/outlet, EDC terminals and the cashier default
+// method, refunds with approval, unallocated funds (PAY-04) and settlement
+// reconciliation cases (EDC-06). The tenant always comes from the trusted
+// session context (TEN-02); every list is cursor-paginated (D-CORE-5).
+//
+// Data contracts only: signature verification, provider credentials (PAY-06)
+// and the WS-01 approval decision itself stay at the service boundary.
+
+import {
+  z,
+  clientInputSchema,
+  cursorPageQuerySchema,
+  cursorPageSchema,
+  dataResponseSchema,
+  idempotencyKeySchema,
+  idrSchema,
+  isoDateTimeSchema,
+  businessDateSchema,
+  outletIdSchema,
+  tenantIdSchema,
+  uuidSchema,
+  cafeLegendFixtures,
+} from "../core/index.ts";
+import { defineEndpoint } from "../api/endpoint.ts";
+import {
+  edcTerminalSchema,
+  paymentMethodSchema,
+  refundSchema,
+  unallocatedFundsSchema,
+} from "./index.ts";
+
+const ref = z.string().min(1).max(100);
+const nonnegativeIdr = idrSchema.refine((n) => n >= 0);
+const positiveIdr = idrSchema.refine((n) => n > 0);
+const noteSchema = z.string().min(4).max(500);
+const ADMIN = "/api/payments/admin";
+
+/** Online methods a gateway can route. Cash, EDC and points never route here. */
+export const routedPaymentMethodSchema = z.enum([
+  "qris",
+  "card",
+  "ewallet",
+  "va",
+  "bank_transfer",
+  "paylater",
+]);
+export type RoutedPaymentMethod = z.infer<typeof routedPaymentMethodSchema>;
+
+/** PRD §3.13: methods come from the provider's endpoint, never hard-coded. */
+export const paymentProviderSchema = z.strictObject({
+  code: ref,
+  name: ref,
+  kind: z.enum(["gateway", "manual"]),
+  enabled: z.boolean(),
+});
+export type PaymentProvider = z.infer<typeof paymentProviderSchema>;
+
+/** `outletId: null` = the tenant-wide default; a row overrides it per outlet. */
+export const paymentRouteSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: tenantIdSchema,
+  outletId: uuidSchema.nullable(),
+  method: routedPaymentMethodSchema,
+  provider: ref,
+  fallbackProvider: ref.nullable(),
+  enabled: z.boolean(),
+  updatedAt: isoDateTimeSchema,
+});
+export type PaymentRoute = z.infer<typeof paymentRouteSchema>;
+
+const outletOptionSchema = z.strictObject({
+  id: outletIdSchema,
+  name: ref,
+});
+export type PaymentOutletOption = z.infer<typeof outletOptionSchema>;
+
+/** The routing screen: the selected scope's routes plus what it can choose. */
+export const paymentRoutingViewSchema = z.strictObject({
+  scope: z.enum(["tenant", "outlet"]),
+  outletId: outletIdSchema.nullable(),
+  outletName: ref.nullable(),
+  outlets: z.array(outletOptionSchema),
+  providers: z.array(paymentProviderSchema),
+  routes: z.array(paymentRouteSchema),
+});
+export type PaymentRoutingView = z.infer<typeof paymentRoutingViewSchema>;
+
+export const updatePaymentRouteInputSchema = clientInputSchema({
+  outletId: outletIdSchema.nullable(),
+  provider: ref,
+  fallbackProvider: ref.nullable(),
+  enabled: z.boolean(),
+});
+export type UpdatePaymentRouteInput = z.infer<
+  typeof updatePaymentRouteInputSchema
+>;
+
+// ---- EDC terminals (EDC-01..07) -----------------------------------------
+
+/** EDC row plus the outlet name the table shows; the id stays the record id. */
+export const edcTerminalViewSchema = z.strictObject({
+  ...edcTerminalSchema.shape,
+  /** The four banks the PRD integrates (BCA, Mandiri, BNI, BJB). */
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  outletName: ref,
+});
+export type EdcTerminalView = z.infer<typeof edcTerminalViewSchema>;
+
+const edcTerminalFields = {
+  outletId: outletIdSchema,
+  bankCode: z.enum(["bca", "mandiri", "bni", "bjb"]),
+  terminalId: ref,
+  merchantId: ref,
+  model: ref,
+  connection: z.enum(["lan", "usb", "bluetooth"]),
+  ipAddress: z.union([z.ipv4(), z.ipv6()]).nullable(),
+  supportedMethods: z.array(z.enum(["card", "qris"])).min(1),
+};
+export const createEdcTerminalInputSchema = clientInputSchema({
+  ...edcTerminalFields,
+  status: z.enum(["active", "inactive"]),
+});
+export type CreateEdcTerminalInput = z.infer<
+  typeof createEdcTerminalInputSchema
+>;
+
+export const updateEdcTerminalInputSchema = clientInputSchema({
+  bankCode: edcTerminalFields.bankCode.optional(),
+  terminalId: edcTerminalFields.terminalId.optional(),
+  merchantId: edcTerminalFields.merchantId.optional(),
+  model: edcTerminalFields.model.optional(),
+  connection: edcTerminalFields.connection.optional(),
+  ipAddress: edcTerminalFields.ipAddress.optional(),
+  supportedMethods: edcTerminalFields.supportedMethods.optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+export type UpdateEdcTerminalInput = z.infer<
+  typeof updateEdcTerminalInputSchema
+>;
+
+/** PRD "Routing kasir": QRIS via one bank's EDC or via DOIT, terminal per cashier. */
+export const cashierDefaultMethodSchema = z.enum([
+  "edc_card",
+  "edc_qris",
+  "qris_doit",
+]);
+export type CashierDefaultMethod = z.infer<typeof cashierDefaultMethodSchema>;
+
+export const edcCashierDefaultSchema = z.strictObject({
+  id: uuidSchema,
+  tenantId: tenantIdSchema,
+  outletId: outletIdSchema,
+  cashierId: uuidSchema,
+  cashierName: ref,
+  terminalId: uuidSchema.nullable(),
+  defaultMethod: cashierDefaultMethodSchema,
+  updatedAt: isoDateTimeSchema,
+});
+export type EdcCashierDefault = z.infer<typeof edcCashierDefaultSchema>;
+
+/** Cashier defaults split by outlet; terminals travel along for the label. */
+export const edcCashierDefaultsViewSchema = z.strictObject({
+  outletId: outletIdSchema,
+  outletName: ref,
+  terminals: z.array(edcTerminalViewSchema),
+  cashiers: z.array(edcCashierDefaultSchema),
+});
+export type EdcCashierDefaultsView = z.infer<
+  typeof edcCashierDefaultsViewSchema
+>;
+
+export const updateEdcCashierDefaultInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  terminalId: uuidSchema.nullable(),
+  defaultMethod: cashierDefaultMethodSchema,
+});
+export type UpdateEdcCashierDefaultInput = z.infer<
+  typeof updateEdcCashierDefaultInputSchema
+>;
+
+// ---- Refunds (PRD "Refund": full/partial, gateway or manual + approval) --
+
+export const refundStatusSchema = z.enum([
+  "pending",
+  "approved",
+  "completed",
+  "failed",
+]);
+export type RefundStatus = z.infer<typeof refundStatusSchema>;
+
+export const refundViewSchema = z.strictObject({
+  ...refundSchema.shape,
+  paymentReference: ref,
+  method: paymentMethodSchema,
+  paidAmountIdr: positiveIdr,
+  outletName: ref,
+  /** Staff who asked for the refund; the approver must be someone else (PRD §3 "Matriks Approval"). */
+  requestedBy: uuidSchema,
+  requestedByName: ref,
+  /**
+   * Server-computed for the signed-in viewer: pending, the approval matrix lets
+   * this viewer decide, and the viewer is not the requester. The UI only shows
+   * the approve action when true; the API re-checks (APPROVER_IS_REQUESTER).
+   */
+  viewerCanApprove: z.boolean(),
+  approvedByName: ref.nullable(),
+  note: z.string().max(500).nullable(),
+  createdAt: isoDateTimeSchema,
+  decidedAt: isoDateTimeSchema.nullable(),
+});
+export type RefundView = z.infer<typeof refundViewSchema>;
+
+/**
+ * Refund writes are idempotent by (tenant, idempotencyKey) (contracts.md
+ * "Idempotent mutations"): a retry or double click returns the first result,
+ * the same key with a different body fails IDEMPOTENCY_KEY_REUSED (409).
+ */
+export const createRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  paymentIntentId: uuidSchema,
+  amountIdr: positiveIdr,
+  reason: z.string().min(1).max(500),
+  note: z.string().max(500).optional(),
+});
+export type CreateRefundInput = z.infer<typeof createRefundInputSchema>;
+
+/**
+ * A settled payment the refund screen may pick; the server checks the rest.
+ * `refundedAmountIdr` counts every refund that is not `failed` (pending ones
+ * reserve their amount), so paid = refunded + refundable and two pending
+ * refunds can never exceed what was paid.
+ */
+export const refundablePaymentSchema = z
+  .strictObject({
+    paymentIntentId: uuidSchema,
+    reference: ref,
+    outletId: outletIdSchema,
+    outletName: ref,
+    method: paymentMethodSchema,
+    paidAmountIdr: positiveIdr,
+    refundedAmountIdr: nonnegativeIdr,
+    refundableAmountIdr: nonnegativeIdr,
+    paidAt: isoDateTimeSchema,
+  })
+  .refine(
+    (p) => p.refundedAmountIdr + p.refundableAmountIdr === p.paidAmountIdr,
+    {
+      path: ["refundableAmountIdr"],
+      message: "paid must equal refunded + refundable",
+    },
+  );
+export type RefundablePayment = z.infer<typeof refundablePaymentSchema>;
+
+export const listRefundablePayments = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/refunds/refundable`,
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(
+    z.strictObject({ payments: z.array(refundablePaymentSchema) }),
+  ),
+});
+
+export const approveRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  note: z.string().max(500).optional(),
+});
+export type ApproveRefundInput = z.infer<typeof approveRefundInputSchema>;
+
+// ---- Unallocated funds (PAY-04) -----------------------------------------
+
+export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
+export type UnallocatedStatus = z.infer<typeof unallocatedStatusSchema>;
+
+export const unallocatedFundViewSchema = z
+  .strictObject({
+    ...unallocatedFundsSchema.shape,
+    paymentReference: ref,
+    method: paymentMethodSchema,
+    paidAmountIdr: positiveIdr,
+    billTotalIdr: positiveIdr,
+    outletName: ref,
+    status: unallocatedStatusSchema,
+    detectedAt: isoDateTimeSchema,
+    resolvedByName: ref.nullable(),
+    resolvedAt: isoDateTimeSchema.nullable(),
+    note: z.string().max(500).nullable(),
+  })
+  // PAY-04: the unallocated amount is exactly what arrived above the bill.
+  .refine((f) => f.paidAmountIdr - f.billTotalIdr === f.amountIdr, {
+    path: ["amountIdr"],
+    message: "amount must equal paid − bill total",
+  });
+export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
+
+/** Money moves (refund or credit), so the write carries an idempotency key. */
+export const resolveUnallocatedFundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  resolution: z.enum(["refund", "credit"]),
+  note: noteSchema,
+});
+export type ResolveUnallocatedFundInput = z.infer<
+  typeof resolveUnallocatedFundInputSchema
+>;
+
+// ---- Settlement reconciliation (EDC-06) ---------------------------------
+
+export const reconciliationSourceSchema = z.enum(["gateway", "edc"]);
+export type ReconciliationSource = z.infer<typeof reconciliationSourceSchema>;
+
+export const reconciliationCaseViewSchema = z
+  .strictObject({
+    id: uuidSchema,
+    tenantId: tenantIdSchema,
+    outletId: outletIdSchema,
+    settlementId: uuidSchema,
+    settlementLineId: uuidSchema.nullable(),
+    source: reconciliationSourceSchema,
+    /** "doit" or "edc_<bank>" — the settlement report the line came from. */
+    provider: ref,
+    reference: ref,
+    periodStart: businessDateSchema,
+    periodEnd: businessDateSchema,
+    expectedIdr: nonnegativeIdr,
+    receivedIdr: nonnegativeIdr,
+    /** received − expected; negative means less money arrived than booked. */
+    varianceIdr: idrSchema,
+    reason: z.string().min(1).max(500),
+    status: z.enum(["open", "resolved"]),
+    resolvedByName: ref.nullable(),
+    resolvedAt: isoDateTimeSchema.nullable(),
+    note: z.string().max(500).nullable(),
+    createdAt: isoDateTimeSchema,
+  })
+  .refine((c) => c.receivedIdr - c.expectedIdr === c.varianceIdr, {
+    path: ["varianceIdr"],
+    message: "variance must equal received − expected",
+  });
+export type ReconciliationCaseView = z.infer<
+  typeof reconciliationCaseViewSchema
+>;
+
+export const reconciliationSummarySchema = z.strictObject({
+  matchedLines: z.number().int().nonnegative(),
+  unmatchedLines: z.number().int().nonnegative(),
+  mismatchLines: z.number().int().nonnegative(),
+  openCases: z.number().int().nonnegative(),
+  resolvedThisMonth: z.number().int().nonnegative(),
+  varianceIdr: idrSchema,
+});
+export type ReconciliationSummary = z.infer<typeof reconciliationSummarySchema>;
+
+export const resolveReconciliationCaseInputSchema = clientInputSchema({
+  note: noteSchema,
+});
+export type ResolveReconciliationCaseInput = z.infer<
+  typeof resolveReconciliationCaseInputSchema
+>;
+
+// ---- Endpoints ----------------------------------------------------------
+// All routes are staff-only (outlet session + RBAC: payment.transaction.view,
+// payment.reconcile, payment.edc.manage); the API re-checks every request.
+
+const routeParams = z.strictObject({ method: routedPaymentMethodSchema });
+const terminalParams = z.strictObject({ terminalId: uuidSchema });
+const cashierParams = z.strictObject({ cashierId: uuidSchema });
+const refundParams = z.strictObject({ refundId: uuidSchema });
+const fundParams = z.strictObject({ fundId: uuidSchema });
+const caseParams = z.strictObject({ caseId: uuidSchema });
+const outletFilter = { outletId: outletIdSchema.optional() } as const;
+
+/** GET the routing of the tenant (no outlet) or one outlet's overrides. */
+export const getPaymentRouting = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/routing`,
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(paymentRoutingViewSchema),
+});
+/** PRD "Routing per Metode": change routing per tenant or outlet, no redeploy. */
+export const updatePaymentRoute = defineEndpoint({
+  method: "PUT",
+  path: `${ADMIN}/routing/:method`,
+  params: routeParams,
+  body: updatePaymentRouteInputSchema,
+  response: dataResponseSchema(paymentRouteSchema),
+});
+
+export const listEdcTerminals = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/edc/terminals`,
+  query: cursorPageQuerySchema.extend(outletFilter),
+  response: cursorPageSchema(edcTerminalViewSchema),
+});
+export const createEdcTerminal = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/edc/terminals`,
+  body: createEdcTerminalInputSchema,
+  response: dataResponseSchema(edcTerminalViewSchema),
+});
+export const updateEdcTerminal = defineEndpoint({
+  method: "PATCH",
+  path: `${ADMIN}/edc/terminals/:terminalId`,
+  params: terminalParams,
+  body: updateEdcTerminalInputSchema,
+  response: dataResponseSchema(edcTerminalViewSchema),
+});
+
+/** One outlet's cashiers with their default tender; terminals travel along. */
+export const getEdcCashierDefaults = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/edc/cashier-defaults`,
+  query: z.strictObject({ outletId: outletIdSchema }),
+  response: dataResponseSchema(edcCashierDefaultsViewSchema),
+});
+export const updateEdcCashierDefault = defineEndpoint({
+  method: "PUT",
+  path: `${ADMIN}/edc/cashier-defaults/:cashierId`,
+  params: cashierParams,
+  body: updateEdcCashierDefaultInputSchema,
+  response: dataResponseSchema(edcCashierDefaultSchema),
+});
+
+export const listRefunds = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/refunds`,
+  query: cursorPageQuerySchema.extend({
+    ...outletFilter,
+    status: refundStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(refundViewSchema),
+});
+/**
+ * PRD "Refund": any refund above zero needs approval, so the new refund starts
+ * `pending` and only `approveRefund` executes it. The server checks the amount
+ * against the paid amount; the client amount is a request, never authority.
+ */
+export const createRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds`,
+  body: createRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+export const approveRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/approve`,
+  params: refundParams,
+  body: approveRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+
+export const listUnallocatedFunds = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/unallocated-funds`,
+  query: cursorPageQuerySchema.extend({
+    ...outletFilter,
+    status: unallocatedStatusSchema.optional(),
+  }),
+  response: cursorPageSchema(unallocatedFundViewSchema),
+});
+/** PAY-04: a double payment or overpayment is resolved by refund or credit. */
+export const resolveUnallocatedFund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/unallocated-funds/:fundId/resolve`,
+  params: fundParams,
+  body: resolveUnallocatedFundInputSchema,
+  response: dataResponseSchema(unallocatedFundViewSchema),
+});
+
+export const listReconciliationCases = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/reconciliation/cases`,
+  query: cursorPageQuerySchema.extend({
+    ...outletFilter,
+    status: z.enum(["open", "resolved"]).optional(),
+    source: reconciliationSourceSchema.optional(),
+  }),
+  response: cursorPageSchema(reconciliationCaseViewSchema),
+});
+export const getReconciliationSummary = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/reconciliation/summary`,
+  query: z.strictObject({ outletId: outletIdSchema.optional() }),
+  response: dataResponseSchema(reconciliationSummarySchema),
+});
+/** EDC-06: every settlement difference is a case resolved with a written note. */
+export const resolveReconciliationCase = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/reconciliation/cases/:caseId/resolve`,
+  params: caseParams,
+  body: resolveReconciliationCaseInputSchema,
+  response: dataResponseSchema(reconciliationCaseViewSchema),
+});
+
+// ---- Fixtures: Cafe Legend Bandung, one business day --------------------
+
+const tenantId = cafeLegendFixtures.tenant.id;
+const bandung = cafeLegendFixtures.outlets[0];
+const bandung2 = cafeLegendFixtures.outlets[1];
+const bandungId = bandung.id;
+const updatedAt = "2026-11-01T03:10:00.000Z";
+
+const providerFixtures = [
+  { code: "doit", name: "DOIT", kind: "gateway", enabled: true },
+  { code: "duitku", name: "Duitku", kind: "gateway", enabled: false },
+] as const;
+
+const routeFixtures = [
+  {
+    id: "a1b2c3d4-0001-4a01-8b01-000000000001",
+    method: "qris",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: true,
+  },
+  {
+    id: "a1b2c3d4-0002-4a02-8b02-000000000002",
+    method: "va",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: true,
+  },
+  {
+    id: "a1b2c3d4-0003-4a03-8b03-000000000003",
+    method: "ewallet",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: true,
+  },
+  {
+    id: "a1b2c3d4-0004-4a04-8b04-000000000004",
+    method: "card",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: true,
+  },
+  {
+    id: "a1b2c3d4-0005-4a05-8b05-000000000005",
+    method: "bank_transfer",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: true,
+  },
+  {
+    id: "a1b2c3d4-0006-4a06-8b06-000000000006",
+    method: "paylater",
+    provider: "doit",
+    fallbackProvider: null,
+    enabled: false,
+  },
+].map((route) =>
+  paymentRouteSchema.parse({
+    ...route,
+    tenantId,
+    outletId: null,
+    updatedAt,
+  }),
+);
+
+/**
+ * One outlet override: the tenant keeps paylater off, Bandung turns it on.
+ * A fallback gateway appears only after a second gateway is active (PRD
+ * "Failover"), so the fixture never invents one.
+ */
+const outletRouteFixture = paymentRouteSchema.parse({
+  id: "a1b2c3d4-0101-4b01-8c01-000000000101",
+  tenantId,
+  outletId: bandungId,
+  method: "paylater",
+  provider: "doit",
+  fallbackProvider: null,
+  enabled: true,
+  updatedAt,
+});
+
+export const paymentRoutingFixture = paymentRoutingViewSchema.parse({
+  scope: "tenant",
+  outletId: null,
+  outletName: null,
+  outlets: cafeLegendFixtures.outlets.map((outlet) => ({
+    id: outlet.id,
+    name: outlet.name,
+  })),
+  providers: [...providerFixtures],
+  routes: routeFixtures,
+});
+
+export const paymentRoutingOutletFixture = paymentRoutingViewSchema.parse({
+  ...paymentRoutingFixture,
+  scope: "outlet",
+  outletId: bandungId,
+  outletName: bandung.name,
+  routes: [
+    ...routeFixtures.filter((route) => route.method !== "paylater"),
+    outletRouteFixture,
+  ],
+});
+
+const terminalFixtures = [
+  {
+    id: "b2c3d4e5-0001-4b01-9c01-000000000001",
+    outletId: bandungId,
+    bankCode: "bca",
+    terminalId: "TID-8841201",
+    merchantId: "MID-9011842",
+    model: "Ingenico Move 2500",
+    connection: "lan",
+    ipAddress: "10.20.4.31",
+    supportedMethods: ["card", "qris"],
+    assignedDeviceId: null,
+    status: "active",
+  },
+  {
+    id: "b2c3d4e5-0002-4b02-9c02-000000000002",
+    outletId: bandungId,
+    bankCode: "mandiri",
+    terminalId: "TID-7712094",
+    merchantId: "MID-5510287",
+    model: "Verifone VX520",
+    connection: "usb",
+    ipAddress: null,
+    supportedMethods: ["card", "qris"],
+    assignedDeviceId: null,
+    status: "active",
+  },
+  {
+    id: "b2c3d4e5-0003-4b03-9c03-000000000003",
+    outletId: bandungId,
+    bankCode: "bni",
+    terminalId: "TID-6620481",
+    merchantId: "MID-4401938",
+    model: "Ingenico Desk 3500",
+    connection: "lan",
+    ipAddress: "10.20.4.33",
+    supportedMethods: ["card", "qris"],
+    assignedDeviceId: null,
+    status: "inactive",
+  },
+].map((terminal) =>
+  edcTerminalViewSchema.parse({
+    ...terminal,
+    tenantId,
+    outletName: bandung.name,
+  }),
+);
+
+const cashierFixtures = [
+  {
+    id: "c3d4e5f6-0001-4c01-8d01-000000000001",
+    cashierId: "d4e5f6a7-0001-4d01-8e01-000000000001",
+    cashierName: "Rina Kasir",
+    terminalId: terminalFixtures[0].id,
+    defaultMethod: "edc_card",
+  },
+  {
+    id: "c3d4e5f6-0002-4c02-8d02-000000000002",
+    cashierId: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    cashierName: "Dodi Kasir",
+    terminalId: terminalFixtures[1].id,
+    defaultMethod: "edc_qris",
+  },
+  {
+    id: "c3d4e5f6-0003-4c03-8d03-000000000003",
+    cashierId: "d4e5f6a7-0003-4d03-8e03-000000000003",
+    cashierName: "Sari Kasir",
+    terminalId: null,
+    defaultMethod: "qris_doit",
+  },
+].map((cashier) =>
+  edcCashierDefaultSchema.parse({
+    ...cashier,
+    tenantId,
+    outletId: bandungId,
+    updatedAt,
+  }),
+);
+
+export const edcCashierDefaultsFixture = edcCashierDefaultsViewSchema.parse({
+  outletId: bandungId,
+  outletName: bandung.name,
+  terminals: terminalFixtures,
+  cashiers: cashierFixtures,
+});
+
+const refundFixtures = [
+  {
+    id: "e5f6a7b8-0001-4e01-8f01-000000000001",
+    paymentIntentId: "8a32e00d-7e43-45b6-9d01-7a92e605c104",
+    paymentReference: "A03-0412",
+    method: "qris",
+    paidAmountIdr: 144_375,
+    amountIdr: 50_000,
+    reason: "Pesanan dibatalkan setelah dibayar.",
+    status: "pending",
+    requestedBy: "d4e5f6a7-0001-4d01-8e01-000000000001",
+    requestedByName: "Rina Kasir",
+    viewerCanApprove: true,
+    approvedBy: null,
+    approvedByName: null,
+    providerRef: null,
+    note: "Tamu menunggu lebih dari 30 menit.",
+    createdAt: "2026-11-01T04:20:00.000Z",
+    decidedAt: null,
+  },
+  {
+    id: "e5f6a7b8-0002-4e02-8f02-000000000002",
+    paymentIntentId: "7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f",
+    paymentReference: "B02-0355",
+    method: "va",
+    paidAmountIdr: 286_000,
+    amountIdr: 286_000,
+    reason: "Double payment: tamu membayar dua kali.",
+    status: "completed",
+    requestedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    requestedByName: "Dodi Kasir",
+    viewerCanApprove: false,
+    approvedBy: "b1a2c3d4-0001-4a01-8b01-00000000a001",
+    approvedByName: "Budi Supervisor",
+    providerRef: "RF-20261101-0031",
+    note: null,
+    createdAt: "2026-11-01T03:05:00.000Z",
+    decidedAt: "2026-11-01T03:12:00.000Z",
+  },
+  {
+    id: "e5f6a7b8-0003-4e03-8f03-000000000003",
+    paymentIntentId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    paymentReference: "A01-0390",
+    method: "ewallet",
+    paidAmountIdr: 75_000,
+    amountIdr: 75_000,
+    reason: "Menu tidak tersedia setelah pembayaran.",
+    status: "failed",
+    requestedBy: "d4e5f6a7-0003-4d03-8e03-000000000003",
+    requestedByName: "Sari Kasir",
+    viewerCanApprove: false,
+    approvedBy: "b1a2c3d4-0001-4a01-8b01-00000000a001",
+    approvedByName: "Budi Supervisor",
+    providerRef: null,
+    note: "Provider menolak refund; diproses manual oleh finance.",
+    createdAt: "2026-10-31T12:40:00.000Z",
+    decidedAt: "2026-10-31T12:48:00.000Z",
+  },
+].map((refund) =>
+  refundViewSchema.parse({
+    ...refund,
+    tenantId,
+    outletId: bandungId,
+    outletName: bandung.name,
+  }),
+);
+
+const unallocatedFixtures = [
+  {
+    id: "f6a7b8c9-0001-4f01-8a01-000000000001",
+    paymentIntentId: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    paymentReference: "A05-0421",
+    method: "qris",
+    paidAmountIdr: 288_750,
+    billTotalIdr: 144_375,
+    amountIdr: 144_375,
+    resolution: null,
+    resolvedBy: null,
+    resolvedByName: null,
+    resolvedAt: null,
+    status: "open",
+    note: null,
+    detectedAt: "2026-11-01T05:31:00.000Z",
+  },
+  {
+    id: "f6a7b8c9-0002-4f02-8a02-000000000002",
+    paymentIntentId: "5b1f2a3c-9d84-4e6f-8a71-0c3d5e7f9a21",
+    paymentReference: "B01-0342",
+    method: "va",
+    paidAmountIdr: 200_000,
+    billTotalIdr: 182_500,
+    amountIdr: 17_500,
+    resolution: "credit",
+    resolvedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    resolvedByName: "Dodi Kasir",
+    resolvedAt: "2026-10-31T09:15:00.000Z",
+    status: "resolved",
+    note: "Kelebihan dititipkan sebagai kredit tamu pada kunjungan berikutnya.",
+    detectedAt: "2026-10-31T08:58:00.000Z",
+  },
+].map((fund) =>
+  unallocatedFundViewSchema.parse({
+    ...fund,
+    tenantId,
+    outletId: bandungId,
+    outletName: bandung.name,
+  }),
+);
+
+/** Paid payments the refund dialog can pick, newest first. */
+const refundableFixtures = [
+  {
+    paymentIntentId: "8a32e00d-7e43-45b6-9d01-7a92e605c104",
+    reference: "A03-0412",
+    outletId: bandungId,
+    outletName: bandung.name,
+    method: "qris",
+    paidAmountIdr: 144_375,
+    // The pending 50.000 refund above reserves its amount.
+    refundedAmountIdr: 50_000,
+    refundableAmountIdr: 94_375,
+    paidAt: "2026-11-01T05:13:00.000Z",
+  },
+  // B02-0355 was refunded in full (completed above), so it is not offered.
+  {
+    paymentIntentId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+    reference: "A01-0390",
+    outletId: bandungId,
+    outletName: bandung.name,
+    method: "ewallet",
+    paidAmountIdr: 75_000,
+    // The 75.000 refund failed, so nothing is reserved; the guest is still owed.
+    refundedAmountIdr: 0,
+    refundableAmountIdr: 75_000,
+    paidAt: "2026-10-31T11:55:00.000Z",
+  },
+].map((payment) => refundablePaymentSchema.parse(payment));
+
+const caseFixtures = [
+  {
+    id: "a7b8c9d0-0001-4a01-8b01-000000000001",
+    settlementId: "b8c9d0e1-0001-4b01-9c01-000000000001",
+    settlementLineId: "c9d0e1f2-0001-4c01-8d01-000000000001",
+    source: "edc",
+    provider: "edc_bca",
+    reference: "BCA batch 2026-11-01 / TID-8841201",
+    periodStart: "2026-11-01",
+    periodEnd: "2026-11-01",
+    expectedIdr: 4_197_500,
+    receivedIdr: 4_145_000,
+    varianceIdr: -52_500,
+    reason: "MDR dipotong dua kali pada settlement bank.",
+    status: "open",
+    resolvedByName: null,
+    resolvedAt: null,
+    note: null,
+    createdAt: "2026-11-01T05:40:00.000Z",
+  },
+  {
+    id: "a7b8c9d0-0002-4a02-8b02-000000000002",
+    settlementId: "b8c9d0e1-0002-4b02-9c02-000000000002",
+    settlementLineId: null,
+    source: "edc",
+    provider: "edc_mandiri",
+    reference: "Mandiri batch 2026-11-01 / standalone",
+    periodStart: "2026-11-01",
+    periodEnd: "2026-11-01",
+    expectedIdr: 285_000,
+    receivedIdr: 0,
+    varianceIdr: -285_000,
+    reason: "Transaksi EDC mode standalone belum muncul di settlement.",
+    status: "open",
+    resolvedByName: null,
+    resolvedAt: null,
+    note: null,
+    createdAt: "2026-11-01T05:42:00.000Z",
+  },
+  {
+    id: "a7b8c9d0-0003-4a03-8b03-000000000003",
+    settlementId: "b8c9d0e1-0003-4b03-9c03-000000000003",
+    settlementLineId: "c9d0e1f2-0003-4c03-8d03-000000000003",
+    source: "gateway",
+    provider: "doit",
+    reference: "DOIT settlement 2026-10-31",
+    periodStart: "2026-10-31",
+    periodEnd: "2026-10-31",
+    expectedIdr: 892_500,
+    receivedIdr: 878_000,
+    varianceIdr: -14_500,
+    reason: "Biaya layanan gateway lebih besar dari perkiraan.",
+    status: "resolved",
+    resolvedByName: "Budi Supervisor",
+    resolvedAt: "2026-11-01T02:20:00.000Z",
+    note: "Selisih dibukukan sebagai biaya layanan periode Oktober.",
+    createdAt: "2026-11-01T01:05:00.000Z",
+  },
+].map((entry) =>
+  reconciliationCaseViewSchema.parse({
+    ...entry,
+    tenantId,
+    outletId: bandungId,
+  }),
+);
+
+export const reconciliationSummaryFixture = reconciliationSummarySchema.parse({
+  matchedLines: 128,
+  unmatchedLines: 2,
+  mismatchLines: 3,
+  openCases: 2,
+  resolvedThisMonth: 1,
+  varianceIdr: -352_000,
+});
+
+/** Pairs parsed by the contract test; fixtures cannot drift from the schema. */
+export const paymentAdminFixtures = [
+  [paymentRoutingViewSchema, paymentRoutingFixture],
+  [paymentRoutingViewSchema, paymentRoutingOutletFixture],
+  [edcTerminalViewSchema, terminalFixtures[0]],
+  [edcCashierDefaultsViewSchema, edcCashierDefaultsFixture],
+  [refundViewSchema, refundFixtures[0]],
+  [refundViewSchema, refundFixtures[1]],
+  [unallocatedFundViewSchema, unallocatedFixtures[0]],
+  [unallocatedFundViewSchema, unallocatedFixtures[1]],
+  [reconciliationCaseViewSchema, caseFixtures[0]],
+  [reconciliationSummarySchema, reconciliationSummaryFixture],
+] as const;
+
+/** Seeds for the mock mode store; the screens work without a backend. */
+export const cafeLegendPaymentAdminFixtures = {
+  tenantId,
+  outlets: [bandung, bandung2],
+  providers: [...providerFixtures],
+  routes: routeFixtures,
+  outletRoute: outletRouteFixture,
+  terminals: terminalFixtures,
+  cashiers: cashierFixtures,
+  refunds: refundFixtures,
+  refundablePayments: refundableFixtures,
+  unallocatedFunds: unallocatedFixtures,
+  reconciliationCases: caseFixtures,
+  reconciliationSummary: reconciliationSummaryFixture,
+} as const;
