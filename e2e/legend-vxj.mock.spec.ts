@@ -14,10 +14,10 @@ test.use({ baseURL });
 
 async function open(page: Page, path: string) {
   await page.goto(path, { waitUntil: "networkidle" });
+  // v3 (legend-tqnd/legend-vvth): the management topbar owns the area h1, so
+  // it sits outside #main-content; the body shows the section as an h2.
   await expect(
-    page
-      .locator("#main-content")
-      .getByRole("heading", { level: 1, name: "Inventori" }),
+    page.getByRole("heading", { level: 1, name: "Inventori" }),
   ).toBeVisible();
 }
 
