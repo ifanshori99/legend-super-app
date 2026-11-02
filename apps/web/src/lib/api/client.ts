@@ -84,7 +84,12 @@ export async function apiFetch<T>(
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...bearerHeaderFor(path),
         ...headers,
-        ...callHeaders,
+        // Per-call headers are allow-listed (contracts.md "Typed web client &
+        // idempotency headers"): only Idempotency-Key is forwarded, so no
+        // caller can override the cookie, request id or bearer set above.
+        ...(callHeaders?.["Idempotency-Key"] === undefined
+          ? {}
+          : { "Idempotency-Key": callHeaders["Idempotency-Key"] }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
