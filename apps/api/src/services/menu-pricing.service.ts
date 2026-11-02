@@ -23,6 +23,9 @@ import {
   availabilitySchema,
   itemRestoredEvent,
   itemSoldOutEvent,
+  MENU_PHOTO_REQUIRED_MESSAGE,
+  menuErrorHttpStatus,
+  menuItemPhotoMissing,
   menuUpdatedEvent,
   priceListItemSchema,
   priceListSchema,
@@ -958,6 +961,30 @@ export async function setAvailabilityStatus(
       return toAvailability(existing);
     }
     let next: Availability["status"];
+    // Q23: restoring an item republishes it (the 86-side publish switch), so
+    // the post-restore state must pass the same photo rule as an activation —
+    // hence `isActive: true`: the caller is asking for the item to be sold
+    // again. Checked after the idempotency replay above, so a recorded retry
+    // keeps answering with its recorded outcome.
+    if (input.action === "restore") {
+      const [item] = await tx
+        .select({ mediaId: menuItems.mediaId })
+        .from(menuItems)
+        .where(
+          and(
+            eq(menuItems.tenantId, context.tenant.tenantId),
+            eq(menuItems.id, existing.menuItemId),
+            isNull(menuItems.deletedAt),
+          ),
+        );
+      if (!item) throw new CoreError("NOT_FOUND", "Item menu tidak ditemukan.");
+      if (menuItemPhotoMissing({ isActive: true, mediaId: item.mediaId }))
+        throw new HttpError(
+          menuErrorHttpStatus.MENU_PHOTO_REQUIRED,
+          "MENU_PHOTO_REQUIRED",
+          MENU_PHOTO_REQUIRED_MESSAGE,
+        );
+    }
     try {
       next = transitionAvailability(existing.status, input.action);
     } catch {

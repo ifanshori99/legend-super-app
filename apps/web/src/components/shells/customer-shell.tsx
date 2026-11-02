@@ -3,6 +3,8 @@
 // thumb reach with safe-area padding. Wider screens keep the same column.
 // The bar holds at most five slots (DESIGN.md v2 §5); a customer area with
 // more destinations gets a "Lainnya" sheet as the last slot (bead legend-oibk).
+// v3: page stays white (Legend); the active slot gets Metoric's active-nav
+// treatment as an accent-tint pill behind the icon (one accent detail, Q21).
 import { useState, type ReactNode } from "react";
 import { cn } from "cn";
 import { MoreHorizontal } from "lucide-react";
@@ -26,8 +28,28 @@ import {
 /** One 64px bar slot: icon over the label, active item in the accent. */
 function slotClass(current: boolean | undefined) {
   return cn(
-    "relative flex min-h-16 w-full flex-col items-center justify-center gap-1 text-xs leading-4 font-medium text-muted-foreground transition-colors duration-(--duration-fast) pressable hover:text-foreground",
+    "relative flex min-h-16 w-full flex-col items-center justify-center gap-0.5 text-xs leading-4 font-medium text-muted-foreground transition-colors duration-(--duration-fast) pressable hover:text-foreground",
     current && "font-semibold text-primary hover:text-primary",
+  );
+}
+
+/** Icon in a pill that takes the accent tint when its slot is current. */
+function SlotIcon({
+  current,
+  children,
+}: {
+  current: boolean | undefined;
+  children: ReactNode;
+}) {
+  return (
+    <span
+      className={cn(
+        "grid h-8 w-14 place-items-center rounded-full transition-colors duration-(--duration-fast)",
+        current && "bg-primary-tint",
+      )}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -85,9 +107,7 @@ export function CustomerShell({
           {logoUrl ? (
             <img src={logoUrl} alt={brandName} className="h-8 w-auto" />
           ) : (
-            <span className="truncate font-brand text-lg leading-6 font-bold tracking-tight">
-              {brandName}
-            </span>
+            <span className="truncate font-brand type-title">{brandName}</span>
           )}
           {context && (
             <span className="min-w-0 truncate text-sm text-muted-foreground">
@@ -127,7 +147,9 @@ export function CustomerShell({
                   aria-current={current ? "page" : undefined}
                   className={slotClass(current)}
                 >
-                  <Icon className="size-6" aria-hidden="true" />
+                  <SlotIcon current={current}>
+                    <Icon className="size-6" aria-hidden="true" />
+                  </SlotIcon>
                   {label}
                   <CountBadge count={count} />
                 </LinkComponent>
@@ -142,7 +164,9 @@ export function CustomerShell({
                       aria-current={moreCurrent ? "page" : undefined}
                       className={slotClass(moreCurrent)}
                     >
-                      <MoreHorizontal className="size-6" aria-hidden="true" />
+                      <SlotIcon current={moreCurrent}>
+                        <MoreHorizontal className="size-6" aria-hidden="true" />
+                      </SlotIcon>
                       {t("common.more")}
                       <CountBadge count={moreCount} />
                     </button>
