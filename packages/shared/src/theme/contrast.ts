@@ -3,8 +3,8 @@
 // setiap Tenant Theme diperiksa otomatis terhadap WCAG 2.2 AA; tema yang gagal
 // tidak dapat diaktifkan."
 //
-// This file has no runtime imports on purpose: the root test suite
-// (tests/design-system.test.mjs) loads it directly with Node type stripping.
+// This file has no runtime imports on purpose: root tests load it directly
+// with Node type stripping and no module resolution hook.
 
 import type {
   ColorMode,
@@ -13,6 +13,28 @@ import type {
   TenantThemeConfig,
   ThemePalettes,
 } from "./types";
+
+/**
+ * Tokens derived from the palette, never set by hand or by a tenant
+ * (owner decision 2026-11-02: the tint ramp follows the tenant primary, no
+ * second accent token). Each is an sRGB mix `fg pct% + bg (100-pct)%`,
+ * emitted in tokens.css as `color-mix(in srgb, …)` and computed the same way
+ * in contrast.ts, so the gate checks exactly what renders.
+ */
+export const DERIVED_TOKENS = {
+  "primary-hover": { from: "primary", pct: 88, into: "background" },
+  "primary-tint": { from: "primary", pct: 10, into: "background" },
+  "primary-tint-strong": { from: "primary", pct: 18, into: "background" },
+  "chart-neutral": { from: "foreground", pct: 55, into: "background" },
+} as const satisfies Record<
+  string,
+  { from: ColorToken; pct: number; into: ColorToken }
+>;
+
+export type DerivedToken = keyof typeof DERIVED_TOKENS;
+
+/** Any token the contrast gate can check: set or derived. */
+export type ThemeToken = ColorToken | DerivedToken;
 
 /** WCAG 2.2 SC 1.4.3: normal text. */
 export const AA_TEXT = 4.5;
@@ -49,9 +71,44 @@ export function contrastRatio(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/**
+ * sRGB mix `pct%` of `a` into `b`, matching CSS
+ * `color-mix(in srgb, a pct%, b)` channel for channel.
+ */
+export function mixHex(a: string, b: string, pct: number): string {
+  const ma = HEX.exec(a);
+  const mb = HEX.exec(b);
+  if (!ma || !mb) throw new Error(`Not a #rrggbb color: ${a} / ${b}`);
+  const ia = Number.parseInt(ma[1]!, 16);
+  const ib = Number.parseInt(mb[1]!, 16);
+  const w = pct / 100;
+  let out = "#";
+  for (const shift of [16, 8, 0]) {
+    const ca = (ia >> shift) & 0xff;
+    const cb = (ib >> shift) & 0xff;
+    out += Math.round(ca * w + cb * (1 - w))
+      .toString(16)
+      .padStart(2, "0");
+  }
+  return out;
+}
+
+export type FullPalette = Record<ThemeToken, string>;
+
+/** A palette plus its derived tokens (tint ramp, chart neutral). */
+export function derivePalette(palette: ColorPalette): FullPalette {
+  const derived = {} as Record<DerivedToken, string>;
+  for (const [token, rule] of Object.entries(DERIVED_TOKENS) as [
+    DerivedToken,
+    (typeof DERIVED_TOKENS)[DerivedToken],
+  ][])
+    derived[token] = mixHex(palette[rule.from], palette[rule.into], rule.pct);
+  return { ...palette, ...derived };
+}
+
 export type ContrastPair = {
-  fg: ColorToken;
-  bg: ColorToken;
+  fg: ThemeToken;
+  bg: ThemeToken;
   min: number;
   /** Where the pair appears, for readable failure messages. */
   use: string;
@@ -87,6 +144,67 @@ export const REQUIRED_PAIRS: readonly ContrastPair[] = [
   { fg: "input", bg: "card", min: AA_NON_TEXT, use: "field border on cards" },
   { fg: "ring", bg: "background", min: AA_NON_TEXT, use: "focus ring" },
   { fg: "ring", bg: "card", min: AA_NON_TEXT, use: "focus ring on cards" },
+  // v2 surface ladder: bands (surface-2) and raised rows/panels (surface-3).
+  { fg: "foreground", bg: "surface-2", min: AA_TEXT, use: "text on band" },
+  { fg: "foreground", bg: "surface-3", min: AA_TEXT, use: "text on raised" },
+  {
+    fg: "muted-foreground",
+    bg: "surface-2",
+    min: AA_TEXT,
+    use: "hint on band",
+  },
+  {
+    fg: "muted-foreground",
+    bg: "surface-3",
+    min: AA_TEXT,
+    use: "hint on raised",
+  },
+  { fg: "primary", bg: "surface-2", min: AA_TEXT, use: "link on band" },
+  { fg: "input", bg: "surface-2", min: AA_NON_TEXT, use: "field on band" },
+  // v2 tint ramp, derived from primary (DERIVED_TOKENS).
+  {
+    fg: "primary-foreground",
+    bg: "primary-hover",
+    min: AA_TEXT,
+    use: "primary button hover",
+  },
+  {
+    fg: "foreground",
+    bg: "primary-tint",
+    min: AA_TEXT,
+    use: "text on accent tint",
+  },
+  {
+    fg: "primary",
+    bg: "primary-tint",
+    min: AA_TEXT,
+    use: "active nav / accent badge",
+  },
+  {
+    fg: "muted-foreground",
+    bg: "primary-tint",
+    min: AA_TEXT,
+    use: "hint on accent tint",
+  },
+  {
+    fg: "foreground",
+    bg: "primary-tint-strong",
+    min: AA_TEXT,
+    use: "text on strong tint",
+  },
+  {
+    fg: "primary",
+    bg: "primary-tint-strong",
+    min: AA_TEXT,
+    use: "accent label on strong tint",
+  },
+  // Charts (WCAG 1.4.11 graphics): accent and neutral series vs the plot.
+  {
+    fg: "chart-neutral",
+    bg: "card",
+    min: AA_NON_TEXT,
+    use: "neutral chart series",
+  },
   ...STATUS.flatMap((s): ContrastPair[] => [
     { fg: `${s}-foreground`, bg: s, min: AA_TEXT, use: `${s} fill` },
     { fg: s, bg: "background", min: AA_TEXT, use: `${s} text` },
@@ -98,8 +216,8 @@ export const REQUIRED_PAIRS: readonly ContrastPair[] = [
 
 export type ContrastFailure = {
   mode: ColorMode;
-  fg: ColorToken;
-  bg: ColorToken;
+  fg: ThemeToken;
+  bg: ThemeToken;
   ratio: number;
   min: number;
   use: string;
@@ -121,8 +239,9 @@ export function checkPalette(
     if (!isHexColor(value)) invalid.push(`${mode}.${token}: ${String(value)}`);
   const failures: ContrastFailure[] = [];
   if (invalid.length) return { failures, invalid };
+  const full = derivePalette(palette);
   for (const pair of REQUIRED_PAIRS) {
-    const ratio = contrastRatio(palette[pair.fg], palette[pair.bg]);
+    const ratio = contrastRatio(full[pair.fg], full[pair.bg]);
     if (ratio < pair.min) failures.push({ mode, ...pair, ratio });
   }
   return { failures, invalid };

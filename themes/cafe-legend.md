@@ -31,9 +31,15 @@
 
 Page background stays white; status colors, neutrals, and focus ring stay Base.
 
+**Derived accent ramp (DESIGN.md v2 §2).** Not configured here: `primary-hover`,
+`primary-tint`, and `primary-tint-strong` are mixed from `primary` automatically —
+light `#985a3d` / `#f3ece9` / `#eaddd7`, dark `#ce906d` / `#251d18` / `#362921`. Changing
+`primary` when A1 lands updates the whole ramp; the contrast gate re-checks it.
+
 ## Contrast
 
-Merged with the Base Theme, all 74 checked pairs pass AA in light and dark
+Merged with the Base Theme, all 100 checked pairs (50 per mode, including the derived ramp)
+pass AA in light and dark
 (`tests/design-system.test.mjs`, "Cafe Legend placeholder Tenant Theme passes and activates").
 
 ## When A1 arrives (checklist for Super Admin / WS owner)
