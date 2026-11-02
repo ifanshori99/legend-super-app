@@ -566,4 +566,44 @@ describe("table session lifecycle (legend-irw)", () => {
       blocker.release();
     }
   });
+  it("ORD-10 review: a staff status action and a first scan serialize per table", async () => {
+    const { table, token } = await newTable();
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      // Hold the per-table live-state lock the service takes first.
+      await blocker.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`table-live:${seededTenantId}:${table.id}`],
+      );
+      const pending = [
+        scan(app, { token }).then((res) => res),
+        staff.client
+          .post(`/api/tables/${table.id}/status`)
+          .set(originHeader)
+          .send({ action: "mark_dirty" })
+          .then((res) => res),
+      ] as const;
+      // Both writers queue on the same lock: neither decides from a state the
+      // other is about to change.
+      await waitForLockWaiters(2);
+      await blocker.query("COMMIT");
+      const [scanned, marked] = await Promise.all(pending);
+      // Exactly one wins; the table never ends dirty with an active session.
+      expect([scanned.status, marked.status].sort()).toEqual([201, 409]);
+      const { rows } = await owner.query<{ status: string; active: number }>(
+        `SELECT t.status,
+                (SELECT count(*)::int FROM table_sessions s
+                  WHERE s.tenant_id = t.tenant_id AND s.table_id = t.id
+                    AND s.status NOT IN ('closed', 'voided')) AS active
+           FROM tables t WHERE t.id = $1`,
+        [table.id],
+      );
+      if (rows[0]?.active === 1) expect(rows[0]?.status).toBe("occupied");
+      else expect(rows[0]?.status).toBe("dirty");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+    }
+  });
 });

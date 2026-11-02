@@ -291,6 +291,25 @@ async function loadSession(
   return row;
 }
 
+/**
+ * Serializes every writer of one table's live state — the guest scan, the
+ * staff status action, open-bill confirm and close — on a transaction-scoped
+ * advisory lock taken before any row lock (Opus review). Without it a staff
+ * "mark available" could read "no active session" while a concurrent first
+ * scan opens one (ORD-10), and the next party would be seated into — and join
+ * — the first party's session. One lock taken first in every path also keeps
+ * the session/table row locks from forming a cycle.
+ */
+export async function lockTableLiveState(
+  tx: Tx,
+  tenantId: TenantId,
+  tableId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`table-live:${tenantId}:${tableId}`}, 0))`,
+  );
+}
+
 async function activeSessionForTable(
   tx: Tx,
   tenantId: TenantId,
@@ -583,7 +602,7 @@ export async function openOrJoinTableSession(
     resolvedTenantId: context.tenant.tenantId,
   });
   return withTenant(db, context, async (tx) => {
-    const [table] = await tx
+    const [found] = await tx
       .select()
       .from(tables)
       .where(
@@ -593,6 +612,20 @@ export async function openOrJoinTableSession(
         ),
       );
     // Every failure is the same NOT_FOUND: no oracle for valid ids (ORD-04).
+    if (!found) throw new CoreError("NOT_FOUND", "QR meja tidak dikenali");
+    await lockTableLiveState(tx, context.tenant.tenantId, found.id);
+    // Re-read under the lock: staff may have changed the status (or rotated
+    // the QR) between the lookup and the lock.
+    const [table] = await tx
+      .select()
+      .from(tables)
+      .where(
+        and(
+          eq(tables.tenantId, context.tenant.tenantId),
+          eq(tables.id, found.id),
+          eq(tables.qrTokenHash, verified.hash),
+        ),
+      );
     if (!table) throw new CoreError("NOT_FOUND", "QR meja tidak dikenali");
     assertQrTokenMatchesTable(
       verified.payload,
@@ -862,6 +895,8 @@ export async function confirmOpenBillSession(
   now = new Date(),
 ): Promise<TableSession> {
   return withTenant(db, context, async (tx) => {
+    const located = await loadSession(tx, context.tenant.tenantId, sessionId);
+    await lockTableLiveState(tx, context.tenant.tenantId, located.tableId);
     const row = await loadSession(tx, context.tenant.tenantId, sessionId, {
       forUpdate: true,
     });
@@ -943,6 +978,8 @@ export async function closeTableSession(
   now = new Date(),
 ): Promise<TableSession> {
   return withTenant(db, context, async (tx) => {
+    const located = await loadSession(tx, context.tenant.tenantId, sessionId);
+    await lockTableLiveState(tx, context.tenant.tenantId, located.tableId);
     const row = await loadSession(tx, context.tenant.tenantId, sessionId, {
       forUpdate: true,
     });
@@ -1053,6 +1090,7 @@ export async function updateTableStatus(
   now = new Date(),
 ): Promise<TableLiveStatus> {
   return withTenant(db, context, async (tx) => {
+    await lockTableLiveState(tx, context.tenant.tenantId, tableId);
     const [row] = await tx
       .select()
       .from(tables)

@@ -56,6 +56,7 @@ import { withTenant } from "../db/tenant";
 import { sealSecret, openSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
 import { qrTokenHash, signTableQrToken } from "./qr-token";
+import { lockTableLiveState } from "./table-session.service";
 
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -562,6 +563,9 @@ export async function updateTable(
   now = new Date(),
 ): Promise<Table> {
   return withTenant(db, context, async (tx) => {
+    // Same per-table lock as the scan: the open-session guard below and the
+    // status write must not interleave with a first scan (ORD-10).
+    await lockTableLiveState(tx, context.tenant.tenantId, tableId);
     const row = await tableRow(tx, context.tenant.tenantId, tableId);
     assertOutletInScope(context.outletScope, row.outletId);
     if (input.zoneId !== undefined && input.zoneId !== row.zoneId) {
@@ -656,6 +660,7 @@ export async function deleteTable(
   now = new Date(),
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
+    await lockTableLiveState(tx, context.tenant.tenantId, tableId);
     const row = await tableRow(tx, context.tenant.tenantId, tableId);
     assertOutletInScope(context.outletScope, row.outletId);
     // ORD-10: a table with an open session cannot be removed.
