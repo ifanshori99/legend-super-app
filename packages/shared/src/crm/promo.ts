@@ -20,6 +20,7 @@ import {
   clientInputSchema,
   idr,
   applyBasisPoints,
+  type Idr,
 } from "../core/index.ts";
 
 const safeInt = (value: number) => Number.isSafeInteger(value);
@@ -401,6 +402,16 @@ function bundleDiscount(
   return discount > 0 ? discount : null;
 }
 
+export type PromoEvaluationOptions = {
+  /**
+   * Bill amount the benefit is computed on. Stacking passes the amount still
+   * discountable after the promotions already chosen, so percentages apply
+   * sequentially (owner decision Q20, 2026-11-01). Eligibility conditions
+   * always read the full bill in `input`.
+   */
+  discountableIdr?: Idr;
+};
+
 /**
  * Evaluates one promotion against a bill. The result is deterministic and
  * side-effect free: quota/budget counters and voucher validity are supplied by
@@ -411,12 +422,20 @@ export function evaluatePromotion(
   promotion: Promotion,
   input: PromoEvaluationInput,
   usage: PromoUsage = ZERO_USAGE,
+  options: PromoEvaluationOptions = {},
 ): PromotionEvaluation {
   const rejected = (reason: PromoRejectionReason): PromotionEvaluation => ({
     applied: false,
     promotionId: promotion.id,
     reason,
   });
+  const discountableIdr = options.discountableIdr ?? input.subtotalIdr;
+  if (
+    !Number.isSafeInteger(discountableIdr) ||
+    discountableIdr < 0 ||
+    discountableIdr > input.subtotalIdr
+  )
+    throw new RangeError(`Invalid discountable amount: ${discountableIdr}`);
   if (promotion.status === "draft") return rejected("draft");
   if (promotion.status === "paused") return rejected("paused");
   if (promotion.status === "ended") return rejected("ended");
@@ -442,7 +461,7 @@ export function evaluatePromotion(
   switch (benefit.kind) {
     case "percent_off": {
       discountIdr = applyBasisPoints(
-        input.subtotalIdr,
+        discountableIdr,
         benefit.percentBp,
         "half_up",
       );
@@ -476,7 +495,7 @@ export function evaluatePromotion(
       };
       break;
   }
-  if (discountIdr > input.subtotalIdr) discountIdr = input.subtotalIdr;
+  if (discountIdr > discountableIdr) discountIdr = discountableIdr;
   if (
     promotion.budgetIdr !== null &&
     promotion.spentIdr + discountIdr > promotion.budgetIdr
@@ -525,6 +544,12 @@ export type PromotionApplicationResult = z.infer<
  * Applies a stacking policy to a candidate list. Automatic promotion selection
  * never picks a voucher-required promotion; pass its id in
  * `input.voucherPromotionId` to apply it explicitly.
+ *
+ * Stackable promotions are ordered by priority (higher first) then id, and a
+ * percentage discount is computed on the amount still discountable after the
+ * promotions before it, so two percentages compound instead of adding up:
+ * 10% then 20% of Rp100.000 is Rp28.000, not Rp30.000 (owner decision Q20,
+ * 2026-11-01). Conditions such as minimum spend still use the full bill.
  */
 export function applyPromotions(
   promotions: readonly Promotion[],
@@ -533,20 +558,21 @@ export function applyPromotions(
   policy: PromoStackingPolicy,
 ): PromotionApplicationResult {
   const usageById = new Map(usage.map((entry) => [entry.promotionId, entry]));
+  const promotionById = new Map(
+    promotions.map((promotion) => [promotion.id, promotion] as const),
+  );
+  const usageOf = (promotionId: string): PromoUsage =>
+    usageById.get(promotionId) ?? {
+      promotionId,
+      totalUses: 0,
+      customerUses: 0,
+    };
   const candidates = promotions.filter(
     (promotion) =>
       !promotion.voucherRequired || input.voucherPromotionId === promotion.id,
   );
   const evaluations = candidates.map((promotion) =>
-    evaluatePromotion(
-      promotion,
-      input,
-      usageById.get(promotion.id) ?? {
-        promotionId: promotion.id,
-        totalUses: 0,
-        customerUses: 0,
-      },
-    ),
+    evaluatePromotion(promotion, input, usageOf(promotion.id)),
   );
   const applied = evaluations.filter(
     (
@@ -555,7 +581,7 @@ export function applyPromotions(
       evaluation.applied,
   );
   const priorityOf = (promotionId: string) =>
-    promotions.find((promotion) => promotion.id === promotionId)?.priority ?? 0;
+    promotionById.get(promotionId)?.priority ?? 0;
 
   if (policy.mode === "exclusive") {
     let winner: (typeof applied)[number] | null = null;
@@ -610,13 +636,15 @@ export function applyPromotions(
       });
       continue;
     }
-    const promotion = promotions.find(
-      (entry) => entry.id === evaluation.promotionId,
-    );
+    const promotion = promotionById.get(evaluation.promotionId);
+    if (!promotion)
+      throw new RangeError(
+        `Promotion ${evaluation.promotionId} is missing from the candidate list`,
+      );
     // A non-stackable promotion cannot join an existing stack; if it comes
     // first (by priority) it becomes the only promotion, so nothing else may
     // join it afterwards either.
-    if (exclusiveUsed || (!(promotion?.stackable ?? true) && stacked > 0)) {
+    if (exclusiveUsed || (!promotion.stackable && stacked > 0)) {
       chosen.set(evaluation.promotionId, {
         applied: false,
         promotionId: evaluation.promotionId,
@@ -624,7 +652,7 @@ export function applyPromotions(
       });
       continue;
     }
-    const group = promotion?.stackGroup ?? "default";
+    const group = promotion.stackGroup;
     if (!policy.allowSameGroup && usedGroups.has(group)) {
       chosen.set(evaluation.promotionId, {
         applied: false,
@@ -641,11 +669,21 @@ export function applyPromotions(
       });
       continue;
     }
-    const discountIdr = Math.min(evaluation.discountIdr, remaining);
+    // Sequential pricing: a percentage benefit is recomputed on what is still
+    // discountable, while eligibility above used the full bill.
+    const sequential = evaluatePromotion(
+      promotion,
+      input,
+      usageOf(promotion.id),
+      {
+        discountableIdr: idr(remaining),
+      },
+    );
     if (
-      discountIdr <= 0 &&
-      evaluation.freeItems.length === 0 &&
-      evaluation.facilityEntitlement === null
+      !sequential.applied ||
+      (sequential.discountIdr <= 0 &&
+        sequential.freeItems.length === 0 &&
+        sequential.facilityEntitlement === null)
     ) {
       chosen.set(evaluation.promotionId, {
         applied: false,
@@ -654,14 +692,11 @@ export function applyPromotions(
       });
       continue;
     }
-    chosen.set(evaluation.promotionId, {
-      ...evaluation,
-      discountIdr: idr(discountIdr),
-    });
-    remaining -= discountIdr;
+    chosen.set(evaluation.promotionId, sequential);
+    remaining -= sequential.discountIdr;
     stacked += 1;
     usedGroups.add(group);
-    if (!(promotion?.stackable ?? true)) exclusiveUsed = true;
+    if (!promotion.stackable) exclusiveUsed = true;
   }
   let totalDiscountIdr = 0;
   const result: PromotionEvaluation[] = evaluations.map((evaluation) => {

@@ -9,6 +9,7 @@ export * from "./notes";
 export * from "./core-events";
 
 export * from "./platform-org";
+export * from "./menu";
 export * from "./platform-domains";
 export * from "./platform-packages";
 export * from "./platform-integrations";
@@ -18,6 +19,9 @@ export * from "./platform-access";
 export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";
+export * from "./inventory";
+export * from "./floor";
+export * from "./payment";
 export * from "./identity";
 // WS-05 versioned tax / service-charge rules, calculation options, snapshots.
 export * from "./tax";

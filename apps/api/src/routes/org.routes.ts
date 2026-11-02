@@ -24,6 +24,7 @@ import {
   z,
 } from "@starter/shared/core";
 import { requireAuth } from "../middleware/auth";
+import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import {
   getScopedTenantContext,
   requireTenantPermission,
@@ -51,7 +52,14 @@ import { listSupportAccess } from "../services/platform-support.service";
 
 export const orgRouter = Router();
 
-orgRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// AUTH-05: a tenant member whose active role requires MFA cannot use the back
+// office until this session verified a second factor (legend-qfvu).
+orgRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+);
 
 // TEN-03: role assignments determine both permission and service scope.
 const manage = requireTenantPermission("org.structure.manage");
