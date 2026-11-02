@@ -125,6 +125,7 @@ export const inventoryStockMessages = {
     statExpiringSource: "Lihat batch",
     statValue: "Nilai stok",
     statValueContext: "Harga rata-rata per lokasi",
+    summaryLabel: "Ringkasan stok",
   },
   expiry: {
     title: "Batch & kedaluwarsa",
