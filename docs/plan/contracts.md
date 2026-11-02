@@ -150,6 +150,8 @@ The customer screens of `/t/[token]` need read models the WS-03 contract beads (
 
 Guest endpoints (`/api/table-sessions/…`) are called with `Authorization: Bearer <sessionToken>` from `openOrJoinTableSession` (`lib/api/credentials.ts`).
 
+**Q23 guest visibility (bead `legend-qf0i`).** A row created before the photo rule can still be active with `menu_items.media_id` NULL. It stays in the back office (listed with the "Foto wajib" badge, editable, deactivatable) and never reaches a public read: `menuItemVisibleToGuests` (`menu/errors.ts`) is the row rule, `guestMenuItemCondition` (`apps/api/src/services/menu-internals.ts`) is its SQL form, and both public readers (`getQrMenu`, `getPublicMenuPage`) apply it. The mocks mirror the rule (`hidePhotoLessMenuItems`, `withGuestPhotos`), and `?mock=photo-missing` adds one legacy row so the badge, the restore refusal and the hidden guest card stay end-to-end testable now every demo item has a photo.
+
 ## Table operations (`@starter/shared/qr-order`, `table-operations.ts`, bead `legend-7ko`, contract scope of `legend-1dg3`)
 
 - **Board status (PRD §3.9 Papan Status).** `tableBoardStatus` derives the six PRD floor states plus `awaiting_confirmation` (open-bill session not yet confirmed) and `inactive` from one `TableLiveStatus` row; the board never stores its own status.

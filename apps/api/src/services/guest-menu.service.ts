@@ -1,0 +1,731 @@
+// Guest/public menu read models (PRD v1.7 §10 QR Order, §8 "Konten Menu";
+// owner Q17/Q23, bead legend-qf0i).
+//
+// Two public surfaces read the same catalogue:
+//   - `GET /api/qr/menu/:qrToken` — the QR order menu of one table (WS-03);
+//   - `GET /api/public/site/menu` — the brand website's online menu (WS-08 F21).
+//
+// Both are guest reads, so both apply owner Q23: an active item is only shown
+// with a photo. Rows created before the rule can still be active with
+// `media_id` NULL; the back office keeps listing them (with the "Foto wajib"
+// badge) while these services skip them — the SQL predicate
+// `guestMenuItemCondition` narrows the query and `menuItemVisibleToGuests`
+// re-checks the row before it is mapped, so one contract rule drives every
+// public read.
+//
+// Prices are the outlet's dine-in price list (latest version effective today)
+// and, per the owner decision of 1 Nov 2026, exclude tax and service charge.
+// Tax lines are the published rules for the outlet that cover F&B on the
+// dine-in channel; the tax engine (WS-05) still owns the real calculation — the
+// menu only prints the note, so no rounding happens here.
+
+import { and, asc, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import {
+  businessDateOf,
+  CoreError,
+  brandIdSchema,
+  idr,
+  outletIdSchema,
+  toIsoDateTime,
+  type BrandId,
+  type OutletId,
+  type ScopedTenantContext,
+  type TenantId,
+} from "@starter/shared/core";
+import { menuItemVisibleToGuests } from "@starter/shared/menu";
+import {
+  assertQrTokenMatchesTable,
+  qrMenuSchema,
+  tableIdSchema,
+  type QrMenu,
+  type QrMenuItem,
+  type QrMenuModifierGroup,
+  type ZoneHours,
+} from "@starter/shared/qr-order";
+import {
+  publicMenuPageSchema,
+  type PublicMenuPage,
+} from "@starter/shared/website";
+import { db } from "../db";
+import {
+  brands,
+  floorZones,
+  itemAvailability,
+  itemVariants,
+  menuCategories,
+  menuItemModifierGroups,
+  menuItems,
+  modifierGroups,
+  modifiers,
+  outlets,
+  priceListItems,
+  priceLists,
+  tables,
+  taxRules,
+} from "../db/schema";
+import { withTenant } from "../db/tenant";
+import {
+  guestMenuItemCondition,
+  loadMediaUrls,
+  noMediaUrls,
+  type MenuMediaUrls,
+  type Tx,
+} from "./menu-internals";
+import { verifyTableQrToken } from "./qr-token";
+
+/** The contract caps a guest item's lists; the database does not. */
+const MAX_LABELS = 6;
+const MAX_ALLERGENS = 10;
+const MAX_VARIANTS = 8;
+const MAX_MODIFIER_GROUPS = 8;
+const MAX_DESCRIPTION = 500;
+/** The QR menu and the website are the dine-in channel (PRD §10). */
+const GUEST_CHANNEL = "dine_in" as const;
+
+type GuestCatalogue = {
+  categories: { id: string; name: string; sortOrder: number }[];
+  items: QrMenuItem[];
+  updatedAt: Date;
+};
+
+function notFound(): CoreError {
+  return new CoreError("NOT_FOUND", "QR meja tidak dikenali");
+}
+
+// ---- Zone hours ------------------------------------------------------------
+
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+function minutesOfDay(hm: string): number {
+  const [hours, minutes] = hm.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+/**
+ * Is the zone ordering right now? Wall clock of the outlet (PRD: business hours
+ * follow the outlet time zone), compared against `zone.hours`; a zone with no
+ * window never opens. The menu itself stays readable — only ordering is
+ * refused, so the guest can still browse (contract `orderingOpen`).
+ */
+export function zoneOrderingOpen(
+  hours: readonly ZoneHours[],
+  at: Date,
+  timeZone: string,
+): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(at);
+  const part = (type: string) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  const weekday = WEEKDAY_INDEX[part("weekday")];
+  if (weekday === undefined) return false;
+  const minutes = Number(part("hour")) * 60 + Number(part("minute"));
+  return hours.some(
+    (window) =>
+      window.daysOfWeek.includes(weekday) &&
+      minutes >= minutesOfDay(window.start) &&
+      minutes < minutesOfDay(window.end),
+  );
+}
+
+// ---- Catalogue -------------------------------------------------------------
+
+/** Latest dine-in price list of the outlet that is effective on `today`. */
+async function currentPriceList(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  today: string,
+) {
+  const [row] = await tx
+    .select()
+    .from(priceLists)
+    .where(
+      and(
+        eq(priceLists.tenantId, tenantId),
+        eq(priceLists.outletId, outletId),
+        eq(priceLists.channel, GUEST_CHANNEL),
+        lte(priceLists.effectiveFrom, today),
+        isNull(priceLists.deletedAt),
+      ),
+    )
+    .orderBy(desc(priceLists.effectiveFrom), desc(priceLists.id))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * The guest catalogue of one brand outlet: visible categories, visible items
+ * with their dine-in price, variants, modifier groups and 86 state.
+ *
+ * Q23: an active item without `media_id` is dropped here (SQL predicate plus
+ * the shared predicate on the row), so no caller can build a guest payload
+ * that still carries it.
+ */
+async function readGuestCatalogue(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { brandId: BrandId; outletId: OutletId; now: Date },
+  resolveMediaUrls: MenuMediaUrls,
+): Promise<GuestCatalogue> {
+  const tenantId = context.tenant.tenantId;
+  const today = businessDateOf(input.now);
+
+  const categories = await tx
+    .select({
+      id: menuCategories.id,
+      name: menuCategories.name,
+      sortOrder: menuCategories.sortOrder,
+      updatedAt: menuCategories.updatedAt,
+    })
+    .from(menuCategories)
+    .where(
+      and(
+        eq(menuCategories.tenantId, tenantId),
+        eq(menuCategories.brandId, input.brandId),
+        isNull(menuCategories.deletedAt),
+      ),
+    )
+    .orderBy(asc(menuCategories.sortOrder), asc(menuCategories.id));
+
+  const rows = await tx
+    .select()
+    .from(menuItems)
+    .where(
+      and(
+        eq(menuItems.tenantId, tenantId),
+        eq(menuItems.brandId, input.brandId),
+        isNull(menuItems.deletedAt),
+        guestMenuItemCondition(),
+      ),
+    )
+    .orderBy(asc(menuItems.sortOrder), asc(menuItems.id));
+
+  // The freshest menu row drives `menuUpdatedAt`; a brand with no rows answers
+  // the request clock, which is the only honest "what we read" stamp.
+  const stamps = [...categories, ...rows].map((row) => row.updatedAt);
+  const updatedAt = stamps.reduce(
+    (latest, stamp) => (stamp > latest ? stamp : latest),
+    stamps[0] ?? input.now,
+  );
+  if (rows.length === 0)
+    return {
+      categories: categories.map((row) => ({
+        id: row.id,
+        name: row.name,
+        sortOrder: row.sortOrder,
+      })),
+      items: [],
+      updatedAt,
+    };
+
+  const categoryIds = new Set(categories.map((row) => row.id));
+  // Belt and braces: the SQL predicate above already enforced this, but the
+  // rule is the contract's (`menuItemVisibleToGuests`), so re-check per row.
+  const visible = rows.filter(
+    (row) =>
+      categoryIds.has(row.categoryId) &&
+      menuItemVisibleToGuests({
+        isActive: row.isActive,
+        mediaId: row.mediaId,
+      }),
+  );
+  if (visible.length === 0)
+    return {
+      categories: categories.map((row) => ({
+        id: row.id,
+        name: row.name,
+        sortOrder: row.sortOrder,
+      })),
+      items: [],
+      updatedAt,
+    };
+
+  const itemIds = visible.map((row) => row.id);
+  const priceList = await currentPriceList(tx, tenantId, input.outletId, today);
+  const prices = priceList
+    ? await tx
+        .select({
+          itemId: priceListItems.itemId,
+          variantId: priceListItems.variantId,
+          priceIdr: priceListItems.priceIdr,
+          updatedAt: priceListItems.updatedAt,
+        })
+        .from(priceListItems)
+        .where(
+          and(
+            eq(priceListItems.tenantId, tenantId),
+            eq(priceListItems.priceListId, priceList.id),
+            inArray(priceListItems.itemId, itemIds),
+            isNull(priceListItems.deletedAt),
+          ),
+        )
+    : [];
+  const plainPrice = new Map<string, number>();
+  const variantPrice = new Map<string, number>();
+  for (const row of prices) {
+    if (row.variantId === null) plainPrice.set(row.itemId, row.priceIdr);
+    else variantPrice.set(row.variantId, row.priceIdr);
+  }
+
+  const variantRows = await tx
+    .select()
+    .from(itemVariants)
+    .where(
+      and(
+        eq(itemVariants.tenantId, tenantId),
+        inArray(itemVariants.menuItemId, itemIds),
+        isNull(itemVariants.deletedAt),
+      ),
+    )
+    .orderBy(asc(itemVariants.name), asc(itemVariants.id));
+  const variantsByItem = new Map<string, typeof variantRows>();
+  for (const row of variantRows) {
+    const list = variantsByItem.get(row.menuItemId) ?? [];
+    list.push(row);
+    variantsByItem.set(row.menuItemId, list);
+  }
+
+  const links = await tx
+    .select({
+      menuItemId: menuItemModifierGroups.menuItemId,
+      groupId: menuItemModifierGroups.groupId,
+      sortOrder: menuItemModifierGroups.sortOrder,
+      updatedAt: menuItemModifierGroups.updatedAt,
+    })
+    .from(menuItemModifierGroups)
+    .where(
+      and(
+        eq(menuItemModifierGroups.tenantId, tenantId),
+        inArray(menuItemModifierGroups.menuItemId, itemIds),
+        isNull(menuItemModifierGroups.deletedAt),
+      ),
+    )
+    .orderBy(
+      asc(menuItemModifierGroups.sortOrder),
+      asc(menuItemModifierGroups.groupId),
+    );
+  const groupIds = [...new Set(links.map((row) => row.groupId))];
+  const groups = groupIds.length
+    ? await tx
+        .select()
+        .from(modifierGroups)
+        .where(
+          and(
+            eq(modifierGroups.tenantId, tenantId),
+            inArray(modifierGroups.id, groupIds),
+            isNull(modifierGroups.deletedAt),
+          ),
+        )
+    : [];
+  const groupById = new Map(groups.map((row) => [row.id, row]));
+  const modifierRows = groupIds.length
+    ? await tx
+        .select()
+        .from(modifiers)
+        .where(
+          and(
+            eq(modifiers.tenantId, tenantId),
+            inArray(modifiers.groupId, groupIds),
+            isNull(modifiers.deletedAt),
+          ),
+        )
+        .orderBy(asc(modifiers.name), asc(modifiers.id))
+    : [];
+  const modifiersByGroup = new Map<string, typeof modifierRows>();
+  for (const row of modifierRows) {
+    const list = modifiersByGroup.get(row.groupId) ?? [];
+    list.push(row);
+    modifiersByGroup.set(row.groupId, list);
+  }
+  const groupsByItem = new Map<string, QrMenuModifierGroup[]>();
+  for (const link of links) {
+    const group = groupById.get(link.groupId);
+    if (!group) continue;
+    const options = (modifiersByGroup.get(group.id) ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      priceIdr: row.priceIdr,
+      soldOut: false,
+    }));
+    // The contract refuses an empty group and a maxSelect beyond its options.
+    if (options.length === 0 || group.maxSelect > options.length) continue;
+    const list = groupsByItem.get(link.menuItemId) ?? [];
+    if (list.length >= MAX_MODIFIER_GROUPS) continue;
+    list.push({
+      id: group.id,
+      name: group.name,
+      minSelect: group.minSelect,
+      maxSelect: group.maxSelect,
+      modifiers: options,
+    });
+    groupsByItem.set(link.menuItemId, list);
+  }
+
+  const availability = await tx
+    .select({
+      menuItemId: itemAvailability.menuItemId,
+      status: itemAvailability.status,
+      updatedAt: itemAvailability.updatedAt,
+    })
+    .from(itemAvailability)
+    .where(
+      and(
+        eq(itemAvailability.tenantId, tenantId),
+        eq(itemAvailability.outletId, input.outletId),
+        inArray(itemAvailability.menuItemId, itemIds),
+        isNull(itemAvailability.deletedAt),
+      ),
+    );
+  const soldOut = new Set(
+    availability
+      .filter((row) => row.status === "sold_out")
+      .map((row) => row.menuItemId),
+  );
+
+  const mediaUrls = await loadMediaUrls(
+    tx,
+    context,
+    visible.map((row) => row.mediaId).filter((id) => id !== null),
+    resolveMediaUrls,
+  );
+
+  const items: QrMenuItem[] = [];
+  for (const row of visible) {
+    const variants = (variantsByItem.get(row.id) ?? [])
+      .map((variant) => ({
+        id: variant.id,
+        name: variant.name,
+        priceIdr: variantPrice.get(variant.id),
+      }))
+      .filter(
+        (variant): variant is { id: string; name: string; priceIdr: number } =>
+          variant.priceIdr !== undefined && variant.priceIdr > 0,
+      )
+      .slice(0, MAX_VARIANTS);
+    // A variant item may carry its prices per variant only; the contract still
+    // wants a headline price, and it must be the lowest variant price.
+    const plain = plainPrice.get(row.id);
+    const base =
+      variants.length > 0
+        ? Math.min(...variants.map((variant) => variant.priceIdr))
+        : plain;
+    // No price means the item cannot be sold on this channel, so it is not a
+    // guest menu item at all.
+    if (base === undefined || base <= 0) continue;
+    const priceIdr = base;
+    items.push({
+      id: row.id,
+      categoryId: row.categoryId,
+      name: row.name,
+      description: row.description.slice(0, MAX_DESCRIPTION),
+      type: row.type === "combo" ? "combo" : "single",
+      priceIdr: idr(priceIdr),
+      labels: row.labels.slice(0, MAX_LABELS),
+      allergens: row.allergens.slice(0, MAX_ALLERGENS),
+      photoUrl: row.mediaId ? (mediaUrls.get(row.mediaId) ?? null) : null,
+      variants: variants.map((variant) => ({
+        ...variant,
+        priceIdr: idr(variant.priceIdr),
+      })),
+      modifierGroups: groupsByItem.get(row.id) ?? [],
+      status: soldOut.has(row.id) ? "sold_out" : "available",
+      sortOrder: row.sortOrder,
+    });
+  }
+
+  // Every row the payload derives from counts: a price, modifier, variant or
+  // 86 change must move `menuUpdatedAt`, not only an item rename.
+  const freshAt = [
+    ...(priceList ? [priceList.updatedAt] : []),
+    ...prices.map((row) => row.updatedAt),
+    ...availability.map((row) => row.updatedAt),
+    ...variantRows.map((row) => row.updatedAt),
+    ...groups.map((row) => row.updatedAt),
+    ...modifierRows.map((row) => row.updatedAt),
+    ...links.map((row) => row.updatedAt),
+  ].reduce((latest, stamp) => (stamp > latest ? stamp : latest), updatedAt);
+
+  return {
+    categories: categories.map((row) => ({
+      id: row.id,
+      name: row.name,
+      sortOrder: row.sortOrder,
+    })),
+    items,
+    updatedAt: freshAt,
+  };
+}
+
+/** Published tax rules of the outlet that print in the menu price note. */
+async function readGuestTaxes(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+  today: string,
+): Promise<{ name: string; rateBp: number }[]> {
+  const rows = await tx
+    .select()
+    .from(taxRules)
+    .where(
+      and(
+        eq(taxRules.tenantId, tenantId),
+        or(eq(taxRules.outletId, outletId), isNull(taxRules.outletId)),
+        eq(taxRules.status, "published"),
+        eq(taxRules.isActive, true),
+        lte(taxRules.effectiveFrom, today),
+      ),
+    )
+    .orderBy(desc(taxRules.effectiveFrom), desc(taxRules.version));
+  const tenantWide = new Map<string, { name: string; rateBp: number }>();
+  const outletRules = new Map<string, { name: string; rateBp: number }>();
+  for (const row of rows) {
+    // Empty `channels` means every channel (tax contract).
+    if (row.channels.length > 0 && !row.channels.includes(GUEST_CHANNEL))
+      continue;
+    if (
+      row.appliesTo.itemClasses.length > 0 &&
+      !row.appliesTo.itemClasses.includes("food_beverage")
+    )
+      continue;
+    const target = row.outletId === null ? tenantWide : outletRules;
+    if (!target.has(row.code))
+      target.set(row.code, { name: row.name, rateBp: row.rateBp });
+  }
+  return [...new Map([...tenantWide, ...outletRules]).values()];
+}
+
+// ---- QR menu ---------------------------------------------------------------
+
+async function brandAndOutletRefs(
+  tx: Tx,
+  tenantId: TenantId,
+  outletId: OutletId,
+) {
+  const [outlet] = await tx
+    .select()
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)));
+  if (!outlet) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+  const [brand] = await tx
+    .select()
+    .from(brands)
+    .where(and(eq(brands.tenantId, tenantId), eq(brands.id, outlet.brandId)));
+  if (!brand) throw new CoreError("NOT_FOUND", "Brand tidak ditemukan.");
+  return { outlet, brand };
+}
+
+/**
+ * `GET /api/qr/menu/:qrToken` (contract `getQrMenu`): the guest menu of the
+ * scanned table. Public by signed token — the token resolves tenant, outlet and
+ * table (TEN-02/ORD-04), never a request parameter.
+ */
+export async function getQrMenu(
+  context: ScopedTenantContext,
+  qrToken: string,
+  now = new Date(),
+  resolveMediaUrls: MenuMediaUrls = noMediaUrls,
+): Promise<QrMenu> {
+  const verified = verifyTableQrToken({
+    token: qrToken,
+    resolvedTenantId: context.tenant.tenantId,
+  });
+  return withTenant(db, context, async (tx) => {
+    const [table] = await tx
+      .select()
+      .from(tables)
+      .where(
+        and(
+          eq(tables.tenantId, context.tenant.tenantId),
+          eq(tables.qrTokenHash, verified.hash),
+        ),
+      )
+      .limit(1);
+    // Every failure is the same NOT_FOUND: no oracle for valid ids (ORD-04).
+    if (!table) throw notFound();
+    assertQrTokenMatchesTable(verified.payload, context.tenant.tenantId, {
+      id: tableIdSchema.parse(table.id),
+      tenantId: table.tenantId,
+      outletId: table.outletId,
+      status: table.status,
+    });
+    const [zone] = await tx
+      .select()
+      .from(floorZones)
+      .where(
+        and(
+          eq(floorZones.tenantId, context.tenant.tenantId),
+          eq(floorZones.id, table.zoneId),
+        ),
+      )
+      .limit(1);
+    if (!zone) throw notFound();
+    if (zone.status === "inactive")
+      throw new CoreError("CONFLICT", "Zona meja sedang tidak aktif.");
+
+    const { outlet, brand } = await brandAndOutletRefs(
+      tx,
+      context.tenant.tenantId,
+      table.outletId,
+    );
+    const catalogue = await readGuestCatalogue(
+      tx,
+      context,
+      {
+        brandId: brandIdSchema.parse(outlet.brandId),
+        outletId: outletIdSchema.parse(outlet.id),
+        now,
+      },
+      resolveMediaUrls,
+    );
+    const taxes = await readGuestTaxes(
+      tx,
+      context.tenant.tenantId,
+      outletIdSchema.parse(outlet.id),
+      businessDateOf(now, outlet.timezone),
+    );
+
+    return qrMenuSchema.parse({
+      brand: {
+        id: brand.id,
+        tenantId: brand.tenantId,
+        slug: brand.slug,
+        name: brand.name,
+      },
+      outlet: {
+        id: outlet.id,
+        tenantId: outlet.tenantId,
+        brandId: outlet.brandId,
+        code: outlet.code,
+        name: outlet.name,
+        timeZone: outlet.timezone,
+        status: outlet.status,
+      },
+      table: {
+        id: table.id,
+        code: table.code,
+        capacity: table.capacity,
+      },
+      zone: {
+        id: zone.id,
+        name: zone.name,
+        paymentMode: zone.paymentMode,
+        serviceChargeBp: zone.serviceChargeBp,
+        minimumSpendIdr: zone.minimumSpendIdr,
+      },
+      orderingOpen: zoneOrderingOpen(zone.hours, now, outlet.timezone),
+      pricing: {
+        pricesIncludeTaxAndService: false,
+        serviceChargeBp: zone.serviceChargeBp,
+        taxes,
+      },
+      categories: catalogue.categories,
+      items: catalogue.items,
+      menuUpdatedAt: toIsoDateTime(catalogue.updatedAt),
+    });
+  });
+}
+
+// ---- Public website menu ---------------------------------------------------
+
+/**
+ * `GET /api/public/site/menu` (contract `getPublicMenuPage`): the online menu
+ * of the brand the request host resolves to (TEN-08, D-CORE-3). The brand's
+ * first outlet is the public one; a brand with no publishable item has no
+ * online menu, which answers NOT_FOUND instead of an empty page.
+ */
+export async function getPublicMenuPage(
+  context: ScopedTenantContext,
+  now = new Date(),
+  resolveMediaUrls: MenuMediaUrls = noMediaUrls,
+): Promise<PublicMenuPage> {
+  return withTenant(db, context, async (tx) => {
+    const [brand] = await tx
+      .select()
+      .from(brands)
+      .where(
+        and(
+          eq(brands.tenantId, context.tenant.tenantId),
+          ...(context.tenant.brandId
+            ? [eq(brands.id, context.tenant.brandId)]
+            : []),
+        ),
+      )
+      .orderBy(asc(brands.createdAt), asc(brands.id))
+      .limit(1);
+    if (!brand) throw new CoreError("NOT_FOUND", "Brand tidak ditemukan.");
+    const [outlet] = await tx
+      .select()
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, context.tenant.tenantId),
+          eq(outlets.brandId, brand.id),
+          eq(outlets.status, "active"),
+        ),
+      )
+      .orderBy(asc(outlets.createdAt), asc(outlets.id))
+      .limit(1);
+    if (!outlet) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+
+    const catalogue = await readGuestCatalogue(
+      tx,
+      context,
+      {
+        brandId: brandIdSchema.parse(brand.id),
+        outletId: outletIdSchema.parse(outlet.id),
+        now,
+      },
+      resolveMediaUrls,
+    );
+    const sections = catalogue.categories
+      .map((category) => ({
+        id: category.id,
+        name: category.name,
+        // menu_categories has no description column yet (PRD §6 C).
+        description: null,
+        sortOrder: category.sortOrder,
+        items: catalogue.items
+          .filter((item) => item.categoryId === category.id)
+          .map((item) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            priceIdr: item.priceIdr,
+            // Contract: the website shows an absolute https URL; a storage
+            // provider that is not configured yet answers null (legend-3sbl).
+            imageUrl:
+              item.photoUrl && item.photoUrl.startsWith("https://")
+                ? item.photoUrl
+                : null,
+            labels: item.labels.slice(0, 5),
+            allergens: item.allergens,
+            isAvailable: item.status === "available",
+          })),
+      }))
+      .filter((section) => section.items.length > 0);
+    if (sections.length === 0)
+      throw new CoreError(
+        "NOT_FOUND",
+        "Menu publik belum tersedia untuk brand ini.",
+      );
+
+    return publicMenuPageSchema.parse({
+      sections,
+      pricesExcludeTaxAndService: true,
+      updatedAt: toIsoDateTime(catalogue.updatedAt),
+    });
+  });
+}
