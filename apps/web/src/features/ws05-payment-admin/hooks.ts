@@ -53,7 +53,13 @@ export function useUpdatePaymentRoute() {
     mutationFn: (input: {
       method: RoutedPaymentMethod;
       body: UpdatePaymentRouteInput;
-    }) => savePaymentRoute({ method: input.method }, input.body),
+      idempotencyKey: string;
+    }) =>
+      savePaymentRoute(
+        { method: input.method },
+        input.body,
+        input.idempotencyKey,
+      ),
     onSuccess: () =>
       queryClient.invalidateQueries({
         queryKey: [getPaymentRoutingEndpoint.id],
@@ -68,7 +74,10 @@ export function useEdcTerminals(outletId?: string) {
 export function useCreateEdcTerminal() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateEdcTerminalInput) => addEdcTerminal(body),
+    mutationFn: (input: {
+      body: CreateEdcTerminalInput;
+      idempotencyKey: string;
+    }) => addEdcTerminal(input.body, input.idempotencyKey),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({
@@ -84,8 +93,16 @@ export function useCreateEdcTerminal() {
 export function useUpdateEdcTerminal() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { terminalId: string; body: UpdateEdcTerminalInput }) =>
-      patchEdcTerminal({ terminalId: input.terminalId }, input.body),
+    mutationFn: (input: {
+      terminalId: string;
+      body: UpdateEdcTerminalInput;
+      idempotencyKey: string;
+    }) =>
+      patchEdcTerminal(
+        { terminalId: input.terminalId },
+        input.body,
+        input.idempotencyKey,
+      ),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({
@@ -108,7 +125,13 @@ export function useUpdateEdcCashierDefault() {
     mutationFn: (input: {
       cashierId: string;
       body: UpdateEdcCashierDefaultInput;
-    }) => saveEdcCashierDefault({ cashierId: input.cashierId }, input.body),
+      idempotencyKey: string;
+    }) =>
+      saveEdcCashierDefault(
+        { cashierId: input.cashierId },
+        input.body,
+        input.idempotencyKey,
+      ),
     onSuccess: () =>
       queryClient.invalidateQueries({
         queryKey: [getEdcCashierDefaultsEndpoint.id],
@@ -175,7 +198,13 @@ export function useResolveReconciliationCase() {
     mutationFn: (input: {
       caseId: string;
       body: ResolveReconciliationCaseInput;
-    }) => resolveReconciliationCase({ caseId: input.caseId }, input.body),
+      idempotencyKey: string;
+    }) =>
+      resolveReconciliationCase(
+        { caseId: input.caseId },
+        input.body,
+        input.idempotencyKey,
+      ),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({

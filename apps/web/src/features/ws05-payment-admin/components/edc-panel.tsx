@@ -3,6 +3,7 @@
 // outlet, and each cashier has a default method/terminal without retyping the
 // amount at the EDC. The amount itself always comes from POS (EDC-01).
 import * as React from "react";
+import { useAttemptKey } from "../use-attempt-key";
 import { Pencil, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
@@ -332,6 +333,7 @@ function TerminalDialog({
   const t = useT();
   const create = useCreateEdcTerminal();
   const update = useUpdateEdcTerminal();
+  const attempt = useAttemptKey();
   const [bankCode, setBankCode] = React.useState<EdcTerminalView["bankCode"]>(
     terminal?.bankCode ?? "bca",
   );
@@ -390,9 +392,16 @@ function TerminalDialog({
 
     if (terminal) {
       const body: UpdateEdcTerminalInput = { ...common, status };
+      const input = { terminalId: terminal.id, body };
       update.mutate(
-        { terminalId: terminal.id, body },
-        { onSuccess: (result) => onSaved(result.data), onError },
+        { ...input, idempotencyKey: attempt.keyFor(input) },
+        {
+          onSuccess: (result) => {
+            attempt.settle();
+            onSaved(result.data);
+          },
+          onError,
+        },
       );
       return;
     }
@@ -401,10 +410,16 @@ function TerminalDialog({
       outletId: outletId as OutletId,
       status,
     };
-    create.mutate(body, {
-      onSuccess: (result) => onSaved(result.data),
-      onError,
-    });
+    create.mutate(
+      { body, idempotencyKey: attempt.keyFor(body) },
+      {
+        onSuccess: (result) => {
+          attempt.settle();
+          onSaved(result.data);
+        },
+        onError,
+      },
+    );
   };
 
   return (
@@ -621,6 +636,7 @@ function CashierRow({
   const t = useT();
   const toast = useToast();
   const update = useUpdateEdcCashierDefault();
+  const attempt = useAttemptKey();
   const [method, setMethod] = React.useState<CashierDefaultMethod>(
     cashier.defaultMethod,
   );
@@ -660,15 +676,18 @@ function CashierRow({
       terminalId: needsTerminal ? terminalId : null,
       defaultMethod: method,
     };
+    const input = { cashierId: cashier.cashierId, body };
     update.mutate(
-      { cashierId: cashier.cashierId, body },
+      { ...input, idempotencyKey: attempt.keyFor(input) },
       {
-        onSuccess: () =>
+        onSuccess: () => {
+          attempt.settle();
           toast({
             title: t("paymentAdmin.edc.defaultSaved", {
               cashier: cashier.cashierName,
             }),
-          }),
+          });
+        },
         onError: (error) => toast({ title: error.message, tone: "danger" }),
       },
     );
