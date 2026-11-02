@@ -12,8 +12,9 @@
 // also write an audit row (PRD §3.7, §6 B audit_logs) in the same transaction.
 
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import {
+  businessDateOf,
   createUlid,
   CoreError,
   idr,
@@ -32,6 +33,7 @@ import {
   priceListUpdatedEvent,
   transitionAvailability,
   type Availability,
+  type MenuChannel,
   type PriceList,
   type PriceListItem,
 } from "@starter/shared/menu";
@@ -49,6 +51,7 @@ import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
+import { restoreExpiredSoldOut } from "./menu-availability";
 import {
   EVENT_DESTINATION,
   MENU_PRICE_MANAGE_PERMISSION,
@@ -737,6 +740,150 @@ export async function setPriceListItems(
   });
 }
 
+// ------------------------------------------------------- channel resolution
+
+export type ChannelPriceEntry = {
+  itemId: string;
+  variantId: string | null;
+  priceIdr: number;
+  updatedAt: Date;
+};
+
+export type ChannelPriceGrid = {
+  outletId: string;
+  channel: MenuChannel;
+  /** Business date in the outlet time zone that picked the list. */
+  businessDate: string;
+  priceList: typeof priceLists.$inferSelect | null;
+  entries: ChannelPriceEntry[];
+};
+
+/**
+ * The price version in force for one channel on `businessDate`: the latest list
+ * whose `effectiveFrom` is not after that date (PRD §8 "Harga per Kanal" —
+ * nominal per channel with an effective date). No list means the channel sells
+ * nothing, because a price only exists inside a list; the guest read already
+ * behaves that way, and order services (legend-e2x, legend-kk7) resolve through
+ * this same function.
+ */
+export async function effectivePriceList(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    channel: MenuChannel;
+    businessDate: string;
+  },
+): Promise<typeof priceLists.$inferSelect | null> {
+  const [row] = await tx
+    .select()
+    .from(priceLists)
+    .where(
+      and(
+        eq(priceLists.tenantId, context.tenant.tenantId),
+        eq(priceLists.outletId, input.outletId),
+        eq(priceLists.channel, input.channel),
+        lte(priceLists.effectiveFrom, input.businessDate),
+        isNull(priceLists.deletedAt),
+      ),
+    )
+    .orderBy(desc(priceLists.effectiveFrom), desc(priceLists.id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Effective channel prices, optionally narrowed to a set of items. */
+export async function readChannelPriceGrid(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    channel: MenuChannel;
+    businessDate: string;
+    itemIds?: readonly string[];
+  },
+): Promise<ChannelPriceGrid> {
+  const priceList = await effectivePriceList(tx, context, input);
+  if (!priceList)
+    return {
+      outletId: input.outletId,
+      channel: input.channel,
+      businessDate: input.businessDate,
+      priceList: null,
+      entries: [],
+    };
+  const itemFilter =
+    input.itemIds === undefined
+      ? undefined
+      : input.itemIds.length === 0
+        ? sql`false`
+        : inArray(priceListItems.itemId, [...input.itemIds]);
+  const rows = await tx
+    .select({
+      itemId: priceListItems.itemId,
+      variantId: priceListItems.variantId,
+      priceIdr: priceListItems.priceIdr,
+      updatedAt: priceListItems.updatedAt,
+    })
+    .from(priceListItems)
+    .where(
+      and(
+        eq(priceListItems.tenantId, context.tenant.tenantId),
+        eq(priceListItems.priceListId, priceList.id),
+        isNull(priceListItems.deletedAt),
+        itemFilter,
+      ),
+    )
+    .orderBy(asc(priceListItems.itemId), asc(priceListItems.id));
+  return {
+    outletId: input.outletId,
+    channel: input.channel,
+    businessDate: input.businessDate,
+    priceList,
+    entries: rows,
+  };
+}
+
+/**
+ * Staff/order-path read of the effective channel grid, scoped and gated:
+ * `menu.price.view` at the outlet, business date from the outlet's own time
+ * zone. The POS/ojol order services call this instead of trusting a client
+ * price (PRD §8; ORD-05).
+ */
+export async function resolveChannelPrices(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: { outletId?: string; channel: MenuChannel },
+  now = new Date(),
+): Promise<ChannelPriceGrid> {
+  return withTenant(db, context, async (tx) => {
+    const outletId = await resolveOutlet(tx, context, input.outletId);
+    const [outlet] = await tx
+      .select({ timezone: outlets.timezone })
+      .from(outlets)
+      .where(
+        and(
+          eq(outlets.tenantId, context.tenant.tenantId),
+          eq(outlets.id, outletId),
+        ),
+      );
+    if (!outlet) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+    await assertOutletPermission(
+      tx,
+      context,
+      actorUserId,
+      PRICE_VIEW,
+      outletId,
+      now,
+    );
+    return readChannelPriceGrid(tx, context, {
+      outletId,
+      channel: input.channel,
+      businessDate: businessDateOf(now, outlet.timezone),
+    });
+  });
+}
+
 // ------------------------------------------------------------- availability
 
 export async function listAvailability(
@@ -775,6 +922,14 @@ export async function listAvailability(
           now,
         );
     const cursor = cursorOf(query);
+    // The 86 board is where a deadline is observed: persist the restore and
+    // broadcast `item.restored` in this transaction, so QR/POS/ojol learn that
+    // the item sells again without an operator touching it (PRD §8).
+    await restoreExpiredSoldOut(tx, context, {
+      actorUserId,
+      now,
+      outletIds: scope.kind === "outlets" ? scope.outletIds : undefined,
+    });
     const rows = await tx
       .select({ row: itemAvailability, name: menuItems.name })
       .from(itemAvailability)
