@@ -44,10 +44,10 @@ test("F11 D13: config screens list versioned rules, service charge and calc opti
   await waitForHydration(page);
 
   // Rule versions: the published 10% PBJT rule and its draft revision.
+  // v3 (legend-vvth): the management topbar owns the page h1; the page body
+  // shows the section title as an h2 (DESIGN.md v3 §5).
   await expect(
-    page
-      .locator("#main-content")
-      .getByRole("heading", { name: "Pajak & service charge", level: 1 }),
+    page.getByRole("heading", { name: "Pajak & service charge", level: 1 }),
   ).toBeVisible();
   await expect(page.getByText("PBJT-FNB").first()).toBeVisible();
   await expect(page.getByText("10%").first()).toBeVisible();

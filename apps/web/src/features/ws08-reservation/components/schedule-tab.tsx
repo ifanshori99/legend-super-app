@@ -17,6 +17,13 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   RESERVATION_STATUSES,
   type ReservationStatus,
 } from "@starter/shared/reservation";
@@ -48,9 +55,9 @@ function ScheduleSkeleton() {
         <Skeleton className="h-control w-44" />
         <Skeleton className="h-control w-40" />
       </div>
-      <Skeleton className="h-14 w-full rounded-xl" />
+      <Skeleton className="h-14 w-full rounded-container" />
       {Array.from({ length: 3 }, (_, index) => (
-        <Skeleton key={index} className="h-24 w-full rounded-xl" />
+        <Skeleton key={index} className="h-24 w-full rounded-container" />
       ))}
     </div>
   );
@@ -61,6 +68,7 @@ export function ScheduleTab({
   timeZone,
   date,
   status,
+  selectedId,
   onDateChange,
   onStatusChange,
   onOpen,
@@ -69,6 +77,8 @@ export function ScheduleTab({
   timeZone: string;
   date: string | undefined;
   status: ReservationStatus | undefined;
+  /** The reservation whose detail sheet is open, for the selected row. */
+  selectedId: string | undefined;
   onDateChange: (date: string | undefined) => void;
   onStatusChange: (status: ReservationStatus | undefined) => void;
   onOpen: (reservationId: string) => void;
@@ -219,12 +229,14 @@ export function ScheduleTab({
 
       <dl
         aria-label={t("reservation.summary.label")}
-        className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border-(length:--border-w) bg-card px-3 py-2"
+        className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-container border-(length:--border-w) bg-card px-4 py-3"
       >
         {summary.map((item) => (
           <div key={item.key} className="flex items-baseline gap-2">
-            <dt className="text-sm text-muted-foreground">{t(item.key)}</dt>
-            <dd className="text-xl leading-7 font-semibold tabular">
+            <dt className="type-eyebrow text-muted-foreground">
+              {t(item.key)}
+            </dt>
+            <dd className="text-xl leading-7 font-bold tabular">
               {item.value}
             </dd>
           </div>
@@ -247,25 +259,40 @@ export function ScheduleTab({
         <div className="grid gap-5">
           {groups.map((group) => (
             <section key={group.date} className="grid gap-2">
-              <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+              <h2 className="type-eyebrow text-muted-foreground">
                 {dayHeading(group.date, today, t)}{" "}
                 <span className="tabular">
                   ({t("reservation.list.total", { count: group.rows.length })})
                 </span>
               </h2>
-              <ul className="grid list-none gap-2 p-0">
-                {group.rows.map((reservation) => (
-                  <li key={reservation.id} className="min-w-0">
-                    <ReservationRow
-                      reservation={reservation}
-                      timeZone={timeZone}
-                      tableCodes={tableCodes}
-                      conflict={hasConflict(reservation)}
-                      onOpen={() => onOpen(reservation.id)}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <div className="overflow-hidden rounded-container border-(length:--border-w) bg-card">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-28">
+                        {t("reservation.detail.when")}
+                      </TableHead>
+                      <TableHead>{t("reservation.detail.paxLabel")}</TableHead>
+                      <TableHead numeric className="w-32">
+                        {t("reservation.detail.depositTitle")}
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {group.rows.map((reservation) => (
+                      <ReservationRow
+                        key={reservation.id}
+                        reservation={reservation}
+                        timeZone={timeZone}
+                        tableCodes={tableCodes}
+                        conflict={hasConflict(reservation)}
+                        selected={reservation.id === selectedId}
+                        onOpen={() => onOpen(reservation.id)}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </section>
           ))}
         </div>

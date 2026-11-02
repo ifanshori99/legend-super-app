@@ -58,7 +58,7 @@ function RoleFrame({
               <ArrowLeft aria-hidden="true" />
             </Link>
           </Button>
-          <h2 className="text-lg font-semibold">{title}</h2>
+          <h2 className="type-title">{title}</h2>
         </div>
         {actions}
       </div>
@@ -175,7 +175,7 @@ function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
         </p>
         <dl className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1">
-            <dt className="text-sm font-semibold">
+            <dt className="type-eyebrow text-muted-foreground">
               {t("access.role.scopeTitle")}
             </dt>
             <dd className="text-sm text-muted-foreground">
@@ -186,7 +186,7 @@ function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
           </div>
           {template && (
             <div className="grid gap-1">
-              <dt className="text-sm font-semibold">
+              <dt className="type-eyebrow text-muted-foreground">
                 {t("access.role.accessLimit")}
               </dt>
               <dd className="text-sm text-muted-foreground">
@@ -198,9 +198,7 @@ function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
       </Card>
       <Card className="grid gap-3">
         <div className="grid gap-1">
-          <h2 className="text-base font-semibold">
-            {t("access.role.permissionsTitle")}
-          </h2>
+          <h2 className="type-heading">{t("access.role.permissionsTitle")}</h2>
           <p className="text-sm text-muted-foreground">
             {t("access.role.permissionsReadOnlyHint")}
           </p>
@@ -279,9 +277,7 @@ function CustomRoleEditor({
       <form className="grid min-w-0 gap-4" onSubmit={submit} noValidate>
         <Card className="grid gap-4">
           <div className="grid gap-1">
-            <h2 className="text-base font-semibold">
-              {t("access.role.identity")}
-            </h2>
+            <h2 className="type-heading">{t("access.role.identity")}</h2>
             <p className="text-sm text-muted-foreground">
               {role
                 ? t("access.role.customNote")
@@ -318,7 +314,7 @@ function CustomRoleEditor({
                   <label
                     key={type}
                     htmlFor={id}
-                    className="flex min-h-control-sm cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent"
+                    className="flex min-h-control-sm cursor-pointer items-center gap-2 rounded-control px-2 py-1.5 hover:bg-surface-2"
                   >
                     <Checkbox
                       id={id}
@@ -346,7 +342,7 @@ function CustomRoleEditor({
             )}
           </fieldset>
 
-          <div className="flex items-start justify-between gap-4 rounded-lg bg-muted/50 p-3">
+          <div className="flex items-start justify-between gap-4 rounded-container bg-surface-2 p-3">
             <div className="grid gap-1">
               <Label htmlFor="role-mfa">{t("access.role.mfaTitle")}</Label>
               <p className="text-sm text-muted-foreground">
@@ -367,7 +363,7 @@ function CustomRoleEditor({
 
         <Card className="grid gap-3">
           <div className="grid gap-1">
-            <h2 className="text-base font-semibold">
+            <h2 className="type-heading">
               {t("access.role.permissionsTitle")}
             </h2>
             <p className="text-sm text-muted-foreground">

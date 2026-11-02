@@ -9,6 +9,7 @@ import { ApiError } from "@/lib/api/errors";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CardShell, CardShellBody } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -169,79 +170,79 @@ export function JournalDetailPage({
           </Button>
         </div>
 
-        <section className="rounded-xl border-(length:--border-w) border-border bg-card">
-          <header className="grid gap-2 border-b border-border p-card">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl leading-7 font-semibold">
-                {journal.description}
-              </h2>
-              {reversalState === "reversed" && (
-                <Badge tone="warning">
-                  {t("accounting.journals.reversed")}
-                </Badge>
-              )}
-              {reversalState === "reversal" && (
-                <Badge tone="info">{t("accounting.journals.reversal")}</Badge>
-              )}
-            </div>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {formatBusinessDate(journal.entryDate)}
-              {entityName ? ` · ${entityName}` : ""}
-            </p>
-          </header>
-          <dl className="grid gap-4 p-card sm:grid-cols-2 lg:grid-cols-4">
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.journals.columns.date")}
-              </dt>
-              <dd className="tabular">
+        <CardShell>
+          <CardShellBody>
+            <header className="grid gap-2 border-b border-border p-card">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="type-title">{journal.description}</h2>
+                {reversalState === "reversed" && (
+                  <Badge tone="warning">
+                    {t("accounting.journals.reversed")}
+                  </Badge>
+                )}
+                {reversalState === "reversal" && (
+                  <Badge tone="info">{t("accounting.journals.reversal")}</Badge>
+                )}
+              </div>
+              <p className="text-sm leading-5 text-muted-foreground">
                 {formatBusinessDate(journal.entryDate)}
-              </dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.journals.columns.source")}
-              </dt>
-              <dd>{t(JOURNAL_SOURCE_KEYS[journal.sourceType])}</dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.journal.columns.outlet")}
-              </dt>
-              <dd>{outletName}</dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.journal.postedAt")}
-              </dt>
-              <dd className="tabular">
-                {formatDateTime(journal.postedAt)}
-                <span className="block text-sm text-muted-foreground">
-                  {journal.postedBy === null
-                    ? t("accounting.journal.postedBySystem")
-                    : t("accounting.journal.postedByUser")}
-                </span>
-              </dd>
-            </div>
-          </dl>
-          {accountsQuery.isPending ? (
-            <div className="grid gap-2 p-card" aria-busy="true">
-              <span className="sr-only">{t("common.loading")}</span>
-              <Skeleton className="h-row" />
-              <Skeleton className="h-row" />
-            </div>
-          ) : (
-            <JournalLinesTable
-              lines={journal.lines}
-              accounts={accounts}
-              outlets={outlets}
-            />
-          )}
-        </section>
+                {entityName ? ` · ${entityName}` : ""}
+              </p>
+            </header>
+            <dl className="grid gap-4 p-card sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.journals.columns.date")}
+                </dt>
+                <dd className="tabular">
+                  {formatBusinessDate(journal.entryDate)}
+                </dd>
+              </div>
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.journals.columns.source")}
+                </dt>
+                <dd>{t(JOURNAL_SOURCE_KEYS[journal.sourceType])}</dd>
+              </div>
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.journal.columns.outlet")}
+                </dt>
+                <dd>{outletName}</dd>
+              </div>
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.journal.postedAt")}
+                </dt>
+                <dd className="tabular">
+                  {formatDateTime(journal.postedAt)}
+                  <span className="block text-sm text-muted-foreground">
+                    {journal.postedBy === null
+                      ? t("accounting.journal.postedBySystem")
+                      : t("accounting.journal.postedByUser")}
+                  </span>
+                </dd>
+              </div>
+            </dl>
+            {accountsQuery.isPending ? (
+              <div className="grid gap-2 p-card" aria-busy="true">
+                <span className="sr-only">{t("common.loading")}</span>
+                <Skeleton className="h-row" />
+                <Skeleton className="h-row" />
+              </div>
+            ) : (
+              <JournalLinesTable
+                lines={journal.lines}
+                accounts={accounts}
+                outlets={outlets}
+              />
+            )}
+          </CardShellBody>
+        </CardShell>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <section className="grid content-start gap-3 rounded-xl border-(length:--border-w) border-border bg-card p-card">
-            <h3 className="text-lg leading-7 font-semibold">
+          <section className="grid content-start gap-3 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline">
+            <h3 className="type-title">
               {t("accounting.journal.sourceTitle")}
             </h3>
             <dl className="grid gap-1 text-sm">
@@ -294,10 +295,8 @@ export function JournalDetailPage({
             )}
           </section>
 
-          <section className="grid content-start gap-3 rounded-xl border-(length:--border-w) border-border bg-card p-card">
-            <h3 className="text-lg leading-7 font-semibold">
-              {t("accounting.journal.correction")}
-            </h3>
+          <section className="grid content-start gap-3 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline">
+            <h3 className="type-title">{t("accounting.journal.correction")}</h3>
             {reversalState === "reversal" && journal.reversalOf && (
               <Button asChild variant="outline" size="sm" className="w-fit">
                 <Link

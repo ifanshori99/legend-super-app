@@ -31,6 +31,8 @@ import {
 import { db } from "../db";
 import { session } from "../db/schema";
 import { HttpError } from "../lib/http-error";
+import { createSessionExtendLimiter } from "./session-extend-limiter";
+export { SESSION_EXTEND_RATE_LIMIT } from "./session-extend-limiter";
 
 export type SessionRow = typeof session.$inferSelect;
 
@@ -139,12 +141,14 @@ export async function touchSession(input: {
   readonly row: SessionRow;
   readonly management: boolean;
   readonly now: Date;
+  readonly tx?: Pick<typeof db, "update">;
 }): Promise<void> {
   const { row, management, now } = input;
+  const writer = input.tx ?? db;
   if (row.revokedAt !== null) return;
   if (row.expiresAt.getTime() <= now.getTime()) return;
   if (management && row.kind !== "management") {
-    await db
+    await writer
       .update(session)
       .set({
         kind: "management",
@@ -161,13 +165,49 @@ export async function touchSession(input: {
     kind: "user",
   });
   if (!activity.write) return;
-  await db
+  await writer
     .update(session)
     .set({
       lastSeenAt: new Date(activity.session.lastSeenAt),
       expiresAt: new Date(activity.session.expiresAt),
     })
     .where(eq(session.id, row.id));
+}
+
+/** Explicit extensions allowed per session per window. The activity write is
+ * already throttled to one a minute; this caps the row-lock traffic too.
+ * In-process is enough on the single API VM (owner budget note). */
+const extendLimiter = createSessionExtendLimiter();
+
+/** AUTH-05: a staff session may extend only while its idle window is live.
+ * Lock the row through the check and throttled activity write so concurrent
+ * extensions or revocations cannot resurrect it. */
+export async function extendCurrentSession(input: {
+  readonly sessionId: string;
+  readonly userId: string;
+}): Promise<void> {
+  extendLimiter.check(input.sessionId, Date.now());
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(session)
+      .where(
+        and(eq(session.id, input.sessionId), eq(session.userId, input.userId)),
+      )
+      .for("update");
+    const now = new Date();
+    if (
+      !row ||
+      row.revokedAt ||
+      sessionPolicy({ row, management: true, mfaRequired: false, now }).gate !==
+        "ok"
+    )
+      throw new HttpError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk lagi.");
+    // Only sessions that have entered a guarded staff surface are management.
+    if (row.kind !== "management")
+      throw new HttpError(403, "FORBIDDEN", "Sesi staf diperlukan.");
+    await touchSession({ row, management: true, now, tx });
+  });
 }
 
 /** The caller's device list, newest activity first. Own sessions only. */

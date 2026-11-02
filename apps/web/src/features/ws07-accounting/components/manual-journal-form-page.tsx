@@ -153,7 +153,7 @@ export function ManualJournalFormPage({
         </Button>
       </div>
       <header className="grid gap-1">
-        <h2 className="text-xl leading-7 font-semibold">
+        <h2 className="type-title">
           {journal
             ? t("accounting.manual.form.titleEdit")
             : t("accounting.manual.form.titleNew")}
@@ -163,7 +163,7 @@ export function ManualJournalFormPage({
         </p>
       </header>
       <form
-        className="grid gap-4 rounded-xl border-(length:--border-w) border-border bg-card p-card"
+        className="grid gap-4 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();

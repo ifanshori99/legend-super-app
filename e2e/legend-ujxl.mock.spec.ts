@@ -50,15 +50,18 @@ test("Q21 · the station switch is a neutral segmented control, not buttons", as
   await page.goto("/kds");
   const stations = page.getByRole("radiogroup", { name: "Stasiun" });
   await expect(stations).toBeVisible();
+  await expect(stations.getByRole("radio", { name: /^Kopi/ })).toBeChecked();
+  // Each station carries its live queue count (DESIGN.md §5: a station group
+  // with counts, selected in ink — never an accent-filled chip).
   await expect(
-    stations.getByRole("radio", { name: "Kopi", exact: true }),
-  ).toBeChecked();
+    stations.getByRole("radio", { name: /^Kopi \(\d+\)$/ }),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Kopi", exact: true }),
   ).toHaveCount(0);
 
   // Selecting a station still swaps the board (KDS-01).
-  await stations.getByRole("radio", { name: "Dapur", exact: true }).click();
+  await stations.getByRole("radio", { name: /^Dapur/ }).click();
   await expect(
     page.locator('[data-slot="kds-ticket"]').filter({ hasText: "Sate Ayam" }),
   ).toHaveCount(1);

@@ -7,6 +7,7 @@ import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS = [
@@ -35,7 +36,7 @@ export function AccountingTabs({ active }: { active: AccountingSection }) {
   return (
     <nav
       aria-label={t("accounting.title")}
-      className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+      className={cn(tabsListClass, "[scrollbar-width:none]")}
     >
       {TABS.map((tab) => {
         const current = tab.key === active;
@@ -43,6 +44,9 @@ export function AccountingTabs({ active }: { active: AccountingSection }) {
           <Link
             key={tab.key}
             to={tab.to}
+            // Exact match only: a parent link must not keep its own
+            // aria-current on a child section (two current tabs, legend-jda7).
+            activeOptions={{ exact: true }}
             // On 390px the strip scrolls; keep the current tab in view.
             ref={
               current
@@ -54,10 +58,7 @@ export function AccountingTabs({ active }: { active: AccountingSection }) {
                 : undefined
             }
             aria-current={current ? "page" : undefined}
-            className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-              current && "border-primary font-semibold text-foreground",
-            )}
+            className={tabsTriggerClass}
           >
             {t(tab.labelKey)}
           </Link>
@@ -70,31 +71,23 @@ export function AccountingTabs({ active }: { active: AccountingSection }) {
 export function AccountingPage({
   active,
   children,
-  headingLevel = 1,
 }: {
   active: AccountingSection;
   children: ReactNode;
-  /** Section screens use h1; a detail/form screen renders its own h2 and
-   *  keeps this frame's title at h1 for the landmark. */
-  headingLevel?: 1 | 2;
 }) {
   const t = useT();
-  const Heading = headingLevel === 1 ? "h1" : "h2";
   return (
-    <div className="grid min-w-0 gap-4">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Heading className="text-xl leading-7 font-semibold">
-            {t("accounting.title")}
-          </Heading>
-          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-        </div>
+    // The management topbar owns the page title (DESIGN.md v3 §5): no second
+    // h1 and no extra gutter here. Detail screens render their own h2.
+    <div className="grid min-w-0 gap-5">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
           {t("accounting.subtitle")}
         </p>
-      </header>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
       <AccountingTabs active={active} />
-      <div className="grid min-w-0 gap-4">{children}</div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }

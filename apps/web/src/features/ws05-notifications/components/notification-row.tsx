@@ -29,7 +29,7 @@ export function NotificationRow({ item }: { item: Notification }) {
       )}
     >
       <span
-        className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground"
+        className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-muted-foreground"
         aria-hidden="true"
       >
         <Icon className="size-4" />

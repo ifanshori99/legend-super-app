@@ -8,7 +8,7 @@ import { CircleAlert, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Card, CardShell } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
@@ -89,11 +89,11 @@ function TierEditor({
   const lastLevel = tier.levels.at(-1);
 
   return (
-    <div className="grid gap-3 rounded-lg bg-muted/50 p-3">
+    <div className="grid gap-3 rounded-container bg-surface-2 p-3">
       <div className="flex items-center justify-between gap-2">
         <label
           htmlFor={`threshold-${tier.key}`}
-          className="text-sm font-semibold"
+          className="type-eyebrow text-muted-foreground"
         >
           {t("access.matrix.threshold")}
         </label>
@@ -267,45 +267,45 @@ function MatrixEditor({
 
   return (
     <>
-      <Card className="gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="grid min-w-0 gap-1">
-            <h2 className="text-base leading-6 font-semibold">
-              {t("access.matrix.title")}
-            </h2>
-            <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-              {t("access.matrix.description")}
-            </p>
+      <CardShell className="gap-3">
+        <Card className="gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="grid min-w-0 gap-1">
+              <h2 className="type-title">{t("access.matrix.title")}</h2>
+              <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+                {t("access.matrix.description")}
+              </p>
+            </div>
+            {canManage && (
+              <Button
+                type="button"
+                loading={save.isPending}
+                disabled={!dirty || issues.length > 0}
+                onClick={submit}
+              >
+                {t("access.matrix.save")}
+              </Button>
+            )}
           </div>
-          {canManage && (
-            <Button
-              type="button"
-              loading={save.isPending}
-              disabled={!dirty || issues.length > 0}
-              onClick={submit}
-            >
-              {t("access.matrix.save")}
-            </Button>
-          )}
-        </div>
-        <div className="flex items-start gap-2 rounded-md bg-muted/50 p-3">
-          <ShieldCheck
-            className="mt-0.5 size-icon shrink-0 text-success"
-            aria-hidden="true"
-          />
-          <div className="grid gap-1">
-            <p className="text-sm font-semibold">
-              {t("access.matrix.distinctActor")}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              {t("access.matrix.coverage", {
-                covered: coverage.covered,
-                total: coverage.total,
-              })}
-            </p>
+          <div className="flex items-start gap-2 rounded-container bg-surface-2 p-3">
+            <ShieldCheck
+              className="mt-0.5 size-icon shrink-0 text-success"
+              aria-hidden="true"
+            />
+            <div className="grid gap-1">
+              <p className="text-sm font-semibold">
+                {t("access.matrix.distinctActor")}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {t("access.matrix.coverage", {
+                  covered: coverage.covered,
+                  total: coverage.total,
+                })}
+              </p>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      </CardShell>
 
       {save.isError && (
         <p className="text-sm text-danger" role="alert">
@@ -327,61 +327,63 @@ function MatrixEditor({
               issue.kind !== "missing_level",
           );
           return (
-            <Card key={row.actionType} className="grid gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-base font-semibold">
-                  {t(actionLabelKey(row.actionType))}
-                </h2>
-                <div className="flex items-center gap-2">
-                  <Badge tone={row.tiers.length > 0 ? "success" : "danger"}>
-                    {row.tiers.length > 0
-                      ? t("access.matrix.policyCount", {
-                          count: row.tiers.length,
-                        })
-                      : t("access.matrix.noPolicyShort")}
-                  </Badge>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!canManage}
-                    onClick={() => updateRow(row.actionType, addTier(row))}
-                  >
-                    <Plus aria-hidden="true" />
-                    {t("access.matrix.addTier")}
-                  </Button>
-                </div>
-              </div>
-
-              {row.tiers.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {t("access.matrix.notConfiguredNote")}
-                </p>
-              ) : (
-                <div className="grid gap-2">
-                  {row.tiers.map((tier) => (
-                    <TierEditor
-                      key={tier.key}
-                      tier={tier}
-                      row={row}
-                      roles={approverRoles}
-                      issues={rowIssues.filter(
-                        (issue) => issue.tierKey === tier.key,
-                      )}
+            <CardShell key={row.actionType}>
+              <Card className="gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="type-heading">
+                    {t(actionLabelKey(row.actionType))}
+                  </h2>
+                  <div className="flex items-center gap-2">
+                    <Badge tone={row.tiers.length > 0 ? "success" : "danger"}>
+                      {row.tiers.length > 0
+                        ? t("access.matrix.policyCount", {
+                            count: row.tiers.length,
+                          })
+                        : t("access.matrix.noPolicyShort")}
+                    </Badge>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
                       disabled={!canManage}
-                      onChange={(next) => updateRow(row.actionType, next)}
-                    />
-                  ))}
+                      onClick={() => updateRow(row.actionType, addTier(row))}
+                    >
+                      <Plus aria-hidden="true" />
+                      {t("access.matrix.addTier")}
+                    </Button>
+                  </div>
                 </div>
-              )}
-            </Card>
+
+                {row.tiers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("access.matrix.notConfiguredNote")}
+                  </p>
+                ) : (
+                  <div className="grid gap-2">
+                    {row.tiers.map((tier) => (
+                      <TierEditor
+                        key={tier.key}
+                        tier={tier}
+                        row={row}
+                        roles={approverRoles}
+                        issues={rowIssues.filter(
+                          (issue) => issue.tierKey === tier.key,
+                        )}
+                        disabled={!canManage}
+                        onChange={(next) => updateRow(row.actionType, next)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </CardShell>
           );
         })}
       </div>
 
       <Card className="grid gap-3">
         <div className="grid gap-1">
-          <h2 className="flex items-center gap-2 text-base font-semibold">
+          <h2 className="flex items-center gap-2 type-heading">
             <CircleAlert
               className="size-icon text-warning"
               aria-hidden="true"
@@ -401,7 +403,7 @@ function MatrixEditor({
             {coverage.uncovered.map((action) => (
               <li
                 key={action}
-                className="flex min-h-control-sm items-center justify-between gap-2 rounded-md border px-2 py-1"
+                className="flex min-h-control-sm items-center justify-between gap-2 rounded-control border-(length:--border-w) px-2 py-1"
               >
                 <span className="text-(length:--density-text) leading-5">
                   {t(actionLabelKey(action))}

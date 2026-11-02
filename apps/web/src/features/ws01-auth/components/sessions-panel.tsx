@@ -128,7 +128,7 @@ export function SessionsPanel({ mfaRequired }: { mfaRequired: boolean }) {
                 key={session.id}
                 className="flex flex-wrap items-center gap-3 px-card py-3"
               >
-                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-muted-foreground">
                   <DeviceIcon label={session.deviceLabel} />
                 </span>
                 <div className="grid min-w-0 flex-1 gap-0.5">

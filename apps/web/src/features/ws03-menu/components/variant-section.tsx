@@ -106,9 +106,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
     <div className="grid gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-base leading-6 font-semibold">
-            {t("menu.variants.title")}
-          </h3>
+          <h3 className="type-heading">{t("menu.variants.title")}</h3>
           <p className="text-sm leading-5 text-muted-foreground">
             {t("menu.variants.description")}
           </p>
@@ -124,7 +122,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
           {t("common.loading")}
         </p>
       ) : variants.isError ? (
-        <div className="rounded-lg border bg-card p-4">
+        <div className="rounded-container border-(length:--border-w) bg-card p-4 shadow-hairline">
           <p className="text-sm text-danger" role="alert">
             {t("state.errorHint")}
           </p>
@@ -139,7 +137,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
           </Button>
         </div>
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border bg-card px-4 py-6 text-center">
+        <div className="rounded-container border-(length:--border-w) bg-card px-4 py-6 text-center shadow-hairline">
           <p className="text-sm font-semibold">
             {t("menu.variants.emptyTitle")}
           </p>
@@ -148,7 +146,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border bg-card">
+        <div className="overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
           <Table>
             <TableHeader>
               <TableRow>

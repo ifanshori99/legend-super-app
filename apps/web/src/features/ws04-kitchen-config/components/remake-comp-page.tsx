@@ -12,6 +12,7 @@ import {
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
@@ -150,10 +151,10 @@ export function RemakeCompPage() {
   }
 
   return (
-    <div className="grid min-w-0 gap-4">
-      <section
+    <div className="grid min-w-0 gap-5">
+      <Card
         aria-label={t("kitchenConfig.remake.title")}
-        className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card sm:grid-cols-2"
+        className="grid gap-3 sm:grid-cols-2"
       >
         <div className="grid gap-1.5">
           <span id="remake-type-label" className="text-sm font-semibold">
@@ -207,7 +208,7 @@ export function RemakeCompPage() {
             </SelectContent>
           </Select>
         </div>
-      </section>
+      </Card>
 
       {issues.isError && !issues.data ? (
         <ErrorState

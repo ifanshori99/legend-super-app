@@ -25,7 +25,6 @@ function TaxSettingsRoute() {
   return (
     <TaxPage
       active="settings"
-      title={t("tax.title")}
       description={t("tax.subtitle")}
       canConfigure
       canReport={canReport}
