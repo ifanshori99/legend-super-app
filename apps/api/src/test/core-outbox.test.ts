@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -16,6 +17,7 @@ import {
   relayOutbox,
   markOutboxDead,
   replayOutbox,
+  recoverExpiredDispatches,
 } from "../services/core-outbox";
 
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
@@ -263,5 +265,165 @@ describe("transactional domain event outbox", () => {
         ),
       ),
     ).rejects.toThrow();
+  });
+  it("F3 legend-hds7 re-dispatches a queued event whose pg-boss job vanished, fenced by generation", async () => {
+    const tenant = randomUUID();
+    const aggregateId = "01ARZ3NDEKTSV4RRFFQ69G5FD2";
+    const first = {
+      ...row,
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FD1",
+      event: {
+        ...event,
+        tenantId: tenant,
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FD0",
+        aggregateId,
+        sequence: 1,
+      },
+    };
+    const second = {
+      ...row,
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FD4",
+      event: {
+        ...event,
+        tenantId: tenant,
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FD3",
+        aggregateId,
+        sequence: 2,
+      },
+    };
+    await withTenant(database, context(tenant), async (tx) => {
+      await appendOutbox(tx, context(tenant), first);
+      await appendOutbox(tx, context(tenant), second);
+    });
+    const jobId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const sent: { outboxId: string; generation: number }[] = [];
+    const enqueue = async (job: {
+      tenantId: string;
+      outboxId: string;
+      generation: number;
+    }) => {
+      sent.push({ outboxId: job.outboxId, generation: job.generation });
+      return jobId;
+    };
+    expect(await relayOutbox(database, context(tenant), enqueue)).toBe(1);
+    expect(sent).toEqual([{ outboxId: first.id, generation: 0 }]);
+    const queued = await withTenant(
+      database,
+      context(tenant),
+      async (tx) =>
+        (
+          await tx.execute(
+            sql`SELECT dispatch_state, dispatch_job_id, dispatch_lease_token, dispatch_lease_until > now() AS leased FROM domain_event_outbox WHERE event->>'id' = ${first.event.id}`,
+          )
+        ).rows,
+    );
+    // The queued row carries a live job lease, so a lost job is detectable.
+    expect(queued).toEqual([
+      {
+        dispatch_state: "queued",
+        dispatch_job_id: jobId,
+        dispatch_lease_token: null,
+        leased: true,
+      },
+    ]);
+    // A sweep before the lease expires neither duplicates nor recovers it.
+    expect(await relayOutbox(database, context(tenant), enqueue)).toBe(0);
+    expect(sent).toHaveLength(1);
+    // pg-boss lost the job: no consumer ever ran and the lease expired.
+    await withTenant(database, context(tenant), (tx) =>
+      tx.execute(
+        sql`UPDATE domain_event_outbox SET dispatch_lease_until = now() - interval '1 second' WHERE event->>'id' = ${first.event.id}`,
+      ),
+    );
+    expect(await relayOutbox(database, context(tenant), enqueue)).toBe(1);
+    expect(sent.map((job) => job.generation)).toEqual([0, 1]);
+    // The lost job is fenced; only the re-dispatched generation may deliver.
+    await expect(
+      consumeOutbox(database, context(tenant), {
+        outboxId: first.id,
+        generation: 0,
+        authorize: async () => true,
+        deliver: async () => {},
+      }),
+    ).rejects.toThrow("Stale or dead-lettered job");
+    expect(
+      await consumeOutbox(database, context(tenant), {
+        outboxId: first.id,
+        generation: 1,
+        authorize: async () => true,
+        deliver: async () => {},
+      }),
+    ).toBe(true);
+    // The aggregate is unblocked: the next sequence dispatches.
+    expect(await relayOutbox(database, context(tenant), enqueue)).toBe(1);
+    expect(sent.map((job) => job.outboxId)).toEqual([
+      first.id,
+      first.id,
+      second.id,
+    ]);
+    // A delivered row is never recovered by a later sweep.
+    expect(await recoverExpiredDispatches(database, context(tenant))).toEqual(
+      [],
+    );
+  });
+  it("F3 legend-hds7 keeps the recovery fence in the database and scopes it per tenant", async () => {
+    const tenant = randomUUID();
+    const other = randomUUID();
+    const single = {
+      ...row,
+      id: "01ARZ3NDEKTSV4RRFFQ69G5FE1",
+      event: {
+        ...event,
+        tenantId: tenant,
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FE0",
+        aggregateId: "01ARZ3NDEKTSV4RRFFQ69G5FE2",
+        sequence: 1,
+      },
+    };
+    await withTenant(database, context(tenant), async (tx) =>
+      appendOutbox(tx, context(tenant), single),
+    );
+    expect(
+      await relayOutbox(
+        database,
+        context(tenant),
+        async () => "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      ),
+    ).toBe(1);
+    const id = sql`(SELECT id FROM domain_event_outbox WHERE event->>'id' = ${single.event.id})`;
+    // While the queued lease is live the generation cannot advance.
+    await expect(
+      withTenant(database, context(tenant), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_generation = 1, dispatch_lease_until = NULL WHERE id = ${id}`,
+        ),
+      ),
+    ).rejects.toThrow();
+    await withTenant(database, context(tenant), (tx) =>
+      tx.execute(
+        sql`UPDATE domain_event_outbox SET dispatch_lease_until = now() - interval '1 second' WHERE id = ${id}`,
+      ),
+    );
+    // Even with an expired lease, a bare generation bump is refused: recovery
+    // must also return the row to 'ready' for the relay to re-enqueue it.
+    await expect(
+      withTenant(database, context(tenant), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_outbox SET dispatch_generation = 1 WHERE id = ${id}`,
+        ),
+      ),
+    ).rejects.toThrow();
+    // Recovery is tenant scoped: another tenant sees no rows.
+    expect(await recoverExpiredDispatches(database, context(other))).toEqual(
+      [],
+    );
+    const recovered = await recoverExpiredDispatches(database, context(tenant));
+    expect(recovered.map((entry) => Number(entry.dispatch_generation))).toEqual(
+      [1],
+    );
+    // A second sweep is idempotent.
+    expect(await recoverExpiredDispatches(database, context(tenant))).toEqual(
+      [],
+    );
   });
 });

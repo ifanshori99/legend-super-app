@@ -33,9 +33,17 @@ import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
+import { Route as CustomerMemberDaftarRouteImport } from './routes/_customer/member.daftar'
+import { Route as CustomerMemberFavoritRouteImport } from './routes/_customer/member.favorit'
+import { Route as CustomerMemberKunjunganRouteImport } from './routes/_customer/member.kunjungan'
+import { Route as CustomerMemberMisiRouteImport } from './routes/_customer/member.misi'
+import { Route as CustomerMemberPoinRouteImport } from './routes/_customer/member.poin'
+import { Route as CustomerMemberRewardRouteImport } from './routes/_customer/member.reward'
+import { Route as CustomerMemberVoucherRouteImport } from './routes/_customer/member.voucher'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
@@ -55,6 +63,8 @@ import { Route as KelolaKelolaLoyaltyIndexRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaLoyaltyMisiRouteImport } from './routes/_kelola/kelola.loyalty.misi'
 import { Route as KelolaKelolaLoyaltyRewardRouteImport } from './routes/_kelola/kelola.loyalty.reward'
 import { Route as KelolaKelolaLoyaltyTierRouteImport } from './routes/_kelola/kelola.loyalty.tier'
+import { Route as KelolaKelolaMejaIndexRouteImport } from './routes/_kelola/kelola.meja.index'
+import { Route as KelolaKelolaMejaQrRouteImport } from './routes/_kelola/kelola.meja.qr'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
 import { Route as KelolaKelolaMenuItemIdRouteImport } from './routes/_kelola/kelola.menu.$itemId'
 import { Route as KelolaKelolaMenuHargaRouteImport } from './routes/_kelola/kelola.menu.harga'
@@ -62,6 +72,11 @@ import { Route as KelolaKelolaMenuKategoriRouteImport } from './routes/_kelola/k
 import { Route as KelolaKelolaMenuKetersediaanRouteImport } from './routes/_kelola/kelola.menu.ketersediaan'
 import { Route as KelolaKelolaMenuPaketRouteImport } from './routes/_kelola/kelola.menu.paket'
 import { Route as KelolaKelolaMenuStasiunRouteImport } from './routes/_kelola/kelola.menu.stasiun'
+import { Route as KelolaKelolaPajakIndexRouteImport } from './routes/_kelola/kelola.pajak.index'
+import { Route as KelolaKelolaPajakLaporanRouteImport } from './routes/_kelola/kelola.pajak.laporan'
+import { Route as KelolaKelolaPajakOpsiRouteImport } from './routes/_kelola/kelola.pajak.opsi'
+import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_kelola/kelola.pajak.service-charge'
+import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
 
@@ -174,6 +189,41 @@ const CustomerMemberIndexRoute = CustomerMemberIndexRouteImport.update({
   path: '/',
   getParentRoute: () => CustomerMemberRoute,
 } as any)
+const CustomerMemberDaftarRoute = CustomerMemberDaftarRouteImport.update({
+  id: '/daftar',
+  path: '/daftar',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberFavoritRoute = CustomerMemberFavoritRouteImport.update({
+  id: '/favorit',
+  path: '/favorit',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberKunjunganRoute = CustomerMemberKunjunganRouteImport.update({
+  id: '/kunjungan',
+  path: '/kunjungan',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberMisiRoute = CustomerMemberMisiRouteImport.update({
+  id: '/misi',
+  path: '/misi',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberPoinRoute = CustomerMemberPoinRouteImport.update({
+  id: '/poin',
+  path: '/poin',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberRewardRoute = CustomerMemberRewardRouteImport.update({
+  id: '/reward',
+  path: '/reward',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
+const CustomerMemberVoucherRoute = CustomerMemberVoucherRouteImport.update({
+  id: '/voucher',
+  path: '/voucher',
+  getParentRoute: () => CustomerMemberRoute,
+} as any)
 const CustomerTTokenRoute = CustomerTTokenRouteImport.update({
   id: '/t/$token',
   path: '/t/$token',
@@ -187,6 +237,11 @@ const KaryawanKaryawanIndexRoute = KaryawanKaryawanIndexRouteImport.update({
 const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   id: '/kelola/',
   path: '/kelola/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaNotifikasiRoute = KelolaKelolaNotifikasiRouteImport.update({
+  id: '/kelola/notifikasi',
+  path: '/kelola/notifikasi',
   getParentRoute: () => KelolaRoute,
 } as any)
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
@@ -290,6 +345,16 @@ const KelolaKelolaLoyaltyTierRoute = KelolaKelolaLoyaltyTierRouteImport.update({
   path: '/kelola/loyalty/tier',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaMejaIndexRoute = KelolaKelolaMejaIndexRouteImport.update({
+  id: '/kelola/meja/',
+  path: '/kelola/meja/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaMejaQrRoute = KelolaKelolaMejaQrRouteImport.update({
+  id: '/kelola/meja/qr',
+  path: '/kelola/meja/qr',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaMenuIndexRoute = KelolaKelolaMenuIndexRouteImport.update({
   id: '/kelola/menu/',
   path: '/kelola/menu/',
@@ -327,6 +392,33 @@ const KelolaKelolaMenuStasiunRoute = KelolaKelolaMenuStasiunRouteImport.update({
   path: '/kelola/menu/stasiun',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaPajakIndexRoute = KelolaKelolaPajakIndexRouteImport.update({
+  id: '/kelola/pajak/',
+  path: '/kelola/pajak/',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPajakLaporanRoute =
+  KelolaKelolaPajakLaporanRouteImport.update({
+    id: '/kelola/pajak/laporan',
+    path: '/kelola/pajak/laporan',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPajakOpsiRoute = KelolaKelolaPajakOpsiRouteImport.update({
+  id: '/kelola/pajak/opsi',
+  path: '/kelola/pajak/opsi',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPajakServiceChargeRoute =
+  KelolaKelolaPajakServiceChargeRouteImport.update({
+    id: '/kelola/pajak/service-charge',
+    path: '/kelola/pajak/service-charge',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
+  id: '/pos/meja/',
+  path: '/pos/meja/',
+  getParentRoute: () => OpsRoute,
+} as any)
 const CustomerTTokenIssueIssueIdRoute =
   CustomerTTokenIssueIssueIdRouteImport.update({
     id: '/issue/$issueId',
@@ -353,7 +445,15 @@ export interface FileRoutesByFullPath {
   '/notes': typeof ProtectedNotesRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
+  '/member/daftar': typeof CustomerMemberDaftarRoute
+  '/member/favorit': typeof CustomerMemberFavoritRoute
+  '/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/member/misi': typeof CustomerMemberMisiRoute
+  '/member/poin': typeof CustomerMemberPoinRoute
+  '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/voucher': typeof CustomerMemberVoucherRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -373,16 +473,23 @@ export interface FileRoutesByFullPath {
   '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
   '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
   '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
+  '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
+  '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
+  '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
+  '/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
+  '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -398,6 +505,14 @@ export interface FileRoutesByTo {
   '/notes': typeof ProtectedNotesRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
+  '/member/daftar': typeof CustomerMemberDaftarRoute
+  '/member/favorit': typeof CustomerMemberFavoritRoute
+  '/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/member/misi': typeof CustomerMemberMisiRoute
+  '/member/poin': typeof CustomerMemberPoinRoute
+  '/member/reward': typeof CustomerMemberRewardRoute
+  '/member/voucher': typeof CustomerMemberVoucherRoute
+  '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
@@ -417,16 +532,23 @@ export interface FileRoutesByTo {
   '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
   '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
   '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
+  '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
+  '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
+  '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/kelola/loyalty': typeof KelolaKelolaLoyaltyIndexRoute
+  '/kelola/meja': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
+  '/kelola/pajak': typeof KelolaKelolaPajakIndexRoute
+  '/pos/meja': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -455,7 +577,15 @@ export interface FileRoutesById {
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
+  '/_customer/member/daftar': typeof CustomerMemberDaftarRoute
+  '/_customer/member/favorit': typeof CustomerMemberFavoritRoute
+  '/_customer/member/kunjungan': typeof CustomerMemberKunjunganRoute
+  '/_customer/member/misi': typeof CustomerMemberMisiRoute
+  '/_customer/member/poin': typeof CustomerMemberPoinRoute
+  '/_customer/member/reward': typeof CustomerMemberRewardRoute
+  '/_customer/member/voucher': typeof CustomerMemberVoucherRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
@@ -475,16 +605,23 @@ export interface FileRoutesById {
   '/_kelola/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
   '/_kelola/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
   '/_kelola/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
+  '/_kelola/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
   '/_kelola/kelola/menu/kategori': typeof KelolaKelolaMenuKategoriRoute
   '/_kelola/kelola/menu/ketersediaan': typeof KelolaKelolaMenuKetersediaanRoute
   '/_kelola/kelola/menu/paket': typeof KelolaKelolaMenuPaketRoute
   '/_kelola/kelola/menu/stasiun': typeof KelolaKelolaMenuStasiunRoute
+  '/_kelola/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
+  '/_kelola/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
+  '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_kelola/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
+  '/_kelola/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
+  '/_kelola/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
+  '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
 }
@@ -503,7 +640,15 @@ export interface FileRouteTypes {
     | '/notes'
     | '/bayar/$token'
     | '/f/$facility'
+    | '/member/daftar'
+    | '/member/favorit'
+    | '/member/kunjungan'
+    | '/member/misi'
+    | '/member/poin'
+    | '/member/reward'
+    | '/member/voucher'
     | '/t/$token'
+    | '/kelola/notifikasi'
     | '/operasional/koneksi'
     | '/member/'
     | '/karyawan/'
@@ -523,16 +668,23 @@ export interface FileRouteTypes {
     | '/kelola/loyalty/misi'
     | '/kelola/loyalty/reward'
     | '/kelola/loyalty/tier'
+    | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/kelola/pajak/laporan'
+    | '/kelola/pajak/opsi'
+    | '/kelola/pajak/service-charge'
     | '/member/fasilitas/'
     | '/t/$token/'
     | '/kelola/loyalty/'
+    | '/kelola/meja/'
     | '/kelola/menu/'
+    | '/kelola/pajak/'
+    | '/pos/meja/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
   fileRoutesByTo: FileRoutesByTo
@@ -548,6 +700,14 @@ export interface FileRouteTypes {
     | '/notes'
     | '/bayar/$token'
     | '/f/$facility'
+    | '/member/daftar'
+    | '/member/favorit'
+    | '/member/kunjungan'
+    | '/member/misi'
+    | '/member/poin'
+    | '/member/reward'
+    | '/member/voucher'
+    | '/kelola/notifikasi'
     | '/operasional/koneksi'
     | '/member'
     | '/karyawan'
@@ -567,16 +727,23 @@ export interface FileRouteTypes {
     | '/kelola/loyalty/misi'
     | '/kelola/loyalty/reward'
     | '/kelola/loyalty/tier'
+    | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
     | '/kelola/menu/kategori'
     | '/kelola/menu/ketersediaan'
     | '/kelola/menu/paket'
     | '/kelola/menu/stasiun'
+    | '/kelola/pajak/laporan'
+    | '/kelola/pajak/opsi'
+    | '/kelola/pajak/service-charge'
     | '/member/fasilitas'
     | '/t/$token'
     | '/kelola/loyalty'
+    | '/kelola/meja'
     | '/kelola/menu'
+    | '/kelola/pajak'
+    | '/pos/meja'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
   id:
@@ -604,7 +771,15 @@ export interface FileRouteTypes {
     | '/_public/'
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
+    | '/_customer/member/daftar'
+    | '/_customer/member/favorit'
+    | '/_customer/member/kunjungan'
+    | '/_customer/member/misi'
+    | '/_customer/member/poin'
+    | '/_customer/member/reward'
+    | '/_customer/member/voucher'
     | '/_customer/t/$token'
+    | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
@@ -624,16 +799,23 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/loyalty/misi'
     | '/_kelola/kelola/loyalty/reward'
     | '/_kelola/kelola/loyalty/tier'
+    | '/_kelola/kelola/meja/qr'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
     | '/_kelola/kelola/menu/kategori'
     | '/_kelola/kelola/menu/ketersediaan'
     | '/_kelola/kelola/menu/paket'
     | '/_kelola/kelola/menu/stasiun'
+    | '/_kelola/kelola/pajak/laporan'
+    | '/_kelola/kelola/pajak/opsi'
+    | '/_kelola/kelola/pajak/service-charge'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_kelola/kelola/loyalty/'
+    | '/_kelola/kelola/meja/'
     | '/_kelola/kelola/menu/'
+    | '/_kelola/kelola/pajak/'
+    | '/_ops/pos/meja/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
   fileRoutesById: FileRoutesById
@@ -823,6 +1005,55 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerMemberIndexRouteImport
       parentRoute: typeof CustomerMemberRoute
     }
+    '/_customer/member/daftar': {
+      id: '/_customer/member/daftar'
+      path: '/daftar'
+      fullPath: '/member/daftar'
+      preLoaderRoute: typeof CustomerMemberDaftarRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/favorit': {
+      id: '/_customer/member/favorit'
+      path: '/favorit'
+      fullPath: '/member/favorit'
+      preLoaderRoute: typeof CustomerMemberFavoritRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/kunjungan': {
+      id: '/_customer/member/kunjungan'
+      path: '/kunjungan'
+      fullPath: '/member/kunjungan'
+      preLoaderRoute: typeof CustomerMemberKunjunganRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/misi': {
+      id: '/_customer/member/misi'
+      path: '/misi'
+      fullPath: '/member/misi'
+      preLoaderRoute: typeof CustomerMemberMisiRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/poin': {
+      id: '/_customer/member/poin'
+      path: '/poin'
+      fullPath: '/member/poin'
+      preLoaderRoute: typeof CustomerMemberPoinRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/reward': {
+      id: '/_customer/member/reward'
+      path: '/reward'
+      fullPath: '/member/reward'
+      preLoaderRoute: typeof CustomerMemberRewardRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
+    '/_customer/member/voucher': {
+      id: '/_customer/member/voucher'
+      path: '/voucher'
+      fullPath: '/member/voucher'
+      preLoaderRoute: typeof CustomerMemberVoucherRouteImport
+      parentRoute: typeof CustomerMemberRoute
+    }
     '/_customer/t/$token': {
       id: '/_customer/t/$token'
       path: '/t/$token'
@@ -842,6 +1073,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola'
       fullPath: '/kelola/'
       preLoaderRoute: typeof KelolaKelolaIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/notifikasi': {
+      id: '/_kelola/kelola/notifikasi'
+      path: '/kelola/notifikasi'
+      fullPath: '/kelola/notifikasi'
+      preLoaderRoute: typeof KelolaKelolaNotifikasiRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kitchen/kds/': {
@@ -977,6 +1215,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaLoyaltyTierRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/meja/': {
+      id: '/_kelola/kelola/meja/'
+      path: '/kelola/meja'
+      fullPath: '/kelola/meja/'
+      preLoaderRoute: typeof KelolaKelolaMejaIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/meja/qr': {
+      id: '/_kelola/kelola/meja/qr'
+      path: '/kelola/meja/qr'
+      fullPath: '/kelola/meja/qr'
+      preLoaderRoute: typeof KelolaKelolaMejaQrRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/menu/': {
       id: '/_kelola/kelola/menu/'
       path: '/kelola/menu'
@@ -1026,6 +1278,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaMenuStasiunRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pajak/': {
+      id: '/_kelola/kelola/pajak/'
+      path: '/kelola/pajak'
+      fullPath: '/kelola/pajak/'
+      preLoaderRoute: typeof KelolaKelolaPajakIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pajak/laporan': {
+      id: '/_kelola/kelola/pajak/laporan'
+      path: '/kelola/pajak/laporan'
+      fullPath: '/kelola/pajak/laporan'
+      preLoaderRoute: typeof KelolaKelolaPajakLaporanRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pajak/opsi': {
+      id: '/_kelola/kelola/pajak/opsi'
+      path: '/kelola/pajak/opsi'
+      fullPath: '/kelola/pajak/opsi'
+      preLoaderRoute: typeof KelolaKelolaPajakOpsiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pajak/service-charge': {
+      id: '/_kelola/kelola/pajak/service-charge'
+      path: '/kelola/pajak/service-charge'
+      fullPath: '/kelola/pajak/service-charge'
+      preLoaderRoute: typeof KelolaKelolaPajakServiceChargeRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_ops/pos/meja/': {
+      id: '/_ops/pos/meja/'
+      path: '/pos/meja'
+      fullPath: '/pos/meja/'
+      preLoaderRoute: typeof OpsPosMejaIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_customer/t/$token/issue/$issueId': {
       id: '/_customer/t/$token/issue/$issueId'
       path: '/issue/$issueId'
@@ -1056,6 +1343,13 @@ const AuthRouteChildren: AuthRouteChildren = {
 const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 
 interface CustomerMemberRouteChildren {
+  CustomerMemberDaftarRoute: typeof CustomerMemberDaftarRoute
+  CustomerMemberFavoritRoute: typeof CustomerMemberFavoritRoute
+  CustomerMemberKunjunganRoute: typeof CustomerMemberKunjunganRoute
+  CustomerMemberMisiRoute: typeof CustomerMemberMisiRoute
+  CustomerMemberPoinRoute: typeof CustomerMemberPoinRoute
+  CustomerMemberRewardRoute: typeof CustomerMemberRewardRoute
+  CustomerMemberVoucherRoute: typeof CustomerMemberVoucherRoute
   CustomerMemberIndexRoute: typeof CustomerMemberIndexRoute
   CustomerMemberFasilitasTicketIdRoute: typeof CustomerMemberFasilitasTicketIdRoute
   CustomerMemberFasilitasLanggananRoute: typeof CustomerMemberFasilitasLanggananRoute
@@ -1063,6 +1357,13 @@ interface CustomerMemberRouteChildren {
 }
 
 const CustomerMemberRouteChildren: CustomerMemberRouteChildren = {
+  CustomerMemberDaftarRoute: CustomerMemberDaftarRoute,
+  CustomerMemberFavoritRoute: CustomerMemberFavoritRoute,
+  CustomerMemberKunjunganRoute: CustomerMemberKunjunganRoute,
+  CustomerMemberMisiRoute: CustomerMemberMisiRoute,
+  CustomerMemberPoinRoute: CustomerMemberPoinRoute,
+  CustomerMemberRewardRoute: CustomerMemberRewardRoute,
+  CustomerMemberVoucherRoute: CustomerMemberVoucherRoute,
   CustomerMemberIndexRoute: CustomerMemberIndexRoute,
   CustomerMemberFasilitasTicketIdRoute: CustomerMemberFasilitasTicketIdRoute,
   CustomerMemberFasilitasLanggananRoute: CustomerMemberFasilitasLanggananRoute,
@@ -1132,33 +1433,47 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
 )
 
 interface KelolaRouteChildren {
+  KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
   KelolaKelolaLoyaltyMisiRoute: typeof KelolaKelolaLoyaltyMisiRoute
   KelolaKelolaLoyaltyRewardRoute: typeof KelolaKelolaLoyaltyRewardRoute
   KelolaKelolaLoyaltyTierRoute: typeof KelolaKelolaLoyaltyTierRoute
+  KelolaKelolaMejaQrRoute: typeof KelolaKelolaMejaQrRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
   KelolaKelolaMenuKategoriRoute: typeof KelolaKelolaMenuKategoriRoute
   KelolaKelolaMenuKetersediaanRoute: typeof KelolaKelolaMenuKetersediaanRoute
   KelolaKelolaMenuPaketRoute: typeof KelolaKelolaMenuPaketRoute
   KelolaKelolaMenuStasiunRoute: typeof KelolaKelolaMenuStasiunRoute
+  KelolaKelolaPajakLaporanRoute: typeof KelolaKelolaPajakLaporanRoute
+  KelolaKelolaPajakOpsiRoute: typeof KelolaKelolaPajakOpsiRoute
+  KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
   KelolaKelolaLoyaltyIndexRoute: typeof KelolaKelolaLoyaltyIndexRoute
+  KelolaKelolaMejaIndexRoute: typeof KelolaKelolaMejaIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
+  KelolaKelolaPajakIndexRoute: typeof KelolaKelolaPajakIndexRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
+  KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
   KelolaKelolaLoyaltyMisiRoute: KelolaKelolaLoyaltyMisiRoute,
   KelolaKelolaLoyaltyRewardRoute: KelolaKelolaLoyaltyRewardRoute,
   KelolaKelolaLoyaltyTierRoute: KelolaKelolaLoyaltyTierRoute,
+  KelolaKelolaMejaQrRoute: KelolaKelolaMejaQrRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
   KelolaKelolaMenuKategoriRoute: KelolaKelolaMenuKategoriRoute,
   KelolaKelolaMenuKetersediaanRoute: KelolaKelolaMenuKetersediaanRoute,
   KelolaKelolaMenuPaketRoute: KelolaKelolaMenuPaketRoute,
   KelolaKelolaMenuStasiunRoute: KelolaKelolaMenuStasiunRoute,
+  KelolaKelolaPajakLaporanRoute: KelolaKelolaPajakLaporanRoute,
+  KelolaKelolaPajakOpsiRoute: KelolaKelolaPajakOpsiRoute,
+  KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
   KelolaKelolaLoyaltyIndexRoute: KelolaKelolaLoyaltyIndexRoute,
+  KelolaKelolaMejaIndexRoute: KelolaKelolaMejaIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
+  KelolaKelolaPajakIndexRoute: KelolaKelolaPajakIndexRoute,
 }
 
 const KelolaRouteWithChildren =
@@ -1182,11 +1497,13 @@ const KitchenRouteWithChildren =
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
+  OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
+  OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
 }
 
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
@@ -1269,11 +1586,15 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
+
 import type { startInstance } from './start.ts'
+
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
+
     router: Awaited<ReturnType<typeof getRouter>>
+
     config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

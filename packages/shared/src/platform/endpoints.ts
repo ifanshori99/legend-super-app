@@ -26,6 +26,7 @@ import {
   createConfigTemplateInputSchema,
   importConfigInputSchema,
 } from "./config.ts";
+import { brandContextSchema } from "./context.ts";
 import { addDomainInputSchema, tenantDomainSchema } from "./domains.ts";
 import {
   legalEntityIdSchema,
@@ -217,6 +218,20 @@ const brandParams = z.strictObject({ brandId: brandIdSchema });
 const outletParams = z.strictObject({ outletId: outletIdSchema });
 const legalEntityParams = z.strictObject({
   legalEntityId: legalEntityIdSchema,
+});
+
+// ------------------------------------------------- whitelabel brand context
+
+/**
+ * Whitelabel brand of the host the request was sent to (PRD v1.7 §3 F4
+ * "Whitelabel", D43, TEN-08). Public: the web server calls it during SSR, the
+ * browser reads the same DTO. No tenant parameter: the host is the input
+ * (TEN-02), and the answer carries no platform identity (TEN-08).
+ */
+export const getBrandContext = defineEndpoint({
+  method: "GET",
+  path: "/api/tenant/context",
+  response: dataResponseSchema(brandContextSchema),
 });
 
 export const orgEndpoints = {

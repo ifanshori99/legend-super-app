@@ -1,0 +1,85 @@
+import type { QueryClient } from "@tanstack/react-query";
+import { MEMBER_PAGE_SIZE } from "./api";
+import {
+  memberFavoritesQuery,
+  memberMissionsQuery,
+  memberOverviewQuery,
+  memberPointsQuery,
+  memberRewardsQuery,
+  memberVouchersQuery,
+  memberVisitsQuery,
+} from "./queries";
+
+// Route loaders preload into the query cache so SSR renders real data instead
+// of skeletons. A failing secondary query is swallowed: the section shows its
+// own error state and the rest of the page still renders.
+const settle = (promise: Promise<unknown>) => promise.catch(() => undefined);
+
+export function preloadMemberOverview(queryClient: QueryClient) {
+  return Promise.all([
+    settle(queryClient.ensureQueryData(memberOverviewQuery())),
+    settle(queryClient.ensureQueryData(memberMissionsQuery())),
+    settle(queryClient.ensureQueryData(memberRewardsQuery())),
+    settle(queryClient.ensureQueryData(memberVouchersQuery())),
+    settle(
+      queryClient.ensureQueryData(
+        memberVisitsQuery({ limit: MEMBER_PAGE_SIZE }),
+      ),
+    ),
+    settle(queryClient.ensureQueryData(memberFavoritesQuery())),
+  ]);
+}
+
+export function preloadMemberOverviewOnly(queryClient: QueryClient) {
+  return settle(queryClient.ensureQueryData(memberOverviewQuery()));
+}
+
+export function preloadMemberPoints(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(
+      queryClient.ensureQueryData(
+        memberPointsQuery({ limit: MEMBER_PAGE_SIZE }),
+      ),
+    ),
+  ]);
+}
+
+export function preloadMemberVisits(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(
+      queryClient.ensureQueryData(
+        memberVisitsQuery({ limit: MEMBER_PAGE_SIZE }),
+      ),
+    ),
+  ]);
+}
+
+export function preloadMemberMissions(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(queryClient.ensureQueryData(memberMissionsQuery())),
+  ]);
+}
+
+export function preloadMemberRewards(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(queryClient.ensureQueryData(memberRewardsQuery())),
+  ]);
+}
+
+export function preloadMemberVouchers(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(queryClient.ensureQueryData(memberVouchersQuery())),
+  ]);
+}
+
+export function preloadMemberFavorites(queryClient: QueryClient) {
+  return Promise.all([
+    preloadMemberOverviewOnly(queryClient),
+    settle(queryClient.ensureQueryData(memberFavoritesQuery())),
+  ]);
+}
