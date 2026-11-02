@@ -1127,3 +1127,110 @@ test("inventory endpoints are unique and write inputs reject tenant fields (TEN-
     true,
   );
 });
+
+test("setup writes: locations, alternates, conversions and transfers (PRD §16, TEN-02)", () => {
+  const outletId = fixtures.locations[0].outletId;
+  const [from, to] = fixtures.locations;
+  const item = fixtures.items[0];
+
+  // Locations: an outlet-scoped create, then a partial update (no tenant id).
+  const location = {
+    outletId,
+    name: "Gudang Kering",
+    type: "warehouse",
+    idempotencyKey: "fixture-location-0001",
+  };
+  assert.equal(
+    inventory.createStockLocationInputSchema.safeParse(location).success,
+    true,
+  );
+  assert.equal(
+    inventory.createStockLocationInputSchema.safeParse({
+      ...location,
+      tenantId: item.tenantId,
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventory.updateStockLocationInputSchema.safeParse({ isActive: false })
+      .success,
+    true,
+  );
+
+  // Alternates: priority defaults to 0 (lower wins) when omitted.
+  assert.equal(
+    inventory.createInventoryItemAlternateInputSchema.safeParse({
+      alternateItemId: fixtures.itemAlternates[0].alternateItemId,
+      idempotencyKey: "fixture-alternate-0001",
+    }).success,
+    true,
+  );
+
+  // Conversions: two different units, a positive factor.
+  assert.equal(
+    inventory.createUomConversionInputSchema.safeParse({
+      fromUomId: uomId("pack"),
+      toUomId: uomId("pcs"),
+      factor: "24.0000",
+      idempotencyKey: "fixture-conversion-0001",
+    }).success,
+    true,
+  );
+  assert.equal(
+    inventory.createUomConversionInputSchema.safeParse({
+      fromUomId: uomId("pcs"),
+      toUomId: uomId("pcs"),
+      factor: "1.0000",
+      idempotencyKey: "fixture-conversion-0002",
+    }).success,
+    false,
+  );
+
+  // Transfers: two different locations and one row per item (schema parity).
+  const transfer = {
+    outletId,
+    fromLocationId: from.id,
+    toLocationId: to.id,
+    lines: [{ inventoryItemId: item.id, quantity: "2.0000" }],
+    idempotencyKey: "fixture-transfer-0001",
+  };
+  assert.equal(
+    inventory.createStockTransferInputSchema.safeParse(transfer).success,
+    true,
+  );
+  assert.equal(
+    inventory.createStockTransferInputSchema.safeParse({
+      ...transfer,
+      toLocationId: from.id,
+    }).success,
+    false,
+    "a transfer needs two different locations",
+  );
+  assert.equal(
+    inventory.createStockTransferInputSchema.safeParse({
+      ...transfer,
+      lines: [
+        { inventoryItemId: item.id, quantity: "1.0000" },
+        { inventoryItemId: item.id, quantity: "2.0000" },
+      ],
+    }).success,
+    false,
+    "an item appears once per transfer",
+  );
+  assert.equal(
+    inventory.createStockTransferInputSchema.safeParse({
+      ...transfer,
+      tenantId: item.tenantId,
+    }).success,
+    false,
+  );
+
+  // The list query is outlet-scoped like every stock view (TEN-03).
+  assert.equal(
+    inventory.stockTransferListQuerySchema.safeParse({
+      outletId,
+      limit: 20,
+    }).success,
+    true,
+  );
+});

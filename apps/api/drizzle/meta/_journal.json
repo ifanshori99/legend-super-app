@@ -155,6 +155,20 @@
       "when": 1793589795457,
       "tag": "0021_payment_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793590055823,
+      "tag": "0022_rich_boom_boom",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793590062651,
+      "tag": "0023_menu_rls",
+      "breakpoints": true
     }
   ]
 }

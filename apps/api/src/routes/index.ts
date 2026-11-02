@@ -11,6 +11,7 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { createMenuRouter } from "./menu.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
@@ -41,6 +42,10 @@ apiRouter.use("/internal", internalRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Menu back office (WS-03, legend-lmk). No object-storage provider is wired
+// yet (WS-00 storage bead owns that), so the image upload answers 503 until
+// the bootstrap injects one; every other menu route is live.
+apiRouter.use("/menu", createMenuRouter());
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.

@@ -37,6 +37,16 @@
 
   /* Legend roles. */
   --color-surface: var(--card);
+  /* v2 surface ladder: page (background) → band (surface-2) → raised. */
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  /* v2 accent ramp, derived from primary (tokens.css). */
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-tint: var(--primary-tint);
+  --color-primary-tint-strong: var(--primary-tint-strong);
+  --color-chart-accent: var(--chart-accent);
+  --color-chart-neutral: var(--chart-neutral);
+  --color-chart-grid: var(--chart-grid);
   --color-brand: var(--brand);
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-subtle: var(--brand-subtle);
@@ -74,6 +84,15 @@
   --radius-2xl: calc(var(--radius-unit) * 6);
   --radius-control: var(--control-radius);
   --radius-field: var(--field-radius);
+  /* v2 radius intents (aliases over the same scale). Media is never pill;
+   * containers group content; sheets are the largest. */
+  --radius-media: calc(var(--radius-unit) * 3);
+  --radius-container: calc(var(--radius-unit) * 4);
+  --radius-sheet: calc(var(--radius-unit) * 6);
+
+  --aspect-card: var(--ratio-card);
+  --aspect-hero: var(--ratio-hero);
+  --aspect-thumb: var(--ratio-thumb);
 
   /* Density-driven sizes: h-control, px-control-x, h-row, p-card, … */
   --spacing-control: var(--control-h);
@@ -97,11 +116,13 @@
   --font-mono: var(--ff-mono);
 
   --shadow-raised: var(--elevation-raised);
+  --shadow-card: var(--elevation-card);
   --shadow-overlay: var(--elevation-overlay);
 
   --ease-standard: var(--easing-standard);
   --ease-enter: var(--easing-enter);
   --ease-exit: var(--easing-exit);
+  --ease-sheet: var(--easing-sheet);
 }
 
 @layer base {
@@ -140,4 +161,83 @@
 @utility tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+}
+
+/* ------------------------------------------------ v2 type scale ---------
+ * Named `type-*`, not `text-*`, on purpose: tailwind-merge reads unknown
+ * text-<name> classes as colors (see DESIGN.md §3). Each step sets size,
+ * line height, weight, and tracking together; color stays a separate class.
+ * Display steps shrink fluidly on phones and stop at their spec size. */
+@utility type-display-2xl {
+  font-size: clamp(2.5rem, 1.6rem + 2.8vw, 3.5rem);
+  line-height: 1.07;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+@utility type-display-xl {
+  font-size: clamp(2.125rem, 1.6rem + 1.6vw, 2.75rem);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+@utility type-display {
+  font-size: 2rem;
+  line-height: 2.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+@utility type-title {
+  font-size: 1.375rem;
+  line-height: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+@utility type-heading {
+  font-size: 1.0625rem;
+  line-height: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+@utility type-eyebrow {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Money: tabular figures always; currency prefix scales via .money-currency. */
+@utility type-money-display {
+  font-size: 2rem;
+  line-height: 2.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+@utility type-money-hero {
+  font-size: 2.75rem;
+  line-height: 3rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Press feedback for buttons and tappable cards (DESIGN.md §7). The scale
+ * becomes 1 under prefers-reduced-motion (tokens.css). */
+@utility pressable {
+  transition-property:
+    transform, background-color, color, border-color, box-shadow;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--easing-standard);
+  &:active:not(:disabled) {
+    transform: scale(var(--press-scale));
+  }
+}
+
+/* Iconography (DESIGN.md §9): one stroke per density. lucide sets the
+ * stroke as an attribute; CSS wins over presentation attributes. */
+[data-density] svg.lucide {
+  stroke-width: 1.75;
+}
+[data-density="kontras"] svg.lucide {
+  stroke-width: 2;
 }

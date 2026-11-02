@@ -26,7 +26,7 @@ import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { CustomerShell } from "@/components/shells/customer-shell";
 import { ManagementShell } from "@/components/shells/management-shell";
 import { OperationsShell } from "@/components/shells/operations-shell";
@@ -225,29 +225,40 @@ function ManagementPreview() {
           icon: ClipboardCheck,
           count: 4,
         },
-        { label: t("nav.management.inventory"), href: "#shell", icon: Boxes },
+        {
+          label: t("nav.management.inventory"),
+          href: "#shell-inventory",
+          icon: Boxes,
+          group: t("nav.group.operations"),
+        },
         {
           label: t("nav.management.purchasing"),
-          href: "#shell",
+          href: "#shell-purchasing",
           icon: ShoppingCart,
+          group: t("nav.group.operations"),
         },
-        { label: t("nav.management.accounting"), href: "#shell", icon: Wallet },
-        { label: t("nav.management.crm"), href: "#shell", icon: Contact },
+        {
+          label: t("nav.management.accounting"),
+          href: "#shell-accounting",
+          icon: Wallet,
+          group: t("nav.group.finance"),
+        },
+        {
+          label: t("nav.management.crm"),
+          href: "#shell-crm",
+          icon: Contact,
+          group: t("nav.group.team"),
+        },
       ]}
       footerNav={[
         { label: t("nav.management.settings"), href: "#shell", icon: Settings },
       ]}
     >
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-        <div className="grid gap-3 @2xl:grid-cols-2">
+        <StatStrip label={t("designSystem.demo.dashboard")} columns={2}>
           <StatTile
             label={t("designSystem.demo.salesToday")}
-            value={
-              <Money
-                amount={sampleSalesToday}
-                className="text-[length:inherit]"
-              />
-            }
+            value={<Money amount={sampleSalesToday} size="stat" />}
             context={t("designSystem.demo.today", { outlet: sampleOutlet })}
             source={
               <a href="#shell">{t("designSystem.demo.viewTransactions")}</a>
@@ -259,8 +270,8 @@ function ManagementPreview() {
             context={t("designSystem.demo.today", { outlet: sampleOutlet })}
             source={<a href="#shell">{t("designSystem.demo.viewOrders")}</a>}
           />
-        </div>
-        <div className="rounded-xl border bg-card">
+        </StatStrip>
+        <div className="overflow-hidden rounded-container border bg-card">
           <OrdersTable orders={sampleOrders} />
         </div>
       </div>
