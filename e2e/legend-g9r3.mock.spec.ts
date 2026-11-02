@@ -1,15 +1,10 @@
 // WS-09 guest Wi-Fi captive portal (bead legend-g9r3; PRD v1.7 §3 Kelompok C
 // "Wi-Fi Tamu & WFC", §4 Alur X, FAC-11/FAC-12/FAC-13).
 //
-// Mock-mode spec: it runs against a web dev server with VITE_API_MOCK=true, not
-// against the production build `pnpm test:e2e` starts (the WS-09 API is still a
-// P2 bead, and the e2e runner is being repaired in legend-y8n9). Run it with
-//
-//   VITE_API_MOCK=true pnpm --filter @starter/web dev --port 3225
-//   E2E_MOCK_BASE_URL=http://localhost:3225 pnpm exec playwright test e2e/legend-g9r3.spec.ts
-//
-// Without E2E_MOCK_BASE_URL the tests skip, so `pnpm test:e2e` never fails on
-// a server that is not running.
+// Run: pnpm test:e2e:mock e2e/legend-g9r3.mock.spec.ts — mock mode only, no API
+// and no DB. The portal builds absolute links and a role cookie from one
+// origin, so this file reads E2E_MOCK_BASE_URL (the mock runner sets it) and
+// skips when it is missing.
 import { expect, test } from "@playwright/test";
 
 declare global {
@@ -27,10 +22,7 @@ const ZONE = "00000000-0000-4000-8000-000000009401";
 const FACILITY = "00000000-0000-4000-8000-000000009002";
 const TABLE = "st_01JC0QRD4M5N6P7Q8R9S0T1V2W";
 
-test.skip(
-  !base,
-  "Set E2E_MOCK_BASE_URL to a web server running VITE_API_MOCK.",
-);
+test.skip(!base, "Run with pnpm test:e2e:mock so E2E_MOCK_BASE_URL is set.");
 // FAC-12/FAC-13 wait for the portal's 30-second quota poll, so allow more time.
 test.describe.configure({ timeout: 90_000 });
 

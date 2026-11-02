@@ -323,8 +323,8 @@ A screen built against fixtures is reviewable before its API exists, so its Play
 
 - Parallel worktrees must not fight over that port: `LEGEND_MOCK_PORT=3235 pnpm test:e2e:mock` moves the whole run (server, baseURL, `LEGEND_MOCK_WEB_URL`). Default stays 3225.
 - Name a mock spec `<name>.mock.spec.ts`; the older per-bead name `legend-<bead>.spec.ts` is picked up too. `pnpm test:e2e` ignores both (its production build compiles mock mode out) and runs only the specs that need the real API and its disposable database.
-- `playwright.mock.config.ts` owns the server address and exports it to specs as `LEGEND_MOCK_WEB_URL` — the name to write in new specs — and `E2E_MOCK_BASE_URL`, the legacy alias `e2e/legend-g9r3.spec.ts` reads. A spec that skips itself when the variable is missing therefore runs here and still skips under `pnpm test:e2e`.
-- Run one spec: `pnpm test:e2e:mock e2e/legend-g9r3.spec.ts`. The mock runtime answers with zero latency in this project; ask for `?mock=slow` when a screen's loading state is the subject.
+- `playwright.mock.config.ts` owns the server address and exports it to specs as `LEGEND_MOCK_WEB_URL` — the name to write in new specs — and `E2E_MOCK_BASE_URL`, the legacy alias `e2e/legend-g9r3.mock.spec.ts` reads. A spec that skips itself when the variable is missing therefore runs here and still skips under `pnpm test:e2e`.
+- Run one spec: `pnpm test:e2e:mock e2e/legend-g9r3.mock.spec.ts`. The mock runtime answers with zero latency in this project; ask for `?mock=slow` when a screen's loading state is the subject.
 - The first test on a route pays Vite's cold compile: SSR takes 20-35 s on a loaded machine (beads legend-1336, legend-b0kq), well past Playwright's 5 s assertion default. `e2e/mock-global-setup.ts` therefore opens every route area in a real browser once, after the web server starts and before the first test, so specs run warm and keep normal timeouts. New top-level areas go on its `WARM_ROUTES` list.
 - A spec must still survive a dev server started by hand (cold start), so give the **first assertion of the first test** an explicit `{ timeout: 30_000 }` and name the constant `COLD_START_TIMEOUT_MS`. Later tests on the same route rely on the warm-up — no per-spec sleeps.
 - CI shards the suite over two parallel jobs (bead legend-x5be): `mock-e2e` runs `--shard=1/2` on `LEGEND_MOCK_PORT=3225` and `--shard=2/2` on `3235`, then `mock-e2e-report` merges the two blob reports into the browsable `mock-e2e-report` artifact with `playwright merge-reports`. A shard is still one worker. `e2e/mock-mode.mock.spec.ts` is the runner's own smoke test: it proves the dev server, the fixtures and both variable names work without an API.
@@ -356,14 +356,14 @@ Ten slowest tests in the shard 1/4 run (a whole-file sample, not a random one):
 | Time  | Spec                      | Test                                                                               |
 | ----- | ------------------------- | ---------------------------------------------------------------------------------- |
 | 8.8 s | `legend-10n.mock.spec.ts` | KDS mock shows empty, error and offline states                                     |
-| 7.6 s | `legend-2m4.spec.ts`      | ORD-01 ORD-02 ORD-03 ORD-11 order from the menu, pay first, see status             |
+| 7.6 s | `legend-2m4.mock.spec.ts`      | ORD-01 ORD-02 ORD-03 ORD-11 order from the menu, pay first, see status             |
 | 4.9 s | `legend-1j7.mock.spec.ts` | PRD §3.18 / Alur I: empty and error states offer a way forward                     |
 | 4.8 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed refresh keeps the idle warning open with retry text              |
 | 4.7 s | `legend-azt.mock.spec.ts` | F11 customer display: offline is its own state                                     |
 | 4.5 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed load offers a retry instead of a blank page                      |
 | 4.5 s | `legend-azt.mock.spec.ts` | F11 customer display: an error says how to fix it                                  |
 | 4.4 s | `legend-1j7.spec.ts`      | PRD §3.18 / Alur I: request, approve, create a PO and generate a sample share link |
-| 3.2 s | `legend-2m4.spec.ts`      | ORD-01 ORD-03 a reload keeps the joined table and the shared cart                  |
+| 3.2 s | `legend-2m4.mock.spec.ts`      | ORD-01 ORD-03 a reload keeps the joined table and the shared cart                  |
 | 2.9 s | `legend-7ko.mock.spec.ts` | ORD-10 merging two unpaid open-bill tables puts them on one bill                   |
 
 Ten slowest spec files in the same sample (sum of test time):
@@ -373,7 +373,7 @@ Ten slowest spec files in the same sample (sum of test time):
 | 21.0 s | 10    | `legend-7ko.mock.spec.ts`  |
 | 20.8 s | 9     | `legend-9bh.mock.spec.ts`  |
 | 19.7 s | 8     | `legend-azt.mock.spec.ts`  |
-| 15.8 s | 5     | `legend-2m4.spec.ts`       |
+| 15.8 s | 5     | `legend-2m4.mock.spec.ts`       |
 | 11.7 s | 7     | `legend-2w5.spec.ts`       |
 | 10.8 s | 7     | `legend-8tv6.mock.spec.ts` |
 | 8.8 s  | 1     | `legend-10n.mock.spec.ts`  |

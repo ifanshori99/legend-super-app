@@ -1,13 +1,12 @@
 // QR customer journey on the mock API (beads legend-2m4, legend-8sh; PRD §3
-// F10, Alur A). Runs against a web server started with VITE_API_MOCK=true and
-// DEPLOYMENT_MODE=development, so no database or API is needed. The shared
-// Playwright config (playwright.config.ts) builds the real API; run this file
-// with a config whose webServer is `pnpm --filter @starter/web dev` in mock
-// mode until the e2e runner is repaired (bead legend-y8n9).
+// F10, Alur A).
 //
-// First assertion = explicit timeout (bead legend-b0kq): `pnpm test:e2e:mock`
-// warms every route first (e2e/mock-global-setup.ts), but a dev server started
-// by hand is cold and needs 20-35 s for the first route compile.
+// Run: pnpm test:e2e:mock e2e/legend-2m4.mock.spec.ts — mock mode only, no API
+// and no DB.
+//
+// First assertion = explicit timeout (bead legend-b0kq): the runner warms every
+// route first (e2e/mock-global-setup.ts); a cold Vite server needs 20-35 s for
+// the first route compile.
 import { expect, test } from "@playwright/test";
 
 /** Cold Vite dev server: the first SSR hit can take >20 s (legend-1336). */
