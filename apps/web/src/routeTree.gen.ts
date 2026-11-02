@@ -42,6 +42,7 @@ import { Route as CustomerMemberRewardRouteImport } from './routes/_customer/mem
 import { Route as CustomerMemberVoucherRouteImport } from './routes/_customer/member.voucher'
 import { Route as CustomerTTokenRouteImport } from './routes/_customer/t.$token'
 import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/karyawan.index'
+import { Route as KaryawanKaryawanAbsensiRouteImport } from './routes/_karyawan/karyawan.absensi'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
 import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
@@ -59,6 +60,7 @@ import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$to
 import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
+import { Route as KaryawanKaryawanAbsensiRiwayatRouteImport } from './routes/_karyawan/karyawan.absensi.riwayat'
 import { Route as KelolaKelolaMejaIndexRouteImport } from './routes/_kelola/kelola.meja.index'
 import { Route as KelolaKelolaMejaQrRouteImport } from './routes/_kelola/kelola.meja.qr'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
@@ -226,6 +228,11 @@ const KaryawanKaryawanIndexRoute = KaryawanKaryawanIndexRouteImport.update({
   path: '/karyawan/',
   getParentRoute: () => KaryawanRoute,
 } as any)
+const KaryawanKaryawanAbsensiRoute = KaryawanKaryawanAbsensiRouteImport.update({
+  id: '/karyawan/absensi',
+  path: '/karyawan/absensi',
+  getParentRoute: () => KaryawanRoute,
+} as any)
 const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   id: '/kelola/',
   path: '/kelola/',
@@ -315,6 +322,12 @@ const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => CustomerTTokenRoute,
 } as any)
+const KaryawanKaryawanAbsensiRiwayatRoute =
+  KaryawanKaryawanAbsensiRiwayatRouteImport.update({
+    id: '/riwayat',
+    path: '/riwayat',
+    getParentRoute: () => KaryawanKaryawanAbsensiRoute,
+  } as any)
 const KelolaKelolaMejaIndexRoute = KelolaKelolaMejaIndexRouteImport.update({
   id: '/kelola/meja/',
   path: '/kelola/meja/',
@@ -401,6 +414,7 @@ export interface FileRoutesByFullPath {
   '/member/reward': typeof CustomerMemberRewardRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/karyawan/absensi': typeof KaryawanKaryawanAbsensiRouteWithChildren
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member/': typeof CustomerMemberIndexRoute
@@ -418,6 +432,7 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -452,6 +467,7 @@ export interface FileRoutesByTo {
   '/member/poin': typeof CustomerMemberPoinRoute
   '/member/reward': typeof CustomerMemberRewardRoute
   '/member/voucher': typeof CustomerMemberVoucherRoute
+  '/karyawan/absensi': typeof KaryawanKaryawanAbsensiRouteWithChildren
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/member': typeof CustomerMemberIndexRoute
@@ -469,6 +485,7 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -517,6 +534,7 @@ export interface FileRoutesById {
   '/_customer/member/reward': typeof CustomerMemberRewardRoute
   '/_customer/member/voucher': typeof CustomerMemberVoucherRoute
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
+  '/_karyawan/karyawan/absensi': typeof KaryawanKaryawanAbsensiRouteWithChildren
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
@@ -534,6 +552,7 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_karyawan/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/_kelola/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -572,6 +591,7 @@ export interface FileRouteTypes {
     | '/member/reward'
     | '/member/voucher'
     | '/t/$token'
+    | '/karyawan/absensi'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
     | '/member/'
@@ -589,6 +609,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/karyawan/absensi/riwayat'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
@@ -623,6 +644,7 @@ export interface FileRouteTypes {
     | '/member/poin'
     | '/member/reward'
     | '/member/voucher'
+    | '/karyawan/absensi'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
     | '/member'
@@ -640,6 +662,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/karyawan/absensi/riwayat'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
@@ -687,6 +710,7 @@ export interface FileRouteTypes {
     | '/_customer/member/reward'
     | '/_customer/member/voucher'
     | '/_customer/t/$token'
+    | '/_karyawan/karyawan/absensi'
     | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
     | '/_customer/member/'
@@ -704,6 +728,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_karyawan/karyawan/absensi/riwayat'
     | '/_kelola/kelola/meja/qr'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
@@ -968,6 +993,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KaryawanKaryawanIndexRouteImport
       parentRoute: typeof KaryawanRoute
     }
+    '/_karyawan/karyawan/absensi': {
+      id: '/_karyawan/karyawan/absensi'
+      path: '/karyawan/absensi'
+      fullPath: '/karyawan/absensi'
+      preLoaderRoute: typeof KaryawanKaryawanAbsensiRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
     '/_kelola/kelola/': {
       id: '/_kelola/kelola/'
       path: '/kelola'
@@ -1086,6 +1118,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/t/$token/review'
       preLoaderRoute: typeof CustomerTTokenReviewRouteImport
       parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_karyawan/karyawan/absensi/riwayat': {
+      id: '/_karyawan/karyawan/absensi/riwayat'
+      path: '/riwayat'
+      fullPath: '/karyawan/absensi/riwayat'
+      preLoaderRoute: typeof KaryawanKaryawanAbsensiRiwayatRouteImport
+      parentRoute: typeof KaryawanKaryawanAbsensiRoute
     }
     '/_kelola/kelola/meja/': {
       id: '/_kelola/kelola/meja/'
@@ -1264,11 +1303,27 @@ const CustomerRouteWithChildren = CustomerRoute._addFileChildren(
   CustomerRouteChildren,
 )
 
+interface KaryawanKaryawanAbsensiRouteChildren {
+  KaryawanKaryawanAbsensiRiwayatRoute: typeof KaryawanKaryawanAbsensiRiwayatRoute
+}
+
+const KaryawanKaryawanAbsensiRouteChildren: KaryawanKaryawanAbsensiRouteChildren =
+  {
+    KaryawanKaryawanAbsensiRiwayatRoute: KaryawanKaryawanAbsensiRiwayatRoute,
+  }
+
+const KaryawanKaryawanAbsensiRouteWithChildren =
+  KaryawanKaryawanAbsensiRoute._addFileChildren(
+    KaryawanKaryawanAbsensiRouteChildren,
+  )
+
 interface KaryawanRouteChildren {
+  KaryawanKaryawanAbsensiRoute: typeof KaryawanKaryawanAbsensiRouteWithChildren
   KaryawanKaryawanIndexRoute: typeof KaryawanKaryawanIndexRoute
 }
 
 const KaryawanRouteChildren: KaryawanRouteChildren = {
+  KaryawanKaryawanAbsensiRoute: KaryawanKaryawanAbsensiRouteWithChildren,
   KaryawanKaryawanIndexRoute: KaryawanKaryawanIndexRoute,
 }
 
