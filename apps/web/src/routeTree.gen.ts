@@ -48,6 +48,7 @@ import { Route as KelolaKelolaDapurRouteImport } from './routes/_kelola/kelola.d
 import { Route as KelolaKelolaKeamananRouteImport } from './routes/_kelola/kelola.keamanan'
 import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
 import { Route as KelolaKelolaPembayaranRouteImport } from './routes/_kelola/kelola.pembayaran'
+import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelola.pengadaan'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
@@ -112,6 +113,7 @@ import { Route as KelolaKelolaInventoriTransferIndexRouteImport } from './routes
 import { Route as KelolaKelolaInventoriTransferBaruRouteImport } from './routes/_kelola/kelola.inventori.transfer.baru'
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.index'
 import { Route as KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport } from './routes/_kelola/kelola.akuntansi.jurnal-manual.$manualJournalId.ubah'
+import { Route as KelolaKelolaPengadaanPoIdCetakRouteImport } from './routes/_kelola/kelola.pengadaan_.po.$id.cetak'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -295,6 +297,11 @@ const KelolaKelolaNotifikasiRoute = KelolaKelolaNotifikasiRouteImport.update({
 const KelolaKelolaPembayaranRoute = KelolaKelolaPembayaranRouteImport.update({
   id: '/kelola/pembayaran',
   path: '/kelola/pembayaran',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaPengadaanRoute = KelolaKelolaPengadaanRouteImport.update({
+  id: '/kelola/pengadaan',
+  path: '/kelola/pengadaan',
   getParentRoute: () => KelolaRoute,
 } as any)
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
@@ -652,6 +659,12 @@ const KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute =
     path: '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengadaanPoIdCetakRoute =
+  KelolaKelolaPengadaanPoIdCetakRouteImport.update({
+    id: '/kelola/pengadaan_/po/$id/cetak',
+    path: '/kelola/pengadaan/po/$id/cetak',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -679,6 +692,7 @@ export interface FileRoutesByFullPath {
   '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
+  '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -745,6 +759,7 @@ export interface FileRoutesByFullPath {
   '/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
   '/kelola/inventori/transfer/': typeof KelolaKelolaInventoriTransferIndexRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -771,6 +786,7 @@ export interface FileRoutesByTo {
   '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
+  '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -836,6 +852,7 @@ export interface FileRoutesByTo {
   '/kelola/akuntansi/jurnal': typeof KelolaKelolaAkuntansiJurnalIndexRoute
   '/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferIndexRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
   '/kelola/akuntansi/jurnal-manual/$manualJournalId': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRoutesById {
@@ -876,6 +893,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
+  '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/_public/masuk/email': typeof PublicMasukEmailRoute
@@ -942,6 +960,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/akuntansi/jurnal/': typeof KelolaKelolaAkuntansiJurnalIndexRoute
   '/_kelola/kelola/inventori/transfer/': typeof KelolaKelolaInventoriTransferIndexRoute
   '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  '/_kelola/kelola/pengadaan_/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
   '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/': typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -972,6 +991,7 @@ export interface FileRouteTypes {
     | '/kelola/keamanan'
     | '/kelola/notifikasi'
     | '/kelola/pembayaran'
+    | '/kelola/pengadaan'
     | '/operasional/koneksi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1038,6 +1058,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/jurnal/'
     | '/kelola/inventori/transfer/'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/kelola/pengadaan/po/$id/cetak'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -1064,6 +1085,7 @@ export interface FileRouteTypes {
     | '/kelola/keamanan'
     | '/kelola/notifikasi'
     | '/kelola/pembayaran'
+    | '/kelola/pengadaan'
     | '/operasional/koneksi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1129,6 +1151,7 @@ export interface FileRouteTypes {
     | '/kelola/akuntansi/jurnal'
     | '/kelola/inventori/transfer'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/kelola/pengadaan/po/$id/cetak'
     | '/kelola/akuntansi/jurnal-manual/$manualJournalId'
   id:
     | '__root__'
@@ -1168,6 +1191,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/keamanan'
     | '/_kelola/kelola/notifikasi'
     | '/_kelola/kelola/pembayaran'
+    | '/_kelola/kelola/pengadaan'
     | '/_ops/operasional/koneksi'
     | '/_platform/platform/keamanan'
     | '/_public/masuk/email'
@@ -1234,6 +1258,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/akuntansi/jurnal/'
     | '/_kelola/kelola/inventori/transfer/'
     | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/ubah'
+    | '/_kelola/kelola/pengadaan_/po/$id/cetak'
     | '/_kelola/kelola/akuntansi/jurnal-manual/$manualJournalId/'
   fileRoutesById: FileRoutesById
 }
@@ -1526,6 +1551,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/pembayaran'
       fullPath: '/kelola/pembayaran'
       preLoaderRoute: typeof KelolaKelolaPembayaranRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pengadaan': {
+      id: '/_kelola/kelola/pengadaan'
+      path: '/kelola/pengadaan'
+      fullPath: '/kelola/pengadaan'
+      preLoaderRoute: typeof KelolaKelolaPengadaanRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kitchen/kds/': {
@@ -1976,6 +2008,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengadaan_/po/$id/cetak': {
+      id: '/_kelola/kelola/pengadaan_/po/$id/cetak'
+      path: '/kelola/pengadaan/po/$id/cetak'
+      fullPath: '/kelola/pengadaan/po/$id/cetak'
+      preLoaderRoute: typeof KelolaKelolaPengadaanPoIdCetakRouteImport
+      parentRoute: typeof KelolaRoute
+    }
   }
 }
 
@@ -2104,6 +2143,7 @@ interface KelolaRouteChildren {
   KelolaKelolaKeamananRoute: typeof KelolaKelolaKeamananRoute
   KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaPembayaranRoute: typeof KelolaKelolaPembayaranRoute
+  KelolaKelolaPengadaanRoute: typeof KelolaKelolaPengadaanRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
   KelolaKelolaAkuntansiJurnalBerulangRoute: typeof KelolaKelolaAkuntansiJurnalBerulangRoute
   KelolaKelolaDapurLaporanRoute: typeof KelolaKelolaDapurLaporanRoute
@@ -2141,6 +2181,7 @@ interface KelolaRouteChildren {
   KelolaKelolaAkuntansiJurnalManualIndexRoute: typeof KelolaKelolaAkuntansiJurnalManualIndexRoute
   KelolaKelolaAkuntansiJurnalIndexRoute: typeof KelolaKelolaAkuntansiJurnalIndexRoute
   KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute
+  KelolaKelolaPengadaanPoIdCetakRoute: typeof KelolaKelolaPengadaanPoIdCetakRoute
   KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute: typeof KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute
 }
 
@@ -2149,6 +2190,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaKeamananRoute: KelolaKelolaKeamananRoute,
   KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaPembayaranRoute: KelolaKelolaPembayaranRoute,
+  KelolaKelolaPengadaanRoute: KelolaKelolaPengadaanRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
   KelolaKelolaAkuntansiJurnalBerulangRoute:
     KelolaKelolaAkuntansiJurnalBerulangRoute,
@@ -2192,6 +2234,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaAkuntansiJurnalIndexRoute: KelolaKelolaAkuntansiJurnalIndexRoute,
   KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute:
     KelolaKelolaAkuntansiJurnalManualManualJournalIdUbahRoute,
+  KelolaKelolaPengadaanPoIdCetakRoute: KelolaKelolaPengadaanPoIdCetakRoute,
   KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute:
     KelolaKelolaAkuntansiJurnalManualManualJournalIdIndexRoute,
 }
