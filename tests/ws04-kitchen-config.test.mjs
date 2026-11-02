@@ -13,6 +13,7 @@ import {
   durationParts,
   moveChannel,
   periodIncludesDate,
+  recentBusinessPeriod,
   rulesToDrafts,
   shortRef,
 } from "../apps/web/src/features/ws04-kitchen-config/lib.ts";
@@ -123,5 +124,18 @@ test("KDS-05: the config screen can read capacity rules before replacing them", 
   assert.equal(
     parsed.data.length,
     kitchen.cafeLegendKitchenFixtures.capacityRules.length,
+  );
+});
+
+test("F12 review: the serving-time default period uses the outlet business day", () => {
+  // 2026-11-01T18:30Z is 01:30 WIB on 2 Nov: the report ends on 2 Nov.
+  assert.deepEqual(
+    recentBusinessPeriod(new Date("2026-11-01T18:30:00Z"), "Asia/Jakarta"),
+    { startDate: "2026-10-27", endDate: "2026-11-02" },
+  );
+  // Month boundary: seven days ending 3 Mar 2026 starts 25 Feb.
+  assert.deepEqual(
+    recentBusinessPeriod(new Date("2026-03-03T05:00:00Z"), "Asia/Jakarta"),
+    { startDate: "2026-02-25", endDate: "2026-03-03" },
   );
 });

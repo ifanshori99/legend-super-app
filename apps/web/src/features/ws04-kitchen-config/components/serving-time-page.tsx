@@ -21,21 +21,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useServingTimeSummary } from "../hooks.ts";
-import { durationParts } from "../lib.ts";
+import { durationParts, recentBusinessPeriod } from "../lib.ts";
+import { KITCHEN_TIME_ZONE } from "../outlet.ts";
 
 const GROUPS = ["station", "hour", "employee", "item"] as const;
 type Group = (typeof GROUPS)[number];
 
-function isoDate(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-/** Last seven days including today: enough to include the fixture service day. */
+/** Last seven outlet days including today: covers the fixture service day. */
 function defaultPeriod(): { startDate: string; endDate: string } {
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 6);
-  return { startDate: isoDate(start), endDate: isoDate(end) };
+  return recentBusinessPeriod(new Date(), KITCHEN_TIME_ZONE);
 }
 
 function durationText(t: Translate, seconds: number): string {

@@ -174,3 +174,19 @@ export function periodIncludesDate(
 ): boolean {
   return startDate <= date && date <= endDate;
 }
+
+/**
+ * Last seven outlet business days including today. "Today" is the outlet's
+ * calendar day, not UTC's: 01:00 WIB on 2 Nov is still 1 Nov in UTC, and the
+ * report must still default to 2 Nov (business dates are the outlet's).
+ */
+export function recentBusinessPeriod(
+  now: Date,
+  timeZone: string,
+  days = 7,
+): { startDate: string; endDate: string } {
+  const endDate = new Intl.DateTimeFormat("en-CA", { timeZone }).format(now);
+  const [year, month, day] = endDate.split("-").map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day - (days - 1)));
+  return { startDate: start.toISOString().slice(0, 10), endDate };
+}
