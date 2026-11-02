@@ -75,6 +75,56 @@ export function boardCounts(
   return counts;
 }
 
+/**
+ * A waiter call is the floor signal that needs action now (DESIGN v2 Q25).
+ * "Late" has no contract signal on the board yet, so only the call marks a
+ * table urgent; adding a seat-time threshold would invent a business rule.
+ */
+export function isTableUrgent(row: TableLiveStatus): boolean {
+  return row.openServiceRequestCount > 0;
+}
+
+/** Tables with an open waiter call, for the board's "Perlu tindakan" strip. */
+export function urgentTableCount(rows: readonly TableLiveStatus[]): number {
+  return rows.filter(isTableUrgent).length;
+}
+
+export type TableTileLook = {
+  /** Surface the tile sits on (DESIGN.md v2 "Operations — status hierarchy"). */
+  surface: "card" | "surface-2" | "surface-3";
+  /** Solid pill + 2px border + 6px start rule (Q25). */
+  urgent: boolean;
+  /** Tint pill on `surface-3`, e.g. a requested bill (calm attention). */
+  calm: boolean;
+  /** Cleaning tiles use a dashed border. */
+  dashed: boolean;
+  /** Inactive tiles are muted. */
+  muted: boolean;
+};
+
+/**
+ * Tile treatment for one board row. Empty = card + border; occupied =
+ * `surface-3`, no border; cleaning = dashed; inactive = `surface-2`, muted;
+ * bill requested = calm attention on `surface-3`; urgent wins over all
+ * (DESIGN v2, owner Q25/Q27).
+ */
+export function tableTileLook(row: TableLiveStatus): TableTileLook {
+  const status = tableBoardStatus(row);
+  const occupied =
+    status === "seated" ||
+    status === "awaiting_order" ||
+    status === "awaiting_bill" ||
+    status === "awaiting_confirmation";
+  return {
+    surface:
+      status === "inactive" ? "surface-2" : occupied ? "surface-3" : "card",
+    urgent: isTableUrgent(row),
+    calm: status === "awaiting_bill",
+    dashed: status === "needs_cleaning",
+    muted: status === "inactive",
+  };
+}
+
 /** "1 j 5 mnt" / "12 mnt"; a table without a session has no duration. */
 export function seatDurationLabel(
   minutes: number | null,
