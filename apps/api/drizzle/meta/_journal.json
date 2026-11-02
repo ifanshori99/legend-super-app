@@ -253,6 +253,20 @@
       "when": 1793655895755,
       "tag": "0035_promo_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793656729388,
+      "tag": "0036_approval_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793656730329,
+      "tag": "0037_approval_requests_rls",
+      "breakpoints": true
     }
   ]
 }
