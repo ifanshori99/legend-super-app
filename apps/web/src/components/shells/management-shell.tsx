@@ -1,10 +1,13 @@
 // Management shell (Padat & Presisi): dashboards for management, owner,
-// shareholder, finance. Sidebar + topbar from 64rem of shell width; below
-// that the sidebar moves into a sheet behind a menu button. Breakpoints are
-// container queries, so the shell adapts to its own width (also in previews).
+// shareholder, finance. DESIGN.md v2 §5 (owner Q28): a 256px grouped sidebar
+// on the surface-2 band from 80rem of shell width, a 64px icon rail from
+// 64rem, and below that the sidebar moves into a sheet behind a menu button.
+// Breakpoints are container queries, so the shell adapts to its own width
+// (also in previews). The current item takes the accent tint plus a 2px
+// leading rule (Q29) — one of the screen's two accent details (Q21).
 import { useState, type ReactNode } from "react";
 import { cn } from "cn";
-import { Menu } from "lucide-react";
+import { Menu, Store } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Button } from "@/components/ui/button";
@@ -20,39 +23,110 @@ import {
   type ShellNavItem,
 } from "@/components/shells/nav";
 
-function NavList({
+type Layout = "full" | "rail";
+
+/** Consecutive items with the same `group` form one section. */
+function groupItems(items: ShellNavItem[]) {
+  const groups: { title?: string; items: ShellNavItem[] }[] = [];
+  for (const item of items) {
+    const last = groups.at(-1);
+    if (last && last.title === item.group) last.items.push(item);
+    else groups.push({ title: item.group, items: [item] });
+  }
+  return groups;
+}
+
+function NavItemLink({
+  item: { label, href, icon: Icon, current, count },
+  layout,
+  LinkComponent,
+  onNavigate,
+}: {
+  item: ShellNavItem;
+  layout: Layout;
+  LinkComponent: ShellLinkComponent;
+  onNavigate?: () => void;
+}) {
+  const rail = layout === "rail";
+  return (
+    <LinkComponent
+      href={href}
+      onClick={onNavigate}
+      aria-current={current ? "page" : undefined}
+      title={rail ? label : undefined}
+      className={cn(
+        "relative flex min-h-9 items-center gap-2.5 rounded-md text-sm transition-colors duration-(--duration-fast)",
+        rail ? "mx-auto size-10 justify-center" : "px-3",
+        current
+          ? "bg-primary-tint font-semibold text-primary before:absolute before:inset-y-2 before:start-0 before:w-0.5 before:rounded-full before:bg-primary"
+          : "text-foreground hover:bg-surface-3",
+      )}
+    >
+      <Icon
+        className={cn("size-4 shrink-0", !current && "text-muted-foreground")}
+        aria-hidden="true"
+      />
+      <span className={cn("min-w-0 flex-1 truncate", rail && "sr-only")}>
+        {label}
+      </span>
+      {count !== undefined && count > 0 && (
+        <span
+          className={cn(
+            "rounded-full bg-surface-3 px-1.5 text-xs leading-5 font-semibold text-foreground tabular",
+            rail && "absolute -top-1 -end-1 border-2 border-surface-2",
+          )}
+        >
+          {count}
+        </span>
+      )}
+    </LinkComponent>
+  );
+}
+
+function NavGroups({
   items,
+  layout,
   LinkComponent,
   onNavigate,
 }: {
   items: ShellNavItem[];
+  layout: Layout;
   LinkComponent: ShellLinkComponent;
   onNavigate?: () => void;
 }) {
+  const rail = layout === "rail";
   return (
-    <ul className="grid gap-0.5">
-      {items.map(({ label, href, icon: Icon, current, count }) => (
-        <li key={label}>
-          <LinkComponent
-            href={href}
-            onClick={onNavigate}
-            aria-current={current ? "page" : undefined}
-            className={cn(
-              "flex min-h-control items-center gap-2.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-              current && "bg-accent font-semibold text-foreground",
-            )}
-          >
-            <Icon className="size-4 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">{label}</span>
-            {count !== undefined && count > 0 && (
-              <span className="rounded-md bg-background px-1.5 text-xs leading-5 font-semibold text-foreground tabular">
-                {count}
-              </span>
-            )}
-          </LinkComponent>
-        </li>
+    <div className={cn("grid", rail ? "gap-2" : "gap-5")}>
+      {groupItems(items).map((group, index) => (
+        <div
+          key={group.title ?? `group-${index}`}
+          className={cn("grid gap-0.5", rail && index > 0 && "border-t pt-2")}
+        >
+          {group.title && (
+            <p
+              className={cn(
+                "px-3 pb-1 type-eyebrow text-muted-foreground",
+                rail && "sr-only",
+              )}
+            >
+              {group.title}
+            </p>
+          )}
+          <ul className="grid gap-0.5">
+            {group.items.map((item) => (
+              <li key={item.label}>
+                <NavItemLink
+                  item={item}
+                  layout={layout}
+                  LinkComponent={LinkComponent}
+                  onNavigate={onNavigate}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
       ))}
-    </ul>
+    </div>
   );
 }
 
@@ -60,30 +134,54 @@ function Sidebar({
   brandName,
   nav,
   footerNav,
+  layout,
   LinkComponent,
   onNavigate,
 }: {
   brandName: string;
   nav: ShellNavItem[];
   footerNav?: ShellNavItem[];
+  layout: Layout;
   LinkComponent: ShellLinkComponent;
   onNavigate?: () => void;
 }) {
   const t = useT();
+  const rail = layout === "rail";
   return (
-    <nav aria-label={t("shell.mainNav")} className="flex h-full flex-col gap-4">
-      <p className="px-2.5 text-base leading-6 font-bold tracking-tight">
-        {brandName}
-      </p>
-      <NavList
-        items={nav}
-        LinkComponent={LinkComponent}
-        onNavigate={onNavigate}
-      />
-      {footerNav && (
-        <div className="mt-auto border-t pt-3">
-          <NavList
+    <nav aria-label={t("shell.mainNav")} className="flex h-full flex-col">
+      <div
+        className={cn(
+          "flex h-14 shrink-0 items-center gap-2.5 border-b",
+          rail ? "justify-center" : "px-4",
+        )}
+      >
+        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-foreground text-background">
+          <Store className="size-4" aria-hidden="true" />
+        </span>
+        <p
+          className={cn(
+            "min-w-0 truncate text-sm leading-5 font-semibold",
+            rail && "sr-only",
+          )}
+        >
+          {brandName}
+        </p>
+      </div>
+      <div
+        className={cn("min-h-0 flex-1 overflow-y-auto", rail ? "py-3" : "p-3")}
+      >
+        <NavGroups
+          items={nav}
+          layout={layout}
+          LinkComponent={LinkComponent}
+          onNavigate={onNavigate}
+        />
+      </div>
+      {footerNav && footerNav.length > 0 && (
+        <div className={cn("border-t", rail ? "py-3" : "p-3")}>
+          <NavGroups
             items={footerNav}
+            layout={layout}
             LinkComponent={LinkComponent}
             onNavigate={onNavigate}
           />
@@ -121,13 +219,26 @@ export function ManagementShell({
   return (
     <ThemeScope
       density="padat"
-      className={cn("@container flex", embedded ? "h-full" : "h-dvh")}
+      className={cn(
+        "@container flex bg-background",
+        embedded ? "h-full" : "h-dvh",
+      )}
     >
-      <aside className="hidden w-60 shrink-0 border-r bg-muted px-3 py-4 @5xl:block">
+      <aside className="hidden w-16 shrink-0 border-e bg-surface-2 @5xl:block @7xl:hidden">
         <Sidebar
           brandName={brandName}
           nav={nav}
           footerNav={footerNav}
+          layout="rail"
+          LinkComponent={LinkComponent}
+        />
+      </aside>
+      <aside className="hidden w-64 shrink-0 border-e bg-surface-2 @7xl:block">
+        <Sidebar
+          brandName={brandName}
+          nav={nav}
+          footerNav={footerNav}
+          layout="full"
           LinkComponent={LinkComponent}
         />
       </aside>
@@ -137,24 +248,22 @@ export function ManagementShell({
           <Button
             variant="ghost"
             size="icon"
-            className="-ml-2 @5xl:hidden"
+            className="-ms-2 @5xl:hidden"
             onClick={() => setOpen(true)}
             aria-expanded={open}
           >
             <Menu aria-hidden="true" />
             <span className="sr-only">{t("shell.openNav")}</span>
           </Button>
-          <Title className="min-w-0 truncate text-lg leading-7 font-semibold">
-            {pageTitle}
-          </Title>
-          <div className="ml-auto flex items-center gap-2">
+          <Title className="min-w-0 truncate type-heading">{pageTitle}</Title>
+          <div className="ms-auto flex items-center gap-2">
             {actions}
             {user && (
-              <div className="hidden text-right @2xl:block">
-                <p className="text-sm leading-5 font-semibold">{user.name}</p>
-                <p className="text-xs leading-4 text-muted-foreground">
-                  {user.role}
-                </p>
+              <div className="hidden items-center gap-2.5 border-s ps-3 @2xl:flex">
+                <div className="text-end leading-tight">
+                  <p className="text-sm font-semibold">{user.name}</p>
+                  <p className="text-xs text-muted-foreground">{user.role}</p>
+                </div>
               </div>
             )}
           </div>
@@ -163,18 +272,21 @@ export function ManagementShell({
           id={embedded ? undefined : "main-content"}
           className="min-h-0 flex-1 overflow-y-auto"
         >
-          <div className="px-gutter py-6">{children}</div>
+          <div className="mx-auto w-full max-w-[90rem] px-gutter py-6">
+            {children}
+          </div>
         </Main>
       </div>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="left" className="bg-muted px-3">
+        <SheetContent side="left" className="w-64 gap-0 bg-surface-2 p-0">
           <SheetTitle className="sr-only">{t("shell.mainNav")}</SheetTitle>
           <SheetDescription className="sr-only">{brandName}</SheetDescription>
           <Sidebar
             brandName={brandName}
             nav={nav}
             footerNav={footerNav}
+            layout="full"
             LinkComponent={LinkComponent}
             onNavigate={() => setOpen(false)}
           />

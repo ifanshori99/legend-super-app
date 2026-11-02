@@ -9,12 +9,16 @@ export type ShellNavItem = {
   current?: boolean;
   /** Count the user acts on, e.g. open approvals. */
   count?: number;
+  /** Sidebar group heading (management shell); consecutive items share one. */
+  group?: string;
 };
 
 export type ShellLinkProps = {
   href: string;
   className?: string;
   "aria-current"?: "page";
+  /** Hover label where the visible text is hidden (management icon rail). */
+  title?: string;
   onClick?: () => void;
   children: ReactNode;
 };
