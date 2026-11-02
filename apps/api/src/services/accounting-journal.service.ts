@@ -8,12 +8,20 @@
 // outbox. It never opens a transaction of its own, so the domain write and the
 // journal commit or roll back together.
 //
-// ACC-01 rules come from the contract and are repeated by migration 0015:
+// ACC-01 rules come from the contract and are repeated by migration 0025:
 // at least two lines, debit XOR credit, equal totals, posted entries final,
 // corrections only through a reversal (once, never of a reversal).
 //
 // `expectedVersion` lets a caller that read the period earlier fail with
 // PERIOD_CHANGED instead of posting into a period that closed meanwhile.
+//
+// Pre-review findings (legend-kwxj) fixed here:
+// - disclosure scope: an outlet-scoped reader never sees a partial entry; a
+//   multi-outlet journal is invisible to a single-outlet reader instead of
+//   revealing the other outlets' lines (TEN-03);
+// - idempotency: the key is bound to a request fingerprint, so the same key
+//   with a different payload fails IDEMPOTENCY_KEY_REUSED (409);
+// - every exported boundary asserts trusted context before touching rows.
 
 import {
   and,
@@ -23,8 +31,11 @@ import {
   exists,
   gte,
   inArray,
+  isNull,
   lt,
   lte,
+  notExists,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -60,6 +71,7 @@ import {
   type LegalEntityId,
 } from "@starter/shared/accounting";
 import {
+  assertTrustedScopedContext,
   businessDateSchema,
   CoreError,
   createUlid,
@@ -85,6 +97,7 @@ import { HttpError } from "../lib/http-error";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
   auditAccountingChange,
+  journalRequestFingerprint,
   requireLegalEntity,
   requireOutlet,
   type TenantTransaction,
@@ -222,7 +235,10 @@ function toSummary(
 
 /**
  * TEN-03: an outlet-scoped caller may only post or reverse inside its
- * outlets. Entity-level entries (payroll, depreciation) need tenant scope.
+ * outlets. Entity-level entries and entity-level lines (payroll, depreciation,
+ * a tax line without an outlet) need tenant scope, so an outlet reader never
+ * creates a journal it could not see afterwards (disclosure scope, pre-review
+ * finding).
  */
 function assertPostingScope(
   context: ScopedTenantContext,
@@ -232,14 +248,25 @@ function assertPostingScope(
   if (outletId !== null) {
     outletIdsForQuery(context.outletScope, [outletId]);
   }
+  if (context.outletScope.kind !== "tenant") {
+    if (outletId === null)
+      throw new CoreError(
+        "OUTLET_OUT_OF_SCOPE",
+        "Jurnal tingkat badan usaha memerlukan akses seluruh tenant.",
+      );
+    for (const line of lines) {
+      if (line.outletId === null)
+        throw new CoreError(
+          "OUTLET_OUT_OF_SCOPE",
+          "Baris jurnal tingkat badan usaha memerlukan akses seluruh tenant.",
+        );
+      outletIdsForQuery(context.outletScope, [line.outletId]);
+    }
+    return;
+  }
   for (const line of lines)
     if (line.outletId !== null)
       outletIdsForQuery(context.outletScope, [line.outletId]);
-  if (context.outletScope.kind !== "tenant" && outletId === null)
-    throw new CoreError(
-      "OUTLET_OUT_OF_SCOPE",
-      "Jurnal tingkat badan usaha memerlukan akses seluruh tenant.",
-    );
 }
 
 async function entryLines(
@@ -264,7 +291,7 @@ async function findByIdempotency(
   tx: TenantTransaction,
   tenantId: string,
   idempotencyKey: string,
-): Promise<JournalEntry | null> {
+): Promise<{ row: EntryRow; entry: JournalEntry } | null> {
   const [row] = await tx
     .select()
     .from(journalEntries)
@@ -276,7 +303,37 @@ async function findByIdempotency(
     )
     .limit(1);
   if (!row) return null;
-  return toEntry(row, await entryLines(tx, tenantId, row.id));
+  return { row, entry: toEntry(row, await entryLines(tx, tenantId, row.id)) };
+}
+
+/**
+ * A key identifies one business fact (pre-review finding): a replay that
+ * carries another payload is a caller bug, so refuse instead of returning the
+ * entry that belongs to a different request.
+ */
+function assertReplayMatches(
+  replayed: { row: EntryRow; entry: JournalEntry },
+  fingerprint: string,
+): JournalEntry {
+  if (replayed.row.requestFingerprint !== fingerprint)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "That idempotency key was used for a different journal request.",
+    );
+  return replayed.entry;
+}
+
+/** Fingerprint of a post request, after parsing (trimmed description). */
+function postFingerprint(parsed: ParsedPost): string {
+  return journalRequestFingerprint({
+    legalEntityId: parsed.legalEntityId,
+    outletId: parsed.outletId,
+    entryDate: parsed.entryDate,
+    sourceType: parsed.sourceType,
+    sourceId: parsed.sourceId,
+    description: parsed.description,
+    lines: parsed.lines,
+  });
 }
 
 async function chartForEntity(
@@ -365,27 +422,16 @@ export async function postJournalInTransaction(
   input: PostJournalInput,
   now = new Date(),
 ): Promise<JournalEntry> {
+  assertTrustedScopedContext(context);
   const parsed = parsePostInput(input);
   assertPostingScope(context, parsed.outletId, parsed.lines);
+  const fingerprint = postFingerprint(parsed);
   const replayed = await findByIdempotency(
     tx,
     context.tenant.tenantId,
     parsed.idempotencyKey,
   );
-  if (replayed) {
-    // A key identifies one business fact: reusing it for another document is a
-    // caller bug, not a retry, so refuse instead of returning a foreign entry.
-    if (
-      replayed.legalEntityId !== parsed.legalEntityId ||
-      replayed.sourceType !== parsed.sourceType
-    )
-      throw new HttpError(
-        409,
-        "CONFLICT",
-        "That idempotency key belongs to another journal entry.",
-      );
-    return replayed;
-  }
+  if (replayed) return assertReplayMatches(replayed, fingerprint);
   await requireLegalEntity(tx, context.tenant.tenantId, parsed.legalEntityId);
   if (parsed.outletId !== null)
     await requireOutlet(tx, context.tenant.tenantId, parsed.outletId);
@@ -420,6 +466,7 @@ export async function postJournalInTransaction(
       postedBy: parsed.postedBy,
       postedAt: now,
       idempotencyKey: parsed.idempotencyKey,
+      requestFingerprint: fingerprint,
     })
     .onConflictDoNothing({
       target: [journalEntries.tenantId, journalEntries.idempotencyKey],
@@ -431,7 +478,7 @@ export async function postJournalInTransaction(
       context.tenant.tenantId,
       parsed.idempotencyKey,
     );
-    if (concurrent) return concurrent;
+    if (concurrent) return assertReplayMatches(concurrent, fingerprint);
     throw new Error("Journal entry conflicted without an existing entry.");
   }
   const lineRows = await tx
@@ -465,6 +512,7 @@ export async function postJournalFromRuleInTransaction(
   input: PostFromRuleInput,
   now = new Date(),
 ): Promise<JournalEntry> {
+  assertTrustedScopedContext(context);
   const rule = resolvePostingRule(
     defaultPostingRules,
     input.variant
@@ -533,19 +581,48 @@ export type ListJournalsQuery = {
   cursor?: string;
 };
 
-function outletScopeCondition(
+/**
+ * Disclosure scope (pre-review finding, TEN-03): an outlet-scoped reader only
+ * sees an entry when the whole entry is inside its outlets. A multi-outlet
+ * journal is hidden, not partially disclosed, because the other outlets' lines
+ * are outside the caller's assignment. An entity-level line (null outlet) is
+ * tenant-only data, so it hides the entry from outlet readers as well.
+ */
+function scopeDisclosureCondition(
   tx: TenantTransaction,
   context: ScopedTenantContext,
-  outletId: string | undefined,
 ): SQL | undefined {
-  const scope = outletIdsForQuery(
-    context.outletScope,
-    outletId === undefined ? undefined : [outletId],
+  if (context.outletScope.kind === "tenant") return undefined;
+  const ids = [...context.outletScope.outletIds];
+  return and(
+    or(isNull(journalEntries.outletId), inArray(journalEntries.outletId, ids)),
+    notExists(
+      tx
+        .select({ one: sql`1` })
+        .from(journalLines)
+        .where(
+          and(
+            eq(journalLines.tenantId, context.tenant.tenantId),
+            eq(journalLines.entryId, journalEntries.id),
+            or(
+              isNull(journalLines.outletId),
+              notInArray(journalLines.outletId, ids),
+            ),
+          ),
+        ),
+    ),
   );
-  if (scope.kind === "all") return undefined;
-  const ids = [...scope.outletIds];
+}
+
+/** Query filter for an explicitly requested outlet (any scope). */
+function outletFilterCondition(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  outletId: string,
+): SQL {
+  outletIdsForQuery(context.outletScope, [outletId]);
   return or(
-    inArray(journalEntries.outletId, ids),
+    eq(journalEntries.outletId, outletId),
     exists(
       tx
         .select({ one: sql`1` })
@@ -554,11 +631,11 @@ function outletScopeCondition(
           and(
             eq(journalLines.tenantId, context.tenant.tenantId),
             eq(journalLines.entryId, journalEntries.id),
-            inArray(journalLines.outletId, ids),
+            eq(journalLines.outletId, outletId),
           ),
         ),
     ),
-  );
+  ) as SQL;
 }
 
 /** One page of entry summaries, newest first, keyset on (entry_date, id). */
@@ -566,6 +643,7 @@ export async function listJournals(
   context: ScopedTenantContext,
   query: ListJournalsQuery,
 ): Promise<CursorPage<JournalEntrySummary>> {
+  assertTrustedScopedContext(context);
   return withTenant(db, context, async (tx) => {
     await requireLegalEntity(tx, context.tenant.tenantId, query.legalEntityId);
     const filters: SQL[] = [
@@ -574,8 +652,10 @@ export async function listJournals(
       gte(journalEntries.entryDate, query.from),
       lte(journalEntries.entryDate, query.to),
     ];
-    const scopeFilter = outletScopeCondition(tx, context, query.outletId);
+    const scopeFilter = scopeDisclosureCondition(tx, context);
     if (scopeFilter) filters.push(scopeFilter);
+    if (query.outletId)
+      filters.push(outletFilterCondition(tx, context, query.outletId));
     if (query.sourceType)
       filters.push(eq(journalEntries.sourceType, query.sourceType));
     if (query.accountId)
@@ -670,6 +750,10 @@ export async function listJournals(
   });
 }
 
+/**
+ * Point-read twin of scopeDisclosureCondition: true only when the whole entry
+ * is inside the caller's outlets. Never disclose a partial entry.
+ */
 async function visibleToScope(
   tx: TenantTransaction,
   context: ScopedTenantContext,
@@ -677,25 +761,29 @@ async function visibleToScope(
 ): Promise<boolean> {
   if (context.outletScope.kind === "tenant") return true;
   const ids = context.outletScope.outletIds as string[];
-  if (entry.outletId !== null && ids.includes(entry.outletId)) return true;
-  const [line] = await tx
+  if (entry.outletId !== null && !ids.includes(entry.outletId)) return false;
+  const [outside] = await tx
     .select({ one: sql`1` })
     .from(journalLines)
     .where(
       and(
         eq(journalLines.tenantId, context.tenant.tenantId),
         eq(journalLines.entryId, entry.id),
-        inArray(journalLines.outletId, ids),
+        or(
+          isNull(journalLines.outletId),
+          notInArray(journalLines.outletId, ids),
+        ),
       ),
     )
     .limit(1);
-  return line !== undefined;
+  return outside === undefined;
 }
 
 export async function getJournal(
   context: ScopedTenantContext,
   entryId: string,
 ): Promise<{ entry: JournalEntry; reversedBy: string | null }> {
+  assertTrustedScopedContext(context);
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select()
@@ -743,6 +831,7 @@ export async function reverseJournal(
   now = new Date(),
 ): Promise<JournalEntry> {
   const request = reverseJournalInputSchema.parse(input);
+  assertTrustedScopedContext(context);
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .select()
@@ -757,20 +846,24 @@ export async function reverseJournal(
       .for("update");
     if (!row || !(await visibleToScope(tx, context, row)))
       throw new HttpError(404, "NOT_FOUND", "Journal entry not found.");
+    const lines = await entryLines(tx, context.tenant.tenantId, entryId);
+    // The request fingerprint covers the target entry, the reversal date and
+    // the reason, so a reused key with another correction is refused.
+    const fingerprint = journalRequestFingerprint({
+      legalEntityId: row.legalEntityId,
+      outletId: row.outletId,
+      entryDate: request.entryDate,
+      sourceType: "reversal",
+      sourceId: entryId,
+      description: request.reason,
+      lines: lines.map(toLine),
+    });
     const replayed = await findByIdempotency(
       tx,
       context.tenant.tenantId,
       request.idempotencyKey,
     );
-    if (replayed) {
-      if (replayed.reversalOf !== entryId)
-        throw new HttpError(
-          409,
-          "CONFLICT",
-          "That idempotency key belongs to another entry.",
-        );
-      return replayed;
-    }
+    if (replayed) return assertReplayMatches(replayed, fingerprint);
     const [reversal] = await tx
       .select({ id: journalEntries.id })
       .from(journalEntries)
@@ -782,7 +875,6 @@ export async function reverseJournal(
       )
       .limit(1);
     assertReversible(row, reversal?.id ?? null);
-    const lines = await entryLines(tx, context.tenant.tenantId, entryId);
     const reversalLines = buildReversalLines(
       {
         lines: lines.map(toLine),
@@ -811,6 +903,7 @@ export async function reverseJournal(
         postedBy: actorId,
         postedAt: now,
         idempotencyKey: request.idempotencyKey,
+        requestFingerprint: fingerprint,
       })
       .onConflictDoNothing()
       .returning();
@@ -820,7 +913,7 @@ export async function reverseJournal(
         context.tenant.tenantId,
         request.idempotencyKey,
       );
-      if (concurrent?.reversalOf === entryId) return concurrent;
+      if (concurrent) return assertReplayMatches(concurrent, fingerprint);
       throw new AccountingError("JOURNAL_ALREADY_REVERSED");
     }
     const lineRows = await tx

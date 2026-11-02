@@ -29,6 +29,8 @@ import { createApp } from "../app";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import {
+  getJournal as getJournalService,
+  listJournals as listJournalsService,
   postJournalFromRuleInTransaction,
   postJournalInTransaction,
 } from "../services/accounting-journal.service";
@@ -37,6 +39,7 @@ import { agent, originHeader, signUp } from "./helpers";
 const app = createApp();
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletId = cafeLegendPlatformFixtures.outlets[0].id;
+const secondOutletId = cafeLegendPlatformFixtures.outlets[1].id;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
@@ -53,6 +56,21 @@ function scopedContext(tenant = tenantId): ScopedTenantContext {
       source: "session",
     }),
     { kind: "tenant" },
+  );
+}
+
+/** A caller whose role only reaches the listed outlets (TEN-03). */
+function outletScopedContext(...outlets: string[]): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({
+      tenantId,
+      brandId: null,
+      source: "session",
+    }),
+    {
+      kind: "outlets",
+      outletIds: outlets.map((id) => outletIdSchema.parse(id)),
+    },
   );
 }
 
@@ -131,6 +149,8 @@ async function post(
     entryDate?: string;
     idempotencyKey?: string;
     userId: string;
+    sourceId?: string;
+    description?: string;
   },
 ) {
   const context = scopedContext();
@@ -141,8 +161,8 @@ async function post(
       outletId,
       entryDate: businessDateSchema.parse(input.entryDate ?? "2026-11-02"),
       sourceType: "sale",
-      sourceId: randomUUID(),
-      description: "Penjualan tunai (ACC-01 test)",
+      sourceId: input.sourceId ?? randomUUID(),
+      description: input.description ?? "Penjualan tunai (ACC-01 test)",
       lines,
       postedBy: userId,
       idempotencyKey: input.idempotencyKey ?? `sale-${randomUUID()}`,
@@ -356,9 +376,18 @@ describe("legend-kwxj accounting core", () => {
       reportGroup: "revenue",
     });
     const key = `sale-${unique()}`;
+    const sourceId = randomUUID();
     const lines = [line(cash.id, 42_000, 0), line(revenue.id, 0, 42_000)];
-    const first = await post(entity, lines, { userId, idempotencyKey: key });
-    const second = await post(entity, lines, { userId, idempotencyKey: key });
+    const first = await post(entity, lines, {
+      userId,
+      idempotencyKey: key,
+      sourceId,
+    });
+    const second = await post(entity, lines, {
+      userId,
+      idempotencyKey: key,
+      sourceId,
+    });
     expect(second.id).toBe(first.id);
     const { rows } = await owner.query<{ count: string }>(
       "SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
@@ -688,5 +717,184 @@ describe("legend-kwxj accounting core", () => {
     expect(
       periods.body.data.map((row: { period: string }) => row.period),
     ).toEqual(["2026-10"]);
+  });
+
+  it("pre-review HIGH disclosure scope: a single-outlet reader never sees a multi-outlet journal (TEN-03)", async () => {
+    const { client, userId } = await financeUser();
+    const entity = await createEntity("disclosure scope entity");
+    const cash = await createAccountApi(client, entity, {
+      code: "1101",
+      name: "Kas Outlet",
+      type: "asset",
+      reportGroup: "cash_and_equivalents",
+    });
+    const revenue = await createAccountApi(client, entity, {
+      code: "4101",
+      name: "Penjualan",
+      type: "revenue",
+      reportGroup: "revenue",
+    });
+    // Header outlet 1, but the revenue is split across outlet 1 and outlet 2.
+    const mixed = await post(
+      entity,
+      [
+        line(cash.id, 60_000, 0, outletId),
+        line(revenue.id, 0, 40_000, outletId),
+        line(revenue.id, 0, 20_000, secondOutletId),
+      ],
+      { userId },
+    );
+    const own = await post(
+      entity,
+      [line(cash.id, 15_000, 0), line(revenue.id, 0, 15_000)],
+      { userId },
+    );
+    const query = {
+      legalEntityId: entity,
+      from: businessDateSchema.parse("2026-11-01"),
+      to: businessDateSchema.parse("2026-11-30"),
+      limit: 20,
+    };
+
+    const tenantPage = await listJournalsService(scopedContext(), query);
+    expect(tenantPage.data.map((row) => row.id).sort()).toEqual(
+      [mixed.id, own.id].sort(),
+    );
+
+    // Outlet 1 only sees the entry that is entirely its own; the mixed entry is
+    // hidden instead of being disclosed with outlet 2's line.
+    const firstOutletPage = await listJournalsService(
+      outletScopedContext(outletId),
+      query,
+    );
+    expect(firstOutletPage.data.map((row) => row.id)).toEqual([own.id]);
+
+    const filtered = await listJournalsService(outletScopedContext(outletId), {
+      ...query,
+      outletId,
+    });
+    expect(filtered.data.map((row) => row.id)).toEqual([own.id]);
+
+    const secondOutletPage = await listJournalsService(
+      outletScopedContext(secondOutletId),
+      query,
+    );
+    expect(secondOutletPage.data).toEqual([]);
+
+    await expect(
+      getJournalService(outletScopedContext(outletId), mixed.id),
+    ).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+    const ownDetail = await getJournalService(
+      outletScopedContext(outletId),
+      own.id,
+    );
+    expect(ownDetail.entry.lines).toHaveLength(2);
+  });
+
+  it("pre-review HIGH idempotency: one key cannot replay a different payload (IDEMPOTENCY_KEY_REUSED)", async () => {
+    const { client, userId } = await financeUser();
+    const entity = await createEntity("idempotency fingerprint entity");
+    const cash = await createAccountApi(client, entity, {
+      code: "1101",
+      name: "Kas Outlet",
+      type: "asset",
+      reportGroup: "cash_and_equivalents",
+    });
+    const revenue = await createAccountApi(client, entity, {
+      code: "4101",
+      name: "Penjualan",
+      type: "revenue",
+      reportGroup: "revenue",
+    });
+    const key = `sale-${unique()}`;
+    const sourceId = randomUUID();
+    const lines = [line(cash.id, 42_000, 0), line(revenue.id, 0, 42_000)];
+    const first = await post(entity, lines, {
+      userId,
+      idempotencyKey: key,
+      sourceId,
+    });
+    const replay = await post(entity, lines, {
+      userId,
+      idempotencyKey: key,
+      sourceId,
+    });
+    expect(replay.id).toBe(first.id);
+
+    await expect(
+      post(entity, [line(cash.id, 43_000, 0), line(revenue.id, 0, 43_000)], {
+        userId,
+        idempotencyKey: key,
+        sourceId,
+      }),
+    ).rejects.toMatchObject({
+      name: "CoreError",
+      code: "IDEMPOTENCY_KEY_REUSED",
+      status: 409,
+    });
+    await expect(
+      post(entity, lines, {
+        userId,
+        idempotencyKey: key,
+        sourceId,
+        description: "Penjualan lain",
+      }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
+
+    const stored = await owner.query<{ request_fingerprint: string }>(
+      "SELECT request_fingerprint FROM journal_entries WHERE id = $1",
+      [first.id],
+    );
+    expect(stored.rows[0]?.request_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+
+    const reversalKey = `reversal-${unique()}`;
+    const payload = {
+      entryDate: "2026-11-03",
+      reason: "Salah input penjualan",
+      idempotencyKey: reversalKey,
+    };
+    const reversal = await client
+      .post(`/api/accounting/journals/${first.id}/reversal`)
+      .set(originHeader)
+      .send(payload);
+    expect(reversal.status, JSON.stringify(reversal.body)).toBe(201);
+    const replayed = await client
+      .post(`/api/accounting/journals/${first.id}/reversal`)
+      .set(originHeader)
+      .send(payload);
+    expect(replayed.status, JSON.stringify(replayed.body)).toBe(201);
+    expect(replayed.body.data.id).toBe(reversal.body.data.id);
+
+    const reused = await client
+      .post(`/api/accounting/journals/${first.id}/reversal`)
+      .set(originHeader)
+      .send({ ...payload, reason: "Koreksi lain" });
+    expect(reused.status).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("pre-review HIGH trusted context: forged contexts are refused at direct transaction boundaries", async () => {
+    // A plain object (JSON round-trip, spread copy, client input) never carries
+    // server provenance, so a service boundary must fail closed before it reads
+    // or writes a row (TEN-02).
+    const forged = Object.freeze({
+      tenant: { tenantId, brandId: null, source: "session" },
+      outletScope: { kind: "tenant", tenantId },
+    }) as unknown as ScopedTenantContext;
+    await expect(
+      postJournalInTransaction(
+        null as unknown as never,
+        forged,
+        null as unknown as never,
+      ),
+    ).rejects.toThrow(/Untrusted tenant context/);
+    await expect(
+      listJournalsService(forged, {
+        legalEntityId: cafeLegendPlatformFixtures.legalEntity.id,
+        from: businessDateSchema.parse("2026-11-01"),
+        to: businessDateSchema.parse("2026-11-30"),
+        limit: 10,
+      }),
+    ).rejects.toThrow(/Untrusted tenant context/);
   });
 });

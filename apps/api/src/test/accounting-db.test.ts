@@ -76,8 +76,8 @@ async function insertEntry(
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO journal_entries
        (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
-        source_id, description, reversal_of, idempotency_key)
-     VALUES ($1, $2, $3, $4, $5, NULL, 'DB invariant entry', $6, $7)
+        source_id, description, reversal_of, idempotency_key, request_fingerprint)
+     VALUES ($1, $2, $3, $4, $5, NULL, 'DB invariant entry', $6, $7, $8)
      RETURNING id`,
     [
       tenantId,
@@ -87,6 +87,7 @@ async function insertEntry(
       input.sourceType ?? "sale",
       input.reversalOf ?? null,
       input.idempotencyKey ?? `db-${randomUUID()}`,
+      randomBytes(32).toString("hex"),
     ],
   );
   return rows[0]!.id;
@@ -146,6 +147,31 @@ describe("legend-kwxj accounting database invariants", () => {
       await insertLine(client, entry, data.cash, 10_000, 0, 1);
       await insertLine(client, entry, data.revenue, 0, 10_000, 2);
     });
+  });
+
+  it("pre-review HIGH finalize posted entries: a balanced line pair cannot be appended after posting (ACC-01)", async () => {
+    const data = await fixture();
+    let entry = "";
+    await inTransaction(async (client) => {
+      entry = await insertEntry(client, data);
+      await insertLine(client, entry, data.cash, 30_000, 0, 1);
+      await insertLine(client, entry, data.revenue, 0, 30_000, 2);
+    });
+
+    // The deferred balance trigger would accept this balanced pair; the seal
+    // makes the entry final at COMMIT, so a later transaction cannot add it.
+    await expect(
+      inTransaction(async (client) => {
+        await insertLine(client, entry, data.cash, 1_000, 0, 3);
+        await insertLine(client, entry, data.revenue, 0, 1_000, 4);
+      }),
+    ).rejects.toThrow(/posted and final/);
+
+    const { rows } = await owner.query<{ count: string }>(
+      "SELECT count(*) FROM journal_lines WHERE entry_id = $1",
+      [entry],
+    );
+    expect(Number(rows[0]?.count)).toBe(2);
   });
 
   it("ACC-01 refuses an account from another legal entity, an inactive account and a header account", async () => {

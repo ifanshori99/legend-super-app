@@ -3,7 +3,7 @@
 // `fiscal_periods`; ACC-01/ACC-02; bead legend-kwxj).
 //
 // (T) tables: tenant_id NOT NULL with app.enforce_tenant_rls in
-// 0015_accounting_invariants. Unique keys include tenant_id and children reach
+// 0025_accounting_invariants. Unique keys include tenant_id and children reach
 // their parents through (tenant_id, …) composite keys, so a privileged writer
 // cannot point a row at another tenant's legal entity, account or entry.
 //
@@ -249,6 +249,13 @@ export const journalEntries = pgTable(
       .notNull(),
     /** Retry key of the posting API: one business fact posts once. */
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
+    /**
+     * sha256 of the canonical request the key was first used for. A replay must
+     * present the same payload, else IDEMPOTENCY_KEY_REUSED (409).
+     */
+    requestFingerprint: varchar("request_fingerprint", {
+      length: 64,
+    }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

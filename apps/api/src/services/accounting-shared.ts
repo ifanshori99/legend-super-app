@@ -2,6 +2,7 @@
 // Row shapes follow the Drizzle schema; wire shapes are parsed from
 // `@starter/shared/accounting`, never redefined here.
 
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { LegalEntityId } from "@starter/shared/accounting";
@@ -24,6 +25,49 @@ export function uniqueViolation(error: unknown, depth = 0): boolean {
   return (
     candidate.code === "23505" || uniqueViolation(candidate.cause, depth + 1)
   );
+}
+
+/** The journal fact a posting request asks for; hashed into its fingerprint. */
+export type JournalFingerprintInput = {
+  readonly legalEntityId: string;
+  readonly outletId: string | null;
+  readonly entryDate: string;
+  readonly sourceType: string;
+  readonly sourceId: string | null;
+  readonly description: string;
+  readonly lines: readonly {
+    readonly accountId: string;
+    readonly debitIdr: number;
+    readonly creditIdr: number;
+    readonly outletId: string | null;
+    readonly costCenter: string | null;
+  }[];
+};
+
+/**
+ * sha256 of the canonical posting request. The idempotency key is bound to this
+ * value: a retry must present the same business fact, otherwise the request is
+ * refused with IDEMPOTENCY_KEY_REUSED instead of returning a foreign entry.
+ */
+export function journalRequestFingerprint(
+  input: JournalFingerprintInput,
+): string {
+  const canonical = JSON.stringify([
+    input.legalEntityId.toLowerCase(),
+    input.outletId?.toLowerCase() ?? null,
+    input.entryDate,
+    input.sourceType,
+    input.sourceId?.toLowerCase() ?? null,
+    input.description,
+    input.lines.map((line) => [
+      line.accountId.toLowerCase(),
+      line.debitIdr,
+      line.creditIdr,
+      line.outletId?.toLowerCase() ?? null,
+      line.costCenter ?? null,
+    ]),
+  ]);
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 /** A legal entity of this tenant; RLS already hides other tenants' rows. */

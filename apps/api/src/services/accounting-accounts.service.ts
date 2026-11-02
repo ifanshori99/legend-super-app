@@ -11,7 +11,7 @@
 //
 // Chart and mapping changes are sensitive master-data writes: each one records
 // an audit row in the same transaction. The database repeats the structural
-// rules (migration 0015), so a direct SQL write cannot bypass them either.
+// rules (migration 0025), so a direct SQL write cannot bypass them either.
 
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";

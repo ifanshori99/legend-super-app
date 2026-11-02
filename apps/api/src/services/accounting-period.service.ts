@@ -22,7 +22,10 @@ import {
   type FiscalPeriod,
 } from "@starter/shared/accounting";
 import type { BusinessDate } from "@starter/shared/core";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import {
+  assertTrustedScopedContext,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { db } from "../db";
 import { fiscalPeriods } from "../db/schema";
 import { withTenant } from "../db/tenant";
@@ -99,6 +102,7 @@ export async function assertPeriodOpenForPosting(
     expectedVersion?: number | null;
   },
 ): Promise<FiscalPeriodRow> {
+  assertTrustedScopedContext(context);
   const row = await lockFiscalPeriod(
     tx,
     context.tenant.tenantId,
