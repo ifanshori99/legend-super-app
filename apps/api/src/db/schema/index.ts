@@ -28,5 +28,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+// WS-01 generic approval requests (legend-y5q).
+export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
 export * from "./crm-promo";
