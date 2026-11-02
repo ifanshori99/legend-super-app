@@ -6,7 +6,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useT } from "@/components/i18n";
+import { useToast } from "@/components/ui/toast";
 import type { AttendanceCorrection, AttendanceLog } from "@starter/shared/hris";
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
@@ -30,6 +32,8 @@ import {
 import {
   correctionQueueSnapshot,
   enqueueCorrection,
+  isRetryableReplayError,
+  queuedFor,
   readCorrectionQueue,
   removeQueuedCorrection,
   subscribeCorrectionQueue,
@@ -42,18 +46,25 @@ export function useMyHrisProfile() {
   return useQuery({ ...myHrisProfileQuery(), enabled: hydrated });
 }
 
+/** The session employee's own id, once `/api/hris/me` answered (HR-01). */
+function useMyEmployeeId(): string | null {
+  return useMyHrisProfile().data?.employee.id ?? null;
+}
+
 export function useAttendanceDay(businessDate: string | null) {
+  const employeeId = useMyEmployeeId();
   return useQuery({
-    ...attendanceDayQuery(businessDate ?? "none"),
-    enabled: businessDate !== null,
+    ...attendanceDayQuery(employeeId ?? "none", businessDate ?? "none"),
+    enabled: businessDate !== null && employeeId !== null,
   });
 }
 
 export function useShiftToday(businessDate: string | null) {
+  const employeeId = useMyEmployeeId();
   const day = businessDate ?? "none";
   return useQuery({
-    ...shiftAssignmentsQuery(day, day),
-    enabled: businessDate !== null,
+    ...shiftAssignmentsQuery(employeeId ?? "none", day, day),
+    enabled: businessDate !== null && employeeId !== null,
   });
 }
 
@@ -67,13 +78,18 @@ export function usePositions(enabled = true) {
 }
 
 export function usePendingCorrections(enabled = true) {
-  return useQuery({ ...pendingCorrectionsQuery(), enabled });
+  const employeeId = useMyEmployeeId();
+  return useQuery({
+    ...pendingCorrectionsQuery(employeeId ?? "none"),
+    enabled: enabled && employeeId !== null,
+  });
 }
 
 export function useAttendanceHistory(enabled = true) {
+  const employeeId = useMyEmployeeId();
   const query = useInfiniteQuery({
-    ...attendanceLogPagesQuery(),
-    enabled,
+    ...attendanceLogPagesQuery(employeeId ?? "none"),
+    enabled: enabled && employeeId !== null,
   });
   const logs: AttendanceLog[] =
     query.data?.pages.flatMap((page) => page.data) ?? [];
@@ -81,9 +97,10 @@ export function useAttendanceHistory(enabled = true) {
 }
 
 export function useCorrectionHistory(enabled = true) {
+  const employeeId = useMyEmployeeId();
   const query = useInfiniteQuery({
-    ...attendanceCorrectionPagesQuery(),
-    enabled,
+    ...attendanceCorrectionPagesQuery(employeeId ?? "none"),
+    enabled: enabled && employeeId !== null,
   });
   const corrections: AttendanceCorrection[] =
     query.data?.pages.flatMap((page) => page.data) ?? [];
@@ -118,20 +135,22 @@ function isOfflineError(error: unknown): boolean {
  */
 export function useSubmitCorrection() {
   const queryClient = useQueryClient();
+  const employeeId = useMyEmployeeId();
   return useMutation({
     mutationFn: async (
       body: AttendanceCorrectionInput,
     ): Promise<CorrectionSubmitResult> => {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        enqueueCorrection(body);
+      const offline = typeof navigator !== "undefined" && !navigator.onLine;
+      if (offline && employeeId !== null) {
+        enqueueCorrection(body, employeeId);
         return { status: "queued", key: body.idempotencyKey };
       }
       try {
         const correction = await submitAttendanceCorrection(body);
         return { status: "sent", correction };
       } catch (error) {
-        if (!isOfflineError(error)) throw error;
-        enqueueCorrection(body);
+        if (!isOfflineError(error) || employeeId === null) throw error;
+        enqueueCorrection(body, employeeId);
         return { status: "queued", key: body.idempotencyKey };
       }
     },
@@ -139,13 +158,20 @@ export function useSubmitCorrection() {
   });
 }
 
-/** The on-device queue, reactive to this tab and to `storage` events. */
+const EMPTY_QUEUE: QueuedCorrection[] = [];
+
+/**
+ * The signed-in employee's own entries of the on-device queue, reactive to
+ * this tab and to `storage` events.
+ */
 export function useQueuedCorrections(): QueuedCorrection[] {
-  return useSyncExternalStore(
+  const employeeId = useMyEmployeeId();
+  const queue = useSyncExternalStore(
     subscribeCorrectionQueue,
     correctionQueueSnapshot,
-    () => [],
+    () => EMPTY_QUEUE,
   );
+  return useMemo(() => queuedFor(queue, employeeId), [queue, employeeId]);
 }
 
 /**
@@ -157,27 +183,45 @@ export function useQueuedCorrections(): QueuedCorrection[] {
 export function useFlushCorrectionQueue() {
   const online = useOnline();
   const queryClient = useQueryClient();
+  const employeeId = useMyEmployeeId();
+  const toast = useToast();
+  const t = useT();
   const flushing = useRef(false);
   useEffect(() => {
-    if (!online || flushing.current) return;
-    const queue = readCorrectionQueue();
+    if (!online || employeeId === null || flushing.current) return;
+    // Only this session's own entries (HR-01): another employee's queued
+    // request waits for that employee to sign in on this device again.
+    const queue = queuedFor(readCorrectionQueue(), employeeId);
     if (queue.length === 0) return;
     flushing.current = true;
     void (async () => {
-      let sent = 0;
+      let settled = 0;
+      let dropped = 0;
       for (const row of queue) {
         try {
           await submitAttendanceCorrection(row.body);
           removeQueuedCorrection(row.key);
-          sent += 1;
-        } catch {
-          // Keep it queued; the next online event retries with the same key.
-          break;
+          settled += 1;
+        } catch (error) {
+          const status = error instanceof ApiError ? error.status : undefined;
+          // Still offline or the server is down: keep it, retry next time.
+          if (isRetryableReplayError(status)) break;
+          // A final answer (validation, not found, key reused): replaying it
+          // can never succeed, and keeping it would block the rest forever.
+          removeQueuedCorrection(row.key);
+          settled += 1;
+          dropped += 1;
         }
       }
       flushing.current = false;
-      if (sent > 0)
+      if (dropped > 0)
+        toast({
+          title: t("hris.correction.errorTitle"),
+          description: t("hris.correction.replayDropped", { count: dropped }),
+          tone: "danger",
+        });
+      if (settled > 0)
         await queryClient.invalidateQueries({ queryKey: hrisKeys.all });
     })();
-  }, [online, queryClient]);
+  }, [online, employeeId, queryClient, toast, t]);
 }

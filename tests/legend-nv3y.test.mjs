@@ -27,15 +27,18 @@ import {
   formatBusinessDate,
   formatShiftRange,
   formatTime,
+  fromDateTimeLocalValue,
   groupLogsByDate,
   methodLabelKey,
   possibleCauses,
   primaryClockType,
   reasonFixKey,
   reasonLabelKey,
+  sameClockCapture,
   secondaryClockType,
   shiftForDate,
   submissionHeadlineKey,
+  toDateTimeLocalValue,
   typeLabelKey,
   validityLabelKey,
   validityStatus,
@@ -43,6 +46,8 @@ import {
 import {
   CORRECTION_QUEUE_KEY,
   enqueueCorrection,
+  isRetryableReplayError,
+  queuedFor,
   readCorrectionQueue,
   removeQueuedCorrection,
 } from "../apps/web/src/features/ws10-hris-employee/queue.ts";
@@ -51,6 +56,9 @@ const fixtures = hris.cafeLegendHrisFixtures;
 const outlet = fixtures.outlets[0];
 const timeZone = outlet.timeZone;
 const BOUND_DEVICE = "b".repeat(64);
+const ME_ID = fixtures.employees.find(
+  (employee) => employee.employeeNo === "CL-1003",
+).id;
 
 afterEach(resetMocks);
 
@@ -298,13 +306,13 @@ test("the offline correction queue keeps one entry per attempt and replays it", 
     reason: "Ponsel kehabisan baterai.",
     idempotencyKey: randomUUID(),
   };
-  enqueueCorrection(body, storage);
-  enqueueCorrection(body, storage);
+  enqueueCorrection(body, ME_ID, storage);
+  enqueueCorrection(body, ME_ID, storage);
   const queued = readCorrectionQueue(storage);
   assert.equal(queued.length, 1);
   assert.equal(queued[0].key, body.idempotencyKey);
 
-  enqueueCorrection({ ...body, idempotencyKey: randomUUID() }, storage);
+  enqueueCorrection({ ...body, idempotencyKey: randomUUID() }, ME_ID, storage);
   assert.equal(readCorrectionQueue(storage).length, 2);
 
   removeQueuedCorrection(queued[0].key, storage);
@@ -329,4 +337,162 @@ test("the mock outlet point and distance match the fixture tenant's 150 m fence"
   assert.ok(
     hris.cafeLegendHrisFixtures.attendancePolicy.geofenceRadiusM <= distance,
   );
+});
+
+test("HR-01 /api/hris/me takes no employee id and answers only the session employee", async () => {
+  // Nothing in the contract lets the client name an employee or a tenant.
+  assert.equal(hris.getMyHrisProfile.params, undefined);
+  assert.equal(hris.getMyHrisProfile.query, undefined);
+  assert.equal(hris.getMyHrisProfile.body, undefined);
+  const me = await get("/api/hris/me");
+  assert.equal(me.data.employee.id, ME_ID);
+  assert.equal(me.data.outlet.timeZone, "Asia/Jakarta");
+});
+
+test("HR-01 another employee's logs and log ids stay out of reach", async () => {
+  const other = fixtures.attendanceLogs.find((log) => log.employeeId !== ME_ID);
+  assert.ok(other, "the fixtures carry another employee's log");
+
+  // Even when the client asks for someone else, the list stays self-scoped.
+  const asked = await get("/api/hris/attendance/logs", {
+    limit: 50,
+    employeeId: other.employeeId,
+  });
+  assert.equal(asked.data.length, 0);
+  const own = await get("/api/hris/attendance/logs", {
+    limit: 50,
+    employeeId: ME_ID,
+  });
+  assert.ok(own.data.length > 0);
+  assert.ok(own.data.every((log) => log.employeeId === ME_ID));
+
+  // A correction cannot target another employee's log.
+  await assert.rejects(
+    post("/api/hris/attendance/corrections", {
+      outletId: outlet.id,
+      attendanceLogId: other.id,
+      requestedType: "in",
+      requestedOccurredAt: "2026-10-31T01:00:00.000Z",
+      reason: "Coba koreksi milik orang lain.",
+      idempotencyKey: randomUUID(),
+    }),
+    (error) => error.status === 404,
+  );
+});
+
+test("HR-01 the offline queue replays only the filer's own entries", () => {
+  const storage = memoryStorage();
+  const body = (key) => ({
+    outletId: outlet.id,
+    attendanceLogId: null,
+    requestedType: "out",
+    requestedOccurredAt: "2026-10-31T09:00:00.000Z",
+    reason: "Lupa absen pulang.",
+    idempotencyKey: key,
+  });
+  const otherId = fixtures.employees.find(
+    (employee) => employee.id !== ME_ID,
+  ).id;
+  enqueueCorrection(body(randomUUID()), ME_ID, storage);
+  enqueueCorrection(body(randomUUID()), otherId, storage);
+  const queue = readCorrectionQueue(storage);
+  assert.equal(queue.length, 2);
+  assert.equal(queuedFor(queue, ME_ID).length, 1);
+  assert.equal(queuedFor(queue, ME_ID)[0].employeeId, ME_ID);
+  assert.deepEqual(queuedFor(queue, null), []);
+
+  // A final 4xx leaves the queue; a lost connection or a 5xx is retried.
+  assert.equal(isRetryableReplayError(undefined), true);
+  assert.equal(isRetryableReplayError(0), true);
+  assert.equal(isRetryableReplayError(503), true);
+  assert.equal(isRetryableReplayError(429), true);
+  assert.equal(isRetryableReplayError(400), false);
+  assert.equal(isRetryableReplayError(404), false);
+  assert.equal(isRetryableReplayError(409), false);
+});
+
+test("a clock replay with the same key answers the first log; a changed body is refused", async () => {
+  hrisAttendanceMockControl.bindDevice(BOUND_DEVICE);
+  const body = clockBody();
+  const first = await post("/api/hris/attendance/clock", body);
+  const replay = await post("/api/hris/attendance/clock", { ...body });
+  assert.equal(replay.data.id, first.data.id);
+  const day = await get("/api/hris/attendance/logs", { limit: 50 });
+  assert.equal(day.data.filter((log) => log.id === first.data.id).length, 1);
+
+  await assert.rejects(
+    post("/api/hris/attendance/clock", {
+      ...body,
+      occurredAt: new Date(Date.now() + 5_000).toISOString(),
+    }),
+    (error) => error.status === 409 && error.code === "IDEMPOTENCY_KEY_REUSED",
+  );
+
+  // The screen reuses a frozen request only while the capture is unchanged.
+  const selfie = {};
+  const capture = {
+    type: "in",
+    method: "selfie_geo",
+    selfie,
+    qrToken: null,
+    location: { ...MOCK_OUTLET_POINT, accuracyM: 8 },
+    deviceIdHash: BOUND_DEVICE,
+  };
+  assert.equal(
+    sameClockCapture(capture, {
+      ...capture,
+      location: { ...capture.location },
+    }),
+    true,
+  );
+  assert.equal(sameClockCapture(capture, { ...capture, selfie: {} }), false);
+  assert.equal(
+    sameClockCapture(capture, {
+      ...capture,
+      location: { ...capture.location, accuracyM: 30 },
+    }),
+    false,
+  );
+});
+
+test("a correction key reused with a different body is refused", async () => {
+  const body = {
+    outletId: outlet.id,
+    attendanceLogId: null,
+    requestedType: "out",
+    requestedOccurredAt: "2026-10-31T09:10:00.000Z",
+    reason: "Lupa absen pulang.",
+    idempotencyKey: randomUUID(),
+  };
+  await post("/api/hris/attendance/corrections", body);
+  await assert.rejects(
+    post("/api/hris/attendance/corrections", { ...body, reason: "Lain." }),
+    (error) => error.status === 409,
+  );
+});
+
+test("the correction form edits the outlet's wall clock, not the phone's", () => {
+  const instant = new Date("2026-11-01T01:05:00.000Z");
+  assert.equal(
+    toDateTimeLocalValue(instant, "Asia/Jakarta"),
+    "2026-11-01T08:05",
+  );
+  assert.equal(
+    toDateTimeLocalValue(instant, "Asia/Makassar"),
+    "2026-11-01T09:05",
+  );
+  assert.equal(
+    fromDateTimeLocalValue("2026-11-01T08:05", "Asia/Jakarta"),
+    "2026-11-01T01:05:00.000Z",
+  );
+  assert.equal(
+    fromDateTimeLocalValue("2026-11-01T09:05", "Asia/Makassar"),
+    "2026-11-01T01:05:00.000Z",
+  );
+  // Just after midnight WIB is still the previous UTC day.
+  assert.equal(
+    fromDateTimeLocalValue("2026-11-02T00:30", "Asia/Jakarta"),
+    "2026-11-01T17:30:00.000Z",
+  );
+  assert.equal(fromDateTimeLocalValue("", "Asia/Jakarta"), null);
 });

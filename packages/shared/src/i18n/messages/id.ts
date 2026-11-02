@@ -1012,6 +1012,8 @@ export const id = {
       errorTitle: "Pengajuan gagal dikirim",
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
       noLog: "Absen tidak tercatat",
+      replayDropped:
+        "{count} pengajuan dari antrean ditolak server. Periksa riwayat koreksi lalu ajukan ulang bila perlu.",
       cancel: "Batal",
     },
     state: {

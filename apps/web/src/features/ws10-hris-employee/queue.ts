@@ -19,6 +19,12 @@ export type CorrectionSubmission = z.input<
 export type QueuedCorrection = {
   /** The request's idempotency key — one entry per attempt. */
   key: string;
+  /**
+   * The session employee who filed it. A shared outlet phone can switch
+   * accounts while offline; a replay must never go out under someone else's
+   * session (HR-01), so only the filer's own entries are replayed or shown.
+   */
+  employeeId: string;
   body: CorrectionSubmission;
   queuedAt: string;
 };
@@ -44,6 +50,8 @@ function isQueued(value: unknown): value is QueuedCorrection {
   return (
     typeof row.key === "string" &&
     row.key.length > 0 &&
+    typeof row.employeeId === "string" &&
+    row.employeeId.length > 0 &&
     typeof row.queuedAt === "string" &&
     typeof row.body === "object" &&
     row.body !== null
@@ -80,11 +88,13 @@ export function writeCorrectionQueue(
 /** Adds one attempt; replaying the same key replaces it (idempotent). */
 export function enqueueCorrection(
   body: CorrectionSubmission,
+  employeeId: string,
   storage: StorageLike | null = browserStorage(),
   now: Date = new Date(),
 ): QueuedCorrection[] {
   const entry: QueuedCorrection = {
     key: body.idempotencyKey,
+    employeeId,
     body,
     queuedAt: now.toISOString(),
   };
@@ -103,6 +113,28 @@ export function removeQueuedCorrection(
   const queue = readCorrectionQueue(storage).filter((row) => row.key !== key);
   writeCorrectionQueue(queue, storage);
   return queue;
+}
+
+/** The entries one employee filed; everyone else's stay untouched. */
+export function queuedFor(
+  queue: readonly QueuedCorrection[],
+  employeeId: string | null,
+): QueuedCorrection[] {
+  return employeeId === null
+    ? []
+    : queue.filter((row) => row.employeeId === employeeId);
+}
+
+/**
+ * True when replaying again can still succeed: no connection, a timeout, rate
+ * limiting or a server fault. A 4xx answer (validation, not found, key reused)
+ * is final, so the entry must leave the queue instead of blocking every entry
+ * behind it forever.
+ */
+export function isRetryableReplayError(status: number | undefined): boolean {
+  if (status === undefined || status === 0) return true;
+  if (status === 408 || status === 429) return true;
+  return status >= 500;
 }
 
 // ---- Reactivity (this page's submissions, without a full reload) ----------

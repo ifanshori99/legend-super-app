@@ -23,6 +23,7 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { MessageKey } from "@starter/shared/i18n";
 import type { AttendanceLog, AttendanceType } from "@starter/shared/hris";
+import type { ClockAttendanceInput } from "../api.ts";
 import { useOnline } from "@/lib/use-online";
 import { hrisMockControl } from "../browser-mock.ts";
 import { deviceIdHash } from "../device.ts";
@@ -33,7 +34,9 @@ import {
   looksLikeQrToken,
   methodLabelKey,
   normalizeQrToken,
+  sameClockCapture,
   typeTitleKey,
+  type ClockCapture,
 } from "../state.ts";
 import { AttendanceResult } from "./attendance-result.tsx";
 import { LocationStatus } from "./location-status.tsx";
@@ -60,7 +63,13 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
   const [submitError, setSubmitError] = useState<Error | null>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<AttendanceLog | null>(null);
-  const idempotencyKey = useRef<string | null>(null);
+  // The last unanswered attempt: its captured inputs and the exact request
+  // sent. A retry with the same inputs resends that request byte for byte.
+  const attempt = useRef<{
+    capture: ClockCapture;
+    body: ClockAttendanceInput;
+  } | null>(null);
+  const submitting = useRef(false);
 
   const geo = useGeolocation(method === "selfie_geo");
 
@@ -125,30 +134,50 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
       setFormError("hris.attendance.submitOffline");
       return;
     }
+    if (submitting.current) return;
+    submitting.current = true;
     setUploading(true);
     try {
-      const photoUploadRef = await uploadAttendanceSelfie(selfie);
-      // One attempt, one key: a retry after a network error replays the same
-      // request instead of creating a second log.
-      idempotencyKey.current ??= crypto.randomUUID();
-      const log = await clock.mutateAsync({
+      const capture: ClockCapture = {
         type,
         method,
-        occurredAt: new Date().toISOString(),
+        selfie,
+        qrToken: method === "rotating_qr" ? normalizeQrToken(qrToken) : null,
         location:
           method === "selfie_geo" && geo.state.status === "ready"
             ? geo.state.location
             : null,
         deviceIdHash: deviceHash ?? null,
-        photoUploadRef,
-        qrToken: method === "rotating_qr" ? normalizeQrToken(qrToken) : null,
-        idempotencyKey: idempotencyKey.current,
-      });
-      idempotencyKey.current = null;
+      };
+      // One attempt, one key: a retry after a network error replays the same
+      // request (same upload ref and capture time) so the API answers the
+      // original log instead of creating a second one or refusing the key.
+      if (
+        !attempt.current ||
+        !sameClockCapture(attempt.current.capture, capture)
+      ) {
+        const photoUploadRef = await uploadAttendanceSelfie(selfie);
+        attempt.current = {
+          capture,
+          body: {
+            type,
+            method,
+            occurredAt: new Date().toISOString(),
+            location: capture.location,
+            deviceIdHash: capture.deviceIdHash,
+            photoUploadRef,
+            qrToken: capture.qrToken,
+            idempotencyKey: crypto.randomUUID(),
+          },
+        };
+      }
+      const log = await clock.mutateAsync(attempt.current.body);
+      attempt.current = null;
       setResult(log);
     } catch (error) {
       setSubmitError(error instanceof Error ? error : new Error(String(error)));
     } finally {
+      submitting.current = false;
       setUploading(false);
     }
   }

@@ -63,7 +63,17 @@ export function SelfieCapture({
     streamRef.current = null;
   }, []);
 
-  useEffect(() => stopStream, [stopStream]);
+  // getUserMedia can resolve after the employee left this screen (the
+  // permission prompt stays open across navigation). Track mount so a late
+  // stream is stopped at once instead of leaving the front camera on.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopStream();
+    };
+  }, [stopStream]);
 
   useEffect(() => {
     if (mode !== "streaming") return;
@@ -93,10 +103,15 @@ export function SelfieCapture({
         video: { facingMode: "user", width: { ideal: 720 } },
         audio: false,
       });
+      if (!mounted.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       setMode("streaming");
     } catch (caught) {
       stopStream();
+      if (!mounted.current) return;
       setMode("idle");
       setError(
         caught instanceof DOMException && caught.name === "NotAllowedError"

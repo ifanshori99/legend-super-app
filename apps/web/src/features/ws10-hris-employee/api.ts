@@ -2,8 +2,10 @@
 // endpoint of the HRIS contract (@starter/shared/hris); responses are unwrapped
 // so hooks and components never see the `{ data }` envelope.
 //
-// HR-01: the self-scoped endpoints resolve the employee from the signed-in
-// session. No function here accepts an employee id from the screen.
+// HR-01: `/api/hris/me` resolves the employee from the signed-in session and
+// takes no id. The list calls then pass that same session-resolved id as a
+// filter: a supervisor using the PWA must see their own day, not the outlet's.
+// The API still scopes every list to what the session may read.
 
 import type { z } from "zod";
 import type {
@@ -33,12 +35,15 @@ export type AttendanceCorrectionInput = z.input<
 >;
 
 export type AttendanceLogQuery = {
+  /** The caller's own id from `/api/hris/me` (a filter, not an authorization). */
+  employeeId: string;
   limit: number;
   cursor?: string;
   businessDate?: string;
 };
 
 export type AttendanceCorrectionQuery = {
+  employeeId: string;
   limit: number;
   cursor?: string;
   status?: AttendanceCorrectionStatus;
@@ -64,7 +69,7 @@ export async function fetchAttendanceCorrections(
 }
 
 export async function fetchShiftAssignments(
-  query: { from: string; to: string; limit: number },
+  query: { employeeId: string; from: string; to: string; limit: number },
   signal?: AbortSignal,
 ): Promise<CursorPage<ShiftAssignment>> {
   return callEndpoint(listShiftAssignments, { query }, { signal });

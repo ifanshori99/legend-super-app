@@ -356,18 +356,90 @@ export function formatBusinessDate(
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
-/**
- * `datetime-local` value for the device's wall clock. The correction form
- * edits the phone's own time; the employee clocks at the outlet, so the two
- * agree in the normal case and the server still validates the instant.
- */
-export function toDateTimeLocalValue(date: Date): string {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+/** Wall-clock fields of an instant in one IANA zone. */
+function wallClock(instant: Date, timeZone: string) {
+  const parts = dateFormat(timeZone, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const field = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: field("year"),
+    month: field("month"),
+    day: field("day"),
+    hour: field("hour"),
+    minute: field("minute"),
+  };
 }
 
-/** Parses a `datetime-local` value back to an ISO instant, or null. */
-export function fromDateTimeLocalValue(value: string): string | null {
-  if (value.length < 10) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+/**
+ * `datetime-local` value for an instant on the outlet's wall clock. The
+ * history lists every time in the outlet's zone, so the correction form edits
+ * that same clock — never the phone's own zone, which can differ (a phone
+ * left on WIB at a WITA outlet).
+ */
+export function toDateTimeLocalValue(date: Date, timeZone: string): string {
+  const wall = wallClock(date, timeZone);
+  return `${wall.year}-${pad(wall.month)}-${pad(wall.day)}T${pad(wall.hour)}:${pad(wall.minute)}`;
+}
+
+/** Parses a `datetime-local` value on the outlet's wall clock to an ISO instant. */
+export function fromDateTimeLocalValue(
+  value: string,
+  timeZone: string,
+): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!match) return null;
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute);
+  if (Number.isNaN(asUtc)) return null;
+  // Offset of the zone at that moment; a second pass settles a DST edge.
+  const offsetAt = (instant: number) => {
+    const wall = wallClock(new Date(instant), timeZone);
+    return (
+      Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute) -
+      instant
+    );
+  };
+  let instant = asUtc - offsetAt(asUtc);
+  instant = asUtc - offsetAt(instant);
+  return Number.isNaN(instant) ? null : new Date(instant).toISOString();
+}
+
+/**
+ * What the employee captured for one clock attempt. A retry may reuse the
+ * attempt's frozen request (same idempotency key, same upload ref, same
+ * `occurredAt`) only while every captured input is unchanged; anything new is
+ * a new attempt with a new key, because the API refuses a reused key with a
+ * different body (`IDEMPOTENCY_KEY_REUSED`, docs/plan/contracts.md).
+ */
+export type ClockCapture = {
+  type: AttendanceType;
+  method: "selfie_geo" | "rotating_qr";
+  /** Compared by identity: a retake is a new Blob. */
+  selfie: object;
+  qrToken: string | null;
+  location: { latitude: number; longitude: number; accuracyM: number } | null;
+  deviceIdHash: string | null;
+};
+
+export function sameClockCapture(
+  left: ClockCapture,
+  right: ClockCapture,
+): boolean {
+  return (
+    left.type === right.type &&
+    left.method === right.method &&
+    left.selfie === right.selfie &&
+    left.qrToken === right.qrToken &&
+    left.deviceIdHash === right.deviceIdHash &&
+    left.location?.latitude === right.location?.latitude &&
+    left.location?.longitude === right.location?.longitude &&
+    left.location?.accuracyM === right.location?.accuracyM
+  );
 }

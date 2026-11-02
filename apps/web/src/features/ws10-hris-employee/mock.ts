@@ -98,11 +98,33 @@ export function distanceMetres(
 const MOCK_PHOTO_URL =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
+type Replay = { fingerprint: string; id: string };
+
+function idempotencyConflict(): ApiError {
+  return new ApiError(
+    409,
+    "IDEMPOTENCY_KEY_REUSED",
+    "Kunci idempotensi sudah dipakai dengan isi yang berbeda.",
+  );
+}
+
+/** The request minus its key: what a replay must repeat exactly. */
+function fingerprintOf(body: { idempotencyKey: string }): string {
+  const { idempotencyKey, ...rest } = body;
+  void idempotencyKey;
+  return JSON.stringify(rest);
+}
+
 type MockState = {
   logs: AttendanceLog[];
   corrections: AttendanceCorrection[];
-  /** Idempotency key → correction id, so a replay never creates a second row. */
-  correctionReplays: Record<string, string>;
+  /**
+   * Idempotency key → (request fingerprint, row id), so a replay never creates
+   * a second row and a reused key with a different body fails like the API
+   * (`IDEMPOTENCY_KEY_REUSED`, docs/plan/contracts.md "Idempotent mutations").
+   */
+  correctionReplays: Record<string, Replay>;
+  clockReplays: Record<string, Replay>;
   /** Per-device binding hashes a supervisor has registered (F25). */
   boundDevices: string[];
 };
@@ -112,6 +134,7 @@ function seed(): MockState {
     logs: [...cafeLegendHrisFixtures.attendanceLogs],
     corrections: [...cafeLegendHrisFixtures.attendanceCorrections],
     correctionReplays: {},
+    clockReplays: {},
     // Fixture logs record their own device hashes; they are bound devices.
     boundDevices: [
       ...new Set(
@@ -249,6 +272,13 @@ registerMock(listAnnouncements, ({ query, scenario }) => {
 
 registerMock(clockAttendance, ({ body }) => {
   const state = store.get();
+  const fingerprint = fingerprintOf(body);
+  const replay = state.clockReplays[body.idempotencyKey];
+  if (replay) {
+    if (replay.fingerprint !== fingerprint) throw idempotencyConflict();
+    const original = state.logs.find((row) => row.id === replay.id);
+    if (original) return { data: original };
+  }
   const now = new Date();
   const distanceM =
     body.location === null
@@ -292,15 +322,24 @@ registerMock(clockAttendance, ({ body }) => {
           assignment.businessDate === businessDateOf(now, outlet.timeZone),
       )?.id ?? null,
   });
-  store.set({ ...state, logs: [...state.logs, log] });
+  store.set({
+    ...state,
+    logs: [...state.logs, log],
+    clockReplays: {
+      ...state.clockReplays,
+      [body.idempotencyKey]: { fingerprint, id: log.id },
+    },
+  });
   return { data: log };
 });
 
 registerMock(requestAttendanceCorrection, ({ body }) => {
   const state = store.get();
-  const replayedId = state.correctionReplays[body.idempotencyKey];
-  if (replayedId) {
-    const replayed = state.corrections.find((row) => row.id === replayedId);
+  const fingerprint = fingerprintOf(body);
+  const replay = state.correctionReplays[body.idempotencyKey];
+  if (replay) {
+    if (replay.fingerprint !== fingerprint) throw idempotencyConflict();
+    const replayed = state.corrections.find((row) => row.id === replay.id);
     if (replayed) return { data: replayed };
   }
   if (!outlets.some((candidate) => candidate.id === body.outletId))
@@ -336,7 +375,7 @@ registerMock(requestAttendanceCorrection, ({ body }) => {
     corrections: [...state.corrections, correction],
     correctionReplays: {
       ...state.correctionReplays,
-      [body.idempotencyKey]: correction.id,
+      [body.idempotencyKey]: { fingerprint, id: correction.id },
     },
   });
   return { data: correction };

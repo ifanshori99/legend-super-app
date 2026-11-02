@@ -289,6 +289,7 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
         }}
         log={dialogLog ?? null}
         outletId={outletId}
+        timeZone={zone}
       />
     </div>
   );

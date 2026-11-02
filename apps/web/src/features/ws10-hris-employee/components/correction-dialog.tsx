@@ -52,12 +52,15 @@ export function CorrectionDialog({
   onOpenChange,
   log,
   outletId,
+  timeZone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The log being corrected; null when the log is missing entirely. */
   log: AttendanceLog | null;
   outletId: string;
+  /** The outlet's zone: the form edits the same clock the history shows. */
+  timeZone: string;
 }) {
   const t = useT();
   const toast = useToast();
@@ -73,6 +76,7 @@ export function CorrectionDialog({
           key={log?.id ?? "unmatched"}
           log={log}
           outletId={outletId}
+          timeZone={timeZone}
           onSent={(status) => {
             toast(
               status === "queued"
@@ -93,38 +97,48 @@ export function CorrectionDialog({
 function CorrectionForm({
   log,
   outletId,
+  timeZone,
   onSent,
 }: {
   log: AttendanceLog | null;
   outletId: string;
+  timeZone: string;
   onSent: (status: "sent" | "queued") => void;
 }) {
   const t = useT();
   const submit = useSubmitCorrection();
-  const idempotencyKey = useRef<string | null>(null);
+  // One key per distinct request: a resend of the same body reuses it (the
+  // API answers the first correction); an edited body gets a fresh key, since
+  // a reused key with a different body is IDEMPOTENCY_KEY_REUSED (409).
+  const attempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
   const [type, setType] = useState<AttendanceType>(log?.type ?? "in");
   const [occurredAt, setOccurredAt] = useState(() =>
-    toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date()),
+    toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date(), timeZone),
   );
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
   function handleSend() {
-    const occurredAtIso = fromDateTimeLocalValue(occurredAt);
+    const occurredAtIso = fromDateTimeLocalValue(occurredAt, timeZone);
     if (occurredAtIso === null) {
       setErrors({ requestedOccurredAt: t("hris.correction.timeInvalid") });
       return;
     }
-    idempotencyKey.current ??= crypto.randomUUID();
-    const parsed = bodySchema.safeParse({
+    const request = {
       outletId,
       attendanceLogId: log?.id ?? null,
       requestedType: type,
       requestedOccurredAt: occurredAtIso,
       reason: reason.trim(),
-      idempotencyKey: idempotencyKey.current,
+    };
+    const fingerprint = JSON.stringify(request);
+    if (attempt.current?.fingerprint !== fingerprint)
+      attempt.current = { fingerprint, key: crypto.randomUUID() };
+    const parsed = bodySchema.safeParse({
+      ...request,
+      idempotencyKey: attempt.current.key,
     });
     if (!parsed.success) {
       const mapped = fieldErrors(parsed.error);

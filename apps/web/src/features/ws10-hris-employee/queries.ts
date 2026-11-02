@@ -24,14 +24,16 @@ export const HOME_ANNOUNCEMENT_LIMIT = 3;
 export const hrisKeys = {
   all: ["hris"] as const,
   profile: () => [...hrisKeys.all, "profile"] as const,
-  dayLogs: (businessDate: string) =>
-    [...hrisKeys.all, "day-logs", businessDate] as const,
-  logPages: () => [...hrisKeys.all, "log-pages"] as const,
-  correctionPages: () => [...hrisKeys.all, "correction-pages"] as const,
-  pendingCorrections: () =>
-    [...hrisKeys.all, "corrections", "pending"] as const,
-  shifts: (from: string, to: string) =>
-    [...hrisKeys.all, "shifts", from, to] as const,
+  dayLogs: (employeeId: string, businessDate: string) =>
+    [...hrisKeys.all, "day-logs", employeeId, businessDate] as const,
+  logPages: (employeeId: string) =>
+    [...hrisKeys.all, "log-pages", employeeId] as const,
+  correctionPages: (employeeId: string) =>
+    [...hrisKeys.all, "correction-pages", employeeId] as const,
+  pendingCorrections: (employeeId: string) =>
+    [...hrisKeys.all, "corrections", "pending", employeeId] as const,
+  shifts: (employeeId: string, from: string, to: string) =>
+    [...hrisKeys.all, "shifts", employeeId, from, to] as const,
   announcements: () => [...hrisKeys.all, "announcements"] as const,
   positions: () => [...hrisKeys.all, "positions"] as const,
 };
@@ -45,22 +47,25 @@ export function myHrisProfileQuery() {
 }
 
 /** The employee's own logs for one business date (home timeline). */
-export function attendanceDayQuery(businessDate: string) {
+export function attendanceDayQuery(employeeId: string, businessDate: string) {
   return queryOptions({
-    queryKey: hrisKeys.dayLogs(businessDate),
+    queryKey: hrisKeys.dayLogs(employeeId, businessDate),
     queryFn: ({ signal }) =>
-      fetchAttendanceLogs({ limit: HOME_LOG_LIMIT, businessDate }, signal),
+      fetchAttendanceLogs(
+        { employeeId, limit: HOME_LOG_LIMIT, businessDate },
+        signal,
+      ),
     staleTime: 0,
   });
 }
 
 /** Every own log, newest first (history tab, cursor paginated). */
-export function attendanceLogPagesQuery() {
+export function attendanceLogPagesQuery(employeeId: string) {
   return infiniteQueryOptions({
-    queryKey: hrisKeys.logPages(),
+    queryKey: hrisKeys.logPages(employeeId),
     queryFn: ({ pageParam, signal }) =>
       fetchAttendanceLogs(
-        { limit: HISTORY_PAGE_SIZE, cursor: pageParam },
+        { employeeId, limit: HISTORY_PAGE_SIZE, cursor: pageParam },
         signal,
       ),
     initialPageParam: undefined as string | undefined,
@@ -69,12 +74,12 @@ export function attendanceLogPagesQuery() {
 }
 
 /** Corrections this employee sent, newest first. */
-export function attendanceCorrectionPagesQuery() {
+export function attendanceCorrectionPagesQuery(employeeId: string) {
   return infiniteQueryOptions({
-    queryKey: hrisKeys.correctionPages(),
+    queryKey: hrisKeys.correctionPages(employeeId),
     queryFn: ({ pageParam, signal }) =>
       fetchAttendanceCorrections(
-        { limit: HISTORY_PAGE_SIZE, cursor: pageParam },
+        { employeeId, limit: HISTORY_PAGE_SIZE, cursor: pageParam },
         signal,
       ),
     initialPageParam: undefined as string | undefined,
@@ -83,12 +88,12 @@ export function attendanceCorrectionPagesQuery() {
 }
 
 /** The pending corrections shown on the Beranda. */
-export function pendingCorrectionsQuery() {
+export function pendingCorrectionsQuery(employeeId: string) {
   return queryOptions({
-    queryKey: hrisKeys.pendingCorrections(),
+    queryKey: hrisKeys.pendingCorrections(employeeId),
     queryFn: ({ signal }) =>
       fetchAttendanceCorrections(
-        { limit: HOME_CORRECTION_LIMIT, status: "pending" },
+        { employeeId, limit: HOME_CORRECTION_LIMIT, status: "pending" },
         signal,
       ),
     staleTime: 0,
@@ -96,11 +101,15 @@ export function pendingCorrectionsQuery() {
 }
 
 /** Published shifts of one business date (normally zero or one). */
-export function shiftAssignmentsQuery(from: string, to: string) {
+export function shiftAssignmentsQuery(
+  employeeId: string,
+  from: string,
+  to: string,
+) {
   return queryOptions({
-    queryKey: hrisKeys.shifts(from, to),
+    queryKey: hrisKeys.shifts(employeeId, from, to),
     queryFn: ({ signal }) =>
-      fetchShiftAssignments({ from, to, limit: 10 }, signal),
+      fetchShiftAssignments({ employeeId, from, to, limit: 10 }, signal),
     staleTime: 5 * 60_000,
   });
 }
