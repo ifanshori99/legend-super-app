@@ -1530,6 +1530,7 @@ export const id = {
       mismatch: "Selisih",
       openCases: "Kasus terbuka",
       variance: "Total selisih",
+      summaryLabel: "Ringkasan rekonsiliasi",
       source: "Sumber",
       sourceGateway: "Gateway",
       sourceEdc: "EDC",
@@ -1917,6 +1918,11 @@ export const id = {
     waitingTitle: "Menunggu siap",
     waitingHint: "Panggil setelah pesanan siap dan driver menunggu.",
     pickedUpTitle: "Sudah diambil",
+    // The state words on a pickup tile's header band (DESIGN.md §5).
+    status: {
+      waiting: "Menunggu siap",
+      called: "Dipanggil",
+    },
     call: "Panggil",
     callAgain: "Panggil ulang",
     callFor: "Panggil nomor {number}",
@@ -3166,6 +3172,7 @@ export const id = {
       totalRow: "Total",
       totalTax: "Total pajak",
       totalBase: "Total dasar pajak",
+      summaryLabel: "Ringkasan PBJT",
       transactions: "Transaksi",
       viewRows: "Lihat rincian",
       csv: {

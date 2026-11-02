@@ -79,7 +79,7 @@ export function ExpoScreen() {
         >
           <span className="sr-only">{t("expo.loading")}</span>
           {[0, 1, 2, 3].map((card) => (
-            <Skeleton key={card} className="h-56 w-full rounded-xl" />
+            <Skeleton key={card} className="h-56 w-full rounded-container" />
           ))}
         </div>
       </div>
@@ -118,10 +118,7 @@ export function ExpoScreen() {
       {ready.length > 0 && (
         <section aria-labelledby="expo-ready" className="flex flex-col gap-3">
           <div className="min-w-0">
-            <h2
-              id="expo-ready"
-              className="text-lg leading-7 font-semibold tabular"
-            >
+            <h2 id="expo-ready" className="type-title tabular">
               {t("expo.readyTitle")} · {ready.length}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">
@@ -151,10 +148,7 @@ export function ExpoScreen() {
           className="flex flex-col gap-3"
         >
           <div className="min-w-0">
-            <h2
-              id="expo-preparing"
-              className="text-lg leading-7 font-semibold tabular"
-            >
+            <h2 id="expo-preparing" className="type-title tabular">
               {t("expo.preparingTitle")} · {preparing.length}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">
