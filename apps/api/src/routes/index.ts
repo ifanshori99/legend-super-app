@@ -15,6 +15,14 @@ import { qrRouter } from "./qr.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
+//
+// Two WS-01 identity routers are mounted in app.ts instead, because their paths
+// decide the order of middleware rather than the path prefix:
+// - routes/identity-auth.routes.ts is under /api/auth/* and must run BEFORE
+//   Better Auth's catch-all (it is Legend's, not Better Auth's);
+// - routes/identity-wa-webhook.routes.ts is a server-to-server webhook that
+//   reads the raw bytes for the AUTH-02 signature and must run before any body
+//   parser or tenant middleware.
 export const apiRouter = Router();
 
 apiRouter.use(noStore);
