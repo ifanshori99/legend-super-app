@@ -20,6 +20,7 @@ import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingRouter } from "./accounting.routes";
+import { approvalRouter } from "./platform-approval.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -46,6 +47,8 @@ apiRouter.use("/internal", internalRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Generic approval inbox for every module (WS-01 F7, legend-y5q).
+apiRouter.use("/approvals", approvalRouter);
 // Menu back office (WS-03, legend-lmk). No object-storage provider is wired
 // yet (WS-00 storage bead owns that), so the image upload answers 503 until
 // the bootstrap injects one; every other menu route is live.

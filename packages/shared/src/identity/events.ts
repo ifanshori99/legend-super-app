@@ -5,7 +5,7 @@
 // Registered with defineDomainEvent, so a typo or an unregistered name throws
 // at module load instead of publishing an event nobody consumes. This bead
 // owns the identity additions to the WS-01 catalog line (`session.revoked`,
-// `approval.requested`, `approval.decided`); login challenge, identity.link and
+// `approval.requested`, `approval.decided`, `approval.resolved`); login challenge, identity.link and
 // session.created names come from the WS-01 proposal and are now bound here.
 //
 // Never in a payload: a login code, magic-link token, browser binding, session
@@ -135,5 +135,34 @@ export const approvalDecidedEvent = defineDomainEvent({
     level: z.number().int().min(1).max(APPROVAL_MAX_LEVELS),
     decision: z.enum(["approved", "rejected"]),
     decidedBy: userIdSchema,
+  }),
+});
+
+/**
+ * A whole request chain ended (bead legend-y5q): the callback the source
+ * module consumes to apply (or drop) its own effect in its own transaction —
+ * the approval service never mutates another module's tables.
+ * `chainId` is the level-1 request id the source module stored when it opened
+ * the request; a consumer acts only on chains it opened (`sourceModule`).
+ * `outcome`: approved = every required level approved; rejected = a level was
+ * rejected; expired = a level passed its deadline (§3 F7 "batas waktu", fail
+ * closed); cancelled = the source module withdrew it.
+ */
+export const approvalResolvedEvent = defineDomainEvent({
+  name: "approval.resolved",
+  payload: z.strictObject({
+    chainId: approvalRequestIdSchema,
+    requestId: approvalRequestIdSchema,
+    sourceModule: z.string().regex(/^[a-z][a-z0-9_]{0,49}$/),
+    actionType: approvalActionTypeSchema,
+    objectType: objectTypeSchema,
+    objectId: objectIdSchema,
+    source: approvalSourceSchema,
+    outcome: z.enum(["approved", "rejected", "expired", "cancelled"]),
+    level: z.number().int().min(1).max(APPROVAL_MAX_LEVELS),
+    requiredLevels: z.number().int().min(1).max(APPROVAL_MAX_LEVELS),
+    requestedBy: userIdSchema,
+    decidedBy: userIdSchema.nullable(),
+    amountIdr: idrSchema.refine((value) => value >= 0).nullable(),
   }),
 });

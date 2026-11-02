@@ -1,0 +1,1240 @@
+// Generic approval service (bead legend-y5q; PRD v1.7 §3 F7 "Matriks Approval"
+// + "Kotak Approval", §6 B approval_policies / approval_requests, AUTH-06,
+// MCP-04, §2 AI dan MCP "aksi selalu melalui approval").
+//
+// One service for every module: POS void/discount/refund, supervisor override,
+// purchasing, payroll (HR then Finance/Owner), journals, AI and MCP drafts.
+//
+// How a module uses it:
+// 1. Inside its own tenant transaction it calls `openApprovalRequest(...)` and
+//    stores the returned `chainId` on its own pending row.
+// 2. The matrix decides how many levels and which roles (`approvalRequirementFor`
+//    from @starter/shared/access); the requirement is snapshotted on the row,
+//    so a later matrix edit never changes a request in flight.
+// 3. Approvers decide through the inbox API. Each level is one row (identity
+//    contract `approvalRequestSchema`); an approved level opens the next one.
+// 4. When the chain ends (approved, rejected, expired, cancelled) the service
+//    appends `approval.resolved` to the transactional outbox. The source module
+//    consumes it and applies the effect in ITS OWN transaction, acting only on
+//    a chain it opened (`chainId` + `sourceModule`). This service never writes
+//    another module's tables.
+//
+// Rules enforced here (shared contract functions, never re-implemented):
+// - requester ≠ approver, no actor decides two levels, levels in order, the
+//   approver holds a matrix role whose scope covers the request's outlet (or
+//   tenant), MFA on the dashboard (access.assertApprovalDecisionAllowed);
+// - pending + inside deadline (identity.recordApprovalDecision);
+// - `approval.request.decide` permission over the same target.
+// Races: every mutation of a chain locks its level-1 row (FOR UPDATE), so two
+// concurrent approvals of one level produce exactly one decision; the partial
+// unique index allows one pending level per (action, object), and an advisory
+// lock serialises creation for one object. Idempotency keys are bound to a
+// request fingerprint (IDEMPOTENCY_KEY_REUSED on a different body).
+// Deadline (§3 F7 "dengan batas waktu"): the worker sweep expires a pending
+// level after its deadline — fail closed, the action stays blocked — and the
+// source module plus the notification stream receive `approval.resolved`
+// (outcome `expired`). See `expireDueApprovalRequests`.
+
+import { createHash, randomUUID } from "node:crypto";
+import {
+  AccessError,
+  APPROVAL_MAX_LEVELS,
+  approvalRequirementFor,
+  approvalPolicySchema,
+  assertApprovalDecisionAllowed,
+  isAssignmentActive,
+  outletReachOf,
+  type AccessTarget,
+  type ApprovalActionType,
+  type ApprovalPolicy,
+  type ApprovalRequirement,
+  type ApprovalSource,
+  type ApprovalStep,
+  type OrgIndex,
+  type RoleId,
+} from "@starter/shared/access";
+import {
+  CoreError,
+  createUlid,
+  decodeCursor,
+  encodeCursor,
+  idempotencyKeySchema,
+  outletIdSchema,
+  userIdSchema,
+  type Idr,
+  type OutletId,
+  type ScopedTenantContext,
+  type TenantContext,
+} from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
+import {
+  APPROVAL_DEADLINE_MINUTES,
+  approvalDecidedEvent,
+  approvalDeadlineAt,
+  approvalRequestedEvent,
+  approvalRequestSchema,
+  approvalResolvedEvent,
+  expireApprovalRequest,
+  IdentityError,
+  objectIdSchema,
+  objectTypeSchema,
+  recordApprovalDecision,
+  type ApprovalDecisionInput,
+  type ApprovalInboxQuery,
+  type ApprovalRequest,
+  type CreateApprovalRequestInput,
+} from "@starter/shared/identity";
+import { and, asc, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { db } from "../db";
+import {
+  approvalPolicies,
+  approvalRequests,
+  domainEventOutbox,
+} from "../db/schema";
+import type { ApprovalStepSnapshot } from "../db/schema/platform-approval";
+import { withTenant } from "../db/tenant";
+import { recordAudit } from "./audit-writer";
+import { appendOutbox } from "./core-outbox";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type AccessSnapshot,
+  type TenantAccessData,
+  type Tx,
+} from "./permission-resolver";
+
+type Row = typeof approvalRequests.$inferSelect;
+
+/** Source modules consume approval callbacks through the cloud sync stream. */
+const EVENT_DESTINATION = "cloud-sync";
+/** The notification consumer turns the same events into inbox/phone alerts (F7). */
+const NOTIFICATION_DESTINATION = "notification";
+/** `sourceModule` of a request opened through POST /api/approvals. */
+export const INBOX_SOURCE_MODULE = "inbox";
+const SOURCE_MODULE_PATTERN = /^[a-z][a-z0-9_]{0,49}$/;
+/** Bounds for a caller-chosen deadline: 5 minutes to 7 days. */
+const MIN_DEADLINE_MINUTES = 5;
+const MAX_DEADLINE_MINUTES = 7 * 24 * 60;
+
+export type ApprovalOutcome =
+  "pending" | "approved" | "rejected" | "expired" | "cancelled";
+
+// ----------------------------------------------------------------- helpers
+
+function fingerprint(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function notFound(): CoreError {
+  return new CoreError("NOT_FOUND", "Permintaan approval tidak ditemukan.");
+}
+
+function toDto(row: Row): ApprovalRequest {
+  return approvalRequestSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    actionType: row.actionType,
+    objectType: row.objectType,
+    objectId: row.objectId,
+    payload: row.payload,
+    requestedBy: row.requestedBy,
+    source: row.source,
+    level: row.level,
+    requiredLevels: row.requiredLevels,
+    amountIdr: row.amountIdr,
+    status: row.status,
+    requestReason: row.requestReason,
+    decidedBy: row.decidedBy,
+    decidedAt: row.decidedAt?.toISOString() ?? null,
+    reason: row.reason,
+    deadlineAt: row.deadlineAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+  });
+}
+
+/** Inbox view: a pending row past its deadline reads as expired before the sweep. */
+function toView(row: Row, now: Date): ApprovalRequest {
+  return expireApprovalRequest(toDto(row), now);
+}
+
+function targetOf(outletId: string | null): AccessTarget {
+  return outletId === null
+    ? { type: "tenant" }
+    : { type: "outlet", id: outletIdSchema.parse(outletId) };
+}
+
+function requirementOf(row: Row): ApprovalRequirement {
+  return {
+    required: true,
+    thresholdIdr: row.thresholdIdr,
+    steps: row.requiredSteps.map((step): ApprovalStep => ({
+      level: step.level,
+      approverRoleIds: step.approverRoleIds as RoleId[],
+    })),
+  };
+}
+
+function toPolicy(row: typeof approvalPolicies.$inferSelect): ApprovalPolicy {
+  return approvalPolicySchema.parse({
+    id: row.id,
+    actionType: row.actionType,
+    thresholdIdr: row.thresholdIdr,
+    approverRoleId: row.approverRoleId,
+    levels: row.levels,
+    requiresDistinctActor: true,
+  });
+}
+
+async function nextSequence(
+  tx: Tx,
+  tenantId: string,
+  destination: string,
+  aggregateId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, destination),
+        eq(domainEventOutbox.aggregateType, "approval"),
+        eq(domainEventOutbox.aggregateId, aggregateId),
+      ),
+    );
+  return Number(row?.last ?? 0) + 1;
+}
+
+type EventDefinition = {
+  readonly name: string;
+  readonly version: number;
+  readonly payloadSchemaRef: string;
+  readonly entry: { readonly aggregateType: string };
+  readonly envelopeSchema: { parse(value: unknown): unknown };
+};
+
+type EventActor = { type: "user"; id: string } | { type: "system" };
+
+/**
+ * Appends one approval event for every destination, in the caller's
+ * transaction (transactional outbox). The aggregate is the chain, so one
+ * request's events are ordered; the chain row lock serialises the sequence.
+ */
+async function appendApprovalEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  definition: EventDefinition,
+  input: {
+    chainId: string;
+    outletId: string | null;
+    actor: EventActor;
+    payload: Record<string, unknown>;
+    destinations: readonly string[];
+    now: Date;
+  },
+): Promise<void> {
+  for (const destination of input.destinations) {
+    const sequence = await nextSequence(
+      tx,
+      context.tenant.tenantId,
+      destination,
+      input.chainId,
+    );
+    const event = definition.envelopeSchema.parse({
+      id: createUlid(input.now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId,
+      name: definition.name,
+      version: definition.version,
+      aggregateType: definition.entry.aggregateType,
+      aggregateId: input.chainId,
+      sequence,
+      occurredAt: input.now.toISOString(),
+      actor: input.actor,
+      deviceId: null,
+      idempotencyKey: `${definition.name}:${input.chainId}:${sequence}`,
+      payloadSchemaRef: definition.payloadSchemaRef,
+      payload: input.payload,
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(input.now.getTime()),
+      event,
+      destination,
+      direction: null,
+      peerId: null,
+    });
+  }
+}
+
+function requestedPayload(row: Row) {
+  return {
+    requestId: row.id,
+    actionType: row.actionType,
+    objectType: row.objectType,
+    objectId: row.objectId,
+    source: row.source,
+    level: row.level,
+    requiredLevels: row.requiredLevels,
+    requestedBy: row.requestedBy,
+    amountIdr: row.amountIdr,
+    deadlineAt: row.deadlineAt.toISOString(),
+  };
+}
+
+async function emitResolved(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: Row,
+  outcome: Exclude<ApprovalOutcome, "pending">,
+  actor: EventActor,
+  now: Date,
+): Promise<void> {
+  await appendApprovalEvent(tx, context, approvalResolvedEvent, {
+    chainId: row.chainId,
+    outletId: row.outletId,
+    actor,
+    now,
+    destinations: [EVENT_DESTINATION, NOTIFICATION_DESTINATION],
+    payload: {
+      chainId: row.chainId,
+      requestId: row.id,
+      sourceModule: row.sourceModule,
+      actionType: row.actionType,
+      objectType: row.objectType,
+      objectId: row.objectId,
+      source: row.source,
+      outcome,
+      level: row.level,
+      requiredLevels: row.requiredLevels,
+      requestedBy: row.requestedBy,
+      decidedBy: row.decidedBy,
+      amountIdr: row.amountIdr,
+    },
+  });
+}
+
+async function lockChain(tx: Tx, chainId: string): Promise<void> {
+  await tx
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.id, chainId))
+    .for("update");
+}
+
+async function chainRows(tx: Tx, chainId: string): Promise<Row[]> {
+  return tx
+    .select()
+    .from(approvalRequests)
+    .where(eq(approvalRequests.chainId, chainId))
+    .orderBy(asc(approvalRequests.level));
+}
+
+function chainOutcome(rows: readonly Row[]): ApprovalOutcome {
+  const last = rows.at(-1);
+  if (!last) throw notFound();
+  if (last.status === "approved")
+    return last.level >= last.requiredLevels ? "approved" : "pending";
+  return last.status;
+}
+
+// ------------------------------------------------------- access snapshots
+
+type Caller = {
+  readonly snapshot: AccessSnapshot;
+  readonly data: TenantAccessData;
+};
+
+async function loadCaller(
+  tenant: TenantContext,
+  userId: string,
+  mfaVerified: boolean,
+  now: Date,
+): Promise<Caller> {
+  const bootstrap = establishScopedTenantContext(tenant, { kind: "tenant" });
+  const data = await withTenant(db, bootstrap, (tx) =>
+    loadTenantAccessInTransaction(tx, bootstrap, userId),
+  );
+  return {
+    data,
+    snapshot: resolveAccessSnapshot({
+      tenant,
+      userId,
+      ...data,
+      mfaVerified,
+      now,
+    }),
+  };
+}
+
+/**
+ * Outlets the caller belongs to through any active assignment (whatever its
+ * role): tenant-wide, or the outlets its brand/outlet/station scopes reach.
+ * Used for the caller's own requests; null = no membership (deny).
+ */
+function membershipContext(
+  tenant: TenantContext,
+  userId: string,
+  data: TenantAccessData,
+  now: Date,
+): ScopedTenantContext | null {
+  const active = data.assignments.filter(
+    (row) =>
+      row.tenantId.toLowerCase() === tenant.tenantId.toLowerCase() &&
+      row.userId.toLowerCase() === userId.toLowerCase() &&
+      isAssignmentActive(row, now),
+  );
+  if (active.length === 0) return null;
+  const org: OrgIndex = data.org;
+  const outlets = new Set<OutletId>();
+  for (const row of active) {
+    const scope = row.scope;
+    if (scope.type === "tenant")
+      return establishScopedTenantContext(tenant, { kind: "tenant" });
+    if (scope.type === "brand")
+      for (const outlet of org.outlets)
+        if (outlet.brandId.toLowerCase() === scope.id.toLowerCase())
+          outlets.add(outlet.id);
+    if (scope.type === "outlet")
+      for (const outlet of org.outlets)
+        if (outlet.id.toLowerCase() === scope.id.toLowerCase())
+          outlets.add(outlet.id);
+    if (scope.type === "station")
+      for (const station of org.stations)
+        if (station.id.toLowerCase() === scope.id.toLowerCase())
+          outlets.add(station.outletId);
+  }
+  if (outlets.size === 0) return null;
+  return establishScopedTenantContext(tenant, {
+    kind: "outlets",
+    outletIds: [...outlets],
+  });
+}
+
+/**
+ * The caller's reach for `permission`: tenant-wide when an assignment reaches
+ * the whole tenant, else the union of outlets its applicable assignments reach
+ * (TEN-03, same rule as the menu routes). null = no reach (deny).
+ */
+function reachContext(
+  tenant: TenantContext,
+  userId: string,
+  data: TenantAccessData,
+  permission: "approval.inbox.view" | "approval.request.decide",
+  now: Date,
+): ScopedTenantContext | null {
+  const reach = outletReachOf({
+    principal: {
+      tenantId: tenant.tenantId,
+      userId: userIdSchema.parse(userId),
+      assignments: data.assignments,
+    },
+    roles: data.roles,
+    org: data.org,
+    now,
+    permission,
+  });
+  return reach === null ? null : establishScopedTenantContext(tenant, reach);
+}
+
+function covers(context: ScopedTenantContext, outletId: string | null) {
+  if (context.outletScope.kind === "tenant") return true;
+  if (outletId === null) return false;
+  return context.outletScope.outletIds.some(
+    (id) => id.toLowerCase() === outletId.toLowerCase(),
+  );
+}
+
+// ------------------------------------------------------ opening a request
+
+export type OpenApprovalRequestInput = {
+  /** Module that owns the effect (`payment`, `pos`, `purchasing`, `payroll`, `ai`, `mcp`...). */
+  readonly sourceModule: string;
+  readonly actionType: ApprovalActionType;
+  readonly objectType: string;
+  readonly objectId: string;
+  /** The amount the matrix tiers on; null = unknown → every tier applies (fail closed). */
+  readonly amountIdr: Idr | number | null;
+  readonly outletId: string | null;
+  readonly requestedBy: string;
+  /** `ai` / `mcp`: `requestedBy` is the human the agent acts for (PRD §4 Q, MCP-04). */
+  readonly source: ApprovalSource;
+  readonly requestReason: string;
+  readonly payload?: Record<string, unknown>;
+  readonly deadlineMinutes?: number;
+  readonly idempotencyKey?: string | null;
+  readonly now?: Date;
+};
+
+export type OpenApprovalResult =
+  | { readonly required: false }
+  | {
+      readonly required: true;
+      readonly chainId: string;
+      readonly request: ApprovalRequest;
+      /** True when an idempotent retry returned the existing request. */
+      readonly replayed: boolean;
+    };
+
+/**
+ * Opens an approval request inside the caller's tenant transaction (source
+ * modules). The caller has already authorised the action itself; this checks
+ * the matrix, snapshots it, writes level 1 and appends `approval.requested`.
+ * `{ required: false }` when the amount is below every tier of the matrix.
+ * Throws APPROVAL_POLICY_MISSING when the tenant has no policy for the action
+ * (nobody may approve: fail closed).
+ */
+export async function openApprovalRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: OpenApprovalRequestInput,
+): Promise<OpenApprovalResult> {
+  const now = input.now ?? new Date();
+  if (!SOURCE_MODULE_PATTERN.test(input.sourceModule))
+    throw new TypeError("sourceModule must be one snake_case word");
+  const objectType = objectTypeSchema.parse(input.objectType);
+  const objectId = objectIdSchema.parse(input.objectId);
+  const requestedBy = userIdSchema.parse(input.requestedBy);
+  const outletId =
+    input.outletId === null ? null : outletIdSchema.parse(input.outletId);
+  const requestReason = input.requestReason.trim();
+  if (requestReason.length < 3 || requestReason.length > 500)
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Alasan permintaan wajib 3 sampai 500 karakter.",
+    );
+  const deadlineMinutes = input.deadlineMinutes ?? APPROVAL_DEADLINE_MINUTES;
+  if (
+    !Number.isInteger(deadlineMinutes) ||
+    deadlineMinutes < MIN_DEADLINE_MINUTES ||
+    deadlineMinutes > MAX_DEADLINE_MINUTES
+  )
+    throw new RangeError("deadlineMinutes must be 5 minutes to 7 days");
+  if (!covers(context, outletId))
+    throw new CoreError("OUTLET_OUT_OF_SCOPE", "Outlet di luar cakupan Anda.");
+  const payload = input.payload ?? {};
+  const key =
+    input.idempotencyKey === undefined || input.idempotencyKey === null
+      ? null
+      : idempotencyKeySchema.parse(input.idempotencyKey);
+  const createFingerprint = fingerprint({
+    sourceModule: input.sourceModule,
+    actionType: input.actionType,
+    objectType,
+    objectId,
+    amountIdr: input.amountIdr,
+    outletId,
+    source: input.source,
+    requestReason,
+    payload,
+  });
+
+  if (key !== null) {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`approval-create:${context.tenant.tenantId}:${requestedBy}:${key}`}, 0))`,
+    );
+    const [existing] = await tx
+      .select()
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, context.tenant.tenantId),
+          eq(approvalRequests.requestedBy, requestedBy),
+          eq(approvalRequests.createIdempotencyKey, key),
+        ),
+      );
+    if (existing) {
+      if (existing.createFingerprint !== createFingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Idempotency key already used for a different request.",
+        );
+      return {
+        required: true,
+        chainId: existing.chainId,
+        request: toView(existing, now),
+        replayed: true,
+      };
+    }
+  }
+
+  const policies = (
+    await tx
+      .select()
+      .from(approvalPolicies)
+      .where(
+        and(
+          eq(approvalPolicies.tenantId, context.tenant.tenantId),
+          eq(approvalPolicies.actionType, input.actionType),
+        ),
+      )
+  ).map(toPolicy);
+  const requirement = approvalRequirementFor(
+    policies,
+    input.actionType,
+    input.amountIdr,
+  );
+  if (!requirement.required) return { required: false };
+  const steps: ApprovalStepSnapshot[] = requirement.steps.map((step) => ({
+    level: step.level,
+    approverRoleIds: [...step.approverRoleIds],
+  }));
+  const requiredLevels = steps.length;
+  if (requiredLevels < 1 || requiredLevels > APPROVAL_MAX_LEVELS)
+    throw new AccessError("APPROVAL_POLICY_MISSING");
+
+  // One open request per (action, object): serialise creation for the object,
+  // then refuse a duplicate instead of opening a parallel chain.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`approval-object:${context.tenant.tenantId}:${input.actionType}:${objectType}:${objectId}`}, 0))`,
+  );
+  const [pending] = await tx
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, context.tenant.tenantId),
+        eq(approvalRequests.actionType, input.actionType),
+        eq(approvalRequests.objectType, objectType),
+        eq(approvalRequests.objectId, objectId),
+        eq(approvalRequests.status, "pending"),
+      ),
+    );
+  if (pending)
+    throw new CoreError(
+      "CONFLICT",
+      "Permintaan approval untuk objek ini masih menunggu keputusan.",
+    );
+
+  const id = randomUUID();
+  const [row] = await tx
+    .insert(approvalRequests)
+    .values({
+      id,
+      tenantId: context.tenant.tenantId,
+      outletId,
+      chainId: id,
+      sourceModule: input.sourceModule,
+      actionType: input.actionType,
+      objectType,
+      objectId,
+      payload,
+      requestedBy,
+      source: input.source,
+      level: 1,
+      requiredLevels,
+      requiredSteps: steps,
+      thresholdIdr: requirement.thresholdIdr,
+      amountIdr: input.amountIdr === null ? null : (input.amountIdr as Idr),
+      status: "pending",
+      requestReason,
+      createIdempotencyKey: key,
+      createFingerprint: key === null ? null : createFingerprint,
+      deadlineAt: approvalDeadlineAt(now, deadlineMinutes),
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  if (!row) throw new Error("approval request insert returned no row");
+  const actor: EventActor = { type: "user", id: requestedBy };
+  await appendApprovalEvent(tx, context, approvalRequestedEvent, {
+    chainId: row.chainId,
+    outletId,
+    actor,
+    now,
+    destinations: [EVENT_DESTINATION, NOTIFICATION_DESTINATION],
+    payload: requestedPayload(row),
+  });
+  await recordAudit(
+    {
+      tenantId: context.tenant.tenantId,
+      outletId,
+      actorType:
+        input.source === "ai"
+          ? "ai"
+          : input.source === "mcp"
+            ? "mcp_client"
+            : "user",
+      actorId: requestedBy,
+      deviceId: null,
+      action: "approval.requested",
+      objectType: "approval_request",
+      objectId: row.id,
+      reason: null,
+      before: null,
+      after: {
+        actionType: row.actionType,
+        objectType: row.objectType,
+        objectId: row.objectId,
+        sourceModule: row.sourceModule,
+        level: 1,
+        requiredLevels,
+        amountIdr: row.amountIdr,
+      },
+      sensitiveAccess: false,
+    },
+    { tx, context },
+  );
+  return {
+    required: true,
+    chainId: row.chainId,
+    request: toDto(row),
+    replayed: false,
+  };
+}
+
+/**
+ * The chain's outcome for a source module that wants to check synchronously
+ * (e.g. before applying an effect). Only the module that opened it may ask.
+ */
+export async function getApprovalChainOutcome(
+  tx: Tx,
+  input: { readonly chainId: string; readonly sourceModule: string },
+): Promise<ApprovalOutcome> {
+  const rows = await chainRows(tx, input.chainId);
+  if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
+  return chainOutcome(rows);
+}
+
+/**
+ * The source module withdraws its request (e.g. the order was voided first).
+ * Idempotent: an already-ended chain returns its outcome unchanged.
+ */
+export async function cancelApprovalRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    readonly chainId: string;
+    readonly sourceModule: string;
+    /** The human withdrawing it; null = the module itself (system). */
+    readonly actorUserId: string | null;
+    readonly now?: Date;
+  },
+): Promise<ApprovalOutcome> {
+  const now = input.now ?? new Date();
+  await lockChain(tx, input.chainId);
+  const rows = await chainRows(tx, input.chainId);
+  if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
+  const open = rows.find((row) => row.status === "pending");
+  if (!open) return chainOutcome(rows);
+  const [cancelled] = await tx
+    .update(approvalRequests)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(eq(approvalRequests.id, open.id))
+    .returning();
+  if (!cancelled) throw notFound();
+  const actor: EventActor =
+    input.actorUserId === null
+      ? { type: "system" }
+      : { type: "user", id: userIdSchema.parse(input.actorUserId) };
+  await emitResolved(tx, context, cancelled, "cancelled", actor, now);
+  await recordAudit(
+    {
+      tenantId: context.tenant.tenantId,
+      outletId: cancelled.outletId,
+      actorType: input.actorUserId === null ? "system" : "user",
+      actorId: input.actorUserId,
+      deviceId: null,
+      action: "approval.cancelled",
+      objectType: "approval_request",
+      objectId: cancelled.id,
+      reason: null,
+      before: { status: "pending" },
+      after: { status: "cancelled" },
+      sensitiveAccess: false,
+    },
+    { tx, context },
+  );
+  return "cancelled";
+}
+
+// ------------------------------------------------------------ HTTP: create
+
+/**
+ * POST /api/approvals: a user asks for approval directly from the inbox. The
+ * request is `sourceModule = inbox`; no module applies an effect for it, so a
+ * hand-made request can never trigger a refund or a payroll lock. The
+ * requester must belong to the outlet (or to the whole tenant when no outlet).
+ */
+export async function createApprovalRequestFromInbox(
+  tenant: TenantContext,
+  actorUserId: string,
+  input: CreateApprovalRequestInput,
+  options: { idempotencyKey: string | null; now?: Date },
+): Promise<{ request: ApprovalRequest; replayed: boolean }> {
+  const now = options.now ?? new Date();
+  const caller = await loadCaller(tenant, actorUserId, false, now);
+  const membership = membershipContext(tenant, actorUserId, caller.data, now);
+  const outletId = input.outletId ?? null;
+  if (membership === null || !covers(membership, outletId))
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      outletId === null
+        ? "Permintaan tingkat tenant hanya untuk pengguna tingkat tenant."
+        : "Anda tidak terdaftar di outlet ini.",
+    );
+  const context = establishScopedTenantContext(
+    tenant,
+    outletId === null
+      ? { kind: "tenant" }
+      : { kind: "outlets", outletIds: [outletIdSchema.parse(outletId)] },
+  );
+  const result = await withTenant(db, context, (tx) =>
+    openApprovalRequest(tx, context, {
+      sourceModule: INBOX_SOURCE_MODULE,
+      actionType: input.actionType,
+      objectType: input.objectType,
+      objectId: input.objectId,
+      amountIdr: input.amountIdr ?? null,
+      outletId,
+      requestedBy: actorUserId,
+      source: "user",
+      requestReason: input.requestReason,
+      payload: input.payload,
+      idempotencyKey: options.idempotencyKey,
+      now,
+    }),
+  );
+  if (!result.required)
+    throw new CoreError(
+      "PRECONDITION_FAILED",
+      "Tindakan ini tidak memerlukan persetujuan untuk nilai tersebut.",
+    );
+  return { request: result.request, replayed: result.replayed };
+}
+
+// -------------------------------------------------------- HTTP: list / get
+
+/**
+ * GET /api/approvals (F7 "Kotak Approval"). With `approval.inbox.view` the
+ * caller sees every request inside its reach (RLS outlet scope; tenant-wide
+ * requests only with tenant reach). Without it, only its own requests.
+ */
+export async function listApprovalRequests(
+  tenant: TenantContext,
+  actorUserId: string,
+  query: ApprovalInboxQuery,
+  now = new Date(),
+): Promise<{
+  data: ApprovalRequest[];
+  meta: { limit: number; nextCursor: string | null };
+}> {
+  const caller = await loadCaller(tenant, actorUserId, false, now);
+  const inboxContext = reachContext(
+    tenant,
+    actorUserId,
+    caller.data,
+    "approval.inbox.view",
+    now,
+  );
+  const context =
+    inboxContext ??
+    membershipContext(tenant, actorUserId, caller.data, now) ??
+    null;
+  if (context === null) throw new AccessError("PERMISSION_DENIED");
+  if (query.outletId !== undefined && !covers(context, query.outletId))
+    throw new CoreError("OUTLET_OUT_OF_SCOPE", "Outlet di luar cakupan Anda.");
+  return withTenant(db, context, async (tx) => {
+    const filters = [eq(approvalRequests.tenantId, tenant.tenantId)];
+    if (inboxContext === null)
+      filters.push(eq(approvalRequests.requestedBy, actorUserId));
+    if (query.actionType)
+      filters.push(eq(approvalRequests.actionType, query.actionType));
+    if (query.source) filters.push(eq(approvalRequests.source, query.source));
+    if (query.outletId)
+      filters.push(eq(approvalRequests.outletId, query.outletId));
+    if (query.status === "pending") {
+      // The inbox shows open rows only; a past-deadline row waits for the sweep.
+      filters.push(eq(approvalRequests.status, "pending"));
+      filters.push(sql`${approvalRequests.deadlineAt} > ${now}`);
+    } else if (query.status === "expired") {
+      filters.push(
+        or(
+          eq(approvalRequests.status, "expired"),
+          and(
+            eq(approvalRequests.status, "pending"),
+            lte(approvalRequests.deadlineAt, now),
+          ),
+        )!,
+      );
+    } else if (query.status) {
+      filters.push(eq(approvalRequests.status, query.status));
+    }
+    if (query.cursor) {
+      const [createdAt, id] = decodeCursor(query.cursor);
+      if (typeof createdAt !== "string" || typeof id !== "string")
+        throw new CoreError("VALIDATION_ERROR", "Check the cursor.");
+      const at = new Date(createdAt);
+      if (Number.isNaN(at.getTime()))
+        throw new CoreError("VALIDATION_ERROR", "Check the cursor.");
+      filters.push(
+        or(
+          sql`${approvalRequests.createdAt} < ${at}`,
+          and(
+            eq(approvalRequests.createdAt, at),
+            sql`${approvalRequests.id} < ${id}::uuid`,
+          ),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(approvalRequests)
+      .where(and(...filters))
+      .orderBy(desc(approvalRequests.createdAt), desc(approvalRequests.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map((row) => toView(row, now)),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            : null,
+      },
+    };
+  });
+}
+
+/** GET /api/approvals/:requestId — an inbox viewer in reach, or the requester. */
+export async function getApprovalRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  now = new Date(),
+): Promise<ApprovalRequest> {
+  const caller = await loadCaller(tenant, actorUserId, false, now);
+  const inboxContext = reachContext(
+    tenant,
+    actorUserId,
+    caller.data,
+    "approval.inbox.view",
+    now,
+  );
+  for (const context of [
+    inboxContext,
+    membershipContext(tenant, actorUserId, caller.data, now),
+  ]) {
+    if (context === null) continue;
+    const ownOnly = context !== inboxContext;
+    const row = await withTenant(db, context, async (tx) => {
+      const [found] = await tx
+        .select()
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.id, requestId),
+            ownOnly ? eq(approvalRequests.requestedBy, actorUserId) : undefined,
+          ),
+        );
+      return found;
+    });
+    if (row) return toView(row, now);
+  }
+  throw notFound();
+}
+
+// ------------------------------------------------------------ HTTP: decide
+
+export type DecideOptions = {
+  /** The session verified a second factor (AUTH-05; the dashboard is MFA-guarded). */
+  readonly mfaVerified: boolean;
+  readonly idempotencyKey: string | null;
+  readonly now?: Date;
+};
+
+/**
+ * POST /api/approvals/:requestId/decisions (F7: approve/reject with reason).
+ * Returns the decided row. Replaying the same decision (same approver,
+ * decision and reason, or the same Idempotency-Key with the same body) returns
+ * the stored row without a second decision or event.
+ */
+export async function decideApprovalRequest(
+  tenant: TenantContext,
+  actorUserId: string,
+  requestId: string,
+  input: ApprovalDecisionInput,
+  options: DecideOptions,
+): Promise<ApprovalRequest> {
+  const now = options.now ?? new Date();
+  const approverId = userIdSchema.parse(actorUserId);
+  const key =
+    options.idempotencyKey === null
+      ? null
+      : idempotencyKeySchema.parse(options.idempotencyKey);
+  const reason = input.reason.trim();
+  const decisionFingerprint = fingerprint({
+    requestId: requestId.toLowerCase(),
+    decision: input.decision,
+    reason,
+    approverId: approverId.toLowerCase(),
+  });
+  const caller = await loadCaller(tenant, approverId, options.mfaVerified, now);
+  // Rows outside the approver's decide reach are invisible (RLS): 404, no leak.
+  const context = reachContext(
+    tenant,
+    approverId,
+    caller.data,
+    "approval.request.decide",
+    now,
+  );
+  if (context === null) throw new AccessError("PERMISSION_DENIED");
+
+  return withTenant(db, context, async (tx) => {
+    const [found] = await tx
+      .select({ chainId: approvalRequests.chainId })
+      .from(approvalRequests)
+      .where(eq(approvalRequests.id, requestId));
+    if (!found) throw notFound();
+    await lockChain(tx, found.chainId);
+    const rows = await chainRows(tx, found.chainId);
+    const row = rows.find((candidate) => candidate.id === requestId);
+    if (!row) throw notFound();
+
+    // Idempotent replay: same body (and key, if any) → the stored decision.
+    if (row.status !== "pending") {
+      const sameBody = row.decisionFingerprint === decisionFingerprint;
+      if (key !== null && row.decisionIdempotencyKey === key && !sameBody)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Idempotency key already used for a different decision.",
+        );
+      if (sameBody) return toDto(row);
+      if (row.status === "expired")
+        throw new IdentityError("APPROVAL_REQUEST_EXPIRED");
+      throw new IdentityError("APPROVAL_REQUEST_NOT_PENDING");
+    }
+
+    const prior = rows.filter((candidate) => candidate.level < row.level);
+    if (
+      prior.some(
+        (candidate) =>
+          candidate.status !== "approved" || candidate.decidedBy === null,
+      )
+    )
+      throw new AccessError("APPROVAL_LEVEL_OUT_OF_ORDER");
+    const priorApproverIds = prior.map((candidate) =>
+      userIdSchema.parse(candidate.decidedBy),
+    );
+    const dto = toDto(row);
+    // Lifecycle: pending, inside the deadline, requester ≠ approver (AUTH-06).
+    const decided = recordApprovalDecision({
+      request: dto,
+      decision: input.decision,
+      decidedBy: approverId,
+      priorApproverIds,
+      reason,
+      now,
+    });
+    // Matrix: role for this level, scope covers the outlet/tenant, MFA (MCP-04).
+    const target = targetOf(row.outletId);
+    assertApprovalDecisionAllowed({
+      requirement: requirementOf(row),
+      requestedBy: row.requestedBy,
+      priorDecisions: prior.map((candidate) => ({
+        level: candidate.level,
+        approverId: candidate.decidedBy as string,
+      })),
+      level: row.level,
+      approver: {
+        tenantId: tenant.tenantId,
+        userId: approverId,
+        assignments: caller.data.assignments,
+      },
+      approverRoles: caller.data.roles,
+      approverMfaVerified: options.mfaVerified,
+      surface: "dashboard",
+      target,
+      org: caller.data.org,
+      now,
+    });
+    if (!caller.snapshot.allows("approval.request.decide", target))
+      throw new AccessError("PERMISSION_DENIED");
+
+    const [updated] = await tx
+      .update(approvalRequests)
+      .set({
+        status: decided.status,
+        decidedBy: approverId,
+        decidedAt: now,
+        reason,
+        decisionFingerprint,
+        decisionIdempotencyKey: key,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(approvalRequests.id, row.id),
+          eq(approvalRequests.status, "pending"),
+        ),
+      )
+      .returning();
+    if (!updated) throw new IdentityError("APPROVAL_REQUEST_NOT_PENDING");
+    const actor: EventActor = { type: "user", id: approverId };
+    await appendApprovalEvent(tx, context, approvalDecidedEvent, {
+      chainId: row.chainId,
+      outletId: row.outletId,
+      actor,
+      now,
+      destinations: [EVENT_DESTINATION],
+      payload: {
+        requestId: row.id,
+        actionType: row.actionType,
+        objectType: row.objectType,
+        objectId: row.objectId,
+        level: row.level,
+        decision: input.decision,
+        decidedBy: approverId,
+      },
+    });
+
+    if (input.decision === "approved" && row.level < row.requiredLevels) {
+      // Next level: same request snapshot, fresh deadline of the same length.
+      const chainHead = rows[0] ?? row;
+      const minutes = Math.max(
+        MIN_DEADLINE_MINUTES,
+        Math.round(
+          (chainHead.deadlineAt.getTime() - chainHead.createdAt.getTime()) /
+            60_000,
+        ),
+      );
+      const [next] = await tx
+        .insert(approvalRequests)
+        .values({
+          tenantId: row.tenantId,
+          outletId: row.outletId,
+          chainId: row.chainId,
+          sourceModule: row.sourceModule,
+          actionType: row.actionType,
+          objectType: row.objectType,
+          objectId: row.objectId,
+          payload: row.payload,
+          requestedBy: row.requestedBy,
+          source: row.source,
+          level: row.level + 1,
+          requiredLevels: row.requiredLevels,
+          requiredSteps: row.requiredSteps,
+          thresholdIdr: row.thresholdIdr,
+          amountIdr: row.amountIdr,
+          status: "pending",
+          requestReason: row.requestReason,
+          deadlineAt: approvalDeadlineAt(now, minutes),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      if (!next) throw new Error("next approval level insert returned no row");
+      await appendApprovalEvent(tx, context, approvalRequestedEvent, {
+        chainId: row.chainId,
+        outletId: row.outletId,
+        actor,
+        now,
+        destinations: [EVENT_DESTINATION, NOTIFICATION_DESTINATION],
+        payload: requestedPayload(next),
+      });
+    } else {
+      await emitResolved(tx, context, updated, input.decision, actor, now);
+    }
+
+    await recordAudit(
+      {
+        tenantId: tenant.tenantId,
+        outletId: row.outletId,
+        actorType: "user",
+        actorId: approverId,
+        deviceId: null,
+        action: "approval.decided",
+        objectType: "approval_request",
+        objectId: row.id,
+        reason,
+        before: { status: "pending", level: row.level },
+        after: {
+          status: input.decision,
+          level: row.level,
+          requiredLevels: row.requiredLevels,
+          actionType: row.actionType,
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toDto(updated);
+  });
+}
+
+// ------------------------------------------------------- deadline sweep
+
+/**
+ * Worker sweep (relay runtime, tenant-wide context): every pending level past
+ * its deadline becomes `expired` and the chain ends with `approval.resolved`
+ * (outcome `expired`) to the source module and the notification stream, which
+ * alerts the requester and approvers so it can be re-submitted (§3 F7 "batas
+ * waktu"; the action stays blocked — fail closed). PRD names no automatic
+ * re-routing to another approver, so none is invented. Rows already locked by
+ * a decision in flight are skipped and picked up by the next sweep.
+ */
+export async function expireDueApprovalRequests(
+  context: ScopedTenantContext,
+  now = new Date(),
+  limit = 100,
+): Promise<number> {
+  if (context.outletScope.kind !== "tenant")
+    throw new Error("The approval deadline sweep requires tenant-wide scope");
+  return withTenant(db, context, async (tx) => {
+    const due = await tx
+      .select()
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, context.tenant.tenantId),
+          eq(approvalRequests.status, "pending"),
+          lte(approvalRequests.deadlineAt, now),
+        ),
+      )
+      .orderBy(asc(approvalRequests.deadlineAt))
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    if (due.length === 0) return 0;
+    const expired = await tx
+      .update(approvalRequests)
+      .set({ status: "expired", updatedAt: now })
+      .where(
+        and(
+          inArray(
+            approvalRequests.id,
+            due.map((row) => row.id),
+          ),
+          eq(approvalRequests.status, "pending"),
+        ),
+      )
+      .returning();
+    for (const row of expired) {
+      await emitResolved(tx, context, row, "expired", { type: "system" }, now);
+      await recordAudit(
+        {
+          tenantId: context.tenant.tenantId,
+          outletId: row.outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: "approval.expired",
+          objectType: "approval_request",
+          objectId: row.id,
+          reason: null,
+          before: {
+            status: "pending",
+            deadlineAt: row.deadlineAt.toISOString(),
+          },
+          after: { status: "expired" },
+          sensitiveAccess: false,
+        },
+        { tx, context },
+      );
+    }
+    return expired.length;
+  });
+}

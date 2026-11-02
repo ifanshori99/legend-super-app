@@ -141,6 +141,12 @@ export const createApprovalRequestSchema = clientInputSchema({
     .optional(),
   requestReason: z.string().trim().min(3).max(500),
   payload: z.record(z.string(), z.json()).default({}),
+  /**
+   * Outlet the action belongs to (legend-y5q). The service checks that the
+   * requester's own assignments reach it; omitted = a tenant-wide request,
+   * which needs a tenant-wide requester (TEN-03).
+   */
+  outletId: outletIdSchema.optional(),
 });
 export type CreateApprovalRequestInput = z.infer<
   typeof createApprovalRequestSchema

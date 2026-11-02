@@ -28,3 +28,5 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+// WS-01 generic approval requests (legend-y5q).
+export * from "./platform-approval";
