@@ -11,6 +11,10 @@ import type {
   PriceList,
   PriceListItem,
 } from "@starter/shared/menu";
+import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  businessDateOf,
+} from "@starter/shared/core";
 
 export type ItemStatus = "available" | "sold_out" | "inactive";
 
@@ -220,11 +224,13 @@ export function scheduleDaysCsv(days: readonly number[]): string {
  */
 export const DEFAULT_OUTLET_TIME_ZONE = "Asia/Jakarta";
 
+/** Core `businessDateOf` with the outlet cutoff (owner Q39, default 04:00). */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = DEFAULT_OUTLET_TIME_ZONE,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(now);
+  return businessDateOf(now, { timeZone, cutoff });
 }
 
 /** "2026-11-01" → "1 Nov 2026" for table cells (locale-stable, id-ID). */

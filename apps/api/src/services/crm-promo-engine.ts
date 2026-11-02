@@ -62,6 +62,7 @@ import {
 import {
   assertTrustedScopedContext,
   businessDateOf,
+  businessDayRange,
   createUlid,
   idr,
   isOutletInScope,
@@ -69,11 +70,13 @@ import {
   ulidIdSchema,
   ulidToUuid,
   userIdSchema,
+  type BusinessDayClock,
   type Idr,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { MenuChannel } from "@starter/shared/menu";
+import { outletBusinessDayClock } from "./outlet-clock";
 import {
   domainEventOutbox,
   facilityRewards,
@@ -291,49 +294,15 @@ export async function requirePromoOutlet(
   return row;
 }
 
-/** Wall-clock offset (ms) of a time zone at an instant. */
-function zoneOffsetMs(instant: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(instant));
-  const value = (type: string) =>
-    Number(parts.find((entry) => entry.type === type)?.value ?? "0");
-  const local = Date.UTC(
-    value("year"),
-    value("month") - 1,
-    value("day"),
-    value("hour"),
-    value("minute"),
-    value("second"),
-  );
-  return local - Math.floor(instant / 1000) * 1000;
-}
-
 /**
- * First instant of the next business date in the outlet's zone. PRD §3.25
+ * First instant of the next business date at the outlet. PRD §3.25
  * "Minimum belanja": the access voucher is valid until the end of the day's
- * operating hours; facility hours belong to WS-09, so the reward ends at the
- * end of the outlet business date and WS-09 narrows it to its own hours.
+ * operating hours; facility hours belong to WS-09, so the reward ends when
+ * the outlet business date ends (the next business-day cutoff, owner Q39) and
+ * WS-09 narrows it to its own hours.
  */
-export function endOfBusinessDay(at: Date, timeZone: string): Date {
-  const today = businessDateOf(at, timeZone);
-  const [year, month, day] = today.split("-").map(Number) as [
-    number,
-    number,
-    number,
-  ];
-  const localMidnight = Date.UTC(year, month - 1, day + 1);
-  // Two passes settle the offset even across a DST change.
-  let guess = localMidnight - zoneOffsetMs(localMidnight, timeZone);
-  guess = localMidnight - zoneOffsetMs(guess, timeZone);
-  return new Date(guess);
+export function endOfBusinessDay(at: Date, clock: BusinessDayClock): Date {
+  return businessDayRange(businessDateOf(at, clock), clock).end;
 }
 
 // ---------------------------------------------------------------- pricing
@@ -360,7 +329,7 @@ export async function priceRequestLines(
   requestLines: readonly PromoRequestLine[],
   at: Date,
 ): Promise<PromoLine[]> {
-  const today = businessDateOf(at, outlet.timezone);
+  const today = businessDateOf(at, outletBusinessDayClock(outlet));
   const [list] = await tx
     .select({ id: priceLists.id })
     .from(priceLists)
@@ -1230,7 +1199,7 @@ export async function redeemPromotions(
       // The evaluator only grants a facility reward to an identified customer.
       if (customerId === null)
         throw new Error("Facility reward without a customer");
-      const expiresAt = endOfBusinessDay(now, outlet.timezone);
+      const expiresAt = endOfBusinessDay(now, outletBusinessDayClock(outlet));
       const [reward] = await tx
         .insert(facilityRewards)
         .values({

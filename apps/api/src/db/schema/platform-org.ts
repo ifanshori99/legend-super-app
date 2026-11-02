@@ -207,6 +207,10 @@ export const outlets = pgTable(
     timezone: varchar("timezone", { length: 40 })
       .notNull()
       .default("Asia/Jakarta"),
+    /** Owner Q39: business day starts here ("HH:mm", 00:00..11:59). */
+    businessDayCutoff: varchar("business_day_cutoff", { length: 5 })
+      .notNull()
+      .default("04:00"),
     openingHours: jsonb("opening_hours").$type<OpeningHours>().notNull(),
     /** Active edge node (WS-02); the registry itself is a later bead. */
     edgeNodeId: uuid("edge_node_id"),
@@ -237,6 +241,10 @@ export const outlets = pgTable(
     check(
       "outlets_code_check",
       sql`${table.code} ~ '^[A-Z0-9][A-Z0-9-]{0,19}$'`,
+    ),
+    check(
+      "outlets_business_day_cutoff_check",
+      sql`${table.businessDayCutoff} ~ '^(0[0-9]|1[01]):[0-5][0-9]$'`,
     ),
     check(
       "outlets_status_check",

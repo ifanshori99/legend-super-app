@@ -8,6 +8,8 @@
 // joins fixture rows for the tables and derives what the screens display.
 
 import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  businessDateOf as coreBusinessDateOf,
   extendCostIdr,
   formatDecimal4,
   idr,
@@ -94,14 +96,13 @@ export function formatDateTime(
   }).format(new Date(value));
 }
 
-/** The outlet's business date (D-CORE-6), "2026-11-01". */
+/** The outlet's business date (D-CORE-6, owner Q39 cutoff), "2026-11-01". */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = INVENTORY_TIME_ZONE,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): BusinessDate {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-  }).format(now) as BusinessDate;
+  return coreBusinessDateOf(now, { timeZone, cutoff });
 }
 
 /** "2026-11-01" + 3 → "2026-11-04" (calendar days, no time zone drift). */
@@ -123,14 +124,16 @@ export function daysBetween(
   return Math.round((parse(to) - parse(from)) / 86_400_000);
 }
 
-/** Business date of an instant in the outlet time zone, for ledger filters. */
+/**
+ * Business date of an instant at the outlet, for ledger filters: the same rule
+ * as the API's stock-card filter (core `businessDateOf`, owner Q39 cutoff).
+ */
 export function businessDateOf(
   instant: string,
   timeZone: string = INVENTORY_TIME_ZONE,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): BusinessDate {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-  }).format(new Date(instant)) as BusinessDate;
+  return coreBusinessDateOf(instant, { timeZone, cutoff });
 }
 
 // ---- Stock card (ledger) --------------------------------------------------

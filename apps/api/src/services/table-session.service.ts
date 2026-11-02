@@ -463,6 +463,7 @@ async function outletRefs(
       code: outlet.code,
       name: outlet.name,
       timeZone: outlet.timezone,
+      businessDayCutoff: outlet.businessDayCutoff,
       status: outlet.status,
     },
     brand: {

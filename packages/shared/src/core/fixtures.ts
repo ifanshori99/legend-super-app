@@ -17,7 +17,12 @@ import {
 } from "./ids.ts";
 import { decimal4Schema, idrSchema } from "./money.ts";
 import { encodeCursor } from "./pagination.ts";
-import { DEFAULT_TIME_ZONE, timeZoneSchema } from "./time.ts";
+import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  DEFAULT_TIME_ZONE,
+  businessDayCutoffSchema,
+  timeZoneSchema,
+} from "./time.ts";
 
 export const tenantRefSchema = z.object({
   id: tenantIdSchema,
@@ -37,6 +42,10 @@ export const outletRefSchema = z.object({
   code: z.string().min(1).max(20),
   name: z.string().min(1).max(150),
   timeZone: timeZoneSchema,
+  /** Owner Q39 business-day start; older producers omit it (default 04:00). */
+  businessDayCutoff: businessDayCutoffSchema.default(
+    DEFAULT_BUSINESS_DAY_CUTOFF,
+  ),
   status: z.enum(["preopening", "active", "closed"]),
 });
 export type TenantRef = z.infer<typeof tenantRefSchema>;

@@ -307,6 +307,11 @@ export async function reserveMenuItemDailyLimit(
   input: {
     outletId: string;
     menuItemId: string;
+    /**
+     * The order's outlet business date: `businessDateOf(at,
+     * outletBusinessDayClock(outlet))` (owner Q39 cutoff), never a calendar
+     * date, so a 01:00 order after a late close uses the same counter.
+     */
     businessDate: string;
     quantity: number;
     now?: Date;
