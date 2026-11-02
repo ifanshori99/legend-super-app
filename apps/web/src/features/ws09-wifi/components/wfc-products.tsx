@@ -13,8 +13,8 @@ import { useWfcPlans } from "../hooks";
 
 function ProductRow({ name, hint }: { name: string; hint: string }) {
   return (
-    <li className="grid gap-1 p-4">
-      <p className="text-sm leading-5 font-semibold">{name}</p>
+    <li className="grid gap-0.5 px-4 py-3">
+      <p className="type-heading">{name}</p>
       <p className="text-sm leading-5 text-muted-foreground">{hint}</p>
     </li>
   );
@@ -23,9 +23,9 @@ function ProductRow({ name, hint }: { name: string; hint: string }) {
 function PlanRow({ plan }: { plan: SubscriptionPlan }) {
   const t = useT();
   return (
-    <li className="flex items-start justify-between gap-4 p-4">
-      <div className="grid min-w-0 gap-1">
-        <p className="text-sm leading-5 font-semibold">{plan.name}</p>
+    <li className="flex items-start justify-between gap-4 px-4 py-3">
+      <div className="grid min-w-0 gap-0.5">
+        <p className="type-heading">{plan.name}</p>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("wifi.wfcPlanAmount", {
             sessions: plan.quotaPerPeriod,
@@ -36,7 +36,7 @@ function PlanRow({ plan }: { plan: SubscriptionPlan }) {
           })}
         </p>
       </div>
-      <Money amount={plan.priceIdr} size="sm" className="font-semibold" />
+      <Money amount={plan.priceIdr} className="font-semibold" />
     </li>
   );
 }
@@ -49,29 +49,32 @@ export function WfcProducts({
   const t = useT();
   const plans = useWfcPlans(facilityId);
   return (
-    <section aria-labelledby="wfc-title" className="mt-6 grid gap-3">
-      <div>
-        <h2 id="wfc-title" className="text-lg leading-7 font-semibold">
+    <section aria-labelledby="wfc-title" className="grid gap-3">
+      <div className="grid gap-1">
+        <h2 id="wfc-title" className="type-title">
           {t("wifi.wfcTitle")}
         </h2>
-        <p className="mt-1 text-sm leading-5 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("wifi.wfcHint")}
         </p>
       </div>
-      <ul className="divide-y divide-border overflow-hidden rounded-xl border-(length:--border-w) bg-card">
+      <ul className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
         <ProductRow
           name={t("wifi.wfcDayPass")}
           hint={t("wifi.wfcDayPassHint")}
         />
         <ProductRow name={t("wifi.wfcSeat")} hint={t("wifi.wfcSeatHint")} />
         {plans.isPending && facilityId && (
-          <li className="grid gap-2 p-4" aria-busy="true">
+          <li className="grid gap-2 px-4 py-3" aria-busy="true">
             <Skeleton className="h-4 w-36" />
             <Skeleton className="h-4 w-24" />
           </li>
         )}
         {plans.isError && (
-          <li className="flex flex-wrap items-center gap-2 p-4" role="alert">
+          <li
+            className="flex flex-wrap items-center gap-2 px-4 py-3"
+            role="alert"
+          >
             <p className="text-sm leading-5 text-danger">
               {t("state.errorHint")}
             </p>
@@ -81,7 +84,7 @@ export function WfcProducts({
           </li>
         )}
         {plans.data?.length === 0 && (
-          <li className="p-4 text-sm leading-5 text-muted-foreground">
+          <li className="px-4 py-3 text-sm leading-5 text-muted-foreground">
             {t("wifi.wfcPlanEmpty")}
           </li>
         )}

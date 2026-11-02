@@ -9,6 +9,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardDescription,
   CardHeader,
   CardTitle,
@@ -28,33 +29,33 @@ export function WifiLoginGate({
   const menuToken = tableMenuToken(tableToken);
   return (
     <Card>
-      <span className="grid size-12 place-items-center rounded-full bg-brand-subtle">
-        <MessageCircle className="size-icon" aria-hidden="true" />
-      </span>
       <CardHeader>
         <CardTitle>{t("wifi.loginTitle")}</CardTitle>
         <CardDescription>
           {t("wifi.loginHint", { devices: policy.maxDevices })}
         </CardDescription>
+        <CardAction>
+          <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
+            <MessageCircle className="size-5" aria-hidden="true" />
+          </span>
+        </CardAction>
       </CardHeader>
       <WifiFacts policy={policy} />
-      <div className="grid gap-2">
-        <Button asChild>
-          <Link to="/sign-in">{t("wifi.loginAction")}</Link>
-        </Button>
-        {menuToken && (
-          <>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("wifi.orderHint")}
-            </p>
-            <Button variant="outline" asChild>
-              <Link to="/t/$token" params={{ token: menuToken }}>
-                {t("wifi.orderAction")}
-              </Link>
-            </Button>
-          </>
-        )}
-      </div>
+      <Button asChild>
+        <Link to="/sign-in">{t("wifi.loginAction")}</Link>
+      </Button>
+      {menuToken && (
+        <div className="grid gap-2 border-t-(length:--border-w) pt-4">
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("wifi.orderHint")}
+          </p>
+          <Button variant="outline" asChild>
+            <Link to="/t/$token" params={{ token: menuToken }}>
+              {t("wifi.orderAction")}
+            </Link>
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }

@@ -28,7 +28,9 @@ export function ShiftToday({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("hris.home.shiftTitle")}</CardTitle>
+        <CardTitle className="font-brand type-title">
+          {t("hris.home.shiftTitle")}
+        </CardTitle>
       </CardHeader>
       {shifts.isPending ? (
         <SectionSkeleton rows={1} />
@@ -40,7 +42,7 @@ export function ShiftToday({
         />
       ) : shift ? (
         <div className="grid gap-1">
-          <p className="tabular text-2xl leading-8 font-semibold tracking-tight">
+          <p className="tabular type-display">
             {formatShiftRange(shift, timeZone)}
           </p>
           <p className="text-sm leading-5 text-muted-foreground">

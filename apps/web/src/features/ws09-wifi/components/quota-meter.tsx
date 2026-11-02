@@ -25,7 +25,7 @@ export function QuotaMeter({
   const percent = quotaMinutes > 0 ? (used / quotaMinutes) * 100 : 100;
   return (
     <div className="grid gap-2">
-      <p className="text-2xl leading-8 font-semibold tracking-tight">
+      <p className="type-display">
         <data value={remainingMinutes} className="tabular">
           {formatMinutes(remainingMinutes, t)}
         </data>
