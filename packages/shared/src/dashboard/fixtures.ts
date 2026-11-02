@@ -19,7 +19,8 @@ import {
   metricQueryPeriodSchema,
 } from "../metrics/index.ts";
 import type { MetricDefinitionRef } from "../metrics/index.ts";
-import { reportCatalog } from "./catalog.ts";
+import { reportCatalog, reportByCode } from "./catalog.ts";
+import { reportMetricByCode } from "./metric-catalog.ts";
 import { reportCatalogPageSchema } from "./reports.ts";
 import type { ReportDefinition } from "./reports.ts";
 import {
@@ -29,6 +30,7 @@ import {
   reportScheduleSchema,
   savedReportSchema,
 } from "./builder.ts";
+import type { ReportResult } from "./builder.ts";
 import {
   createReportExportInputSchema,
   reportExportSchema,
@@ -323,6 +325,398 @@ export const dashboardErrorFixtures = {
   ),
 };
 
+// ---- Owner dashboard part 1 (bead legend-k8fk) ------------------------------
+//
+// One run result per report the owner dashboard's part-1 sections cite (PRD
+// §3 F34 Ringkasan Real-time, Operasional, Shower Room, Kursi & WFC). Every
+// row is the report's own metric set, so a tile and its source report read the
+// same numbers (DASH-02). 1 November 2026 is the open business day in the
+// fixture calendar, so every value is an estimate (SH-02).
+
+/** 11:40 WIB on the fixture business day; the kitchen board uses the same day. */
+export const ownerBoardGeneratedAt = "2026-11-01T04:40:00.000Z";
+
+const ownerBoardPeriod = metricPeriodSchema.parse({
+  startDate: "2026-11-01",
+  endDate: "2026-11-01",
+  bucket: "total",
+  status: "open",
+  accountingPeriodClosed: false,
+});
+
+type OwnerBoardCell =
+  | { unit: "idr"; valueIdr: number }
+  | { unit: "count"; value: number }
+  | { unit: "seconds"; value: number }
+  | { unit: "percent"; value: string }
+  | { unit: "decimal"; value: string };
+
+type OwnerBoardRowSeed = {
+  dims?: ReadonlyArray<readonly [string, string]>;
+  values: Readonly<Record<string, OwnerBoardCell>>;
+};
+
+function ownerBoardMetricRef(code: string): MetricDefinitionRef {
+  const definition = reportMetricByCode.get(code);
+  if (definition === undefined)
+    throw new Error(`No registry row for owner board metric ${code}`);
+  return metricDefinitionRefSchema.parse({
+    id: definition.id,
+    code: definition.code,
+    version: definition.version,
+    name: definition.name,
+    ownerModule: definition.ownerModule,
+    formula: definition.formula,
+    unit: definition.unit,
+    aggregation: definition.aggregation,
+    dimensions: definition.dimensions,
+    grain: definition.grain,
+    officiality: definition.officiality,
+    sourceReport: definition.sourceReport,
+  });
+}
+
+function ownerBoardRun(
+  code: string,
+  groupBy: readonly string[],
+  rows: readonly OwnerBoardRowSeed[],
+): ReportResult {
+  const report = reportByCode(code);
+  if (report === undefined)
+    throw new Error(`No report catalog entry for owner board ${code}`);
+  return reportResultSchema.parse({
+    reportCode: code,
+    period: ownerBoardPeriod,
+    outletFilter: { kind: "outlets", outletIds: [outlet.id] },
+    definitions: report.metrics.map(ownerBoardMetricRef),
+    groupBy,
+    rows: rows.map((row) => ({
+      dimensions: (row.dims ?? []).map(([key, value]) => ({ key, value })),
+      values: report.metrics.map((metricCode) => ({
+        metricCode,
+        value: row.values[metricCode] ?? null,
+        finality: "estimate",
+      })),
+    })),
+    generatedAt: ownerBoardGeneratedAt,
+    rowLimit: 100,
+  });
+}
+
+/** Run results for the part-1 owner dashboard, keyed by report code. */
+export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
+  Object.freeze({
+    // Ringkasan real-time (PRD §3 F34 "Ringkasan Real-time").
+    "sales.target": ownerBoardRun("sales.target", [], [
+      {
+        values: {
+          net_sales: { unit: "idr", valueIdr: 7_420_000 },
+          sales_target: { unit: "idr", valueIdr: 24_000_000 },
+          target_achievement_pct: { unit: "percent", value: "30.9167" },
+        },
+      },
+    ]),
+    "traffic.pax": ownerBoardRun("traffic.pax", [], [
+      {
+        values: {
+          pax: { unit: "count", value: 148 },
+          avg_spend_per_pax: { unit: "idr", valueIdr: 50_135 },
+        },
+      },
+    ]),
+    "sales.transactions": ownerBoardRun("sales.transactions", [], [
+      {
+        values: {
+          transaction_count: { unit: "count", value: 96 },
+          avg_ticket: { unit: "idr", valueIdr: 77_292 },
+          net_sales: { unit: "idr", valueIdr: 7_420_000 },
+        },
+      },
+    ]),
+    "operations.table_turnover": ownerBoardRun(
+      "operations.table_turnover",
+      [],
+      [
+        {
+          values: {
+            table_turnover: { unit: "decimal", value: "1.8400" },
+            table_occupancy_pct: { unit: "percent", value: "62.5000" },
+          },
+        },
+      ],
+    ),
+    "sales.per_channel": ownerBoardRun("sales.per_channel", ["channel"], [
+      {
+        dims: [["channel", "qr"]],
+        values: {
+          net_sales: { unit: "idr", valueIdr: 4_150_000 },
+          transaction_count: { unit: "count", value: 52 },
+          pax: { unit: "count", value: 92 },
+        },
+      },
+      {
+        dims: [["channel", "pos"]],
+        values: {
+          net_sales: { unit: "idr", valueIdr: 1_980_000 },
+          transaction_count: { unit: "count", value: 28 },
+          pax: { unit: "count", value: 34 },
+        },
+      },
+      {
+        dims: [["channel", "gofood"]],
+        values: {
+          net_sales: { unit: "idr", valueIdr: 780_000 },
+          transaction_count: { unit: "count", value: 10 },
+          pax: { unit: "count", value: 14 },
+        },
+      },
+      {
+        dims: [["channel", "grabfood"]],
+        values: {
+          net_sales: { unit: "idr", valueIdr: 510_000 },
+          transaction_count: { unit: "count", value: 6 },
+          pax: { unit: "count", value: 8 },
+        },
+      },
+    ]),
+
+    // Operasional (PRD §3 F34 "Operasional").
+    "operations.serving_time": ownerBoardRun(
+      "operations.serving_time",
+      ["station"],
+      [
+        {
+          dims: [["station", "Dapur"]],
+          values: { avg_serving_time: { unit: "seconds", value: 718 } },
+        },
+        {
+          dims: [["station", "Kopi"]],
+          values: { avg_serving_time: { unit: "seconds", value: 452 } },
+        },
+        {
+          dims: [["station", "Nonkopi"]],
+          values: { avg_serving_time: { unit: "seconds", value: 310 } },
+        },
+        {
+          dims: [["station", "Pastry"]],
+          values: { avg_serving_time: { unit: "seconds", value: 260 } },
+        },
+      ],
+    ),
+    "operations.kitchen_queue": ownerBoardRun(
+      "operations.kitchen_queue",
+      ["station"],
+      [
+        {
+          dims: [["station", "Dapur"]],
+          values: {
+            order_queue_count: { unit: "count", value: 6 },
+            avg_serving_time: { unit: "seconds", value: 718 },
+          },
+        },
+        {
+          dims: [["station", "Kopi"]],
+          values: {
+            order_queue_count: { unit: "count", value: 3 },
+            avg_serving_time: { unit: "seconds", value: 452 },
+          },
+        },
+        {
+          dims: [["station", "Nonkopi"]],
+          values: {
+            order_queue_count: { unit: "count", value: 2 },
+            avg_serving_time: { unit: "seconds", value: 310 },
+          },
+        },
+        {
+          dims: [["station", "Pastry"]],
+          values: {
+            order_queue_count: { unit: "count", value: 1 },
+            avg_serving_time: { unit: "seconds", value: 260 },
+          },
+        },
+      ],
+    ),
+    "menu.best_sellers": ownerBoardRun("menu.best_sellers", ["menu_item"], [
+      {
+        dims: [["menu_item", "Kopi Susu Aren"]],
+        values: {
+          menu_sold_qty: { unit: "count", value: 42 },
+          net_sales: { unit: "idr", valueIdr: 1_260_000 },
+        },
+      },
+      {
+        dims: [["menu_item", "Nasi Goreng Kampung"]],
+        values: {
+          menu_sold_qty: { unit: "count", value: 31 },
+          net_sales: { unit: "idr", valueIdr: 1_085_000 },
+        },
+      },
+      {
+        dims: [["menu_item", "Ayam Geprek"]],
+        values: {
+          menu_sold_qty: { unit: "count", value: 27 },
+          net_sales: { unit: "idr", valueIdr: 945_000 },
+        },
+      },
+      {
+        dims: [["menu_item", "Matcha Latte"]],
+        values: {
+          menu_sold_qty: { unit: "count", value: 24 },
+          net_sales: { unit: "idr", valueIdr: 720_000 },
+        },
+      },
+      {
+        dims: [["menu_item", "Croissant Mentega"]],
+        values: {
+          menu_sold_qty: { unit: "count", value: 21 },
+          net_sales: { unit: "idr", valueIdr: 525_000 },
+        },
+      },
+    ]),
+    "menu.sold_out": ownerBoardRun("menu.sold_out", [], [
+      { values: { sold_out_menu_count: { unit: "count", value: 2 } } },
+    ]),
+    "operations.waiter_calls": ownerBoardRun(
+      "operations.waiter_calls",
+      ["zone"],
+      [
+        {
+          dims: [["zone", "Indoor Reguler"]],
+          values: { waiter_call_count: { unit: "count", value: 2 } },
+        },
+        {
+          dims: [["zone", "Taman Outdoor"]],
+          values: { waiter_call_count: { unit: "count", value: 1 } },
+        },
+        {
+          dims: [["zone", "WFC Corner"]],
+          values: { waiter_call_count: { unit: "count", value: 1 } },
+        },
+      ],
+    ),
+    "crm.reviews": ownerBoardRun("crm.reviews", [], [
+      {
+        values: {
+          review_rating: { unit: "decimal", value: "4.7000" },
+          review_count: { unit: "count", value: 128 },
+        },
+      },
+    ]),
+
+    // Shower room (PRD §3 F34 "Shower Room").
+    "facility.occupancy": ownerBoardRun("facility.occupancy", [], [
+      {
+        values: {
+          shower_occupancy_pct: { unit: "percent", value: "56.2500" },
+          shower_sessions: { unit: "count", value: 18 },
+        },
+      },
+    ]),
+    "facility.revenue": ownerBoardRun("facility.revenue", [], [
+      {
+        values: {
+          shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
+          shower_sessions: { unit: "count", value: 18 },
+        },
+      },
+    ]),
+    "facility.subscriptions": ownerBoardRun("facility.subscriptions", [], [
+      {
+        values: {
+          active_subscriptions: { unit: "count", value: 23 },
+          shower_revenue: { unit: "idr", valueIdr: 1_350_000 },
+        },
+      },
+    ]),
+    "facility.fnb_conversion": ownerBoardRun(
+      "facility.fnb_conversion",
+      [],
+      [
+        {
+          values: {
+            shower_fnb_conversion_pct: { unit: "percent", value: "61.1100" },
+            shower_sessions_with_fnb: { unit: "count", value: 11 },
+          },
+        },
+      ],
+    ),
+
+    // Kursi & WFC (PRD §3 F34 "Kursi & WFC").
+    "facility.revpash": ownerBoardRun("facility.revpash", ["zone"], [
+      {
+        dims: [["zone", "Indoor Reguler"]],
+        values: {
+          revpash: { unit: "idr", valueIdr: 18_500 },
+          seat_occupancy_pct: { unit: "percent", value: "68.7500" },
+        },
+      },
+      {
+        dims: [["zone", "Taman Outdoor"]],
+        values: {
+          revpash: { unit: "idr", valueIdr: 9_200 },
+          seat_occupancy_pct: { unit: "percent", value: "42.5000" },
+        },
+      },
+      {
+        dims: [["zone", "Private Room Nusantara"]],
+        values: {
+          revpash: { unit: "idr", valueIdr: 26_400 },
+          seat_occupancy_pct: { unit: "percent", value: "75.0000" },
+        },
+      },
+      {
+        dims: [["zone", "WFC Corner"]],
+        values: {
+          revpash: { unit: "idr", valueIdr: 12_800 },
+          seat_occupancy_pct: { unit: "percent", value: "55.0000" },
+        },
+      },
+    ]),
+    "traffic.dwell_time": ownerBoardRun("traffic.dwell_time", ["zone"], [
+      {
+        dims: [["zone", "Indoor Reguler"]],
+        values: {
+          avg_dwell_minutes: { unit: "decimal", value: "68.5000" },
+          avg_spend_per_pax: { unit: "idr", valueIdr: 48_200 },
+          table_turnover: { unit: "decimal", value: "1.9000" },
+        },
+      },
+      {
+        dims: [["zone", "Taman Outdoor"]],
+        values: {
+          avg_dwell_minutes: { unit: "decimal", value: "82.0000" },
+          avg_spend_per_pax: { unit: "idr", valueIdr: 41_800 },
+          table_turnover: { unit: "decimal", value: "1.6000" },
+        },
+      },
+      {
+        dims: [["zone", "Private Room Nusantara"]],
+        values: {
+          avg_dwell_minutes: { unit: "decimal", value: "96.5000" },
+          avg_spend_per_pax: { unit: "idr", valueIdr: 88_400 },
+          table_turnover: { unit: "decimal", value: "1.2000" },
+        },
+      },
+      {
+        dims: [["zone", "WFC Corner"]],
+        values: {
+          avg_dwell_minutes: { unit: "decimal", value: "110.0000" },
+          avg_spend_per_pax: { unit: "idr", valueIdr: 52_600 },
+          table_turnover: { unit: "decimal", value: "1.1000" },
+        },
+      },
+    ]),
+    "facility.wifi": ownerBoardRun("facility.wifi", [], [
+      {
+        values: {
+          wifi_quota_used: { unit: "decimal", value: "42.7000" },
+          wifi_sessions: { unit: "count", value: 210 },
+        },
+      },
+    ]),
+  } satisfies Record<string, ReportResult>);
+
 export const cafeLegendReportFixtures = {
   dashboard: cafeLegendDashboardFixtures,
   catalogPage: reportCatalogPageFixture,
@@ -332,6 +726,7 @@ export const cafeLegendReportFixtures = {
   savedReport: savedReportFixture,
   schedule: reportScheduleFixture,
   runResult: reportRunResultFixture,
+  ownerBoardRuns: ownerDashboardBoardRuns,
   createExportInput: createReportExportInputFixture,
   exportPendingApproval: reportExportPendingApprovalFixture,
   exportReady: reportExportReadyFixture,
