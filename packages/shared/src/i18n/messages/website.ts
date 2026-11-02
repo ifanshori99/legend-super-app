@@ -145,4 +145,12 @@ export const websiteMessages = {
   footer: {
     rights: "© {year} {brand}",
   },
+  // Alt text for the demo photos mock mode overlays on the shared fixtures
+  // (DESIGN.md Q24: Unsplash samples only in demo data).
+  demo: {
+    heroAlt: "Contoh foto: meja kayu dengan kopi di Cafe Legend",
+    galleryInteriorAlt:
+      "Contoh foto: meja dan kursi di ruang utama Cafe Legend",
+    galleryCoffeeAlt: "Contoh foto: kopi susu aren dingin di meja",
+  },
 };

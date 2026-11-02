@@ -83,10 +83,14 @@ test("F21 JSON-LD cannot close the script tag from a menu item name", () => {
 test("F21 sitemap.xml lists home, menu, reservation and member from the canonical origin", () => {
   const xml = seo.sitemapXml(homepage);
   assert.ok(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
-  assert.ok(xml.includes('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'));
+  assert.ok(
+    xml.includes('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'),
+  );
   for (const path of ["/", "/menu", "/reservation", "/member"])
     assert.ok(
-      xml.includes(`<loc>${new URL(homepage.seo.canonicalUrl).origin}${path}</loc>`),
+      xml.includes(
+        `<loc>${new URL(homepage.seo.canonicalUrl).origin}${path}</loc>`,
+      ),
       path,
     );
   assert.equal((xml.match(/<url>/g) ?? []).length, 4);
@@ -122,16 +126,21 @@ test("F21 opening hours group identical ranges into readable lines", () => {
   );
   // Two non-adjacent days sharing one range list both names, Monday first.
   assert.deepEqual(
-    hours.groupOpeningHours([
-      { daysOfWeek: [6, 1], opens: "10:00", closes: "12:00" },
-    ]).map((group) => group.days),
+    hours
+      .groupOpeningHours([
+        { daysOfWeek: [6, 1], opens: "10:00", closes: "12:00" },
+      ])
+      .map((group) => group.days),
     [[1, 6]],
   );
 });
 
 test("F21 dates format in UTC so SSR and the browser agree", () => {
   assert.equal(hours.formatBusinessDate("2026-12-31"), "31 Desember 2026");
-  assert.equal(hours.formatIsoDate("2026-11-01T02:00:00.000Z"), "1 November 2026");
+  assert.equal(
+    hours.formatIsoDate("2026-11-01T02:00:00.000Z"),
+    "1 November 2026",
+  );
   assert.equal(hours.formatBusinessDate("not-a-date"), "");
 });
 

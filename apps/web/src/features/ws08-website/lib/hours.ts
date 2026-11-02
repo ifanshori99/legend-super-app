@@ -68,7 +68,9 @@ export function groupOpeningHours(
       ...group,
       days: group.days.sort((a, b) => displayOrder(a) - displayOrder(b)),
     }))
-    .sort((left, right) => displayOrder(left.days[0]) - displayOrder(right.days[0]));
+    .sort(
+      (left, right) => displayOrder(left.days[0]) - displayOrder(right.days[0]),
+    );
 }
 
 /** True when the days form one unbroken run in Monday-first order. */

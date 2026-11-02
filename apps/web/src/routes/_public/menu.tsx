@@ -5,7 +5,10 @@ import {
   WebsiteError,
   WebsitePending,
 } from "@/features/ws08-website/components/states";
-import { usePublicMenuPage, usePublicSite } from "@/features/ws08-website/hooks";
+import {
+  usePublicMenuPage,
+  usePublicSite,
+} from "@/features/ws08-website/hooks";
 import { menuHead } from "@/features/ws08-website/lib/seo";
 import {
   publicMenuPageQuery,
@@ -43,5 +46,6 @@ export const Route = createFileRoute("/_public/menu")({
 function Menu() {
   const site = usePublicSite();
   const page = usePublicMenuPage();
-  return <MenuPage site={site} page={page} />;
+  const { session } = Route.useRouteContext();
+  return <MenuPage site={site} page={page} signedIn={session !== null} />;
 }

@@ -117,10 +117,7 @@ export function menuHead(
       sections.length > 0
         ? [
             jsonLdScript(
-              buildMenuJsonLd(
-                { ...page, sections },
-                copy.jsonLdName,
-              ),
+              buildMenuJsonLd({ ...page, sections }, copy.jsonLdName),
             ),
           ]
         : [],

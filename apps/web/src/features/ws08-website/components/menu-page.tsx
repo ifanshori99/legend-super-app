@@ -3,25 +3,32 @@
 // come from the outlet price list and exclude tax and service charge (owner
 // decision, 1 Nov 2026), so the disclosure sits above the list and every
 // sold-out item says so instead of disappearing.
+//
+// v3 (DESIGN.md §4/§5): photo-first rows (MediaPlate list thumb), ink tab
+// track for the sections, search on a `surface-2` toolbar band.
 import { useMemo, useState } from "react";
-import { Ban, Search } from "lucide-react";
+import { Ban, BookOpen, Search } from "lucide-react";
+import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import type {
   PublicMenuPage,
   PublicMenuItem,
   PublicMenuSection,
   PublicSite,
 } from "@starter/shared/website";
+import { API_MOCK } from "@/lib/api/mock-flag.ts";
+import { demoMenuPhoto } from "../lib/demo-media.ts";
 import { formatIsoDate } from "../lib/hours.ts";
-import { PriceNote, SectionHeading, SiteSection } from "./blocks.tsx";
+import { PriceNote, SiteSection } from "./blocks.tsx";
 import { SiteFrame } from "./site-frame.tsx";
-import { SiteImage } from "./site-image.tsx";
 
 function matchesQuery(item: PublicMenuItem, query: string): boolean {
   const haystack = `${item.name} ${item.description}`.toLowerCase();
@@ -30,15 +37,16 @@ function matchesQuery(item: PublicMenuItem, query: string): boolean {
 
 function MenuItemRow({ item }: { item: PublicMenuItem }) {
   const t = useT();
+  const src = demoMenuPhoto(item.name) ?? item.imageUrl;
   return (
     <li className="flex items-start gap-4 py-4">
-      {item.imageUrl && (
-        <SiteImage
-          src={item.imageUrl}
-          alt={item.name}
-          className="size-20 shrink-0 rounded-lg"
-        />
-      )}
+      <MediaPlate
+        src={src}
+        alt={item.name}
+        ratio="card"
+        muted={!item.isAvailable}
+        className="size-18 shrink-0"
+      />
       <div className="grid min-w-0 flex-1 gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-base leading-6 font-semibold">{item.name}</h3>
@@ -67,11 +75,10 @@ function MenuItemRow({ item }: { item: PublicMenuItem }) {
       </div>
       <Money
         amount={item.priceIdr}
-        className={
-          item.isAvailable
-            ? "shrink-0 text-base font-semibold"
-            : "shrink-0 text-base font-semibold text-muted-foreground"
-        }
+        className={cn(
+          "shrink-0 text-base font-semibold",
+          !item.isAvailable && "text-muted-foreground",
+        )}
       />
     </li>
   );
@@ -94,10 +101,7 @@ function MenuSectionBlock({
   const id = `menu-section-${index}`;
   return (
     <section id={id} aria-labelledby={`${id}-title`} className="grid gap-1">
-      <h2
-        id={`${id}-title`}
-        className="text-xl font-semibold tracking-tight"
-      >
+      <h2 id={`${id}-title`} className="type-title">
         {section.name}
       </h2>
       {section.description && (
@@ -123,19 +127,18 @@ function MenuSectionBlock({
 export function MenuPage({
   site,
   page,
+  signedIn,
 }: {
   site: PublicSite;
   page: PublicMenuPage;
+  signedIn: boolean;
 }) {
   const t = useT();
   const [search, setSearch] = useState("");
   const query = search.trim().toLowerCase();
   const itemCount = useMemo(
     () =>
-      page.sections.reduce(
-        (total, section) => total + section.items.length,
-        0,
-      ),
+      page.sections.reduce((total, section) => total + section.items.length, 0),
     [page.sections],
   );
   const visibleCount = useMemo(
@@ -143,21 +146,21 @@ export function MenuPage({
       page.sections.reduce(
         (total, section) =>
           total +
-          section.items.filter(
-            (item) => !query || matchesQuery(item, query),
-          ).length,
+          section.items.filter((item) => !query || matchesQuery(item, query))
+            .length,
         0,
       ),
     [page.sections, query],
   );
 
   return (
-    <SiteFrame site={site}>
-      <SiteSection className="pb-6">
+    <SiteFrame site={site} signedIn={signedIn}>
+      <SiteSection innerClassName="pb-4">
         <div className="grid gap-3">
-          <h1 className="font-brand text-3xl leading-tight font-bold tracking-tight sm:text-4xl">
-            {t("website.menu.title")}
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="type-display-xl">{t("website.menu.title")}</h1>
+            {API_MOCK && <Badge>{t("common.sampleData")}</Badge>}
+          </div>
           <p className="text-lg leading-7 text-muted-foreground">
             {t("website.menu.lead", { brand: site.brand.name })}
           </p>
@@ -171,52 +174,58 @@ export function MenuPage({
       </SiteSection>
 
       {itemCount === 0 ? (
-        <SiteSection className="pt-0">
+        <SiteSection innerClassName="pt-0">
           <EmptyState
+            icon={BookOpen}
             title={t("website.menu.emptyTitle")}
             description={t("website.menu.emptyHint")}
           />
         </SiteSection>
       ) : (
         <>
-          <SiteSection className="py-4">
-            <div className="grid max-w-md gap-1.5">
-              <Label htmlFor="menu-search">{t("website.menu.searchLabel")}</Label>
-              <div className="relative">
-                <Search
-                  className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <Input
-                  id="menu-search"
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder={t("website.menu.searchPlaceholder")}
-                  className="pl-9"
-                  autoComplete="off"
-                />
+          <SiteSection band innerClassName="py-5">
+            <div className="grid gap-3">
+              <div className="grid max-w-md gap-1.5">
+                <Label htmlFor="menu-search">
+                  {t("website.menu.searchLabel")}
+                </Label>
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    id="menu-search"
+                    type="search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder={t("website.menu.searchPlaceholder")}
+                    className="bg-card pl-9"
+                    autoComplete="off"
+                  />
+                </div>
               </div>
+              <nav aria-label={t("website.menu.sectionsNav")}>
+                <ul className={tabsListClass}>
+                  {page.sections.map((section, index) => (
+                    <li key={section.id}>
+                      <a
+                        href={`#menu-section-${index}`}
+                        className={tabsTriggerClass}
+                      >
+                        {section.name}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </nav>
             </div>
-            <nav aria-label={t("website.menu.sectionsNav")} className="mt-4">
-              <ul className="flex flex-wrap gap-2">
-                {page.sections.map((section, index) => (
-                  <li key={section.id}>
-                    <a
-                      href={`#menu-section-${index}`}
-                      className="inline-flex min-h-11 items-center rounded-full border-(length:--border-w) border-input px-3 text-sm font-medium text-foreground transition-colors duration-(--duration-fast) hover:bg-accent"
-                    >
-                      {section.name}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </nav>
           </SiteSection>
 
-          <SiteSection className="grid gap-10 pt-2">
+          <SiteSection innerClassName="grid items-start gap-10 pt-8 lg:grid-cols-2 lg:gap-x-12 lg:gap-y-12">
             {visibleCount === 0 ? (
               <EmptyState
+                icon={Search}
                 title={t("website.menu.noResultsTitle")}
                 description={t("website.menu.noResultsHint")}
                 action={

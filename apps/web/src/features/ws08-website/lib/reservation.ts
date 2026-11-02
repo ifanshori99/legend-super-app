@@ -7,7 +7,7 @@
 // not own. Validation returns field keys, not sentences: the component maps
 // them to the text catalog.
 
-export type ReservationField = "name" | "date" | "time" | "pax";
+export type ReservationField = "name" | "date" | "time" | "pax" | "notes";
 
 export type ReservationRequest = {
   name: string;

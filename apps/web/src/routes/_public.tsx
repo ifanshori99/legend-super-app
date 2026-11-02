@@ -1,27 +1,58 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useLocation,
+} from "@tanstack/react-router";
+import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { ThemeScope } from "@/components/theme-scope";
 import { AREAS } from "@/lib/areas/definitions";
 import { areaHead, runGuard } from "@/lib/areas/route";
 
-// Area "public" (PRD §5): the brand website — SSR, CDN cache, indexed. It
-// renders the website's own frame (wide, warm, brand-first, see
-// features/ws08-website/components/site-frame.tsx) instead of the customer app
-// shell: a visitor on the brand domain should see the cafe, not app chrome.
-// Guard and density still come from the area definition.
+// Area "public" (PRD §5): the brand website — SSR, CDN cache, indexed — plus
+// the customer sign-in entry (/masuk). Guard and density still come from the
+// area definition; the pages own their frame:
+//
+// - the brand site (/ , /menu, /reservation) renders the website's own wide,
+//   photo-first frame (features/ws08-website/components/site-frame.tsx);
+// - the sign-in screens keep a centered reading column.
+//
+// TEN-08: nothing here prints the platform name; brand text comes from the
+// site payload, and the sign-in screens print their own copy.
 export const Route = createFileRoute("/_public")({
   beforeLoad: ({ context }) => runGuard(AREAS.public.guard, context.access),
   head: () => areaHead("public"),
   component: Layout,
 });
 
+const WEBSITE_PATHS = new Set(["/", "/menu", "/reservation"]);
+
 function Layout() {
   const { gate } = Route.useRouteContext();
+  const { pathname } = useLocation();
+  const t = useT();
   if (gate.status !== "allowed")
     return <AreaGateScreen area="public" gate={gate} />;
   return (
     <ThemeScope density="hangat" className="min-h-dvh bg-background">
-      <Outlet />
+      {WEBSITE_PATHS.has(pathname) ? (
+        <Outlet />
+      ) : (
+        <div className="mx-auto w-full max-w-2xl px-gutter py-6">
+          <div className="mb-6 flex items-center justify-between">
+            <Link
+              to="/"
+              className="text-sm font-semibold text-primary underline-offset-4 hover:underline"
+            >
+              {t("website.nav.home")}
+            </Link>
+            <ThemeToggle />
+          </div>
+          <Outlet />
+        </div>
+      )}
     </ThemeScope>
   );
 }

@@ -1,8 +1,10 @@
 // Loading and failure states for the public website (PRD: every screen has
 // loading, empty, error and offline states). The skeleton mirrors the page
 // rhythm — header bar, hero split, card row — so the shift to content is calm.
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
+import { RotateCw } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/client";
@@ -44,7 +46,8 @@ export function WebsiteError({
   error,
   reset,
 }: {
-  error: Error;
+  /** TanStack Router hands the boundary an `unknown` error. */
+  error: unknown;
   reset: () => void;
 }) {
   const t = useT();
@@ -63,10 +66,24 @@ export function WebsiteError({
             ? t("website.state.offlineHint")
             : t("website.state.errorHint")
         }
-        onRetry={() => {
-          reset();
-          void router.invalidate();
-        }}
+        action={
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                reset();
+                void router.invalidate();
+              }}
+            >
+              <RotateCw aria-hidden="true" />
+              {t("common.retry")}
+            </Button>
+            <Button asChild variant="ghost" size="sm">
+              <Link to="/">{t("website.nav.home")}</Link>
+            </Button>
+          </div>
+        }
       />
     </div>
   );

@@ -7,6 +7,7 @@
 // works before the reservation API exists.
 import { useState, type FormEvent, type MouseEvent } from "react";
 import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -19,6 +20,7 @@ import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { MessageKey } from "@starter/shared/i18n";
+import { API_MOCK } from "@/lib/api/mock-flag.ts";
 import type { PublicSite } from "@starter/shared/website";
 import {
   businessDateInZone,
@@ -66,9 +68,9 @@ export function ReservationPage({
 }) {
   const t = useT();
   const [values, setValues] = useState<ReservationFormValues>(EMPTY);
-  const [errors, setErrors] = useState<
-    Partial<Record<ReservationField, true>>
-  >({});
+  const [errors, setErrors] = useState<Partial<Record<ReservationField, true>>>(
+    {},
+  );
 
   const set = (field: ReservationField, value: string) => {
     setValues((current) => ({ ...current, [field]: value }));
@@ -110,12 +112,15 @@ export function ReservationPage({
     event.preventDefault();
 
   return (
-    <SiteFrame site={site}>
-      <SiteSection className="pb-6">
+    <SiteFrame site={site} signedIn={signedIn}>
+      <SiteSection innerClassName="pb-4 sm:pb-2">
         <div className="grid gap-3">
-          <h1 className="font-brand text-3xl leading-tight font-bold tracking-tight sm:text-4xl">
-            {t("website.reservation.title")}
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="type-display-xl">
+              {t("website.reservation.title")}
+            </h1>
+            {API_MOCK && <Badge>{t("common.sampleData")}</Badge>}
+          </div>
           <p className="max-w-2xl text-lg leading-7 text-muted-foreground">
             {t("website.reservation.lead")}
           </p>
@@ -123,7 +128,7 @@ export function ReservationPage({
       </SiteSection>
 
       {site.acceptsReservations ? (
-        <SiteSection className="grid gap-6 pt-0 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <SiteSection innerClassName="grid gap-6 pt-0 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <Card>
             <CardContent className="grid gap-5">
               <div className="grid gap-1">
@@ -257,12 +262,15 @@ export function ReservationPage({
           </div>
         </SiteSection>
       ) : (
-        <SiteSection className="pt-0">
+        <SiteSection innerClassName="pt-0">
           <EmptyState
             title={t("website.reservation.closedTitle")}
             description={t("website.reservation.closedHint")}
             action={
-              <WhatsAppLink contact={site.contact} brandName={site.brand.name} />
+              <WhatsAppLink
+                contact={site.contact}
+                brandName={site.brand.name}
+              />
             }
           />
         </SiteSection>

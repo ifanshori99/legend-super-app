@@ -1,6 +1,7 @@
 // Shared pieces of the public brand site: section rhythm, opening hours,
 // address, contact links and the member entry card. Layout only — every colour
-// is a design token and every sentence comes from the text catalog.
+// is a design token (DESIGN.md v3) and every sentence comes from the text
+// catalog.
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -16,31 +17,41 @@ import {
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import type {
-  PublicContact,
-  PublicOutlet,
-} from "@starter/shared/website";
-import { formatHoursRange, openingHoursLines, type DayLabels } from "../lib/hours.ts";
+import type { PublicContact, PublicOutlet } from "@starter/shared/website";
+import { openingHoursLines, type DayLabels } from "../lib/hours.ts";
 import { buildWhatsAppUrl } from "../lib/reservation.ts";
 
+/**
+ * Page section. `band` puts the content on the `surface-2` canvas band
+ * (v3 customer rhythm: page tone, one tinted band per screen); the gutter and
+ * max width stay inside the band so the tint reads edge to edge.
+ */
 export function SiteSection({
   id,
+  band = false,
   className,
+  innerClassName,
   children,
 }: {
   id?: string;
+  band?: boolean;
   className?: string;
+  innerClassName?: string;
   children: ReactNode;
 }) {
   return (
     <section
       id={id}
-      className={cn(
-        "mx-auto w-full max-w-6xl scroll-mt-20 px-gutter py-10 sm:py-14",
-        className,
-      )}
+      className={cn("w-full scroll-mt-20", band && "bg-surface-2", className)}
     >
-      {children}
+      <div
+        className={cn(
+          "mx-auto w-full max-w-6xl px-gutter py-10 sm:py-14",
+          innerClassName,
+        )}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -57,8 +68,10 @@ export function SectionHeading({
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div className="grid gap-1">
-        <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
-        {hint && <p className="text-sm leading-6 text-muted-foreground">{hint}</p>}
+        <h2 className="type-title">{title}</h2>
+        {hint && (
+          <p className="text-sm leading-6 text-muted-foreground">{hint}</p>
+        )}
       </div>
       {action}
     </div>
@@ -243,7 +256,7 @@ export function ContactList({
       icon: <ExternalLink className="size-4" aria-hidden="true" />,
     });
   return (
-    <ul className="grid gap-2">
+    <ul className="grid gap-1">
       {items.map((item) => (
         <li key={item.key}>
           <a
@@ -280,10 +293,10 @@ export function MemberEntryCard({
 }) {
   const t = useT();
   return (
-    <Card className={cn("bg-brand-subtle", className)}>
-      <CardContent className="grid gap-3">
+    <Card className={className}>
+      <CardContent className="grid gap-4">
         <div className="grid gap-1">
-          <h2 className="text-xl font-semibold tracking-tight">
+          <h2 className="type-title">
             {t("website.home.memberTitle", { brand: brandName })}
           </h2>
           <p className="text-sm leading-6 text-muted-foreground">
@@ -298,10 +311,12 @@ export function MemberEntryCard({
           ) : (
             <>
               <Button asChild>
-                <Link to="/member/daftar">{t("website.home.memberRegister")}</Link>
+                <Link to="/member/daftar">
+                  {t("website.home.memberRegister")}
+                </Link>
               </Button>
               <Button asChild variant="outline">
-                <Link to="/sign-in">{t("website.home.memberSignIn")}</Link>
+                <Link to="/masuk">{t("website.home.memberSignIn")}</Link>
               </Button>
             </>
           )}
@@ -309,11 +324,4 @@ export function MemberEntryCard({
       </CardContent>
     </Card>
   );
-}
-
-/** "08.00–23.00" for the outlet's first range, used in compact visit blocks. */
-export function PrimaryHours({ outlet }: { outlet: PublicOutlet }) {
-  const first = outlet.openingHours[0];
-  if (!first) return null;
-  return <span className="tabular">{formatHoursRange(first)}</span>;
 }
