@@ -2,7 +2,11 @@
 // proposes the corrected time with a reason and a supervisor decides. The body
 // is validated with the contract's own schema before it is sent, so the form
 // and the API agree and the reason limit is not duplicated in the UI.
-import { useEffect, useRef, useState } from "react";
+//
+// The form is its own component: Radix unmounts the dialog content when it
+// closes, so every opening starts from the row it was opened for (no reset
+// effect, no stale reason from the previous correction).
+import { useRef, useState } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,26 +61,55 @@ export function CorrectionDialog({
 }) {
   const t = useT();
   const toast = useToast();
-  const submit = useSubmitCorrection();
-  const resetSubmit = submit.reset;
-  const idempotencyKey = useRef<string>("");
 
-  const [type, setType] = useState<AttendanceType>("in");
-  const [occurredAt, setOccurredAt] = useState("");
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("hris.correction.title")}</DialogTitle>
+          <DialogDescription>{t("hris.correction.hint")}</DialogDescription>
+        </DialogHeader>
+        <CorrectionForm
+          key={log?.id ?? "unmatched"}
+          log={log}
+          outletId={outletId}
+          onSent={(status) => {
+            toast(
+              status === "queued"
+                ? {
+                    title: t("hris.correction.queuedTitle"),
+                    description: t("hris.correction.queued"),
+                  }
+                : { title: t("hris.correction.success"), tone: "success" },
+            );
+            onOpenChange(false);
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CorrectionForm({
+  log,
+  outletId,
+  onSent,
+}: {
+  log: AttendanceLog | null;
+  outletId: string;
+  onSent: (status: "sent" | "queued") => void;
+}) {
+  const t = useT();
+  const submit = useSubmitCorrection();
+  const idempotencyKey = useRef<string | null>(null);
+
+  const [type, setType] = useState<AttendanceType>(log?.type ?? "in");
+  const [occurredAt, setOccurredAt] = useState(() =>
+    toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date()),
+  );
   const [reason, setReason] = useState("");
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
-
-  useEffect(() => {
-    if (!open) return;
-    setType(log?.type ?? "in");
-    setOccurredAt(
-      toDateTimeLocalValue(log ? new Date(log.occurredAt) : new Date()),
-    );
-    setReason("");
-    setErrors({});
-    idempotencyKey.current = crypto.randomUUID();
-    resetSubmit();
-  }, [open, log, resetSubmit]);
+  const [formError, setFormError] = useState<string | null>(null);
 
   function handleSend() {
     const occurredAtIso = fromDateTimeLocalValue(occurredAt);
@@ -84,8 +117,7 @@ export function CorrectionDialog({
       setErrors({ requestedOccurredAt: t("hris.correction.timeInvalid") });
       return;
     }
-    if (idempotencyKey.current === "")
-      idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current ??= crypto.randomUUID();
     const parsed = bodySchema.safeParse({
       outletId,
       attendanceLogId: log?.id ?? null,
@@ -95,124 +127,115 @@ export function CorrectionDialog({
       idempotencyKey: idempotencyKey.current,
     });
     if (!parsed.success) {
-      setErrors(fieldErrors(parsed.error));
+      const mapped = fieldErrors(parsed.error);
+      setErrors(mapped);
+      // A refinement without a field path must still reach the employee.
+      setFormError(
+        Object.values(mapped).some(Boolean)
+          ? null
+          : t("hris.correction.invalid"),
+      );
       return;
     }
     setErrors({});
+    setFormError(null);
     submit.mutate(parsed.data, {
-      onSuccess: (result) => {
-        if (result.status === "queued")
-          toast({
-            title: t("hris.correction.queuedTitle"),
-            description: t("hris.correction.queued"),
-          });
-        else
-          toast({
-            title: t("hris.correction.success"),
-            tone: "success",
-          });
-        onOpenChange(false);
-      },
+      onSuccess: (result) => onSent(result.status),
     });
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t("hris.correction.title")}</DialogTitle>
-          <DialogDescription>{t("hris.correction.hint")}</DialogDescription>
-        </DialogHeader>
+    <>
+      <div className="grid gap-4">
+        {log === null && (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("hris.correction.noLog")}
+          </p>
+        )}
 
-        <div className="grid gap-4">
-          {log === null && (
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("hris.correction.noLog")}
+        <FormField
+          label={t("hris.correction.typeLabel")}
+          required
+          error={errors.requestedType}
+        >
+          <Select
+            value={type}
+            onValueChange={(value) => setType(value as AttendanceType)}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TYPES.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {t(typeLabelKey(option))}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+
+        <FormField
+          label={t("hris.correction.timeLabel")}
+          required
+          error={errors.requestedOccurredAt}
+        >
+          <Input
+            type="datetime-local"
+            value={occurredAt}
+            onChange={(event) => setOccurredAt(event.target.value)}
+          />
+        </FormField>
+
+        <FormField
+          label={t("hris.correction.reasonLabel")}
+          hint={t("hris.correction.reasonHint")}
+          required
+          error={errors.reason}
+        >
+          <Textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder={t("hris.correction.reasonPlaceholder")}
+            maxLength={500}
+          />
+        </FormField>
+
+        {formError && (
+          <p role="alert" className="text-sm leading-5 font-medium text-danger">
+            {formError}
+          </p>
+        )}
+
+        {submit.isError && (
+          <div role="alert" className="grid gap-0.5">
+            <p className="text-sm leading-5 font-semibold text-danger">
+              {t("hris.correction.errorTitle")}
             </p>
-          )}
+            <p className="text-sm leading-5">
+              {submit.error instanceof Error
+                ? submit.error.message
+                : t("hris.correction.errorTitle")}
+            </p>
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("hris.correction.errorHint")}
+            </p>
+          </div>
+        )}
+      </div>
 
-          <FormField
-            label={t("hris.correction.typeLabel")}
-            required
-            error={errors.requestedType}
-          >
-            <Select
-              value={type}
-              onValueChange={(value) => setType(value as AttendanceType)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TYPES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(typeLabelKey(option))}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
-
-          <FormField
-            label={t("hris.correction.timeLabel")}
-            required
-            error={errors.requestedOccurredAt}
-          >
-            <Input
-              type="datetime-local"
-              value={occurredAt}
-              onChange={(event) => setOccurredAt(event.target.value)}
-            />
-          </FormField>
-
-          <FormField
-            label={t("hris.correction.reasonLabel")}
-            hint={t("hris.correction.reasonHint")}
-            required
-            error={errors.reason}
-          >
-            <Textarea
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder={t("hris.correction.reasonPlaceholder")}
-              maxLength={500}
-            />
-          </FormField>
-
-          {submit.isError && (
-            <div role="alert" className="grid gap-0.5">
-              <p className="text-sm leading-5 font-semibold text-danger">
-                {t("hris.correction.errorTitle")}
-              </p>
-              <p className="text-sm leading-5">
-                {submit.error instanceof Error
-                  ? submit.error.message
-                  : t("hris.correction.failed")}
-              </p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("hris.correction.errorHint")}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type="button" variant="outline">
-              {t("hris.correction.cancel")}
-            </Button>
-          </DialogClose>
-          <Button
-            type="button"
-            loading={submit.isPending}
-            onClick={handleSend}
-          >
-            {submit.isPending
-              ? t("hris.correction.submitting")
-              : t("hris.correction.submit")}
+      <DialogFooter>
+        <DialogClose asChild>
+          <Button type="button" variant="outline">
+            {t("hris.correction.cancel")}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </DialogClose>
+        <Button type="button" loading={submit.isPending} onClick={handleSend}>
+          {submit.isPending
+            ? t("hris.correction.submitting")
+            : t("hris.correction.submit")}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }

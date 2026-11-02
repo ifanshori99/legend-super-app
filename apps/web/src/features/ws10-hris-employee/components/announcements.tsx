@@ -6,7 +6,11 @@ import { useT } from "@/components/i18n";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAnnouncements } from "../hooks.ts";
 import { formatDateShort } from "../state.ts";
-import { SectionEmpty, SectionError, SectionSkeleton } from "./section-states.tsx";
+import {
+  InlineEmpty,
+  SectionError,
+  SectionSkeleton,
+} from "./section-states.tsx";
 
 export function Announcements({ timeZone }: { timeZone: string }) {
   const t = useT();
@@ -26,7 +30,7 @@ export function Announcements({ timeZone }: { timeZone: string }) {
           onRetry={() => void announcements.refetch()}
         />
       ) : announcements.data.data.length === 0 ? (
-        <SectionEmpty
+        <InlineEmpty
           icon={Megaphone}
           title={t("hris.home.announcementEmpty")}
         />

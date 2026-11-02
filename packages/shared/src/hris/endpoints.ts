@@ -22,6 +22,7 @@ import {
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   employeeIdSchema,
+  attendanceLogIdSchema,
   orgUnitIdSchema,
   positionIdSchema,
   employmentContractIdSchema,
@@ -269,7 +270,8 @@ export const requestAttendanceCorrection = defineEndpoint({
   path: "/api/hris/attendance/corrections",
   body: clientInputSchema({
     outletId: outletIdSchema,
-    attendanceLogId: z.uuid().nullable(),
+    // The log id is a ULID (PRD §6 H `attendance_logs.id`), not a UUID.
+    attendanceLogId: attendanceLogIdSchema.nullable(),
     requestedType: attendanceTypeSchema,
     requestedOccurredAt: isoDateTimeSchema,
     reason: z.string().min(1).max(500),

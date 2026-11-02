@@ -44,6 +44,22 @@ export function SectionEmpty({
   );
 }
 
+/** A quiet empty line for a secondary card (no big icon block). */
+export function InlineEmpty({
+  icon: Icon,
+  title,
+}: {
+  icon?: LucideIcon;
+  title: string;
+}) {
+  return (
+    <p className="flex items-center gap-2 text-sm leading-5 text-muted-foreground">
+      {Icon && <Icon className="size-4 shrink-0" aria-hidden="true" />}
+      {title}
+    </p>
+  );
+}
+
 export function SectionError({
   title,
   description,

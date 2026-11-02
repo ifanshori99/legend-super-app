@@ -24,7 +24,11 @@ export function LocationStatus({
     return (
       <div className="flex items-start gap-2 text-sm leading-5">
         <MapPin
-          className={coarse ? "mt-0.5 size-4 shrink-0 text-warning" : "mt-0.5 size-4 shrink-0 text-info"}
+          className={
+            coarse
+              ? "mt-0.5 size-4 shrink-0 text-warning"
+              : "mt-0.5 size-4 shrink-0 text-info"
+          }
           aria-hidden="true"
         />
         <p>

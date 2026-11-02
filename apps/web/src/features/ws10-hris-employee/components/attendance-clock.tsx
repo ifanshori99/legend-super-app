@@ -76,8 +76,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
 
   // The result replaces the form below the page header; bring it into view.
   useEffect(() => {
-    if (result)
-      document.getElementById("main-content")?.scrollTo({ top: 0 });
+    if (result) document.getElementById("main-content")?.scrollTo({ top: 0 });
   }, [result]);
 
   if (profile.isPending)
@@ -148,9 +147,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
       idempotencyKey.current = null;
       setResult(log);
     } catch (error) {
-      setSubmitError(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      setSubmitError(error instanceof Error ? error : new Error(String(error)));
     } finally {
       setUploading(false);
     }

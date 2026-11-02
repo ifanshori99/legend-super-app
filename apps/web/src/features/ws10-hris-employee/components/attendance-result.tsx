@@ -14,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { formatNumber } from "@starter/shared/i18n";
 import type { AttendanceLog, AttendanceMethod } from "@starter/shared/hris";
 import {
   formatTime,
@@ -81,7 +82,9 @@ export function AttendanceResult({
             <dt className="text-muted-foreground">
               {t("hris.result.detailDistance")}
             </dt>
-            <dd className="font-medium tabular">{log.geoDistanceM} m</dd>
+            <dd className="font-medium tabular">
+              {formatNumber(log.geoDistanceM)} m
+            </dd>
           </div>
         )}
       </dl>

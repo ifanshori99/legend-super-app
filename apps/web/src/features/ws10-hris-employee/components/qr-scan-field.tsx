@@ -14,9 +14,7 @@ import { hrisMockControl } from "../browser-mock.ts";
 
 type DetectedCode = { rawValue: string };
 type Detector = { detect(source: CanvasImageSource): Promise<DetectedCode[]> };
-type DetectorConstructor = new (options?: {
-  formats?: string[];
-}) => Detector;
+type DetectorConstructor = new (options?: { formats?: string[] }) => Detector;
 
 function detectorConstructor(): DetectorConstructor | null {
   const candidate = (globalThis as { BarcodeDetector?: unknown })
@@ -38,11 +36,12 @@ export function QrScanField({
   const streamRef = useRef<MediaStream | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<MessageKey | null>(null);
-  const [mockToken, setMockToken] = useState<string | null>(null);
-
-  useEffect(() => {
-    setMockToken(hrisMockControl()?.currentQrToken() ?? null);
-  }, []);
+  // The mock runtime installs the control on the first fixture call, which
+  // happens before this screen renders; a render-time read avoids a state
+  // round-trip (and a hydration mismatch cannot occur: the control is absent
+  // during hydration). A stale code is rejected by the server window, which is
+  // exactly what the screen demonstrates.
+  const mockToken = hrisMockControl()?.currentQrToken() ?? null;
 
   const stopScanning = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -50,10 +49,13 @@ export function QrScanField({
     setScanning(false);
   }, []);
 
-  useEffect(() => () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-  }, []);
+  useEffect(
+    () => () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!scanning) return;

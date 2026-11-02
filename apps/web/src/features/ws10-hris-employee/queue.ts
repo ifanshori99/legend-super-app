@@ -134,4 +134,3 @@ function notifyQueueChanged() {
   cachedSnapshot = null;
   for (const listener of listeners) listener();
 }
-

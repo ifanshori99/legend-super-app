@@ -154,7 +154,7 @@ export function SelfieCapture({
         <img
           src={previewUrl}
           alt={t("hris.attendance.photoAlt")}
-          className="aspect-[4/3] w-full rounded-lg border-(length:--border-w) object-cover"
+          className="h-64 w-full rounded-lg border-(length:--border-w) object-cover sm:h-80"
         />
       ) : mode === "streaming" ? (
         <video
@@ -163,10 +163,10 @@ export function SelfieCapture({
           playsInline
           autoPlay
           aria-label={t("hris.attendance.cameraTitle")}
-          className="aspect-[4/3] w-full rounded-lg border-(length:--border-w) bg-muted object-cover"
+          className="h-64 w-full rounded-lg border-(length:--border-w) bg-muted object-cover sm:h-80"
         />
       ) : (
-        <div className="grid aspect-[4/3] place-items-center gap-2 rounded-lg border-(length:--border-w) border-dashed bg-muted/40 p-4 text-center">
+        <div className="grid h-64 place-items-center gap-2 rounded-lg border-(length:--border-w) border-dashed bg-muted/40 p-4 text-center sm:h-80">
           {mode === "starting" ? (
             <p className="text-sm text-muted-foreground">
               {t("hris.attendance.cameraStarting")}
@@ -260,11 +260,7 @@ export function SelfieCapture({
         }}
       />
 
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("hris.attendance.cameraHint")}
-      </p>
-
-      <div aria-live="polite">
+      <div aria-live="polite" className="grid gap-1">
         {error && (
           <p role="alert" className="text-sm leading-5 font-medium text-danger">
             {t(ERROR_KEYS[error])}
@@ -275,6 +271,9 @@ export function SelfieCapture({
             {t("hris.attendance.photoReady")}
           </p>
         )}
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("hris.attendance.cameraHint")}
+        </p>
       </div>
     </div>
   );

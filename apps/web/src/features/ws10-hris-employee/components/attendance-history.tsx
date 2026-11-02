@@ -11,12 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AttendanceLog } from "@starter/shared/hris";
 import {
   useAttendanceHistory,
@@ -38,21 +33,21 @@ import {
 } from "../state.ts";
 import { ATTENDANCE_TYPE_ICONS } from "./attendance-type-icon.ts";
 import { CorrectionDialog } from "./correction-dialog.tsx";
-import { SectionEmpty, SectionError, SectionSkeleton } from "./section-states.tsx";
+import {
+  SectionEmpty,
+  SectionError,
+  SectionSkeleton,
+} from "./section-states.tsx";
 
 export type HistoryTab = "logs" | "corrections";
 
-export function AttendanceHistory({
-  initialTab,
-}: {
-  initialTab: HistoryTab;
-}) {
+export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
   const t = useT();
   const profile = useMyHrisProfile();
   const [tab, setTab] = useState<HistoryTab>(initialTab);
-  const [dialogLog, setDialogLog] = useState<
-    AttendanceLog | null | undefined
-  >(undefined);
+  const [dialogLog, setDialogLog] = useState<AttendanceLog | null | undefined>(
+    undefined,
+  );
   const logs = useAttendanceHistory(profile.isSuccess);
   const corrections = useCorrectionHistory(
     profile.isSuccess && tab === "corrections",

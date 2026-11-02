@@ -178,7 +178,7 @@ registerMock(getMyHrisProfile, ({ scenario }) => {
   return { data: { employee: me, outlet } };
 });
 
-registerMock(listShiftAssignments, ({ query }) => {
+registerMock(listShiftAssignments, ({ query, scenario }) => {
   const rows = shiftAssignments
     .filter((assignment) => assignment.employeeId === me.id)
     .filter(
@@ -189,10 +189,8 @@ registerMock(listShiftAssignments, ({ query }) => {
       (assignment) =>
         query.to === undefined || assignment.businessDate <= query.to,
     )
-    .sort((left, right) =>
-      left.businessDate.localeCompare(right.businessDate),
-    );
-  return paginateFixture(rows, query, (assignment) => assignment.id);
+    .sort((left, right) => left.businessDate.localeCompare(right.businessDate));
+  return paginateFixture(rows, query, (assignment) => assignment.id, scenario);
 });
 
 registerMock(listPositions, ({ query }) => {
@@ -200,30 +198,36 @@ registerMock(listPositions, ({ query }) => {
     (position) =>
       query.orgUnitId === undefined || position.orgUnitId === query.orgUnitId,
   );
+  // Reference data for a label, not a list the employee screens: keep it
+  // when `?mock=empty` empties the day's logs and roster.
   return paginateFixture(rows, query, (position) => position.id);
 });
 
-registerMock(listAttendanceLogs, ({ query }) => {
+registerMock(listAttendanceLogs, ({ query, scenario }) => {
   const rows = myLogs()
-    .filter((log) => query.employeeId === undefined || log.employeeId === query.employeeId)
+    .filter(
+      (log) =>
+        query.employeeId === undefined || log.employeeId === query.employeeId,
+    )
     .filter(
       (log) =>
         query.businessDate === undefined ||
         businessDateOf(log.occurredAt, outlet.timeZone) === query.businessDate,
     );
-  return paginateFixture(rows, query, (log) => log.id);
+  return paginateFixture(rows, query, (log) => log.id, scenario);
 });
 
-registerMock(listAttendanceCorrections, ({ query }) => {
+registerMock(listAttendanceCorrections, ({ query, scenario }) => {
   const rows = myCorrections()
     .filter(
-      (row) => query.employeeId === undefined || row.employeeId === query.employeeId,
+      (row) =>
+        query.employeeId === undefined || row.employeeId === query.employeeId,
     )
     .filter((row) => query.status === undefined || row.status === query.status);
-  return paginateFixture(rows, query, (row) => row.id);
+  return paginateFixture(rows, query, (row) => row.id, scenario);
 });
 
-registerMock(listAnnouncements, ({ query }) => {
+registerMock(listAnnouncements, ({ query, scenario }) => {
   const rows: Announcement[] = cafeLegendHrisFixtures.announcements
     .filter((announcement) =>
       isAnnouncementVisibleTo(announcement, {
@@ -235,7 +239,12 @@ registerMock(listAnnouncements, ({ query }) => {
       (left, right) =>
         Date.parse(right.publishedAt) - Date.parse(left.publishedAt),
     );
-  return paginateFixture(rows, query, (announcement) => announcement.id);
+  return paginateFixture(
+    rows,
+    query,
+    (announcement) => announcement.id,
+    scenario,
+  );
 });
 
 registerMock(clockAttendance, ({ body }) => {
@@ -251,8 +260,7 @@ registerMock(clockAttendance, ({ body }) => {
   const decision = evaluateAttendanceSubmission({
     policy: attendancePolicy,
     method: body.method,
-    geoDistanceM:
-      body.method === "selfie_geo" ? distanceM : null,
+    geoDistanceM: body.method === "selfie_geo" ? distanceM : null,
     deviceBound,
     selfieProvided: body.photoUploadRef !== null,
     qrValid:

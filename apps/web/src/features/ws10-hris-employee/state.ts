@@ -20,10 +20,7 @@ import type {
 
 /** What today looks like from the employee's own log stream (Alur L). */
 export type AttendanceDayStatus =
-  | "not_started"
-  | "working"
-  | "on_break"
-  | "finished";
+  "not_started" | "working" | "on_break" | "finished";
 
 const TYPE_ORDER: Record<AttendanceType, number> = {
   in: 0,
@@ -62,9 +59,7 @@ export function businessDateIn(timeZone: string, now: Date = new Date()) {
  * The day's state from the last log. A rejected log never counts as presence:
  * the server decided it is invalid, so the employee is still "not started".
  */
-export function dayStatus(
-  logs: readonly AttendanceLog[],
-): AttendanceDayStatus {
+export function dayStatus(logs: readonly AttendanceLog[]): AttendanceDayStatus {
   const last = sortLogsAsc(logs)
     .filter((log) => log.validity !== "rejected")
     .at(-1);
@@ -82,9 +77,7 @@ export function dayStatus(
 }
 
 /** The one primary clock action the home offers for this state. */
-export function primaryClockType(
-  status: AttendanceDayStatus,
-): AttendanceType {
+export function primaryClockType(status: AttendanceDayStatus): AttendanceType {
   switch (status) {
     case "not_started":
     case "finished":
@@ -178,9 +171,7 @@ export function submissionHeadlineKey(
   }
 }
 
-export function submissionHintKey(
-  validity: AttendanceValidity,
-): MessageKey {
+export function submissionHintKey(validity: AttendanceValidity): MessageKey {
   switch (validity) {
     case "valid":
       return "hris.result.validHint";
@@ -225,10 +216,15 @@ export function possibleCauses(
 ): AttendanceFlagReason[] {
   if (validity === "valid") return [];
   const reasons: AttendanceFlagReason[] = [];
-  if (!submitted.selfie) reasons.push("selfie_missing");
+  // A missing selfie and the two QR failures are rejections by contract, so
+  // they can never explain a flag; geofence and device binding can flag or
+  // reject depending on the tenant policy.
+  if (validity === "rejected") {
+    if (!submitted.selfie) reasons.push("selfie_missing");
+    if (submitted.method === "rotating_qr")
+      reasons.push("rotating_qr_disabled", "qr_token_invalid");
+  }
   if (submitted.method === "selfie_geo") reasons.push("outside_geofence");
-  if (submitted.method === "rotating_qr")
-    reasons.push("rotating_qr_disabled", "qr_token_invalid");
   reasons.push("device_not_bound");
   return reasons;
 }
@@ -242,8 +238,7 @@ export function shiftForDate(
     assignments.find(
       (assignment) =>
         assignment.businessDate === businessDate &&
-        (assignment.status === "published" ||
-          assignment.status === "swapped"),
+        (assignment.status === "published" || assignment.status === "swapped"),
     ) ?? null
   );
 }
@@ -282,7 +277,7 @@ export function formatTime(iso: string, timeZone: string): string {
   return timeFormat(timeZone).format(new Date(iso));
 }
 
-/** "Sab, 1 Nov 2026". */
+/** "Min, 1 Nov 2026". */
 export function formatDate(iso: string, timeZone: string): string {
   return dateFormat(timeZone, {
     weekday: "short",
@@ -348,7 +343,7 @@ export function groupLogsByDate(
     }));
 }
 
-/** A business date as a readable day label ("Sab, 1 Nov 2026"). */
+/** A business date as a readable day label ("Min, 1 Nov 2026"). */
 export function formatBusinessDate(
   businessDate: string,
   timeZone: string,
@@ -376,4 +371,3 @@ export function fromDateTimeLocalValue(value: string): string | null {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
-

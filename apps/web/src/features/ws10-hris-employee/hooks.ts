@@ -7,10 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import type {
-  AttendanceCorrection,
-  AttendanceLog,
-} from "@starter/shared/hris";
+import type { AttendanceCorrection, AttendanceLog } from "@starter/shared/hris";
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import {
@@ -98,8 +95,7 @@ export function useClockAttendance() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: ClockAttendanceInput) => submitClockAttendance(body),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: hrisKeys.all }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: hrisKeys.all }),
   });
 }
 
@@ -139,8 +135,7 @@ export function useSubmitCorrection() {
         return { status: "queued", key: body.idempotencyKey };
       }
     },
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: hrisKeys.all }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: hrisKeys.all }),
   });
 }
 

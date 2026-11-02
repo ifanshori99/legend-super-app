@@ -18,7 +18,11 @@ import {
   formatTime,
   typeLabelKey,
 } from "../state.ts";
-import { SectionEmpty, SectionError, SectionSkeleton } from "./section-states.tsx";
+import {
+  InlineEmpty,
+  SectionError,
+  SectionSkeleton,
+} from "./section-states.tsx";
 
 export function PendingCorrections({ timeZone }: { timeZone: string }) {
   const t = useT();
@@ -39,11 +43,7 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
           onRetry={() => void pending.refetch()}
         />
       ) : pending.data.data.length === 0 ? (
-        <SectionEmpty
-          icon={Inbox}
-          title={t("hris.home.ongoingEmpty")}
-          description={t("hris.home.ongoingHint")}
-        />
+        <InlineEmpty icon={Inbox} title={t("hris.home.ongoingEmpty")} />
       ) : (
         <ul className="divide-y">
           {pending.data.data.map((correction) => (
@@ -55,10 +55,7 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
                 <p className="text-sm leading-5 font-medium">
                   {t("hris.history.requestedType", {
                     type: t(typeLabelKey(correction.requestedType)),
-                    time: formatTime(
-                      correction.requestedOccurredAt,
-                      timeZone,
-                    ),
+                    time: formatTime(correction.requestedOccurredAt, timeZone),
                   })}
                 </p>
                 <p className="line-clamp-2 text-sm leading-5 text-muted-foreground">

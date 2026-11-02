@@ -49,10 +49,7 @@ export function attendanceDayQuery(businessDate: string) {
   return queryOptions({
     queryKey: hrisKeys.dayLogs(businessDate),
     queryFn: ({ signal }) =>
-      fetchAttendanceLogs(
-        { limit: HOME_LOG_LIMIT, businessDate },
-        signal,
-      ),
+      fetchAttendanceLogs({ limit: HOME_LOG_LIMIT, businessDate }, signal),
     staleTime: 0,
   });
 }

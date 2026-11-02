@@ -923,7 +923,8 @@ export const id = {
       outside_geofenceFix:
         "Dekatkan ke titik outlet atau pindai QR outlet di layar.",
       device_not_bound: "Perangkat ini belum terikat ke akun Anda.",
-      device_not_boundFix: "Minta supervisor mengikat perangkat, lalu kirim ulang.",
+      device_not_boundFix:
+        "Minta supervisor mengikat perangkat, lalu kirim ulang.",
       selfie_missing: "Selfie wajib belum terlampir.",
       selfie_missingFix: "Ambil selfie lalu kirim ulang.",
       rotating_qr_disabled: "Absen QR tidak diaktifkan tenant ini.",
@@ -973,7 +974,7 @@ export const id = {
       noSelfie: "Tanpa selfie",
       correct: "Ajukan koreksi",
       correctionFor: "Koreksi untuk absen {type} pukul {time}",
-      requestedType: "Diminta {type} pukul {time}",
+      requestedType: "{type} seharusnya pukul {time}",
       requestedAt: "Diajukan {date}",
       decidedAt: "Diputuskan {date}",
       unmatched: "Absen tidak tercatat? Ajukan koreksi",
@@ -993,11 +994,11 @@ export const id = {
       reasonPlaceholder: "Contoh: lupa absen pulang setelah shift malam.",
       reasonHint: "Singkat dan jelas, maksimal 500 karakter.",
       timeInvalid: "Pilih tanggal dan waktu yang valid.",
+      invalid: "Periksa kembali isian koreksi.",
       submit: "Kirim pengajuan",
       submitting: "Mengirim…",
       success: "Pengajuan koreksi terkirim.",
-      queued:
-        "Pengajuan disimpan di perangkat dan dikirim saat ponsel online.",
+      queued: "Pengajuan disimpan di perangkat dan dikirim saat ponsel online.",
       queuedTitle: "Menunggu koneksi",
       queuedHint: "Pengajuan terkirim otomatis saat internet tersedia.",
       errorTitle: "Pengajuan gagal dikirim",
@@ -1007,10 +1008,9 @@ export const id = {
     },
     state: {
       loadingProfile: "Memuat profil…",
-      profileError: "Profil tidak bisa dimuat. Periksa koneksi lalu coba lagi.",
+      profileError: "Profil tidak bisa dimuat.",
       offlineTitle: "Anda sedang offline",
-      offlineHint:
-        "Absensi butuh koneksi internet. Sambungkan lalu coba lagi.",
+      offlineHint: "Absensi butuh koneksi internet. Sambungkan lalu coba lagi.",
       logsError: "Catatan absensi tidak bisa dimuat.",
       shiftError: "Jadwal shift tidak bisa dimuat.",
       announcementsError: "Pengumuman tidak bisa dimuat.",

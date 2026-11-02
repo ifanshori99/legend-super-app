@@ -140,7 +140,9 @@ export function AttendanceHero({
           </Button>
         )}
         <Button asChild variant="ghost" className="w-full">
-          <Link to="/karyawan/absensi/riwayat">{t("hris.home.viewHistory")}</Link>
+          <Link to="/karyawan/absensi/riwayat">
+            {t("hris.home.viewHistory")}
+          </Link>
         </Button>
       </div>
     </Card>

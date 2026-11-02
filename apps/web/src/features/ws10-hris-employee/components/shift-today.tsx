@@ -6,7 +6,11 @@ import { useT } from "@/components/i18n";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { useShiftToday } from "../hooks.ts";
 import { formatShiftRange, shiftForDate } from "../state.ts";
-import { SectionEmpty, SectionError, SectionSkeleton } from "./section-states.tsx";
+import {
+  InlineEmpty,
+  SectionError,
+  SectionSkeleton,
+} from "./section-states.tsx";
 
 export function ShiftToday({
   businessDate,
@@ -17,7 +21,9 @@ export function ShiftToday({
 }) {
   const t = useT();
   const shifts = useShiftToday(businessDate);
-  const shift = shifts.data ? shiftForDate(shifts.data.data, businessDate) : null;
+  const shift = shifts.data
+    ? shiftForDate(shifts.data.data, businessDate)
+    : null;
 
   return (
     <Card>
@@ -42,11 +48,7 @@ export function ShiftToday({
           </p>
         </div>
       ) : (
-        <SectionEmpty
-          icon={CalendarOff}
-          title={t("hris.home.shiftEmpty")}
-          description={t("hris.home.shiftEmptyHint")}
-        />
+        <InlineEmpty icon={CalendarOff} title={t("hris.home.shiftEmpty")} />
       )}
     </Card>
   );
