@@ -27,6 +27,7 @@ import {
 } from "../db/schema/facility.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { maskAuditChanges } from "@starter/shared/audit";
 import { recordAudit } from "./core-audit.ts";
 import {
   loadTenantAccessInTransaction,
@@ -260,7 +261,16 @@ export async function auditFacility(
       objectType: entry.objectType,
       objectId: entry.objectId,
       reason: null,
-      maskedChanges: { before: entry.before, after: entry.after },
+      maskedChanges: {
+        before:
+          entry.before === null
+            ? null
+            : maskAuditChanges(entry.before, FACILITY_AUDIT_SAFE_FIELDS),
+        after:
+          entry.after === null
+            ? null
+            : maskAuditChanges(entry.after, FACILITY_AUDIT_SAFE_FIELDS),
+      },
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y" as const,

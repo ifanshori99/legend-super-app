@@ -376,7 +376,7 @@ describe("Facility configuration API", () => {
         await client
           .put(`/api/facility/facilities/${facilityId}`)
           .set(originHeader)
-          .send({ sessionMinutes: 480, cleaningMinutes: 240 })
+          .send({ sessionMinutes: 481 })
       ).status,
     ).toBe(422);
   });
