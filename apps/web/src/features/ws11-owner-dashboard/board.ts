@@ -139,19 +139,27 @@ export function ownerBoardRunInputs(layout: DashboardLayout): ReportRunInput[] {
   );
 }
 
-/** DASH-01 drill-down: the source report with the same period and outlets. */
+/**
+ * DASH-01 drill-down: the source report with the tile's own period (the
+ * dashboard day, or the running month for "this_month" tiles) and outlets.
+ * The multi-outlet tile reads the report unsplit, so it carries no channel split.
+ */
 export function ownerBoardTilePath(
   tile: DashboardTile,
   layout: DashboardLayout,
 ): string | null {
   const reportCode = tileReportCode(tile);
   const groupBy =
-    reportCode === null
+    reportCode === null || tile.section === "multi_outlet"
       ? null
       : (OWNER_BOARD_GROUP_BY[reportCode]?.[0] ?? null);
+  const monthly = tile.kind === "metric" && tile.period === "this_month";
+  const [year = "1970", month = "01"] = layout.businessDate.split("-");
   return dashboardTilePath(tile, {
-    startDate: layout.monitoringPeriod.startDate,
-    endDate: layout.monitoringPeriod.endDate,
+    startDate: monthly
+      ? `${year}-${month}-01`
+      : layout.monitoringPeriod.startDate,
+    endDate: monthly ? layout.businessDate : layout.monitoringPeriod.endDate,
     outletIds: layout.availableOutlets,
     groupBy,
   });

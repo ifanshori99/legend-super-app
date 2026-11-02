@@ -10,6 +10,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBusinessDate, formatOutletTime } from "../board";
 import { OwnerBoardProvider, useOwnerBoardContext } from "../board-context";
 import { useOwnerBoard, useOwnerDashboard } from "../hooks";
+import { AlertsSection } from "./alerts-section";
+import { CostMarginSection } from "./cost-margin-section";
+import { DailySummarySection } from "./daily-summary-section";
+import { FinanceSection } from "./finance-section";
+import { MultiOutletSection } from "./multi-outlet-section";
+import { ServiceQualitySection } from "./service-quality-section";
 import { OperationsSection } from "./operations-section";
 import { RealtimeSummarySection } from "./realtime-section";
 import { SeatsSection } from "./seats-section";
@@ -47,6 +53,24 @@ function BoardToolbar() {
           className="px-2.5 sm:px-3.5"
         >
           {t("ownerDashboard.tabs.seats")}
+        </TabsTrigger>
+        <TabsTrigger value="cost_margin" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.cost")}
+        </TabsTrigger>
+        <TabsTrigger value="service_quality" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.service")}
+        </TabsTrigger>
+        <TabsTrigger value="finance" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.finance")}
+        </TabsTrigger>
+        <TabsTrigger value="alerts" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.alerts")}
+        </TabsTrigger>
+        <TabsTrigger value="daily_summary" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.daily")}
+        </TabsTrigger>
+        <TabsTrigger value="multi_outlet" className="px-2.5 sm:px-3.5">
+          {t("ownerInsights.tabs.multi")}
         </TabsTrigger>
       </TabsList>
 
@@ -107,6 +131,24 @@ export function OwnerDashboardPage() {
         </TabsContent>
         <TabsContent value="seats_wfc" className="pt-0">
           <SeatsSection />
+        </TabsContent>
+        <TabsContent value="cost_margin" className="pt-0">
+          <CostMarginSection />
+        </TabsContent>
+        <TabsContent value="service_quality" className="pt-0">
+          <ServiceQualitySection />
+        </TabsContent>
+        <TabsContent value="finance" className="pt-0">
+          <FinanceSection />
+        </TabsContent>
+        <TabsContent value="alerts" className="pt-0">
+          <AlertsSection />
+        </TabsContent>
+        <TabsContent value="daily_summary" className="pt-0">
+          <DailySummarySection />
+        </TabsContent>
+        <TabsContent value="multi_outlet" className="pt-0">
+          <MultiOutletSection />
         </TabsContent>
       </Tabs>
     </OwnerBoardProvider>

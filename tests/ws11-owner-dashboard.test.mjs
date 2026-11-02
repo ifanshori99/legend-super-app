@@ -13,6 +13,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import * as dashboard from "../packages/shared/src/dashboard/index.ts";
+import * as insights from "../apps/web/src/features/ws11-owner-dashboard/insights.ts";
 import * as board from "../apps/web/src/features/ws11-owner-dashboard/board.ts";
 // Side effect: registers the owner layout and runs through the shared owners.
 import "../apps/web/src/features/ws11-owner-dashboard/mock.ts";
@@ -236,5 +237,77 @@ describe("owner dashboard part 1 · mock owners (legend-ssu7)", () => {
     );
     assert.equal(error.status, 404);
     assert.equal(error.code, "REPORT_NOT_FOUND");
+  });
+});
+
+describe("owner dashboard part 2 (legend-gb03)", () => {
+  test("DASH-01: every part-2 tile cites a registry metric and a source report, with its own period", () => {
+    for (const section of insights.OWNER_INSIGHT_SECTIONS) {
+      const tiles = insights.insightTilesOf(layout, section);
+      assert.ok(tiles.length > 0, `no tiles in ${section}`);
+      for (const tile of tiles) {
+        if (tile.kind === "metric")
+          for (const code of tile.metricCodes)
+            assert.ok(dashboard.reportMetricByCode.has(code), code);
+        if (section === "daily_summary") continue;
+        const path = board.ownerBoardTilePath(tile, layout);
+        assert.match(path ?? "", /^\/reports\//, tile.key);
+        assert.match(path, /startDate=2026-11-01/);
+        assert.match(path, /endDate=2026-11-01/);
+      }
+    }
+  });
+
+  test("DASH-02: every part-2 tile run is served by the mock with the tile's period", async () => {
+    for (const section of insights.OWNER_INSIGHT_SECTIONS)
+      for (const tile of insights.insightTilesOf(layout, section)) {
+        const input = insights.insightTileRunInput(tile, layout);
+        if (input === null) continue;
+        const response = await post("/api/reports/run", input);
+        assert.equal(response.data.reportCode, input.reportCode);
+        assert.ok(response.data.rows.length > 0, tile.key);
+      }
+  });
+
+  test("DASH-02: the trend months run for every cost report and the running month is an estimate", async () => {
+    const months = insights.monthPeriods(
+      layout.businessDate,
+      insights.TREND_MONTHS,
+    );
+    assert.equal(months.length, 4);
+    assert.equal(months.at(-1).closed, false);
+    for (const month of months) {
+      const prime = await post(
+        "/api/reports/run",
+        insights.insightRunInput(layout, "finance.prime_cost", month),
+      );
+      const food = await post(
+        "/api/reports/run",
+        insights.insightRunInput(layout, "inventory.food_cost", month),
+      );
+      assert.deepEqual(
+        board.metricCell(prime.data, "food_cost_pct"),
+        board.metricCell(food.data, "food_cost_pct"),
+      );
+      assert.equal(
+        insights.cellFinality(prime.data, "prime_cost_pct"),
+        month.closed ? "final" : "estimate",
+      );
+    }
+  });
+
+  test("DASH-02: the multi-outlet total equals the management KPI run of the same key", async () => {
+    const tile = insights.insightTile(
+      layout,
+      insights.INSIGHT_TILE.multiOutlet,
+    );
+    const response = await post(
+      "/api/reports/run",
+      insights.insightTileRunInput(tile, layout),
+    );
+    assert.equal(
+      board.idrOf(board.metricCell(response.data, "net_sales")),
+      44_750_000,
+    );
   });
 });
