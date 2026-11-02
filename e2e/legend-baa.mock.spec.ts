@@ -255,7 +255,7 @@ test("AUTH-07: the link-WhatsApp screen keeps its 16px gutter at 360px and 390px
   expect(
     await page.evaluate(() =>
       Math.max(
-        ...[...document.querySelectorAll("#main-content section")].map(
+        ...Array.from(document.querySelectorAll("#main-content section")).map(
           (node) => node.getBoundingClientRect().right,
         ),
       ),
@@ -273,11 +273,11 @@ test("AUTH-07: the link-WhatsApp screen keeps its 16px gutter at 360px and 390px
   expect(overflow).toBeLessThanOrEqual(1);
   const right = await page.evaluate(() =>
     Math.max(
-      ...[
-        ...document.querySelectorAll(
+      ...Array.from(
+        document.querySelectorAll(
           "#main-content section, #main-content [role=status], #main-content h1",
         ),
-      ].map((node) => node.getBoundingClientRect().right),
+      ).map((node) => node.getBoundingClientRect().right),
     ),
   );
   expect(right).toBeLessThanOrEqual(390 - 15);
