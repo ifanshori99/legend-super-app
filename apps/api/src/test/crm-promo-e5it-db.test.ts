@@ -56,6 +56,8 @@ const owner = new Pool({
 });
 const createdPromotions: string[] = [];
 let zoneA = "Asia/Jakarta";
+/** Outlet business-day clock (Q39, default cutoff 04:00). */
+const clockA = () => ({ timeZone: zoneA, cutoff: "04:00" });
 
 const base = () =>
   establishTenantContext({ tenantId, brandId: null, source: "session" });
@@ -179,7 +181,10 @@ const member = (id = randomUUID()): PromoCustomer => ({
 
 /** Noon (outlet zone) `days` ahead: a fixed point inside one business day. */
 function noon(days: number): Date {
-  const date = businessDateOf(new Date(Date.now() + days * 86_400_000), zoneA);
+  const date = businessDateOf(
+    new Date(Date.now() + days * 86_400_000),
+    clockA(),
+  );
   const probe = new Date(`${date}T12:00:00Z`);
   const offset =
     new Date(probe.toLocaleString("en-US", { timeZone: zoneA })).getTime() -
@@ -448,7 +453,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
     expect(applied(third, promotionId)).toBeUndefined();
     const rewards = await liveRewards(promotionId, customer.customerProfileId);
     expect(rewards).toHaveLength(1);
-    expect(rewards[0]?.business_date).toBe(businessDateOf(at, zoneA));
+    expect(rewards[0]?.business_date).toBe(businessDateOf(at, clockA()));
   });
 
   it("[E5IT-5] anonymous bills are not cumulated: an anonymous bill does not count toward a member's day total", async () => {
@@ -485,7 +490,7 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
     expect(applied(crossing, promotionId)).toBeTruthy();
     const rewards = await liveRewards(promotionId, customer.customerProfileId);
     expect(rewards.map((row) => row.business_date).sort()).toEqual(
-      [businessDateOf(day1, zoneA), businessDateOf(day2, zoneA)].sort(),
+      [businessDateOf(day1, clockA()), businessDateOf(day2, clockA())].sort(),
     );
   });
 

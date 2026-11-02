@@ -34,59 +34,21 @@ import { and, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import type { PromoCustomer, Promotion } from "@starter/shared/crm";
 import {
   businessDateOf,
+  businessDayRange,
   idr,
   outletIdSchema,
+  type BusinessDayClock,
   type Idr,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { facilityRewards, promotionOrderApplications } from "../db/schema";
+import { outletBusinessDayClock } from "./outlet-clock";
 import type { Tx } from "./permission-resolver";
 
-/** Outlet business date used for the same-day rule. */
-export function promoBusinessDate(at: Date, timeZone: string): string {
-  // TODO(legend-0n8z): switch to business-day helper (outlet cutoff, default
-  // 04:00). Until it lands this is the outlet-calendar date in the outlet zone.
-  return businessDateOf(at, timeZone);
-}
-
-/** Wall-clock offset (ms) of a time zone at an instant. */
-function zoneOffsetMs(instant: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(instant));
-  const value = (type: string) =>
-    Number(parts.find((entry) => entry.type === type)?.value ?? "0");
-  const local = Date.UTC(
-    value("year"),
-    value("month") - 1,
-    value("day"),
-    value("hour"),
-    value("minute"),
-    value("second"),
-  );
-  return local - Math.floor(instant / 1000) * 1000;
-}
-
-/** First instant of a local calendar date (plus `dayOffset` days). */
-function localMidnight(date: string, timeZone: string, dayOffset = 0): Date {
-  const [year, month, day] = date.split("-").map(Number) as [
-    number,
-    number,
-    number,
-  ];
-  const wall = Date.UTC(year, month - 1, day + dayOffset);
-  // Two passes settle the offset even across a DST change.
-  let guess = wall - zoneOffsetMs(wall, timeZone);
-  guess = wall - zoneOffsetMs(guess, timeZone);
-  return new Date(guess);
+/** Outlet business date (Q39 cutoff, default 04:00) used for the same-day rule. */
+export function promoBusinessDate(at: Date, clock: BusinessDayClock): string {
+  return businessDateOf(at, clock);
 }
 
 export type BusinessDayWindow = {
@@ -99,14 +61,10 @@ export type BusinessDayWindow = {
 
 export function businessDayWindow(
   at: Date,
-  timeZone: string,
+  clock: BusinessDayClock,
 ): BusinessDayWindow {
-  const businessDate = promoBusinessDate(at, timeZone);
-  return {
-    businessDate,
-    start: localMidnight(businessDate, timeZone),
-    end: localMidnight(businessDate, timeZone, 1),
-  };
+  const businessDate = promoBusinessDate(at, clock);
+  return { businessDate, ...businessDayRange(businessDate, clock) };
 }
 
 /** A facility-access reward gated by a minimum spend (PRD §3.25). */
@@ -124,10 +82,10 @@ export function isSameDayMinSpendReward(promotion: Promotion): boolean {
 export function sameDayRewardDate(
   promotion: Promotion,
   at: Date,
-  timeZone: string,
+  clock: BusinessDayClock,
 ): string | null {
   return isSameDayMinSpendReward(promotion)
-    ? promoBusinessDate(at, timeZone)
+    ? promoBusinessDate(at, clock)
     : null;
 }
 
@@ -228,7 +186,7 @@ export async function loadSameDayMinSpend(
   input: {
     promotions: readonly Promotion[];
     customer: PromoCustomer | null;
-    outlet: { id: string; timezone: string };
+    outlet: { id: string; timezone: string; businessDayCutoff: string };
     at: Date;
     lock: boolean;
   },
@@ -237,7 +195,10 @@ export async function loadSameDayMinSpend(
   const targets = input.promotions.filter(isSameDayMinSpendReward);
   if (customerId === null || targets.length === 0) return identity;
   const outletId = outletIdSchema.parse(input.outlet.id);
-  const window = businessDayWindow(input.at, input.outlet.timezone);
+  const window = businessDayWindow(
+    input.at,
+    outletBusinessDayClock(input.outlet),
+  );
   if (input.lock)
     await lockCustomerDay(
       tx,

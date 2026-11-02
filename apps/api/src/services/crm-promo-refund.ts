@@ -73,6 +73,7 @@ import {
   sameDaySpendIdr,
   withSameDaySpend,
 } from "./crm-promo-minspend";
+import { outletBusinessDayClock } from "./outlet-clock";
 import type { Tx } from "./permission-resolver";
 
 const orderIdSchema = ulidIdSchema<"OrderId">();
@@ -310,7 +311,10 @@ export async function recomputeAfterPartialRefund(
         context,
         application.outletId,
       );
-      const window = businessDayWindow(application.redeemedAt, outlet.timezone);
+      const window = businessDayWindow(
+        application.redeemedAt,
+        outletBusinessDayClock(outlet),
+      );
       await lockCustomerDay(
         tx,
         context,

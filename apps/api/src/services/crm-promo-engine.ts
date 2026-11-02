@@ -1213,7 +1213,11 @@ export async function redeemPromotions(
           issuedAt: now,
           expiresAt,
           // Q40 once-per-day key (legend-e5it); null without a min spend.
-          businessDate: sameDayRewardDate(promotion, now, outlet.timezone),
+          businessDate: sameDayRewardDate(
+            promotion,
+            now,
+            outletBusinessDayClock(outlet),
+          ),
         })
         .returning({ id: facilityRewards.id });
       if (!reward) throw new Error("Facility reward insert returned no row");
