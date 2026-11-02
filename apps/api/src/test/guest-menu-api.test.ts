@@ -291,6 +291,22 @@ describe("guest menu reads (Q23 legend-qf0i)", () => {
     expect(response.body.data.pricesExcludeTaxAndService).toBe(true);
   });
 
+  it("TEN-02 legend-qf0i: a tampered QR signature is the same NOT_FOUND", async () => {
+    const tampered = `${qrToken.slice(0, -2)}${qrToken.endsWith("AA") ? "BB" : "AA"}`;
+    const response = await agent(app)
+      .get(`/api/qr/menu/${tampered}`)
+      .set("Host", hostname)
+      .expect(404);
+    expect(response.body.error.code).toBe("NOT_FOUND");
+  });
+
+  it("TEN-02 legend-qf0i: an unknown host has no public website menu", async () => {
+    await agent(app)
+      .get("/api/public/site/menu")
+      .set("Host", "unknown-brand.example")
+      .expect(404);
+  });
+
   it("Q23 legend-qf0i: a token signed for another tenant is not a guest menu", async () => {
     const isolated = await createIsolatedTenant("q23");
     try {

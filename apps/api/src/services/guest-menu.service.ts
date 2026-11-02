@@ -177,11 +177,17 @@ async function currentPriceList(
 async function readGuestCatalogue(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { brandId: BrandId; outletId: OutletId; now: Date },
+  input: {
+    brandId: BrandId;
+    outletId: OutletId;
+    now: Date;
+    /** The outlet's IANA zone: price lists start on its business date. */
+    timeZone: string;
+  },
   resolveMediaUrls: MenuMediaUrls,
 ): Promise<GuestCatalogue> {
   const tenantId = context.tenant.tenantId;
-  const today = businessDateOf(input.now);
+  const today = businessDateOf(input.now, input.timeZone);
 
   const categories = await tx
     .select({
@@ -587,6 +593,7 @@ export async function getQrMenu(
         brandId: brandIdSchema.parse(outlet.brandId),
         outletId: outletIdSchema.parse(outlet.id),
         now,
+        timeZone: outlet.timezone,
       },
       resolveMediaUrls,
     );
@@ -687,6 +694,7 @@ export async function getPublicMenuPage(
         brandId: brandIdSchema.parse(brand.id),
         outletId: outletIdSchema.parse(outlet.id),
         now,
+        timeZone: outlet.timezone,
       },
       resolveMediaUrls,
     );
