@@ -55,9 +55,31 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // public.payment_link_tokens: the guest holds a payment link token and has
     // no tenant context yet (PRD §3.13, TEN-02). The row is only a SHA-256 token
     // hash plus tenant/outlet/link ids — never an amount or guest data — so
-    // SELECT is open while writes stay tenant-checked (migration 0015). Its
+    // SELECT is open while writes stay tenant-checked (migration 0017). Its
     // tenant table, payment_links, keeps the full restrictive policy.
-    const allowlist = ["public.tenant_domains", "public.payment_link_tokens"];
+    //
+    // public.session: authentication also runs BEFORE a tenant context exists
+    // (the session cookie is what resolves the caller), so the device list and
+    // the revoke path read this global §6 B table outside a tenant transaction;
+    // tenant_id is nullable and only records the tenant of a tenant-bound
+    // login. RLS would make a signed-in user's own sessions unreadable. See
+    // identity-session-api.test.ts for the global-read proof.
+    //
+    // public.login_challenges and public.wa_inbound_messages: coordinator
+    // decision (docs/plan/contracts.md `login_challenges`, bead legend-v0o).
+    // A WhatsApp login attempt exists before any session or tenant context, and
+    // the KirimDev webhook resolves the tenant FROM the receiving number, so
+    // these §6 B "(global)" tables are service-scoped instead of RLS. The
+    // services refuse a message received on another tenant's number
+    // (identity-login.test.ts "AUTH-02 rejects a message received on another
+    // tenant's number").
+    const allowlist = [
+      "public.tenant_domains",
+      "public.payment_link_tokens",
+      "public.session",
+      "public.login_challenges",
+      "public.wa_inbound_messages",
+    ];
     const result = await pool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_attribute a
