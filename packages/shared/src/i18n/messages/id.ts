@@ -5,12 +5,16 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { loginMessages } from "./login.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
 
 export const id = {
+  // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
+  // beads never edit the same lines.
+  login: loginMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).

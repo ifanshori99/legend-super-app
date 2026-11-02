@@ -49,6 +49,11 @@ import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasi
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
+import { Route as PublicMasukIndexRouteImport } from './routes/_public/masuk.index'
+import { Route as PublicMasukEmailRouteImport } from './routes/_public/masuk.email'
+import { Route as PublicMasukGoogleRouteImport } from './routes/_public/masuk.google'
+import { Route as PublicMasukHubungkanRouteImport } from './routes/_public/masuk.hubungkan'
+import { Route as PublicMasukTautanRouteImport } from './routes/_public/masuk.tautan'
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
 import { Route as CustomerMemberFasilitasIndexRouteImport } from './routes/_customer/member.fasilitas.index'
 import { Route as CustomerMemberFasilitasTicketIdRouteImport } from './routes/_customer/member.fasilitas.$ticketId'
@@ -261,6 +266,31 @@ const PlatformPlatformIndexRoute = PlatformPlatformIndexRouteImport.update({
   path: '/platform/',
   getParentRoute: () => PlatformRoute,
 } as any)
+const PublicMasukIndexRoute = PublicMasukIndexRouteImport.update({
+  id: '/masuk/',
+  path: '/masuk/',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMasukEmailRoute = PublicMasukEmailRouteImport.update({
+  id: '/masuk/email',
+  path: '/masuk/email',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMasukGoogleRoute = PublicMasukGoogleRouteImport.update({
+  id: '/masuk/google',
+  path: '/masuk/google',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMasukHubungkanRoute = PublicMasukHubungkanRouteImport.update({
+  id: '/masuk/hubungkan',
+  path: '/masuk/hubungkan',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMasukTautanRoute = PublicMasukTautanRouteImport.update({
+  id: '/masuk/tautan',
+  path: '/masuk/tautan',
+  getParentRoute: () => PublicRoute,
+} as any)
 const ShareholderShareholderIndexRoute =
   ShareholderShareholderIndexRouteImport.update({
     id: '/shareholder/',
@@ -403,6 +433,10 @@ export interface FileRoutesByFullPath {
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/masuk/email': typeof PublicMasukEmailRoute
+  '/masuk/google': typeof PublicMasukGoogleRoute
+  '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
+  '/masuk/tautan': typeof PublicMasukTautanRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -410,6 +444,7 @@ export interface FileRoutesByFullPath {
   '/pos/': typeof OpsPosIndexRoute
   '/owner/': typeof OwnerOwnerIndexRoute
   '/platform/': typeof PlatformPlatformIndexRoute
+  '/masuk/': typeof PublicMasukIndexRoute
   '/shareholder/': typeof ShareholderShareholderIndexRoute
   '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
   '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
@@ -454,6 +489,10 @@ export interface FileRoutesByTo {
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/masuk/email': typeof PublicMasukEmailRoute
+  '/masuk/google': typeof PublicMasukGoogleRoute
+  '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
+  '/masuk/tautan': typeof PublicMasukTautanRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -461,6 +500,7 @@ export interface FileRoutesByTo {
   '/pos': typeof OpsPosIndexRoute
   '/owner': typeof OwnerOwnerIndexRoute
   '/platform': typeof PlatformPlatformIndexRoute
+  '/masuk': typeof PublicMasukIndexRoute
   '/shareholder': typeof ShareholderShareholderIndexRoute
   '/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
   '/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
@@ -519,6 +559,10 @@ export interface FileRoutesById {
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_public/masuk/email': typeof PublicMasukEmailRoute
+  '/_public/masuk/google': typeof PublicMasukGoogleRoute
+  '/_public/masuk/hubungkan': typeof PublicMasukHubungkanRoute
+  '/_public/masuk/tautan': typeof PublicMasukTautanRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -526,6 +570,7 @@ export interface FileRoutesById {
   '/_ops/pos/': typeof OpsPosIndexRoute
   '/_owner/owner/': typeof OwnerOwnerIndexRoute
   '/_platform/platform/': typeof PlatformPlatformIndexRoute
+  '/_public/masuk/': typeof PublicMasukIndexRoute
   '/_shareholder/shareholder/': typeof ShareholderShareholderIndexRoute
   '/_customer/member/fasilitas/$ticketId': typeof CustomerMemberFasilitasTicketIdRoute
   '/_customer/member/fasilitas/langganan': typeof CustomerMemberFasilitasLanggananRoute
@@ -574,6 +619,10 @@ export interface FileRouteTypes {
     | '/t/$token'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/masuk/email'
+    | '/masuk/google'
+    | '/masuk/hubungkan'
+    | '/masuk/tautan'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -581,6 +630,7 @@ export interface FileRouteTypes {
     | '/pos/'
     | '/owner/'
     | '/platform/'
+    | '/masuk/'
     | '/shareholder/'
     | '/member/fasilitas/$ticketId'
     | '/member/fasilitas/langganan'
@@ -625,6 +675,10 @@ export interface FileRouteTypes {
     | '/member/voucher'
     | '/kelola/notifikasi'
     | '/operasional/koneksi'
+    | '/masuk/email'
+    | '/masuk/google'
+    | '/masuk/hubungkan'
+    | '/masuk/tautan'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -632,6 +686,7 @@ export interface FileRouteTypes {
     | '/pos'
     | '/owner'
     | '/platform'
+    | '/masuk'
     | '/shareholder'
     | '/member/fasilitas/$ticketId'
     | '/member/fasilitas/langganan'
@@ -689,6 +744,10 @@ export interface FileRouteTypes {
     | '/_customer/t/$token'
     | '/_kelola/kelola/notifikasi'
     | '/_ops/operasional/koneksi'
+    | '/_public/masuk/email'
+    | '/_public/masuk/google'
+    | '/_public/masuk/hubungkan'
+    | '/_public/masuk/tautan'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -696,6 +755,7 @@ export interface FileRouteTypes {
     | '/_ops/pos/'
     | '/_owner/owner/'
     | '/_platform/platform/'
+    | '/_public/masuk/'
     | '/_shareholder/shareholder/'
     | '/_customer/member/fasilitas/$ticketId'
     | '/_customer/member/fasilitas/langganan'
@@ -1016,6 +1076,41 @@ declare module '@tanstack/react-router' {
       fullPath: '/platform/'
       preLoaderRoute: typeof PlatformPlatformIndexRouteImport
       parentRoute: typeof PlatformRoute
+    }
+    '/_public/masuk/': {
+      id: '/_public/masuk/'
+      path: '/masuk'
+      fullPath: '/masuk/'
+      preLoaderRoute: typeof PublicMasukIndexRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/masuk/email': {
+      id: '/_public/masuk/email'
+      path: '/masuk/email'
+      fullPath: '/masuk/email'
+      preLoaderRoute: typeof PublicMasukEmailRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/masuk/google': {
+      id: '/_public/masuk/google'
+      path: '/masuk/google'
+      fullPath: '/masuk/google'
+      preLoaderRoute: typeof PublicMasukGoogleRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/masuk/hubungkan': {
+      id: '/_public/masuk/hubungkan'
+      path: '/masuk/hubungkan'
+      fullPath: '/masuk/hubungkan'
+      preLoaderRoute: typeof PublicMasukHubungkanRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/masuk/tautan': {
+      id: '/_public/masuk/tautan'
+      path: '/masuk/tautan'
+      fullPath: '/masuk/tautan'
+      preLoaderRoute: typeof PublicMasukTautanRouteImport
+      parentRoute: typeof PublicRoute
     }
     '/_shareholder/shareholder/': {
       id: '/_shareholder/shareholder/'
@@ -1374,10 +1469,20 @@ const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
 
 interface PublicRouteChildren {
   PublicIndexRoute: typeof PublicIndexRoute
+  PublicMasukEmailRoute: typeof PublicMasukEmailRoute
+  PublicMasukGoogleRoute: typeof PublicMasukGoogleRoute
+  PublicMasukHubungkanRoute: typeof PublicMasukHubungkanRoute
+  PublicMasukTautanRoute: typeof PublicMasukTautanRoute
+  PublicMasukIndexRoute: typeof PublicMasukIndexRoute
 }
 
 const PublicRouteChildren: PublicRouteChildren = {
   PublicIndexRoute: PublicIndexRoute,
+  PublicMasukEmailRoute: PublicMasukEmailRoute,
+  PublicMasukGoogleRoute: PublicMasukGoogleRoute,
+  PublicMasukHubungkanRoute: PublicMasukHubungkanRoute,
+  PublicMasukTautanRoute: PublicMasukTautanRoute,
+  PublicMasukIndexRoute: PublicMasukIndexRoute,
 }
 
 const PublicRouteWithChildren =
