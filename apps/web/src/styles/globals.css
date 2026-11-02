@@ -40,6 +40,8 @@
   /* v2 surface ladder: page (background) → band (surface-2) → raised. */
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
+  /* v3 double-shell card outer layer (Metoric shell 18 / card 12). */
+  --color-shell: var(--shell);
   /* v2 accent ramp, derived from primary (tokens.css). */
   --color-primary-hover: var(--primary-hover);
   --color-primary-tint: var(--primary-tint);
@@ -87,7 +89,9 @@
   /* v2 radius intents (aliases over the same scale). Media is never pill;
    * containers group content; sheets are the largest. */
   --radius-media: calc(var(--radius-unit) * 3);
-  --radius-container: calc(var(--radius-unit) * 4);
+  /* v3 (Metoric): inner card 12px inside an 18px shell, 8px shell padding. */
+  --radius-container: calc(var(--radius-unit) * 3);
+  --radius-shell: calc(var(--radius-unit) * 4.5);
   --radius-sheet: calc(var(--radius-unit) * 6);
 
   --aspect-card: var(--ratio-card);
@@ -115,6 +119,9 @@
   --font-ui: var(--ff-ui);
   --font-mono: var(--ff-mono);
 
+  --shadow-hairline: var(--elevation-hairline);
+  --shadow-primary: var(--elevation-primary);
+  --shadow-focus: var(--focus-halo);
   --shadow-raised: var(--elevation-raised);
   --shadow-card: var(--elevation-card);
   --shadow-overlay: var(--elevation-overlay);
@@ -163,7 +170,10 @@
   font-feature-settings: "tnum" 1;
 }
 
-/* ------------------------------------------------ v2 type scale ---------
+/* ------------------------------------------------ v3 type scale ---------
+ * v3 (Metoric): one family, titles and figures in 700 with negative
+ * tracking, page title 26px, card/section title 21px, uppercase labels at
+ * +0.09em. Reading text stays 16px (PRD Kemudahan pakai).
  * Named `type-*`, not `text-*`, on purpose: tailwind-merge reads unknown
  * text-<name> classes as colors (see DESIGN.md §3). Each step sets size,
  * line height, weight, and tracking together; color stays a separate class.
@@ -171,25 +181,25 @@
 @utility type-display-2xl {
   font-size: clamp(2.5rem, 1.6rem + 2.8vw, 3.5rem);
   line-height: 1.07;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.03em;
 }
 @utility type-display-xl {
-  font-size: clamp(2.125rem, 1.6rem + 1.6vw, 2.75rem);
+  font-size: clamp(2rem, 1.6rem + 1.4vw, 2.5rem);
   line-height: 1.1;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.025em;
 }
 @utility type-display {
-  font-size: 2rem;
-  line-height: 2.5rem;
-  font-weight: 600;
+  font-size: 1.625rem;
+  line-height: 2rem;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 @utility type-title {
-  font-size: 1.375rem;
+  font-size: 1.3125rem;
   line-height: 1.75rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.015em;
 }
 @utility type-heading {
@@ -202,21 +212,21 @@
   font-size: 0.75rem;
   line-height: 1rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 /* Money: tabular figures always; currency prefix scales via .money-currency. */
 @utility type-money-display {
-  font-size: 2rem;
-  line-height: 2.25rem;
-  font-weight: 600;
+  font-size: 1.625rem;
+  line-height: 2rem;
+  font-weight: 700;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 @utility type-money-hero {
   font-size: 2.75rem;
   line-height: 3rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
 }

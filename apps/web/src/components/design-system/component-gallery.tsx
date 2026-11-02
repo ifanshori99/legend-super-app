@@ -16,6 +16,8 @@ import {
   Card,
   CardDescription,
   CardHeader,
+  CardShell,
+  CardShellFooter,
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -63,7 +65,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -78,6 +80,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import {
   sampleMenu,
+  sampleGuestsToday,
   sampleOpenOrders,
   sampleOrders,
   sampleOutlet,
@@ -478,7 +481,7 @@ function DataDemo() {
   );
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
-      <div className="grid gap-4 sm:grid-cols-2">
+      <StatStrip label={t("designSystem.demo.salesToday")} columns={3}>
         <StatTile
           label={t("designSystem.demo.salesToday")}
           value={
@@ -496,7 +499,12 @@ function DataDemo() {
           context={t("designSystem.demo.today", { outlet: sampleOutlet })}
           source={<a href="#data">{t("designSystem.demo.viewOrders")}</a>}
         />
-      </div>
+        <StatTile
+          label={t("designSystem.demo.guestsToday")}
+          value={sampleGuestsToday}
+          context={t("designSystem.demo.today", { outlet: sampleOutlet })}
+        />
+      </StatStrip>
       <SegmentedControl<DataState>
         label={t("designSystem.demo.dataState")}
         value={state}
@@ -583,6 +591,83 @@ function FeedbackDemo() {
   );
 }
 
+// v3 (DESIGN.md §4): the double-shell card and its three layers, plus every
+// status as icon + text.
+function ShellDemo() {
+  const t = useT();
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-6">
+      <p className="max-w-prose text-sm leading-5 text-muted-foreground">
+        {t("designSystem.components.shellHint")}
+      </p>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <CardShell>
+          <Card>
+            <CardHeader>
+              <p className="type-eyebrow text-muted-foreground">
+                {t("designSystem.demo.today", { outlet: sampleOutlet })}
+              </p>
+              <CardTitle className="type-title">
+                {t("designSystem.demo.shellCardTitle")}
+              </CardTitle>
+            </CardHeader>
+            <CardDescription>
+              {t("designSystem.demo.shellCardBody")}
+            </CardDescription>
+          </Card>
+          <CardShellFooter>
+            <a
+              href="#data"
+              className="font-semibold text-primary underline-offset-4 hover:underline"
+            >
+              {t("designSystem.demo.viewOrders")}
+            </a>
+          </CardShellFooter>
+        </CardShell>
+        <div className="grid gap-2">
+          <p className="text-sm font-semibold">
+            {t("designSystem.components.layers")}
+          </p>
+          <div className="rounded-container border bg-surface-2 p-3">
+            <p className="mb-2 text-xs text-muted-foreground">
+              {t("designSystem.components.layerCanvas")}
+            </p>
+            <div className="rounded-shell border bg-shell p-2 shadow-hairline">
+              <p className="mb-2 px-1 text-xs text-muted-foreground">
+                {t("designSystem.components.layerShell")}
+              </p>
+              <div className="rounded-container border bg-card p-3 text-xs shadow-hairline">
+                {t("designSystem.components.layerCard")}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p className="mb-2 text-sm font-semibold">
+          {t("designSystem.components.statuses")}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {STATUS_KINDS.map((status) => (
+            <StatusPill key={status} status={status} />
+          ))}
+          <StatusPill status="late" solid />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STATUS_KINDS = [
+  "received",
+  "preparing",
+  "ready",
+  "delivered",
+  "onTrack",
+  "near",
+  "late",
+] as const;
+
 export function ComponentGallery() {
   const t = useT();
   return (
@@ -612,6 +697,10 @@ export function ComponentGallery() {
       <div>
         <SubHeading>{t("designSystem.components.navigation")}</SubHeading>
         <TabsDemo />
+      </div>
+      <div>
+        <SubHeading>{t("designSystem.components.shell")}</SubHeading>
+        <ShellDemo />
       </div>
       <div id="data" className="scroll-mt-28">
         <SubHeading>{t("designSystem.components.data")}</SubHeading>

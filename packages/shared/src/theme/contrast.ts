@@ -26,6 +26,8 @@ export const DERIVED_TOKENS = {
   "primary-tint": { from: "primary", pct: 10, into: "background" },
   "primary-tint-strong": { from: "primary", pct: 18, into: "background" },
   "chart-neutral": { from: "foreground", pct: 55, into: "background" },
+  // v3 double-shell card: outer shell between canvas (surface-2) and card.
+  shell: { from: "surface-2", pct: 55, into: "card" },
 } as const satisfies Record<
   string,
   { from: ColorToken; pct: number; into: ColorToken }
@@ -198,6 +200,15 @@ export const REQUIRED_PAIRS: readonly ContrastPair[] = [
     min: AA_TEXT,
     use: "accent label on strong tint",
   },
+  // v3 double-shell card: labels and footers sit on the outer shell.
+  { fg: "foreground", bg: "shell", min: AA_TEXT, use: "text on card shell" },
+  {
+    fg: "muted-foreground",
+    bg: "shell",
+    min: AA_TEXT,
+    use: "hint on card shell",
+  },
+  { fg: "primary", bg: "shell", min: AA_TEXT, use: "link on card shell" },
   // Charts (WCAG 1.4.11 graphics): accent and neutral series vs the plot.
   {
     fg: "chart-neutral",

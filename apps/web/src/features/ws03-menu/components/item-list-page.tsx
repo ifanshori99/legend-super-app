@@ -539,6 +539,12 @@ export function ItemListPage() {
                             {label}
                           </Badge>
                         ))}
+                        {/* Q23: without a photo the item can never be shown. */}
+                        {!row.item.mediaId && (
+                          <Badge tone="warning">
+                            {t("menu.list.photoRequired")}
+                          </Badge>
+                        )}
                       </span>
                       {row.item.description && (
                         <span className="line-clamp-1 text-sm text-muted-foreground">
@@ -599,6 +605,11 @@ export function ItemListPage() {
                         {label}
                       </Badge>
                     ))}
+                    {!row.item.mediaId && (
+                      <Badge tone="warning">
+                        {t("menu.list.photoRequired")}
+                      </Badge>
+                    )}
                   </span>
                   <span className="text-sm text-muted-foreground">
                     {row.category?.name ?? t("menu.list.noCategory")} ·{" "}

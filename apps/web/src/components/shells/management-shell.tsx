@@ -5,6 +5,11 @@
 // Breakpoints are container queries, so the shell adapts to its own width
 // (also in previews). The current item takes the accent tint plus a 2px
 // leading rule (Q29) — one of the screen's two accent details (Q21).
+//
+// v3 (Metoric layering): sidebar on the near-white shell tone, topbar on
+// the page tone with a 26px bold title, and the work area on the canvas
+// (surface-2) so double-shell cards read as layers. Metoric's 296px sidebar
+// and grey active pill lose to Legend's 256px/64px rail and tint + rule.
 import { useState, type ReactNode } from "react";
 import { cn } from "cn";
 import { Menu, Store } from "lucide-react";
@@ -24,6 +29,16 @@ import {
 } from "@/components/shells/nav";
 
 type Layout = "full" | "rail";
+
+/** Up to two initials for the account chip (no avatar photo yet). */
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]!.toUpperCase())
+    .join("");
+}
 
 /** Consecutive items with the same `group` form one section. */
 function groupItems(items: ShellNavItem[]) {
@@ -55,15 +70,15 @@ function NavItemLink({
       aria-current={current ? "page" : undefined}
       title={rail ? label : undefined}
       className={cn(
-        "relative flex min-h-9 items-center gap-2.5 rounded-md text-sm transition-colors duration-(--duration-fast)",
+        "relative flex min-h-10 items-center gap-3 rounded-control text-sm font-medium transition-colors duration-(--duration-fast)",
         rail ? "mx-auto size-10 justify-center" : "px-3",
         current
           ? "bg-primary-tint font-semibold text-primary before:absolute before:inset-y-2 before:start-0 before:w-0.5 before:rounded-full before:bg-primary"
-          : "text-foreground hover:bg-surface-3",
+          : "text-muted-foreground hover:bg-surface-2 hover:text-foreground",
       )}
     >
       <Icon
-        className={cn("size-4 shrink-0", !current && "text-muted-foreground")}
+        className={cn("size-5 shrink-0", !current && "text-muted-foreground")}
         aria-hidden="true"
       />
       <span className={cn("min-w-0 flex-1 truncate", rail && "sr-only")}>
@@ -73,7 +88,7 @@ function NavItemLink({
         <span
           className={cn(
             "rounded-full bg-surface-3 px-1.5 text-xs leading-5 font-semibold text-foreground tabular",
-            rail && "absolute -top-1 -end-1 border-2 border-surface-2",
+            rail && "absolute -top-1 -end-1 border-2 border-shell",
           )}
         >
           {count}
@@ -151,16 +166,16 @@ function Sidebar({
     <nav aria-label={t("shell.mainNav")} className="flex h-full flex-col">
       <div
         className={cn(
-          "flex h-14 shrink-0 items-center gap-2.5 border-b",
+          "flex h-16 shrink-0 items-center gap-2.5",
           rail ? "justify-center" : "px-4",
         )}
       >
-        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-foreground text-background">
-          <Store className="size-4" aria-hidden="true" />
+        <span className="grid size-9 shrink-0 place-items-center rounded-control bg-foreground text-background">
+          <Store className="size-5" aria-hidden="true" />
         </span>
         <p
           className={cn(
-            "min-w-0 truncate text-sm leading-5 font-semibold",
+            "min-w-0 truncate text-base leading-6 font-bold tracking-tight",
             rail && "sr-only",
           )}
         >
@@ -224,7 +239,7 @@ export function ManagementShell({
         embedded ? "h-full" : "h-dvh",
       )}
     >
-      <aside className="hidden w-16 shrink-0 border-e bg-surface-2 @5xl:block @7xl:hidden">
+      <aside className="hidden w-16 shrink-0 border-e bg-shell @5xl:block @7xl:hidden">
         <Sidebar
           brandName={brandName}
           nav={nav}
@@ -233,7 +248,7 @@ export function ManagementShell({
           LinkComponent={LinkComponent}
         />
       </aside>
-      <aside className="hidden w-64 shrink-0 border-e bg-surface-2 @7xl:block">
+      <aside className="hidden w-64 shrink-0 border-e bg-shell @7xl:block">
         <Sidebar
           brandName={brandName}
           nav={nav}
@@ -244,7 +259,7 @@ export function ManagementShell({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-background px-gutter">
+        <header className="flex h-16 shrink-0 items-center gap-2 border-b bg-background px-gutter">
           <Button
             variant="ghost"
             size="icon"
@@ -255,12 +270,20 @@ export function ManagementShell({
             <Menu aria-hidden="true" />
             <span className="sr-only">{t("shell.openNav")}</span>
           </Button>
-          <Title className="min-w-0 truncate type-heading">{pageTitle}</Title>
+          <Title className="min-w-0 truncate type-title @3xl:type-display">
+            {pageTitle}
+          </Title>
           <div className="ms-auto flex items-center gap-2">
             {actions}
             {user && (
               <div className="hidden items-center gap-2.5 border-s ps-3 @2xl:flex">
-                <div className="text-end leading-tight">
+                <span
+                  aria-hidden="true"
+                  className="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-sm font-bold"
+                >
+                  {initials(user.name)}
+                </span>
+                <div className="leading-tight">
                   <p className="text-sm font-semibold">{user.name}</p>
                   <p className="text-xs text-muted-foreground">{user.role}</p>
                 </div>
@@ -270,7 +293,7 @@ export function ManagementShell({
         </header>
         <Main
           id={embedded ? undefined : "main-content"}
-          className="min-h-0 flex-1 overflow-y-auto"
+          className="min-h-0 flex-1 overflow-y-auto bg-surface-2"
         >
           <div className="mx-auto w-full max-w-[90rem] px-gutter py-6">
             {children}
@@ -279,7 +302,7 @@ export function ManagementShell({
       </div>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="left" className="w-64 gap-0 bg-surface-2 p-0">
+        <SheetContent side="left" className="w-64 gap-0 bg-shell p-0">
           <SheetTitle className="sr-only">{t("shell.mainNav")}</SheetTitle>
           <SheetDescription className="sr-only">{brandName}</SheetDescription>
           <Sidebar

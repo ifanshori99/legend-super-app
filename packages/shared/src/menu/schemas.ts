@@ -138,6 +138,11 @@ export function transitionAvailability(
   if (!next) throw new RangeError("Invalid availability transition");
   return next;
 }
+/**
+ * One row of the bulk import template (PRD §8 "Impor Massal"). The template has
+ * no photo column, so an imported item is created as a draft: it cannot be
+ * active until someone uploads its photo (owner Q23).
+ */
 export const importRowSchema = z.strictObject({
   category: name,
   name,
