@@ -122,15 +122,15 @@ export function FacilityTicketScreen({
 
   return (
     <div className="grid gap-5 pb-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="grid gap-1">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid min-w-0 gap-1">
           <Link
             to="/member/fasilitas"
             className="text-sm font-medium text-primary underline underline-offset-4"
           >
             {t("facility.ticket.backToList")}
           </Link>
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+          <h1 className="font-brand type-display-xl">
             {t("facility.ticket.title")}
           </h1>
         </div>
@@ -139,8 +139,10 @@ export function FacilityTicketScreen({
 
       <Card>
         <CardHeader>
-          <CardTitle>{schedule}</CardTitle>
-          <CardDescription>
+          <CardTitle className="font-brand type-title tabular">
+            {schedule}
+          </CardTitle>
+          <CardDescription className="tabular">
             {unit
               ? `${unit.areaName} · ${t("facility.ticket.unit")} ${unit.code}`
               : t("facility.entry.title")}
@@ -157,7 +159,9 @@ export function FacilityTicketScreen({
       {credentialLive && (
         <Card>
           <CardHeader>
-            <CardTitle>{t("facility.ticket.credentialTitle")}</CardTitle>
+            <CardTitle className="font-brand type-title">
+              {t("facility.ticket.credentialTitle")}
+            </CardTitle>
             {credential && (
               <CardDescription>{t("facility.ticket.qrHint")}</CardDescription>
             )}
@@ -165,10 +169,10 @@ export function FacilityTicketScreen({
           {!hydrated ? (
             <LoadingCard lines={4} />
           ) : credential === null ? (
-            <div className="flex items-start gap-2 rounded-lg bg-muted px-3 py-2 text-sm leading-5">
+            <div className="flex items-start gap-2 rounded-container bg-surface-2 px-3 py-2 text-sm leading-5">
               <Ticket className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <div className="grid gap-0.5">
-                <p className="font-semibold">
+                <p className="type-heading">
                   {t("facility.ticket.credentialMissingTitle")}
                 </p>
                 <p className="text-muted-foreground">
@@ -191,13 +195,13 @@ export function FacilityTicketScreen({
                 })}
               />
               <div className="grid gap-1">
-                <p className="text-sm leading-5 font-medium text-muted-foreground">
+                <p className="type-eyebrow text-muted-foreground">
                   {t("facility.ticket.pinLabel")}
                 </p>
-                <p className="text-3xl leading-tight font-semibold tracking-[0.35em] tabular">
+                <p className="font-mono text-2xl leading-8 font-semibold tracking-[0.3em] tabular">
                   {credential.pin}
                 </p>
-                <p className="text-sm leading-5 text-muted-foreground">
+                <p className="text-sm leading-5 text-muted-foreground tabular">
                   {t("facility.ticket.window", {
                     from: formatClock(credential.validFrom),
                     until: formatClock(credential.validUntil),
@@ -226,7 +230,7 @@ export function FacilityTicketScreen({
               aria-hidden="true"
             />
             <div className="grid gap-0.5">
-              <p className="text-sm leading-5 font-semibold">
+              <p className="type-heading">
                 {t("facility.ticket.offlineTitle")}
               </p>
               <p className="text-sm leading-5 text-muted-foreground">

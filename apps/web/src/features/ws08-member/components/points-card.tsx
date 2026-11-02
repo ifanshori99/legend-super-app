@@ -23,19 +23,19 @@ export function PointsCard({
   return (
     <Card className="gap-3">
       <div className="flex items-start justify-between gap-3">
-        <div className="grid gap-1">
-          <p className="text-sm leading-5 font-medium text-muted-foreground">
+        <div className="grid min-w-0 gap-1">
+          <p className="type-eyebrow text-muted-foreground">
             {t("member.points.balance")}
           </p>
           <p className="flex items-baseline gap-2">
-            <NumberDisplay value={balance} size="xl" className="font-brand" />
-            <span className="text-base leading-6 font-semibold text-muted-foreground">
+            <NumberDisplay value={balance} size="stat" />
+            <span className="text-sm leading-5 font-semibold text-muted-foreground">
               {t("member.common.pointsUnit")}
             </span>
           </p>
         </div>
-        <span className="grid size-12 shrink-0 place-items-center rounded-full bg-brand-subtle text-foreground">
-          <Coins className="size-6" aria-hidden="true" />
+        <span className="grid size-11 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
+          <Coins className="size-5" aria-hidden="true" />
         </span>
       </div>
 

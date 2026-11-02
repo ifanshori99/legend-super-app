@@ -114,12 +114,12 @@ export function FacilityBookingScreen({ facilityId }: { facilityId: string }) {
 
   return (
     <div className="grid gap-5 pb-4">
-      <header className="grid gap-2">
+      <header className="grid gap-3">
         <div className="grid gap-1">
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+          <h1 className="font-brand type-display-xl">
             {catalog.data?.facility.name ?? t("facility.entry.title")}
           </h1>
-          <p className="text-sm leading-5 text-muted-foreground">
+          <p className="max-w-prose text-sm leading-5 text-muted-foreground">
             {t("facility.entry.hint")}
           </p>
         </div>

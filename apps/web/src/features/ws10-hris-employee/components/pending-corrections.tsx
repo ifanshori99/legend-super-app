@@ -31,7 +31,9 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("hris.home.ongoingTitle")}</CardTitle>
+        <CardTitle className="font-brand type-title">
+          {t("hris.home.ongoingTitle")}
+        </CardTitle>
         <CardDescription>{t("hris.home.ongoingHint")}</CardDescription>
       </CardHeader>
       {pending.isPending ? (
@@ -45,14 +47,14 @@ export function PendingCorrections({ timeZone }: { timeZone: string }) {
       ) : pending.data.data.length === 0 ? (
         <InlineEmpty icon={Inbox} title={t("hris.home.ongoingEmpty")} />
       ) : (
-        <ul className="divide-y">
+        <ul className="divide-y divide-border">
           {pending.data.data.map((correction) => (
             <li
               key={correction.id}
-              className="flex items-start justify-between gap-3 py-2.5"
+              className="flex items-start justify-between gap-3 py-3"
             >
               <div className="grid min-w-0 gap-0.5">
-                <p className="text-sm leading-5 font-medium">
+                <p className="font-medium tabular">
                   {t("hris.history.requestedType", {
                     type: t(typeLabelKey(correction.requestedType)),
                     time: formatTime(correction.requestedOccurredAt, timeZone),

@@ -11,6 +11,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronLeft, Globe, Info } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useStartGoogleLogin } from "../hooks";
 import { InlineFailure, Notice } from "./shared";
 
@@ -33,7 +34,7 @@ export function GoogleLoginScreen({ returnTo }: { returnTo?: string }) {
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="mx-auto grid w-full max-w-md gap-5">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-3 min-h-11">
           <Link to="/masuk">
@@ -44,15 +45,15 @@ export function GoogleLoginScreen({ returnTo }: { returnTo?: string }) {
       </div>
 
       <header className="grid gap-2">
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-brand type-display-xl">
           {t("login.google.heading")}
         </h1>
-        <p className="text-base leading-6 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.google.subtitle")}
         </p>
       </header>
 
-      <section className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card">
+      <Card className="gap-4">
         <Button
           size="lg"
           className="w-full"
@@ -70,7 +71,7 @@ export function GoogleLoginScreen({ returnTo }: { returnTo?: string }) {
         <p className="text-sm leading-5 text-muted-foreground">
           {t("login.google.privacy")}
         </p>
-      </section>
+      </Card>
 
       <Notice
         tone="info"

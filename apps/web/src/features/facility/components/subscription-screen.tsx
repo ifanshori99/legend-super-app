@@ -150,7 +150,7 @@ export function FacilitySubscriptionScreen({
         >
           {t("facility.subscription.backToFacilities")}
         </Link>
-        <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+        <h1 className="font-brand type-display-xl">
           {t("facility.subscription.title")}
         </h1>
         <p className="text-sm leading-5 text-muted-foreground">
@@ -167,8 +167,10 @@ export function FacilitySubscriptionScreen({
           <Section title={t("facility.subscription.currentTitle")}>
             <Card>
               <CardHeader>
-                <CardTitle>{view.plan.name}</CardTitle>
-                <CardDescription>
+                <CardTitle className="font-brand type-title">
+                  {view.plan.name}
+                </CardTitle>
+                <CardDescription className="tabular">
                   {t("facility.subscription.period", {
                     start: formatDateLabel(
                       `${view.subscription.currentPeriodStart}T00:00:00+07:00`,
@@ -181,7 +183,7 @@ export function FacilitySubscriptionScreen({
               </CardHeader>
               <div className="grid gap-2">
                 <div className="flex items-baseline justify-between gap-2">
-                  <p className="text-sm leading-5 font-medium text-muted-foreground">
+                  <p className="type-eyebrow text-muted-foreground">
                     {t("facility.subscription.quotaLabel")}
                   </p>
                   <Badge
@@ -196,7 +198,7 @@ export function FacilitySubscriptionScreen({
                     {t(STATUS_KEYS[view.subscription.status])}
                   </Badge>
                 </div>
-                <p className="text-2xl leading-8 font-semibold tabular">
+                <p className="type-display tabular">
                   {t("facility.subscription.quotaValue", {
                     remaining: view.quota.remaining,
                   })}
@@ -278,14 +280,11 @@ export function FacilitySubscriptionScreen({
                 description={t("state.emptyHint")}
               />
             ) : (
-              <ul className="grid gap-2">
+              <ul className="divide-y divide-border rounded-container border-(length:--border-w) bg-card shadow-hairline">
                 {view.invoices.map((invoice) => (
-                  <li
-                    key={invoice.id}
-                    className="grid gap-1 rounded-xl border-(length:--border-w) bg-card p-card"
-                  >
+                  <li key={invoice.id} className="grid gap-1 px-4 py-3">
                     <div className="flex items-baseline justify-between gap-2">
-                      <p className="text-sm leading-5 font-medium">
+                      <p className="text-sm leading-5 font-medium tabular">
                         {periodRange(invoice.periodStart, invoice.periodEnd)}
                       </p>
                       <Badge tone={INVOICE_TONES[invoice.status]}>
@@ -345,7 +344,9 @@ export function FacilitySubscriptionScreen({
               <li key={plan.id}>
                 <Card className="gap-3">
                   <CardHeader>
-                    <CardTitle>{plan.name}</CardTitle>
+                    <CardTitle className="font-brand type-title">
+                      {plan.name}
+                    </CardTitle>
                     <CardDescription>
                       {t("facility.subscription.quotaPerPeriod", {
                         count: plan.quotaPerPeriod,
@@ -357,7 +358,7 @@ export function FacilitySubscriptionScreen({
                     </CardDescription>
                   </CardHeader>
                   <div className="flex items-baseline gap-1">
-                    <Money amount={plan.priceIdr} size="lg" />
+                    <Money amount={plan.priceIdr} size="stat" />
                     <span className="text-sm leading-5 text-muted-foreground">
                       {plan.interval === "month"
                         ? t("facility.subscription.perMonth")
@@ -365,7 +366,11 @@ export function FacilitySubscriptionScreen({
                     </span>
                   </div>
                   <CardFooter>
-                    <Button size="sm" onClick={() => setPendingPlan(plan)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPendingPlan(plan)}
+                    >
                       {t("facility.subscription.choose")}
                     </Button>
                   </CardFooter>

@@ -47,7 +47,9 @@ export function AttendanceResult({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t(submissionHeadlineKey(log.validity))}</CardTitle>
+        <CardTitle className="font-brand type-title">
+          {t(submissionHeadlineKey(log.validity))}
+        </CardTitle>
         <CardDescription>{t(submissionHintKey(log.validity))}</CardDescription>
         <CardAction>
           <StatusPill status={validityStatus(log.validity)}>
@@ -56,18 +58,20 @@ export function AttendanceResult({
         </CardAction>
       </CardHeader>
 
-      <dl className="grid gap-2 text-sm leading-5">
+      <dl className="grid gap-2 rounded-container bg-surface-2 p-3 text-sm leading-5">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-muted-foreground">
             {t("hris.result.detailType")}
           </dt>
-          <dd className="font-medium">{t(typeLabelKey(log.type))}</dd>
+          <dd className="text-right font-medium">
+            {t(typeLabelKey(log.type))}
+          </dd>
         </div>
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-muted-foreground">
             {t("hris.result.detailTime")}
           </dt>
-          <dd className="font-medium tabular">
+          <dd className="text-right font-medium tabular">
             {formatTime(log.occurredAt, timeZone)}
           </dd>
         </div>
@@ -75,14 +79,16 @@ export function AttendanceResult({
           <dt className="text-muted-foreground">
             {t("hris.result.detailMethod")}
           </dt>
-          <dd className="font-medium">{t(methodLabelKey(log.method))}</dd>
+          <dd className="text-right font-medium">
+            {t(methodLabelKey(log.method))}
+          </dd>
         </div>
         {log.geoDistanceM !== null && (
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted-foreground">
               {t("hris.result.detailDistance")}
             </dt>
-            <dd className="font-medium tabular">
+            <dd className="text-right font-medium tabular">
               {formatNumber(log.geoDistanceM)} m
             </dd>
           </div>
@@ -93,8 +99,8 @@ export function AttendanceResult({
         <div
           className={
             rejected
-              ? "grid gap-2 rounded-lg bg-danger-subtle p-3"
-              : "grid gap-2 rounded-lg bg-warning-subtle p-3"
+              ? "grid gap-2 rounded-container bg-danger-subtle p-3"
+              : "grid gap-2 rounded-container bg-warning-subtle p-3"
           }
         >
           <p className="text-sm leading-5 font-semibold">

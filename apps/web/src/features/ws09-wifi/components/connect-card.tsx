@@ -59,7 +59,7 @@ export function ConnectCard({
         )}
       </div>
       {menuToken && (
-        <div className="grid gap-2 border-t pt-4">
+        <div className="grid gap-2 border-t-(length:--border-w) pt-4">
           <p className="text-sm leading-5 text-muted-foreground">
             {t("wifi.orderHint")}
           </p>
