@@ -50,7 +50,7 @@ export function VerifyLinkScreen({
   return (
     <div className="grid gap-6">
       <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-3">
+        <Button asChild variant="ghost" size="sm" className="-ml-3 min-h-11">
           <Link to="/masuk">
             <ChevronLeft aria-hidden="true" />
             {t("login.backToOptions")}
@@ -112,7 +112,10 @@ export function VerifyLinkScreen({
               : t("login.verify.submit")}
           </Button>
           {complete.isError && (
-            <InlineFailure error={complete.error} onRetry={() => void submit()} />
+            <InlineFailure
+              error={complete.error}
+              onRetry={() => void submit()}
+            />
           )}
           <p className="text-sm leading-5 text-muted-foreground">
             {t("login.verify.note")}

@@ -11,7 +11,10 @@
 // The challenge state machine itself lives in the contract
 // (@starter/shared/identity, machines.ts); this file only reads its output.
 
-import type { LoginChallenge, LoginChallengeView } from "@starter/shared/identity";
+import type {
+  LoginChallenge,
+  LoginChallengeView,
+} from "@starter/shared/identity";
 
 /** Two minutes between polls while the guest sends the message (AUTH-01 flow). */
 export const LOGIN_POLL_MS = 2_000;

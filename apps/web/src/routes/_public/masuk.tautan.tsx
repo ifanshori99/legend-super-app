@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
-import { magicLinkTokenSchema, returnPathSchema } from "@starter/shared/identity";
+import {
+  magicLinkTokenSchema,
+  returnPathSchema,
+} from "@starter/shared/identity";
 import { z } from "zod";
 import { VerifyLinkScreen } from "@/features/ws01-login/components/verify-link";
 

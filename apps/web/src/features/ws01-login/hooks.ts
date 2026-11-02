@@ -1,11 +1,7 @@
 // Hooks for the sign-in screens: components never call the API or useQuery
 // directly (docs/frontend.md "Custom hooks"). A completed sign-in invalidates
 // the cached identity view, so the shell and the link-WhatsApp prompt refresh.
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import { currentAuthQuery, loginChallengeQuery, loginKeys } from "./queries";
 
@@ -32,13 +28,8 @@ export function useCancelWhatsAppLogin() {
 
 export function useRequestMagicLink() {
   return useMutation({
-    mutationFn: ({
-      email,
-      returnTo,
-    }: {
-      email: string;
-      returnTo?: string;
-    }) => api.requestMagicLinkEmail(email, returnTo),
+    mutationFn: ({ email, returnTo }: { email: string; returnTo?: string }) =>
+      api.requestMagicLinkEmail(email, returnTo),
   });
 }
 

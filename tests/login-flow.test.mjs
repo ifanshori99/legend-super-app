@@ -98,13 +98,21 @@ describe("WhatsApp challenge states (AUTH-01)", () => {
   test("AUTH-01: a completed code without a session here reads expired, not signed in", () => {
     const at = Date.parse("2026-11-02T02:00:00.000Z");
     const spent = viewAt(at, {
-      challenge: { status: "completed", completedAt: iso(at), matchedUserId: fx.usersByKey.sari.id },
+      challenge: {
+        status: "completed",
+        completedAt: iso(at),
+        matchedUserId: fx.usersByKey.sari.id,
+      },
     });
     // The second poll after the session was claimed carries no session.
     assert.equal(loginChallengeOutcome(spent, at), "expired");
 
     const handedOut = viewAt(at, {
-      challenge: { status: "completed", completedAt: iso(at), matchedUserId: fx.usersByKey.sari.id },
+      challenge: {
+        status: "completed",
+        completedAt: iso(at),
+        matchedUserId: fx.usersByKey.sari.id,
+      },
       session: fx.sessions.find((session) => session.kind === "customer"),
     });
     assert.equal(loginChallengeOutcome(handedOut, at), "signed_in");
@@ -142,8 +150,14 @@ describe("WhatsApp challenge states (AUTH-01)", () => {
   });
 
   test("AUTH-01: failures that are not end states keep a fix hint", () => {
-    assert.equal(loginErrorKey({ code: "NETWORK_ERROR" }), "login.errors.offline");
-    assert.equal(loginErrorKey({ code: "RATE_LIMITED" }), "login.errors.tooMany");
+    assert.equal(
+      loginErrorKey({ code: "NETWORK_ERROR" }),
+      "login.errors.offline",
+    );
+    assert.equal(
+      loginErrorKey({ code: "RATE_LIMITED" }),
+      "login.errors.tooMany",
+    );
     assert.equal(
       loginErrorKey({ code: "VALIDATION_ERROR" }),
       "login.errors.invalidEmail",
@@ -255,7 +269,10 @@ describe("email link, Google and the identity view", () => {
       "the link window is 15 minutes",
     );
     // No account-enumeration field: the two answers differ only in the clock.
-    assert.deepEqual(Object.keys(known.data).sort(), Object.keys(unknown.data).sort());
+    assert.deepEqual(
+      Object.keys(known.data).sort(),
+      Object.keys(unknown.data).sort(),
+    );
   });
 
   test("AUTH-01: the clicked email link sets a customer session", async () => {

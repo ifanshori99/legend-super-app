@@ -47,7 +47,7 @@ export function EmailLoginScreen({ returnTo }: { returnTo?: string }) {
   return (
     <div className="grid gap-6">
       <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-3">
+        <Button asChild variant="ghost" size="sm" className="-ml-3 min-h-11">
           <Link to="/masuk">
             <ChevronLeft aria-hidden="true" />
             {t("login.backToOptions")}
@@ -107,7 +107,7 @@ export function EmailLoginScreen({ returnTo }: { returnTo?: string }) {
               type="email"
               autoComplete="email"
               inputMode="email"
-              placeholder="nama@contoh.id"
+              placeholder={t("login.email.addressPlaceholder")}
               required
               maxLength={254}
               autoFocus

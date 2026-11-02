@@ -18,10 +18,8 @@ import {
   TimerOff,
   type LucideIcon,
 } from "lucide-react";
-import type {
-  LoginChallengeIssued,
-  Session,
-} from "@starter/shared/identity";
+import type { LoginChallengeIssued, Session } from "@starter/shared/identity";
+import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { QrCode } from "@/components/ui/qr-code";
@@ -38,13 +36,7 @@ import {
   useLoginChallenge,
   useStartWhatsAppLogin,
 } from "../hooks";
-import {
-  InlineFailure,
-  Notice,
-  formatClock,
-  useNow,
-  type NoticeTone,
-} from "./shared";
+import { InlineFailure, Notice, useNow, type NoticeTone } from "./shared";
 
 /** Copy that differs between signing in and linking a number. */
 export type WhatsAppCopy = {
@@ -59,8 +51,8 @@ type EndState = ChallengeFailure | "cancelled";
 const END_COPY: Record<
   EndState,
   {
-    title: string;
-    hint: string;
+    title: MessageKey;
+    hint: MessageKey;
     tone: NoticeTone;
     icon: LucideIcon;
     /** A fresh code helps for every end except "belongs to another account". */
@@ -126,9 +118,11 @@ export function WhatsAppLogin({
   const view = poll.data;
 
   const now = useNow(issued !== null);
-  // A pending challenge is judged at the last poll (render stays pure); the
-  // countdown only starts once the mounted clock exists.
-  const judgedAt = now ?? (view ? Date.parse(view.challenge.createdAt) : 0);
+  // The clock never runs behind the code's own issue time, so a screen that
+  // sat idle before the code existed still counts from the code's real start.
+  const judgedAt = issued
+    ? Math.max(now, Date.parse(issued.challenge.createdAt))
+    : now;
   const outcome = view
     ? loginChallengeOutcome(view, judgedAt)
     : issued
@@ -253,12 +247,9 @@ export function WhatsAppLogin({
 
   // ---------------------------------------------------------- waiting state
   const { challenge } = issued;
-  const remaining =
-    now === null ? null : loginCodeRemainingMs(challenge, judgedAt);
-  const expiryLine =
-    remaining === null
-      ? t("login.whatsapp.expiresAt", { time: formatClock(challenge.expiresAt) })
-      : t("login.whatsapp.expiresIn", { time: formatRemaining(remaining) });
+  const expiryLine = t("login.whatsapp.expiresIn", {
+    time: formatRemaining(loginCodeRemainingMs(challenge, judgedAt)),
+  });
 
   return (
     <section
@@ -294,11 +285,7 @@ export function WhatsAppLogin({
         </div>
         <div className="grid gap-3">
           <Button asChild size="lg" className="w-full">
-            <a
-              href={issued.whatsAppDeepLink}
-              target="_blank"
-              rel="noopener"
-            >
+            <a href={issued.whatsAppDeepLink} target="_blank" rel="noopener">
               <MessageCircle aria-hidden="true" />
               {t("login.whatsapp.openWhatsApp")}
             </a>
@@ -361,6 +348,11 @@ export function WhatsAppLogin({
       <p className="text-xs leading-4 text-muted-foreground">
         {t("login.whatsapp.noReply")}
       </p>
+      {API_MOCK && (
+        <p className="text-xs leading-4 text-muted-foreground">
+          {t("login.whatsapp.mockHint")}
+        </p>
+      )}
     </section>
   );
 }

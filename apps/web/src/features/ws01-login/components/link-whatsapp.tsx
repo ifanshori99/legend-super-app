@@ -117,8 +117,8 @@ export function LinkWhatsAppScreen() {
           />
           <WhatsAppLogin
             copy={{
-              heading: t("login.link.heading"),
-              hint: t("login.link.subtitle"),
+              heading: t("login.link.panelHeading"),
+              hint: t("login.whatsapp.hint"),
               action: t("login.link.action"),
             }}
             onSignedIn={() => void onLinked()}

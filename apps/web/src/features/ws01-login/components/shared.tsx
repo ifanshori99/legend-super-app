@@ -117,28 +117,17 @@ export function SuccessPanel({
 }
 
 /**
- * The current instant while `active`, or null before mount. Null keeps the
- * first render (SSR and hydration) identical: only the countdown uses it.
+ * The current instant, refreshed once a second while `active`. The first value
+ * is the mount time; callers floor it with the challenge's own `createdAt`, so a
+ * screen that sat idle before the code was issued still counts from the code's
+ * real start.
  */
-export function useNow(active: boolean): number | null {
-  const [now, setNow] = useState<number | null>(null);
+export function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!active) {
-      setNow(null);
-      return;
-    }
-    setNow(Date.now());
+    if (!active) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [active]);
   return now;
-}
-
-/** "03.24" — the wall clock the guest reads on their own device. */
-export function formatClock(iso: string): string {
-  return new Intl.DateTimeFormat("id-ID", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(new Date(iso));
 }

@@ -165,7 +165,11 @@ registerMock(getLoginChallenge, ({ params }) => {
     challenge.status === "completed" && !entry.claimed
       ? newCustomerSession(now)
       : null;
-  saveChallenge({ challenge, polls, claimed: entry.claimed || session !== null });
+  saveChallenge({
+    challenge,
+    polls,
+    claimed: entry.claimed || session !== null,
+  });
   if (session) auth.set("customer");
   return {
     data: {
