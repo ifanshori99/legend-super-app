@@ -173,6 +173,37 @@ describe("AUTH-05 session warning", () => {
     );
   });
 
+  test("AUTH-05: an activity-extended deadline stays quiet, and the next idle end warns again", () => {
+    // The real API moves a management deadline only through a recorded activity
+    // write, and recordSessionActivity sets it to now + 30 idle minutes — far
+    // outside the 2-minute warning window (touchSession, §3 F6). A refetch after
+    // "Lanjut bekerja" therefore cannot return a changed deadline that is still
+    // inside the window, which is why dismissal can key on the exact value.
+    const extended = {
+      ...nearEndSession,
+      expiresAt: new Date(Date.parse(fixtures.now) + 30 * 60_000).toISOString(),
+    };
+    assert.equal(
+      state.idleWarningVisible({
+        session: extended,
+        now: fixtures.now,
+        dismissedFor: nearEndSession.expiresAt,
+      }),
+      false,
+    );
+    // 28 minutes later the same session is 90 seconds from its next idle end:
+    // a new warning, not the dismissed one, so it must show again.
+    const nextIdleEnd = new Date(Date.parse(extended.expiresAt) - 90_000);
+    assert.equal(
+      state.idleWarningVisible({
+        session: extended,
+        now: nextIdleEnd,
+        dismissedFor: nearEndSession.expiresAt,
+      }),
+      true,
+    );
+  });
+
   test("AUTH-05: a management session that still owes MFA is marked waiting", () => {
     const view = {
       session: {
