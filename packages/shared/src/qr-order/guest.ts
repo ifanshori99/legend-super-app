@@ -688,6 +688,21 @@ export function buildQrMenu(
   });
 }
 
+/**
+ * Q23 (legend-qf0i): the guest copy of a menu never carries an active item
+ * without a photo. The API drops those rows in SQL (`guestMenuItemCondition`);
+ * a mock built from fixtures applies the same rule on the resolved read model,
+ * so the demo shows exactly what a guest would see once an outlet has a legacy
+ * row. Categories are kept: they are navigation, and the contract allows a
+ * category with no visible item.
+ */
+export function hidePhotoLessMenuItems(menu: QrMenu): QrMenu {
+  return {
+    ...menu,
+    items: menu.items.filter((item) => item.photoUrl !== null),
+  };
+}
+
 function tableByCode(code: string): Table {
   const table = qrOrderFixtures.tables.find((entry) => entry.code === code);
   if (!table) throw new RangeError(`Unknown table fixture: ${code}`);

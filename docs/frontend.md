@@ -328,6 +328,7 @@ A screen built against fixtures is reviewable before its API exists, so its Play
 - The first test on a route pays Vite's cold compile: SSR takes 20-35 s on a loaded machine (beads legend-1336, legend-b0kq), well past Playwright's 5 s assertion default. `e2e/mock-global-setup.ts` therefore opens every route area in a real browser once, after the web server starts and before the first test, so specs run warm and keep normal timeouts. New top-level areas go on its `WARM_ROUTES` list.
 - A spec must still survive a dev server started by hand (cold start), so give the **first assertion of the first test** an explicit `{ timeout: 30_000 }` and name the constant `COLD_START_TIMEOUT_MS`. Later tests on the same route rely on the warm-up — no per-spec sleeps.
 - CI shards the suite over two parallel jobs (bead legend-x5be): `mock-e2e` runs `--shard=1/2` on `LEGEND_MOCK_PORT=3225` and `--shard=2/2` on `3235`, then `mock-e2e-report` merges the two blob reports into the browsable `mock-e2e-report` artifact with `playwright merge-reports`. A shard is still one worker. `e2e/mock-mode.mock.spec.ts` is the runner's own smoke test: it proves the dev server, the fixtures and both variable names work without an API.
+- Screenshot evidence goes through `e2e/screenshots.ts`, never a `docs/` path in the spec: the helper writes to `test-results/` unless `LEGEND_CAPTURE_SCREENSHOTS=1` (section 8).
 
 ### 7. Splitting a long mock run (shards)
 
@@ -385,3 +386,25 @@ Obvious waste, biggest first:
 1. The warm-up repeats for every shard and for every single-spec run: `globalSetup` warms all 41 routes (~30 s measured) even when a shard needs a fraction of them, and `pnpm test:e2e:mock e2e/one.spec.ts` pays the full warm-up for one test. Warming only the routes of the specs in the run would cut most of CI's fixed cost; an env opt-out would help the single-spec loop. (No change in this bead.)
 2. The slowest tests are multi-state journeys (`?mock=slow` latency, retry and offline paths) and multi-viewport visual checks. Those states are the subject of the specs, not waste — do not speed them up by dropping assertions.
 3. The two CI shards get 113 and 111 tests because whole files are assigned in file order; that is even enough that `PWTEST_SHARD_WEIGHTS` is not worth setting yet.
+
+### 8. Screenshot evidence for UI beads
+
+Every UI bead saves screenshots under `docs/design/screenshots/<bead>/` (390 + 1440, light + dark, plus empty/error). Those files are tracked, so a spec that calls `page.screenshot({ path: "docs/..." })` rewrites them on every `pnpm test:e2e:mock` run and leaves every worktree and main dirty even when the screen did not change (bead legend-nt8q). Capture through `e2e/screenshots.ts` instead, passing only the part below the root:
+
+```ts
+import { captureScreenshot } from "./screenshots.ts";
+
+await captureScreenshot(page, "legend-baa/masuk-hubungkan-390-light.png");
+```
+
+- **Default is test-results/** — the file lands in `test-results/screenshots/<bead>/…`: gitignored, inspectable after the run, and `git status` stays clean.
+- **Refresh the tracked evidence** with the opt-in flag; only then does the helper write `docs/design/screenshots/<bead>/…`:
+
+  ```bash
+  LEGEND_CAPTURE_SCREENSHOTS=1 pnpm test:e2e:mock e2e/legend-8tv6.mock.spec.ts
+  ```
+
+  Commit only the screenshots you meant to change; anything else in `git status` is a signal, not noise. Only the value `1` opts in.
+
+- **Full page is the default**, matching the evidence beads have always produced; pass `{ fullPage: false }` for a viewport crop.
+- **The guard**: `tests/e2e-screenshot-paths.test.mjs` fails `pnpm test` when an e2e file contains a `docs/` path literal outside the helper, so the tracked evidence cannot be rewritten by accident.

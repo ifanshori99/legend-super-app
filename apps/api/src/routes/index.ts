@@ -15,6 +15,7 @@ import { taxRouter } from "./tax.routes";
 import { createMenuRouter } from "./menu.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
+import { publicSiteRouter } from "./public-site.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
@@ -63,6 +64,9 @@ apiRouter.use("/outlets", outletFloorRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
 apiRouter.use("/qr", qrRouter);
+// Public brand website (WS-08 F21): the online menu page, tenant and brand from
+// the request host (TEN-08). Q23 hides items without a photo.
+apiRouter.use("/public/site", publicSiteRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.

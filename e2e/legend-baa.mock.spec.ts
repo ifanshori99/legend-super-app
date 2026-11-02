@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { captureScreenshot } from "./screenshots.ts";
 
 // Customer and staff sign-in (WS-01, bead legend-baa) against the FE mock
 // runtime: no API, no database. Every screen runs on the identity contract and
@@ -281,8 +282,5 @@ test("AUTH-07: the link-WhatsApp screen keeps its 16px gutter at 360px and 390px
     ),
   );
   expect(right).toBeLessThanOrEqual(390 - 15);
-  await page.screenshot({
-    path: "docs/design/screenshots/legend-baa/masuk-hubungkan-390-light.png",
-    fullPage: true,
-  });
+  await captureScreenshot(page, "legend-baa/masuk-hubungkan-390-light.png");
 });

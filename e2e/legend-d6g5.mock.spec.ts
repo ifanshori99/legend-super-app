@@ -2,6 +2,7 @@
 // /member needs sign-in and robots.txt disallows it, so it is not submitted;
 // on /reservation only "Kirim lewat WhatsApp" is a filled accent.
 import { expect, test } from "@playwright/test";
+import { captureScreenshot } from "./screenshots.ts";
 
 declare global {
   interface Window {
@@ -51,10 +52,10 @@ for (const width of [390, 1440]) {
       await expect(
         page.getByRole("heading", { level: 1, name: "Reservasi meja" }),
       ).toBeVisible();
-      await page.screenshot({
-        path: `docs/design/screenshots/legend-d6g5/reservation-${width}-${theme}.png`,
-        fullPage: true,
-      });
+      await captureScreenshot(
+        page,
+        `legend-d6g5/reservation-${width}-${theme}.png`,
+      );
     });
   }
 }
@@ -74,10 +75,7 @@ for (const [state, scenario, text] of [
     await page.goto("/masuk");
     await navigateClient(page, "/reservation");
     await expect(page.getByText(text)).toBeVisible();
-    await page.screenshot({
-      path: `docs/design/screenshots/legend-d6g5/reservation-390-${state}.png`,
-      fullPage: true,
-    });
+    await captureScreenshot(page, `legend-d6g5/reservation-390-${state}.png`);
     await page.evaluate(() => window.__legendMock?.setScenario("normal"));
   });
 }
