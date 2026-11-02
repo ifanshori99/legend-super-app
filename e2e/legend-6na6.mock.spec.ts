@@ -2,7 +2,7 @@
 // "Beranda per Role", DASH-01/DASH-02). Runs against the FE mock runtime: the
 // management layout and each role's KPI report run come from
 // @starter/shared/dashboard fixtures through VITE_API_MOCK=true, no API and no
-// database (docs/frontend.md, "Typed endpoints and mock mode").
+// database (frontend standard, "Typed endpoints and mock mode").
 //
 // How to run: `pnpm test:e2e:mock` starts a VITE_API_MOCK web server and names
 // it in `LEGEND_MOCK_WEB_URL`. With no variable set every test skips, so the
