@@ -75,6 +75,13 @@ SELECT app.enforce_tenant_rls('app.journal_entry_seals'::regclass);
 --> statement-breakpoint
 REVOKE ALL ON TABLE app.journal_entry_seals FROM PUBLIC;
 --> statement-breakpoint
+-- The application role only ever inserts a seal (through the trigger) and
+-- reads it. enforce_tenant_rls grants it UPDATE/DELETE as on business tables;
+-- either would let it re-stamp sealed_xid with its own transaction and append
+-- lines to a posted entry, so the seal is append-only for that role (Opus
+-- review, legend-kwxj).
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE app.journal_entry_seals FROM legend_app;
+--> statement-breakpoint
 CREATE OR REPLACE FUNCTION app.seal_journal_entry() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN

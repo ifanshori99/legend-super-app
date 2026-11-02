@@ -174,6 +174,30 @@ describe("legend-kwxj accounting database invariants", () => {
     expect(Number(rows[0]?.count)).toBe(2);
   });
 
+  it("ACC-01 the application role cannot re-open a posted entry by rewriting or deleting its seal", async () => {
+    const data = await fixture();
+    let entry = "";
+    await inTransaction(async (client) => {
+      entry = await insertEntry(client, data);
+      await insertLine(client, entry, data.cash, 20_000, 0, 1);
+      await insertLine(client, entry, data.revenue, 0, 20_000, 2);
+    });
+    for (const statement of [
+      "UPDATE app.journal_entry_seals SET sealed_xid = pg_current_xact_id() WHERE entry_id = $1",
+      "DELETE FROM app.journal_entry_seals WHERE entry_id = $1",
+    ]) {
+      await expect(
+        inTransaction(async (client) => {
+          await client.query("SET LOCAL ROLE legend_app");
+          await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+            tenantId,
+          ]);
+          await client.query(statement, [entry]);
+        }),
+      ).rejects.toThrow(/permission denied/);
+    }
+  });
+
   it("ACC-01 refuses an account from another legal entity, an inactive account and a header account", async () => {
     const data = await fixture();
     await expect(
