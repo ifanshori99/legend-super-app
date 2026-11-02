@@ -47,6 +47,7 @@ export async function mockFetch<T>(
     query?: Record<string, string | number | boolean | undefined>;
     body?: unknown;
     signal?: AbortSignal;
+    headers?: { "Idempotency-Key"?: string };
   },
 ): Promise<T> {
   setup();
@@ -63,5 +64,6 @@ export async function mockFetch<T>(
     query,
     body: request.body,
     signal: request.signal,
+    headers: request.headers,
   })) as T;
 }

@@ -21,6 +21,8 @@ import { Route as ProtectedRouteImport } from './routes/_protected'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as ShareholderRouteImport } from './routes/_shareholder'
 import { Route as DesignSystemRouteImport } from './routes/design-system'
+import { Route as RobotsDottxtRouteImport } from './routes/robots[.]txt'
+import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as VerifikasiRouteImport } from './routes/verifikasi'
 import { Route as AuthSignInRouteImport } from './routes/_auth/sign-in'
 import { Route as AuthSignUpRouteImport } from './routes/_auth/sign-up'
@@ -31,6 +33,8 @@ import { Route as KitchenPickupRouteImport } from './routes/_kitchen/pickup'
 import { Route as ProtectedAdminRouteImport } from './routes/_protected/admin'
 import { Route as ProtectedNotesRouteImport } from './routes/_protected/notes'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
+import { Route as PublicMenuRouteImport } from './routes/_public/menu'
+import { Route as PublicReservationRouteImport } from './routes/_public/reservation'
 import { Route as CustomerBayarTokenRouteImport } from './routes/_customer/bayar.$token'
 import { Route as CustomerFFacilityRouteImport } from './routes/_customer/f.$facility'
 import { Route as CustomerMemberIndexRouteImport } from './routes/_customer/member.index'
@@ -52,6 +56,7 @@ import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelo
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
+import { Route as OpsPosCustomerDisplayRouteImport } from './routes/_ops/pos.customer-display'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
@@ -175,6 +180,16 @@ const DesignSystemRoute = DesignSystemRouteImport.update({
   path: '/design-system',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RobotsDottxtRoute = RobotsDottxtRouteImport.update({
+  id: '/robots.txt',
+  path: '/robots.txt',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
+  id: '/sitemap.xml',
+  path: '/sitemap.xml',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const VerifikasiRoute = VerifikasiRouteImport.update({
   id: '/verifikasi',
   path: '/verifikasi',
@@ -223,6 +238,16 @@ const ProtectedNotesRoute = ProtectedNotesRouteImport.update({
 const PublicIndexRoute = PublicIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicMenuRoute = PublicMenuRouteImport.update({
+  id: '/menu',
+  path: '/menu',
+  getParentRoute: () => PublicRoute,
+} as any)
+const PublicReservationRoute = PublicReservationRouteImport.update({
+  id: '/reservation',
+  path: '/reservation',
   getParentRoute: () => PublicRoute,
 } as any)
 const CustomerBayarTokenRoute = CustomerBayarTokenRouteImport.update({
@@ -328,6 +353,11 @@ const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
 const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
   id: '/pos/',
   path: '/pos/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosCustomerDisplayRoute = OpsPosCustomerDisplayRouteImport.update({
+  id: '/pos/customer-display',
+  path: '/pos/customer-display',
   getParentRoute: () => OpsRoute,
 } as any)
 const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
@@ -743,6 +773,8 @@ const KelolaKelolaPengadaanPoIdCetakRoute =
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
@@ -752,6 +784,8 @@ export interface FileRoutesByFullPath {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/menu': typeof PublicMenuRoute
+  '/reservation': typeof PublicReservationRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -768,6 +802,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -850,6 +885,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
   '/sign-in': typeof AuthSignInRoute
   '/sign-up': typeof AuthSignUpRoute
@@ -858,6 +895,8 @@ export interface FileRoutesByTo {
   '/pickup': typeof KitchenPickupRoute
   '/admin': typeof ProtectedAdminRoute
   '/notes': typeof ProtectedNotesRoute
+  '/menu': typeof PublicMenuRoute
+  '/reservation': typeof PublicReservationRoute
   '/bayar/$token': typeof CustomerBayarTokenRoute
   '/f/$facility': typeof CustomerFFacilityRoute
   '/member/daftar': typeof CustomerMemberDaftarRoute
@@ -873,6 +912,7 @@ export interface FileRoutesByTo {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -965,6 +1005,8 @@ export interface FileRoutesById {
   '/_public': typeof PublicRouteWithChildren
   '/_shareholder': typeof ShareholderRouteWithChildren
   '/design-system': typeof DesignSystemRoute
+  '/robots.txt': typeof RobotsDottxtRoute
+  '/sitemap.xml': typeof SitemapDotxmlRoute
   '/verifikasi': typeof VerifikasiRoute
   '/_auth/sign-in': typeof AuthSignInRoute
   '/_auth/sign-up': typeof AuthSignUpRoute
@@ -974,6 +1016,8 @@ export interface FileRoutesById {
   '/_kitchen/pickup': typeof KitchenPickupRoute
   '/_protected/admin': typeof ProtectedAdminRoute
   '/_protected/notes': typeof ProtectedNotesRoute
+  '/_public/menu': typeof PublicMenuRoute
+  '/_public/reservation': typeof PublicReservationRoute
   '/_public/': typeof PublicIndexRoute
   '/_customer/bayar/$token': typeof CustomerBayarTokenRoute
   '/_customer/f/$facility': typeof CustomerFFacilityRoute
@@ -991,6 +1035,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_ops/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/_public/masuk/email': typeof PublicMasukEmailRoute
@@ -1075,6 +1120,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
@@ -1084,6 +1131,8 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/menu'
+    | '/reservation'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -1100,6 +1149,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/customer-display'
     | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1182,6 +1232,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/verifikasi'
     | '/sign-in'
     | '/sign-up'
@@ -1190,6 +1242,8 @@ export interface FileRouteTypes {
     | '/pickup'
     | '/admin'
     | '/notes'
+    | '/menu'
+    | '/reservation'
     | '/bayar/$token'
     | '/f/$facility'
     | '/member/daftar'
@@ -1205,6 +1259,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/customer-display'
     | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1296,6 +1351,8 @@ export interface FileRouteTypes {
     | '/_public'
     | '/_shareholder'
     | '/design-system'
+    | '/robots.txt'
+    | '/sitemap.xml'
     | '/verifikasi'
     | '/_auth/sign-in'
     | '/_auth/sign-up'
@@ -1305,6 +1362,8 @@ export interface FileRouteTypes {
     | '/_kitchen/pickup'
     | '/_protected/admin'
     | '/_protected/notes'
+    | '/_public/menu'
+    | '/_public/reservation'
     | '/_public/'
     | '/_customer/bayar/$token'
     | '/_customer/f/$facility'
@@ -1322,6 +1381,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pembayaran'
     | '/_kelola/kelola/pengadaan'
     | '/_ops/operasional/koneksi'
+    | '/_ops/pos/customer-display'
     | '/_ops/pos/reservasi'
     | '/_platform/platform/keamanan'
     | '/_public/masuk/email'
@@ -1415,6 +1475,8 @@ export interface RootRouteChildren {
   PublicRoute: typeof PublicRouteWithChildren
   ShareholderRoute: typeof ShareholderRouteWithChildren
   DesignSystemRoute: typeof DesignSystemRoute
+  RobotsDottxtRoute: typeof RobotsDottxtRoute
+  SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   VerifikasiRoute: typeof VerifikasiRoute
 }
 
@@ -1504,6 +1566,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DesignSystemRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/robots.txt': {
+      id: '/robots.txt'
+      path: '/robots.txt'
+      fullPath: '/robots.txt'
+      preLoaderRoute: typeof RobotsDottxtRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sitemap.xml': {
+      id: '/sitemap.xml'
+      path: '/sitemap.xml'
+      fullPath: '/sitemap.xml'
+      preLoaderRoute: typeof SitemapDotxmlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/verifikasi': {
       id: '/verifikasi'
       path: '/verifikasi'
@@ -1572,6 +1648,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof PublicIndexRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/menu': {
+      id: '/_public/menu'
+      path: '/menu'
+      fullPath: '/menu'
+      preLoaderRoute: typeof PublicMenuRouteImport
+      parentRoute: typeof PublicRoute
+    }
+    '/_public/reservation': {
+      id: '/_public/reservation'
+      path: '/reservation'
+      fullPath: '/reservation'
+      preLoaderRoute: typeof PublicReservationRouteImport
       parentRoute: typeof PublicRoute
     }
     '/_customer/bayar/$token': {
@@ -1719,6 +1809,13 @@ declare module '@tanstack/react-router' {
       path: '/pos'
       fullPath: '/pos/'
       preLoaderRoute: typeof OpsPosIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/customer-display': {
+      id: '/_ops/pos/customer-display'
+      path: '/pos/customer-display'
+      fullPath: '/pos/customer-display'
+      preLoaderRoute: typeof OpsPosCustomerDisplayRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_ops/pos/reservasi': {
@@ -2497,6 +2594,7 @@ const KitchenRouteWithChildren =
 
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
+  OpsPosCustomerDisplayRoute: typeof OpsPosCustomerDisplayRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
@@ -2504,6 +2602,7 @@ interface OpsRouteChildren {
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
+  OpsPosCustomerDisplayRoute: OpsPosCustomerDisplayRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
@@ -2550,6 +2649,8 @@ const ProtectedRouteWithChildren = ProtectedRoute._addFileChildren(
 )
 
 interface PublicRouteChildren {
+  PublicMenuRoute: typeof PublicMenuRoute
+  PublicReservationRoute: typeof PublicReservationRoute
   PublicIndexRoute: typeof PublicIndexRoute
   PublicMasukEmailRoute: typeof PublicMasukEmailRoute
   PublicMasukGoogleRoute: typeof PublicMasukGoogleRoute
@@ -2559,6 +2660,8 @@ interface PublicRouteChildren {
 }
 
 const PublicRouteChildren: PublicRouteChildren = {
+  PublicMenuRoute: PublicMenuRoute,
+  PublicReservationRoute: PublicReservationRoute,
   PublicIndexRoute: PublicIndexRoute,
   PublicMasukEmailRoute: PublicMasukEmailRoute,
   PublicMasukGoogleRoute: PublicMasukGoogleRoute,
@@ -2597,6 +2700,8 @@ const rootRouteChildren: RootRouteChildren = {
   PublicRoute: PublicRouteWithChildren,
   ShareholderRoute: ShareholderRouteWithChildren,
   DesignSystemRoute: DesignSystemRoute,
+  RobotsDottxtRoute: RobotsDottxtRoute,
+  SitemapDotxmlRoute: SitemapDotxmlRoute,
   VerifikasiRoute: VerifikasiRoute,
 }
 export const routeTree = rootRouteImport
