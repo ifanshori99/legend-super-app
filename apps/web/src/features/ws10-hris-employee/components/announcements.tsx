@@ -19,7 +19,9 @@ export function Announcements({ timeZone }: { timeZone: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("hris.home.announcementTitle")}</CardTitle>
+        <CardTitle className="font-brand type-title">
+          {t("hris.home.announcementTitle")}
+        </CardTitle>
       </CardHeader>
       {announcements.isPending ? (
         <SectionSkeleton rows={2} />
@@ -35,14 +37,12 @@ export function Announcements({ timeZone }: { timeZone: string }) {
           title={t("hris.home.announcementEmpty")}
         />
       ) : (
-        <ul className="divide-y">
+        <ul className="divide-y divide-border">
           {announcements.data.data.map((announcement) => (
-            <li key={announcement.id} className="grid gap-1 py-2.5">
+            <li key={announcement.id} className="grid gap-1 py-3">
               <div className="flex items-baseline justify-between gap-3">
-                <p className="text-sm leading-5 font-medium">
-                  {announcement.title}
-                </p>
-                <span className="shrink-0 text-xs leading-4 text-muted-foreground tabular">
+                <p className="font-medium">{announcement.title}</p>
+                <span className="shrink-0 text-sm leading-5 text-muted-foreground tabular">
                   {formatDateShort(announcement.publishedAt, timeZone)}
                 </span>
               </div>

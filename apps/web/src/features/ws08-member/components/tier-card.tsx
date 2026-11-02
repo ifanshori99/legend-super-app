@@ -81,12 +81,10 @@ export function TierCard({ overview }: { overview: MemberOverview }) {
   if (!currentTier) {
     return (
       <Card className="gap-2">
-        <p className="text-sm leading-5 font-medium text-muted-foreground">
+        <p className="type-eyebrow text-muted-foreground">
           {t("member.tier.current")}
         </p>
-        <p className="font-brand text-2xl leading-8 font-bold">
-          {t("member.tier.none")}
-        </p>
+        <p className="font-brand type-display">{t("member.tier.none")}</p>
         <p className="text-sm leading-5 text-muted-foreground">
           {t("member.tier.noneHint")}
         </p>
@@ -97,15 +95,13 @@ export function TierCard({ overview }: { overview: MemberOverview }) {
   const target = nextTier ?? currentTier;
   const percent = percentFromBp(overview.tierProgressBp);
   return (
-    <Card className="gap-4 bg-brand-subtle">
-      <div className="flex items-start justify-between gap-3">
-        <div className="grid gap-0.5">
-          <p className="text-sm leading-5 font-medium text-muted-foreground">
+    <Card className="gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="grid min-w-0 gap-0.5">
+          <p className="type-eyebrow text-muted-foreground">
             {t("member.tier.current")}
           </p>
-          <p className="font-brand text-2xl leading-8 font-bold">
-            {currentTier.name}
-          </p>
+          <p className="font-brand type-display">{currentTier.name}</p>
         </div>
         <Badge tone="brand">
           <Sparkles aria-hidden="true" />
@@ -150,7 +146,7 @@ export function TierCard({ overview }: { overview: MemberOverview }) {
       </div>
 
       <div className="grid gap-2">
-        <p className="text-sm leading-5 font-semibold">
+        <p className="type-eyebrow text-muted-foreground">
           {t("member.tier.benefits")}
         </p>
         <ul className="grid gap-1.5">

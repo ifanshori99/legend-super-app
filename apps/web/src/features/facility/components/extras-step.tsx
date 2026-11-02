@@ -14,6 +14,7 @@ import type {
 } from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Money } from "@/components/ui/money";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -51,29 +52,30 @@ export function ExtrasStep({
 
   return (
     <div className="grid gap-5">
-      <h2 className="text-xl leading-7 font-semibold">
-        {t("facility.extras.title")}
-      </h2>
+      <h2 className="font-brand type-title">{t("facility.extras.title")}</h2>
 
       <Section title={t("facility.extras.productLabel")}>
         <RadioGroup.Root
           value={draft.productId ?? ""}
           onValueChange={(productId) => onDraftChange({ ...draft, productId })}
           aria-label={t("facility.extras.productLabel")}
-          className="grid gap-2"
+          className="grid divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline"
         >
           {products.map((product) => (
             <RadioGroup.Item
               key={product.id}
               value={product.id}
               className={cn(
-                "flex items-start gap-3 rounded-xl border-(length:--border-w) bg-card p-card text-left transition-colors duration-(--duration-fast)",
-                "data-[state=checked]:border-primary data-[state=checked]:bg-accent",
+                "group flex items-start gap-3 p-4 text-left transition-colors duration-(--duration-fast) focus-visible:outline-offset-[-2px]",
+                "hover:bg-surface-2 data-[state=checked]:bg-surface-2",
               )}
             >
-              <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-(length:--border-w) border-input">
+              <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-(length:--border-w) border-input bg-card transition-colors duration-(--duration-fast) group-data-[state=checked]:border-foreground group-data-[state=checked]:bg-foreground">
                 <RadioGroup.Indicator>
-                  <Check className="size-3.5 text-primary" aria-hidden="true" />
+                  <Check
+                    className="size-3 text-background"
+                    aria-hidden="true"
+                  />
                 </RadioGroup.Indicator>
               </span>
               <span className="grid min-w-0 flex-1 gap-0.5">
@@ -92,7 +94,7 @@ export function ExtrasStep({
               <Money
                 amount={product.priceIdr}
                 size="md"
-                className="font-semibold"
+                className="shrink-0 font-semibold"
               />
             </RadioGroup.Item>
           ))}
@@ -105,14 +107,14 @@ export function ExtrasStep({
             {t("facility.extras.noAddons")}
           </p>
         ) : (
-          <ul className="grid gap-2">
+          <ul className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
             {addons.map((addon) => {
               const checked = draft.addonIds.includes(addon.id);
               return (
                 <li key={addon.id}>
                   <label
                     htmlFor={`addon-${addon.id}`}
-                    className="flex min-h-control cursor-pointer items-center gap-3 rounded-xl border-(length:--border-w) bg-card px-3 py-2"
+                    className="flex min-h-control cursor-pointer items-center gap-3 px-4 py-3 transition-colors duration-(--duration-fast) hover:bg-surface-2"
                   >
                     <Checkbox
                       id={`addon-${addon.id}`}
@@ -140,51 +142,54 @@ export function ExtrasStep({
       </Section>
 
       <Section title={t("facility.extras.sourceLabel")}>
-        {redeemable ? (
-          <SegmentedControl
-            label={t("facility.extras.sourceLabel")}
-            value={draft.source}
-            onValueChange={(value) =>
-              onDraftChange({
-                ...draft,
-                source: value === "subscription" ? "subscription" : "purchase",
-              })
-            }
-            options={[
-              { value: "purchase", label: t("facility.extras.payNow") },
-              { value: "subscription", label: t("facility.extras.useQuota") },
-            ]}
-          />
-        ) : (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("facility.extras.redeemUnavailable")}{" "}
-            {subscription?.quota.reason === "quota_exhausted"
-              ? t("facility.subscription.reason.quota_exhausted")
-              : t("facility.list.noSubscriptionHint")}
-          </p>
-        )}
-        {redeemable && draft.source === "subscription" ? (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("facility.extras.redeemHint", {
-              remaining,
-              perPeriod: subscription?.quota.perPeriod ?? 0,
-            })}
-          </p>
-        ) : (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("facility.extras.payHint")}
-          </p>
-        )}
+        <Card className="gap-3">
+          {redeemable ? (
+            <SegmentedControl
+              label={t("facility.extras.sourceLabel")}
+              value={draft.source}
+              onValueChange={(value) =>
+                onDraftChange({
+                  ...draft,
+                  source:
+                    value === "subscription" ? "subscription" : "purchase",
+                })
+              }
+              options={[
+                { value: "purchase", label: t("facility.extras.payNow") },
+                { value: "subscription", label: t("facility.extras.useQuota") },
+              ]}
+            />
+          ) : (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("facility.extras.redeemUnavailable")}{" "}
+              {subscription?.quota.reason === "quota_exhausted"
+                ? t("facility.subscription.reason.quota_exhausted")
+                : t("facility.list.noSubscriptionHint")}
+            </p>
+          )}
+          {redeemable && draft.source === "subscription" ? (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("facility.extras.redeemHint", {
+                remaining,
+                perPeriod: subscription?.quota.perPeriod ?? 0,
+              })}
+            </p>
+          ) : (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("facility.extras.payHint")}
+            </p>
+          )}
+        </Card>
       </Section>
 
-      <div className="grid gap-1 rounded-xl border-(length:--border-w) bg-card p-card">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="text-sm leading-5 font-medium text-muted-foreground">
+      <Card className="gap-2">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="type-eyebrow text-muted-foreground">
             {draft.source === "subscription"
               ? t("facility.extras.payable")
               : t("facility.extras.subtotal")}
           </p>
-          <Money amount={total} size="lg" />
+          <Money amount={total} size="stat" />
         </div>
         {chosenAddons.length > 0 && draft.source === "subscription" && (
           <p className="text-sm leading-5 text-muted-foreground">
@@ -195,7 +200,7 @@ export function ExtrasStep({
         <p className="text-sm leading-5 text-muted-foreground">
           {t("facility.extras.taxNote")}
         </p>
-      </div>
+      </Card>
 
       <Button
         size="lg"

@@ -24,7 +24,7 @@ export function AccessTicketQr({
       density="hangat"
       svgClassName="size-40 sm:size-48"
       className={cn(
-        "grid place-items-center rounded-xl border-(length:--border-w) p-3",
+        "grid place-items-center rounded-container border-(length:--border-w) p-3",
         className,
       )}
     />

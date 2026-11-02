@@ -20,6 +20,7 @@ import {
 } from "../metrics/index.ts";
 import type { MetricDefinitionRef } from "../metrics/index.ts";
 import { reportCatalog } from "./catalog.ts";
+import { reportMetricByCode } from "./metric-catalog.ts";
 import { reportCatalogPageSchema } from "./reports.ts";
 import type { ReportDefinition } from "./reports.ts";
 import {
@@ -29,11 +30,16 @@ import {
   reportScheduleSchema,
   savedReportSchema,
 } from "./builder.ts";
+import type { ReportResult } from "./builder.ts";
 import {
   createReportExportInputSchema,
   reportExportSchema,
 } from "./exports.ts";
-import { dashboardLayoutSchema, OWNER_DASHBOARD_TILES } from "./dashboards.ts";
+import {
+  dashboardLayoutSchema,
+  MANAGEMENT_DASHBOARD_TILES,
+  OWNER_DASHBOARD_TILES,
+} from "./dashboards.ts";
 
 const tenant = cafeLegendFixtures.tenant;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -60,9 +66,26 @@ const metricRefByCode = new Map<string, MetricDefinitionRef>(
 );
 
 function metricRef(code: string): MetricDefinitionRef {
-  const ref = metricRefByCode.get(code);
-  if (ref === undefined) throw new Error(`No metric fixture for ${code}`);
-  return ref;
+  const base = metricRefByCode.get(code);
+  if (base !== undefined) return base;
+  // Codes this contract adds (DASH-01) live in the full registry.
+  const definition = reportMetricByCode.get(code);
+  if (definition === undefined)
+    throw new Error(`No metric fixture for ${code}`);
+  return metricDefinitionRefSchema.parse({
+    id: definition.id,
+    code: definition.code,
+    version: definition.version,
+    name: definition.name,
+    ownerModule: definition.ownerModule,
+    formula: definition.formula,
+    unit: definition.unit,
+    aggregation: definition.aggregation,
+    dimensions: definition.dimensions,
+    grain: definition.grain,
+    officiality: definition.officiality,
+    sourceReport: definition.sourceReport,
+  });
 }
 
 function reportFixture(code: string): ReportDefinition {
@@ -89,6 +112,160 @@ export const cafeLegendDashboardFixtures = {
   }),
   businessDate: "2026-11-01",
 };
+
+/**
+ * Management home layout (PRD §3.36 "Beranda per Role", bead legend-6na6): the
+ * whole management tile catalog for one Cafe Legend outlet. The BE dashboard
+ * API (legend-1ye3) resolves this per caller role and outlet scope; mock mode
+ * serves it as-is so every role's composed home can be reviewed, and the web
+ * kit narrows it per role with `dashboardTilesFor`.
+ */
+export const cafeLegendManagementLayoutFixture = dashboardLayoutSchema.parse({
+  dashboard: "management",
+  title: "Dashboard Manajemen",
+  businessDate: "2026-11-01",
+  availableOutlets: [outlet.id],
+  tiles: MANAGEMENT_DASHBOARD_TILES,
+  generatedAt: "2026-11-01T22:45:00.000Z",
+  monitoringPeriod: {
+    startDate: "2026-11-01",
+    endDate: "2026-11-01",
+    bucket: "day",
+    status: "open",
+    accountingPeriodClosed: false,
+  },
+});
+
+/** One total row for a role KPI report (DASH-02: the tile runs this report). */
+function kpiRun(
+  reportCode: string,
+  period: { readonly startDate: string; readonly endDate: string },
+  cells: readonly {
+    readonly metricCode: string;
+    readonly value: unknown;
+  }[],
+): ReportResult {
+  return reportResultSchema.parse({
+    reportCode,
+    period: {
+      startDate: period.startDate,
+      endDate: period.endDate,
+      bucket: "total",
+      status: "open",
+      accountingPeriodClosed: false,
+    },
+    outletFilter: { kind: "outlets", outletIds: [outlet.id] },
+    definitions: cells.map((cell) => metricRef(cell.metricCode)),
+    groupBy: [],
+    rows: [
+      {
+        dimensions: [],
+        values: cells.map((cell) => ({
+          metricCode: cell.metricCode,
+          value: cell.value,
+          // The fixture period is open: every figure is an estimate (SH-02).
+          finality: "estimate",
+        })),
+      },
+    ],
+    generatedAt: "2026-11-01T22:46:00.000Z",
+    rowLimit: 100,
+  });
+}
+
+/** The business day the management home fixture describes. */
+const managementDayPeriod = {
+  startDate: "2026-11-01",
+  endDate: "2026-11-01",
+} as const;
+
+/**
+ * Role KPI runs of the management home (PRD §3.36 "Beranda per Role", bead
+ * legend-6na6). Each role's KPI tile cites one source report; running that
+ * report for the same period, outlets and (unsplit) total is the number the
+ * tile shows, so the tile and its drill-down can never disagree (DASH-02).
+ * Purchasing's tile is a month-to-date figure (catalog period `this_month`).
+ */
+export const managementDashboardKpiRuns: Readonly<
+  Record<string, ReportResult>
+> = Object.freeze({
+  "sales.per_channel": kpiRun("sales.per_channel", managementDayPeriod, [
+    { metricCode: "net_sales", value: { unit: "idr", valueIdr: 44_750_000 } },
+    { metricCode: "pax", value: { unit: "count", value: 182 } },
+    { metricCode: "transaction_count", value: { unit: "count", value: 168 } },
+  ]),
+  "operations.table_turnover": kpiRun(
+    "operations.table_turnover",
+    managementDayPeriod,
+    [
+      {
+        metricCode: "table_occupancy_pct",
+        value: { unit: "percent", value: "68.4000" },
+      },
+      {
+        metricCode: "table_turnover",
+        value: { unit: "decimal", value: "2.3500" },
+      },
+    ],
+  ),
+  "operations.kitchen_queue": kpiRun(
+    "operations.kitchen_queue",
+    managementDayPeriod,
+    [
+      {
+        metricCode: "avg_serving_time",
+        value: { unit: "seconds", value: 780 },
+      },
+      { metricCode: "order_queue_count", value: { unit: "count", value: 12 } },
+    ],
+  ),
+  "purchasing.supplier_due": kpiRun(
+    "purchasing.supplier_due",
+    managementDayPeriod,
+    [
+      {
+        metricCode: "supplier_due",
+        value: { unit: "idr", valueIdr: 12_400_000 },
+      },
+      {
+        metricCode: "purchase_total",
+        value: { unit: "idr", valueIdr: 38_600_000 },
+      },
+    ],
+  ),
+  "finance.cash_position": kpiRun(
+    "finance.cash_position",
+    managementDayPeriod,
+    [
+      {
+        metricCode: "cash_balance",
+        value: { unit: "idr", valueIdr: 8_250_000 },
+      },
+      {
+        metricCode: "bank_balance",
+        value: { unit: "idr", valueIdr: 96_500_000 },
+      },
+    ],
+  ),
+  "attendance.by_station": kpiRun(
+    "attendance.by_station",
+    managementDayPeriod,
+    [
+      {
+        metricCode: "attendance_late_count",
+        value: { unit: "count", value: 3 },
+      },
+      {
+        metricCode: "overtime_hours",
+        value: { unit: "decimal", value: "6.5000" },
+      },
+    ],
+  ),
+  "loyalty.members": kpiRun("loyalty.members", managementDayPeriod, [
+    { metricCode: "new_customers", value: { unit: "count", value: 24 } },
+    { metricCode: "active_members", value: { unit: "count", value: 1_320 } },
+  ]),
+});
 
 export const reportCatalogPageFixture = reportCatalogPageSchema.parse({
   data: reportCatalog.slice(0, 5),
@@ -325,6 +502,8 @@ export const dashboardErrorFixtures = {
 
 export const cafeLegendReportFixtures = {
   dashboard: cafeLegendDashboardFixtures,
+  managementLayout: cafeLegendManagementLayoutFixture,
+  managementKpiRuns: managementDashboardKpiRuns,
   catalogPage: reportCatalogPageFixture,
   report: reportDefinitionFixture,
   builderQuery: reportBuilderQueryFixture,

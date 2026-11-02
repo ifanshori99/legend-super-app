@@ -21,7 +21,7 @@ export function MemberSection({
   return (
     <section className={cn("grid gap-3", className)}>
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-brand text-xl leading-7 font-semibold">{title}</h2>
+        <h2 className="font-brand type-title">{title}</h2>
         {viewAllTo && (
           <Link
             to={viewAllTo}

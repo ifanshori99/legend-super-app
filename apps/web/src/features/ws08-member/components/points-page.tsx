@@ -38,7 +38,7 @@ export function MemberPointsPage() {
       )}
 
       <section className="grid gap-3">
-        <h2 className="font-brand text-xl leading-7 font-semibold">
+        <h2 className="font-brand type-title">
           {t("member.points.historyTitle")}
         </h2>
         {pointsQuery.isPending ? (

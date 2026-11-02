@@ -2,7 +2,6 @@
 // at once — the guest is often standing at the door. The full ticket screen
 // adds the session timer and the cancellation policy.
 import { Link } from "@tanstack/react-router";
-import { CircleCheck } from "lucide-react";
 import type {
   AccessTicketCredential,
   AccessTicket,
@@ -12,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatClock, formatDateLabel } from "../flow";
 import { AccessTicketQr } from "./access-ticket-qr";
+import { TicketStatusPill } from "./shared";
 
 export function IssuedStep({
   ticket,
@@ -25,17 +25,17 @@ export function IssuedStep({
   const t = useT();
   return (
     <div className="grid gap-5">
-      <div className="grid justify-items-start gap-2">
-        <span className="grid size-12 place-items-center rounded-full bg-success-subtle text-success">
-          <CircleCheck className="size-6" aria-hidden="true" />
-        </span>
-        <h2 className="text-2xl leading-8 font-semibold tracking-tight">
-          {t("facility.issued.title")}
-        </h2>
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("facility.issued.hint")}
-        </p>
-      </div>
+      <header className="flex items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <h2 className="font-brand type-title">
+            {t("facility.issued.title")}
+          </h2>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("facility.issued.hint")}
+          </p>
+        </div>
+        <TicketStatusPill status={ticket.status} className="mt-0.5 shrink-0" />
+      </header>
 
       <Card>
         <div className="grid gap-1">
@@ -58,10 +58,10 @@ export function IssuedStep({
             label={t("facility.ticket.qrLabel", { unit: unitLabel ?? "" })}
           />
           <div className="grid gap-1">
-            <p className="text-sm leading-5 font-medium text-muted-foreground">
+            <p className="type-eyebrow text-muted-foreground">
               {t("facility.ticket.pinLabel")}
             </p>
-            <p className="text-3xl leading-tight font-semibold tracking-[0.35em] tabular">
+            <p className="font-mono text-2xl leading-8 font-semibold tracking-[0.3em] tabular">
               {credential.pin}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">

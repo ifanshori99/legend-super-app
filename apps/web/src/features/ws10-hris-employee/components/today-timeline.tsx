@@ -30,25 +30,23 @@ export function TodayTimeline({
       </p>
     );
   return (
-    <ul className="divide-y">
+    <ul className="divide-y divide-border">
       {ordered.map((log) => {
         const Icon = ATTENDANCE_TYPE_ICONS[log.type];
         return (
-          <li key={log.id} className="flex items-center gap-3 py-2.5">
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
-              <Icon className="size-4" aria-hidden="true" />
+          <li key={log.id} className="flex items-center gap-3 py-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
+              <Icon className="size-5" aria-hidden="true" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm leading-5 font-medium">
-                {t(typeShortLabelKey(log.type))}
-              </p>
-              <p className="truncate text-xs leading-4 text-muted-foreground">
+              <p className="font-medium">{t(typeShortLabelKey(log.type))}</p>
+              <p className="truncate text-sm leading-5 text-muted-foreground">
                 {t(methodLabelKey(log.method))}
                 {log.geoDistanceM !== null && ` · ${log.geoDistanceM} m`}
               </p>
             </div>
             <div className="grid shrink-0 justify-items-end gap-1">
-              <span className="tabular text-sm leading-5 font-semibold">
+              <span className="tabular font-semibold">
                 {formatTime(log.occurredAt, timeZone)}
               </span>
               {log.validity !== "valid" && (

@@ -208,19 +208,13 @@ export function WhatsAppLogin({
   // -------------------------------------------------------------- start state
   if (issued === null) {
     return (
-      <section
-        aria-labelledby="login-whatsapp-heading"
-        className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
-      >
+      <section aria-labelledby="login-whatsapp-heading" className="grid gap-4">
         <div className="flex items-start gap-3">
-          <span className="grid size-11 shrink-0 place-items-center rounded-full bg-brand-subtle text-foreground">
+          <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
             <MessageCircle className="size-5" aria-hidden="true" />
           </span>
-          <div className="grid gap-1">
-            <h2
-              id="login-whatsapp-heading"
-              className="text-lg leading-7 font-semibold"
-            >
+          <div className="grid min-w-0 gap-1">
+            <h2 id="login-whatsapp-heading" className="font-brand type-title">
               {copy.heading}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">
@@ -252,19 +246,16 @@ export function WhatsAppLogin({
   });
 
   return (
-    <section
-      aria-labelledby="login-challenge-heading"
-      className="grid gap-5 rounded-xl border-(length:--border-w) bg-card p-card"
-    >
+    <section aria-labelledby="login-challenge-heading" className="grid gap-5">
       <div className="grid gap-1">
         <h2
           id="login-challenge-heading"
-          className="text-sm leading-5 font-medium text-muted-foreground"
+          className="type-eyebrow text-muted-foreground"
         >
           {t("login.whatsapp.codeLabel")}
         </h2>
         <p
-          className="font-mono text-3xl leading-tight font-semibold tracking-widest tabular sm:text-4xl"
+          className="font-mono type-display tracking-widest tabular"
           aria-live="polite"
         >
           {issued.codeFormatted}
@@ -280,7 +271,7 @@ export function WhatsAppLogin({
             value={issued.whatsAppDeepLink}
             label={t("login.whatsapp.qrLabel", { code: issued.codeFormatted })}
             size={148}
-            className="rounded-xl border-(length:--border-w) p-2"
+            className="rounded-container border-(length:--border-w) p-2"
           />
         </div>
         <div className="grid gap-3">
@@ -311,18 +302,18 @@ export function WhatsAppLogin({
           <li key={step} className="flex items-start gap-2">
             <span
               aria-hidden="true"
-              className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold tabular"
+              className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-surface-3 text-xs font-semibold tabular"
             >
               {index + 1}
             </span>
-            <span>{t(key)}</span>
+            <span className="min-w-0">{t(key)}</span>
           </li>
         ))}
       </ol>
 
       <p
         role="status"
-        className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm leading-5 font-medium"
+        className="flex items-center gap-2 rounded-container bg-surface-2 px-3 py-2 text-sm leading-5 font-medium"
       >
         <Hourglass className="size-4 shrink-0" aria-hidden="true" />
         {t("login.whatsapp.waiting")}
@@ -349,11 +340,11 @@ export function WhatsAppLogin({
         <InlineFailure error={poll.error} onRetry={() => void check()} />
       )}
 
-      <p className="text-xs leading-4 text-muted-foreground">
+      <p className="text-sm leading-5 text-muted-foreground">
         {t("login.whatsapp.noReply")}
       </p>
       {API_MOCK && (
-        <p className="text-xs leading-4 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.whatsapp.mockHint")}
         </p>
       )}
