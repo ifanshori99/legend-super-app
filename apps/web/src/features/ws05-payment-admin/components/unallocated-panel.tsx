@@ -174,6 +174,8 @@ function ResolveFundDialog({
     "refund",
   );
   const [note, setNote] = React.useState("");
+  // One key per dialog so a retry never books the refund/credit twice.
+  const [idempotencyKey] = React.useState(() => crypto.randomUUID());
   const [error, setError] = React.useState<string | undefined>();
 
   const submit = (event: React.FormEvent) => {
@@ -183,7 +185,10 @@ function ResolveFundDialog({
       return;
     }
     resolve.mutate(
-      { fundId: fund.id, body: { resolution, note: note.trim() } },
+      {
+        fundId: fund.id,
+        body: { idempotencyKey, resolution, note: note.trim() },
+      },
       {
         onSuccess: () => {
           toast({

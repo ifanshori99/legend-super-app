@@ -193,6 +193,8 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
   const [amount, setAmount] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [note, setNote] = React.useState("");
+  // One key per dialog: a retry or double submit replays, never refunds twice.
+  const [idempotencyKey] = React.useState(() => crypto.randomUUID());
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -221,6 +223,7 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
     if (!selected || Object.keys(next).length > 0) return;
     create.mutate(
       {
+        idempotencyKey,
         paymentIntentId: selected.paymentIntentId,
         amountIdr: idr(amountIdr),
         reason: reason.trim(),
@@ -357,13 +360,17 @@ function ApproveRefundDialog({
   const toast = useToast();
   const approve = useApproveRefund();
   const [note, setNote] = React.useState("");
+  const [idempotencyKey] = React.useState(() => crypto.randomUUID());
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     approve.mutate(
       {
         refundId: refund.id,
-        body: note.trim() === "" ? {} : { note: note.trim() },
+        body:
+          note.trim() === ""
+            ? { idempotencyKey }
+            : { idempotencyKey, note: note.trim() },
       },
       {
         onSuccess: () => {

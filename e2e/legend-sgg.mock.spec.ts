@@ -94,8 +94,9 @@ test("PAY-04 a refund is requested, waits for approval, then settles", async ({
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("combobox", { name: "Pembayaran lunas" }).click();
   await page.getByRole("option", { name: /A03-0412/ }).click();
-  // The dialog prefills the remaining refundable amount, not more.
-  await expect(dialog.getByLabel("Nominal refund")).toHaveValue("144375");
+  // The dialog prefills what is still refundable: the pending 50.000 refund
+  // already reserves its share of the 144.375 payment.
+  await expect(dialog.getByLabel("Nominal refund")).toHaveValue("94375");
   await dialog
     .getByLabel("Alasan refund")
     .fill("Pesanan dibatalkan setelah pembayaran.");
@@ -105,12 +106,19 @@ test("PAY-04 a refund is requested, waits for approval, then settles", async ({
     page.getByText("Refund diajukan dan menunggu approval.").first(),
   ).toBeVisible();
 
-  // The new refund is pending until a supervisor approves it.
+  // The requester cannot approve their own refund (approver ≠ requester).
+  const own = page
+    .getByRole("listitem")
+    .filter({ hasText: /A03-0412/ })
+    .filter({ hasText: "Budi Supervisor" });
+  await expect(own.getByText("Menunggu approval")).toBeVisible();
+  await expect(own.getByRole("button", { name: "Setujui" })).toHaveCount(0);
+
+  // A cashier's pending refund is approved by the supervisor and settles.
   const pending = page
     .getByRole("listitem")
     .filter({ hasText: /A03-0412/ })
-    .first();
-  await expect(pending.getByText("Menunggu approval")).toBeVisible();
+    .filter({ hasText: "Rina Kasir" });
   await pending.getByRole("button", { name: "Setujui" }).click();
   const approveDialog = page.getByRole("dialog");
   await approveDialog

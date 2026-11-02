@@ -13,6 +13,7 @@ import {
   cursorPageQuerySchema,
   cursorPageSchema,
   dataResponseSchema,
+  idempotencyKeySchema,
   idrSchema,
   isoDateTimeSchema,
   businessDateSchema,
@@ -194,7 +195,15 @@ export const refundViewSchema = z.strictObject({
   method: paymentMethodSchema,
   paidAmountIdr: positiveIdr,
   outletName: ref,
+  /** Staff who asked for the refund; the approver must be someone else (PRD §3 "Matriks Approval"). */
+  requestedBy: uuidSchema,
   requestedByName: ref,
+  /**
+   * Server-computed for the signed-in viewer: pending, the approval matrix lets
+   * this viewer decide, and the viewer is not the requester. The UI only shows
+   * the approve action when true; the API re-checks (APPROVER_IS_REQUESTER).
+   */
+  viewerCanApprove: z.boolean(),
   approvedByName: ref.nullable(),
   note: z.string().max(500).nullable(),
   createdAt: isoDateTimeSchema,
@@ -202,7 +211,13 @@ export const refundViewSchema = z.strictObject({
 });
 export type RefundView = z.infer<typeof refundViewSchema>;
 
+/**
+ * Refund writes are idempotent by (tenant, idempotencyKey) (contracts.md
+ * "Idempotent mutations"): a retry or double click returns the first result,
+ * the same key with a different body fails IDEMPOTENCY_KEY_REUSED (409).
+ */
 export const createRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
   paymentIntentId: uuidSchema,
   amountIdr: positiveIdr,
   reason: z.string().min(1).max(500),
@@ -210,18 +225,31 @@ export const createRefundInputSchema = clientInputSchema({
 });
 export type CreateRefundInput = z.infer<typeof createRefundInputSchema>;
 
-/** A settled payment the refund screen may pick; the server checks the rest. */
-export const refundablePaymentSchema = z.strictObject({
-  paymentIntentId: uuidSchema,
-  reference: ref,
-  outletId: outletIdSchema,
-  outletName: ref,
-  method: paymentMethodSchema,
-  paidAmountIdr: positiveIdr,
-  refundedAmountIdr: nonnegativeIdr,
-  refundableAmountIdr: nonnegativeIdr,
-  paidAt: isoDateTimeSchema,
-});
+/**
+ * A settled payment the refund screen may pick; the server checks the rest.
+ * `refundedAmountIdr` counts every refund that is not `failed` (pending ones
+ * reserve their amount), so paid = refunded + refundable and two pending
+ * refunds can never exceed what was paid.
+ */
+export const refundablePaymentSchema = z
+  .strictObject({
+    paymentIntentId: uuidSchema,
+    reference: ref,
+    outletId: outletIdSchema,
+    outletName: ref,
+    method: paymentMethodSchema,
+    paidAmountIdr: positiveIdr,
+    refundedAmountIdr: nonnegativeIdr,
+    refundableAmountIdr: nonnegativeIdr,
+    paidAt: isoDateTimeSchema,
+  })
+  .refine(
+    (p) => p.refundedAmountIdr + p.refundableAmountIdr === p.paidAmountIdr,
+    {
+      path: ["refundableAmountIdr"],
+      message: "paid must equal refunded + refundable",
+    },
+  );
 export type RefundablePayment = z.infer<typeof refundablePaymentSchema>;
 
 export const listRefundablePayments = defineEndpoint({
@@ -234,6 +262,7 @@ export const listRefundablePayments = defineEndpoint({
 });
 
 export const approveRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
   note: z.string().max(500).optional(),
 });
 export type ApproveRefundInput = z.infer<typeof approveRefundInputSchema>;
@@ -243,22 +272,30 @@ export type ApproveRefundInput = z.infer<typeof approveRefundInputSchema>;
 export const unallocatedStatusSchema = z.enum(["open", "resolved"]);
 export type UnallocatedStatus = z.infer<typeof unallocatedStatusSchema>;
 
-export const unallocatedFundViewSchema = z.strictObject({
-  ...unallocatedFundsSchema.shape,
-  paymentReference: ref,
-  method: paymentMethodSchema,
-  paidAmountIdr: positiveIdr,
-  billTotalIdr: positiveIdr,
-  outletName: ref,
-  status: unallocatedStatusSchema,
-  detectedAt: isoDateTimeSchema,
-  resolvedByName: ref.nullable(),
-  resolvedAt: isoDateTimeSchema.nullable(),
-  note: z.string().max(500).nullable(),
-});
+export const unallocatedFundViewSchema = z
+  .strictObject({
+    ...unallocatedFundsSchema.shape,
+    paymentReference: ref,
+    method: paymentMethodSchema,
+    paidAmountIdr: positiveIdr,
+    billTotalIdr: positiveIdr,
+    outletName: ref,
+    status: unallocatedStatusSchema,
+    detectedAt: isoDateTimeSchema,
+    resolvedByName: ref.nullable(),
+    resolvedAt: isoDateTimeSchema.nullable(),
+    note: z.string().max(500).nullable(),
+  })
+  // PAY-04: the unallocated amount is exactly what arrived above the bill.
+  .refine((f) => f.paidAmountIdr - f.billTotalIdr === f.amountIdr, {
+    path: ["amountIdr"],
+    message: "amount must equal paid − bill total",
+  });
 export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
 
+/** Money moves (refund or credit), so the write carries an idempotency key. */
 export const resolveUnallocatedFundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
   resolution: z.enum(["refund", "credit"]),
   note: noteSchema,
 });
@@ -271,29 +308,34 @@ export type ResolveUnallocatedFundInput = z.infer<
 export const reconciliationSourceSchema = z.enum(["gateway", "edc"]);
 export type ReconciliationSource = z.infer<typeof reconciliationSourceSchema>;
 
-export const reconciliationCaseViewSchema = z.strictObject({
-  id: uuidSchema,
-  tenantId: tenantIdSchema,
-  outletId: outletIdSchema,
-  settlementId: uuidSchema,
-  settlementLineId: uuidSchema.nullable(),
-  source: reconciliationSourceSchema,
-  /** "doit" or "edc_<bank>" — the settlement report the line came from. */
-  provider: ref,
-  reference: ref,
-  periodStart: businessDateSchema,
-  periodEnd: businessDateSchema,
-  expectedIdr: nonnegativeIdr,
-  receivedIdr: nonnegativeIdr,
-  /** received − expected; negative means less money arrived than booked. */
-  varianceIdr: idrSchema,
-  reason: z.string().min(1).max(500),
-  status: z.enum(["open", "resolved"]),
-  resolvedByName: ref.nullable(),
-  resolvedAt: isoDateTimeSchema.nullable(),
-  note: z.string().max(500).nullable(),
-  createdAt: isoDateTimeSchema,
-});
+export const reconciliationCaseViewSchema = z
+  .strictObject({
+    id: uuidSchema,
+    tenantId: tenantIdSchema,
+    outletId: outletIdSchema,
+    settlementId: uuidSchema,
+    settlementLineId: uuidSchema.nullable(),
+    source: reconciliationSourceSchema,
+    /** "doit" or "edc_<bank>" — the settlement report the line came from. */
+    provider: ref,
+    reference: ref,
+    periodStart: businessDateSchema,
+    periodEnd: businessDateSchema,
+    expectedIdr: nonnegativeIdr,
+    receivedIdr: nonnegativeIdr,
+    /** received − expected; negative means less money arrived than booked. */
+    varianceIdr: idrSchema,
+    reason: z.string().min(1).max(500),
+    status: z.enum(["open", "resolved"]),
+    resolvedByName: ref.nullable(),
+    resolvedAt: isoDateTimeSchema.nullable(),
+    note: z.string().max(500).nullable(),
+    createdAt: isoDateTimeSchema,
+  })
+  .refine((c) => c.receivedIdr - c.expectedIdr === c.varianceIdr, {
+    path: ["varianceIdr"],
+    message: "variance must equal received − expected",
+  });
 export type ReconciliationCaseView = z.infer<
   typeof reconciliationCaseViewSchema
 >;
@@ -649,7 +691,9 @@ const refundFixtures = [
     amountIdr: 50_000,
     reason: "Pesanan dibatalkan setelah dibayar.",
     status: "pending",
+    requestedBy: "d4e5f6a7-0001-4d01-8e01-000000000001",
     requestedByName: "Rina Kasir",
+    viewerCanApprove: true,
     approvedBy: null,
     approvedByName: null,
     providerRef: null,
@@ -666,8 +710,10 @@ const refundFixtures = [
     amountIdr: 286_000,
     reason: "Double payment: tamu membayar dua kali.",
     status: "completed",
+    requestedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
     requestedByName: "Dodi Kasir",
-    approvedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    viewerCanApprove: false,
+    approvedBy: "b1a2c3d4-0001-4a01-8b01-00000000a001",
     approvedByName: "Budi Supervisor",
     providerRef: "RF-20261101-0031",
     note: null,
@@ -683,8 +729,10 @@ const refundFixtures = [
     amountIdr: 75_000,
     reason: "Menu tidak tersedia setelah pembayaran.",
     status: "failed",
+    requestedBy: "d4e5f6a7-0003-4d03-8e03-000000000003",
     requestedByName: "Sari Kasir",
-    approvedBy: "d4e5f6a7-0002-4d02-8e02-000000000002",
+    viewerCanApprove: false,
+    approvedBy: "b1a2c3d4-0001-4a01-8b01-00000000a001",
     approvedByName: "Budi Supervisor",
     providerRef: null,
     note: "Provider menolak refund; diproses manual oleh finance.",
@@ -751,21 +799,12 @@ const refundableFixtures = [
     outletName: bandung.name,
     method: "qris",
     paidAmountIdr: 144_375,
-    refundedAmountIdr: 0,
-    refundableAmountIdr: 144_375,
+    // The pending 50.000 refund above reserves its amount.
+    refundedAmountIdr: 50_000,
+    refundableAmountIdr: 94_375,
     paidAt: "2026-11-01T05:13:00.000Z",
   },
-  {
-    paymentIntentId: "7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f",
-    reference: "B02-0355",
-    outletId: bandungId,
-    outletName: bandung.name,
-    method: "va",
-    paidAmountIdr: 286_000,
-    refundedAmountIdr: 0,
-    refundableAmountIdr: 286_000,
-    paidAt: "2026-11-01T04:02:00.000Z",
-  },
+  // B02-0355 was refunded in full (completed above), so it is not offered.
   {
     paymentIntentId: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
     reference: "A01-0390",
@@ -773,8 +812,9 @@ const refundableFixtures = [
     outletName: bandung.name,
     method: "ewallet",
     paidAmountIdr: 75_000,
-    refundedAmountIdr: 25_000,
-    refundableAmountIdr: 50_000,
+    // The 75.000 refund failed, so nothing is reserved; the guest is still owed.
+    refundedAmountIdr: 0,
+    refundableAmountIdr: 75_000,
     paidAt: "2026-10-31T11:55:00.000Z",
   },
 ].map((payment) => refundablePaymentSchema.parse(payment));

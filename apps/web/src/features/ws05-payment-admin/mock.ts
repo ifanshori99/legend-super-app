@@ -27,7 +27,9 @@ import {
   type EdcTerminalView,
   type PaymentRoute,
   type ReconciliationCaseView,
+  type CreateRefundInput,
   type ReconciliationSummary,
+  type ResolveUnallocatedFundInput,
   type RefundView,
   type RefundablePayment,
   type UnallocatedFundView,
@@ -74,6 +76,31 @@ const seed = (): MockState => ({
 });
 
 const store = createMockStore(seed);
+
+/**
+ * Money writes replay by idempotency key like the real API (contracts.md
+ * "Idempotent mutations"): same key + same request returns the first result,
+ * same key + a different request fails IDEMPOTENCY_KEY_REUSED.
+ */
+const replays = createMockStore(
+  () => new Map<string, { fingerprint: string; data: unknown }>(),
+);
+
+function replay<T>(key: string, fingerprint: string, run: () => T): T {
+  const seen = replays.get().get(key);
+  if (seen) {
+    if (seen.fingerprint !== fingerprint)
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+      );
+    return seen.data as T;
+  }
+  const data = run();
+  replays.get().set(key, { fingerprint, data });
+  return data;
+}
 
 const outlets = fixtures.outlets.map((outlet) => ({
   id: outlet.id,
@@ -381,7 +408,13 @@ registerMock(listRefundablePayments, ({ query, scenario }) => {
   return { data: { payments } };
 });
 
-registerMock(createRefund, ({ body }) => {
+registerMock(createRefund, ({ body }) =>
+  replay(body.idempotencyKey, `refund:${JSON.stringify(body)}`, () =>
+    createRefundOnce(body),
+  ),
+);
+
+function createRefundOnce(body: CreateRefundInput) {
   const state = store.get();
   const payment = state.refundable.find(
     (entry) => entry.paymentIntentId === body.paymentIntentId,
@@ -419,7 +452,10 @@ registerMock(createRefund, ({ body }) => {
     status: "pending",
     approvedBy: null,
     approvedByName: null,
+    requestedBy: ACTOR.id,
     requestedByName: ACTOR.name,
+    // Nobody approves their own refund (PRD §3 "Matriks Approval").
+    viewerCanApprove: false,
     note: body.note ?? null,
     createdAt: now(),
     decidedAt: null,
@@ -440,12 +476,26 @@ registerMock(createRefund, ({ body }) => {
     ),
   });
   return { data: created };
-});
+}
 
-registerMock(approveRefund, ({ params, body }) => {
+registerMock(approveRefund, ({ params, body }) =>
+  replay(
+    body.idempotencyKey,
+    `approve:${params.refundId}:${body.note ?? ""}`,
+    () => approveRefundOnce(params.refundId, body.note),
+  ),
+);
+
+function approveRefundOnce(refundId: string, note: string | undefined) {
   const state = store.get();
-  const refund = state.refunds.find((entry) => entry.id === params.refundId);
+  const refund = state.refunds.find((entry) => entry.id === refundId);
   if (!refund) throw new ApiError(404, "NOT_FOUND", "Refund tidak ditemukan.");
+  if (refund.requestedBy === ACTOR.id)
+    throw new ApiError(
+      403,
+      "APPROVER_IS_REQUESTER",
+      "Penyetuju tidak boleh sama dengan pemohon.",
+    );
   if (refund.status !== "pending")
     throw new ApiError(
       409,
@@ -460,8 +510,9 @@ registerMock(approveRefund, ({ params, body }) => {
     status: online ? "completed" : "approved",
     approvedBy: ACTOR.id,
     approvedByName: ACTOR.name,
+    viewerCanApprove: false,
     providerRef: online ? `RF-${Date.now().toString(36).toUpperCase()}` : null,
-    note: body.note ?? refund.note,
+    note: note ?? refund.note,
     decidedAt: now(),
   };
   store.set({
@@ -471,7 +522,7 @@ registerMock(approveRefund, ({ params, body }) => {
     ),
   });
   return { data: updated };
-});
+}
 
 // ---- Unallocated funds ---------------------------------------------------
 
@@ -485,9 +536,17 @@ registerMock(listUnallocatedFunds, ({ query, scenario }) => {
   return paginateFixture(filtered, query, (fund) => fund.id, scenario);
 });
 
-registerMock(resolveUnallocatedFund, ({ params, body }) => {
+registerMock(resolveUnallocatedFund, ({ params, body }) =>
+  replay(
+    body.idempotencyKey,
+    `fund:${params.fundId}:${body.resolution}:${body.note}`,
+    () => resolveFundOnce(params.fundId, body),
+  ),
+);
+
+function resolveFundOnce(fundId: string, body: ResolveUnallocatedFundInput) {
   const state = store.get();
-  const fund = state.funds.find((entry) => entry.id === params.fundId);
+  const fund = state.funds.find((entry) => entry.id === fundId);
   if (!fund) throw new ApiError(404, "NOT_FOUND", "Dana tidak ditemukan.");
   if (fund.status === "resolved")
     throw new ApiError(409, "CONFLICT", "Dana ini sudah diselesaikan.");
@@ -507,7 +566,7 @@ registerMock(resolveUnallocatedFund, ({ params, body }) => {
     ),
   });
   return { data: updated };
-});
+}
 
 // ---- Reconciliation ------------------------------------------------------
 

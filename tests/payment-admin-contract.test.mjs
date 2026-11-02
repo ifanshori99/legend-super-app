@@ -132,3 +132,87 @@ test("payment admin inputs never accept a client tenant id (TEN-02)", () => {
     false,
   );
 });
+
+test("refund and unallocated money writes require an idempotency key (contracts: idempotent mutations)", () => {
+  const paymentIntentId = "8a32e00d-7e43-45b6-9d01-7a92e605c104";
+  const refund = { paymentIntentId, amountIdr: 50_000, reason: "Batal." };
+  assert.equal(admin.createRefundInputSchema.safeParse(refund).success, false);
+  assert.equal(
+    admin.createRefundInputSchema.safeParse({
+      ...refund,
+      idempotencyKey: "refund-7f3a2c19",
+    }).success,
+    true,
+  );
+  assert.equal(admin.approveRefundInputSchema.safeParse({}).success, false);
+  assert.equal(
+    admin.resolveUnallocatedFundInputSchema.safeParse({
+      resolution: "credit",
+      note: "Kredit tamu.",
+    }).success,
+    false,
+  );
+});
+
+test("PAY-04 refunds never exceed the paid amount and the approver is not the requester", () => {
+  const { refunds, refundablePayments } = admin.cafeLegendPaymentAdminFixtures;
+  for (const payment of refundablePayments) {
+    assert.equal(
+      payment.refundedAmountIdr + payment.refundableAmountIdr,
+      payment.paidAmountIdr,
+    );
+    const reserved = refunds
+      .filter(
+        (refund) =>
+          refund.paymentIntentId === payment.paymentIntentId &&
+          refund.status !== "failed",
+      )
+      .reduce((sum, refund) => sum + refund.amountIdr, 0);
+    assert.equal(reserved, payment.refundedAmountIdr);
+  }
+  // A fully refunded payment is no longer offered.
+  const fullyRefunded = refunds.find(
+    (refund) =>
+      refund.status === "completed" &&
+      refund.amountIdr === refund.paidAmountIdr,
+  );
+  assert.ok(fullyRefunded);
+  assert.ok(
+    !refundablePayments.some(
+      (payment) => payment.paymentIntentId === fullyRefunded.paymentIntentId,
+    ),
+  );
+  for (const refund of refunds) {
+    if (refund.approvedBy !== null)
+      assert.notEqual(refund.approvedBy, refund.requestedBy);
+    if (refund.status !== "pending")
+      assert.equal(refund.viewerCanApprove, false);
+  }
+  const [first] = refundablePayments;
+  assert.equal(
+    admin.refundablePaymentSchema.safeParse({
+      ...first,
+      refundableAmountIdr: first.paidAmountIdr,
+    }).success,
+    false,
+  );
+});
+
+test("EDC-06 / PAY-04 derived amounts are checked by the schema", () => {
+  const [kase] = admin.cafeLegendPaymentAdminFixtures.reconciliationCases;
+  assert.equal(
+    admin.reconciliationCaseViewSchema.safeParse({
+      ...kase,
+      varianceIdr: kase.varianceIdr + 1,
+    }).success,
+    false,
+  );
+  const [fund] = admin.cafeLegendPaymentAdminFixtures.unallocatedFunds;
+  assert.equal(
+    admin.unallocatedFundViewSchema.safeParse({
+      ...fund,
+      amountIdr: fund.amountIdr + 1,
+    }).success,
+    false,
+  );
+});

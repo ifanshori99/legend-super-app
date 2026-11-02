@@ -114,9 +114,12 @@ export function reconciliationLabelKey(
     : "paymentAdmin.reconciliation.statusResolved";
 }
 
-/** Refund state decides whether the approve action is still possible. */
+/**
+ * Approve shows only for a pending refund the server says this viewer may
+ * decide (approval matrix, approver ≠ requester — PRD §3 "Matriks Approval").
+ */
 export function canApproveRefund(refund: RefundView): boolean {
-  return refund.status === "pending";
+  return refund.status === "pending" && refund.viewerCanApprove;
 }
 
 export function filterRefunds(
