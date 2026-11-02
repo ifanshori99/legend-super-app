@@ -157,6 +157,8 @@ export const opnameMessages = {
       loading: "Memproses…",
       selfApproval:
         "Penghitung tidak dapat menyetujui hitungannya sendiri. Minta outlet manager meninjau sesi ini.",
+      waitingApproval:
+        "Menunggu persetujuan outlet manager sebelum penyesuaian dibukukan.",
     },
     dialogs: {
       start: {

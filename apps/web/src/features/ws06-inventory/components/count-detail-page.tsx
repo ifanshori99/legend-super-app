@@ -739,9 +739,13 @@ export function CountDetailPage({
             </>
           )}
           {count.status === "pending_approval" &&
-            !canApproveCount(count, actorId) && (
-              <p>{t("opname.detail.actions.selfApproval")}</p>
-            )}
+            (canApprove ? (
+              !canApproveCount(count, actorId) && (
+                <p>{t("opname.detail.actions.selfApproval")}</p>
+              )
+            ) : (
+              <p>{t("opname.detail.actions.waitingApproval")}</p>
+            ))}
         </div>
       </div>
 
@@ -855,7 +859,7 @@ export function CountDetailPage({
       >
         <div className="grid gap-0.5 text-sm text-muted-foreground">
           {count.status === "pending_approval" && !canApprove && (
-            <span>{t("opname.detail.actions.selfApproval")}</span>
+            <span>{t("opname.detail.actions.waitingApproval")}</span>
           )}
           {counting && !progress.complete && canCount && (
             <span>{t("opname.detail.actions.submitBlocked")}</span>
