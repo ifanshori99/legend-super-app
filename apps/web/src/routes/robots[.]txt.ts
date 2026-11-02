@@ -10,19 +10,23 @@ import { robotsTxt } from "@/features/ws08-website/lib/seo";
 export const Route = createFileRoute("/robots.txt")({
   server: {
     handlers: {
-      GET: async ({ request }) => {
-        let canonical = new URL(request.url).origin;
+      GET: async () => {
+        let canonical: string | null = null;
         try {
           const { data } = await callEndpoint(getPublicSite);
           canonical = data.seo.canonicalUrl;
         } catch {
-          // Keep answering with the request's own origin: a 404 here hurts
-          // indexing more than a slightly different Sitemap host.
+          // The API is unreachable: still answer the crawl rules, but without
+          // a Sitemap line — the request's Host header is client-controlled and
+          // must not be written into a publicly cached file. Cache briefly so
+          // the full file returns once the API is back.
         }
         return new Response(robotsTxt(canonical), {
           headers: {
             "content-type": "text/plain; charset=utf-8",
-            "cache-control": "public, max-age=300, s-maxage=3600",
+            "cache-control": canonical
+              ? "public, max-age=300, s-maxage=3600"
+              : "public, max-age=60, s-maxage=60",
           },
         });
       },

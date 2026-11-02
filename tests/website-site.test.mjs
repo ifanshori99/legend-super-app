@@ -105,6 +105,15 @@ test("F21 robots.txt allows the brand pages and hides signed-in areas", () => {
   assert.ok(robots.includes("Disallow: /member"));
   assert.ok(robots.includes("Disallow: /kelola"));
   assert.ok(robots.includes(`Sitemap: ${origin}/sitemap.xml`));
+  assert.ok(robots.includes("Disallow: /masuk"));
+});
+
+test("F21 robots.txt without a canonical URL never advertises a sitemap host", () => {
+  // The fallback must not echo the client-controlled Host header into a
+  // publicly cached file (Opus review legend-qflm).
+  const robots = seo.robotsTxt(null);
+  assert.ok(robots.includes("Disallow: /kelola"));
+  assert.ok(!robots.includes("Sitemap:"));
 });
 
 test("F21 opening hours group identical ranges into readable lines", () => {

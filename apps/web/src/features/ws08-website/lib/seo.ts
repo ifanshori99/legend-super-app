@@ -187,11 +187,13 @@ export function sitemapXml(site: PublicSite): string {
 /**
  * `/robots.txt`: index the brand pages, keep the signed-in and operational
  * areas out (PRD §5 "Diindeks: Tidak"), and point crawlers at the sitemap.
+ * Without a known canonical URL the Sitemap line is left out: the request's
+ * Host header is client-controlled and must never end up in a cached file.
  */
-export function robotsTxt(canonicalUrl: string): string {
-  const origin = new URL(canonicalUrl).origin;
+export function robotsTxt(canonicalUrl: string | null): string {
   const disallow = [
     "/member",
+    "/masuk",
     "/sign-in",
     "/sign-up",
     "/t/",
@@ -218,7 +220,8 @@ export function robotsTxt(canonicalUrl: string): string {
     "# Signed-in and operational areas (PRD §5).",
     ...disallow.map((path) => `Disallow: ${path}`),
     "",
-    `Sitemap: ${origin}/sitemap.xml`,
-    "",
+    ...(canonicalUrl
+      ? [`Sitemap: ${new URL(canonicalUrl).origin}/sitemap.xml`, ""]
+      : []),
   ].join("\n");
 }

@@ -50,7 +50,11 @@ function Layout() {
             </Link>
             <ThemeToggle />
           </div>
-          <Outlet />
+          {/* The skip link in __root targets #main-content; the brand site
+              frame renders its own <main>. */}
+          <main id="main-content">
+            <Outlet />
+          </main>
         </div>
       )}
     </ThemeScope>
