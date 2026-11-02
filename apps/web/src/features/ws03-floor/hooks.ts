@@ -8,6 +8,7 @@ import {
   type TableSessionId,
 } from "@starter/shared/qr-order";
 import * as api from "./api";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { floorBoardQuery, outletsQuery, sessionBillQuery } from "./queries";
 
 function useInvalidate(endpoints: readonly AnyEndpoint[]) {
@@ -144,7 +145,7 @@ export function useSplitBill() {
         {
           method: "equal",
           parts: input.parts,
-          idempotencyKey: api.newIdempotencyKey(),
+          idempotencyKey: newIdempotencyKey(),
         },
       ),
   );

@@ -285,10 +285,17 @@ export function ContactList({
 export function MemberEntryCard({
   brandName,
   signedIn,
+  variant = "default",
   className,
 }: {
   brandName: string;
   signedIn: boolean;
+  /**
+   * The page's one filled accent belongs to the primary CTA; a side card on
+   * /reservation passes "outline" so only "Kirim lewat WhatsApp" is filled
+   * (DESIGN.md §1 accent budget).
+   */
+  variant?: "default" | "outline";
   className?: string;
 }) {
   const t = useT();
@@ -305,12 +312,12 @@ export function MemberEntryCard({
         </div>
         <div className="flex flex-wrap gap-2">
           {signedIn ? (
-            <Button asChild>
+            <Button asChild variant={variant}>
               <Link to="/member">{t("website.nav.member")}</Link>
             </Button>
           ) : (
             <>
-              <Button asChild>
+              <Button asChild variant={variant}>
                 <Link to="/member/daftar">
                   {t("website.home.memberRegister")}
                 </Link>

@@ -65,6 +65,7 @@ import { registerMock, type MockHandler } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { compareAccountCodes, entryBalance } from "./lib.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const fixtures = cafeLegendAccountingFixtures;
 const tenantId = fixtures.tenantId;
@@ -131,7 +132,7 @@ function periodIdFor(period: string): string {
   const current = state.get();
   const existing = current.periodIds.get(period);
   if (existing) return existing;
-  const id = crypto.randomUUID();
+  const id = newIdempotencyKey();
   current.periodIds.set(period, id);
   return id;
 }
@@ -180,7 +181,7 @@ function postEntry(input: {
   assertJournalBalanced(input.lines);
   assertOpenMonth(input.entryDate);
   const entry = journalEntrySchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     legalEntityId: fixtures.legalEntity.id,
     outletId: input.outletId,
@@ -193,7 +194,7 @@ function postEntry(input: {
     postedBy: input.postedBy,
     postedAt: nowIso(),
     lines: input.lines.map((line) => ({
-      id: crypto.randomUUID(),
+      id: newIdempotencyKey(),
       ...line,
     })),
   });
@@ -276,7 +277,7 @@ register(createAccount, ({ params, body }) => {
       throw invalid("Tipe akun harus sama dengan tipe akun induknya.");
   }
   const account = accountSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     legalEntityId: params.legalEntityId,
     code: body.code,
@@ -439,7 +440,7 @@ register(createManualJournal, ({ body }) => {
   const replayed = current.created.get(replayKey);
   if (replayed) return { data: findManual(replayed) };
   const journal = manualJournalSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     legalEntityId: body.legalEntityId,
     outletId: body.outletId,
@@ -600,7 +601,7 @@ register(createRecurringJournal, ({ body }) => {
   const replayed = current.created.get(replayKey);
   if (replayed) return { data: findRecurring(replayed) };
   const template = recurringJournalSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId,
     legalEntityId: body.legalEntityId,
     outletId: body.outletId,

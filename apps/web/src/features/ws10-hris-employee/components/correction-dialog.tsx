@@ -37,6 +37,7 @@ import {
   toDateTimeLocalValue,
   typeLabelKey,
 } from "../state.ts";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -135,7 +136,7 @@ function CorrectionForm({
     };
     const fingerprint = JSON.stringify(request);
     if (attempt.current?.fingerprint !== fingerprint)
-      attempt.current = { fingerprint, key: crypto.randomUUID() };
+      attempt.current = { fingerprint, key: newIdempotencyKey() };
     const parsed = bodySchema.safeParse({
       ...request,
       idempotencyKey: attempt.current.key,

@@ -257,6 +257,7 @@ export function ReservationPage({
             <MemberEntryCard
               brandName={site.brand.name}
               signedIn={signedIn}
+              variant="outline"
               className="bg-card"
             />
           </div>

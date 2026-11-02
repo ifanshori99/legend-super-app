@@ -40,6 +40,7 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** Mock-only knob for the idle warning; ignored in a real build. */
 export const MOCK_SESSION_KNOB = "legend-mock-session";
@@ -214,7 +215,7 @@ registerMock(listMfaFactors, ({ scenario }) => ({
 registerMock(enrollMfaFactor, ({ body }) => {
   const base = cafeLegendIdentityFixtures;
   const owner = base.usersByKey.owner;
-  const factorId = mfaFactorIdSchema.parse(crypto.randomUUID());
+  const factorId = mfaFactorIdSchema.parse(newIdempotencyKey());
   const factor = mfaFactorSchema.parse({
     id: factorId,
     userId: owner.id,

@@ -39,13 +39,14 @@ import {
   blankEditorLine,
   type EditorLine,
 } from "./lines-editor";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Kind = ManualJournal["kind"];
 
 function rowsFromJournal(journal: ManualJournal | undefined): EditorLine[] {
   if (!journal) return [blankEditorLine(), blankEditorLine()];
   return journal.lines.map((line) => ({
-    key: crypto.randomUUID(),
+    key: newIdempotencyKey(),
     accountId: line.accountId,
     debit: line.debitIdr > 0 ? String(line.debitIdr) : "",
     credit: line.creditIdr > 0 ? String(line.creditIdr) : "",

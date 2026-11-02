@@ -41,6 +41,7 @@ import {
   useUpdateSubscription,
 } from "../hooks";
 import { ApiFailure, LoadingCard, Section } from "./shared";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const STATUS_KEYS = {
   active: "facility.subscription.status.active",
@@ -96,7 +97,7 @@ export function FacilitySubscriptionScreen({
     try {
       await start.mutateAsync({
         planId: plan.id,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       });
       setPendingPlan(null);
       toast({ title: t("facility.subscription.started"), tone: "success" });

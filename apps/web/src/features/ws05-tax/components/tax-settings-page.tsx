@@ -39,6 +39,7 @@ import {
 import { PublishDialog } from "./publish-dialog";
 import { TaxSettingsDialog } from "./tax-settings-dialog";
 import { VersionStatusBadge } from "./version-badges";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function TaxSettingsPage() {
   const t = useT();
@@ -74,7 +75,7 @@ export function TaxSettingsPage() {
     publishSettings.mutate(
       {
         params: { taxSettingsId: publishing.id },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: () => {

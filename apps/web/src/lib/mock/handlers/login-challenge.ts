@@ -19,6 +19,7 @@ import { ApiError } from "../../api/errors.ts";
 import { registerMock } from "../registry.ts";
 import { createMockStore } from "../store.ts";
 import { auth, newCustomerSession } from "./customer-auth.ts";
+import { newIdempotencyKey } from "../../idempotency.ts";
 
 type MockChallenge = {
   challenge: LoginChallenge;
@@ -47,7 +48,7 @@ const POLLS_TO_COMPLETE = 2;
 registerMock(requestWhatsAppLoginChallenge, () => {
   const createdAt = new Date();
   const challenge = loginChallengeSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: idFx.tenantId,
     brandId: idFx.brandId,
     channel: "whatsapp_inbound",

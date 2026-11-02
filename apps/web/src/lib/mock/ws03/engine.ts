@@ -45,6 +45,7 @@ import {
 } from "@starter/shared/qr-order";
 import type { z } from "zod";
 import { ApiError } from "../../api/errors.ts";
+import { newIdempotencyKey } from "../../idempotency.ts";
 
 const fixtures = cafeLegendQrOrderFixtures;
 const outletId = fixtures.floorBoard.outletId;
@@ -213,7 +214,7 @@ function seedState(clock: () => number): FloorState {
   };
 }
 
-const mintUuid = () => crypto.randomUUID();
+const mintUuid = () => newIdempotencyKey();
 
 function notFound(what: string): never {
   throw new ApiError(404, "NOT_FOUND", `${what} tidak ditemukan.`);
