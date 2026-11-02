@@ -17,7 +17,7 @@ export const accessMessages = {
   tabs: {
     roles: "Peran",
     assignments: "Penugasan",
-    matrix: "Matriks approval",
+    matrix: "Matriks",
   },
 
   roles: {
@@ -66,6 +66,7 @@ export const accessMessages = {
     permissionsTitle: "Katalog izin",
     permissionsHint:
       "Pilih hanya yang dibutuhkan. Izin platform tidak tersedia untuk peran tenant.",
+    permissionsReadOnlyHint: "Izin yang diberikan template ini.",
     searchPermissions: "Cari izin…",
     selectedCount: "{count} izin dipilih",
     selectModule: "Pilih semua di {module}",
@@ -88,7 +89,7 @@ export const accessMessages = {
   assignments: {
     title: "Penugasan peran",
     description:
-      "Peran yang diberikan kepada pengguna, lengkap dengan cakupan dan masa berlaku.",
+      "Peran yang diberikan kepada pengguna, beserta cakupan dan masa berlakunya.",
     grant: "Beri peran",
     search: "Cari pengguna…",
     filterRole: "Semua peran",
@@ -145,6 +146,7 @@ export const accessMessages = {
     rolePlaceholder: "Pilih peran…",
     roleScopeNote: "Cakupan yang tersedia mengikuti peran yang dipilih.",
     scope: "Cakupan",
+    scopeTarget: "Objek cakupan",
     scopeValue: "Pilih {type}",
     scopeNone: "Belum ada {type}",
     validFrom: "Berlaku mulai",
@@ -186,7 +188,7 @@ export const accessMessages = {
     approver: "Penyetuju",
     level: "Tingkat {level}",
     addLevel: "Tambah tingkat",
-    removeLevel: "Hapus tingkat",
+    removeLevel: "Hapus tingkat terakhir",
     addTier: "Tambah ambang",
     removeTier: "Hapus ambang",
     configure: "Atur",
@@ -198,11 +200,10 @@ export const accessMessages = {
       "Tanpa kebijakan, tindakan diblokir (fail closed). Tambahkan minimal satu ambang.",
     noPolicies: "Belum ada kebijakan di matriks ini.",
     noPolicyShort: "Belum diatur",
-    policyCount: "{count} kebijakan",
+    policyCount: "{count} ambang",
     approverPlaceholder: "Pilih peran penyetuju…",
     issueMissingLevel: "Tingkat approval harus berurutan mulai 1.",
     issueNoApprover: "Setiap tingkat butuh satu peran penyetuju.",
-    issueDuplicate: "Satu peran dipilih dua kali pada tingkat yang sama.",
     issueThreshold: "Ambang harus 0 atau lebih.",
     issueEmpty: "Matriks butuh minimal satu kebijakan.",
     levelMax: "Maksimal {max} tingkat.",
@@ -391,7 +392,10 @@ export const accessMessages = {
       tax_report: { manage: "Kelola laporan pajak" },
       asset: { manage: "Kelola aset tetap" },
       budget: { manage: "Kelola anggaran" },
-      expense: { request: "Ajukan pengeluaran", approve: "Setujui pengeluaran" },
+      expense: {
+        request: "Ajukan pengeluaran",
+        approve: "Setujui pengeluaran",
+      },
       cash_deposit: { record: "Catat setoran kas" },
     },
     profit_share: {
@@ -490,7 +494,8 @@ export const accessMessages = {
     approverIsRequester: "Penyetuju tidak boleh sama dengan pemohon.",
     forbid: "Anda tidak punya izin untuk tindakan ini.",
     notFound: "Data tidak ditemukan. Muat ulang halaman.",
-    conflict: "Perubahan bentrok dengan data terbaru. Muat ulang lalu coba lagi.",
+    conflict:
+      "Perubahan bentrok dengan data terbaru. Muat ulang lalu coba lagi.",
     invalid: "Periksa kembali isian yang ditandai.",
     offline: "Tidak ada koneksi. Periksa jaringan lalu coba lagi.",
     generic: "Terjadi kesalahan. Coba lagi.",

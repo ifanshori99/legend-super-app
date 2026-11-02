@@ -79,9 +79,7 @@ export function AccessPage({
             <h1 className="text-xl leading-7 font-semibold">
               {t("access.title")}
             </h1>
-            {API_MOCK && (
-              <Badge tone="neutral">{t("common.sampleData")}</Badge>
-            )}
+            {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
           </div>
           {actions}
         </div>

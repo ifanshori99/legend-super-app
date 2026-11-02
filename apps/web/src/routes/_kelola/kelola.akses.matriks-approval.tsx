@@ -8,9 +8,7 @@ import {
 } from "@/features/ws01-access/queries";
 
 // /kelola/akses/matriks-approval — approval matrix (PRD §3 F7, AUTH-06).
-export const Route = createFileRoute(
-  "/_kelola/kelola/akses/matriks-approval",
-)({
+export const Route = createFileRoute("/_kelola/kelola/akses/matriks-approval")({
   beforeLoad: accessGuard([
     "access.approval_policy.manage",
     "access.role.view",

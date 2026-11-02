@@ -20,9 +20,8 @@ export const accessKeys = {
 
 export const rolesQuery = () => endpointQueryOptions(listRoles);
 
-export const assignmentsQuery = (
-  query: Query<typeof listRoleAssignments>,
-) => endpointQueryOptions(listRoleAssignments, { query });
+export const assignmentsQuery = (query: Query<typeof listRoleAssignments>) =>
+  endpointQueryOptions(listRoleAssignments, { query });
 
 export const approvalMatrixQuery = () =>
   endpointQueryOptions(getApprovalMatrix);

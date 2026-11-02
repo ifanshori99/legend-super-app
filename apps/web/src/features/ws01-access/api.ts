@@ -17,9 +17,8 @@ import { callEndpoint } from "@/lib/api/endpoint";
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 
-export const createCustomRole = (
-  body: Body<typeof createCustomRoleEndpoint>,
-) => callEndpoint(createCustomRoleEndpoint, { body });
+export const createCustomRole = (body: Body<typeof createCustomRoleEndpoint>) =>
+  callEndpoint(createCustomRoleEndpoint, { body });
 
 export const updateCustomRole = (
   params: Params<typeof updateCustomRoleEndpoint>,

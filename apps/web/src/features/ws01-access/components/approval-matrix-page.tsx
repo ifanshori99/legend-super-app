@@ -4,12 +4,7 @@
 // AUTH-06: the approver is always a different person from the requester; that
 // rule is fixed by the contract (requiresDistinctActor: true), not a toggle.
 import * as React from "react";
-import {
-  CircleAlert,
-  Plus,
-  ShieldCheck,
-  Trash2,
-} from "lucide-react";
+import { CircleAlert, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,8 +62,6 @@ function issueMessageKey(kind: MatrixIssue["kind"]) {
       return "access.matrix.issueMissingLevel" as const;
     case "no_approver":
       return "access.matrix.issueNoApprover" as const;
-    case "duplicate_approver":
-      return "access.matrix.issueDuplicate" as const;
     case "bad_threshold":
       return "access.matrix.issueThreshold" as const;
   }
@@ -93,48 +86,17 @@ function TierEditor({
   const update = (fn: (row: MatrixDraftRow) => MatrixDraftRow) =>
     onChange(fn(row));
 
+  const lastLevel = tier.levels.at(-1);
+
   return (
-    <div className="grid gap-2 rounded-md border p-3">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div className="grid gap-1">
-          <label
-            htmlFor={`threshold-${tier.key}`}
-            className="text-sm font-semibold"
-          >
-            {t("access.matrix.threshold")}
-          </label>
-          <div className="flex items-center gap-2">
-            <Input
-              id={`threshold-${tier.key}`}
-              type="number"
-              inputMode="numeric"
-              min={0}
-              step={1000}
-              value={tier.thresholdIdr ?? ""}
-              placeholder={t("access.matrix.anyAmount")}
-              disabled={disabled}
-              className="h-control-sm w-40 tabular"
-              onChange={(event) => {
-                const raw = event.target.value;
-                update((current) =>
-                  setTierThreshold(
-                    current,
-                    tier.key,
-                    raw === "" ? null : Math.max(0, Number(raw)),
-                  ),
-                );
-              }}
-            />
-            {tier.thresholdIdr === null ? (
-              <Badge tone="info">{t("access.matrix.anyAmount")}</Badge>
-            ) : (
-              <Money amount={tier.thresholdIdr} size="sm" />
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {t("access.matrix.thresholdHint")}
-          </p>
-        </div>
+    <div className="grid gap-3 rounded-lg bg-muted/50 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <label
+          htmlFor={`threshold-${tier.key}`}
+          className="text-sm font-semibold"
+        >
+          {t("access.matrix.threshold")}
+        </label>
         <Button
           type="button"
           variant="ghost"
@@ -146,12 +108,43 @@ function TierEditor({
           <Trash2 aria-hidden="true" />
         </Button>
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id={`threshold-${tier.key}`}
+          type="number"
+          inputMode="numeric"
+          min={0}
+          step={1000}
+          value={tier.thresholdIdr ?? ""}
+          placeholder={t("access.matrix.anyAmount")}
+          disabled={disabled}
+          className="h-control-sm w-40 tabular"
+          onChange={(event) => {
+            const raw = event.target.value;
+            update((current) =>
+              setTierThreshold(
+                current,
+                tier.key,
+                raw === "" ? null : Math.max(0, Number(raw)),
+              ),
+            );
+          }}
+        />
+        {tier.thresholdIdr === null ? (
+          <Badge tone="info">{t("access.matrix.anyAmount")}</Badge>
+        ) : (
+          <Money amount={tier.thresholdIdr} size="sm" />
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t("access.matrix.thresholdHint")}
+      </p>
 
       <div className="grid gap-2">
         {tier.levels.map((level, index) => (
           <div
             key={level.key}
-            className="grid gap-2 sm:grid-cols-[7rem_minmax(0,1fr)_auto] sm:items-center"
+            className="grid gap-1 sm:grid-cols-[7rem_minmax(0,1fr)] sm:items-center"
           >
             <span className="text-sm text-muted-foreground">
               {t("access.matrix.level", { level: index + 1 })}
@@ -181,18 +174,6 @@ function TierEditor({
                 ))}
               </SelectContent>
             </Select>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              disabled={disabled || tier.levels.length === 1}
-              aria-label={t("access.matrix.removeLevel")}
-              onClick={() =>
-                update((current) => removeLevel(current, tier.key, level.key))
-              }
-            >
-              <Trash2 aria-hidden="true" />
-            </Button>
           </div>
         ))}
       </div>
@@ -208,6 +189,18 @@ function TierEditor({
           <Plus aria-hidden="true" />
           {t("access.matrix.addLevel")}
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={disabled || tier.levels.length === 1 || !lastLevel}
+          onClick={() => {
+            if (!lastLevel) return;
+            update((current) => removeLevel(current, tier.key, lastLevel.key));
+          }}
+        >
+          {t("access.matrix.removeLevel")}
+        </Button>
         {tier.levels.length >= APPROVAL_MAX_LEVELS && (
           <span className="text-xs text-muted-foreground">
             {t("access.matrix.levelMax", { max: APPROVAL_MAX_LEVELS })}
@@ -218,10 +211,7 @@ function TierEditor({
       {issues.length > 0 && (
         <ul className="grid gap-1" role="alert">
           {issues.map((issue, index) => (
-            <li
-              key={`${issue.kind}-${index}`}
-              className="text-sm text-danger"
-            >
+            <li key={`${issue.kind}-${index}`} className="text-sm text-danger">
               {t(issueMessageKey(issue.kind))}
             </li>
           ))}
@@ -246,11 +236,13 @@ function MatrixEditor({
   const [draft, setDraft] = React.useState<MatrixDraftRow[]>(() =>
     matrixDraftFromPolicies(policies),
   );
-  const initial = React.useRef(JSON.stringify(matrixPoliciesFromDraft(draft)));
+  const [initialJson, setInitialJson] = React.useState(() =>
+    JSON.stringify(matrixPoliciesFromDraft(draft)),
+  );
   const issues = matrixIssues(draft);
   const coverage = matrixCoverage(draft);
   const approverRoles = matrixApproverRoles(roles);
-  const dirty = JSON.stringify(matrixPoliciesFromDraft(draft)) !== initial.current;
+  const dirty = JSON.stringify(matrixPoliciesFromDraft(draft)) !== initialJson;
 
   const updateRow = (
     actionType: MatrixDraftRow["actionType"],
@@ -267,7 +259,7 @@ function MatrixEditor({
       onSuccess: (response) => {
         const next = matrixDraftFromPolicies(response.data);
         setDraft(next);
-        initial.current = JSON.stringify(matrixPoliciesFromDraft(next));
+        setInitialJson(JSON.stringify(matrixPoliciesFromDraft(next)));
         toast({ title: t("access.matrix.saved") });
       },
     });
@@ -275,21 +267,16 @@ function MatrixEditor({
 
   return (
     <>
-      <Card className="flex-row items-start gap-3">
-        <ShieldCheck
-          className="mt-0.5 size-icon shrink-0 text-success"
-          aria-hidden="true"
-        />
-        <div className="grid gap-1">
-          <p className="text-sm font-semibold">{t("access.matrix.distinctActor")}</p>
-          <p className="text-sm text-muted-foreground">
-            {t("access.matrix.coverage", {
-              covered: coverage.covered,
-              total: coverage.total,
-            })}
-          </p>
-        </div>
-        <div className="ml-auto shrink-0">
+      <Card className="gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="grid min-w-0 gap-1">
+            <h2 className="text-base leading-6 font-semibold">
+              {t("access.matrix.title")}
+            </h2>
+            <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
+              {t("access.matrix.description")}
+            </p>
+          </div>
           {canManage && (
             <Button
               type="button"
@@ -300,6 +287,23 @@ function MatrixEditor({
               {t("access.matrix.save")}
             </Button>
           )}
+        </div>
+        <div className="flex items-start gap-2 rounded-md bg-muted/50 p-3">
+          <ShieldCheck
+            className="mt-0.5 size-icon shrink-0 text-success"
+            aria-hidden="true"
+          />
+          <div className="grid gap-1">
+            <p className="text-sm font-semibold">
+              {t("access.matrix.distinctActor")}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t("access.matrix.coverage", {
+                covered: coverage.covered,
+                total: coverage.total,
+              })}
+            </p>
+          </div>
         </div>
       </Card>
 
@@ -341,9 +345,7 @@ function MatrixEditor({
                     variant="outline"
                     size="sm"
                     disabled={!canManage}
-                    onClick={() =>
-                      updateRow(row.actionType, addTier(row))
-                    }
+                    onClick={() => updateRow(row.actionType, addTier(row))}
                   >
                     <Plus aria-hidden="true" />
                     {t("access.matrix.addTier")}
@@ -409,7 +411,9 @@ function MatrixEditor({
                   variant="ghost"
                   size="sm"
                   disabled={!canManage}
-                  onClick={() => setDraft((current) => addActionRow(current, action))}
+                  onClick={() =>
+                    setDraft((current) => addActionRow(current, action))
+                  }
                 >
                   {t("access.matrix.configure")}
                 </Button>

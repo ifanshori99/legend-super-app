@@ -25,18 +25,13 @@ import {
   rolesQuery,
   stationsQuery,
 } from "./queries";
-import {
-  EMPTY_SCOPE_LOOKUP,
-  type ScopeLookup,
-} from "./lib";
+import { EMPTY_SCOPE_LOOKUP, type ScopeLookup } from "./lib";
 
 export function useRoles() {
   return useQuery(rolesQuery());
 }
 
-export function useAssignments(
-  query: Parameters<typeof assignmentsQuery>[0],
-) {
+export function useAssignments(query: Parameters<typeof assignmentsQuery>[0]) {
   return useQuery(assignmentsQuery(query));
 }
 
@@ -53,10 +48,10 @@ export function useMfaFactors(enabled: boolean) {
  * lacks the owning permission; the screen then shows a short id instead of
  * failing the list.
  */
-export function useScopeLookup(enabled: {
-  org: boolean;
-  menu: boolean;
-}): { lookup: ScopeLookup; pending: boolean } {
+export function useScopeLookup(enabled: { org: boolean; menu: boolean }): {
+  lookup: ScopeLookup;
+  pending: boolean;
+} {
   const brands = useQuery({ ...brandsQuery(), enabled: enabled.org });
   const outlets = useQuery({
     ...outletsQuery({ limit: 100 }),
@@ -133,7 +128,8 @@ export function useEndRoleAssignment() {
     mutationFn: (input: {
       assignmentId: string;
       body: EndRoleAssignmentInput;
-    }) => api.endRoleAssignment({ assignmentId: input.assignmentId }, input.body),
+    }) =>
+      api.endRoleAssignment({ assignmentId: input.assignmentId }, input.body),
     onSuccess: () => refresh(),
   });
 }

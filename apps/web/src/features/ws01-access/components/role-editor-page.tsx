@@ -19,11 +19,7 @@ import type { PermissionCode, Role, ScopeType } from "@starter/shared/access";
 import { roleTemplate } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
-import {
-  useCreateCustomRole,
-  useRoles,
-  useUpdateCustomRole,
-} from "../hooks";
+import { useCreateCustomRole, useRoles, useUpdateCustomRole } from "../hooks";
 import { accessErrorMessage } from "../errors";
 import {
   customRoleMfaRequired,
@@ -122,7 +118,7 @@ export function RoleDetailPage({
     );
 
   if (role.isTemplate) return <TemplateRole role={role} access={access} />;
-  return <CustomRoleEditor role={role} access={access} canManage={canManage} />;
+  return <CustomRoleEditor role={role} canManage={canManage} />;
 }
 
 export function CreateCustomRolePage({ access }: { access: AreaAccess }) {
@@ -143,16 +139,10 @@ export function CreateCustomRolePage({ access }: { access: AreaAccess }) {
         </Card>
       </RoleFrame>
     );
-  return <CustomRoleEditor canManage access={access} />;
+  return <CustomRoleEditor canManage />;
 }
 
-function TemplateRole({
-  role,
-  access,
-}: {
-  role: Role;
-  access: AreaAccess;
-}) {
+function TemplateRole({ role, access }: { role: Role; access: AreaAccess }) {
   const t = useT();
   const template = role.templateKey ? roleTemplate(role.templateKey) : null;
   return (
@@ -212,7 +202,7 @@ function TemplateRole({
             {t("access.role.permissionsTitle")}
           </h2>
           <p className="text-sm text-muted-foreground">
-            {t("access.role.permissionsHint")}
+            {t("access.role.permissionsReadOnlyHint")}
           </p>
         </div>
         <PermissionReadOnlyList codes={role.permissions} />
@@ -223,11 +213,9 @@ function TemplateRole({
 
 function CustomRoleEditor({
   role,
-  access,
   canManage,
 }: {
   role?: Role;
-  access: AreaAccess;
   canManage: boolean;
 }) {
   const t = useT();
@@ -287,9 +275,7 @@ function CustomRoleEditor({
   };
 
   return (
-    <RoleFrame
-      title={role ? role.name : t("access.role.createTitle")}
-    >
+    <RoleFrame title={role ? role.name : t("access.role.createTitle")}>
       <form className="grid min-w-0 gap-4" onSubmit={submit} noValidate>
         <Card className="grid gap-4">
           <div className="grid gap-1">
@@ -297,7 +283,9 @@ function CustomRoleEditor({
               {t("access.role.identity")}
             </h2>
             <p className="text-sm text-muted-foreground">
-              {role ? t("access.role.customNote") : t("access.role.createSubtitle")}
+              {role
+                ? t("access.role.customNote")
+                : t("access.role.createSubtitle")}
             </p>
           </div>
           <FormField
@@ -358,7 +346,7 @@ function CustomRoleEditor({
             )}
           </fieldset>
 
-          <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+          <div className="flex items-start justify-between gap-4 rounded-lg bg-muted/50 p-3">
             <div className="grid gap-1">
               <Label htmlFor="role-mfa">{t("access.role.mfaTitle")}</Label>
               <p className="text-sm text-muted-foreground">
@@ -407,7 +395,7 @@ function CustomRoleEditor({
           </p>
         )}
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="sticky bottom-0 z-10 -mx-4 mt-2 flex flex-wrap items-center gap-2 border-t bg-background px-4 py-3 sm:-mx-6 sm:px-6">
           <Button
             type="submit"
             loading={mutation.isPending}

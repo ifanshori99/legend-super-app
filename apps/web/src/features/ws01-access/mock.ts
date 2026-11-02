@@ -32,10 +32,7 @@ import {
   updateCustomRole,
   verifyMfaFactor,
 } from "@starter/shared/identity";
-import {
-  cafeLegendMenuFixtures,
-  listStations,
-} from "@starter/shared/menu";
+import { cafeLegendMenuFixtures, listStations } from "@starter/shared/menu";
 import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
@@ -144,7 +141,8 @@ registerMock(updateCustomRole, ({ params, body }) => {
     ...current,
     name: body.name ?? current.name,
     permissions: normalized?.permissions ?? current.permissions,
-    mfaRequired: normalized?.mfaRequired ?? body.mfaRequired ?? current.mfaRequired,
+    mfaRequired:
+      normalized?.mfaRequired ?? body.mfaRequired ?? current.mfaRequired,
     allowedScopeTypes: body.allowedScopeTypes ?? current.allowedScopeTypes,
     updatedAt: NOW(),
   });
@@ -197,10 +195,15 @@ registerMock(grantRole, ({ body }) => {
 });
 
 registerMock(endRoleAssignment, ({ params, body }) => {
-  const current = assignments.get().find((row) => row.id === params.assignmentId);
+  const current = assignments
+    .get()
+    .find((row) => row.id === params.assignmentId);
   if (!current)
     throw new ApiError(404, "NOT_FOUND", "Penugasan tidak ditemukan.");
-  if (current.validUntil !== null && Date.parse(current.validUntil) <= Date.now())
+  if (
+    current.validUntil !== null &&
+    Date.parse(current.validUntil) <= Date.now()
+  )
     throw new ApiError(409, "CONFLICT", "Penugasan ini sudah berakhir.");
   const next = roleAssignmentSchema.parse({
     ...current,

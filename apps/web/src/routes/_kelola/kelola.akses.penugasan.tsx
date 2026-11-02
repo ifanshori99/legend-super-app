@@ -3,10 +3,7 @@ import { AssignmentsPage } from "@/features/ws01-access/components/assignments-p
 import { accessGuard } from "@/features/ws01-access/guard";
 import { isMockScenarioRequest } from "@/features/ws01-access/lib";
 import { assignablePeopleQuery } from "@/features/ws01-access/people";
-import {
-  assignmentsQuery,
-  rolesQuery,
-} from "@/features/ws01-access/queries";
+import { assignmentsQuery, rolesQuery } from "@/features/ws01-access/queries";
 
 // /kelola/akses/penugasan — scoped, time-bound role assignments (TEN-03).
 export const Route = createFileRoute("/_kelola/kelola/akses/penugasan")({
@@ -16,9 +13,7 @@ export const Route = createFileRoute("/_kelola/kelola/akses/penugasan")({
       ? undefined
       : Promise.all([
           context.queryClient.ensureQueryData(rolesQuery()),
-          context.queryClient.ensureQueryData(
-            assignmentsQuery({ limit: 100 }),
-          ),
+          context.queryClient.ensureQueryData(assignmentsQuery({ limit: 100 })),
           context.queryClient.ensureQueryData(assignablePeopleQuery()),
         ]),
   component: AssignmentsScreen,

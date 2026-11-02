@@ -2,7 +2,14 @@
 // (PRD v1.7 §3 F7; TEN-03 outlet scope). Granting needs a fresh second factor;
 // ending records a reason.
 import * as React from "react";
-import { CircleCheck, CircleSlash, Clock, Info, Plus, UserMinus } from "lucide-react";
+import {
+  CircleCheck,
+  CircleSlash,
+  Clock,
+  Info,
+  Plus,
+  UserMinus,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,15 +30,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { RoleAssignment, ScopeType } from "@starter/shared/access";
+import type { RoleAssignment } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
-import {
-  useAssignments,
-  useNow,
-  useRoles,
-  useScopeLookup,
-} from "../hooks";
+import { useAssignments, useNow, useRoles, useScopeLookup } from "../hooks";
 import { useAssignablePeople } from "../people";
 import {
   assignmentStatus,
@@ -39,7 +41,6 @@ import {
   filterAssignmentRows,
   formatInstant,
   SCOPE_LABEL_KEY,
-  SCOPE_TYPES,
   scopeName,
   type AssignmentRow,
   type AssignmentStatus,
@@ -93,7 +94,6 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
   const [search, setSearch] = React.useState("");
   const [roleId, setRoleId] = React.useState(ALL);
   const [status, setStatus] = React.useState(ALL);
-  const [scopeType, setScopeType] = React.useState(ALL);
   const [grantOpen, setGrantOpen] = React.useState(false);
   const [ending, setEnding] = React.useState<AssignmentRow | null>(null);
 
@@ -123,9 +123,8 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         search,
         roleId: roleId === ALL ? undefined : roleId,
         status: status === ALL ? undefined : (status as AssignmentStatus),
-        scopeType: scopeType === ALL ? undefined : (scopeType as ScopeType),
       }),
-    [rows, search, roleId, status, scopeType],
+    [rows, search, roleId, status],
   );
 
   const loading = assignments.isPending || roles.isPending;
@@ -143,8 +142,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
     t("access.assignments.unknownUser", { id: shortId(row.userId) });
 
   const scopeLabel = (row: RoleAssignment) => {
-    if (row.scope.type === "tenant")
-      return t("access.assignments.scopeTenant");
+    if (row.scope.type === "tenant") return t("access.assignments.scopeTenant");
     const name = scopeName(row.scope, lookup);
     const typeLabel = t(SCOPE_LABEL_KEY[row.scope.type]);
     return name ?? `${typeLabel} ${shortId(row.scope.id)}`;
@@ -189,10 +187,10 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
           label: t("access.assignments.search"),
         }}
         actions={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex shrink-0 gap-2">
             <Select value={roleId} onValueChange={setRoleId}>
               <SelectTrigger
-                className="h-control-sm sm:w-40"
+                className="h-control-sm sm:w-[10rem]"
                 aria-label={t("access.assignments.filterRole")}
               >
                 <SelectValue />
@@ -210,7 +208,7 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
             </Select>
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger
-                className="h-control-sm sm:w-36"
+                className="h-control-sm sm:w-[10rem]"
                 aria-label={t("access.assignments.filterStatus")}
               >
                 <SelectValue />
@@ -219,31 +217,13 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
                 <SelectItem value={ALL}>
                   {t("access.assignments.filterStatus")}
                 </SelectItem>
-                {(
-                  ["active", "scheduled", "expired"] as AssignmentStatus[]
-                ).map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {t(ASSIGNMENT_STATUS_LABEL_KEY[value])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={scopeType} onValueChange={setScopeType}>
-              <SelectTrigger
-                className="h-control-sm sm:w-36"
-                aria-label={t("access.assignments.filterScope")}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>
-                  {t("access.assignments.filterScope")}
-                </SelectItem>
-                {SCOPE_TYPES.map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {t(SCOPE_LABEL_KEY[value])}
-                  </SelectItem>
-                ))}
+                {(["active", "scheduled", "expired"] as AssignmentStatus[]).map(
+                  (value) => (
+                    <SelectItem key={value} value={value}>
+                      {t(ASSIGNMENT_STATUS_LABEL_KEY[value])}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
           </div>
@@ -256,18 +236,17 @@ export function AssignmentsPage({ access }: { access: AreaAccess }) {
         empty={{
           title: t("access.assignments.emptyTitle"),
           description: t("access.assignments.emptyHint"),
-          action:
-            canAssign && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setGrantOpen(true)}
-              >
-                <Plus aria-hidden="true" />
-                {t("access.assignments.grant")}
-              </Button>
-            ),
+          action: canAssign && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setGrantOpen(true)}
+            >
+              <Plus aria-hidden="true" />
+              {t("access.assignments.grant")}
+            </Button>
+          ),
         }}
         rowCount={filtered.length}
       >

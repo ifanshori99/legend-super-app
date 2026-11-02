@@ -9,11 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import type { PermissionCode } from "@starter/shared/access";
-import {
-  normalizeQuery,
-  permissionGroups,
-  permissionLabelKey,
-} from "../lib";
+import { normalizeQuery, permissionGroups, permissionLabelKey } from "../lib";
 
 export function PermissionChecklist({
   selected,
@@ -159,9 +155,7 @@ export function PermissionReadOnlyList({
 
 /** Small shared error line: every error says how to fix it (DESIGN.md §4). */
 export function PermissionNote({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-sm leading-5 text-muted-foreground">{children}</p>
-  );
+  return <p className="text-sm leading-5 text-muted-foreground">{children}</p>;
 }
 
 export { permissionLabelKey };

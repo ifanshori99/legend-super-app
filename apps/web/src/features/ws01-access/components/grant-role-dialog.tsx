@@ -42,11 +42,7 @@ import {
   validityIsOrdered,
   type ScopeLookup,
 } from "../lib";
-import {
-  useGrantRole,
-  useMfaFactors,
-  useVerifyMfaFactor,
-} from "../hooks";
+import { useGrantRole, useMfaFactors, useVerifyMfaFactor } from "../hooks";
 import type { AssignablePerson } from "../people";
 
 type Step = 1 | 2 | 3;
@@ -154,7 +150,9 @@ export function GrantRoleDialog({
         setError(t("access.grant.pickScope"));
         return;
       }
-      if (!validityIsOrdered(toIso(validFrom) ?? null, toIso(validUntil) ?? null)) {
+      if (
+        !validityIsOrdered(toIso(validFrom) ?? null, toIso(validUntil) ?? null)
+      ) {
         setError(t("access.grant.invalidValidity"));
         return;
       }
@@ -254,7 +252,9 @@ export function GrantRoleDialog({
               <FormField label={t("access.grant.user")} required>
                 <Select value={userId} onValueChange={setUserId}>
                   <SelectTrigger>
-                    <SelectValue placeholder={t("access.grant.userPlaceholder")} />
+                    <SelectValue
+                      placeholder={t("access.grant.userPlaceholder")}
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {people.map((row) => (
@@ -269,7 +269,9 @@ export function GrantRoleDialog({
             <FormField label={t("access.grant.role")} required>
               <Select value={roleId} onValueChange={pickRole}>
                 <SelectTrigger>
-                  <SelectValue placeholder={t("access.grant.rolePlaceholder")} />
+                  <SelectValue
+                    placeholder={t("access.grant.rolePlaceholder")}
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {roles.map((row) => (
@@ -328,7 +330,7 @@ export function GrantRoleDialog({
             </fieldset>
 
             {scopeType !== "tenant" && (
-              <FormField label={t("access.grant.scope")} required>
+              <FormField label={t("access.grant.scopeTarget")} required>
                 <Select value={scopeId} onValueChange={setScopeId}>
                   <SelectTrigger>
                     <SelectValue

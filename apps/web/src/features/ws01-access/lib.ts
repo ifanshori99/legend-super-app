@@ -70,12 +70,12 @@ export function permissionGroups(): PermissionGroup[] {
         labelKey: `access.module.${entry.module}` as MessageKey,
         permissions: [],
       } satisfies PermissionGroup);
-    (group.permissions as { code: PermissionCode; labelKey: MessageKey }[]).push(
-      {
-        code: entry.code,
-        labelKey: `access.perm.${entry.code}` as MessageKey,
-      },
-    );
+    (
+      group.permissions as { code: PermissionCode; labelKey: MessageKey }[]
+    ).push({
+      code: entry.code,
+      labelKey: `access.perm.${entry.code}` as MessageKey,
+    });
     groups.set(entry.module, group);
   }
   return [...groups.values()];
@@ -311,9 +311,7 @@ export function matrixDraftFromPolicies(
     byAction.set(policy.actionType, tiers);
   }
   return [...byAction.entries()]
-    .sort(
-      ([a], [b]) => (ACTION_ORDER.get(a) ?? 0) - (ACTION_ORDER.get(b) ?? 0),
-    )
+    .sort(([a], [b]) => (ACTION_ORDER.get(a) ?? 0) - (ACTION_ORDER.get(b) ?? 0))
     .map(([actionType, tiers]) => ({
       actionType,
       tiers: tiers
@@ -329,12 +327,7 @@ export function matrixDraftFromPolicies(
 }
 
 export type MatrixIssue = {
-  kind:
-    | "empty"
-    | "missing_level"
-    | "no_approver"
-    | "duplicate_approver"
-    | "bad_threshold";
+  kind: "empty" | "missing_level" | "no_approver" | "bad_threshold";
   actionType: ApprovalActionType | null;
   tierKey: string | null;
 };
@@ -356,23 +349,13 @@ export function matrixIssues(draft: readonly MatrixDraftRow[]): MatrixIssue[] {
           actionType: row.actionType,
           tierKey: tier.key,
         });
-      const used = new Set<string>();
       for (const level of tier.levels) {
-        if (level.roleId === "") {
+        if (level.roleId === "")
           issues.push({
             kind: "no_approver",
             actionType: row.actionType,
             tierKey: tier.key,
           });
-          continue;
-        }
-        if (used.has(level.roleId))
-          issues.push({
-            kind: "duplicate_approver",
-            actionType: row.actionType,
-            tierKey: tier.key,
-          });
-        used.add(level.roleId);
       }
       if (tier.levels.length === 0 || tier.levels[0]?.roleId === "")
         issues.push({
@@ -439,22 +422,24 @@ export function matrixCoverage(
 export function addTier(
   row: MatrixDraftRow,
   options: { thresholdIdr?: number | null; roleId?: string } = {},
-): MatrixDraftRow {  return {
+): MatrixDraftRow {
+  return {
     ...row,
     tiers: [
       ...row.tiers,
       {
         key: nextDraftKey("tier"),
         thresholdIdr: options.thresholdIdr ?? null,
-        levels: [
-          { key: nextDraftKey("level"), roleId: options.roleId ?? "" },
-        ],
+        levels: [{ key: nextDraftKey("level"), roleId: options.roleId ?? "" }],
       },
     ].sort(compareTiers),
   };
 }
 
-export function removeTier(row: MatrixDraftRow, tierKey: string): MatrixDraftRow {
+export function removeTier(
+  row: MatrixDraftRow,
+  tierKey: string,
+): MatrixDraftRow {
   return { ...row, tiers: row.tiers.filter((tier) => tier.key !== tierKey) };
 }
 
@@ -554,8 +539,7 @@ export function addActionRow(
   draft: readonly MatrixDraftRow[],
   actionType: ApprovalActionType,
 ): MatrixDraftRow[] {
-  if (draft.some((row) => row.actionType === actionType))
-    return [...draft];
+  if (draft.some((row) => row.actionType === actionType)) return [...draft];
   return [
     ...draft,
     {
@@ -568,7 +552,11 @@ export function addActionRow(
         },
       ],
     },
-  ].sort((a, b) => (ACTION_ORDER.get(a.actionType) ?? 0) - (ACTION_ORDER.get(b.actionType) ?? 0));
+  ].sort(
+    (a, b) =>
+      (ACTION_ORDER.get(a.actionType) ?? 0) -
+      (ACTION_ORDER.get(b.actionType) ?? 0),
+  );
 }
 
 export function removeActionRow(
