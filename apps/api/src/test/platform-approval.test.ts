@@ -667,6 +667,20 @@ describe("legend-y5q decisions (AUTH-06, MCP-04)", () => {
   });
 });
 
+/** Blocks until a cancellation is queued behind another transaction's row lock. */
+async function waitForApprovalLockWaiter(): Promise<void> {
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const { rows } = await owner.query<{ waiting: number }>(
+      `SELECT count(*)::int AS waiting FROM pg_stat_activity
+       WHERE datname = current_database() AND state = 'active'
+         AND wait_event_type = 'Lock' AND query ILIKE '%approval_requests%'`,
+    );
+    if ((rows[0]?.waiting ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("the cancel never queued behind the sweep row lock");
+}
+
 describe("legend-y5q deadline and cancellation", () => {
   it("§3 F7 deadline escalation: an overdue level blocks the decision, the sweep expires it and calls back", async () => {
     const past = new Date(Date.now() - 20 * 60_000);
@@ -727,6 +741,60 @@ describe("legend-y5q deadline and cancellation", () => {
     await expect(
       expireDueApprovalRequests(outletScope(bandung)),
     ).rejects.toThrow(/tenant-wide/);
+  });
+
+  it("legend-y5q a cancel racing the deadline sweep leaves one terminal outcome", async () => {
+    // Two levels, the second already due: level 1 was approved in the past.
+    const base = Date.now() - 60 * 60_000;
+    const opened = await openRequired({
+      actionType: "refund",
+      requestedBy: users.cashier,
+      amountIdr: 750_000,
+      deadlineMinutes: 10,
+      now: new Date(base),
+    });
+    await decide(users.supervisor, opened.request.id, "approved", {
+      now: new Date(base + 5 * 60_000),
+    });
+    const rows = await chain(opened.chainId);
+    expect(rows.map((row) => [row.level, row.status])).toEqual([
+      [1, "approved"],
+      [2, "pending"],
+    ]);
+    const levelTwo = rows[1]!.id;
+
+    // The sweep holds the due row lock with "expired" uncommitted.
+    const sweep = await owner.connect();
+    try {
+      await sweep.query("BEGIN");
+      await sweep.query(
+        `UPDATE approval_requests SET status = 'expired', updated_at = now()
+         WHERE id = $1 AND status = 'pending'`,
+        [levelTwo],
+      );
+      // The module withdraws: it reads the chain (still pending from its
+      // snapshot) and queues behind the sweep's row lock.
+      const cancelling = withTenant(db, tenantWide, (tx) =>
+        cancelApprovalRequest(tx, tenantWide, {
+          chainId: opened.chainId,
+          sourceModule: "payment",
+          actorUserId: users.cashier,
+        }),
+      );
+      await waitForApprovalLockWaiter();
+      await sweep.query("COMMIT");
+      expect(await cancelling).toBe("expired");
+    } finally {
+      await sweep.query("ROLLBACK").catch(() => undefined);
+      sweep.release();
+    }
+    // The sweep's terminal outcome stands: no second resolved event.
+    expect((await chain(opened.chainId))[1]?.status).toBe("expired");
+    expect(
+      (await events(opened.chainId)).filter(
+        (row) => row.name === "approval.resolved",
+      ),
+    ).toHaveLength(0);
   });
 
   it("legend-y5q the source module cancels its own request, idempotently; another module cannot", async () => {

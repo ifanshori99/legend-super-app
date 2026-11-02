@@ -722,9 +722,20 @@ export async function cancelApprovalRequest(
   const [cancelled] = await tx
     .update(approvalRequests)
     .set({ status: "cancelled", updatedAt: now })
-    .where(eq(approvalRequests.id, open.id))
+    .where(
+      and(
+        eq(approvalRequests.id, open.id),
+        eq(approvalRequests.status, "pending"),
+      ),
+    )
     .returning();
-  if (!cancelled) throw notFound();
+  if (!cancelled) {
+    // The deadline sweep locks the due row (not the chain head), so it can
+    // expire this level between our read and our write. One terminal outcome
+    // per chain: report the winner instead of overwriting "expired" with
+    // "cancelled" and emitting a second approval.resolved.
+    return chainOutcome(await chainRows(tx, input.chainId));
+  }
   const actor: EventActor =
     input.actorUserId === null
       ? { type: "system" }
