@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { accessMessages } from "./access.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -18,6 +19,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
+  access: accessMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -542,6 +545,7 @@ export const id = {
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",
+      access: "Akses & Peran",
     },
   },
   // Notification center, preferences and web push opt-in (PRD §3.15, §2 PWA).
