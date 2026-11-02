@@ -143,7 +143,9 @@ export function ProgramPage() {
     <>
       <Card>
         <CardHeader>
-          <CardTitle>{t("loyalty.program.title")}</CardTitle>
+          <CardTitle className="type-title">
+            {t("loyalty.program.title")}
+          </CardTitle>
           <CardDescription>{t("loyalty.program.description")}</CardDescription>
         </CardHeader>
 
@@ -270,7 +272,9 @@ export function ProgramPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{t("loyalty.program.preview.title")}</CardTitle>
+          <CardTitle className="type-title">
+            {t("loyalty.program.preview.title")}
+          </CardTitle>
           <CardDescription>
             {t("loyalty.program.preview.description")}
           </CardDescription>

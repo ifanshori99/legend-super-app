@@ -46,10 +46,10 @@ async function openDialog(page: Page, name: string) {
 async function openCounts(page: Page) {
   await page.goto("/kelola/inventori/opname");
   await waitForApp(page);
+  // v3 (legend-vvth): the management topbar owns the page h1; the page body
+  // no longer repeats it (DESIGN.md v3 §5).
   await expect(
-    page
-      .locator("#main-content")
-      .getByRole("heading", { level: 1, name: "Inventori" }),
+    page.getByRole("heading", { level: 1, name: "Inventori" }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Sesi stok opname" }),

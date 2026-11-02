@@ -1,11 +1,15 @@
-// Shared frame for the RBAC admin screens: page title, the tab strip between
-// the access sections, and the content slot. Tabs are links, not Radix tabs,
-// because each section has its own URL (docs/frontend.md "Add a page").
+// Shared frame for the RBAC admin screens: the tab strip between the access
+// sections, page actions and the content slot. v3 (DESIGN.md §5 Management):
+// the shell topbar owns the page title, so the frame only renders the section
+// tab group (same look as <Tabs>) with the "Contoh data" badge. Tabs are
+// links, not Radix tabs, because each section has its own URL
+// (docs/frontend.md "Add a page").
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 const TABS = [
@@ -29,7 +33,7 @@ export function AccessTabs({ active }: { active: AccessSection }) {
   return (
     <nav
       aria-label={t("access.title")}
-      className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+      className={cn(tabsListClass, "min-w-0")}
     >
       {TABS.map((tab) => {
         const current = tab.key === active;
@@ -48,10 +52,7 @@ export function AccessTabs({ active }: { active: AccessSection }) {
                 : undefined
             }
             aria-current={current ? "page" : undefined}
-            className={cn(
-              "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-              current && "border-primary font-semibold text-foreground",
-            )}
+            className={tabsTriggerClass}
           >
             {t(tab.labelKey)}
           </Link>
@@ -72,23 +73,15 @@ export function AccessPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4">
-      <header className="grid gap-1">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl leading-7 font-semibold">
-              {t("access.title")}
-            </h1>
-            {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-          </div>
-          {actions}
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <AccessTabs active={active} />
+          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
         </div>
-        <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("access.subtitle")}
-        </p>
-      </header>
-      <AccessTabs active={active} />
-      <div className="grid min-w-0 gap-4">{children}</div>
+        {actions}
+      </div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }

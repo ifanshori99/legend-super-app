@@ -102,18 +102,18 @@ export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
 
   return (
     <form className="grid gap-4" onSubmit={submit}>
-      <div className="flex flex-col gap-3 rounded-lg border-(length:--border-w) bg-muted p-3 sm:flex-row sm:items-start">
+      <div className="flex flex-col gap-3 rounded-container border-(length:--border-w) bg-surface-2 p-3 sm:flex-row sm:items-start">
         <QrCode
           value={enrollment.otpauthUri}
           label={t("staffAuth.enroll.qrLabel")}
           size={132}
-          className="self-center rounded-lg border bg-card p-2 sm:self-start"
+          className="self-center rounded-container border-(length:--border-w) bg-card p-2 sm:self-start"
         />
         <div className="min-w-0 flex-1">
           <p className="text-sm leading-5 font-semibold">
             {t("staffAuth.enroll.secretLabel")}
           </p>
-          <code className="mt-1 block rounded-md border bg-card px-3 py-2 font-mono text-sm break-all select-all">
+          <code className="mt-1 block rounded-field border-(length:--border-w) bg-card px-3 py-2 font-mono text-sm break-all select-all">
             {enrollment.secretBase32}
           </code>
           <p className="mt-1 text-sm leading-5 text-muted-foreground">

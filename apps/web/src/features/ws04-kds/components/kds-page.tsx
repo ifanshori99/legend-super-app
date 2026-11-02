@@ -1,6 +1,8 @@
 import { useState, useSyncExternalStore } from "react";
+import { useQueries } from "@tanstack/react-query";
 import type {
   KitchenTicketDetail,
+  StationBoard,
   StationConfig,
 } from "@starter/shared/kitchen";
 import { canTransitionKitchenTicket } from "@starter/shared/kitchen";
@@ -38,6 +40,7 @@ import {
   useMenuStations,
   useStations,
 } from "../hooks.ts";
+import { boardQuery } from "../queries.ts";
 import {
   formatElapsedSeconds,
   kdsTimerStatus,
@@ -82,6 +85,29 @@ export function KdsPage() {
     .sort((a, b) => a.displayOrder - b.displayOrder);
   const stationId = selected ?? active[0]?.stationId;
   const station = names.data?.find((row) => row.id === stationId);
+  // The station switch carries each station's live queue (DESIGN.md §5: zones
+  // and stations are a group with counts). The open station's count reuses its
+  // own 2 s board poll (same query key, no extra request); the other stations
+  // are read every 30 s only, so a kitchen tablet does not multiply board reads
+  // on the edge node (Opus review legend-haxq). A dedicated per-station count
+  // endpoint is follow-up work.
+  const stationBoards = useQueries({
+    queries: active.map((item) => ({
+      ...boardQuery(item.stationId),
+      refetchInterval: item.stationId === stationId ? (false as const) : 30_000,
+      select: (board: StationBoard) =>
+        board.tickets.filter(
+          (ticket) => ticket.status !== "done" && ticket.status !== "cancelled",
+        ).length,
+    })),
+  });
+  const stationLabel = (id: StationId) => {
+    const name = names.data?.find((row) => row.id === id)?.name ?? id;
+    const index = active.findIndex((item) => item.stationId === id);
+    const count = index === -1 ? undefined : stationBoards[index]?.data;
+    // No count until the board is read — never a fake "(0)".
+    return count === undefined ? name : `${name} (${count})`;
+  };
   const failure = stations.error ?? names.error;
   const offline =
     failure instanceof ApiError && failure.code === "NETWORK_ERROR";
@@ -125,9 +151,7 @@ export function KdsPage() {
                 selection="ink"
                 options={active.map((item) => ({
                   value: item.stationId,
-                  label:
-                    names.data?.find((row) => row.id === item.stationId)
-                      ?.name ?? item.stationId,
+                  label: stationLabel(item.stationId),
                 }))}
               />
               <StationBoard

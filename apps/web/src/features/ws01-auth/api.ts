@@ -5,6 +5,7 @@
 import {
   deleteMfaFactor,
   enrollMfaFactor,
+  extendCurrentSession,
   getCurrentAuth,
   listMfaFactors,
   listSessions,
@@ -50,4 +51,9 @@ export async function fetchSessions(signal?: AbortSignal) {
 
 export async function revokeDeviceSession(sessionId: string) {
   await callEndpoint(revokeSession, { params: { sessionId } });
+}
+
+/** Records explicit staff activity before refreshing the idle deadline. */
+export async function extendStaffSession() {
+  await callEndpoint(extendCurrentSession, undefined);
 }

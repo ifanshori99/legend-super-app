@@ -88,7 +88,7 @@ export function PreOrderDialog({
               {t("reservation.preOrder.loading")}
             </span>
             {Array.from({ length: 2 }, (_, index) => (
-              <Skeleton key={index} className="h-28 w-full rounded-xl" />
+              <Skeleton key={index} className="h-28 w-full rounded-container" />
             ))}
           </div>
         ) : packages.error ? (
@@ -119,9 +119,9 @@ export function PreOrderDialog({
                     disabled={!available}
                     onClick={() => setSelectedId(pack.id)}
                     className={cn(
-                      "grid w-full gap-1 rounded-xl border-(length:--border-w) bg-card p-card text-left text-foreground transition-colors duration-(--duration-fast)",
+                      "grid w-full gap-1 rounded-container border-(length:--border-w) bg-card p-card text-left text-foreground transition-colors duration-(--duration-fast)",
                       "hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-                      selected && "border-primary bg-accent",
+                      selected && "border-primary bg-primary-tint",
                       !available &&
                         "cursor-not-allowed opacity-60 hover:bg-card",
                     )}

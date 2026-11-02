@@ -20,7 +20,7 @@ export function PackagesTab({ outletId }: { outletId: string }) {
           {t("reservation.packages.loading")}
         </span>
         {Array.from({ length: 2 }, (_, index) => (
-          <Skeleton key={index} className="h-32 w-full rounded-xl" />
+          <Skeleton key={index} className="h-32 w-full rounded-container" />
         ))}
       </div>
     );
@@ -52,10 +52,10 @@ export function PackagesTab({ outletId }: { outletId: string }) {
           <li
             key={pack.id}
             data-package-id={pack.id}
-            className="grid gap-2 rounded-xl border-(length:--border-w) bg-card p-card"
+            className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-card"
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
-              <h3 className="text-base font-semibold">{pack.name}</h3>
+              <h3 className="type-title">{pack.name}</h3>
               <Badge tone={pack.status === "active" ? "success" : "neutral"}>
                 {pack.status === "active"
                   ? t("reservation.packages.active")

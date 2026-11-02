@@ -119,6 +119,45 @@ test("AUTH-05: the idle warning appears before a management session ends", async
   await expect(heading).toHaveCount(0);
 });
 
+test("AUTH-05: a failed refresh keeps the idle warning open with retry text", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("legend-mock-session", "idle"),
+  );
+  await page.goto("/kelola/keamanan");
+  await expect(
+    page.getByRole("heading", { name: "Sesi akan segera berakhir" }),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    localStorage.setItem("legend-mock-auth-error", "503"),
+  );
+  await page.getByRole("button", { name: "Lanjut bekerja" }).click();
+  await expect(page.getByRole("alert")).toContainText("Sesi belum diperbarui");
+  await page.evaluate(() => localStorage.removeItem("legend-mock-auth-error"));
+  await page.getByRole("button", { name: "Lanjut bekerja" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Sesi akan segera berakhir" }),
+  ).toHaveCount(0);
+});
+
+test("AUTH-05: an unauthorized refresh returns to sign-in with a safe path", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("legend-mock-session", "idle"),
+  );
+  await page.goto("/kelola/keamanan");
+  await expect(
+    page.getByRole("heading", { name: "Sesi akan segera berakhir" }),
+  ).toBeVisible();
+  await page.evaluate(() =>
+    localStorage.setItem("legend-mock-auth-error", "401"),
+  );
+  await page.getByRole("button", { name: "Lanjut bekerja" }).click();
+  await expect(page).toHaveURL(/\/masuk\?lanjut=%2Fkelola%2Fkeamanan/);
+});
+
 test("AUTH-05: the security page shows honest empty states", async ({
   page,
 }) => {
