@@ -287,6 +287,38 @@ const ZERO_USAGE: PromoUsage = {
   customerUses: 0,
 };
 
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/**
+ * Day of week (0 = Sunday) and "HH:mm" of an instant in the outlet's IANA time
+ * zone: the server derives `localDayOfWeek` / `localTime` with this, never
+ * from the client's clock (PRD §6 business dates in the outlet zone).
+ */
+export function outletLocalClock(
+  at: string | Date,
+  timeZone: string,
+): { localDayOfWeek: number; localTime: string } {
+  const instant = typeof at === "string" ? new Date(at) : at;
+  if (Number.isNaN(instant.getTime())) throw new RangeError("Invalid date");
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const part = (type: string) =>
+    parts.find((entry) => entry.type === type)?.value ?? "";
+  const localDayOfWeek = WEEKDAYS.indexOf(
+    part("weekday") as (typeof WEEKDAYS)[number],
+  );
+  if (localDayOfWeek < 0) throw new RangeError("Unknown weekday");
+  return {
+    localDayOfWeek,
+    localTime: `${part("hour").padStart(2, "0")}:${part("minute")}`,
+  };
+}
+
 function withinTimeWindow(
   condition: Extract<PromotionCondition, { kind: "time_window" }>,
   day: number,
@@ -446,6 +478,10 @@ export function evaluatePromotion(
     return rejected("voucher_required");
   if (promotion.quotaTotal !== null && usage.totalUses >= promotion.quotaTotal)
     return rejected("quota_exhausted");
+  // A per-customer quota cannot be counted on an anonymous bill, so it fails
+  // closed instead of letting a walk-in reuse a once-per-customer promotion.
+  if (promotion.quotaPerCustomer !== null && input.customer === null)
+    return rejected("member_only");
   if (
     promotion.quotaPerCustomer !== null &&
     usage.customerUses >= promotion.quotaPerCustomer
@@ -489,6 +525,9 @@ export function evaluatePromotion(
       break;
     }
     case "facility_entitlement":
+      // PRD §3.25 "Titik Masuk": facility access is bound to an identified
+      // customer, so the minimum-spend reward needs one.
+      if (input.customer === null) return rejected("member_only");
       facilityEntitlement = {
         facilityProductId: benefit.facilityProductId,
         quantity: benefit.quantity,

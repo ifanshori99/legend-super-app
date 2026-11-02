@@ -232,6 +232,20 @@
       "when": 1793649011707,
       "tag": "0032_outlet_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793653233107,
+      "tag": "0033_skinny_hitman",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793653245399,
+      "tag": "0034_promo_rls",
+      "breakpoints": true
     }
   ]
 }
