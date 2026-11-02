@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
 import { loyaltyMessages } from "./loyalty.ts";
 import { qrCartMessages } from "./qr-cart.ts";
@@ -28,6 +29,8 @@ export const id = {
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
+  // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
+  accounting: accountingMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
