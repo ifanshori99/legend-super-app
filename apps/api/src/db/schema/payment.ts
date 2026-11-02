@@ -369,3 +369,67 @@ export const paymentUnallocatedFunds = pgTable(
     ),
   ],
 );
+
+/**
+ * Payment evidence identity (PRD PAY-02/PAY-04): one row per provider
+ * transaction the settlement path applied. The unique
+ * `(tenant_id, provider, provider_ref)` key makes a retried webhook or status
+ * check idempotent, including a retried second payment: the money row
+ * (`payment_unallocated_funds`) is written once per real transaction, never
+ * once per delivery attempt.
+ */
+export const paymentEvidence = pgTable(
+  "payment_evidence",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    paymentIntentId: uuid("payment_intent_id").notNull(),
+    /** Gateway that issued the reference (`doit`, `edc`, ...). */
+    provider: varchar("provider", { length: 20 }).notNull(),
+    /** Provider transaction id; the evidence identity itself. */
+    providerRef: varchar("provider_ref", { length: 100 }).notNull(),
+    method: varchar("method", { length: 20 }).$type<PaymentMethod>().notNull(),
+    /** Verified source label (contract `PaymentConfirmationSource`). */
+    source: varchar("source", { length: 30 }).notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    /** When the provider/staff confirmed the money (confirmation `at`). */
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("payment_evidence_tenant_id_id_key").on(table.tenantId, table.id),
+    // A provider transaction backs exactly one intent; retries hit this key.
+    unique("payment_evidence_provider_ref_key").on(
+      table.tenantId,
+      table.provider,
+      table.providerRef,
+    ),
+    foreignKey({
+      name: "payment_evidence_intent_fk",
+      columns: [table.tenantId, table.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
+    foreignKey({
+      name: "payment_evidence_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("payment_evidence_intent_idx").on(
+      table.tenantId,
+      table.paymentIntentId,
+      table.receivedAt,
+    ),
+    check("payment_evidence_amount_check", sql`${table.amountIdr} > 0`),
+    check(
+      "payment_evidence_source_check",
+      sql`${table.source} IN ('verified_webhook', 'gateway_status', 'edc_ecr', 'authorized_cash', 'authorized_edc_standalone')`,
+    ),
+    check(
+      "payment_evidence_method_check",
+      sql`${table.method} IN ('qris', 'card', 'ewallet', 'va', 'bank_transfer', 'paylater', 'cash', 'edc_card', 'edc_qris', 'points', 'voucher')`,
+    ),
+  ],
+);

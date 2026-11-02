@@ -138,6 +138,24 @@ describe("PAY-04 late, double and over-payment handling", () => {
     });
   });
 
+  it("PAY-04 rejects untrusted or mismatched evidence even after settlement", () => {
+    for (const evidence of [
+      confirmation({ source: "browser_redirect", providerRef: "DOIT-2" }),
+      confirmation({
+        source: "authorized_cash",
+        method: "cash",
+        providerRef: "DOIT-2",
+      }),
+    ]) {
+      expect(
+        decidePaymentConfirmation(intent({ status: "paid" }), evidence),
+      ).toMatchObject({
+        kind: "reject",
+        code: "UNTRUSTED_CONFIRMATION",
+      });
+    }
+  });
+
   it("PAY-04 an overpaid intent records the excess as unallocated funds", () => {
     const decision = decidePaymentConfirmation(
       intent({ amountIdr: 100_000 }),

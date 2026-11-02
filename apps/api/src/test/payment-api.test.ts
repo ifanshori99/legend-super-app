@@ -118,7 +118,10 @@ class FakeGateway implements PaymentGatewayPort {
   }
 
   async createIntent(input: GatewayIntentRequest) {
-    const providerRef = `FAKE-${++this.sequence}`;
+    // Provider references are unique per provider transaction in production;
+    // the fake keeps the same contract so persisted evidence from an earlier
+    // test can never collide with a later one.
+    const providerRef = `FAKE-${randomBytes(6).toString("hex")}-${++this.sequence}`;
     this.lastCreated = providerRef;
     this.payments.set(providerRef, {
       status: "pending",
@@ -195,6 +198,10 @@ afterEach(() => {
 
 afterAll(async () => {
   if (createdLinkIds.length > 0) {
+    await owner.query(
+      "DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[]))",
+      [tenantId, createdLinkIds],
+    );
     await owner.query(
       "DELETE FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id IN (SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[]))",
       [tenantId, createdLinkIds],
@@ -340,6 +347,37 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
       .send({ method: "va", channelCode: "bca", idempotencyKey: "reuse-key" });
     expect(reused.status).toBe(409);
     expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("PAY-01 an idempotency key is bound to the whole request fingerprint (link + method + channel)", async () => {
+    const first = await openBill();
+    const other = await openBill();
+    const key = "fingerprint-key";
+    const created = await agent(app)
+      .post(`/api/payments/links/${first.token}/intents`)
+      .send({ method: "va", channelCode: "bca", idempotencyKey: key });
+    expect(created.status).toBe(201);
+
+    // Same key and payload on the same link is a retry, not a reuse.
+    const retry = await agent(app)
+      .post(`/api/payments/links/${first.token}/intents`)
+      .send({ method: "va", channelCode: "bca", idempotencyKey: key });
+    expect(retry.status).toBe(201);
+    expect(retry.body.data.id).toBe(created.body.data.id);
+
+    // Another link with the same key is a different request.
+    const otherLink = await agent(app)
+      .post(`/api/payments/links/${other.token}/intents`)
+      .send({ method: "va", channelCode: "bca", idempotencyKey: key });
+    expect(otherLink.status).toBe(409);
+    expect(otherLink.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+
+    // Another channel with the same key is a different request too.
+    const otherChannel = await agent(app)
+      .post(`/api/payments/links/${first.token}/intents`)
+      .send({ method: "va", channelCode: "bni", idempotencyKey: key });
+    expect(otherChannel.status).toBe(409);
+    expect(otherChannel.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 
   it("PAY-01 a new intent supersedes the previous pending code", async () => {
@@ -513,6 +551,119 @@ describe("PAY-04 unallocated funds", () => {
     expect(funds).toHaveLength(1);
     expect(funds[0]).toMatchObject({
       amountIdr: 144_375,
+      reason: "double_payment",
+    });
+  });
+
+  it("HIGH payment.service.ts:923 a retried second payment records unallocated funds once (unique provider evidence)", async () => {
+    const { token } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "double-retry-key",
+      });
+    gateway.settle(gateway.lastCreated!);
+    await agent(app).get(
+      `/api/payments/links/${token}/intents/${created.body.data.id}`,
+    );
+
+    // The same provider transaction is delivered twice (webhook retry).
+    const evidence = {
+      source: "verified_webhook" as const,
+      method: "qris" as const,
+      amountIdr: 144_375,
+      providerRef: "WEBHOOK-SECOND-RETRY",
+      at: new Date().toISOString(),
+    };
+    await confirmPayment(contextFor(), created.body.data.id, evidence);
+    await confirmPayment(contextFor(), created.body.data.id, evidence);
+
+    const funds = await unallocatedFundsOfIntent(
+      contextFor(),
+      created.body.data.id,
+    );
+    expect(funds).toHaveLength(1);
+    expect(funds[0]).toMatchObject({
+      amountIdr: 144_375,
+      reason: "double_payment",
+    });
+    const { rows } = await owner.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id = $2 AND provider_ref = $3",
+      [tenantId, created.body.data.id, evidence.providerRef],
+    );
+    expect(rows[0]?.count).toBe("1");
+  });
+
+  it("HIGH payment.service.ts:980 concurrent settlements lock the bill row and never double-allocate", async () => {
+    const { token, linkId } = await openBill();
+    const first = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "race-intent-a",
+      });
+    // The second intent supersedes the first code; a late payment on the first
+    // is still accepted (PRD §3.13 "Siklus Pembayaran").
+    const second = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "race-intent-b",
+      });
+
+    // Hold the first settlement inside its link update long enough for the
+    // second one to read the same balance without the FOR UPDATE lock.
+    await owner.query(
+      `CREATE OR REPLACE FUNCTION slow_link_update() RETURNS trigger
+       LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.3); RETURN NEW; END $$`,
+    );
+    await owner.query(
+      "CREATE TRIGGER slow_link_update BEFORE UPDATE ON payment_links FOR EACH ROW EXECUTE FUNCTION slow_link_update()",
+    );
+    try {
+      const results = await Promise.allSettled([
+        confirmPayment(contextFor(), first.body.data.id, {
+          source: "verified_webhook",
+          method: "qris",
+          amountIdr: 144_375,
+          providerRef: "WEBHOOK-RACE-A",
+          at: new Date().toISOString(),
+        }),
+        confirmPayment(contextFor(), second.body.data.id, {
+          source: "verified_webhook",
+          method: "qris",
+          amountIdr: 144_375,
+          providerRef: "WEBHOOK-RACE-B",
+          at: new Date().toISOString(),
+        }),
+      ]);
+      expect(results.map((result) => result.status)).toEqual([
+        "fulfilled",
+        "fulfilled",
+      ]);
+    } finally {
+      await owner.query(
+        "DROP TRIGGER IF EXISTS slow_link_update ON payment_links",
+      );
+      await owner.query("DROP FUNCTION IF EXISTS slow_link_update()");
+    }
+
+    const link = await owner.query<{ paid_idr: string }>(
+      "SELECT paid_idr::text AS paid_idr FROM payment_links WHERE id = $1",
+      [linkId],
+    );
+    expect(link.rows[0]?.paid_idr).toBe("144375");
+    const funds = await owner.query<{ total: string; reason: string }>(
+      "SELECT coalesce(sum(amount_idr), 0)::text AS total, min(reason) AS reason FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id = ANY($2::uuid[])",
+      [tenantId, [first.body.data.id, second.body.data.id]],
+    );
+    // Exactly one of the two payments fits the bill; the other is unallocated.
+    expect(funds.rows[0]).toEqual({
+      total: "144375",
       reason: "double_payment",
     });
   });

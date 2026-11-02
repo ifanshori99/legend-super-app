@@ -1,3 +1,22 @@
+CREATE TABLE "payment_evidence" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL,
+	"outlet_id" uuid NOT NULL,
+	"payment_intent_id" uuid NOT NULL,
+	"provider" varchar(20) NOT NULL,
+	"provider_ref" varchar(100) NOT NULL,
+	"method" varchar(20) NOT NULL,
+	"source" varchar(30) NOT NULL,
+	"amount_idr" bigint NOT NULL,
+	"received_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "payment_evidence_tenant_id_id_key" UNIQUE("tenant_id","id"),
+	CONSTRAINT "payment_evidence_provider_ref_key" UNIQUE("tenant_id","provider","provider_ref"),
+	CONSTRAINT "payment_evidence_amount_check" CHECK ("payment_evidence"."amount_idr" > 0),
+	CONSTRAINT "payment_evidence_source_check" CHECK ("payment_evidence"."source" IN ('verified_webhook', 'gateway_status', 'edc_ecr', 'authorized_cash', 'authorized_edc_standalone')),
+	CONSTRAINT "payment_evidence_method_check" CHECK ("payment_evidence"."method" IN ('qris', 'card', 'ewallet', 'va', 'bank_transfer', 'paylater', 'cash', 'edc_card', 'edc_qris', 'points', 'voucher'))
+);
+--> statement-breakpoint
 CREATE TABLE "payment_intents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -107,6 +126,10 @@ CREATE TABLE "payment_unallocated_funds" (
 	CONSTRAINT "payment_unallocated_funds_resolved_check" CHECK (("payment_unallocated_funds"."resolution" IS NULL AND "payment_unallocated_funds"."resolved_by" IS NULL AND "payment_unallocated_funds"."resolved_at" IS NULL) OR ("payment_unallocated_funds"."resolution" IS NOT NULL AND "payment_unallocated_funds"."resolved_by" IS NOT NULL AND "payment_unallocated_funds"."resolved_at" IS NOT NULL))
 );
 --> statement-breakpoint
+ALTER TABLE "payment_evidence" ADD CONSTRAINT "payment_evidence_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_evidence" ADD CONSTRAINT "payment_evidence_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_evidence" ADD CONSTRAINT "payment_evidence_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_evidence" ADD CONSTRAINT "payment_evidence_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -121,6 +144,7 @@ ALTER TABLE "payment_unallocated_funds" ADD CONSTRAINT "payment_unallocated_fund
 ALTER TABLE "payment_unallocated_funds" ADD CONSTRAINT "payment_unallocated_funds_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_unallocated_funds" ADD CONSTRAINT "payment_unallocated_funds_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_unallocated_funds" ADD CONSTRAINT "payment_unallocated_funds_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "payment_evidence_intent_idx" ON "payment_evidence" USING btree ("tenant_id","payment_intent_id","received_at");--> statement-breakpoint
 CREATE INDEX "payment_intents_status_expiry_idx" ON "payment_intents" USING btree ("tenant_id","outlet_id","status","expires_at");--> statement-breakpoint
 CREATE INDEX "payment_intents_link_status_idx" ON "payment_intents" USING btree ("tenant_id","payment_link_id","status");--> statement-breakpoint
 CREATE INDEX "payment_link_tokens_expiry_idx" ON "payment_link_tokens" USING btree ("expires_at");--> statement-breakpoint

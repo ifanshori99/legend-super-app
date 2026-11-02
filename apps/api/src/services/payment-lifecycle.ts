@@ -93,6 +93,22 @@ export function decidePaymentConfirmation(
   intent: IntentSnapshot,
   confirmation: PaymentConfirmation,
 ): PaymentDecision {
+  if (
+    confirmation.method !== intent.method ||
+    !canTransitionPayment(
+      "pending",
+      "paid",
+      confirmation.source,
+      confirmation.method,
+    )
+  )
+    return {
+      kind: "reject",
+      code: "UNTRUSTED_CONFIRMATION",
+      message:
+        "Only a verified gateway, EDC or authorized staff confirmation can mark a payment paid.",
+    };
+
   if (settledStatuses.includes(intent.status)) {
     // The same payment retried (webhook replay, a second status check): the
     // intent already holds this money, so nothing new is recorded.

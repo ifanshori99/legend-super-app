@@ -45,6 +45,7 @@ import { z } from "zod";
 import { db } from "../db";
 import {
   outlets,
+  paymentEvidence,
   paymentIntents,
   paymentLinks,
   paymentLinkTokens,
@@ -425,6 +426,32 @@ type IntentPlan = {
   readonly existing: PaymentIntentRow | null;
 };
 
+/**
+ * PAY-01: an idempotency key is bound to the request fingerprint (link +
+ * method + channel). The same key with a different payload is a client bug,
+ * never a retry, so it always fails IDEMPOTENCY_KEY_REUSED — including on the
+ * unique-key race path, where the first request may still be committing.
+ */
+function assertIdempotencyFingerprint(
+  existing: PaymentIntentRow,
+  request: {
+    readonly paymentLinkId: string;
+    readonly method: CreatePaymentIntentInput["method"];
+    readonly channelCode: string | null;
+  },
+): void {
+  if (
+    existing.paymentLinkId !== request.paymentLinkId ||
+    existing.method !== request.method ||
+    existing.channelCode !== request.channelCode
+  )
+    throw new HttpError(
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "This idempotency key was already used for another payment.",
+    );
+}
+
 async function readIntentPlan(
   context: ScopedTenantContext,
   token: string,
@@ -443,16 +470,11 @@ async function readIntentPlan(
         ),
       );
     if (existing) {
-      if (
-        existing.paymentLinkId !== link.id ||
-        existing.method !== input.method ||
-        existing.channelCode !== input.channelCode
-      )
-        throw new HttpError(
-          409,
-          "IDEMPOTENCY_KEY_REUSED",
-          "This idempotency key was already used for another payment.",
-        );
+      assertIdempotencyFingerprint(existing, {
+        paymentLinkId: link.id,
+        method: input.method,
+        channelCode: input.channelCode,
+      });
       return { link, provider: existing.provider, existing };
     }
     if (outstandingIdr(link) <= 0)
@@ -572,16 +594,11 @@ export async function createIntent(
           ),
         );
       if (existing) {
-        if (
-          existing.paymentLinkId !== plan.link.id ||
-          existing.method !== parsed.method ||
-          existing.channelCode !== parsed.channelCode
-        )
-          throw new HttpError(
-            409,
-            "IDEMPOTENCY_KEY_REUSED",
-            "This idempotency key was already used for another payment.",
-          );
+        assertIdempotencyFingerprint(existing, {
+          paymentLinkId: plan.link.id,
+          method: parsed.method,
+          channelCode: parsed.channelCode,
+        });
         return toCustomerIntent(existing);
       }
       await supersedePending(tx, context, plan.link, now);
@@ -638,6 +655,12 @@ export async function createIntent(
       return row ?? null;
     });
     if (!existing) throw error;
+    // The winner may have been a different request that reused the key.
+    assertIdempotencyFingerprint(existing, {
+      paymentLinkId: plan.link.id,
+      method: parsed.method,
+      channelCode: parsed.channelCode,
+    });
     return toCustomerIntent(existing);
   }
 }
@@ -886,6 +909,82 @@ function auditActorOf(actor: PaymentActor) {
     : ({ actorType: "system", actorId: null } as const);
 }
 
+/**
+ * Persists the provider transaction identity behind one confirmation (PAY-02,
+ * PAY-04). Returns `true` when this is new evidence, `false` when the same
+ * provider reference was already applied to this intent (a webhook replay or a
+ * retried status check), so the caller records no second money row. Evidence
+ * that already belongs to another intent fails closed.
+ */
+async function recordPaymentEvidence(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  confirmation: PaymentConfirmation,
+): Promise<boolean> {
+  const [inserted] = await tx
+    .insert(paymentEvidence)
+    .values({
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId,
+      paymentIntentId: intent.id,
+      provider: intent.provider,
+      providerRef: confirmation.providerRef,
+      method: confirmation.method,
+      source: confirmation.source,
+      amountIdr: idr(confirmation.amountIdr),
+      receivedAt: new Date(confirmation.at),
+    })
+    .onConflictDoNothing({
+      target: [
+        paymentEvidence.tenantId,
+        paymentEvidence.provider,
+        paymentEvidence.providerRef,
+      ],
+    })
+    .returning();
+  if (inserted) return true;
+  const [existing] = await tx
+    .select()
+    .from(paymentEvidence)
+    .where(
+      and(
+        eq(paymentEvidence.tenantId, context.tenant.tenantId),
+        eq(paymentEvidence.provider, intent.provider),
+        eq(paymentEvidence.providerRef, confirmation.providerRef),
+      ),
+    );
+  if (!existing)
+    throw new Error("Payment evidence conflicted without a winner");
+  if (existing.paymentIntentId !== intent.id)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "This payment reference is already recorded for another payment.",
+    );
+  return false;
+}
+
+/** Re-reads the intent under a row lock, so a replayed evidence path returns
+ * the state the first (winning) delivery committed. */
+async function lockedIntent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+): Promise<PaymentIntentRow | null> {
+  const [row] = await tx
+    .select()
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    )
+    .for("update");
+  return row ?? null;
+}
+
 async function applyConfirmation(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
@@ -922,6 +1021,18 @@ async function applyConfirmation(
 
   if (decision.kind === "double_payment") {
     return withTenant(db, context, async (tx) => {
+      // PAY-04 retries: one provider transaction must produce one unallocated
+      // money row. The evidence identity decides; a replay returns the current
+      // intent and writes nothing.
+      const recorded = await recordPaymentEvidence(tx, context, intent, {
+        source: confirmation.source,
+        method: confirmation.method,
+        amountIdr: decision.amountIdr,
+        providerRef: confirmation.providerRef,
+        at: confirmation.at,
+      });
+      if (!recorded)
+        return (await lockedIntent(tx, context, intent.id)) ?? intent;
       const [row] = await tx
         .update(paymentIntents)
         .set({ flags: [...decision.flags], updatedAt: now })
@@ -975,8 +1086,10 @@ async function applyConfirmation(
   // The bill may already be covered by another intent (a refreshed code paid
   // late): only the remainder is allocated, the rest becomes unallocated.
   return withTenant(db, context, async (tx) => {
-    // The link row is re-read inside the transaction: another settled intent
-    // may have taken the remainder between the read above and this write.
+    // PAY-04 concurrency: lock the bill row (FOR UPDATE) before reading its
+    // balance. Two settlements for different intents then serialize; the
+    // second one sees the first allocation and turns its own money into
+    // unallocated funds instead of double-allocating the same remainder.
     const [freshLink] = await tx
       .select()
       .from(paymentLinks)
@@ -985,9 +1098,21 @@ async function applyConfirmation(
           eq(paymentLinks.tenantId, context.tenant.tenantId),
           eq(paymentLinks.id, link.id),
         ),
-      );
+      )
+      .for("update");
     if (!freshLink)
       throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
+    // Evidence identity before any money write: a replay of this provider
+    // transaction returns the committed state and records nothing.
+    const recorded = await recordPaymentEvidence(tx, context, intent, {
+      source: confirmation.source,
+      method: confirmation.method,
+      amountIdr: confirmation.amountIdr,
+      providerRef: confirmation.providerRef,
+      at: confirmation.at,
+    });
+    if (!recorded)
+      return (await lockedIntent(tx, context, intent.id)) ?? intent;
     const allocatableNow = Math.min(
       intent.amountIdr,
       outstandingIdr(freshLink),
