@@ -23,7 +23,9 @@ const state = await import("../apps/web/src/features/ws01-auth/state.ts");
 
 const fixtures = identity.cafeLegendIdentityFixtures;
 const owner = fixtures.usersByKey.owner;
-const ownerFactors = fixtures.mfaFactors.filter((row) => row.userId === owner.id);
+const ownerFactors = fixtures.mfaFactors.filter(
+  (row) => row.userId === owner.id,
+);
 const managementSession = fixtures.sessions.find(
   (row) => row.userId === owner.id && row.kind === "management",
 );
@@ -151,10 +153,7 @@ describe("AUTH-05 session warning", () => {
       "ending",
     );
     // 90 seconds left at fixtures.now.
-    assert.equal(
-      state.minutesUntilExpiry(nearEndSession, fixtures.now),
-      2,
-    );
+    assert.equal(state.minutesUntilExpiry(nearEndSession, fixtures.now), 2);
     assert.equal(
       state.idleWarningVisible({
         session: nearEndSession,
@@ -193,7 +192,10 @@ describe("AUTH-05 session warning", () => {
 describe("AUTH-05 return path and code entry", () => {
   test("AUTH-05: verification only returns to a path on this app", () => {
     assert.equal(state.safeReturnTo("/kelola/menu"), "/kelola/menu");
-    assert.equal(state.safeReturnTo("/platform/keamanan"), "/platform/keamanan");
+    assert.equal(
+      state.safeReturnTo("/platform/keamanan"),
+      "/platform/keamanan",
+    );
     assert.equal(state.safeReturnTo("https://evil.example"), "/kelola");
     assert.equal(state.safeReturnTo("//evil.example"), "/kelola");
     assert.equal(state.safeReturnTo("/masuk/email"), "/kelola");

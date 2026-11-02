@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MfaEnrollInput, MfaVerifyInput } from "@starter/shared/identity";
 import {
-  fetchCurrentAuth,
   removeMfaFactor,
   revokeDeviceSession,
   startMfaEnrollment,
@@ -74,4 +73,3 @@ export function useRevokeSession() {
       queryClient.invalidateQueries({ queryKey: staffAuthKeys.all }),
   });
 }
-

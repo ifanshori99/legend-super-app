@@ -39,7 +39,10 @@ export function SecurityStatusBand({
         <Icon className="size-5" aria-hidden="true" />
       </span>
       <div className="grid min-w-0 flex-1 gap-1">
-        <h2 id="security-status-title" className="text-base leading-6 font-semibold text-foreground">
+        <h2
+          id="security-status-title"
+          className="text-base leading-6 font-semibold text-foreground"
+        >
           {blocked
             ? t("staffAuth.status.requiredTitle")
             : state.required

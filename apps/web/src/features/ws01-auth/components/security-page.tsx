@@ -26,7 +26,10 @@ export function SecurityPage() {
   const state = auth.data ? secondFactorState(auth.data, now) : null;
 
   return (
-    <section aria-labelledby="security-title" className="mx-auto grid w-full max-w-5xl gap-6">
+    <section
+      aria-labelledby="security-title"
+      className="mx-auto grid w-full max-w-5xl gap-6"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid min-w-0 gap-1">
           <h2 id="security-title" className="sr-only">
@@ -89,7 +92,7 @@ export function SecurityPage() {
             verifiedAt={auth.data.session.mfaVerifiedAt}
             returnTo={pathname}
           />
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:items-start">
+          <div className="grid gap-6">
             <MfaPanel mfaRequired={auth.data.mfaRequired} />
             <SessionsPanel mfaRequired={auth.data.mfaRequired} />
           </div>

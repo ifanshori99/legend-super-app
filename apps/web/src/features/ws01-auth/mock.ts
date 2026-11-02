@@ -8,7 +8,7 @@
 //   ?mock=empty       no factor enrolled (enrollment) and no device sessions
 //   ?mock=error       every call fails (see lib/mock/control.ts)
 //
-// A mock-only knob shows the idle warning without waiting 28 minutes:
+// A mock-only knob shows the idle warning without waiting 22 minutes:
 //   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m
 //   localStorage.removeItem("legend-mock-session")
 //
@@ -64,7 +64,8 @@ function seedSessions(): SessionView[] {
   const owner = base.usersByKey.owner;
   const devices = base.sessions.filter((row) => row.userId === owner.id);
   const [current, other] = devices;
-  if (!current || !other) throw new Error("Identity fixtures lost owner sessions");
+  if (!current || !other)
+    throw new Error("Identity fixtures lost owner sessions");
 
   const currentSession = sessionSchema.parse({
     ...current,
@@ -105,7 +106,11 @@ function withIdleKnob(session: Session): Session {
 function currentSession(): Session {
   const view = state.get().sessions.find((row) => row.current);
   if (!view)
-    throw new ApiError(401, "UNAUTHORIZED", "Sesi tidak ditemukan. Masuk kembali.");
+    throw new ApiError(
+      401,
+      "UNAUTHORIZED",
+      "Sesi tidak ditemukan. Masuk kembali.",
+    );
   return withIdleKnob(view.session);
 }
 
@@ -163,14 +168,15 @@ registerMock(enrollMfaFactor, ({ body }) => {
   });
   const issuer = encodeURIComponent("Legend Super App");
   const account = encodeURIComponent(owner.displayName);
+  const secretBase32 = totpSecret();
 
   const enrollment: MfaEnrollment =
     body.type === "totp"
       ? {
           type: "totp",
           factorId,
-          secretBase32: totpSecret(),
-          otpauthUri: `otpauth://totp/${issuer}:${account}?issuer=${issuer}&algorithm=SHA1&digits=6&period=30&secret=`,
+          secretBase32,
+          otpauthUri: `otpauth://totp/${issuer}:${account}?issuer=${issuer}&algorithm=SHA1&digits=6&period=30&secret=${secretBase32}`,
           expiresAt: at(10 * 60_000),
         }
       : {
@@ -192,17 +198,8 @@ registerMock(enrollMfaFactor, ({ body }) => {
           },
         };
 
-  // The URI must carry the generated secret, which the literal above lacks.
-  const withSecret: MfaEnrollment =
-    enrollment.type === "totp"
-      ? {
-          ...enrollment,
-          otpauthUri: `${enrollment.otpauthUri}${enrollment.secretBase32}`,
-        }
-      : enrollment;
-
-  state.get().pending.set(factorId, { enrollment: withSecret, factor });
-  return { data: withSecret };
+  state.get().pending.set(factorId, { enrollment, factor });
+  return { data: enrollment };
 });
 
 registerMock(verifyMfaFactor, ({ body }) => {

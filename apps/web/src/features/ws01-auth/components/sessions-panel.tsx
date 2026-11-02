@@ -12,14 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import type { SessionView } from "@starter/shared/identity";
 import { formatDateTime } from "../format";
@@ -35,10 +27,15 @@ const STATUS_TONE = {
 function DeviceIcon({ label }: { label: string }) {
   const phone = /iphone|android|pixel|galaxy/i.test(label);
   const Icon = phone ? Smartphone : Laptop;
-  return <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />;
+  return (
+    <Icon
+      className="size-4 shrink-0 text-muted-foreground"
+      aria-hidden="true"
+    />
+  );
 }
 
-/** One device row's status, always icon + text (never color alone). */
+/** One device's status, always icon + text (never color alone). */
 function SessionStatus({
   view,
   mfaRequired,
@@ -50,8 +47,7 @@ function SessionStatus({
 }) {
   const t = useT();
   const status = sessionRowStatus({ view, mfaRequired, now });
-  const Icon =
-    status === "active" ? CircleCheck : status === "ending" ? Clock : Clock;
+  const Icon = status === "active" ? CircleCheck : Clock;
   return (
     <Badge tone={STATUS_TONE[status]} className="gap-1">
       <Icon aria-hidden="true" />
@@ -66,8 +62,10 @@ function SessionStatus({
 
 /**
  * "Sesi & perangkat" (PRD §3 F6): server-held sessions, revocable per device.
- * The current session is marked, not revocable from here (signing out is the
- * header action).
+ * A row list rather than a table: one device is one object with a name, a
+ * status and one action, and the rows stay readable on a 390px phone without
+ * horizontal scrolling. The current session is marked, not revocable from here
+ * (signing out is the header action).
  */
 export function SessionsPanel({ mfaRequired }: { mfaRequired: boolean }) {
   const t = useT();
@@ -116,87 +114,71 @@ export function SessionsPanel({ mfaRequired }: { mfaRequired: boolean }) {
         description={t("staffAuth.sessions.description")}
         state={state}
         onRetry={() => void sessions.refetch()}
-        rowCount={rows.length}
         loadingRows={2}
         empty={{
           title: t("staffAuth.sessions.emptyTitle"),
           description: t("staffAuth.sessions.emptyHint"),
         }}
       >
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("staffAuth.sessions.columnDevice")}</TableHead>
-              <TableHead>{t("staffAuth.sessions.columnKind")}</TableHead>
-              <TableHead>{t("staffAuth.sessions.columnLastSeen")}</TableHead>
-              <TableHead>{t("staffAuth.sessions.columnStatus")}</TableHead>
-              <TableHead className="text-right">
-                {t("staffAuth.sessions.columnActions")}
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((view) => {
-              const { session } = view;
-              return (
-                <TableRow key={session.id}>
-                  <TableCell>
-                    <div className="flex min-w-0 items-center gap-2">
-                      <DeviceIcon label={session.deviceLabel} />
-                      <span className="min-w-0">
-                        <span className="block truncate font-semibold">
-                          {session.deviceLabel}
-                        </span>
-                        {view.current && (
-                          <Badge tone="neutral" className="mt-1">
-                            {t("staffAuth.sessions.current")}
-                          </Badge>
-                        )}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
+        <ul className="divide-y">
+          {rows.map((view) => {
+            const { session } = view;
+            return (
+              <li
+                key={session.id}
+                className="flex flex-wrap items-center gap-3 px-card py-3"
+              >
+                <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                  <DeviceIcon label={session.deviceLabel} />
+                </span>
+                <div className="grid min-w-0 flex-1 gap-0.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-sm leading-5 font-semibold">
+                      {session.deviceLabel}
+                    </span>
+                    {view.current && (
+                      <Badge tone="neutral">
+                        {t("staffAuth.sessions.current")}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs leading-4 text-muted-foreground">
                     {session.kind === "management"
                       ? t("staffAuth.sessions.kindManagement")
                       : t("staffAuth.sessions.kindCustomer")}
-                  </TableCell>
-                  <TableCell>
-                    <span className="block whitespace-nowrap">
-                      {formatDateTime(session.lastSeenAt)}
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {t("staffAuth.sessions.endsAt", {
-                        time: formatDateTime(session.expiresAt),
-                      })}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <SessionStatus
-                      view={view}
-                      mfaRequired={mfaRequired}
-                      now={now}
-                    />
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {!view.current && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setError(null);
-                          setTarget(view);
-                        }}
-                      >
-                        <Trash2 aria-hidden="true" />
-                        {t("staffAuth.sessions.revoke")}
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                    {" · "}
+                    {t("staffAuth.sessions.lastSeen", {
+                      time: formatDateTime(session.lastSeenAt),
+                    })}
+                  </p>
+                  <p className="text-xs leading-4 text-muted-foreground">
+                    {t("staffAuth.sessions.endsAt", {
+                      time: formatDateTime(session.expiresAt),
+                    })}
+                  </p>
+                </div>
+                <SessionStatus
+                  view={view}
+                  mfaRequired={mfaRequired}
+                  now={now}
+                />
+                {!view.current && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setError(null);
+                      setTarget(view);
+                    }}
+                  >
+                    <Trash2 aria-hidden="true" />
+                    {t("staffAuth.sessions.revoke")}
+                  </Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </DataTableShell>
 
       <Dialog

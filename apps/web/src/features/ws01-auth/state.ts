@@ -159,5 +159,7 @@ export function asAppPath(path: string): "/kelola" {
 export function primaryIdentity(
   identities: readonly UserIdentity[],
 ): UserIdentity | null {
-  return identities.find((identity) => identity.isPrimary) ?? identities[0] ?? null;
+  return (
+    identities.find((identity) => identity.isPrimary) ?? identities[0] ?? null
+  );
 }

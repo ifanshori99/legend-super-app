@@ -18,7 +18,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
@@ -32,6 +31,7 @@ import {
   asAppPath,
   isTotpCodeComplete,
   normalizeTotpCode,
+  primaryIdentity,
   secondFactorState,
 } from "../state";
 import { TotpEnrollFlow } from "./totp-enroll";
@@ -104,7 +104,6 @@ function CodeChallenge({
           autoComplete="one-time-code"
           autoFocus
           maxLength={6}
-          placeholder="123456"
           className="max-w-40 text-center font-mono text-lg tracking-[0.3em] tabular"
         />
       </FormField>
@@ -144,13 +143,15 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
   const passkey = auth.data?.mfaFactors.find(
     (factor) => factor.type === "passkey",
   );
+  const identity = primaryIdentity(auth.data?.identities ?? []);
   const noSession =
-    auth.isError &&
-    auth.error instanceof ApiError &&
-    auth.error.status === 401;
+    auth.isError && auth.error instanceof ApiError && auth.error.status === 401;
 
   return (
-    <ThemeScope density="padat" className="grid min-h-dvh grid-rows-[auto_1fr_auto]">
+    <ThemeScope
+      density="padat"
+      className="grid min-h-dvh grid-rows-[auto_1fr_auto]"
+    >
       <header className="flex items-center justify-between gap-3 px-gutter py-4">
         <p className="text-base leading-6 font-bold tracking-tight">
           {t("app.defaultBrand")}
@@ -158,7 +159,10 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
         <ThemeToggle />
       </header>
 
-      <main id="main-content" className="mx-auto w-full max-w-md px-gutter py-6">
+      <main
+        id="main-content"
+        className="mx-auto grid w-full max-w-md place-items-center px-gutter py-6"
+      >
         {auth.isPending ? (
           <Card aria-busy="true">
             <span className="sr-only">{t("common.loading")}</span>
@@ -232,11 +236,11 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
         ) : (
           <Card>
             <CardHeader>
-              <CardTitle className="text-xl">
+              <h1 className="text-xl leading-7 font-semibold">
                 {state.enrollmentRequired
                   ? t("staffAuth.verify.enrollTitle")
                   : t("staffAuth.verify.title")}
-              </CardTitle>
+              </h1>
               <CardDescription>
                 {state.enrollmentRequired
                   ? t("staffAuth.verify.enrollHint")
@@ -244,11 +248,20 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4">
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("staffAuth.verify.signedInAs", {
-                  name: auth.data?.user.displayName ?? "",
-                })}
-              </p>
+              <div className="grid gap-0.5">
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {t("staffAuth.verify.signedInAs", {
+                    name: auth.data?.user.displayName ?? "",
+                  })}
+                </p>
+                {identity && (
+                  <p className="text-xs leading-4 text-muted-foreground">
+                    {t("staffAuth.verify.identityHint", {
+                      value: identity.valueMasked,
+                    })}
+                  </p>
+                )}
+              </div>
 
               {state.enrollmentRequired || !totpFactor ? (
                 state.enrollmentRequired ? (
@@ -292,7 +305,10 @@ export function MfaVerifyPage({ returnTo }: { returnTo?: string }) {
       <footer className="border-t px-gutter py-4">
         <p className="mx-auto max-w-md text-center text-sm leading-5 text-muted-foreground">
           {t("staffAuth.verify.notYou")}{" "}
-          <Link to="/sign-in" className="font-semibold text-primary underline-offset-4 hover:underline">
+          <Link
+            to="/sign-in"
+            className="font-semibold text-primary underline-offset-4 hover:underline"
+          >
             {t("staffAuth.verify.backToSignIn")}
           </Link>
         </p>

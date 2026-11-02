@@ -62,7 +62,8 @@ export const ws01AuthMessages = {
     enroll: {
       title: "Daftarkan aplikasi autentikator",
       description:
-        "Tambahkan akun di aplikasi autentikator dengan kunci di bawah, lalu masukkan 6 angka yang muncul.",
+        "Pindai kode QR di aplikasi autentikator, atau masukkan kunci setup di bawah, lalu masukkan 6 angka yang muncul.",
+      qrLabel: "Kode QR untuk aplikasi autentikator",
       secretLabel: "Kunci setup",
       copySecret: "Salin kunci",
       copied: "Kunci setup disalin.",
@@ -73,11 +74,8 @@ export const ws01AuthMessages = {
       codeHint: "Masukkan kode terbaru dari aplikasi autentikator.",
       submit: "Verifikasi dan aktifkan",
       success: "Faktor kedua aktif.",
-      invalidCode:
-        "Kode tidak cocok. Periksa jam perangkat, lalu masukkan kode terbaru.",
       errorGeneric: "Faktor kedua belum bisa didaftarkan. Coba lagi.",
       expires: "Kunci ini berlaku sampai {time}.",
-      back: "Batal",
     },
 
     verify: {
@@ -85,6 +83,7 @@ export const ws01AuthMessages = {
       description:
         "Masukkan kode dari aplikasi autentikator untuk melanjutkan ke back office.",
       signedInAs: "Masuk sebagai {name}",
+      identityHint: "Identitas terverifikasi: {value}",
       factorLabel: "Faktor kedua",
       codeLabel: "Kode 6 angka",
       codeHint: "6 angka dari aplikasi autentikator.",
@@ -95,7 +94,6 @@ export const ws01AuthMessages = {
       rateLimited:
         "Terlalu banyak percobaan. Tunggu beberapa menit sebelum mencoba lagi.",
       notYou: "Bukan akun Anda?",
-      signOut: "Keluar",
       backToSignIn: "Kembali ke halaman masuk",
       alreadyTitle: "Verifikasi sudah selesai",
       alreadyHint: "Sesi ini sudah melewati faktor kedua.",
@@ -110,7 +108,6 @@ export const ws01AuthMessages = {
       offlineTitle: "Tidak ada koneksi internet",
       offlineHint:
         "Verifikasi memerlukan koneksi. Sambungkan internet, lalu coba lagi.",
-      passkeyLabel: "Passkey",
       passkeyHint:
         "Passkey belum dapat diverifikasi dari web ini. Gunakan kode dari aplikasi autentikator.",
       helpTitle: "Tidak bisa memakai aplikasi autentikator?",
@@ -122,11 +119,6 @@ export const ws01AuthMessages = {
       title: "Sesi & perangkat",
       description:
         "Sesi disimpan di server dan dapat dicabut per perangkat. Sesi manajemen berakhir setelah 30 menit tidak aktif; sesi pelanggan bertahan 90 hari.",
-      columnDevice: "Perangkat",
-      columnKind: "Jenis",
-      columnLastSeen: "Terakhir aktif",
-      columnStatus: "Status",
-      columnActions: "Tindakan",
       kindManagement: "Manajemen",
       kindCustomer: "Pelanggan",
       current: "Sesi ini",
@@ -140,12 +132,11 @@ export const ws01AuthMessages = {
       statusActive: "Aktif",
       statusEnding: "Segera berakhir",
       statusMfaPending: "Menunggu verifikasi",
+      lastSeen: "Terakhir aktif {time}",
       endsAt: "Berakhir {time}",
       emptyTitle: "Belum ada sesi perangkat",
       emptyHint:
         "Sesi muncul di sini setelah akun ini masuk dari sebuah perangkat.",
-      loadErrorTitle: "Daftar sesi tidak dapat dimuat",
-      loadErrorHint: "Periksa koneksi, lalu coba lagi.",
     },
 
     idle: {

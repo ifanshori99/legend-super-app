@@ -1,10 +1,11 @@
 import * as React from "react";
-import { Check, Copy, RotateCw, Smartphone } from "lucide-react";
+import { Check, Copy, RotateCw } from "lucide-react";
 import type { TotpEnrollment } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
+import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { enrollmentErrorKey, secondFactorErrorKey } from "../errors";
@@ -101,10 +102,12 @@ export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
 
   return (
     <form className="grid gap-4" onSubmit={submit}>
-      <div className="flex items-start gap-3 rounded-lg border bg-muted p-3">
-        <Smartphone
-          className="mt-0.5 size-5 shrink-0 text-muted-foreground"
-          aria-hidden="true"
+      <div className="flex flex-col gap-3 rounded-lg border-(length:--border-w) bg-muted p-3 sm:flex-row sm:items-start">
+        <QrCode
+          value={enrollment.otpauthUri}
+          label={t("staffAuth.enroll.qrLabel")}
+          size={132}
+          className="self-center rounded-lg border bg-card p-2 sm:self-start"
         />
         <div className="min-w-0 flex-1">
           <p className="text-sm leading-5 font-semibold">
@@ -152,7 +155,6 @@ export function TotpEnrollFlow({ onEnrolled }: { onEnrolled: () => void }) {
           autoComplete="one-time-code"
           autoFocus
           maxLength={6}
-          placeholder="123456"
           className="max-w-40 text-center font-mono text-lg tracking-[0.3em] tabular"
         />
       </FormField>

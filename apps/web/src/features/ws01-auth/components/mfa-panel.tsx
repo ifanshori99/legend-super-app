@@ -7,7 +7,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,6 +40,7 @@ import { TotpEnrollFlow } from "./totp-enroll";
  */
 export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
   const t = useT();
+  const toast = useToast();
   const factors = useMfaFactors();
   const remove = useDeleteMfaFactor();
   const [chooseOpen, setChooseOpen] = React.useState(false);
@@ -56,7 +56,10 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
     if (!removeTarget) return;
     setRemoveError(null);
     remove.mutate(removeTarget.id, {
-      onSuccess: () => setRemoveTarget(null),
+      onSuccess: () => {
+        toast({ title: t("staffAuth.mfa.removed"), tone: "success" });
+        setRemoveTarget(null);
+      },
       onError: () => setRemoveError(t("staffAuth.mfa.removeFailed")),
     });
   }
@@ -107,10 +110,9 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
                       })}
                     </p>
                   </div>
-                  <Badge tone="success">{t("staffAuth.sessions.statusActive")}</Badge>
                   <Button
                     variant="ghost"
-                    size="sm"
+                    size="icon"
                     disabled={locked}
                     onClick={() => {
                       setRemoveError(null);
@@ -118,7 +120,7 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
                     }}
                   >
                     <Trash2 aria-hidden="true" />
-                    {t("staffAuth.mfa.remove")}
+                    <span className="sr-only">{t("staffAuth.mfa.remove")}</span>
                   </Button>
                 </li>
               );
@@ -149,7 +151,9 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
       </CardContent>
 
       <CardFooter>
-        <Button onClick={() => setChooseOpen(true)}>
+        {/* Outline: when AUTH-05 blocks the session, "Verifikasi sekarang" is
+            the one primary action of this view. */}
+        <Button variant="outline" onClick={() => setChooseOpen(true)}>
           <Plus aria-hidden="true" />
           {t("staffAuth.mfa.add")}
         </Button>
@@ -205,10 +209,7 @@ export function MfaPanel({ mfaRequired }: { mfaRequired: boolean }) {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={enrollOpen}
-        onOpenChange={(open) => setEnrollOpen(open)}
-      >
+      <Dialog open={enrollOpen} onOpenChange={(open) => setEnrollOpen(open)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("staffAuth.enroll.title")}</DialogTitle>
