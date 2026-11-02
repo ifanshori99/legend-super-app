@@ -322,6 +322,22 @@ export function resolveAccessSnapshot(
     target: AccessTarget,
   ): ScopedTenantContext | null => {
     if (!allows(permission, target)) return null;
+    // Station-bound route (legend-fsb7): RLS is outlet-level, so the context
+    // carries exactly the station's outlet — never the caller's other outlets
+    // (an outlet grant elsewhere must not replace or widen it). Minted only
+    // after the station target is authorized above; services assert the
+    // station on every query and mutation.
+    if (target.type === "station") {
+      const station = input.org.stations.find(
+        (row) => row.id.toLowerCase() === target.id.toLowerCase(),
+      );
+      return station
+        ? establishScopedTenantContext(input.tenant, {
+            kind: "outlets",
+            outletIds: [station.outletId],
+          })
+        : null;
+    }
     const reach = outletReachOf({
       principal,
       roles: input.roles,
@@ -329,23 +345,9 @@ export function resolveAccessSnapshot(
       now: input.now,
       permission,
     });
-    if (reach !== null)
-      return establishScopedTenantContext(input.tenant, reach);
-    // Station-bound route (legend-fsb7): RLS is outlet-level, so the context
-    // carries the station's outlet. Minted only for an authorized station
-    // target; services assert the station on every query and mutation, so the
-    // outlet reach never widens what a station-scoped grant may touch.
-    if (target.type === "station") {
-      const station = input.org.stations.find(
-        (row) => row.id.toLowerCase() === target.id.toLowerCase(),
-      );
-      if (station)
-        return establishScopedTenantContext(input.tenant, {
-          kind: "outlets",
-          outletIds: [station.outletId],
-        });
-    }
-    return null;
+    return reach === null
+      ? null
+      : establishScopedTenantContext(input.tenant, reach);
   };
   const stationsFor = (permission: PermissionCode): StationId[] =>
     stationReachOf({

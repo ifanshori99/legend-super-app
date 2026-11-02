@@ -183,6 +183,36 @@ describe("TEN-03 permission resolver", () => {
     ).toBeNull();
   });
 
+  it("a station target mints exactly that station's outlet, even beside an outlet grant elsewhere (legend-fsb7)", () => {
+    // Kitchen Lead holds kds.ticket.process for the whole of Bandung; give it
+    // one more station-scoped grant at Bandung 2. The station target must run
+    // with Bandung 2's reach, not the unrelated Bandung outlet reach.
+    const stationAtBandung2 = fx.stations.find(
+      (row) => row.code === "bar_kopi_2",
+    )!;
+    const barista = fx.assignments.find(
+      (row) => row.userId === fx.users.barista.id,
+    )!;
+    const extra = {
+      ...barista,
+      id: "00000000-0000-4000-8000-00000000f5b7" as typeof barista.id,
+      userId: fx.users.kitchenLead.id,
+      scope: { type: "station" as const, id: stationAtBandung2.id },
+    } as unknown as (typeof fx.assignments)[number];
+    const lead = snapshotFor("kitchenLead", {
+      assignments: [...fx.assignments, extra],
+    });
+    const context = lead.contextFor("kds.ticket.process", {
+      type: "station",
+      id: stationAtBandung2.id,
+    });
+    expect(
+      context?.outletScope.kind === "outlets"
+        ? context.outletScope.outletIds
+        : null,
+    ).toEqual([bandung2]);
+  });
+
   it("station reach lists only the stations a permission reaches (legend-fsb7)", () => {
     expect(snapshotFor("barista").stationsFor("kds.ticket.process")).toEqual([
       stationBarKopi,

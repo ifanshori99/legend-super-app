@@ -42,6 +42,29 @@ const dataByRequest = new WeakMap<Request, TenantAccessData>();
 const contexts = new WeakMap<Request, ScopedTenantContext>();
 
 /**
+ * Station-scoped list routes (legend-fsb7) keep their context apart from
+ * `contexts`: the outlet-wide RLS reach is only safe together with the
+ * station narrowing, so `getScopedTenantContext` refuses these routes and the
+ * handler must take `getStationScope` (context + permitted stations) instead.
+ */
+export type StationScope = {
+  readonly context: ScopedTenantContext;
+  /** Stations the caller may see for the route's permission; filter by these. */
+  readonly stationIds: readonly string[];
+};
+const stationScopes = new WeakMap<Request, StationScope>();
+
+/** The station-scoped context set by requireStationScopePermission. */
+export function getStationScope(req: Request): StationScope {
+  const scope = stationScopes.get(req);
+  if (!scope)
+    throw new Error(
+      "getStationScope() used without requireStationScopePermission",
+    );
+  return scope;
+}
+
+/**
  * Resolves (and caches per request) the caller's effective access. Read-only:
  * the tenant transaction only selects assignments, roles and the org tree.
  */
@@ -225,7 +248,12 @@ export function requireStationScopePermission(
         "PERMISSION_DENIED",
         "Anda hanya dapat mengakses stasiun yang ditugaskan.",
       );
-    contexts.set(req, context);
+    // Not `contexts`: see StationScope. The handler gets the context only
+    // together with the stations it must filter by.
+    stationScopes.set(req, {
+      context,
+      stationIds: snapshot.stationsFor(permission),
+    });
     res.setHeader("Cache-Control", "private, no-store");
     next();
   };

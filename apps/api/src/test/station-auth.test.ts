@@ -221,6 +221,46 @@ describe("legend-fsb7 station authorization", () => {
     ).not.toContain(stationOfOutletB);
   });
 
+  it("legend-fsb7 an unknown or soft-deleted station answers the same 403 (no enumeration)", async () => {
+    const stationA = await createStation(outletA, "pastry");
+    const roleId = await customRole(["menu.item.view", "menu.item.manage"]);
+    // Outlet-wide manager: it may manage every live station of outletA.
+    const { client } = await roleClient(roleId, {
+      type: "outlet",
+      id: outletA,
+    });
+    expect(
+      (
+        await client
+          .patch(`/api/menu/stations/${stationA}`)
+          .set(originHeader)
+          .send({ targetSeconds: 240 })
+      ).status,
+    ).toBe(200);
+    // Never-existing id (or another tenant's, which RLS and the org index
+    // hide the same way): denied with the station message, not 404.
+    const unknown = await client
+      .patch("/api/menu/stations/00000000-0000-4000-8000-0000000f5b70")
+      .set(originHeader)
+      .send({ targetSeconds: 240 });
+    expect(unknown.status).toBe(403);
+    expect(body(unknown).error).toMatchObject({ code: "PERMISSION_DENIED" });
+    // Soft-deleted: the org index drops it, so the same 403.
+    expect(
+      (
+        await client
+          .delete(`/api/menu/stations/${stationA}`)
+          .set(originHeader)
+          .send()
+      ).status,
+    ).toBe(204);
+    const deleted = await client
+      .patch(`/api/menu/stations/${stationA}`)
+      .set(originHeader)
+      .send({ targetSeconds: 240 });
+    expect(deleted.status).toBe(403);
+  });
+
   it("legend-fsb7 an outlet-scoped manager configures every station of its outlet only", async () => {
     const stationA = await createStation(outletA, "coffee_bar");
     const stationB = await createStation(outletA, "hot_kitchen");

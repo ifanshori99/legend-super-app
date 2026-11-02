@@ -115,6 +115,7 @@ import {
   requireMenuPermission,
   requireStationPermission,
   requireStationScopePermission,
+  getStationScope,
 } from "../middleware/permissions";
 import { getScopedTenantContext } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
@@ -252,9 +253,11 @@ export function createMenuRouter(
 
   router.get(relative(listStationsEndpoint), viewStations, async (req, res) => {
     const query = listStationsEndpoint.query.parse(req.query);
+    // Station scope, not getScopedTenantContext: listStations narrows the
+    // rows to the caller's stations (legend-fsb7).
     res.json(
       await listStations(
-        getScopedTenantContext(req),
+        getStationScope(req).context,
         getAuth(req).user.id,
         query,
       ),
