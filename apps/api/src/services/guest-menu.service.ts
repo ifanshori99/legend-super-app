@@ -50,7 +50,6 @@ import { db } from "../db";
 import {
   brands,
   floorZones,
-  itemAvailability,
   itemVariants,
   menuCategories,
   menuItemModifierGroups,
@@ -58,8 +57,6 @@ import {
   modifierGroups,
   modifiers,
   outlets,
-  priceListItems,
-  priceLists,
   tables,
   taxRules,
 } from "../db/schema";
@@ -71,6 +68,8 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
+import { readAvailabilityDecisions, withinWindows } from "./menu-availability";
+import { readChannelPriceGrid } from "./menu-pricing.service";
 import { verifyTableQrToken } from "./qr-token";
 
 /** The contract caps a guest item's lists; the database does not. */
@@ -94,21 +93,6 @@ function notFound(): CoreError {
 
 // ---- Zone hours ------------------------------------------------------------
 
-const WEEKDAY_INDEX: Record<string, number> = {
-  Sun: 0,
-  Mon: 1,
-  Tue: 2,
-  Wed: 3,
-  Thu: 4,
-  Fri: 5,
-  Sat: 6,
-};
-
-function minutesOfDay(hm: string): number {
-  const [hours, minutes] = hm.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
 /**
  * Is the zone ordering right now? Wall clock of the outlet (PRD: business hours
  * follow the outlet time zone), compared against `zone.hours`; a zone with no
@@ -120,51 +104,10 @@ export function zoneOrderingOpen(
   at: Date,
   timeZone: string,
 ): boolean {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(at);
-  const part = (type: string) =>
-    parts.find((entry) => entry.type === type)?.value ?? "";
-  const weekday = WEEKDAY_INDEX[part("weekday")];
-  if (weekday === undefined) return false;
-  const minutes = Number(part("hour")) * 60 + Number(part("minute"));
-  return hours.some(
-    (window) =>
-      window.daysOfWeek.includes(weekday) &&
-      minutes >= minutesOfDay(window.start) &&
-      minutes < minutesOfDay(window.end),
-  );
+  return withinWindows(hours, at, timeZone, "closed");
 }
 
 // ---- Catalogue -------------------------------------------------------------
-
-/** Latest dine-in price list of the outlet that is effective on `today`. */
-async function currentPriceList(
-  tx: Tx,
-  tenantId: TenantId,
-  outletId: OutletId,
-  today: string,
-) {
-  const [row] = await tx
-    .select()
-    .from(priceLists)
-    .where(
-      and(
-        eq(priceLists.tenantId, tenantId),
-        eq(priceLists.outletId, outletId),
-        eq(priceLists.channel, GUEST_CHANNEL),
-        lte(priceLists.effectiveFrom, today),
-        isNull(priceLists.deletedAt),
-      ),
-    )
-    .orderBy(desc(priceLists.effectiveFrom), desc(priceLists.id))
-    .limit(1);
-  return row ?? null;
-}
 
 /**
  * The guest catalogue of one brand outlet: visible categories, visible items
@@ -260,25 +203,16 @@ async function readGuestCatalogue(
     };
 
   const itemIds = visible.map((row) => row.id);
-  const priceList = await currentPriceList(tx, tenantId, input.outletId, today);
-  const prices = priceList
-    ? await tx
-        .select({
-          itemId: priceListItems.itemId,
-          variantId: priceListItems.variantId,
-          priceIdr: priceListItems.priceIdr,
-          updatedAt: priceListItems.updatedAt,
-        })
-        .from(priceListItems)
-        .where(
-          and(
-            eq(priceListItems.tenantId, tenantId),
-            eq(priceListItems.priceListId, priceList.id),
-            inArray(priceListItems.itemId, itemIds),
-            isNull(priceListItems.deletedAt),
-          ),
-        )
-    : [];
+  // The effective dine-in price grid: one resolver shared with the POS/ojol
+  // order paths (bead legend-h2a), so a channel price can never read two ways.
+  const grid = await readChannelPriceGrid(tx, context, {
+    outletId: input.outletId,
+    channel: GUEST_CHANNEL,
+    businessDate: today,
+    itemIds,
+  });
+  const priceList = grid.priceList;
+  const prices = grid.entries;
   const plainPrice = new Map<string, number>();
   const variantPrice = new Map<string, number>();
   for (const row of prices) {
@@ -380,25 +314,23 @@ async function readGuestCatalogue(
     groupsByItem.set(link.menuItemId, list);
   }
 
-  const availability = await tx
-    .select({
-      menuItemId: itemAvailability.menuItemId,
-      status: itemAvailability.status,
-      updatedAt: itemAvailability.updatedAt,
-    })
-    .from(itemAvailability)
-    .where(
-      and(
-        eq(itemAvailability.tenantId, tenantId),
-        eq(itemAvailability.outletId, input.outletId),
-        inArray(itemAvailability.menuItemId, itemIds),
-        isNull(itemAvailability.deletedAt),
-      ),
-    );
+  // Ketersediaan (PRD §8): the 86 state, the schedule window of this instant
+  // and today's remaining daily quantity decide whether the item can be added
+  // (ORD-05). Outside its window or out of daily stock it answers `sold_out`,
+  // the only unavailable state the QR/public contracts carry; a passed
+  // `soldOutUntil` already counts as restored.
+  const availability = await readAvailabilityDecisions(tx, {
+    tenantId,
+    outletId: input.outletId,
+    itemIds,
+    at: input.now,
+    timeZone: input.timeZone,
+    businessDate: today,
+  });
   const soldOut = new Set(
-    availability
-      .filter((row) => row.status === "sold_out")
-      .map((row) => row.menuItemId),
+    [...availability.entries()]
+      .filter(([, decision]) => !decision.sellable)
+      .map(([itemId]) => itemId),
   );
 
   const mediaUrls = await loadMediaUrls(
@@ -457,7 +389,7 @@ async function readGuestCatalogue(
   const freshAt = [
     ...(priceList ? [priceList.updatedAt] : []),
     ...prices.map((row) => row.updatedAt),
-    ...availability.map((row) => row.updatedAt),
+    ...[...availability.values()].map((decision) => decision.updatedAt),
     ...variantRows.map((row) => row.updatedAt),
     ...groups.map((row) => row.updatedAt),
     ...modifierRows.map((row) => row.updatedAt),
