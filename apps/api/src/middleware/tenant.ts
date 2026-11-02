@@ -85,6 +85,15 @@ export function getTenantContext(req: Request): TenantContext {
 }
 
 /**
+ * The server-minted context when one resolved, undefined otherwise. For
+ * cross-cutting middleware (the public rate limiter keys its tenant bucket)
+ * that must not decide the route's tenant requirement.
+ */
+export function findTenantContext(req: Request): TenantContext | undefined {
+  return contexts.get(req);
+}
+
+/**
  * A tenant-aware route that requires a resolved tenant (TEN-02). Without a
  * domain or credential there is no tenant, so the answer is 404 — never a
  * tenant picked from request input.

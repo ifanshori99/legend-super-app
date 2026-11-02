@@ -10,6 +10,11 @@ import { auth, CLIENT_IP_HEADER } from "./lib/auth";
 import { logger as defaultLogger, type Logger } from "./lib/logger";
 import { requestContext } from "./lib/request-context";
 import { limitAuthBody } from "./middleware/body";
+import {
+  PUBLIC_RATE_LIMIT_PATHS,
+  publicRateLimit,
+  type PublicRateLimitOptions,
+} from "./middleware/public-rate-limit";
 import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
@@ -46,10 +51,13 @@ function originalUrl(req: IncomingMessage) {
 export function createApp({
   logger = defaultLogger,
   whatsappWebhookSecrets,
+  publicRateLimit: publicRateLimitOptions,
 }: {
   logger?: Logger;
   /** Test seam; production reads KIRIM_WEBHOOK_SECRET. */
   whatsappWebhookSecrets?: readonly string[];
+  /** Test seam; production reads PUBLIC_RATE_LIMIT_* (see config/env.ts). */
+  publicRateLimit?: Partial<PublicRateLimitOptions>;
 } = {}) {
   const app = express();
   app.disable("x-powered-by");
@@ -211,6 +219,14 @@ export function createApp({
         : undefined,
     }),
   );
+  // The public, session-free reads (guest QR scan and menu, brand website and
+  // its menu, SSR brand context, customer payment links) have no session to
+  // bound them, so one in-memory limiter caps them per client IP and per
+  // resolved tenant, answering 429 RATE_LIMITED with Retry-After. Mounted
+  // after the tenant resolver (the tenant bucket needs it) and only on those
+  // prefixes: health, Better Auth, provider webhooks and the TLS ask keep their
+  // own budgets, and a limiter window can never fail a probe (legend-wd4b).
+  app.use(PUBLIC_RATE_LIMIT_PATHS, publicRateLimit(publicRateLimitOptions));
   app.use("/api", apiRouter);
 
   app.use(notFound);
