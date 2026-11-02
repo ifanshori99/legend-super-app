@@ -9,7 +9,6 @@
 // writes that create documents carry an idempotency key.
 
 import {
-  basisPointsSchema,
   brandIdSchema,
   businessDateSchema,
   clientInputSchema,
@@ -41,6 +40,7 @@ import {
   recipeDetailSchema,
   recipeIdSchema,
   recipeSchema,
+  recipeWastePctSchema,
   stockBatchSchema,
   stockBalanceSchema,
   stockCountActionSchema,
@@ -247,7 +247,7 @@ export const recipeLineInputSchema = z.strictObject({
   componentId: uuidSchema,
   quantity: positiveDecimal4Schema,
   uomId: uomIdSchema,
-  wastePctBp: basisPointsSchema,
+  wastePctBp: recipeWastePctSchema,
 });
 
 export const createRecipeInputSchema = clientInputSchema({
