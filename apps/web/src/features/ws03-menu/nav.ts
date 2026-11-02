@@ -4,6 +4,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
+    group: "operations",
     labelKey: "nav.management.menu",
     to: "/kelola/menu",
     icon: UtensilsCrossed,

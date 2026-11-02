@@ -135,7 +135,7 @@ function readPaletteBlock(css, name) {
   );
   assert.ok(match, `tokens.css has a "${name}" palette block`);
   return Object.fromEntries(
-    [...match[1].matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6});/gi)].map((m) => [
+    [...match[1].matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((m) => [
       m[1],
       m[2].toLowerCase(),
     ]),
@@ -157,6 +157,38 @@ test("tokens.css palettes match the checked TypeScript palettes", () => {
     readPaletteBlock(css, "kontras-dark"),
     kontrasOverrides.dark,
   );
+});
+
+// The v2 tint ramp is derived in CSS with color-mix; the gate computes the
+// same mix in TypeScript. Both must use the same source, percentage, and base.
+test("tokens.css derived accent ramp matches DERIVED_TOKENS", () => {
+  const css = readFileSync(
+    resolve(root, "apps/web/src/styles/tokens.css"),
+    "utf8",
+  );
+  // Prettier may wrap long declarations; compare on collapsed whitespace.
+  const flat = css
+    .replace(/\s+/g, " ")
+    .replace(/\(\s/g, "(")
+    .replace(/\s\)/g, ")");
+  for (const [token, rule] of Object.entries(theme.DERIVED_TOKENS)) {
+    const decl = `--${token}: color-mix(in srgb, var(--${rule.from}) ${rule.pct}%, var(--${rule.into}));`;
+    assert.ok(flat.includes(decl), `tokens.css declares ${decl}`);
+  }
+  assert.equal(theme.mixHex("#000000", "#ffffff", 50), "#808080");
+  assert.equal(theme.mixHex("#8a4423", "#ffffff", 100), "#8a4423");
+});
+
+test("derived tint ramp follows each tenant primary and passes AA", () => {
+  const merged = theme.mergeTenantPalettes(basePalettes, cafeLegendTheme);
+  const full = theme.derivePalette(merged.light);
+  assert.equal(full["primary-tint"], theme.mixHex("#8a4423", "#ffffff", 10));
+  assert.notEqual(
+    full["primary-tint"],
+    theme.derivePalette(basePalettes.light)["primary-tint"],
+    "a tenant primary changes the ramp with no extra token",
+  );
+  assert.equal(checkTenantTheme(basePalettes, cafeLegendTheme).ok, true);
 });
 
 test("Rupiah formatting is deterministic Indonesian notation", () => {

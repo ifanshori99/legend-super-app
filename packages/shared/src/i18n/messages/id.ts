@@ -8,6 +8,7 @@
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
+import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
@@ -16,6 +17,9 @@ import { qrRecoveryMessages } from "./qr-recovery.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 
 export const id = {
+  // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
+  // beads never edit the same lines.
+  login: loginMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
@@ -387,6 +391,12 @@ export const id = {
     noResultsHint: "Coba kata lain atau hapus filter.",
     clearSearch: "Hapus pencarian",
   },
+  // Photo plate (DESIGN.md v2 §4 Media): every menu item has a photo; back
+  // office shows the gap so it gets fixed before publishing.
+  media: {
+    photoRequired: "Foto wajib",
+    photoMissing: "Foto belum tersedia",
+  },
   form: {
     errorSummary: "Periksa {count} isian yang ditandai.",
     invalid: "Isian belum benar",
@@ -715,6 +725,12 @@ export const id = {
     shift: "Shift",
   },
   nav: {
+    // Management sidebar group headings (lib/areas/nav.ts NAV_GROUPS).
+    group: {
+      operations: "Operasional",
+      finance: "Keuangan",
+      team: "Tim",
+    },
     // Starter example screens (notes, admin) until they are removed.
     starter: {
       notes: "Catatan",

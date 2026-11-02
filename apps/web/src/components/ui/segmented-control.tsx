@@ -28,7 +28,7 @@ function SegmentedControl<T extends string>({
       aria-label={label}
       orientation="horizontal"
       className={cn(
-        "inline-flex w-fit max-w-full gap-1 overflow-x-auto rounded-control border-(length:--border-w) bg-muted p-1",
+        "inline-flex w-fit max-w-full gap-1 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1",
         className,
       )}
     >
