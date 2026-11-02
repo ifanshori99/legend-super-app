@@ -71,6 +71,8 @@ import { Route as CustomerTTokenCartRouteImport } from './routes/_customer/t.$to
 import { Route as CustomerTTokenCheckoutRouteImport } from './routes/_customer/t.$token.checkout'
 import { Route as CustomerTTokenOrdersRouteImport } from './routes/_customer/t.$token.orders'
 import { Route as CustomerTTokenReviewRouteImport } from './routes/_customer/t.$token.review'
+import { Route as KaryawanKaryawanAbsensiIndexRouteImport } from './routes/_karyawan/karyawan.absensi.index'
+import { Route as KaryawanKaryawanAbsensiRiwayatRouteImport } from './routes/_karyawan/karyawan.absensi.riwayat'
 import { Route as KelolaKelolaAksesIndexRouteImport } from './routes/_kelola/kelola.akses.index'
 import { Route as KelolaKelolaAksesBaruRouteImport } from './routes/_kelola/kelola.akses.baru'
 import { Route as KelolaKelolaAksesMatriksApprovalRouteImport } from './routes/_kelola/kelola.akses.matriks-approval'
@@ -425,6 +427,18 @@ const CustomerTTokenReviewRoute = CustomerTTokenReviewRouteImport.update({
   path: '/review',
   getParentRoute: () => CustomerTTokenRoute,
 } as any)
+const KaryawanKaryawanAbsensiIndexRoute =
+  KaryawanKaryawanAbsensiIndexRouteImport.update({
+    id: '/karyawan/absensi/',
+    path: '/karyawan/absensi/',
+    getParentRoute: () => KaryawanRoute,
+  } as any)
+const KaryawanKaryawanAbsensiRiwayatRoute =
+  KaryawanKaryawanAbsensiRiwayatRouteImport.update({
+    id: '/karyawan/absensi/riwayat',
+    path: '/karyawan/absensi/riwayat',
+    getParentRoute: () => KaryawanRoute,
+  } as any)
 const KelolaKelolaAksesIndexRoute = KelolaKelolaAksesIndexRouteImport.update({
   id: '/kelola/akses/',
   path: '/kelola/akses/',
@@ -749,6 +763,7 @@ export interface FileRoutesByFullPath {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
   '/kelola/akses/matriks-approval': typeof KelolaKelolaAksesMatriksApprovalRoute
   '/kelola/akses/penugasan': typeof KelolaKelolaAksesPenugasanRoute
@@ -779,6 +794,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
+  '/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
   '/kelola/akses/': typeof KelolaKelolaAksesIndexRoute
   '/kelola/akuntansi/': typeof KelolaKelolaAkuntansiIndexRoute
   '/kelola/inventori/': typeof KelolaKelolaInventoriIndexRoute
@@ -848,6 +864,7 @@ export interface FileRoutesByTo {
   '/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
   '/kelola/akses/matriks-approval': typeof KelolaKelolaAksesMatriksApprovalRoute
   '/kelola/akses/penugasan': typeof KelolaKelolaAksesPenugasanRoute
@@ -877,6 +894,7 @@ export interface FileRoutesByTo {
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
+  '/karyawan/absensi': typeof KaryawanKaryawanAbsensiIndexRoute
   '/kelola/akses': typeof KelolaKelolaAksesIndexRoute
   '/kelola/akuntansi': typeof KelolaKelolaAkuntansiIndexRoute
   '/kelola/inventori': typeof KelolaKelolaInventoriIndexRoute
@@ -960,6 +978,7 @@ export interface FileRoutesById {
   '/_customer/t/$token/checkout': typeof CustomerTTokenCheckoutRoute
   '/_customer/t/$token/orders': typeof CustomerTTokenOrdersRoute
   '/_customer/t/$token/review': typeof CustomerTTokenReviewRoute
+  '/_karyawan/karyawan/absensi/riwayat': typeof KaryawanKaryawanAbsensiRiwayatRoute
   '/_kelola/kelola/akses/baru': typeof KelolaKelolaAksesBaruRoute
   '/_kelola/kelola/akses/matriks-approval': typeof KelolaKelolaAksesMatriksApprovalRoute
   '/_kelola/kelola/akses/penugasan': typeof KelolaKelolaAksesPenugasanRoute
@@ -990,6 +1009,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
+  '/_karyawan/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
   '/_kelola/kelola/akses/': typeof KelolaKelolaAksesIndexRoute
   '/_kelola/kelola/akuntansi/': typeof KelolaKelolaAkuntansiIndexRoute
   '/_kelola/kelola/inventori/': typeof KelolaKelolaInventoriIndexRoute
@@ -1063,6 +1083,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/karyawan/absensi/riwayat'
     | '/kelola/akses/baru'
     | '/kelola/akses/matriks-approval'
     | '/kelola/akses/penugasan'
@@ -1093,6 +1114,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/service-charge'
     | '/member/fasilitas/'
     | '/t/$token/'
+    | '/karyawan/absensi/'
     | '/kelola/akses/'
     | '/kelola/akuntansi/'
     | '/kelola/inventori/'
@@ -1162,6 +1184,7 @@ export interface FileRouteTypes {
     | '/t/$token/checkout'
     | '/t/$token/orders'
     | '/t/$token/review'
+    | '/karyawan/absensi/riwayat'
     | '/kelola/akses/baru'
     | '/kelola/akses/matriks-approval'
     | '/kelola/akses/penugasan'
@@ -1191,6 +1214,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/service-charge'
     | '/member/fasilitas'
     | '/t/$token'
+    | '/karyawan/absensi'
     | '/kelola/akses'
     | '/kelola/akuntansi'
     | '/kelola/inventori'
@@ -1273,6 +1297,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token/checkout'
     | '/_customer/t/$token/orders'
     | '/_customer/t/$token/review'
+    | '/_karyawan/karyawan/absensi/riwayat'
     | '/_kelola/kelola/akses/baru'
     | '/_kelola/kelola/akses/matriks-approval'
     | '/_kelola/kelola/akses/penugasan'
@@ -1303,6 +1328,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/service-charge'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
+    | '/_karyawan/karyawan/absensi/'
     | '/_kelola/kelola/akses/'
     | '/_kelola/kelola/akuntansi/'
     | '/_kelola/kelola/inventori/'
@@ -1777,6 +1803,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerTTokenReviewRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
+    '/_karyawan/karyawan/absensi/': {
+      id: '/_karyawan/karyawan/absensi/'
+      path: '/karyawan/absensi'
+      fullPath: '/karyawan/absensi/'
+      preLoaderRoute: typeof KaryawanKaryawanAbsensiIndexRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
+    '/_karyawan/karyawan/absensi/riwayat': {
+      id: '/_karyawan/karyawan/absensi/riwayat'
+      path: '/karyawan/absensi/riwayat'
+      fullPath: '/karyawan/absensi/riwayat'
+      preLoaderRoute: typeof KaryawanKaryawanAbsensiRiwayatRouteImport
+      parentRoute: typeof KaryawanRoute
+    }
     '/_kelola/kelola/akses/': {
       id: '/_kelola/kelola/akses/'
       path: '/kelola/akses'
@@ -2208,10 +2248,14 @@ const CustomerRouteWithChildren = CustomerRoute._addFileChildren(
 
 interface KaryawanRouteChildren {
   KaryawanKaryawanIndexRoute: typeof KaryawanKaryawanIndexRoute
+  KaryawanKaryawanAbsensiRiwayatRoute: typeof KaryawanKaryawanAbsensiRiwayatRoute
+  KaryawanKaryawanAbsensiIndexRoute: typeof KaryawanKaryawanAbsensiIndexRoute
 }
 
 const KaryawanRouteChildren: KaryawanRouteChildren = {
   KaryawanKaryawanIndexRoute: KaryawanKaryawanIndexRoute,
+  KaryawanKaryawanAbsensiRiwayatRoute: KaryawanKaryawanAbsensiRiwayatRoute,
+  KaryawanKaryawanAbsensiIndexRoute: KaryawanKaryawanAbsensiIndexRoute,
 }
 
 const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
