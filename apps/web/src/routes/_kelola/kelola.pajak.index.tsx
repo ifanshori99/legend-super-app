@@ -26,7 +26,6 @@ function TaxRulesRoute() {
   return (
     <TaxPage
       active="rules"
-      title={t("tax.title")}
       description={t("tax.subtitle")}
       canConfigure
       canReport={canReport}

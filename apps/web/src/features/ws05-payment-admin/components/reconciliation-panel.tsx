@@ -134,42 +134,24 @@ export function ReconciliationPanel() {
           <StatTile
             label={t("paymentAdmin.reconciliation.matched")}
             value={summary.data.data.matchedLines}
-            source={
-              <a href="#reconciliation-cases">
-                {t("paymentAdmin.reconciliation.casesTitle")}
-              </a>
-            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.unmatched")}
             value={summary.data.data.unmatchedLines}
-            source={
-              <a href="#reconciliation-cases">
-                {t("paymentAdmin.reconciliation.casesTitle")}
-              </a>
-            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.mismatch")}
             value={summary.data.data.mismatchLines}
-            source={
-              <a href="#reconciliation-cases">
-                {t("paymentAdmin.reconciliation.casesTitle")}
-              </a>
-            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.openCases")}
             value={summary.data.data.openCases}
-            source={
-              <a href="#reconciliation-cases">
-                {t("paymentAdmin.reconciliation.casesTitle")}
-              </a>
-            }
           />
           <StatTile
             className="lg:col-span-4"
             label={t("paymentAdmin.reconciliation.variance")}
+            // One source link for the strip (accent budget Q21): every count
+            // comes from the cases table just below.
             value={<Money amount={summary.data.data.varianceIdr} />}
             source={
               <a href="#reconciliation-cases">

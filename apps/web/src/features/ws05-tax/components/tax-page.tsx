@@ -54,7 +54,9 @@ export function TaxPage({
   children,
 }: {
   active: TaxSection;
-  title: string;
+  /** Section title shown as an h2; omit when the topbar already names the
+   *  screen (config tabs), pass it when the section differs (PBJT recap). */
+  title?: string;
   description: string;
   canConfigure: boolean;
   canReport: boolean;
@@ -70,7 +72,7 @@ export function TaxPage({
     <div className="grid min-w-0 gap-5">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          {title !== t("tax.title") && <h2 className="type-title">{title}</h2>}
+          {title && <h2 className="type-title">{title}</h2>}
           {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
         </div>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
