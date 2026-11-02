@@ -56,8 +56,7 @@ export const opnameMessages = {
     locationPlaceholder: "Pilih lokasi",
     type: "Jenis hitungan",
     blind: "Hitung buta",
-    blindHint:
-      "Penghitung tidak melihat jumlah sistem selama menghitung.",
+    blindHint: "Penghitung tidak melihat jumlah sistem selama menghitung.",
     businessDate: "Tanggal bisnis",
     businessDateHint: "Mengikuti zona waktu outlet.",
     items: "Item yang dihitung",
