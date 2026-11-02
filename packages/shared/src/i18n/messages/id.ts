@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { kdsMessages } from "./kds.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -14,6 +15,7 @@ export const id = {
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
+  kds: kdsMessages,
   qrMenu: qrMenuMessages,
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
