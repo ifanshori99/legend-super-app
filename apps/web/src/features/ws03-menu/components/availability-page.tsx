@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import {
   useAvailability,
   useItems,
@@ -159,8 +160,15 @@ export function AvailabilityPage() {
           });
           setToggleTarget(null);
         },
-        onError: () =>
-          toast({ title: t("menu.errors.saveFailed"), tone: "danger" }),
+        onError: (error) =>
+          toast({
+            // Q23: a restore republishes the item, so it needs its photo.
+            title:
+              error instanceof ApiError && error.code === "MENU_PHOTO_REQUIRED"
+                ? t("menu.errors.photoRequired")
+                : t("menu.errors.saveFailed"),
+            tone: "danger",
+          }),
       },
     );
   }

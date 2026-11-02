@@ -2357,6 +2357,7 @@ export const id = {
       emptyHint: "Tambahkan item pertama untuk mulai mengisi menu.",
       noPrice: "Harga belum diatur",
       priceHint: "Harga dine-in yang berlaku hari ini.",
+      photoRequired: "Foto wajib",
       sellOut: "Tandai habis",
       restore: "Aktifkan lagi",
       edit: "Ubah item",
@@ -2430,6 +2431,9 @@ export const id = {
         "Isi hanya alergen yang benar-benar dipakai resep item ini.",
       activeHint:
         "Item yang disembunyikan tidak tampil di QR order, POS, maupun kanal lain.",
+      photoRequired: "Foto wajib",
+      photoRequiredHint:
+        "Item hanya bisa tampil di menu setelah fotonya diunggah. Unggah foto atau matikan pilihan tampil di menu.",
       photoChoose: "Pilih foto",
       photoChange: "Ganti foto",
       photoRemove: "Hapus foto",
@@ -2723,6 +2727,7 @@ export const id = {
       minGreaterThanMax: "Maksimal tidak boleh kurang dari minimal.",
       allocationNotFull: "Alokasi pendapatan harus berjumlah 100%.",
       deleteInUse: "Masih dipakai data lain. Lepas dulu sebelum menghapus.",
+      photoRequired: "Unggah foto item sebelum menampilkannya di menu.",
       saveFailed: "Perubahan gagal disimpan. Periksa isian lalu coba lagi.",
     },
   },

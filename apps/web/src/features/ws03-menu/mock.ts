@@ -12,6 +12,7 @@ import { createMockStore } from "@/lib/mock/store";
 import { cafeLegendFixtures, type Idr } from "@starter/shared/core";
 import {
   MENU_IMAGE_MAX_BYTES,
+  MENU_PHOTO_REQUIRED_MESSAGE,
   cafeLegendMenuFixtures,
   createCategory,
   createCombo,
@@ -41,7 +42,9 @@ import {
   listPriceLists,
   listStations,
   listVariants,
+  menuErrorHttpStatus,
   menuItemAdminSchema,
+  menuItemPhotoMissing,
   reorderCategories,
   reorderItems,
   setAvailabilityStatus,
@@ -114,6 +117,15 @@ function notFound(what: string): never {
 
 function conflict(message: string): never {
   throw new ApiError(409, "CONFLICT", message);
+}
+
+/** Q23: the API refuses an active item without a photo; so does the mock. */
+function photoRequired(): never {
+  throw new ApiError(
+    menuErrorHttpStatus.MENU_PHOTO_REQUIRED,
+    "MENU_PHOTO_REQUIRED",
+    MENU_PHOTO_REQUIRED_MESSAGE,
+  );
 }
 
 function requireItem(itemId: string): MenuItem {
@@ -332,6 +344,8 @@ registerMock(createItem, ({ body }) => {
     throw new ApiError(400, "VALIDATION_ERROR", "Kategori tidak dikenal.", [
       { field: "categoryId", message: "Pilih kategori yang ada." },
     ]);
+  // Q23: publishing a new item needs its photo; the default is a draft.
+  if (menuItemPhotoMissing(body)) photoRequired();
   const item: MenuItem = {
     id: nextId(),
     tenantId: state().items[0].tenantId,
@@ -387,6 +401,15 @@ registerMock(updateItem, ({ params, body }) => {
     throw new ApiError(400, "VALIDATION_ERROR", "Kategori tidak dikenal.", [
       { field: "categoryId", message: "Pilih kategori yang ada." },
     ]);
+  // Q23: same rule as the API — activation and photo removal are the writes
+  // that could publish an item without a photo.
+  const isActive = body.isActive ?? item.isActive;
+  const mediaId = body.mediaId !== undefined ? body.mediaId : item.mediaId;
+  if (
+    menuItemPhotoMissing({ isActive, mediaId }) &&
+    (body.isActive === true || body.mediaId === null)
+  )
+    photoRequired();
   state().items[index] = { ...item, ...body };
   return { data: adminItem(state().items[index]) };
 });
@@ -879,6 +902,13 @@ registerMock(setAvailabilityStatus, ({ params, body }) => {
         "Kunci idempotensi sudah dipakai untuk aksi lain.",
       );
     return { data: row };
+  }
+  // Q23: a restore republishes the item, so it needs its photo (like the API,
+  // checked after an idempotent replay so a retry keeps its outcome).
+  if (body.action === "restore") {
+    const item = requireItem(row.menuItemId);
+    if (menuItemPhotoMissing({ isActive: true, mediaId: item.mediaId }))
+      photoRequired();
   }
   const status = transitionAvailability(row.status, body.action);
   const next: Availability = {
