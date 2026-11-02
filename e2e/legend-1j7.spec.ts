@@ -11,7 +11,10 @@ test("PRD §3.18 / Alur I: request, approve, create a PO and generate a sample s
   page,
 }) => {
   await page.goto("/kelola/pengadaan?mock=normal");
-  await expect(page.getByRole("heading", { name: "Pengadaan" })).toBeVisible();
+  // The shell title and the page heading both read "Pengadaan".
+  await expect(
+    page.getByRole("heading", { name: "Pengadaan" }).first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Daftar permintaan" }),
   ).toBeVisible();

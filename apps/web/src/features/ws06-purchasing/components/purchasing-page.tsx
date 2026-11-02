@@ -97,6 +97,30 @@ function ItemSelect({
   );
 }
 
+/**
+ * One idempotency key per business attempt (Opus review, legend-1j7): a retry
+ * of the same payload after a timeout or network drop must reuse its key, or
+ * the API creates a second request/PO or sends a second email. A changed
+ * payload is a new attempt and gets a new key; success clears it.
+ */
+function useAttemptKey() {
+  const attempt = React.useRef<{ signature: string; key: string } | null>(null);
+  return React.useMemo(
+    () => ({
+      keyFor(payload: unknown): string {
+        const signature = JSON.stringify(payload);
+        if (attempt.current?.signature !== signature)
+          attempt.current = { signature, key: crypto.randomUUID() };
+        return attempt.current.key;
+      },
+      settle() {
+        attempt.current = null;
+      },
+    }),
+    [],
+  );
+}
+
 function RequestForm({
   outletId,
   items,
@@ -136,9 +160,10 @@ function RequestForm({
   const [neededBy, setNeededBy] = React.useState("");
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState(false);
+  const attempt = useAttemptKey();
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const result = createPurchaseRequestInputSchema.safeParse({
+    const payload = {
       outletId,
       neededBy,
       lines: lines.map((line) => ({
@@ -147,7 +172,10 @@ function RequestForm({
         uomId: items.find((item) => item.id === line.itemId)?.baseUomId,
       })),
       note: note || null,
-      idempotencyKey: crypto.randomUUID(),
+    };
+    const result = createPurchaseRequestInputSchema.safeParse({
+      ...payload,
+      idempotencyKey: attempt.keyFor(payload),
     });
     if (!result.success) {
       setError(true);
@@ -155,6 +183,7 @@ function RequestForm({
     }
     try {
       const response = await create.mutateAsync(result.data);
+      attempt.settle();
       onDone(response.data.request.id);
     } catch {
       setError(true);
@@ -353,6 +382,7 @@ function RequestDetail({
   const transition = useTransitionPurchaseRequest();
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState(false);
+  const attempt = useAttemptKey();
   if (query.isPending) return <Skeleton className="h-32" />;
   if (query.isError || !query.data)
     return <ErrorState onRetry={() => void query.refetch()} />;
@@ -360,14 +390,16 @@ function RequestDetail({
   async function act(action: "submit" | "approve" | "reject") {
     try {
       setError(false);
+      const payload = { id, action, note: note || null };
       await transition.mutateAsync({
         id,
         body: {
           action,
-          note: note || null,
-          idempotencyKey: crypto.randomUUID(),
+          note: payload.note,
+          idempotencyKey: attempt.keyFor(payload),
         },
       });
+      attempt.settle();
     } catch {
       setError(true);
     }
@@ -468,25 +500,29 @@ function OrderForm({
   const [expectedDate, setExpectedDate] = React.useState("");
   const [prices, setPrices] = React.useState<Record<string, string>>({});
   const [error, setError] = React.useState(false);
+  const attempt = useAttemptKey();
   if (request.isPending) return <Skeleton className="h-32" />;
   if (request.isError || !request.data)
     return <ErrorState onRetry={() => void request.refetch()} />;
   const lines = request.data.data.lines;
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const parsed = createPurchaseOrderInputSchema.safeParse({
+    const payload = {
       outletId,
       supplierId,
       purchaseRequestId: requestId,
       expectedDate,
-      source: "user",
+      source: "user" as const,
       lines: lines.map((line) => ({
         inventoryItemId: line.inventoryItemId,
         quantity: line.quantity,
         uomId: line.uomId,
         unitPriceIdr: prices[line.id] ?? "",
       })),
-      idempotencyKey: crypto.randomUUID(),
+    };
+    const parsed = createPurchaseOrderInputSchema.safeParse({
+      ...payload,
+      idempotencyKey: attempt.keyFor(payload),
     });
     if (!parsed.success) {
       setError(true);
@@ -494,6 +530,7 @@ function OrderForm({
     }
     try {
       const response = await create.mutateAsync(parsed.data);
+      attempt.settle();
       onDone(response.data.purchaseOrder.id);
     } catch {
       setError(true);
@@ -582,6 +619,8 @@ function OrderDetail({
   const [note, setNote] = React.useState("");
   const [url, setUrl] = React.useState("");
   const [error, setError] = React.useState(false);
+  const attempt = useAttemptKey();
+  const sendAttempt = useAttemptKey();
   if (query.isPending) return <Skeleton className="h-32" />;
   if (query.isError || !query.data)
     return <ErrorState onRetry={() => void query.refetch()} />;
@@ -589,14 +628,16 @@ function OrderDetail({
   async function act(action: "submit" | "approve" | "reject") {
     try {
       setError(false);
+      const payload = { id, action, note: note || null };
       await transition.mutateAsync({
         id,
         body: {
           action,
-          note: note || null,
-          idempotencyKey: crypto.randomUUID(),
+          note: payload.note,
+          idempotencyKey: attempt.keyFor(payload),
         },
       });
+      attempt.settle();
     } catch {
       setError(true);
     }
@@ -604,14 +645,16 @@ function OrderDetail({
   async function sendOrder(channel: "email" | "share_link") {
     try {
       setError(false);
+      const target = channel === "email" ? { email } : {};
       const result = await send.mutateAsync({
         id,
         body: {
           channel,
-          ...(channel === "email" ? { email } : {}),
-          idempotencyKey: crypto.randomUUID(),
+          ...target,
+          idempotencyKey: sendAttempt.keyFor({ id, channel, ...target }),
         },
       });
+      sendAttempt.settle();
       setUrl(result.data.shareUrl ?? "");
     } catch {
       setError(true);

@@ -753,7 +753,7 @@ export const id = {
       kitchen: "Dapur",
       approvals: "Approval",
       inventory: "Inventori",
-      purchasing: "Purchasing",
+      purchasing: "Pengadaan",
       accounting: "Akuntansi",
       crm: "CRM",
       loyalty: "Loyalty",
