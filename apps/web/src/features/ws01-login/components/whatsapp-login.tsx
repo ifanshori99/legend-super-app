@@ -214,7 +214,7 @@ export function WhatsAppLogin({
             <MessageCircle className="size-5" aria-hidden="true" />
           </span>
           <div className="grid min-w-0 gap-1">
-            <h2 id="login-whatsapp-heading" className="type-title">
+            <h2 id="login-whatsapp-heading" className="font-brand type-title">
               {copy.heading}
             </h2>
             <p className="text-sm leading-5 text-muted-foreground">

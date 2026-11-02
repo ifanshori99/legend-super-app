@@ -51,7 +51,7 @@ export function WfcProducts({
   return (
     <section aria-labelledby="wfc-title" className="grid gap-3">
       <div className="grid gap-1">
-        <h2 id="wfc-title" className="type-title">
+        <h2 id="wfc-title" className="font-brand type-title">
           {t("wifi.wfcTitle")}
         </h2>
         <p className="text-sm leading-5 text-muted-foreground">
