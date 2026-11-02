@@ -42,6 +42,7 @@ import {
 } from "@starter/shared/platform";
 import {
   assertOutletInScope,
+  createUlid,
   decodeCursor,
   encodeCursor,
   type ScopedTenantContext,
@@ -55,6 +56,7 @@ import {
   tenants,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
+import { recordAudit } from "./core-audit";
 import { HttpError } from "../lib/http-error";
 import { blindIndex, sealSecret } from "../lib/secrets";
 
@@ -112,6 +114,7 @@ function toOutlet(row: typeof outlets.$inferSelect): Outlet {
     regionId: row.regionId,
     geofence: row.geofence,
     timeZone: row.timezone,
+    businessDayCutoff: row.businessDayCutoff,
     openingHours: row.openingHours,
     edgeNodeId: row.edgeNodeId,
     status: row.status,
@@ -459,6 +462,7 @@ export async function createOutlet(
           regionId: input.regionId,
           geofence: input.geofence,
           timezone: input.timeZone,
+          businessDayCutoff: input.businessDayCutoff,
           openingHours: input.openingHours,
         })
         .returning();
@@ -475,6 +479,7 @@ export async function updateOutlet(
   context: ScopedTenantContext,
   outletId: string,
   input: UpdateOutletInput,
+  actorUserId: string,
 ): Promise<Outlet> {
   assertOutletWritable(context, outletId);
   return withTenant(db, context, async (tx) => {
@@ -488,6 +493,9 @@ export async function updateOutlet(
       ...(input.address === undefined ? {} : { address: input.address }),
       ...(input.regionId === undefined ? {} : { regionId: input.regionId }),
       ...(input.geofence === undefined ? {} : { geofence: input.geofence }),
+      ...(input.businessDayCutoff === undefined
+        ? {}
+        : { businessDayCutoff: input.businessDayCutoff }),
       ...(input.openingHours === undefined
         ? {}
         : { openingHours: input.openingHours }),
@@ -501,12 +509,47 @@ export async function updateOutlet(
       if (!current) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
       return toOutlet(current);
     }
+    const [before] = await tx
+      .select({ businessDayCutoff: outlets.businessDayCutoff })
+      .from(outlets)
+      .where(eq(outlets.id, outletId))
+      .limit(1)
+      .for("update");
+    if (!before) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
     const [row] = await tx
       .update(outlets)
       .set(changes)
       .where(eq(outlets.id, outletId))
       .returning();
     if (!row) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+    // Owner Q39: moving the cutoff moves which business date future trade
+    // lands on (daily limits, tax and sales reports), so the change is audited.
+    if (before.businessDayCutoff !== row.businessDayCutoff)
+      await recordAudit(
+        tx,
+        context,
+        {
+          id: createUlid(),
+          tenantId: context.tenant.tenantId,
+          outletId: row.id,
+          actorType: "user",
+          actorId: actorUserId,
+          deviceId: null,
+          action: "outlet.business_day_cutoff.updated",
+          objectType: "outlet",
+          objectId: row.id,
+          reason: null,
+          maskedChanges: {
+            before: { businessDayCutoff: before.businessDayCutoff },
+            after: { businessDayCutoff: row.businessDayCutoff },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: new Date().toISOString(),
+        },
+        ["businessDayCutoff"],
+      );
     return toOutlet(row);
   });
 }

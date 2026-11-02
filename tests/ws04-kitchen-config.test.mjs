@@ -127,10 +127,25 @@ test("KDS-05: the config screen can read capacity rules before replacing them", 
   );
 });
 
-test("F12 review: the serving-time default period uses the outlet business day", () => {
-  // 2026-11-01T18:30Z is 01:30 WIB on 2 Nov: the report ends on 2 Nov.
+test("F12 review Q39: the serving-time default period uses the outlet business day", () => {
+  // 2026-11-01T22:30Z is 05:30 WIB on 2 Nov (still 1 Nov in UTC): ends 2 Nov.
+  assert.deepEqual(
+    recentBusinessPeriod(new Date("2026-11-01T22:30:00Z"), "Asia/Jakarta"),
+    { startDate: "2026-10-27", endDate: "2026-11-02" },
+  );
+  // Q39: 01:30 WIB on 2 Nov is before the 04:00 cutoff: business date 1 Nov.
   assert.deepEqual(
     recentBusinessPeriod(new Date("2026-11-01T18:30:00Z"), "Asia/Jakarta"),
+    { startDate: "2026-10-26", endDate: "2026-11-01" },
+  );
+  // Q39: an outlet with cutoff 00:00 keeps the plain calendar day.
+  assert.deepEqual(
+    recentBusinessPeriod(
+      new Date("2026-11-01T18:30:00Z"),
+      "Asia/Jakarta",
+      7,
+      "00:00",
+    ),
     { startDate: "2026-10-27", endDate: "2026-11-02" },
   );
   // Month boundary: seven days ending 3 Mar 2026 starts 25 Feb.

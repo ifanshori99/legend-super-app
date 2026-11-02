@@ -657,24 +657,41 @@ describe("Outlet time zone (validity in outlet business time)", () => {
       "Jakarta afternoon",
       "2026-11-02T09:00:00.000Z",
       "Asia/Jakarta",
-      "2026-11-02T17:00:00.000Z",
+      "2026-11-02T21:00:00.000Z",
     ],
     [
-      "Jakarta just after local midnight",
+      "Jakarta 00:00 still belongs to the previous business day",
       "2026-11-02T17:00:00.000Z",
       "Asia/Jakarta",
-      "2026-11-03T17:00:00.000Z",
+      "2026-11-02T21:00:00.000Z",
+    ],
+    [
+      "Jakarta 04:00 starts the next business day",
+      "2026-11-02T21:00:00.000Z",
+      "Asia/Jakarta",
+      "2026-11-03T21:00:00.000Z",
     ],
     [
       "Makassar",
       "2026-11-02T09:00:00.000Z",
       "Asia/Makassar",
-      "2026-11-02T16:00:00.000Z",
+      "2026-11-02T20:00:00.000Z",
+    ],
+    [
+      "Jayapura 03:59",
+      "2026-11-02T18:59:00.000Z",
+      "Asia/Jayapura",
+      "2026-11-02T19:00:00.000Z",
     ],
   ])(
-    "§3.25 facility reward expires at the end of the outlet business day: %s",
+    "§3.25 Q39 facility reward expires at the next business-day cutoff (04:00): %s",
     (_label, at, zone, end) => {
-      expect(endOfBusinessDay(new Date(at), zone).toISOString()).toBe(end);
+      expect(
+        endOfBusinessDay(new Date(at), {
+          timeZone: zone,
+          cutoff: "04:00",
+        }).toISOString(),
+      ).toBe(end);
     },
   );
 });

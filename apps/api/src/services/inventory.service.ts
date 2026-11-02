@@ -38,6 +38,7 @@ import {
   assertOutletInScope,
   createUlid,
   CoreError,
+  businessDayRange,
   decimal4,
   decodeCursor,
   encodeCursor,
@@ -54,6 +55,7 @@ import {
   type PermissionCode,
 } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
+import { outletBusinessDayClock } from "./outlet-clock";
 import type {
   BusinessDate,
   Decimal4,
@@ -1150,20 +1152,25 @@ export async function listStockLedger(
         eq(stockLedger.movementType, query.movementType as StockMovementType),
       );
     if (query.fromDate || query.toDate) {
-      // Business dates are outlet-local calendar dates (D-CORE-6).
+      // Business dates follow the outlet clock (D-CORE-6, owner Q39 cutoff):
+      // a day is [cutoff, next cutoff) in the outlet time zone.
       const [outlet] = await tx
-        .execute<{ timezone: string }>(
-          sql`SELECT timezone FROM outlets WHERE id = ${query.outletId}::uuid`,
+        .execute<{ timezone: string; business_day_cutoff: string }>(
+          sql`SELECT timezone, business_day_cutoff FROM outlets WHERE id = ${query.outletId}::uuid`,
         )
         .then((result) => result.rows);
       if (!outlet) throw new HttpError(404, "NOT_FOUND", "Outlet not found.");
+      const clock = outletBusinessDayClock({
+        timezone: outlet.timezone,
+        businessDayCutoff: outlet.business_day_cutoff,
+      });
       if (query.fromDate)
         filters.push(
-          sql`(${stockLedger.occurredAt} AT TIME ZONE ${outlet.timezone})::date >= ${query.fromDate}::date`,
+          sql`${stockLedger.occurredAt} >= ${businessDayRange(query.fromDate, clock).start.toISOString()}::timestamptz`,
         );
       if (query.toDate)
         filters.push(
-          sql`(${stockLedger.occurredAt} AT TIME ZONE ${outlet.timezone})::date <= ${query.toDate}::date`,
+          sql`${stockLedger.occurredAt} < ${businessDayRange(query.toDate, clock).end.toISOString()}::timestamptz`,
         );
     }
     const [at, id] = cursorKeys(query.cursor, 2);

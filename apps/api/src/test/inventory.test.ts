@@ -34,6 +34,7 @@ import {
   inventoryLocationLockKey,
   listStockBalances,
   listStockBatches,
+  listStockLedger,
   recordStockMovement,
   recordStockTransfer,
   rebuildStockBalances,
@@ -561,6 +562,66 @@ describe("TEN-01/TEN-02 inventory isolation", () => {
       }),
       "OUTLET_OUT_OF_SCOPE",
     );
+  });
+});
+
+describe("Q39 stock card business-day filter", () => {
+  it("Q39 fromDate/toDate select [04:00, next 04:00) in the outlet zone, not the calendar day", async () => {
+    const location = await insertLocation(
+      tenantA,
+      outletA,
+      `Q39 ${randomUUID().slice(0, 6)}`,
+    );
+    const item = await insertItem(
+      tenantA,
+      uomId,
+      `Q39 Susu ${randomUUID().slice(0, 6)}`,
+    );
+    // Ledger rows are append-only: like `itemId`, this item stays in the
+    // disposable DB instead of the HTTP-item cleanup.
+    createdItemIds.splice(createdItemIds.indexOf(item), 1);
+    // Seeded outlet A: Asia/Jakarta (UTC+7), default cutoff 04:00.
+    const wib = {
+      "2026-10-12 03:59": "2026-10-11T20:59:00.000Z", // business date 11 Oct
+      "2026-10-12 04:00": "2026-10-11T21:00:00.000Z", // 12 Oct
+      "2026-10-12 23:59": "2026-10-12T16:59:00.000Z", // 12 Oct
+      "2026-10-13 00:30": "2026-10-12T17:30:00.000Z", // 12 Oct (after close)
+      "2026-10-13 04:00": "2026-10-12T21:00:00.000Z", // 13 Oct
+    };
+    for (const occurredAt of Object.values(wib))
+      await recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: item,
+        movementType: "receipt",
+        quantity: decimal4("1.0000"),
+        unitCostIdr: decimal4("1000.0000"),
+        sourceType: "goods_receipt",
+        sourceId: randomUUID(),
+        occurredAt,
+        actor: { type: "system" },
+      });
+    const page = await listStockLedger(tenantContext(), serviceUserId, {
+      limit: 100,
+      outletId: outletA,
+      inventoryItemId: item,
+      fromDate: "2026-10-12",
+      toDate: "2026-10-12",
+    });
+    expect(page.data.map((row) => row.occurredAt).sort()).toEqual([
+      wib["2026-10-12 04:00"],
+      wib["2026-10-12 23:59"],
+      wib["2026-10-13 00:30"],
+    ]);
+    const tail = await listStockLedger(tenantContext(), serviceUserId, {
+      limit: 100,
+      outletId: outletA,
+      inventoryItemId: item,
+      fromDate: "2026-10-13",
+    });
+    expect(tail.data.map((row) => row.occurredAt)).toEqual([
+      wib["2026-10-13 04:00"],
+    ]);
   });
 });
 

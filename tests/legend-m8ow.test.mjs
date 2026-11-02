@@ -204,26 +204,37 @@ test("PRD §3.20 Reward: creating a voucher reward keeps points, stock and valid
   const created = await send("POST", "/api/loyalty/rewards", body);
   assert.equal(created.data.stock, 5);
   assert.equal(created.data.voucherValueIdr, 10_000);
-  assert.equal(created.data.validFrom, "2026-10-31T17:00:00.000Z");
-  assert.equal(created.data.validUntil, "2026-12-31T16:59:59.000Z");
+  // Q39: validity names whole business days (04:00 WIB to next 03:59:59).
+  assert.equal(created.data.validFrom, "2026-10-31T21:00:00.000Z");
+  assert.equal(created.data.validUntil, "2026-12-31T20:59:59.000Z");
 
   const page = await get("/api/loyalty/rewards", { limit: "100" });
   assert.ok(page.data.some((reward) => reward.id === created.data.id));
 });
 
-test("legend-m8ow review: reward validity uses outlet (WIB) business days and round-trips", () => {
-  // Business dates live in the outlet time zone (AGENT_PLAYBOOK §2), not UTC.
+test("legend-m8ow review Q39: reward validity uses outlet (WIB) business days (cutoff 04:00) and round-trips", () => {
+  // Business dates live in the outlet time zone (AGENT_PLAYBOOK §2), not UTC,
+  // and start at the business-day cutoff (owner Q39, default 04:00).
   assert.equal(
     lib.isoFromDateInput("2026-11-01", "start"),
-    "2026-10-31T17:00:00.000Z",
+    "2026-10-31T21:00:00.000Z",
   );
   assert.equal(
     lib.isoFromDateInput("2026-11-01", "end"),
-    "2026-11-01T16:59:59.000Z",
+    "2026-11-01T20:59:59.000Z",
   );
-  assert.equal(lib.dateInputValue("2026-10-31T17:00:00.000Z"), "2026-11-01");
-  assert.equal(lib.dateInputValue("2026-11-01T16:59:59.000Z"), "2026-11-01");
-  assert.equal(lib.formatDateShort("2026-10-31T17:00:00.000Z"), "01/11/2026");
+  assert.equal(lib.dateInputValue("2026-10-31T21:00:00.000Z"), "2026-11-01");
+  assert.equal(lib.dateInputValue("2026-11-01T20:59:59.000Z"), "2026-11-01");
+  // 00:30 WIB on 2 Nov is still business date 1 Nov.
+  assert.equal(lib.dateInputValue("2026-11-01T17:30:00.000Z"), "2026-11-01");
+  assert.equal(lib.formatDateShort("2026-10-31T21:00:00.000Z"), "01/11/2026");
+  assert.equal(
+    lib.isoFromDateInput("2026-11-01", "start", {
+      timeZone: "Asia/Makassar",
+      cutoff: "05:00",
+    }),
+    "2026-10-31T21:00:00.000Z",
+  );
   // A one-day reward (from = until) is valid: the end is that day's close.
   const oneDay = {
     ...lib.emptyRewardForm(),

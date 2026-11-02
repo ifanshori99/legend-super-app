@@ -797,7 +797,7 @@ test("PRD F22 operating hours bound the session, and the wait estimate uses the 
     facility.sessionsOnBusinessDate(f.tickets, {
       businessDate: "2026-11-02",
       customerProfileId: f.ids.customerC1,
-      timeZone: "Asia/Jakarta",
+      clock: { timeZone: "Asia/Jakarta", cutoff: "04:00" },
     }),
     2,
   );
