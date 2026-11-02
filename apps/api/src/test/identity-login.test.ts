@@ -403,6 +403,20 @@ describe("WhatsApp reverse-OTP login", () => {
     ).toBe(409);
   });
 
+  it("AUTH-02 treats a redelivery of a pre-fingerprint claim as a duplicate", async () => {
+    const eventId = `wamid.${randomUUID()}`;
+    const body = loginMessage({ eventId, text: "MASUK LEGEND AAAAAA02" });
+    expect((await postWebhook(body)).status).toBe(200);
+    // Rows claimed before migration 0029 have no request_hash.
+    await owner.query(
+      "UPDATE wa_inbound_messages SET request_hash = NULL WHERE provider_message_id = $1",
+      [eventId],
+    );
+    const replay = await postWebhook(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.duplicates).toBe(1);
+  });
+
   it("AUTH-02 rolls back a failed link claim and retries the same delivery once", async () => {
     const browser = agent(app);
     await signUp(browser);

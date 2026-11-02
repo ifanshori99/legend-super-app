@@ -283,7 +283,12 @@ export async function processInboundWhatsApp(
           .select({ requestHash: waInboundMessages.requestHash })
           .from(waInboundMessages)
           .where(eq(waInboundMessages.providerMessageId, message.eventId));
-        if (!previous?.requestHash || previous.requestHash !== requestHash)
+        // Rows claimed before migration 0029 carry no fingerprint; a redelivery
+        // of one is a plain duplicate, not a conflict the provider retries forever.
+        if (
+          previous?.requestHash !== null &&
+          previous?.requestHash !== requestHash
+        )
           throw new CoreError(
             "CONFLICT",
             "Pesan webhook tidak cocok dengan percobaan sebelumnya.",
