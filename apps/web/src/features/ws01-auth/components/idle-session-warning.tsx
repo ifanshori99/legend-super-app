@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ApiError } from "@/lib/api/errors";
+import { safeReturnPath } from "@/features/ws01-login/flow";
 import { useCurrentAuth, useExtendStaffSession } from "../hooks";
 import { idleWarningVisible, minutesUntilExpiry } from "../state";
 
@@ -52,6 +53,7 @@ export function IdleSessionWarning() {
   const auth = useCurrentAuth();
   const extend = useExtendStaffSession();
   const [dismissedFor, setDismissedFor] = React.useState<string | null>(null);
+  const [stayFailed, setStayFailed] = React.useState(false);
   const { refetch } = auth;
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -73,6 +75,7 @@ export function IdleSessionWarning() {
   if (!idleWarningVisible({ session, now, dismissedFor })) return null;
 
   async function stay() {
+    setStayFailed(false);
     try {
       await extend.mutateAsync();
       await refetch({ throwOnError: true });
@@ -84,9 +87,10 @@ export function IdleSessionWarning() {
       if (error instanceof ApiError && error.status === 401)
         void navigate({
           to: "/masuk",
-          search: { lanjut: pathname },
+          search: { lanjut: safeReturnPath(pathname) },
           replace: true,
         });
+      else setStayFailed(true);
     }
   }
 
@@ -112,7 +116,7 @@ export function IdleSessionWarning() {
             minutes: minutesUntilExpiry(session, now),
           })}
         </p>
-        {extend.isError && (
+        {stayFailed && (
           <p role="alert" className="text-sm text-destructive">
             {t("staffAuth.idle.extendFailed")}
           </p>

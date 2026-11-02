@@ -178,6 +178,13 @@ function totpSecret(): string {
  * sign-in mock of the same endpoint.
  */
 export function staffCurrentAuthMock({ scenario }: { scenario: string }) {
+  const error = globalThis.localStorage?.getItem("legend-mock-auth-error");
+  if (error === "401" || error === "503")
+    throw new ApiError(
+      Number(error),
+      "MOCK_ERROR",
+      "Mock session read failed.",
+    );
   const base = cafeLegendIdentityFixtures;
   const owner = base.usersByKey.owner;
   const auth = state.get();
