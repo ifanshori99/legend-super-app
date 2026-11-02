@@ -8,6 +8,7 @@ import {
   Card,
   CardDescription,
   CardHeader,
+  CardShell,
   CardTitle,
 } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
@@ -144,69 +145,71 @@ export function ExpiryPage() {
   };
 
   return (
-    <div className="grid min-w-0 gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CalendarClock
-              className="size-5 text-muted-foreground"
-              aria-hidden="true"
+    <div className="grid min-w-0 gap-5">
+      <CardShell>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CalendarClock
+                className="size-5 text-muted-foreground"
+                aria-hidden="true"
+              />
+              {t("inventoryStock.expiry.useFirstTitle")}
+            </CardTitle>
+            <CardDescription>
+              {t("inventoryStock.expiry.useFirstHint")}{" "}
+              {t("inventoryStock.expiry.warnDays", { days: EXPIRY_WARN_DAYS })}
+            </CardDescription>
+          </CardHeader>
+          {pending ? (
+            <div className="grid gap-2">
+              <span className="sr-only">{t("common.loading")}</span>
+              <Skeleton className="h-control" />
+              <Skeleton className="h-control" />
+            </div>
+          ) : failed ? (
+            <ErrorState
+              onRetry={() => {
+                void batchesQuery.refetch();
+                void itemsQuery.refetch();
+                void locationsQuery.refetch();
+                void unitsQuery.refetch();
+              }}
             />
-            {t("inventoryStock.expiry.useFirstTitle")}
-          </CardTitle>
-          <CardDescription>
-            {t("inventoryStock.expiry.useFirstHint")}{" "}
-            {t("inventoryStock.expiry.warnDays", { days: EXPIRY_WARN_DAYS })}
-          </CardDescription>
-        </CardHeader>
-        {pending ? (
-          <div className="grid gap-2">
-            <span className="sr-only">{t("common.loading")}</span>
-            <Skeleton className="h-control" />
-            <Skeleton className="h-control" />
-          </div>
-        ) : failed ? (
-          <ErrorState
-            onRetry={() => {
-              void batchesQuery.refetch();
-              void itemsQuery.refetch();
-              void locationsQuery.refetch();
-              void unitsQuery.refetch();
-            }}
-          />
-        ) : useFirst.length === 0 ? (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("inventoryStock.expiry.useFirstEmpty")}
-          </p>
-        ) : (
-          <ul className="grid gap-2 divide-y divide-border">
-            {useFirst.map((row) => (
-              <li
-                key={row.batch.id}
-                className="flex flex-wrap items-center justify-between gap-2 pt-2 first:pt-0"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-sm font-semibold tabular">
-                    {row.fefoRank}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="font-medium">
-                      {row.batch.batchCode} · {row.item?.name ?? "—"}
-                    </p>
-                    <p className="text-sm leading-5 text-muted-foreground">
-                      {row.location?.name ?? "—"} ·{" "}
-                      {row.batch.expiresOn
-                        ? `${formatBusinessDate(row.batch.expiresOn)} · ${daysLabel(row)}`
-                        : t("inventoryStock.expiry.status.no_expiry")}
-                    </p>
+          ) : useFirst.length === 0 ? (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("inventoryStock.expiry.useFirstEmpty")}
+            </p>
+          ) : (
+            <ul className="grid gap-2 divide-y divide-border">
+              {useFirst.map((row) => (
+                <li
+                  key={row.batch.id}
+                  className="flex flex-wrap items-center justify-between gap-2 pt-2 first:pt-0"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-sm font-semibold tabular">
+                      {row.fefoRank}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-medium">
+                        {row.batch.batchCode} · {row.item?.name ?? "—"}
+                      </p>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {row.location?.name ?? "—"} ·{" "}
+                        {row.batch.expiresOn
+                          ? `${formatBusinessDate(row.batch.expiresOn)} · ${daysLabel(row)}`
+                          : t("inventoryStock.expiry.status.no_expiry")}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <ExpiryStatusPill status={row.status} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+                  <ExpiryStatusPill status={row.status} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </CardShell>
 
       <div className="flex flex-wrap items-center gap-2">
         <SegmentedControl<ExpiryFilter>

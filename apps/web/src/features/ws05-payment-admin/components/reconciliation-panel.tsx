@@ -89,10 +89,7 @@ export function ReconciliationPanel() {
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
       <div className="grid gap-1">
-        <h2
-          id="reconciliation-title"
-          className="text-base leading-6 font-semibold"
-        >
+        <h2 id="reconciliation-title" className="type-title">
           {t("paymentAdmin.reconciliation.title")}
         </h2>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
@@ -108,7 +105,7 @@ export function ReconciliationPanel() {
           <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
         </div>
       ) : summary.isError ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <div className="rounded-container border-(length:--border-w) bg-card">
           <ErrorState
             title={t("paymentAdmin.loadErrorTitle")}
             description={t("paymentAdmin.loadErrorHint")}
@@ -125,154 +122,181 @@ export function ReconciliationPanel() {
           <StatTile
             label={t("paymentAdmin.reconciliation.matched")}
             value={summary.data.data.matchedLines}
+            source={
+              <a href="#reconciliation-cases">
+                {t("paymentAdmin.reconciliation.casesTitle")}
+              </a>
+            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.unmatched")}
             value={summary.data.data.unmatchedLines}
+            source={
+              <a href="#reconciliation-cases">
+                {t("paymentAdmin.reconciliation.casesTitle")}
+              </a>
+            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.mismatch")}
             value={summary.data.data.mismatchLines}
+            source={
+              <a href="#reconciliation-cases">
+                {t("paymentAdmin.reconciliation.casesTitle")}
+              </a>
+            }
           />
           <StatTile
             label={t("paymentAdmin.reconciliation.openCases")}
             value={summary.data.data.openCases}
+            source={
+              <a href="#reconciliation-cases">
+                {t("paymentAdmin.reconciliation.casesTitle")}
+              </a>
+            }
           />
           <StatTile
             className="lg:col-span-4"
             label={t("paymentAdmin.reconciliation.variance")}
             value={<Money amount={summary.data.data.varianceIdr} />}
+            source={
+              <a href="#reconciliation-cases">
+                {t("paymentAdmin.reconciliation.casesTitle")}
+              </a>
+            }
           />
         </StatStrip>
       )}
 
-      <DataTableShell
-        title={t("paymentAdmin.reconciliation.casesTitle")}
-        state={state}
-        rowCount={rows.length}
-        noResults={all.length > 0 && rows.length === 0}
-        onRetry={() => void cases.refetch()}
-        actions={
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Select
-              value={status}
-              onValueChange={(value) =>
-                setStatus(value as ReconciliationCaseView["status"] | "all")
-              }
-            >
-              <SelectTrigger
-                className="w-full sm:w-40"
-                aria-label={t("paymentAdmin.reconciliation.filter")}
+      <div id="reconciliation-cases" className="min-w-0">
+        <DataTableShell
+          title={t("paymentAdmin.reconciliation.casesTitle")}
+          state={state}
+          rowCount={rows.length}
+          noResults={all.length > 0 && rows.length === 0}
+          onRetry={() => void cases.refetch()}
+          actions={
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Select
+                value={status}
+                onValueChange={(value) =>
+                  setStatus(value as ReconciliationCaseView["status"] | "all")
+                }
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>
-                  {t("paymentAdmin.reconciliation.allStatuses")}
-                </SelectItem>
-                <SelectItem value="open">
-                  {t("paymentAdmin.reconciliation.statusOpen")}
-                </SelectItem>
-                <SelectItem value="resolved">
-                  {t("paymentAdmin.reconciliation.statusResolved")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={source}
-              onValueChange={(value) =>
-                setSource(value as ReconciliationSource | "all")
-              }
-            >
-              <SelectTrigger
-                className="w-full sm:w-44"
-                aria-label={t("paymentAdmin.reconciliation.filterSource")}
+                <SelectTrigger
+                  className="w-full sm:w-40"
+                  aria-label={t("paymentAdmin.reconciliation.filter")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>
+                    {t("paymentAdmin.reconciliation.allStatuses")}
+                  </SelectItem>
+                  <SelectItem value="open">
+                    {t("paymentAdmin.reconciliation.statusOpen")}
+                  </SelectItem>
+                  <SelectItem value="resolved">
+                    {t("paymentAdmin.reconciliation.statusResolved")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={source}
+                onValueChange={(value) =>
+                  setSource(value as ReconciliationSource | "all")
+                }
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>
-                  {t("paymentAdmin.reconciliation.allSources")}
-                </SelectItem>
-                <SelectItem value="gateway">
-                  {t("paymentAdmin.reconciliation.sourceGateway")}
-                </SelectItem>
-                <SelectItem value="edc">
-                  {t("paymentAdmin.reconciliation.sourceEdc")}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        }
-        empty={{
-          title: t("paymentAdmin.reconciliation.emptyTitle"),
-          description: t("paymentAdmin.reconciliation.emptyHint"),
-        }}
-      >
-        <ul className="divide-y divide-border">
-          {rows.map((entry) => (
-            <li
-              key={entry.id}
-              className="flex flex-col gap-3 p-card lg:flex-row lg:items-center lg:justify-between"
-            >
-              <div className="grid min-w-0 gap-0.5">
-                <p className="font-semibold">{entry.reference}</p>
-                <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  <Badge tone={entry.source === "edc" ? "info" : "neutral"}>
-                    {sourceLabel(entry.source, entry.provider, t)}
-                  </Badge>
-                  <span>
-                    {entry.periodStart === entry.periodEnd
-                      ? entry.periodStart
-                      : `${entry.periodStart} – ${entry.periodEnd}`}{" "}
-                    · {formatMoment(entry.createdAt)}
-                  </span>
-                </p>
-                <p className="max-w-2xl text-sm text-muted-foreground">
-                  {entry.reason}
-                </p>
-                {entry.resolvedByName && (
-                  <p className="text-sm text-muted-foreground">
-                    {entry.resolvedByName}
-                    {entry.note ? ` · ${entry.note}` : ""}
+                <SelectTrigger
+                  className="w-full sm:w-44"
+                  aria-label={t("paymentAdmin.reconciliation.filterSource")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>
+                    {t("paymentAdmin.reconciliation.allSources")}
+                  </SelectItem>
+                  <SelectItem value="gateway">
+                    {t("paymentAdmin.reconciliation.sourceGateway")}
+                  </SelectItem>
+                  <SelectItem value="edc">
+                    {t("paymentAdmin.reconciliation.sourceEdc")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          }
+          empty={{
+            title: t("paymentAdmin.reconciliation.emptyTitle"),
+            description: t("paymentAdmin.reconciliation.emptyHint"),
+          }}
+        >
+          <ul className="divide-y divide-border">
+            {rows.map((entry) => (
+              <li
+                key={entry.id}
+                className="flex flex-col gap-3 p-card lg:flex-row lg:items-center lg:justify-between"
+              >
+                <div className="grid min-w-0 gap-0.5">
+                  <p className="font-semibold">{entry.reference}</p>
+                  <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                    <Badge tone={entry.source === "edc" ? "info" : "neutral"}>
+                      {sourceLabel(entry.source, entry.provider, t)}
+                    </Badge>
+                    <span>
+                      {entry.periodStart === entry.periodEnd
+                        ? entry.periodStart
+                        : `${entry.periodStart} – ${entry.periodEnd}`}{" "}
+                      · {formatMoment(entry.createdAt)}
+                    </span>
                   </p>
-                )}
-              </div>
-              <div className="flex flex-wrap items-center gap-3 lg:justify-end">
-                <div className="text-sm text-muted-foreground">
-                  <p>
-                    {t("paymentAdmin.reconciliation.expected")}{" "}
-                    <Money amount={entry.expectedIdr} size="sm" />
+                  <p className="max-w-2xl text-sm text-muted-foreground">
+                    {entry.reason}
                   </p>
-                  <p>
-                    {t("paymentAdmin.reconciliation.received")}{" "}
-                    <Money amount={entry.receivedIdr} size="sm" />
-                  </p>
+                  {entry.resolvedByName && (
+                    <p className="text-sm text-muted-foreground">
+                      {entry.resolvedByName}
+                      {entry.note ? ` · ${entry.note}` : ""}
+                    </p>
+                  )}
                 </div>
-                <div className="text-right">
-                  <Money amount={entry.varianceIdr} size="lg" />
-                  <p className="text-sm text-muted-foreground">
-                    {t("paymentAdmin.reconciliation.varianceColumn")}
-                  </p>
+                <div className="flex flex-wrap items-center gap-3 lg:justify-end">
+                  <div className="text-sm text-muted-foreground">
+                    <p>
+                      {t("paymentAdmin.reconciliation.expected")}{" "}
+                      <Money amount={entry.expectedIdr} size="sm" />
+                    </p>
+                    <p>
+                      {t("paymentAdmin.reconciliation.received")}{" "}
+                      <Money amount={entry.receivedIdr} size="sm" />
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <Money amount={entry.varianceIdr} size="lg" />
+                    <p className="text-sm text-muted-foreground">
+                      {t("paymentAdmin.reconciliation.varianceColumn")}
+                    </p>
+                  </div>
+                  <StatusPill status={reconciliationTone(entry.status)}>
+                    {t(reconciliationLabelKey(entry.status))}
+                  </StatusPill>
+                  {entry.status === "open" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setResolving(entry)}
+                    >
+                      {t("paymentAdmin.reconciliation.resolve")}
+                    </Button>
+                  )}
                 </div>
-                <StatusPill status={reconciliationTone(entry.status)}>
-                  {t(reconciliationLabelKey(entry.status))}
-                </StatusPill>
-                {entry.status === "open" && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setResolving(entry)}
-                  >
-                    {t("paymentAdmin.reconciliation.resolve")}
-                  </Button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      </DataTableShell>
+              </li>
+            ))}
+          </ul>
+        </DataTableShell>
+      </div>
 
       {resolving && (
         <ResolveCaseDialog

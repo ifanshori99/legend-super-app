@@ -30,11 +30,10 @@ async function open(page: Page, path: string, heading: string) {
   // Hydration settles after load; a fill before React attaches would be wiped
   // by the first client render.
   await page.waitForLoadState("networkidle");
-  // The shell topbar also renders an h1; the page's own title lives in main.
+  // v3 (legend-vvth): the management topbar owns the page h1; the page body
+  // no longer repeats it (DESIGN.md v3 §5).
   await expect(
-    page
-      .locator("#main-content")
-      .getByRole("heading", { name: heading, level: 1 }),
+    page.getByRole("heading", { name: heading, level: 1 }),
   ).toBeVisible();
 }
 

@@ -22,6 +22,7 @@ import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CardShell, CardShellBody } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +35,14 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
@@ -153,9 +162,7 @@ function MetaItem({
 }) {
   return (
     <div className="grid min-w-0 gap-0.5">
-      <dt className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        {label}
-      </dt>
+      <dt className="type-eyebrow text-muted-foreground">{label}</dt>
       <dd className="min-w-0 truncate text-sm">{children}</dd>
     </div>
   );
@@ -304,70 +311,47 @@ function VarianceList({
   const t = useT();
   return (
     <div>
-      <div className="hidden grid-cols-[minmax(0,1fr)_repeat(3,6rem)_8rem] gap-2 border-b px-4 py-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid">
-        <span>{t("opname.detail.line.item")}</span>
-        <span className="text-right">{t("opname.detail.line.system")}</span>
-        <span className="text-right">{t("opname.detail.line.counted")}</span>
-        <span className="text-right">{t("opname.detail.line.difference")}</span>
-        <span className="text-right">{t("opname.detail.line.value")}</span>
-      </div>
-      <ul className="divide-y">
-        {lines.map((line) => {
-          const variance = line.varianceIdr;
-          const delta = lineDelta(line);
-          return (
-            <li
-              key={line.id}
-              className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)_8rem] sm:items-center"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-(length:--density-text) font-medium">
-                  {nameOf(line)}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  {t("opname.detail.line.unit", { unit: unitOf(line) })}
-                </p>
-              </div>
-              <div className="grid grid-cols-3 gap-x-4 text-sm sm:contents">
-                <div className="sm:text-right">
-                  <span className="text-xs text-muted-foreground sm:hidden">
-                    {t("opname.detail.line.system")}{" "}
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>{t("opname.detail.line.item")}</TableHead>
+            <TableHead numeric>{t("opname.detail.line.system")}</TableHead>
+            <TableHead numeric>{t("opname.detail.line.counted")}</TableHead>
+            <TableHead numeric>{t("opname.detail.line.difference")}</TableHead>
+            <TableHead numeric>{t("opname.detail.line.value")}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {lines.map((line) => {
+            const variance = line.varianceIdr;
+            const delta = lineDelta(line);
+            return (
+              <TableRow key={line.id}>
+                <TableCell className="min-w-44">
+                  <span className="block font-medium">{nameOf(line)}</span>
+                  <span className="block text-sm text-muted-foreground">
+                    {t("opname.detail.line.unit", { unit: unitOf(line) })}
                   </span>
-                  <span className="tabular">
-                    {formatQuantity(line.systemQty)}
-                  </span>
-                </div>
-                <div className="sm:text-right">
-                  <span className="text-xs text-muted-foreground sm:hidden">
-                    {t("opname.detail.line.counted")}{" "}
-                  </span>
-                  <span className="tabular">
-                    {line.countedQty === null
-                      ? "—"
-                      : formatQuantity(line.countedQty)}
-                  </span>
-                </div>
-                <div className="sm:text-right">
-                  <span className="text-xs text-muted-foreground sm:hidden">
-                    {t("opname.detail.line.difference")}{" "}
-                  </span>
-                  <span className="tabular">{delta ?? "—"}</span>
-                </div>
-              </div>
-              <div className="flex items-baseline justify-between text-sm sm:block sm:text-right">
-                <span className="text-xs text-muted-foreground sm:hidden">
-                  {t("opname.detail.line.value")}
-                </span>
-                {variance === null ? (
-                  <span className="text-muted-foreground">—</span>
-                ) : (
-                  <Money amount={variance} />
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+                </TableCell>
+                <TableCell numeric>{formatQuantity(line.systemQty)}</TableCell>
+                <TableCell numeric>
+                  {line.countedQty === null
+                    ? "—"
+                    : formatQuantity(line.countedQty)}
+                </TableCell>
+                <TableCell numeric>{delta ?? "—"}</TableCell>
+                <TableCell numeric>
+                  {variance === null ? (
+                    <span className="text-muted-foreground">—</span>
+                  ) : (
+                    <Money amount={variance} />
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -662,7 +646,7 @@ export function CountDetailPage({
 
       <header className="grid gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg leading-7 font-semibold">
+          <h2 className="type-title">
             {t(typeLabelKey(count.type))} ·{" "}
             {locationName.get(count.locationId) ?? ""}
           </h2>
@@ -674,44 +658,50 @@ export function CountDetailPage({
             </Badge>
           )}
         </div>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border p-4 lg:grid-cols-4">
-          <MetaItem label={t("opname.detail.meta.location")}>
-            {locationName.get(count.locationId) ?? "—"}
-          </MetaItem>
-          <MetaItem label={t("opname.detail.meta.businessDate")}>
-            <span className="tabular">
-              {formatBusinessDate(count.businessDate)}
-            </span>
-          </MetaItem>
-          <MetaItem label={t("opname.detail.meta.counter")}>
-            <span className="tabular" title={count.countedBy}>
-              {shortId(count.countedBy)}
-            </span>
-          </MetaItem>
-          <MetaItem label={t("opname.detail.meta.approver")}>
-            {count.approvedBy ? (
-              <span className="tabular" title={count.approvedBy}>
-                {shortId(count.approvedBy)}
-              </span>
-            ) : (
-              <span className="text-muted-foreground">
-                {t("opname.detail.meta.notApproved")}
-              </span>
-            )}
-          </MetaItem>
-          {count.countedAt && (
-            <MetaItem label={t("opname.detail.meta.countedAt")}>
-              <span className="tabular">{formatDateTime(count.countedAt)}</span>
-            </MetaItem>
-          )}
-          {count.approvedAt && (
-            <MetaItem label={t("opname.detail.meta.approvedAt")}>
-              <span className="tabular">
-                {formatDateTime(count.approvedAt)}
-              </span>
-            </MetaItem>
-          )}
-        </dl>
+        <CardShell>
+          <CardShellBody className="p-card">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
+              <MetaItem label={t("opname.detail.meta.location")}>
+                {locationName.get(count.locationId) ?? "—"}
+              </MetaItem>
+              <MetaItem label={t("opname.detail.meta.businessDate")}>
+                <span className="tabular">
+                  {formatBusinessDate(count.businessDate)}
+                </span>
+              </MetaItem>
+              <MetaItem label={t("opname.detail.meta.counter")}>
+                <span className="tabular" title={count.countedBy}>
+                  {shortId(count.countedBy)}
+                </span>
+              </MetaItem>
+              <MetaItem label={t("opname.detail.meta.approver")}>
+                {count.approvedBy ? (
+                  <span className="tabular" title={count.approvedBy}>
+                    {shortId(count.approvedBy)}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {t("opname.detail.meta.notApproved")}
+                  </span>
+                )}
+              </MetaItem>
+              {count.countedAt && (
+                <MetaItem label={t("opname.detail.meta.countedAt")}>
+                  <span className="tabular">
+                    {formatDateTime(count.countedAt)}
+                  </span>
+                </MetaItem>
+              )}
+              {count.approvedAt && (
+                <MetaItem label={t("opname.detail.meta.approvedAt")}>
+                  <span className="tabular">
+                    {formatDateTime(count.approvedAt)}
+                  </span>
+                </MetaItem>
+              )}
+            </dl>
+          </CardShellBody>
+        </CardShell>
         {count.note && (
           <p className="text-sm text-muted-foreground">{count.note}</p>
         )}
@@ -720,12 +710,12 @@ export function CountDetailPage({
       <div
         className={
           noticeTone === "warning"
-            ? "flex gap-2 rounded-xl bg-warning-subtle p-3 text-sm text-warning"
+            ? "flex gap-2 rounded-container bg-warning-subtle p-3 text-sm text-warning"
             : noticeTone === "success"
-              ? "flex gap-2 rounded-xl bg-success-subtle p-3 text-sm text-success"
+              ? "flex gap-2 rounded-container bg-success-subtle p-3 text-sm text-success"
               : noticeTone === "info"
-                ? "flex gap-2 rounded-xl bg-info-subtle p-3 text-sm text-info"
-                : "flex gap-2 rounded-xl bg-muted p-3 text-sm text-foreground"
+                ? "flex gap-2 rounded-container bg-info-subtle p-3 text-sm text-info"
+                : "flex gap-2 rounded-container bg-muted p-3 text-sm text-foreground"
         }
         role="status"
       >
@@ -754,38 +744,38 @@ export function CountDetailPage({
       )}
 
       {reviewable && (
-        <section className="grid gap-3 rounded-xl border">
-          <header className="grid gap-1 border-b p-4">
-            <h3 className="text-base leading-6 font-semibold">
-              {t("opname.detail.summary.title")}
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              {t("opname.detail.summary.description")}
-            </p>
-            <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-              <span className="text-sm text-muted-foreground">
-                {t("opname.detail.summary.total")}
-              </span>
-              <Money amount={totalVariance} size="lg" />
-              <span className="text-sm tabular text-muted-foreground">
-                {differingLines === 0
-                  ? t("opname.detail.summary.noVariance")
-                  : t("opname.detail.summary.lines", {
-                      count: differingLines,
-                    })}
-              </span>
+        <CardShell>
+          <CardShellBody className="gap-3">
+            <header className="grid gap-1 border-b p-card">
+              <h3 className="type-title">{t("opname.detail.summary.title")}</h3>
+              <p className="text-sm text-muted-foreground">
+                {t("opname.detail.summary.description")}
+              </p>
+              <div className="mt-1 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                <span className="text-sm text-muted-foreground">
+                  {t("opname.detail.summary.total")}
+                </span>
+                <Money amount={totalVariance} size="lg" />
+                <span className="text-sm tabular text-muted-foreground">
+                  {differingLines === 0
+                    ? t("opname.detail.summary.noVariance")
+                    : t("opname.detail.summary.lines", {
+                        count: differingLines,
+                      })}
+                </span>
+              </div>
+            </header>
+            <VarianceList lines={lines} nameOf={nameOf} unitOf={unitOf} />
+            <div className="border-t p-card">
+              <p className="type-eyebrow text-muted-foreground">
+                {t("opname.detail.summary.note")}
+              </p>
+              <p className="mt-1 text-sm">
+                {count.note ?? t("opname.detail.summary.noNote")}
+              </p>
             </div>
-          </header>
-          <VarianceList lines={lines} nameOf={nameOf} unitOf={unitOf} />
-          <div className="border-t p-4">
-            <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              {t("opname.detail.summary.note")}
-            </p>
-            <p className="text-sm">
-              {count.note ?? t("opname.detail.summary.noNote")}
-            </p>
-          </div>
-        </section>
+          </CardShellBody>
+        </CardShell>
       )}
 
       {(counting || count.status === "draft") && (
@@ -812,7 +802,7 @@ export function CountDetailPage({
               className="h-control-sm pl-10"
             />
           </div>
-          <ul className="divide-y rounded-xl border">
+          <ul className="divide-y rounded-container border bg-card shadow-hairline">
             {filteredLines.map((line) => (
               <CountLineRow
                 key={line.id}
@@ -855,7 +845,7 @@ export function CountDetailPage({
 
       <div
         data-slot="count-action-bar"
-        className="sticky bottom-0 z-10 -mx-4 grid gap-2 border-t bg-background px-4 py-3 sm:static sm:mx-0 sm:flex sm:items-center sm:justify-between sm:rounded-xl sm:border sm:px-4"
+        className="sticky bottom-0 z-10 -mx-4 grid gap-2 border-t bg-background px-4 py-3 sm:static sm:mx-0 sm:flex sm:items-center sm:justify-between sm:rounded-container sm:border sm:px-4"
       >
         <div className="grid gap-0.5 text-sm text-muted-foreground">
           {count.status === "pending_approval" && !canApprove && (

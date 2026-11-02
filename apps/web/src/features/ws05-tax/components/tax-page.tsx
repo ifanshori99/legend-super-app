@@ -8,6 +8,7 @@ import type { MessageKey } from "@starter/shared/i18n";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 
 type TaxTab = {
@@ -64,10 +65,12 @@ export function TaxPage({
     tab.reportOnly ? canReport : canConfigure,
   );
   return (
-    <div className="grid min-w-0 gap-4">
+    // The management topbar already renders the area h1 (DESIGN.md v3 §5);
+    // the section title stays an h2 so each screen keeps one landmark.
+    <div className="grid min-w-0 gap-5">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-xl leading-7 font-semibold">{title}</h1>
+          {title !== t("tax.title") && <h2 className="type-title">{title}</h2>}
           {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
         </div>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
@@ -77,7 +80,7 @@ export function TaxPage({
       {tabs.length > 1 && (
         <nav
           aria-label={t("tax.title")}
-          className="flex min-w-0 gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+          className={cn(tabsListClass, "[scrollbar-width:none]")}
         >
           {tabs.map((tab) => {
             const current = tab.key === active;
@@ -97,10 +100,7 @@ export function TaxPage({
                     : undefined
                 }
                 aria-current={current ? "page" : undefined}
-                className={cn(
-                  "-mb-px inline-flex min-h-control-sm shrink-0 items-center border-b-2 border-transparent px-3 text-(length:--density-text) font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground",
-                  current && "border-primary font-semibold text-foreground",
-                )}
+                className={tabsTriggerClass}
               >
                 {t(tab.labelKey)}
               </Link>
@@ -108,7 +108,7 @@ export function TaxPage({
           })}
         </nav>
       )}
-      <div className="grid min-w-0 gap-4">{children}</div>
+      <div className="grid min-w-0 gap-5">{children}</div>
     </div>
   );
 }
