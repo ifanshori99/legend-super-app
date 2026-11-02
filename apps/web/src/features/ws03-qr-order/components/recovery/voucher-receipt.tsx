@@ -40,11 +40,11 @@ export function VoucherReceipt({ voucher, timeZone }: VoucherReceiptProps) {
   return (
     <section
       aria-labelledby="voucher-receipt-title"
-      className="grid gap-4 rounded-xl border-(length:--border-w) border-dashed border-input p-card"
+      className="grid gap-4 rounded-container border-(length:--border-w) border-dashed border-input p-card"
     >
       <h2
         id="voucher-receipt-title"
-        className="flex items-center gap-2 text-lg leading-7 font-semibold"
+        className="type-title flex items-center gap-2"
       >
         <Ticket className="size-icon" aria-hidden="true" />
         {t("qrRecovery.voucher.title")}
