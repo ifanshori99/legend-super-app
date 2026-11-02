@@ -15,12 +15,14 @@ import {
   dataResponseSchema,
   idempotencyKeySchema,
   outletIdSchema,
+  outletRefSchema,
   isoDateTimeSchema,
   businessDateSchema,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
   employeeIdSchema,
+  attendanceLogIdSchema,
   orgUnitIdSchema,
   positionIdSchema,
   employmentContractIdSchema,
@@ -164,6 +166,29 @@ export const getEmploymentContract = defineEndpoint({
   response: dataResponseSchema(employmentContractSchema),
 });
 
+// ---- Employee PWA (self-scoped) ------------------------------------------
+
+/**
+ * The caller's own employee row and the outlet the PWA acts for. HR-01: no
+ * employee id in the input — the API resolves it from the signed-in session,
+ * so one employee can never read another's profile through this route. The
+ * outlet comes along because the Beranda names "today" in the outlet's time
+ * zone (core `businessDateOf`), exactly like the attendance service.
+ *
+ * Added by the employee PWA bead (legend-nv3y); the HRIS API bead wires it.
+ */
+export const myHrisProfileSchema = z.strictObject({
+  employee: employeeSchema,
+  outlet: outletRefSchema,
+});
+export type MyHrisProfile = z.infer<typeof myHrisProfileSchema>;
+
+export const getMyHrisProfile = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/me",
+  response: dataResponseSchema(myHrisProfileSchema),
+});
+
 export const listEmployeeDocuments = defineEndpoint({
   method: "GET",
   path: "/api/hris/employees/:employeeId/documents",
@@ -245,7 +270,8 @@ export const requestAttendanceCorrection = defineEndpoint({
   path: "/api/hris/attendance/corrections",
   body: clientInputSchema({
     outletId: outletIdSchema,
-    attendanceLogId: z.uuid().nullable(),
+    // The log id is a ULID (PRD §6 H `attendance_logs.id`), not a UUID.
+    attendanceLogId: attendanceLogIdSchema.nullable(),
     requestedType: attendanceTypeSchema,
     requestedOccurredAt: isoDateTimeSchema,
     reason: z.string().min(1).max(500),
@@ -481,6 +507,7 @@ export const hrisEndpoints = [
   getEmployee,
   getEmployeePii,
   updateEmployeePii,
+  getMyHrisProfile,
   listOrgUnits,
   listPositionGrades,
   listPositions,

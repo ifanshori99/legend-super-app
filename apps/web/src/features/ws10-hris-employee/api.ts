@@ -1,0 +1,104 @@
+// Typed calls for the employee PWA (bead legend-nv3y). One function per
+// endpoint of the HRIS contract (@starter/shared/hris); responses are unwrapped
+// so hooks and components never see the `{ data }` envelope.
+//
+// HR-01: `/api/hris/me` resolves the employee from the signed-in session and
+// takes no id. The list calls then pass that same session-resolved id as a
+// filter: a supervisor using the PWA must see their own day, not the outlet's.
+// The API still scopes every list to what the session may read.
+
+import type { z } from "zod";
+import type {
+  Announcement,
+  AttendanceCorrection,
+  AttendanceCorrectionStatus,
+  AttendanceLog,
+  Position,
+  ShiftAssignment,
+} from "@starter/shared/hris";
+import {
+  clockAttendance,
+  getMyHrisProfile,
+  listAnnouncements,
+  listAttendanceCorrections,
+  listAttendanceLogs,
+  listPositions,
+  listShiftAssignments,
+  requestAttendanceCorrection,
+} from "@starter/shared/hris";
+import type { CursorPage } from "@starter/shared/core";
+import { callEndpoint } from "@/lib/api/endpoint";
+
+export type ClockAttendanceInput = z.input<typeof clockAttendance.body>;
+export type AttendanceCorrectionInput = z.input<
+  typeof requestAttendanceCorrection.body
+>;
+
+export type AttendanceLogQuery = {
+  /** The caller's own id from `/api/hris/me` (a filter, not an authorization). */
+  employeeId: string;
+  limit: number;
+  cursor?: string;
+  businessDate?: string;
+};
+
+export type AttendanceCorrectionQuery = {
+  employeeId: string;
+  limit: number;
+  cursor?: string;
+  status?: AttendanceCorrectionStatus;
+};
+
+export async function fetchMyHrisProfile(signal?: AbortSignal) {
+  const response = await callEndpoint(getMyHrisProfile, {}, { signal });
+  return response.data;
+}
+
+export async function fetchAttendanceLogs(
+  query: AttendanceLogQuery,
+  signal?: AbortSignal,
+): Promise<CursorPage<AttendanceLog>> {
+  return callEndpoint(listAttendanceLogs, { query }, { signal });
+}
+
+export async function fetchAttendanceCorrections(
+  query: AttendanceCorrectionQuery,
+  signal?: AbortSignal,
+): Promise<CursorPage<AttendanceCorrection>> {
+  return callEndpoint(listAttendanceCorrections, { query }, { signal });
+}
+
+export async function fetchShiftAssignments(
+  query: { employeeId: string; from: string; to: string; limit: number },
+  signal?: AbortSignal,
+): Promise<CursorPage<ShiftAssignment>> {
+  return callEndpoint(listShiftAssignments, { query }, { signal });
+}
+
+export async function fetchAnnouncements(
+  limit: number,
+  signal?: AbortSignal,
+): Promise<CursorPage<Announcement>> {
+  return callEndpoint(listAnnouncements, { query: { limit } }, { signal });
+}
+
+/** The employee's position is a reference; its name comes from this list. */
+export async function fetchPositions(
+  signal?: AbortSignal,
+): Promise<CursorPage<Position>> {
+  return callEndpoint(listPositions, { query: { limit: 100 } }, { signal });
+}
+
+export async function submitClockAttendance(
+  body: ClockAttendanceInput,
+): Promise<AttendanceLog> {
+  const response = await callEndpoint(clockAttendance, { body });
+  return response.data;
+}
+
+export async function submitAttendanceCorrection(
+  body: AttendanceCorrectionInput,
+): Promise<AttendanceCorrection> {
+  const response = await callEndpoint(requestAttendanceCorrection, { body });
+  return response.data;
+}
