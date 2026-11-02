@@ -1,5 +1,5 @@
 // Promo texts live in the shared catalog under "promo.*" (messages/promo.ts).
-// This hook keeps call sites short: t("editor.save") → catalog "promo.editor.save".
+// This hook keeps call sites short: t("promo.editor.save") → catalog "promo.editor.save".
 import { useMemo } from "react";
 import type { TranslateVars } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -11,7 +11,10 @@ export function usePromoT(): PromoT {
   const t = useT();
   return useMemo(
     () => (key, vars) =>
-      (t as (k: string, v?: TranslateVars) => string)(`promo.${key}`, vars),
+      (t as (k: string, v?: TranslateVars) => string)(
+        key.startsWith("promo.") ? key : `promo.${key}`,
+        vars,
+      ),
     [t],
   );
 }

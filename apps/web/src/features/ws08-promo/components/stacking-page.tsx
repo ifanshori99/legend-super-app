@@ -60,9 +60,9 @@ export function StackingPage() {
         />
         <p className="text-sm leading-5 text-muted-foreground">
           <span className="font-semibold text-foreground">
-            {t("stacking.orderTitle")}.
+            {t("promo.stacking.orderTitle")}.
           </span>{" "}
-          {t("stacking.orderBody")}
+          {t("promo.stacking.orderBody")}
         </p>
       </Card>
     </div>
@@ -98,7 +98,7 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
       {
         onSuccess: () => {
           setFailed(false);
-          toast({ title: t("stacking.savedToast"), tone: "success" });
+          toast({ title: t("promo.stacking.savedToast"), tone: "success" });
         },
         onError: () => setFailed(true),
       },
@@ -118,19 +118,19 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
       >
         <div className="grid gap-1">
           <h3 id="stack-policy-title" className="type-title">
-            {t("stacking.title")}
+            {t("promo.stacking.title")}
           </h3>
           <p className="text-sm leading-5 text-muted-foreground">
-            {t("stacking.description")}
+            {t("promo.stacking.description")}
           </p>
         </div>
 
         <div className="grid gap-2">
           <p className="text-sm leading-5 font-semibold">
-            {t("stacking.mode")}
+            {t("promo.stacking.mode")}
           </p>
           <SegmentedControl
-            label={t("stacking.mode")}
+            label={t("promo.stacking.mode")}
             value={draft.mode}
             onValueChange={(mode) => {
               setDraft((current) => ({ ...current, mode }));
@@ -139,29 +139,29 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
             options={[
               {
                 value: "exclusive",
-                label: t("stacking.modeExclusive"),
+                label: t("promo.stacking.modeExclusive"),
                 icon: Layers,
               },
               {
                 value: "stackable",
-                label: t("stacking.modeStackable"),
+                label: t("promo.stacking.modeStackable"),
                 icon: Layers,
               },
             ]}
           />
           <p className="text-sm leading-5 text-muted-foreground">
             {stackable
-              ? t("stacking.modeStackableHint")
-              : t("stacking.modeExclusiveHint")}
+              ? t("promo.stacking.modeStackableHint")
+              : t("promo.stacking.modeExclusiveHint")}
           </p>
         </div>
 
         {stackable && (
           <>
             <FormField
-              label={t("stacking.maxStacked")}
-              hint={t("stacking.maxStackedHint")}
-              error={maxError ? t("stacking.errorMaxStacked") : undefined}
+              label={t("promo.stacking.maxStacked")}
+              hint={t("promo.stacking.maxStackedHint")}
+              error={maxError ? t("promo.stacking.errorMaxStacked") : undefined}
               required
             >
               <Input
@@ -192,11 +192,11 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
                   }
                 />
                 <Label htmlFor="stack-same-group">
-                  {t("stacking.allowSameGroup")}
+                  {t("promo.stacking.allowSameGroup")}
                 </Label>
               </div>
               <p className="text-sm leading-5 text-muted-foreground">
-                {t("stacking.allowSameGroupHint")}
+                {t("promo.stacking.allowSameGroupHint")}
               </p>
             </div>
           </>
@@ -204,14 +204,16 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
 
         {failed && (
           <Notice tone="danger" role="alert">
-            {t("stacking.saveFailed")}
+            {t("promo.stacking.saveFailed")}
           </Notice>
         )}
-        {!online && <Notice tone="warning">{t("offline.saveBlocked")}</Notice>}
+        {!online && (
+          <Notice tone="warning">{t("promo.offline.saveBlocked")}</Notice>
+        )}
         <div>
           <Button type="submit" loading={save.isPending} disabled={!online}>
             <Save aria-hidden="true" />
-            {t("stacking.save")}
+            {t("promo.stacking.save")}
           </Button>
         </div>
       </form>
@@ -250,14 +252,14 @@ function ExampleBody({
     <>
       <div className="grid gap-1">
         <h3 id={titleId} className="type-title">
-          {t("stacking.exampleTitle")}
+          {t("promo.stacking.exampleTitle")}
         </h3>
         <p className="text-sm leading-5 text-muted-foreground">
-          {t("stacking.exampleHint")}
+          {t("promo.stacking.exampleHint")}
         </p>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <FormField label={t("stacking.exampleSubtotal")}>
+        <FormField label={t("promo.stacking.exampleSubtotal")}>
           <Input
             type="number"
             inputMode="numeric"
@@ -266,14 +268,14 @@ function ExampleBody({
             onChange={(event) => setSubtotal(event.target.value)}
           />
         </FormField>
-        <FormField label={t("stacking.exampleFirst")}>
+        <FormField label={t("promo.stacking.exampleFirst")}>
           <Input
             inputMode="decimal"
             value={first}
             onChange={(event) => setFirst(event.target.value)}
           />
         </FormField>
-        <FormField label={t("stacking.exampleSecond")}>
+        <FormField label={t("promo.stacking.exampleSecond")}>
           <Input
             inputMode="decimal"
             value={second}
@@ -300,13 +302,15 @@ function ExampleBody({
             </div>
           ))}
           <div className="flex items-baseline justify-between gap-3 border-t pt-1.5 font-semibold">
-            <dt>{t("stacking.stepTotal")}</dt>
+            <dt>{t("promo.stacking.stepTotal")}</dt>
             <dd className="tabular whitespace-nowrap" data-testid="stack-total">
               {formatRupiah(result.totalIdr)}
             </dd>
           </div>
           <div className="flex items-baseline justify-between gap-3">
-            <dt className="text-muted-foreground">{t("stacking.stepPay")}</dt>
+            <dt className="text-muted-foreground">
+              {t("promo.stacking.stepPay")}
+            </dt>
             <dd className="tabular whitespace-nowrap">
               {formatRupiah(result.payIdr)}
             </dd>
@@ -315,12 +319,14 @@ function ExampleBody({
       )}
       {valid && policy.mode === "exclusive" && (
         <Notice tone="info">
-          {t("stacking.exampleExclusive", { amount: formatRupiah(exclusive) })}
+          {t("promo.stacking.exampleExclusive", {
+            amount: formatRupiah(exclusive),
+          })}
         </Notice>
       )}
       {valid && policy.mode === "stackable" && policy.maxStacked < 2 && (
         <Notice tone="info">
-          {t("stacking.exampleLimit", { max: policy.maxStacked })}
+          {t("promo.stacking.exampleLimit", { max: policy.maxStacked })}
         </Notice>
       )}
     </>

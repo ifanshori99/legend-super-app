@@ -26,7 +26,9 @@ import { PromoStatusPill } from "./promo-shell";
 
 function RoiValue({ roiBp, t }: { roiBp: number | null; t: PromoT }) {
   if (roiBp === null)
-    return <span className="text-muted-foreground">{t("roi.roiNone")}</span>;
+    return (
+      <span className="text-muted-foreground">{t("promo.roi.roiNone")}</span>
+    );
   return (
     <span className={cn("tabular font-semibold", roiBp < 0 && "text-danger")}>
       {roiBp < 0
@@ -69,24 +71,24 @@ export function RoiPage() {
   return (
     <div className="grid min-w-0 gap-5">
       {state === "ready" && (
-        <StatStrip label={t("roi.summaryLabel")} columns={4}>
+        <StatStrip label={t("promo.roi.summaryLabel")} columns={4}>
           <StatTile
-            label={t("roi.totalCost")}
+            label={t("promo.roi.totalCost")}
             value={<Money amount={total.cost} size="stat" />}
-            context={t("roi.contextAll")}
+            context={t("promo.roi.contextAll")}
           />
           <StatTile
-            label={t("roi.totalRevenue")}
+            label={t("promo.roi.totalRevenue")}
             value={<Money amount={total.revenue} size="stat" />}
-            context={t("roi.contextAll")}
+            context={t("promo.roi.contextAll")}
           />
           <StatTile
-            label={t("roi.netMargin")}
+            label={t("promo.roi.netMargin")}
             value={<Money amount={total.net} size="stat" />}
-            context={t("roi.marginNote")}
+            context={t("promo.roi.marginNote")}
           />
           <StatTile
-            label={t("roi.avgRoi")}
+            label={t("promo.roi.avgRoi")}
             value={
               roiLoading ? (
                 <span aria-busy="true">…</span>
@@ -94,22 +96,25 @@ export function RoiPage() {
                 <RoiValue roiBp={total.roiBp} t={t} />
               )
             }
-            context={`${formatNumber(total.transactions)} ${t("roi.columns.transactions").toLocaleLowerCase("id-ID")}`}
+            context={`${formatNumber(total.transactions)} ${t("promo.roi.columns.transactions").toLocaleLowerCase("id-ID")}`}
           />
         </StatStrip>
       )}
 
       <DataTableShell
-        title={t("roi.title")}
-        description={t("roi.description")}
+        title={t("promo.roi.title")}
+        description={t("promo.roi.description")}
         state={state}
         search={{
           value: search,
           onChange: setSearch,
-          label: t("roi.searchLabel"),
+          label: t("promo.roi.searchLabel"),
         }}
         onRetry={() => void promotionsQuery.refetch()}
-        empty={{ title: t("roi.emptyTitle"), description: t("roi.emptyHint") }}
+        empty={{
+          title: t("promo.roi.emptyTitle"),
+          description: t("promo.roi.emptyHint"),
+        }}
         noResults={filtered.length === 0 && promotions.length > 0}
         rowCount={filtered.length}
       >
@@ -117,12 +122,14 @@ export function RoiPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t("roi.columns.promo")}</TableHead>
-                <TableHead numeric>{t("roi.columns.transactions")}</TableHead>
-                <TableHead numeric>{t("roi.columns.cost")}</TableHead>
-                <TableHead numeric>{t("roi.columns.revenue")}</TableHead>
-                <TableHead numeric>{t("roi.columns.margin")}</TableHead>
-                <TableHead numeric>{t("roi.columns.roi")}</TableHead>
+                <TableHead>{t("promo.roi.columns.promo")}</TableHead>
+                <TableHead numeric>
+                  {t("promo.roi.columns.transactions")}
+                </TableHead>
+                <TableHead numeric>{t("promo.roi.columns.cost")}</TableHead>
+                <TableHead numeric>{t("promo.roi.columns.revenue")}</TableHead>
+                <TableHead numeric>{t("promo.roi.columns.margin")}</TableHead>
+                <TableHead numeric>{t("promo.roi.columns.roi")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -164,7 +171,7 @@ export function RoiPage() {
                         {query?.isError ? (
                           <span className="inline-flex items-center gap-2 text-sm">
                             <span role="alert" className="text-danger">
-                              {t("roi.rowError")}
+                              {t("promo.roi.rowError")}
                             </span>
                             <Button
                               type="button"
@@ -173,12 +180,12 @@ export function RoiPage() {
                               onClick={() => void query.refetch()}
                             >
                               <RotateCw aria-hidden="true" />
-                              {t("roi.retry")}
+                              {t("promo.roi.retry")}
                             </Button>
                           </span>
                         ) : (
                           <span className="text-sm text-muted-foreground">
-                            {t("common.loading")}
+                            {t("promo.common.loading")}
                           </span>
                         )}
                       </TableCell>
@@ -204,19 +211,19 @@ export function RoiPage() {
                 {roi ? (
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                     <dt className="text-muted-foreground">
-                      {t("roi.columns.cost")}
+                      {t("promo.roi.columns.cost")}
                     </dt>
                     <dd className="text-right">
                       <Money amount={roi.discountCostIdr} size="sm" />
                     </dd>
                     <dt className="text-muted-foreground">
-                      {t("roi.columns.revenue")}
+                      {t("promo.roi.columns.revenue")}
                     </dt>
                     <dd className="text-right">
                       <Money amount={roi.revenueIdr} size="sm" />
                     </dd>
                     <dt className="text-muted-foreground">
-                      {t("roi.columns.margin")}
+                      {t("promo.roi.columns.margin")}
                     </dt>
                     <dd className="text-right">
                       <Money
@@ -226,7 +233,7 @@ export function RoiPage() {
                       />
                     </dd>
                     <dt className="text-muted-foreground">
-                      {t("roi.columns.roi")}
+                      {t("promo.roi.columns.roi")}
                     </dt>
                     <dd className="text-right">
                       <RoiValue roiBp={roi.roiBp} t={t} />
@@ -235,7 +242,7 @@ export function RoiPage() {
                 ) : query?.isError ? (
                   <div className="flex items-center gap-2 text-sm">
                     <span role="alert" className="text-danger">
-                      {t("roi.rowError")}
+                      {t("promo.roi.rowError")}
                     </span>
                     <Button
                       type="button"
@@ -244,12 +251,12 @@ export function RoiPage() {
                       onClick={() => void query.refetch()}
                     >
                       <RotateCw aria-hidden="true" />
-                      {t("roi.retry")}
+                      {t("promo.roi.retry")}
                     </Button>
                   </div>
                 ) : (
                   <span className="text-sm text-muted-foreground">
-                    {t("common.loading")}
+                    {t("promo.common.loading")}
                   </span>
                 )}
               </li>

@@ -86,8 +86,8 @@ const STATUS_TONE: Record<
 
 function validityLine(voucher: VoucherDto, t: PromoT): string {
   return voucher.validUntil === null
-    ? t("list.windowOpen", { from: formatDateLabel(voucher.validFrom) })
-    : t("list.window", {
+    ? t("promo.list.windowOpen", { from: formatDateLabel(voucher.validFrom) })
+    : t("promo.list.window", {
         from: formatDateLabel(voucher.validFrom),
         to: formatDateLabel(voucher.validUntil),
       });
@@ -106,10 +106,10 @@ export function VouchersPage() {
   const promotions = promotionsQuery.data?.data ?? [];
   const promoName = (voucher: VoucherDto) =>
     voucher.promotionId === null
-      ? t("vouchers.noPromo")
+      ? t("promo.vouchers.noPromo")
       : (promotions.find((p) => p.id === voucher.promotionId)?.name ?? "—");
   const filtered = vouchers.filter((voucher) =>
-    `${promoName(voucher)} ${t(`vouchers.source.${voucher.source}`)}`
+    `${promoName(voucher)} ${t(`promo.vouchers.source.${voucher.source}`)}`
       .toLocaleLowerCase("id-ID")
       .includes(search.trim().toLocaleLowerCase("id-ID")),
   );
@@ -117,7 +117,7 @@ export function VouchersPage() {
     voucher.valueIdr === null ? "—" : formatRupiah(voucher.valueIdr);
   const pill = (voucher: VoucherDto) => (
     <Badge tone={STATUS_TONE[voucher.status]}>
-      {t(`vouchers.status.${voucher.status}`)}
+      {t(`promo.vouchers.status.${voucher.status}`)}
     </Badge>
   );
 
@@ -133,13 +133,13 @@ export function VouchersPage() {
   return (
     <>
       <DataTableShell
-        title={t("vouchers.title")}
-        description={t("vouchers.description")}
+        title={t("promo.vouchers.title")}
+        description={t("promo.vouchers.description")}
         state={state}
         search={{
           value: search,
           onChange: setSearch,
-          label: t("vouchers.searchLabel"),
+          label: t("promo.vouchers.searchLabel"),
         }}
         actions={
           <div className="flex flex-col gap-2 sm:flex-row">
@@ -150,41 +150,43 @@ export function VouchersPage() {
               }
             >
               <SelectTrigger
-                aria-label={t("vouchers.filterLabel")}
+                aria-label={t("promo.vouchers.filterLabel")}
                 className="sm:w-44"
               >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">{t("vouchers.filterAll")}</SelectItem>
+                <SelectItem value="all">
+                  {t("promo.vouchers.filterAll")}
+                </SelectItem>
                 {STATUSES.map((status) => (
                   <SelectItem key={status} value={status}>
-                    {t(`vouchers.status.${status}`)}
+                    {t(`promo.vouchers.status.${status}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <Button type="button" onClick={() => setIssuing(true)}>
               <Plus aria-hidden="true" />
-              {t("vouchers.issue")}
+              {t("promo.vouchers.issue")}
             </Button>
           </div>
         }
         onRetry={() => void vouchersQuery.refetch()}
         empty={{
           title: filteredEmpty
-            ? t("vouchers.emptyFilteredTitle")
-            : t("vouchers.emptyTitle"),
+            ? t("promo.vouchers.emptyFilteredTitle")
+            : t("promo.vouchers.emptyTitle"),
           description: filteredEmpty
-            ? t("vouchers.emptyFilteredHint")
-            : t("vouchers.emptyHint"),
+            ? t("promo.vouchers.emptyFilteredHint")
+            : t("promo.vouchers.emptyHint"),
           action: filteredEmpty ? undefined : (
             <Button
               type="button"
               variant="outline"
               onClick={() => setIssuing(true)}
             >
-              {t("vouchers.issue")}
+              {t("promo.vouchers.issue")}
             </Button>
           ),
         }}
@@ -195,11 +197,13 @@ export function VouchersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t("vouchers.columns.promo")}</TableHead>
-                <TableHead>{t("vouchers.columns.source")}</TableHead>
-                <TableHead numeric>{t("vouchers.columns.value")}</TableHead>
-                <TableHead>{t("vouchers.columns.window")}</TableHead>
-                <TableHead>{t("vouchers.columns.status")}</TableHead>
+                <TableHead>{t("promo.vouchers.columns.promo")}</TableHead>
+                <TableHead>{t("promo.vouchers.columns.source")}</TableHead>
+                <TableHead numeric>
+                  {t("promo.vouchers.columns.value")}
+                </TableHead>
+                <TableHead>{t("promo.vouchers.columns.window")}</TableHead>
+                <TableHead>{t("promo.vouchers.columns.status")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -209,7 +213,7 @@ export function VouchersPage() {
                     {promoName(voucher)}
                   </TableCell>
                   <TableCell className="text-sm">
-                    {t(`vouchers.source.${voucher.source}`)}
+                    {t(`promo.vouchers.source.${voucher.source}`)}
                   </TableCell>
                   <TableCell numeric className="tabular">
                     {valueLine(voucher)}
@@ -236,7 +240,8 @@ export function VouchersPage() {
                 {pill(voucher)}
               </div>
               <span className="text-sm text-muted-foreground">
-                {t(`vouchers.source.${voucher.source}`)} · {valueLine(voucher)}
+                {t(`promo.vouchers.source.${voucher.source}`)} ·{" "}
+                {valueLine(voucher)}
               </span>
               <span className="tabular text-sm text-muted-foreground">
                 {validityLine(voucher, t)}
@@ -263,12 +268,14 @@ export function VouchersPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("vouchers.issuedTitle")}</DialogTitle>
-            <DialogDescription>{t("vouchers.issuedBody")}</DialogDescription>
+            <DialogTitle>{t("promo.vouchers.issuedTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("promo.vouchers.issuedBody")}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-1 rounded-control bg-surface-2 p-4 text-center">
             <p className="type-eyebrow text-muted-foreground">
-              {t("vouchers.issuedCode")}
+              {t("promo.vouchers.issuedCode")}
             </p>
             <p
               data-testid="issued-code"
@@ -279,7 +286,7 @@ export function VouchersPage() {
           </div>
           <DialogFooter>
             <Button type="button" onClick={() => setIssuedCode(null)}>
-              {t("vouchers.done")}
+              {t("promo.vouchers.done")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -379,7 +386,7 @@ function IssueDialog({
       } as Parameters<typeof issue.mutate>[0],
       {
         onSuccess: (result) => {
-          toast({ title: t("vouchers.issuedTitle"), tone: "success" });
+          toast({ title: t("promo.vouchers.issuedTitle"), tone: "success" });
           onIssued(result.code);
         },
         onError: () => setFailed(true),
@@ -394,9 +401,9 @@ function IssueDialog({
     >
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{t("vouchers.issueTitle")}</DialogTitle>
+          <DialogTitle>{t("promo.vouchers.issueTitle")}</DialogTitle>
           <DialogDescription>
-            {t("vouchers.issueDescription")}
+            {t("promo.vouchers.issueDescription")}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -410,7 +417,7 @@ function IssueDialog({
         >
           <FormField
             id="voucher-promo"
-            label={t("vouchers.fieldPromo")}
+            label={t("promo.vouchers.fieldPromo")}
             className="sm:col-span-2"
           >
             <Select
@@ -422,7 +429,7 @@ function IssueDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">
-                  {t("vouchers.fieldPromoNone")}
+                  {t("promo.vouchers.fieldPromoNone")}
                 </SelectItem>
                 {promotions.map((promotion) => (
                   <SelectItem key={promotion.id} value={promotion.id}>
@@ -432,7 +439,10 @@ function IssueDialog({
               </SelectContent>
             </Select>
           </FormField>
-          <FormField id="voucher-source" label={t("vouchers.fieldSource")}>
+          <FormField
+            id="voucher-source"
+            label={t("promo.vouchers.fieldSource")}
+          >
             <Select
               value={form.source}
               onValueChange={(value) => set("source", value as VoucherSource)}
@@ -443,15 +453,15 @@ function IssueDialog({
               <SelectContent>
                 {SOURCES.map((source) => (
                   <SelectItem key={source} value={source}>
-                    {t(`vouchers.source.${source}`)}
+                    {t(`promo.vouchers.source.${source}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </FormField>
           <FormField
-            label={t("vouchers.fieldValue")}
-            hint={t("vouchers.fieldValueHint")}
+            label={t("promo.vouchers.fieldValue")}
+            hint={t("promo.vouchers.fieldValueHint")}
             error={err("value")}
             required={form.promotionId === "none"}
           >
@@ -464,8 +474,8 @@ function IssueDialog({
             />
           </FormField>
           <FormField
-            label={t("vouchers.fieldCustomer")}
-            hint={t("vouchers.fieldCustomerHint")}
+            label={t("promo.vouchers.fieldCustomer")}
+            hint={t("promo.vouchers.fieldCustomerHint")}
             error={err("customer")}
             className="sm:col-span-2"
           >
@@ -477,7 +487,7 @@ function IssueDialog({
             />
           </FormField>
           <FormField
-            label={t("vouchers.fieldFrom")}
+            label={t("promo.vouchers.fieldFrom")}
             error={err("from")}
             required
           >
@@ -488,8 +498,8 @@ function IssueDialog({
             />
           </FormField>
           <FormField
-            label={t("vouchers.fieldUntil")}
-            hint={t("vouchers.fieldUntilHint")}
+            label={t("promo.vouchers.fieldUntil")}
+            hint={t("promo.vouchers.fieldUntilHint")}
             error={err("until")}
           >
             <Input
@@ -500,12 +510,12 @@ function IssueDialog({
           </FormField>
           {failed && (
             <Notice tone="danger" role="alert" className="sm:col-span-2">
-              {t("vouchers.issueFailed")}
+              {t("promo.vouchers.issueFailed")}
             </Notice>
           )}
           {!online && (
             <Notice tone="warning" className="sm:col-span-2">
-              {t("offline.saveBlocked")}
+              {t("promo.offline.saveBlocked")}
             </Notice>
           )}
         </form>
@@ -516,7 +526,7 @@ function IssueDialog({
             disabled={issue.isPending}
             onClick={onClose}
           >
-            {t("common.cancel")}
+            {t("promo.common.cancel")}
           </Button>
           <Button
             type="submit"
@@ -525,7 +535,7 @@ function IssueDialog({
             disabled={!online}
           >
             <Ticket aria-hidden="true" />
-            {t("vouchers.issueSubmit")}
+            {t("promo.vouchers.issueSubmit")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -565,10 +575,10 @@ function ValidateCard() {
     <Card aria-labelledby="voucher-validate-title">
       <div className="grid gap-1">
         <h3 id="voucher-validate-title" className="type-title">
-          {t("vouchers.validateTitle")}
+          {t("promo.vouchers.validateTitle")}
         </h3>
         <p className="text-sm leading-5 text-muted-foreground">
-          {t("vouchers.validateDescription")}
+          {t("promo.vouchers.validateDescription")}
         </p>
       </div>
       <form
@@ -580,9 +590,9 @@ function ValidateCard() {
         }}
       >
         <FormField
-          label={t("vouchers.validateCode")}
-          hint={t("vouchers.validateCodeHint")}
-          error={errors.code ? t("vouchers.errorCode") : undefined}
+          label={t("promo.vouchers.validateCode")}
+          hint={t("promo.vouchers.validateCodeHint")}
+          error={errors.code ? t("promo.vouchers.errorCode") : undefined}
           required
         >
           <Input
@@ -597,8 +607,10 @@ function ValidateCard() {
           />
         </FormField>
         <FormField
-          label={t("vouchers.validateSubtotal")}
-          error={errors.subtotal ? t("vouchers.errorSubtotal") : undefined}
+          label={t("promo.vouchers.validateSubtotal")}
+          error={
+            errors.subtotal ? t("promo.vouchers.errorSubtotal") : undefined
+          }
           required
         >
           <Input
@@ -614,7 +626,7 @@ function ValidateCard() {
         </FormField>
         <FormField
           id="voucher-validate-channel"
-          label={t("vouchers.validateChannel")}
+          label={t("promo.vouchers.validateChannel")}
         >
           <Select
             value={channel}
@@ -626,7 +638,7 @@ function ValidateCard() {
             <SelectContent>
               {PROMO_CHANNELS.map((option) => (
                 <SelectItem key={option} value={option}>
-                  {t(`channel.${option}`)}
+                  {t(`promo.channel.${option}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -640,18 +652,18 @@ function ValidateCard() {
           disabled={!online}
         >
           <ShieldCheck aria-hidden="true" />
-          {t("vouchers.validateSubmit")}
+          {t("promo.vouchers.validateSubmit")}
         </Button>
       </form>
       {validate.isError && (
         <Notice tone="danger" role="alert">
-          {t("vouchers.validateFailed")}
+          {t("promo.vouchers.validateFailed")}
         </Notice>
       )}
       {result &&
         (result.valid ? (
           <Notice tone="info" role="status" icon={ShieldCheck}>
-            {t("vouchers.validateOk", {
+            {t("promo.vouchers.validateOk", {
               amount: formatRupiah(result.discountPreviewIdr),
             })}
           </Notice>

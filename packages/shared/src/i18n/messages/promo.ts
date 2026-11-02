@@ -60,7 +60,8 @@ export const promoMessages = {
     add: "Buat promo",
     edit: "Ubah {name}",
     emptyTitle: "Belum ada promo",
-    emptyHint: "Buat promo pertama: diskon persen, potongan, beli X gratis Y, atau paket.",
+    emptyHint:
+      "Buat promo pertama: diskon persen, potongan, beli X gratis Y, atau paket.",
     emptyFilteredTitle: "Tidak ada promo dengan status ini",
     emptyFilteredHint: "Ganti filter status atau buat promo baru.",
     columns: {
@@ -130,14 +131,16 @@ export const promoMessages = {
     nameHint: "Nama ini tampil di kasir dan struk.",
     description: "Deskripsi",
     status: "Status",
-    statusHint: "Draf tidak dipakai. Aktifkan setelah ringkasan di kanan sudah benar.",
+    statusHint:
+      "Draf tidak dipakai. Aktifkan setelah ringkasan di kanan sudah benar.",
     startsOn: "Mulai tanggal",
     endsOn: "Berakhir tanggal",
     endsOnHint: "Kosongkan jika promo tanpa batas akhir.",
     conditionsHint:
       "Semua syarat yang dicentang harus terpenuhi sekaligus (DAN). Tanpa syarat, promo berlaku untuk semua transaksi.",
     minSpend: "Minimum belanja (Rp)",
-    minSpendHint: "Dihitung dari tagihan setelah diskon item, sebelum promo, pajak, dan service.",
+    minSpendHint:
+      "Dihitung dari tagihan setelah diskon item, sebelum promo, pajak, dan service.",
     channels: "Kanal yang berlaku",
     memberAnyTier: "Semua member",
     memberTiers: "Hanya tier tertentu",
@@ -146,7 +149,8 @@ export const promoMessages = {
     days: "Hari berlaku",
     timeStart: "Jam mulai",
     timeEnd: "Jam selesai",
-    timeHint: "Jam selesai lebih awal dari jam mulai berarti melewati tengah malam.",
+    timeHint:
+      "Jam selesai lebih awal dari jam mulai berarti melewati tengah malam.",
     items: "Menu",
     itemsLoading: "Memuat daftar menu…",
     itemsError: "Daftar menu tidak dapat dimuat.",
@@ -162,7 +166,7 @@ export const promoMessages = {
     freeItems: "Item gratis",
     freeQty: "Jumlah gratis per kelipatan",
     freeNeedsBuy:
-      "Beli X gratis Y butuh syarat \"Jumlah item tertentu\" sebagai item yang harus dibeli.",
+      'Beli X gratis Y butuh syarat "Jumlah item tertentu" sebagai item yang harus dibeli.',
     bundlePriceItems: "Item dalam paket (minimal 2)",
     bundlePrice: "Harga paket (Rp)",
     facilityProductId: "ID produk fasilitas",
@@ -172,18 +176,22 @@ export const promoMessages = {
     quotaPerCustomer: "Kuota per pelanggan",
     quotaHint: "Kosongkan untuk tanpa batas.",
     budget: "Budget promo (Rp)",
-    budgetHint: "Promo berhenti otomatis saat budget habis. Kosong berarti tanpa budget.",
+    budgetHint:
+      "Promo berhenti otomatis saat budget habis. Kosong berarti tanpa budget.",
     budgetSpent: "Terpakai {spent} dari {budget}",
     stackGroup: "Grup tumpang tindih",
-    stackGroupHint: "Huruf kecil, angka, dan garis bawah. Promo satu grup tidak digabung kecuali kebijakan mengizinkan.",
+    stackGroupHint:
+      "Huruf kecil, angka, dan garis bawah. Promo satu grup tidak digabung kecuali kebijakan mengizinkan.",
     stackable: "Boleh digabung dengan promo lain",
     priority: "Prioritas",
     priorityHint: "Angka lebih besar dipertimbangkan lebih dulu.",
     voucherRequired: "Hanya berlaku dengan kode voucher",
     code: "Kode promo",
-    codeHint: "6–32 huruf besar atau angka. Kode tidak disimpan, hanya sidik jarinya (SHA-256).",
+    codeHint:
+      "6–32 huruf besar atau angka. Kode tidak disimpan, hanya sidik jarinya (SHA-256).",
     codeStored: "Kode sudah tersimpan. Isi kolom ini hanya untuk menggantinya.",
-    summaryHint: "Ringkasan ini dibuat dari isian formulir, sama seperti yang dihitung mesin promo.",
+    summaryHint:
+      "Ringkasan ini dibuat dari isian formulir, sama seperti yang dihitung mesin promo.",
     summaryEmpty: "Lengkapi manfaat promo untuk melihat ringkasan.",
     conflictsNone: "Tidak ada konflik dengan promo lain.",
     conflictsLoading: "Memeriksa promo lain…",
@@ -230,18 +238,17 @@ export const promoMessages = {
     policyExclusive:
       "Kebijakan saat ini eksklusif: hanya satu promo terbaik yang dipakai per transaksi, jadi promo ini bersaing dengan {names}.",
     sameGroup:
-      "Satu grup \"{group}\" dengan {names}. Kebijakan melarang promo satu grup digabung, jadi salah satunya tidak dipakai.",
+      'Satu grup "{group}" dengan {names}. Kebijakan melarang promo satu grup digabung, jadi salah satunya tidak dipakai.',
     samePriority:
       "Prioritas sama ({priority}) dengan {names} di grup yang sama. Urutan ditentukan ID promo, sebaiknya bedakan prioritasnya.",
     overStack:
       "Ada {count} promo aktif yang bisa menyala bersamaan, sementara kebijakan hanya menggabungkan maksimal {max}.",
     freeNeedsBuy:
-      "Beli X gratis Y tanpa syarat \"Jumlah item tertentu\" tidak akan pernah berlaku.",
+      'Beli X gratis Y tanpa syarat "Jumlah item tertentu" tidak akan pernah berlaku.',
     bundleNeedsItems: "Harga paket butuh minimal 2 item berbeda.",
     highPercent:
       "Diskon {percent} sangat besar dan tanpa batas diskon. Pertimbangkan batas diskon atau budget.",
-    budgetLow:
-      "Budget {budget} hampir habis ({percent}% terpakai).",
+    budgetLow: "Budget {budget} hampir habis ({percent}% terpakai).",
     budgetBelowSpent: "Budget lebih kecil dari yang sudah terpakai ({spent}).",
     quotaOrder:
       "Kuota per pelanggan lebih besar dari kuota total, sehingga batas per pelanggan tidak pernah tercapai.",
@@ -264,7 +271,8 @@ export const promoMessages = {
     maxStacked: "Maksimal promo digabung",
     maxStackedHint: "1–10. Hanya berlaku di mode bisa digabung.",
     allowSameGroup: "Izinkan dua promo dari grup yang sama digabung",
-    allowSameGroupHint: "Mati: promo satu grup tumpang tindih tidak pernah digabung.",
+    allowSameGroupHint:
+      "Mati: promo satu grup tumpang tindih tidak pernah digabung.",
     save: "Simpan kebijakan",
     savedToast: "Kebijakan tumpang tindih tersimpan.",
     saveFailed: "Kebijakan belum tersimpan. Coba lagi.",
@@ -281,7 +289,8 @@ export const promoMessages = {
     stepPay: "Tagihan setelah promo",
     exampleExclusive:
       "Di mode eksklusif hanya promo terbaik yang dipakai: diskon {amount}.",
-    exampleLimit: "Dengan batas {max}, promo di atas batas tidak ikut dihitung.",
+    exampleLimit:
+      "Dengan batas {max}, promo di atas batas tidak ikut dihitung.",
     orderTitle: "Urutan penerapan",
     orderBody:
       "Promo dipilih menurut prioritas. Hadiah item dan harga paket dihitung dulu, lalu persentase, potongan nominal, dan akses fasilitas pada sisa tagihan.",
@@ -295,7 +304,8 @@ export const promoMessages = {
     filterLabel: "Filter status voucher",
     filterAll: "Semua status",
     emptyTitle: "Belum ada voucher",
-    emptyHint: "Terbitkan voucher untuk promo kode, permintaan maaf, atau ulang tahun.",
+    emptyHint:
+      "Terbitkan voucher untuk promo kode, permintaan maaf, atau ulang tahun.",
     emptyFilteredTitle: "Tidak ada voucher dengan status ini",
     emptyFilteredHint: "Ganti filter status.",
     columns: {
@@ -322,12 +332,14 @@ export const promoMessages = {
       manual: "Manual",
     },
     issueTitle: "Terbitkan voucher",
-    issueDescription: "Voucher memakai satu promo, atau bernilai tetap tanpa promo.",
+    issueDescription:
+      "Voucher memakai satu promo, atau bernilai tetap tanpa promo.",
     fieldPromo: "Promo",
     fieldPromoNone: "Tanpa promo (nilai tetap)",
     fieldSource: "Sumber",
     fieldValue: "Nilai (Rp)",
-    fieldValueHint: "Wajib jika tanpa promo. Kosong jika promo yang menentukan diskon.",
+    fieldValueHint:
+      "Wajib jika tanpa promo. Kosong jika promo yang menentukan diskon.",
     fieldCustomer: "ID pelanggan",
     fieldCustomerHint: "Opsional. Kosong berarti siapa saja boleh memakai.",
     fieldFrom: "Berlaku mulai",
@@ -393,7 +405,8 @@ export const promoMessages = {
     emptyHint: "ROI muncul setelah promo dipakai di transaksi.",
     rowError: "Gagal dimuat",
     retry: "Muat ulang",
-    marginNote: "Margin bersih = omzet dikurangi biaya diskon. Negatif berarti promo merugi.",
+    marginNote:
+      "Margin bersih = omzet dikurangi biaya diskon. Negatif berarti promo merugi.",
     negative: "Merugi",
   },
   common: {
@@ -421,7 +434,7 @@ export const promoMessages = {
     nominal: "Isi potongan lebih dari 0.",
     freeItems: "Pilih minimal satu menu gratis.",
     freeQty: "Isi jumlah gratis, bilangan bulat di atas 0.",
-    freeNeedsBuy: "Tambahkan syarat \"Jumlah item tertentu\".",
+    freeNeedsBuy: 'Tambahkan syarat "Jumlah item tertentu".',
     bundlePrice: "Isi harga paket, 0 atau lebih.",
     facilityProductId: "Isi ID produk fasilitas (UUID).",
     facilityQty: "Isi jumlah akses, bilangan bulat di atas 0.",

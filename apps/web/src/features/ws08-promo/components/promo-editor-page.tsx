@@ -147,11 +147,11 @@ export function PromoEditorPage({ promotionId }: { promotionId: string }) {
     return (
       <Card>
         <EmptyState
-          title={t("editor.notFoundTitle")}
-          description={t("editor.notFoundHint")}
+          title={t("promo.editor.notFoundTitle")}
+          description={t("promo.editor.notFoundHint")}
           action={
             <Button asChild variant="outline">
-              <Link to="/kelola/promo">{t("editor.back")}</Link>
+              <Link to="/kelola/promo">{t("promo.editor.back")}</Link>
             </Button>
           }
         />
@@ -212,7 +212,9 @@ function PromoEditorForm({
       ? "error"
       : "ready";
   const menuText =
-    menuState === "loading" ? t("editor.itemsLoading") : t("editor.itemsError");
+    menuState === "loading"
+      ? t("promo.editor.itemsLoading")
+      : t("promo.editor.itemsError");
 
   function set<Field extends keyof PromoForm>(
     field: Field,
@@ -263,8 +265,8 @@ function PromoEditorForm({
     const onSuccess = (saved: Promotion) => {
       toast({
         title: existing
-          ? t("editor.updatedToast", { name: saved.name })
-          : t("editor.createdToast", { name: saved.name }),
+          ? t("promo.editor.updatedToast", { name: saved.name })
+          : t("promo.editor.createdToast", { name: saved.name }),
         tone: "success",
       });
       void navigate({ to: "/kelola/promo" });
@@ -291,20 +293,20 @@ function PromoEditorForm({
         <Button asChild variant="outline" size="sm">
           <Link to="/kelola/promo">
             <ArrowLeft aria-hidden="true" />
-            {t("editor.back")}
+            {t("promo.editor.back")}
           </Link>
         </Button>
         <h3 className="type-title">
-          {existing ? t("editor.titleEdit") : t("editor.titleNew")}
+          {existing ? t("promo.editor.titleEdit") : t("promo.editor.titleNew")}
         </h3>
       </div>
 
       <div className="grid min-w-0 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="grid min-w-0 gap-5">
-          <Section title={t("editor.sections.basic")}>
+          <Section title={t("promo.editor.sections.basic")}>
             <FormField
-              label={t("editor.name")}
-              hint={t("editor.nameHint")}
+              label={t("promo.editor.name")}
+              hint={t("promo.editor.nameHint")}
               error={err("name")}
               required
               className="sm:col-span-2"
@@ -316,7 +318,7 @@ function PromoEditorForm({
               />
             </FormField>
             <FormField
-              label={t("editor.description")}
+              label={t("promo.editor.description")}
               className="sm:col-span-2"
             >
               <Textarea
@@ -327,8 +329,8 @@ function PromoEditorForm({
             </FormField>
             <FormField
               id="promo-status"
-              label={t("editor.status")}
-              hint={t("editor.statusHint")}
+              label={t("promo.editor.status")}
+              hint={t("promo.editor.statusHint")}
               className="sm:col-span-2"
             >
               <Select
@@ -343,7 +345,7 @@ function PromoEditorForm({
                 <SelectContent>
                   {PROMO_STATUSES.map((status) => (
                     <SelectItem key={status} value={status}>
-                      {t(`status.${status}`)}
+                      {t(`promo.status.${status}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -352,18 +354,18 @@ function PromoEditorForm({
           </Section>
 
           <Section
-            title={t("editor.sections.conditions")}
-            hint={t("editor.conditionsHint")}
+            title={t("promo.editor.sections.conditions")}
+            hint={t("promo.editor.conditionsHint")}
           >
             <ConditionBlock
               id="cond-min-spend"
-              label={t("conditionKind.min_spend")}
+              label={t("promo.conditionKind.min_spend")}
               checked={form.condMinSpend}
               onChange={(checked) => set("condMinSpend", checked)}
             >
               <FormField
-                label={t("editor.minSpend")}
-                hint={t("editor.minSpendHint")}
+                label={t("promo.editor.minSpend")}
+                hint={t("promo.editor.minSpendHint")}
                 error={err("minSpend")}
                 required
                 className="sm:col-span-2"
@@ -380,17 +382,17 @@ function PromoEditorForm({
 
             <ConditionBlock
               id="cond-channel"
-              label={t("conditionKind.channel")}
+              label={t("promo.conditionKind.channel")}
               checked={form.condChannel}
               onChange={(checked) => set("condChannel", checked)}
             >
               <CheckGroup
                 className="sm:col-span-2"
                 idPrefix="promo-channel"
-                legend={t("editor.channels")}
+                legend={t("promo.editor.channels")}
                 options={PROMO_CHANNELS.map((channel) => ({
                   id: channel,
-                  label: t(`channel.${channel}`),
+                  label: t(`promo.channel.${channel}`),
                 }))}
                 value={form.channels}
                 onChange={(next) =>
@@ -402,15 +404,15 @@ function PromoEditorForm({
 
             <ConditionBlock
               id="cond-member"
-              label={t("conditionKind.member")}
+              label={t("promo.conditionKind.member")}
               checked={form.condMember}
               onChange={(checked) => set("condMember", checked)}
             >
               <CheckGroup
                 className="sm:col-span-2"
                 idPrefix="promo-tier"
-                legend={t("editor.memberTiers")}
-                hint={t("editor.memberTiersHint")}
+                legend={t("promo.editor.memberTiers")}
+                hint={t("promo.editor.memberTiersHint")}
                 options={tiers.map((tier) => ({
                   id: tier.id,
                   label: tier.name,
@@ -427,25 +429,25 @@ function PromoEditorForm({
                 stateText={
                   tiersQuery.isPending
                     ? common("common.loading")
-                    : t("offline.readHint")
+                    : t("promo.offline.readHint")
                 }
-                emptyText={t("editor.noTiers")}
+                emptyText={t("promo.editor.noTiers")}
               />
             </ConditionBlock>
 
             <ConditionBlock
               id="cond-time"
-              label={t("conditionKind.time_window")}
+              label={t("promo.conditionKind.time_window")}
               checked={form.condTime}
               onChange={(checked) => set("condTime", checked)}
             >
               <CheckGroup
                 className="sm:col-span-2"
                 idPrefix="promo-day"
-                legend={t("editor.days")}
+                legend={t("promo.editor.days")}
                 options={WEEKDAYS.map((day) => ({
                   id: String(day),
-                  label: t(`weekday.d${day}`),
+                  label: t(`promo.weekday.d${day}`),
                 }))}
                 value={form.days.map(String)}
                 onChange={(next) =>
@@ -458,7 +460,7 @@ function PromoEditorForm({
                 columns={false}
               />
               <FormField
-                label={t("editor.timeStart")}
+                label={t("promo.editor.timeStart")}
                 error={err("timeStart")}
                 required
               >
@@ -469,8 +471,8 @@ function PromoEditorForm({
                 />
               </FormField>
               <FormField
-                label={t("editor.timeEnd")}
-                hint={t("editor.timeHint")}
+                label={t("promo.editor.timeEnd")}
+                hint={t("promo.editor.timeHint")}
                 error={err("timeEnd")}
                 required
               >
@@ -484,7 +486,7 @@ function PromoEditorForm({
 
             <ConditionBlock
               id="cond-item-qty"
-              label={t("conditionKind.item_quantity")}
+              label={t("promo.conditionKind.item_quantity")}
               checked={form.condItemQty}
               onChange={(checked) => set("condItemQty", checked)}
               error={err("condItemQty")}
@@ -492,17 +494,17 @@ function PromoEditorForm({
               <CheckGroup
                 className="sm:col-span-2"
                 idPrefix="promo-qty-item"
-                legend={t("editor.items")}
+                legend={t("promo.editor.items")}
                 options={menuOptions}
                 value={form.qtyItemIds}
                 onChange={(next) => set("qtyItemIds", next)}
                 error={err("qtyItemIds")}
                 state={menuState}
                 stateText={menuText}
-                emptyText={t("editor.itemsEmpty")}
+                emptyText={t("promo.editor.itemsEmpty")}
               />
               <FormField
-                label={t("editor.minQuantity")}
+                label={t("promo.editor.minQuantity")}
                 error={err("minQuantity")}
                 required
               >
@@ -518,29 +520,29 @@ function PromoEditorForm({
 
             <ConditionBlock
               id="cond-bundle"
-              label={t("conditionKind.bundle")}
+              label={t("promo.conditionKind.bundle")}
               checked={form.condBundle}
               onChange={(checked) => set("condBundle", checked)}
             >
               <CheckGroup
                 className="sm:col-span-2"
                 idPrefix="promo-bundle-item"
-                legend={t("editor.bundleItems")}
+                legend={t("promo.editor.bundleItems")}
                 options={menuOptions}
                 value={form.bundleItemIds}
                 onChange={(next) => set("bundleItemIds", next)}
                 error={err("bundleItemIds")}
                 state={menuState}
                 stateText={menuText}
-                emptyText={t("editor.itemsEmpty")}
+                emptyText={t("promo.editor.itemsEmpty")}
               />
             </ConditionBlock>
           </Section>
 
-          <Section title={t("editor.sections.benefit")}>
+          <Section title={t("promo.editor.sections.benefit")}>
             <FormField
               id="promo-benefit-kind"
-              label={t("editor.benefitKind")}
+              label={t("promo.editor.benefitKind")}
               required
               className="sm:col-span-2"
             >
@@ -556,7 +558,7 @@ function PromoEditorForm({
                 <SelectContent>
                   {BENEFIT_KINDS.map((kind) => (
                     <SelectItem key={kind} value={kind}>
-                      {t(`benefitKind.${kind}`)}
+                      {t(`promo.benefitKind.${kind}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -566,8 +568,8 @@ function PromoEditorForm({
             {form.benefitKind === "percent_off" && (
               <>
                 <FormField
-                  label={t("editor.percent")}
-                  hint={t("editor.percentHint")}
+                  label={t("promo.editor.percent")}
+                  hint={t("promo.editor.percentHint")}
                   error={err("percent")}
                   required
                 >
@@ -578,8 +580,8 @@ function PromoEditorForm({
                   />
                 </FormField>
                 <FormField
-                  label={t("editor.maxDiscount")}
-                  hint={t("editor.maxDiscountHint")}
+                  label={t("promo.editor.maxDiscount")}
+                  hint={t("promo.editor.maxDiscountHint")}
                   error={err("maxDiscount")}
                 >
                   <Input
@@ -595,7 +597,7 @@ function PromoEditorForm({
 
             {form.benefitKind === "nominal_off" && (
               <FormField
-                label={t("editor.nominal")}
+                label={t("promo.editor.nominal")}
                 error={err("nominal")}
                 required
                 className="sm:col-span-2"
@@ -618,23 +620,23 @@ function PromoEditorForm({
                     className="sm:col-span-2"
                     role={errors.condItemQty ? "alert" : undefined}
                   >
-                    {t("editor.freeNeedsBuy")}
+                    {t("promo.editor.freeNeedsBuy")}
                   </Notice>
                 )}
                 <CheckGroup
                   className="sm:col-span-2"
                   idPrefix="promo-free-item"
-                  legend={t("editor.freeItems")}
+                  legend={t("promo.editor.freeItems")}
                   options={menuOptions}
                   value={form.freeItemIds}
                   onChange={(next) => set("freeItemIds", next)}
                   error={err("freeItemIds")}
                   state={menuState}
                   stateText={menuText}
-                  emptyText={t("editor.itemsEmpty")}
+                  emptyText={t("promo.editor.itemsEmpty")}
                 />
                 <FormField
-                  label={t("editor.freeQty")}
+                  label={t("promo.editor.freeQty")}
                   error={err("freeQty")}
                   required
                 >
@@ -654,17 +656,17 @@ function PromoEditorForm({
                 <CheckGroup
                   className="sm:col-span-2"
                   idPrefix="promo-bundle-price-item"
-                  legend={t("editor.bundlePriceItems")}
+                  legend={t("promo.editor.bundlePriceItems")}
                   options={menuOptions}
                   value={form.bundlePriceItemIds}
                   onChange={(next) => set("bundlePriceItemIds", next)}
                   error={err("bundlePriceItemIds")}
                   state={menuState}
                   stateText={menuText}
-                  emptyText={t("editor.itemsEmpty")}
+                  emptyText={t("promo.editor.itemsEmpty")}
                 />
                 <FormField
-                  label={t("editor.bundlePrice")}
+                  label={t("promo.editor.bundlePrice")}
                   error={err("bundlePrice")}
                   required
                 >
@@ -682,8 +684,8 @@ function PromoEditorForm({
             {form.benefitKind === "facility_entitlement" && (
               <>
                 <FormField
-                  label={t("editor.facilityProductId")}
-                  hint={t("editor.facilityProductHint")}
+                  label={t("promo.editor.facilityProductId")}
+                  hint={t("promo.editor.facilityProductHint")}
                   error={err("facilityProductId")}
                   required
                   className="sm:col-span-2"
@@ -698,7 +700,7 @@ function PromoEditorForm({
                   />
                 </FormField>
                 <FormField
-                  label={t("editor.facilityQty")}
+                  label={t("promo.editor.facilityQty")}
                   error={err("facilityQty")}
                   required
                 >
@@ -714,9 +716,9 @@ function PromoEditorForm({
             )}
           </Section>
 
-          <Section title={t("editor.sections.validity")}>
+          <Section title={t("promo.editor.sections.validity")}>
             <FormField
-              label={t("editor.startsOn")}
+              label={t("promo.editor.startsOn")}
               error={err("startsOn")}
               required
             >
@@ -727,8 +729,8 @@ function PromoEditorForm({
               />
             </FormField>
             <FormField
-              label={t("editor.endsOn")}
-              hint={t("editor.endsOnHint")}
+              label={t("promo.editor.endsOn")}
+              hint={t("promo.editor.endsOnHint")}
               error={err("endsOn")}
             >
               <Input
@@ -739,10 +741,10 @@ function PromoEditorForm({
             </FormField>
           </Section>
 
-          <Section title={t("editor.sections.limits")}>
+          <Section title={t("promo.editor.sections.limits")}>
             <FormField
-              label={t("editor.quotaTotal")}
-              hint={t("editor.quotaHint")}
+              label={t("promo.editor.quotaTotal")}
+              hint={t("promo.editor.quotaHint")}
               error={err("quotaTotal")}
             >
               <Input
@@ -754,8 +756,8 @@ function PromoEditorForm({
               />
             </FormField>
             <FormField
-              label={t("editor.quotaPerCustomer")}
-              hint={t("editor.quotaHint")}
+              label={t("promo.editor.quotaPerCustomer")}
+              hint={t("promo.editor.quotaHint")}
               error={err("quotaPerCustomer")}
             >
               <Input
@@ -769,14 +771,14 @@ function PromoEditorForm({
               />
             </FormField>
             <FormField
-              label={t("editor.budget")}
+              label={t("promo.editor.budget")}
               hint={
                 existing && existing.budgetIdr !== null
-                  ? t("editor.budgetSpent", {
+                  ? t("promo.editor.budgetSpent", {
                       spent: formatRupiah(existing.spentIdr),
                       budget: formatRupiah(existing.budgetIdr),
                     })
-                  : t("editor.budgetHint")
+                  : t("promo.editor.budgetHint")
               }
               error={err("budget")}
               className="sm:col-span-2"
@@ -791,10 +793,10 @@ function PromoEditorForm({
             </FormField>
           </Section>
 
-          <Section title={t("editor.sections.stacking")}>
+          <Section title={t("promo.editor.sections.stacking")}>
             <FormField
-              label={t("editor.stackGroup")}
-              hint={t("editor.stackGroupHint")}
+              label={t("promo.editor.stackGroup")}
+              hint={t("promo.editor.stackGroupHint")}
               error={err("stackGroup")}
               required
             >
@@ -806,8 +808,8 @@ function PromoEditorForm({
               />
             </FormField>
             <FormField
-              label={t("editor.priority")}
-              hint={t("editor.priorityHint")}
+              label={t("promo.editor.priority")}
+              hint={t("promo.editor.priorityHint")}
               error={err("priority")}
               required
             >
@@ -824,11 +826,13 @@ function PromoEditorForm({
                 checked={form.stackable}
                 onCheckedChange={(checked) => set("stackable", checked)}
               />
-              <Label htmlFor="promo-stackable">{t("editor.stackable")}</Label>
+              <Label htmlFor="promo-stackable">
+                {t("promo.editor.stackable")}
+              </Label>
             </div>
           </Section>
 
-          <Section title={t("editor.sections.voucher")}>
+          <Section title={t("promo.editor.sections.voucher")}>
             <div className="flex items-center gap-3 sm:col-span-2">
               <Switch
                 id="promo-voucher-required"
@@ -836,16 +840,16 @@ function PromoEditorForm({
                 onCheckedChange={(checked) => set("voucherRequired", checked)}
               />
               <Label htmlFor="promo-voucher-required">
-                {t("editor.voucherRequired")}
+                {t("promo.editor.voucherRequired")}
               </Label>
             </div>
             {form.voucherRequired && (
               <FormField
-                label={t("editor.code")}
+                label={t("promo.editor.code")}
                 hint={
                   form.hasStoredCode
-                    ? t("editor.codeStored")
-                    : t("editor.codeHint")
+                    ? t("promo.editor.codeStored")
+                    : t("promo.editor.codeHint")
                 }
                 error={err("code")}
                 required={!form.hasStoredCode}
@@ -869,10 +873,10 @@ function PromoEditorForm({
           <Card aria-labelledby="promo-summary-title">
             <div className="grid gap-1">
               <h3 id="promo-summary-title" className="type-title">
-                {t("editor.sections.summary")}
+                {t("promo.editor.sections.summary")}
               </h3>
               <p className="text-sm leading-5 text-muted-foreground">
-                {t("editor.summaryHint")}
+                {t("promo.editor.summaryHint")}
               </p>
             </div>
             {summary ? (
@@ -886,18 +890,18 @@ function PromoEditorForm({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {t("editor.summaryEmpty")}
+                {t("promo.editor.summaryEmpty")}
               </p>
             )}
           </Card>
 
           <Card aria-labelledby="promo-conflicts-title">
             <h3 id="promo-conflicts-title" className="type-title">
-              {t("editor.sections.conflicts")}
+              {t("promo.editor.sections.conflicts")}
             </h3>
             {policyQuery.isPending ? (
               <p className="text-sm text-muted-foreground" role="status">
-                {t("editor.conflictsLoading")}
+                {t("promo.editor.conflictsLoading")}
               </p>
             ) : summary && summary.conflicts.length > 0 ? (
               <ul className="grid gap-2" data-testid="promo-conflicts">
@@ -911,27 +915,27 @@ function PromoEditorForm({
               </ul>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {t("editor.conflictsNone")}
+                {t("promo.editor.conflictsNone")}
               </p>
             )}
           </Card>
 
           {errorCount > 0 && (
             <Notice tone="danger" role="alert">
-              {t("editor.errorSummary", { count: errorCount })}
+              {t("promo.editor.errorSummary", { count: errorCount })}
             </Notice>
           )}
           {saveFailed && (
             <Notice tone="danger" role="alert">
-              {t("editor.saveFailed")}
+              {t("promo.editor.saveFailed")}
             </Notice>
           )}
           {!online && (
-            <Notice tone="warning">{t("offline.saveBlocked")}</Notice>
+            <Notice tone="warning">{t("promo.offline.saveBlocked")}</Notice>
           )}
           <Button type="submit" loading={pending} disabled={!online || pending}>
             <Save aria-hidden="true" />
-            {pending ? t("editor.saving") : t("editor.save")}
+            {pending ? t("promo.editor.saving") : t("promo.editor.save")}
           </Button>
         </aside>
       </div>

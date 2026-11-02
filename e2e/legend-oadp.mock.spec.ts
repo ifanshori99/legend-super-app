@@ -33,7 +33,9 @@ test("PRD §3.21 List: promotions show status, benefit in words, quota and budge
   page.on("pageerror", (error) => errors.push(error.message));
 
   await page.goto(`${MOCK_URL}/kelola/promo?mock=normal`, NAV);
-  await expect(page.getByRole("heading", { name: "Promo & voucher" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Promo & voucher" }),
+  ).toBeVisible();
 
   const current = page
     .getByRole("navigation", { name: "Promo & voucher" })
@@ -73,7 +75,9 @@ test("PRD §3.21 Rule builder: a percent promo with minimum spend gets a plain-l
 }) => {
   await page.goto(`${MOCK_URL}/kelola/promo?mock=normal`, NAV);
   await page.getByRole("link", { name: "Buat promo" }).click();
-  await expect(page.getByRole("button", { name: "Simpan promo" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Simpan promo" }),
+  ).toBeVisible();
 
   // Validation first: an empty form says what to fix and sends nothing.
   await page.getByRole("button", { name: "Simpan promo" }).click();
@@ -95,7 +99,9 @@ test("PRD §3.21 Rule builder: a percent promo with minimum spend gets a plain-l
   );
 
   await page.getByRole("button", { name: "Simpan promo" }).click();
-  await expect(page.getByText("Promo Kopi Pagi 15% dibuat.").first()).toBeVisible();
+  await expect(
+    page.getByText("Promo Kopi Pagi 15% dibuat.").first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("table").getByText("Kopi Pagi 15%"),
   ).toBeVisible();
@@ -119,7 +125,9 @@ test("PRD §3.21 Rule types: every benefit and condition of the contract can be 
   await expect(page.getByText("Kanal yang berlaku")).toBeVisible();
   await expect(page.getByText("Hari berlaku")).toBeVisible();
   await expect(page.getByLabel("Jam mulai")).toBeVisible();
-  await expect(page.getByText("Item dalam paket (minimal 2)").first()).toBeVisible();
+  await expect(
+    page.getByText("Item dalam paket (minimal 2)").first(),
+  ).toBeVisible();
 
   const kinds: [string, string][] = [
     ["Potongan nominal", "Potongan (Rp)"],
@@ -147,7 +155,9 @@ test("PRD §3.21 Stacking (owner Q20): 10% then 20% of Rp100.000 is Rp28.000 and
   page,
 }) => {
   await page.goto(`${MOCK_URL}/kelola/promo/tumpang-tindih?mock=normal`, NAV);
-  await expect(page.getByText("Kebijakan tumpang tindih").first()).toBeVisible();
+  await expect(
+    page.getByText("Kebijakan tumpang tindih").first(),
+  ).toBeVisible();
   await expect(page.getByTestId("stack-total")).toContainText(/28\.000/);
   await expect(page.getByTestId("stack-total")).not.toContainText(/30\.000/);
 
@@ -170,7 +180,9 @@ test("PRD §3.21 Vouchers: issue a code once, validate it like the cashier, and 
   page,
 }) => {
   await page.goto(`${MOCK_URL}/kelola/promo/voucher?mock=normal`, NAV);
-  await expect(page.getByRole("table").getByText("Dipakai").first()).toBeVisible();
+  await expect(
+    page.getByRole("table").getByText("Dipakai").first(),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Terbitkan voucher" }).click();
   await page.getByLabel("Nilai (Rp)").fill("20000");
@@ -181,7 +193,9 @@ test("PRD §3.21 Vouchers: issue a code once, validate it like the cashier, and 
 
   await page.getByLabel("Kode voucher", { exact: true }).fill(code ?? "");
   await page.getByRole("button", { name: "Cek kode" }).click();
-  await expect(page.getByText(/Kode valid\. Pratinjau diskon Rp\s*20\.000/)).toBeVisible();
+  await expect(
+    page.getByText(/Kode valid\. Pratinjau diskon Rp\s*20\.000/),
+  ).toBeVisible();
 
   await page.getByLabel("Kode voucher", { exact: true }).fill("MAAFRINA50");
   await page.getByRole("button", { name: "Cek kode" }).click();
@@ -194,9 +208,13 @@ test("PRD §3.21 ROI: totals in a stat strip and one row per promotion", async (
   await page.goto(`${MOCK_URL}/kelola/promo/roi?mock=normal`, NAV);
   const strip = page.getByRole("region", { name: "Ringkasan ROI promo" });
   await expect(strip.getByText("Biaya diskon", { exact: true })).toBeVisible();
-  await expect(strip.getByText("Omzet berpromo", { exact: true })).toBeVisible();
+  await expect(
+    strip.getByText("Omzet berpromo", { exact: true }),
+  ).toBeVisible();
   await expect(strip.getByText("Margin bersih", { exact: true })).toBeVisible();
-  await expect(strip.getByText("ROI keseluruhan", { exact: true })).toBeVisible();
+  await expect(
+    strip.getByText("ROI keseluruhan", { exact: true }),
+  ).toBeVisible();
   const row = page
     .getByRole("table")
     .getByRole("row")
@@ -249,7 +267,10 @@ for (const [name, path] of SHOTS) {
             document.documentElement.clientWidth,
         );
         expect(overflow).toBe(false);
-        await captureScreenshot(page, `legend-oadp/${name}-${width}-${theme}.png`);
+        await captureScreenshot(
+          page,
+          `legend-oadp/${name}-${width}-${theme}.png`,
+        );
       });
     }
   }

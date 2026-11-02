@@ -13,7 +13,7 @@ import type {
   PromotionStatus,
 } from "@starter/shared/crm";
 import type { createPromotion } from "@starter/shared/crm";
-import { DEFAULT_TIME_ZONE, businessDateOf } from "@starter/shared/core";
+import { DEFAULT_TIME_ZONE, localDateOf } from "@starter/shared/core";
 import { formatRupiah, type TranslateVars } from "@starter/shared/i18n";
 import type { PromoKey, PromoT } from "./t.ts";
 
@@ -119,7 +119,7 @@ function zoneOffsetMinutes(instant: number, timeZone: string): number {
 
 /** Outlet business day of an instant, as `<input type="date">` wants it. */
 export function dateInputValue(iso: string): string {
-  return businessDateOf(iso, DEFAULT_TIME_ZONE);
+  return localDateOf(iso, DEFAULT_TIME_ZONE);
 }
 
 /** `<input type="date">` value → opening / closing instant of that outlet day. */
@@ -147,8 +147,7 @@ const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
 
 /** ISO instant or "2026-10-01" → "1 Okt 2026" (outlet business day). */
 export function formatDateLabel(value: string): string {
-  const day =
-    value.length > 10 ? businessDateOf(value, DEFAULT_TIME_ZONE) : value;
+  const day = value.length > 10 ? localDateOf(value, DEFAULT_TIME_ZONE) : value;
   const [year, month, date] = day.split("-").map(Number);
   return DAY_FORMAT.format(Date.UTC(year, month - 1, date));
 }
@@ -616,9 +615,9 @@ export type SummaryContext = {
 };
 
 function itemList(ids: readonly string[], ctx: SummaryContext): string {
-  if (ids.length === 0) return ctx.t("summary.anyItem");
+  if (ids.length === 0) return ctx.t("promo.summary.anyItem");
   return ids
-    .map((id) => ctx.itemName(id) ?? ctx.t("summary.unknownItem"))
+    .map((id) => ctx.itemName(id) ?? ctx.t("promo.summary.unknownItem"))
     .join(", ");
 }
 
@@ -630,29 +629,29 @@ export function benefitSummary(
   switch (benefit.kind) {
     case "percent_off":
       return benefit.maxDiscountIdr === null
-        ? t("summary.benefit.percent", {
+        ? t("promo.summary.benefit.percent", {
             percent: formatPercentBp(benefit.percentBp),
           })
-        : t("summary.benefit.percentCap", {
+        : t("promo.summary.benefit.percentCap", {
             percent: formatPercentBp(benefit.percentBp),
             max: formatRupiah(benefit.maxDiscountIdr),
           });
     case "nominal_off":
-      return t("summary.benefit.nominal", {
+      return t("promo.summary.benefit.nominal", {
         amount: formatRupiah(benefit.amountIdr),
       });
     case "free_items":
-      return t("summary.benefit.free", {
+      return t("promo.summary.benefit.free", {
         qty: benefit.quantityPerMultiple,
         items: itemList(benefit.menuItemIds, ctx),
       });
     case "bundle_price":
-      return t("summary.benefit.bundle", {
+      return t("promo.summary.benefit.bundle", {
         price: formatRupiah(benefit.bundlePriceIdr),
         items: itemList(benefit.menuItemIds, ctx),
       });
     case "facility_entitlement":
-      return t("summary.benefit.facility", { qty: benefit.quantity });
+      return t("promo.summary.benefit.facility", { qty: benefit.quantity });
   }
 }
 
@@ -663,46 +662,46 @@ export function conditionSummary(
   const { t } = ctx;
   switch (condition.kind) {
     case "min_spend":
-      return t("summary.cond.minSpend", {
+      return t("promo.summary.cond.minSpend", {
         amount: formatRupiah(condition.amountIdr),
       });
     case "channel":
-      return t("summary.cond.channel", {
+      return t("promo.summary.cond.channel", {
         channels: condition.channels
-          .map((channel) => t(`channel.${channel}`))
+          .map((channel) => t(`promo.channel.${channel}`))
           .join(", "),
       });
     case "member":
       return condition.tierIds.length === 0
-        ? t("summary.cond.memberAny")
-        : t("summary.cond.memberTiers", {
+        ? t("promo.summary.cond.memberAny")
+        : t("promo.summary.cond.memberTiers", {
             tiers: condition.tierIds
-              .map((id) => ctx.tierName(id) ?? t("summary.unknownTier"))
+              .map((id) => ctx.tierName(id) ?? t("promo.summary.unknownTier"))
               .join(", "),
           });
     case "time_window":
-      return t("summary.cond.time", {
+      return t("promo.summary.cond.time", {
         days: daysLabel(condition.daysOfWeek, t),
         start: condition.start,
         end: condition.end,
       });
     case "item_quantity":
-      return t("summary.cond.itemQty", {
+      return t("promo.summary.cond.itemQty", {
         qty: condition.minQuantity,
         items: itemList(condition.menuItemIds, ctx),
       });
     case "bundle":
-      return t("summary.cond.bundle", {
+      return t("promo.summary.cond.bundle", {
         items: itemList(condition.menuItemIds, ctx),
       });
   }
 }
 
 export function daysLabel(days: readonly number[], t: PromoT): string {
-  if (days.length === 7) return t("summary.allDays");
+  if (days.length === 7) return t("promo.summary.allDays");
   return [...days]
     .sort((a, b) => a - b)
-    .map((day) => t(`weekday.d${day}` as PromoKey))
+    .map((day) => t(`promo.weekday.d${day}` as PromoKey))
     .join(", ");
 }
 
@@ -728,33 +727,40 @@ export function summarizePromotion(
   const conditions = body.conditions.map((c) => conditionSummary(c, ctx));
   const lines = [
     conditions.length === 0
-      ? t("summary.sentence", { benefit })
-      : t("summary.sentenceIf", { benefit, conditions: conditions.join(", ") }),
+      ? t("promo.summary.sentence", { benefit })
+      : t("promo.summary.sentenceIf", {
+          benefit,
+          conditions: conditions.join(", "),
+        }),
   ];
   lines.push(
     body.endsAt === null
-      ? t("summary.validityOpen", { from: formatDateLabel(body.startsAt) })
-      : t("summary.validity", {
+      ? t("promo.summary.validityOpen", {
+          from: formatDateLabel(body.startsAt),
+        })
+      : t("promo.summary.validity", {
           from: formatDateLabel(body.startsAt),
           to: formatDateLabel(body.endsAt),
         }),
   );
   const limits: string[] = [];
   if (body.quotaTotal !== null)
-    limits.push(t("summary.quotaTotal", { total: body.quotaTotal }));
+    limits.push(t("promo.summary.quotaTotal", { total: body.quotaTotal }));
   if (body.quotaPerCustomer !== null)
     limits.push(
-      t("summary.quotaPerCustomer", { count: body.quotaPerCustomer }),
+      t("promo.summary.quotaPerCustomer", { count: body.quotaPerCustomer }),
     );
   if (body.budgetIdr !== null)
-    limits.push(t("summary.budget", { amount: formatRupiah(body.budgetIdr) }));
+    limits.push(
+      t("promo.summary.budget", { amount: formatRupiah(body.budgetIdr) }),
+    );
   if (limits.length > 0)
-    lines.push(t("summary.limits", { parts: limits.join(", ") }));
-  if (body.voucherRequired) lines.push(t("summary.voucher"));
+    lines.push(t("promo.summary.limits", { parts: limits.join(", ") }));
+  if (body.voucherRequired) lines.push(t("promo.summary.voucher"));
   lines.push(
     body.stackable
-      ? t("summary.stackGroup", { group: body.stackGroup })
-      : t("summary.stackAlone"),
+      ? t("promo.summary.stackGroup", { group: body.stackGroup })
+      : t("promo.summary.stackAlone"),
   );
   return lines;
 }

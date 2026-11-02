@@ -62,7 +62,7 @@ export function PromoTabs({ active }: { active: PromoSection }) {
   const t = usePromoT();
   return (
     <nav
-      aria-label={t("title")}
+      aria-label={t("promo.title")}
       className={cn(tabsListClass, "[scrollbar-width:none]")}
     >
       {TABS.map((tab) => {
@@ -110,19 +110,19 @@ export function PromoPage({
     <div className="grid min-w-0 gap-5">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="type-title">{t("title")}</h2>
+          <h2 className="type-title">{t("promo.title")}</h2>
           {API_MOCK && (
             <Badge tone="neutral">{common("common.sampleData")}</Badge>
           )}
         </div>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-          {t("subtitle")}
+          {t("promo.subtitle")}
         </p>
       </header>
       <PromoTabs active={active} />
       {!online && (
-        <Notice tone="warning" icon={WifiOff} title={t("offline.title")}>
-          {t("offline.description")}
+        <Notice tone="warning" icon={WifiOff} title={t("promo.offline.title")}>
+          {t("promo.offline.description")}
         </Notice>
       )}
       <div className="grid min-w-0 gap-5">{children}</div>
@@ -190,7 +190,7 @@ export function PromoStatusPill({ status }: { status: PromotionStatus }) {
       icon={status === "active" ? undefined : icon}
       className="text-xs"
     >
-      {t(`status.${status}`)}
+      {t(`promo.status.${status}`)}
     </StatusPill>
   );
 }
@@ -217,8 +217,8 @@ export function ReadError({
   return (
     <ErrorState
       icon={network ? WifiOff : undefined}
-      title={network ? t("offline.readTitle") : undefined}
-      description={network ? t("offline.readHint") : undefined}
+      title={network ? t("promo.offline.readTitle") : undefined}
+      description={network ? t("promo.offline.readHint") : undefined}
       onRetry={onRetry}
     />
   );
@@ -228,7 +228,7 @@ export function LoadingBlock({ rows = 4 }: { rows?: number }) {
   const t = usePromoT();
   return (
     <div aria-busy="true" className="grid gap-3 p-card">
-      <span className="sr-only">{t("common.loading")}</span>
+      <span className="sr-only">{t("promo.common.loading")}</span>
       {Array.from({ length: rows }, (_, index) => (
         <Skeleton key={index} className="h-control" />
       ))}

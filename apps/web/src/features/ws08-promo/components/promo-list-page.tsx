@@ -42,21 +42,21 @@ function BudgetCell({ promotion, t }: { promotion: Promotion; t: PromoT }) {
   if (promotion.budgetIdr === null)
     return (
       <span className="text-sm text-muted-foreground">
-        {t("list.budgetNone")}
+        {t("promo.list.budgetNone")}
       </span>
     );
   const percent = budgetPercent(promotion.spentIdr, promotion.budgetIdr) ?? 0;
   return (
     <div className="grid min-w-32 gap-1">
       <span className="tabular text-sm">
-        {t("list.budgetUsed", {
+        {t("promo.list.budgetUsed", {
           spent: formatRupiah(promotion.spentIdr),
           budget: formatRupiah(promotion.budgetIdr),
         })}
       </span>
       <div
         role="progressbar"
-        aria-label={t("list.budgetBar", { percent })}
+        aria-label={t("promo.list.budgetBar", { percent })}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
@@ -74,18 +74,20 @@ function BudgetCell({ promotion, t }: { promotion: Promotion; t: PromoT }) {
 function quotaLine(promotion: Promotion, t: PromoT): string {
   const parts: string[] = [];
   if (promotion.quotaTotal !== null)
-    parts.push(t("list.quotaTotal", { total: promotion.quotaTotal }));
+    parts.push(t("promo.list.quotaTotal", { total: promotion.quotaTotal }));
   if (promotion.quotaPerCustomer !== null)
     parts.push(
-      t("list.quotaPerCustomer", { count: promotion.quotaPerCustomer }),
+      t("promo.list.quotaPerCustomer", { count: promotion.quotaPerCustomer }),
     );
-  return parts.length === 0 ? t("list.quotaUnlimited") : parts.join(" · ");
+  return parts.length === 0
+    ? t("promo.list.quotaUnlimited")
+    : parts.join(" · ");
 }
 
 function windowLine(promotion: Promotion, t: PromoT): string {
   return promotion.endsAt === null
-    ? t("list.windowOpen", { from: formatDateLabel(promotion.startsAt) })
-    : t("list.window", {
+    ? t("promo.list.windowOpen", { from: formatDateLabel(promotion.startsAt) })
+    : t("promo.list.window", {
         from: formatDateLabel(promotion.startsAt),
         to: formatDateLabel(promotion.endsAt),
       });
@@ -132,7 +134,8 @@ export function PromoListPage() {
             ),
             tone: "success",
           }),
-        onError: () => toast({ title: t("list.actionFailed"), tone: "danger" }),
+        onError: () =>
+          toast({ title: t("promo.list.actionFailed"), tone: "danger" }),
       },
     );
   }
@@ -150,7 +153,7 @@ export function PromoListPage() {
     <Button asChild variant={variant}>
       <Link to="/kelola/promo/$promotionId" params={{ promotionId: "baru" }}>
         <Plus aria-hidden="true" />
-        {t("list.add")}
+        {t("promo.list.add")}
       </Link>
     </Button>
   );
@@ -182,7 +185,7 @@ export function PromoListPage() {
         <Link
           to="/kelola/promo/$promotionId"
           params={{ promotionId: promotion.id }}
-          aria-label={t("list.edit", { name: promotion.name })}
+          aria-label={t("promo.list.edit", { name: promotion.name })}
         >
           <Pencil aria-hidden="true" />
         </Link>
@@ -192,13 +195,13 @@ export function PromoListPage() {
 
   return (
     <DataTableShell
-      title={t("list.title")}
-      description={t("list.description")}
+      title={t("promo.list.title")}
+      description={t("promo.list.description")}
       state={state}
       search={{
         value: search,
         onChange: setSearch,
-        label: t("list.searchLabel"),
+        label: t("promo.list.searchLabel"),
       }}
       actions={
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -207,16 +210,16 @@ export function PromoListPage() {
             onValueChange={(value) => setFilter(value as StatusFilter)}
           >
             <SelectTrigger
-              aria-label={t("list.filterLabel")}
+              aria-label={t("promo.list.filterLabel")}
               className="sm:w-44"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{t("list.filterAll")}</SelectItem>
+              <SelectItem value="all">{t("promo.list.filterAll")}</SelectItem>
               {PROMO_STATUSES.map((status) => (
                 <SelectItem key={status} value={status}>
-                  {t(`status.${status}`)}
+                  {t(`promo.status.${status}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -227,11 +230,11 @@ export function PromoListPage() {
       onRetry={() => void promotionsQuery.refetch()}
       empty={{
         title: filteredEmpty
-          ? t("list.emptyFilteredTitle")
-          : t("list.emptyTitle"),
+          ? t("promo.list.emptyFilteredTitle")
+          : t("promo.list.emptyTitle"),
         description: filteredEmpty
-          ? t("list.emptyFilteredHint")
-          : t("list.emptyHint"),
+          ? t("promo.list.emptyFilteredHint")
+          : t("promo.list.emptyHint"),
         action: filteredEmpty ? undefined : addLink("outline"),
       }}
       noResults={filtered.length === 0 && promotions.length > 0}
@@ -241,13 +244,13 @@ export function PromoListPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>{t("list.columns.name")}</TableHead>
-              <TableHead>{t("list.columns.benefit")}</TableHead>
-              <TableHead>{t("list.columns.window")}</TableHead>
-              <TableHead>{t("list.columns.quota")}</TableHead>
-              <TableHead>{t("list.columns.budget")}</TableHead>
-              <TableHead>{t("list.columns.status")}</TableHead>
-              <TableHead numeric>{t("list.columns.actions")}</TableHead>
+              <TableHead>{t("promo.list.columns.name")}</TableHead>
+              <TableHead>{t("promo.list.columns.benefit")}</TableHead>
+              <TableHead>{t("promo.list.columns.window")}</TableHead>
+              <TableHead>{t("promo.list.columns.quota")}</TableHead>
+              <TableHead>{t("promo.list.columns.budget")}</TableHead>
+              <TableHead>{t("promo.list.columns.status")}</TableHead>
+              <TableHead numeric>{t("promo.list.columns.actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -257,7 +260,7 @@ export function PromoListPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     {promotion.name}
                     {promotion.voucherRequired && (
-                      <Badge tone="brand">{t("list.voucherOnly")}</Badge>
+                      <Badge tone="brand">{t("promo.list.voucherOnly")}</Badge>
                     )}
                   </div>
                 </TableCell>
@@ -302,7 +305,7 @@ export function PromoListPage() {
               <span className="tabular">{windowLine(promotion, t)}</span>
               <span>{quotaLine(promotion, t)}</span>
               {promotion.voucherRequired && (
-                <Badge tone="brand">{t("list.voucherOnly")}</Badge>
+                <Badge tone="brand">{t("promo.list.voucherOnly")}</Badge>
               )}
             </div>
             <BudgetCell promotion={promotion} t={t} />
