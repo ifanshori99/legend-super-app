@@ -1,13 +1,22 @@
 // Audit write port (PRD v1.7 §3.7 "Pemberian Role ... tercatat di audit log",
-// §6 B audit_logs). The audit service and its append-only table are bead
-// legend-4sc (in progress, not on main yet). Until it merges, this port is the
-// only seam: the RBAC service calls `recordAudit` inside the same
-// `withTenant` transaction, and the default writer fails closed, so a missing
-// audit implementation can never let a role/approval change pass silently.
+// §6 B audit_logs). The RBAC service calls `recordAudit` inside the same
+// `withTenant` transaction that performs the change, and the default writer
+// fails closed, so a missing audit implementation can never let a
+// role/approval change pass silently.
 //
-// Wiring legend-4sc: call `setAuditWriter` in the API bootstrap with a writer
-// that inserts `audit_logs` on the caller's transaction. Do not replace the
-// default with a no-op.
+// Wiring (bead legend-wt33): `apps/api/src/services/core-audit-writer.ts` maps
+// this entry to the audit contract and appends it on the caller's transaction.
+// `app.ts` installs it at bootstrap. Do not replace it with a no-op.
+
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import type * as schema from "../db/schema/index.ts";
+
+type Database = NodePgDatabase<typeof schema>;
+/** The tenant transaction the audited change runs on. */
+export type AuditTransaction = Parameters<
+  Parameters<Database["transaction"]>[0]
+>[0];
 
 export type AuditActorType = "user" | "ai" | "mcp_client" | "system" | "device";
 
@@ -31,8 +40,14 @@ export type AuditEntry = {
   readonly sensitiveAccess: boolean;
 };
 
+/** Where the audit row must land: the caller's transaction and tenant scope. */
+export type AuditWriteScope = {
+  readonly tx: AuditTransaction;
+  readonly context: ScopedTenantContext;
+};
+
 export type AuditWriter = {
-  record(entry: AuditEntry): Promise<void>;
+  record(entry: AuditEntry, scope: AuditWriteScope): Promise<void>;
 };
 
 export class AuditUnavailableError extends Error {
@@ -46,7 +61,7 @@ export class AuditUnavailableError extends Error {
 
 let writer: AuditWriter | null = null;
 
-/** Installed once by the API bootstrap when legend-4sc lands. */
+/** Installed once by the API bootstrap (app.ts). */
 export function setAuditWriter(next: AuditWriter | null): void {
   writer = next;
 }
@@ -56,7 +71,10 @@ export function setAuditWriter(next: AuditWriter | null): void {
  * awaits this inside its transaction, so a write failure rolls back the
  * domain change together with the audit row.
  */
-export async function recordAudit(entry: AuditEntry): Promise<void> {
+export async function recordAudit(
+  entry: AuditEntry,
+  scope: AuditWriteScope,
+): Promise<void> {
   if (writer === null) throw new AuditUnavailableError();
-  await writer.record(entry);
+  await writer.record(entry, scope);
 }
