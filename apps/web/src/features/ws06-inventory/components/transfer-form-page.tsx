@@ -44,6 +44,7 @@ import {
   quantityFromInput,
 } from "../lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Line = { key: string; inventoryItemId: string; quantity: string };
 
@@ -145,7 +146,7 @@ export function TransferFormPage() {
     setLines((current) => [
       ...current,
       {
-        key: crypto.randomUUID(),
+        key: newIdempotencyKey(),
         inventoryItemId: pendingItemId,
         quantity: parsed,
       },
@@ -178,7 +179,7 @@ export function TransferFormPage() {
       return;
     }
     setFormError(undefined);
-    draftKey.current ??= crypto.randomUUID();
+    draftKey.current ??= newIdempotencyKey();
     createTransfer.mutate(
       {
         outletId: INVENTORY_OUTLET_ID,
@@ -230,23 +231,21 @@ export function TransferFormPage() {
           <ArrowLeft className="size-4" aria-hidden="true" />
           {t("inventory.transfers.form.back")}
         </Link>
-        <h2 className="text-xl leading-7 font-semibold">
-          {t("inventory.transfers.form.title")}
-        </h2>
+        <h2 className="type-title">{t("inventory.transfers.form.title")}</h2>
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
           {t("inventory.transfers.form.subtitle")}
         </p>
       </div>
 
       {loading ? (
-        <div className="grid gap-3 rounded-xl border bg-card p-card">
+        <div className="grid gap-3 rounded-container border bg-card p-card shadow-hairline">
           <span className="sr-only">{t("common.loading")}</span>
           <Skeleton className="h-row" />
           <Skeleton className="h-row" />
           <Skeleton className="h-row" />
         </div>
       ) : failed ? (
-        <div className="rounded-xl border bg-card">
+        <div className="rounded-container border bg-card">
           <ErrorState
             onRetry={() => {
               void locationsQuery.refetch();
@@ -257,7 +256,7 @@ export function TransferFormPage() {
           />
         </div>
       ) : activeLocations.length < 2 ? (
-        <div className="rounded-xl border bg-card">
+        <div className="rounded-container border bg-card">
           <EmptyState
             title={t("inventory.transfers.form.noLocations")}
             description={t("inventory.transfers.form.noLocationsHint")}
@@ -271,7 +270,7 @@ export function TransferFormPage() {
           />
         </div>
       ) : items.length === 0 ? (
-        <div className="rounded-xl border bg-card">
+        <div className="rounded-container border bg-card">
           <EmptyState
             title={t("inventory.transfers.form.noItems")}
             description={t("inventory.transfers.form.noItemsHint")}
@@ -284,7 +283,7 @@ export function TransferFormPage() {
         </div>
       ) : (
         <form className="grid min-w-0 gap-4" onSubmit={submit} noValidate>
-          <section className="grid gap-4 rounded-xl border bg-card p-card sm:grid-cols-2">
+          <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline sm:grid-cols-2">
             <FormField label={t("inventory.transfers.form.from")} required>
               <Select value={fromValue} onValueChange={setFromId}>
                 <SelectTrigger>
@@ -317,7 +316,7 @@ export function TransferFormPage() {
             </FormField>
           </section>
 
-          <section className="grid gap-4 rounded-xl border bg-card p-card">
+          <section className="grid gap-4 rounded-container border bg-card p-card shadow-hairline">
             <h3 className="text-base leading-6 font-semibold">
               {t("inventory.transfers.form.linesTitle")}
             </h3>
@@ -370,7 +369,7 @@ export function TransferFormPage() {
             </div>
 
             {lines.length > 0 && (
-              <div className="overflow-hidden rounded-lg border">
+              <div className="overflow-hidden rounded-container border">
                 <Table>
                   <TableHeader>
                     <TableRow>

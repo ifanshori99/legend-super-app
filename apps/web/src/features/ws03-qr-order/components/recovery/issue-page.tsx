@@ -24,9 +24,9 @@ function IssueSkeleton() {
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("common.loading")}</span>
       <Skeleton className="h-8 w-3/4" />
-      <Skeleton className="h-20 w-full rounded-xl" />
-      <Skeleton className="h-24 w-full rounded-xl" />
-      <Skeleton className="h-24 w-full rounded-xl" />
+      <Skeleton className="h-20 w-full rounded-container" />
+      <Skeleton className="h-24 w-full rounded-container" />
+      <Skeleton className="h-24 w-full rounded-container" />
       <Skeleton className="h-12 w-full rounded-control" />
     </div>
   );
@@ -69,7 +69,7 @@ function Resolved({
   if (issue.resolution === "swap" && issue.replacementItemName) {
     const difference = issue.priceDifferenceIdr ?? 0;
     return (
-      <section className="grid gap-3 rounded-xl border-(length:--border-w) p-card">
+      <section className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
         <ResolvedNotice>
           {t("qrRecovery.issue.resolved.swapTitle", {
             name: issue.replacementItemName,
@@ -159,9 +159,7 @@ export function IssuePage({ issueId }: { issueId: string }) {
   return (
     <div className="grid gap-4 pb-4">
       <header className="grid gap-1">
-        <h1 className="text-2xl leading-8 font-semibold">
-          {t("qrRecovery.issue.title")}
-        </h1>
+        <h1 className="type-display-xl">{t("qrRecovery.issue.title")}</h1>
         {issue.status === "open" && (
           <p className="text-muted-foreground">
             {t("qrRecovery.issue.apology")}
@@ -179,7 +177,7 @@ export function IssuePage({ issueId }: { issueId: string }) {
         </p>
       )}
 
-      <section className="flex items-start justify-between gap-3 rounded-xl border-(length:--border-w) p-card">
+      <section className="flex items-start justify-between gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
         <div className="grid min-w-0 gap-1">
           <p className="font-semibold">
             {t("qrRecovery.issue.itemLine", {

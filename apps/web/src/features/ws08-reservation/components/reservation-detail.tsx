@@ -54,9 +54,7 @@ function Fact({
 }) {
   return (
     <div className="grid min-w-0 gap-0.5">
-      <dt className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-        {label}
-      </dt>
+      <dt className="type-eyebrow text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-sm font-medium">{children}</dd>
     </div>
   );
@@ -128,7 +126,7 @@ function DetailBody({
         </DialogDescription>
       </DialogHeader>
 
-      <dl className="grid min-w-0 grid-cols-2 gap-3 rounded-xl border-(length:--border-w) bg-card p-card">
+      <dl className="grid min-w-0 grid-cols-2 gap-3 rounded-container border-(length:--border-w) bg-card p-card">
         <Fact label={t("reservation.detail.when")}>
           <span className="tabular">
             {formatDayLabel(businessDateOf(reservation.reservedFor, timeZone))}
@@ -196,10 +194,8 @@ function DetailBody({
       </dl>
 
       <section className="grid gap-1.5">
-        <h3 className="text-sm font-semibold">
-          {t("reservation.detail.policyTitle")}
-        </h3>
-        <div className="grid gap-1.5 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+        <h3 className="type-heading">{t("reservation.detail.policyTitle")}</h3>
+        <div className="grid gap-1.5 rounded-container bg-muted p-3 text-sm text-muted-foreground">
           <p className="tabular">
             {t("reservation.detail.policyVersion", {
               version: reservation.policy.version,
@@ -249,11 +245,11 @@ function DetailBody({
       </section>
 
       <section className="grid gap-1.5">
-        <h3 className="text-sm font-semibold">
+        <h3 className="type-heading">
           {t("reservation.detail.preOrderTitle")}
         </h3>
         {preOrder ? (
-          <div className="grid gap-1 rounded-lg border-(length:--border-w) bg-card p-3">
+          <div className="grid gap-1 rounded-container border-(length:--border-w) bg-card p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-semibold">
                 {t("reservation.detail.preOrderPackage", {
@@ -299,9 +295,7 @@ function DetailBody({
 
       {slots.length > 0 && (
         <section className="grid gap-1.5">
-          <h3 className="text-sm font-semibold">
-            {t("reservation.detail.slotsTitle")}
-          </h3>
+          <h3 className="type-heading">{t("reservation.detail.slotsTitle")}</h3>
           <ul className="grid list-none gap-1 p-0 text-sm text-muted-foreground">
             {slots.map((slot) => (
               <li
@@ -436,7 +430,7 @@ export function ReservationDetailDialog({
               {t("reservation.detail.loading")}
             </span>
             <Skeleton className="h-8 w-1/2" />
-            <Skeleton className="h-32 w-full rounded-xl" />
+            <Skeleton className="h-32 w-full rounded-container" />
           </div>
         ) : detail.error ? (
           <>

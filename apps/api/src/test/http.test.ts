@@ -33,6 +33,31 @@ describe("HTTP plumbing", () => {
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
+  // legend-8tv6: payment-admin configuration writes are PUT and carry their
+  // retry identity in Idempotency-Key, so the preflight must allow both.
+  it("allows the Idempotency-Key preflight for PUT from the web origin only", async () => {
+    const allowed = await request(app)
+      .options("/api/payments/admin/routing/qris")
+      .set("Origin", WEB_ORIGIN)
+      .set("Access-Control-Request-Method", "PUT")
+      .set("Access-Control-Request-Headers", "content-type,idempotency-key");
+    expect(allowed.headers["access-control-allow-origin"]).toBe(WEB_ORIGIN);
+    expect(allowed.headers["access-control-allow-methods"]).toContain("PUT");
+    expect(
+      String(allowed.headers["access-control-allow-headers"]).toLowerCase(),
+    ).toContain("idempotency-key");
+    expect(allowed.headers["access-control-allow-credentials"]).toBe("true");
+
+    const denied = await request(app)
+      .options("/api/payments/admin/routing/qris")
+      .set("Origin", "https://evil.example")
+      .set("Access-Control-Request-Method", "PUT")
+      .set("Access-Control-Request-Headers", "idempotency-key");
+    // Without Allow-Origin the browser blocks the response, so no header list
+    // can make an untrusted page call the API.
+    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
   it("generates or echoes a safe X-Request-Id", async () => {
     const generated = await request(app).get("/api/health");
     expect(generated.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);

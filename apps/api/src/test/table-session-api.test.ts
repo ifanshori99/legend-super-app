@@ -362,7 +362,9 @@ describe("table session lifecycle (legend-irw)", () => {
     const denied = await supervisor.client
       .post(`/api/table-sessions/${session.body.data.session.id}/confirm`)
       .set(originHeader);
-    expect(denied.status).toBe(403);
+    // Outlet RLS (legend-tjey) hides the other outlet's session: not found,
+    // without revealing that it exists.
+    expect(denied.status).toBe(404);
 
     // A signed-in account without a role cannot confirm either.
     const anonymousStaff = agent(app);

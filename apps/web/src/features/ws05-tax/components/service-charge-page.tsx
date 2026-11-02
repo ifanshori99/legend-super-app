@@ -42,6 +42,7 @@ import { PublishDialog } from "./publish-dialog";
 import { ServiceChargeDialog } from "./service-charge-dialog";
 import { ChannelsSummary, ZoneSummary } from "./summaries";
 import { EffectiveBadge, VersionStatusBadge } from "./version-badges";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type StatusFilter = RuleVersionStatus | "all";
 
@@ -171,7 +172,7 @@ export function ServiceChargePage() {
     publishRule.mutate(
       {
         params: { serviceChargeRuleId: publishing.id },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: () => {

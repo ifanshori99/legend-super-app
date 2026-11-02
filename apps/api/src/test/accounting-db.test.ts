@@ -189,9 +189,10 @@ describe("legend-kwxj accounting database invariants", () => {
       await expect(
         inTransaction(async (client) => {
           await client.query("SET LOCAL ROLE legend_app");
-          await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-            tenantId,
-          ]);
+          await client.query(
+            "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+            [tenantId],
+          );
           await client.query(statement, [entry]);
         }),
       ).rejects.toThrow(/permission denied/);

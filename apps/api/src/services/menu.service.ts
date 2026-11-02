@@ -3,8 +3,9 @@
 // groups/modifiers, combos and item↔group links.
 //
 // Every function takes the server-minted ScopedTenantContext and runs inside
-// `withTenant`, so Postgres RLS applies (`app.tenant_id`/`app.outlet_ids`) on
-// top of explicit tenant filters. The tenant never comes from the request
+// `withTenant`, so Postgres RLS applies on top of explicit tenant filters:
+// `app.tenant_id` on every menu table, and `app.outlet_ids` on the outlet-owned
+// ones (stations, price_lists, item_availability; migration 0032, legend-tjey). The tenant never comes from the request
 // (TEN-02). Each mutating function re-checks the RBAC permission against the
 // target brand/outlet inside the same transaction (service-layer authority,
 // not only the route middleware), and outlet-owned records assert the caller's
@@ -79,7 +80,6 @@ import {
   assertBrandPermission,
   assertBrandReadPermission,
   assertOutletPermission,
-  assertPermission,
   assertSharedMasterDataPermission,
   cursorOf,
   keysetCondition,
@@ -94,6 +94,7 @@ import {
   type MenuMediaUrls,
   type Tx,
 } from "./menu-internals";
+import { assertStationPermission, permittedStationIds } from "./station-access";
 
 export type { MenuMediaUrls } from "./menu-internals";
 
@@ -513,27 +514,23 @@ export async function listStations(
   meta: { limit: number; nextCursor: string | null };
 }> {
   return withTenant(db, context, async (tx) => {
+    // TEN-03: a requested outlet outside the caller's reach is refused.
     const scope = scopedOutletIds(context, query.outletId);
-    if (scope.kind === "all")
-      await assertPermission(
-        tx,
-        context,
-        actorUserId,
-        MENU_VIEW_PERMISSION,
-        { type: "tenant" },
-        now,
-      );
-    else
-      for (const outletId of scope.outletIds)
-        await assertOutletPermission(
-          tx,
-          context,
-          actorUserId,
-          MENU_VIEW_PERMISSION,
-          outletId,
-          now,
-        );
     const cursor = cursorOf(query);
+    // Station-bound resource: a KDS/floor grant that reaches this outlet for a
+    // narrower station scope must only see its own station(s) (legend-fsb7).
+    // `permittedStationIds` is the permission + scope check for the list too:
+    // an outlet/brand/tenant grant reaches every station it contains, a
+    // station grant only its own.
+    const stationIds = await permittedStationIds(
+      tx,
+      context,
+      actorUserId,
+      MENU_VIEW_PERMISSION,
+      now,
+    );
+    if (stationIds.length === 0)
+      return { data: [], meta: { limit: query.limit, nextCursor: null } };
     const rows = await tx
       .select()
       .from(stations)
@@ -541,6 +538,7 @@ export async function listStations(
         and(
           eq(stations.tenantId, context.tenant.tenantId),
           isNull(stations.deletedAt),
+          inArray(stations.id, stationIds),
           scope.kind === "outlets"
             ? inArray(stations.outletId, [...scope.outletIds])
             : undefined,
@@ -632,12 +630,15 @@ export async function updateStation(
 ): Promise<Station> {
   return withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
-    await assertOutletPermission(
+    // Station-bound config (target time, printer binding): the caller must
+    // reach this station for the permission, not merely its outlet
+    // (legend-fsb7). A station-scoped grant manages its own station only.
+    await assertStationPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
-      existing.outletId,
+      existing.id,
       now,
     );
     const [row] = await tx
@@ -679,12 +680,14 @@ export async function deleteStation(
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const existing = await requireStation(tx, context, stationId);
-    await assertOutletPermission(
+    // Station-bound config record: same station target as updateStation
+    // (legend-fsb7).
+    await assertStationPermission(
       tx,
       context,
       actorUserId,
       MENU_ITEM_PERMISSION,
-      existing.outletId,
+      existing.id,
       now,
     );
     const [usedItem] = await tx
@@ -764,6 +767,17 @@ export async function listItems(
       query.brandId,
       now,
     );
+    // A station filter is a station-bound read: the caller must reach that
+    // station itself, never only its outlet (legend-fsb7).
+    if (query.stationId)
+      await assertStationPermission(
+        tx,
+        context,
+        actorUserId,
+        MENU_VIEW_PERMISSION,
+        query.stationId,
+        now,
+      );
     const cursor = cursorOf(query);
     const order =
       query.sort === "name"

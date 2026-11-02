@@ -41,3 +41,21 @@ export function menuItemPhotoMissing(input: {
 }): boolean {
   return input.isActive && (input.mediaId ?? null) === null;
 }
+
+/**
+ * Q23 (legend-qf0i): may this row reach a guest? Rows created before the photo
+ * rule can still be active without `media_id`; they stay in the back office
+ * (listed with the "Foto wajib" badge, editable, deactivatable) but every
+ * public read — QR order menu, POS item picker, public website menu — must
+ * skip them instead of rendering a broken photo card.
+ *
+ * This is the row-level rule; the API mirrors it in SQL
+ * (`guestMenuItemCondition`, apps/api/src/services/menu-internals.ts) so a
+ * guest query cannot forget the photo half of `is_active`.
+ */
+export function menuItemVisibleToGuests(input: {
+  isActive: boolean;
+  mediaId?: string | null;
+}): boolean {
+  return input.isActive && (input.mediaId ?? null) !== null;
+}

@@ -569,7 +569,7 @@ function PriceGridForm({
         aria-label={t("menu.prices.editorSearch")}
         className="h-control-sm"
       />
-      <div className="max-h-[50dvh] overflow-y-auto rounded-lg border">
+      <div className="max-h-[50dvh] overflow-y-auto rounded-container border-(length:--border-w)">
         <Table>
           <TableHeader>
             <TableRow>

@@ -61,12 +61,14 @@ test("Q22 the menu card leads with a square photo plate and prints the sample la
     cappuccino.getByRole("button", { name: /^Pilih opsi untuk Cappuccino$/ }),
   ).toBeVisible();
 
-  // Items without a sample photo keep the designed quiet plate (no art).
-  const withoutPhoto = cards(page).filter({ hasText: "Americano" });
-  await expect(
-    withoutPhoto.locator('[data-slot="media-plate"][data-missing="quiet"]'),
-  ).toBeVisible();
-  await expect(withoutPhoto.locator("img")).toHaveCount(0);
+  // Every demo item has a sample photo (legend-4pki); Americano shares the
+  // black-coffee glass. The quiet plate stays the real-outlet state for an item
+  // without an upload and is no longer reachable in the sample catalogue.
+  const americano = cards(page).filter({ hasText: "Americano" });
+  await expect(americano.locator("img")).toHaveAttribute(
+    "src",
+    /\/sample\/menu\/espresso\.jpg$/,
+  );
 });
 
 test("Q22 a sold-out card greys its photo, says Habis and offers no add button", async ({
@@ -100,16 +102,24 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
     /\/sample\/menu\/cappuccino\.jpg$/,
   );
   // 3:2, and flush with the sheet edge (only the 1px border of the sheet is
-  // allowed between them).
-  const [heroBox, sheetBox] = await Promise.all([
-    hero.boundingBox(),
-    sheet.boundingBox(),
-  ]);
-  expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
-  expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
-    (sheetBox?.width ?? 0) - 4,
-  );
-  expect(heroBox?.height ?? 0).toBeCloseTo((heroBox?.width ?? 0) * (2 / 3), 0);
+  // allowed between them). The sheet animates open, and a measurement taken
+  // mid-transition sees a narrower hero (seen once in a sharded run: 487 vs
+  // 495), so retry the measurement until the geometry settles — the contract
+  // below is unchanged.
+  await expect(async () => {
+    const [heroBox, sheetBox] = await Promise.all([
+      hero.boundingBox(),
+      sheet.boundingBox(),
+    ]);
+    expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
+    expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
+      (sheetBox?.width ?? 0) - 4,
+    );
+    expect(heroBox?.height ?? 0).toBeCloseTo(
+      (heroBox?.width ?? 0) * (2 / 3),
+      0,
+    );
+  }).toPass({ timeout: 5_000 });
   await expect(
     sheet.getByRole("button", { name: "Tutup", exact: true }),
   ).toBeVisible();

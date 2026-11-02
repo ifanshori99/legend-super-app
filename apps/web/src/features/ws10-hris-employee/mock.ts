@@ -35,6 +35,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const { tenant, outlets, employees, attendancePolicy, shiftAssignments } =
   cafeLegendHrisFixtures;
@@ -357,7 +358,7 @@ registerMock(requestAttendanceCorrection, ({ body }) => {
       );
   }
   const correction = attendanceCorrectionSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: tenant.id,
     outletId: body.outletId,
     employeeId: me.id,

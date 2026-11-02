@@ -12,6 +12,14 @@ export const MOCK_SCENARIOS = [
   "slow",
   "error",
   "offline",
+  /**
+   * legend-qf0i: the demo catalogue gives every item a photo, so the pre-Q23
+   * "active item without a photo" case needs its own scenario. It adds one
+   * legacy row (`legacyPhotoMissingItem` in the menu fixtures): the back office
+   * lists it with the "Foto wajib" badge and refuses to publish it, and every
+   * guest read hides it.
+   */
+  "photo-missing",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

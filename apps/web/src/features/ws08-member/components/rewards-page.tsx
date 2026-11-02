@@ -8,6 +8,7 @@ import { ListSkeleton } from "./list-skeleton";
 import { MemberPageHeader } from "./page-header";
 import { RedeemDialog } from "./redeem-dialog";
 import { RewardCard } from "./reward-card";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type Attempt = { reward: Reward; idempotencyKey: string };
 
@@ -22,7 +23,7 @@ export function MemberRewardsPage() {
   const balance = overviewQuery.data?.profile.pointsBalance ?? 0;
 
   function openRedeem(reward: Reward) {
-    setAttempt({ reward, idempotencyKey: crypto.randomUUID() });
+    setAttempt({ reward, idempotencyKey: newIdempotencyKey() });
   }
 
   return (

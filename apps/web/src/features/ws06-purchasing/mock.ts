@@ -33,6 +33,7 @@ import {
 // /kelola/inventori/satuan default to the wrong item. Importing the owning
 // feature keeps one handler per endpoint no matter which screen loads first.
 import "../ws06-inventory/mock.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const printStoragePrefix = "legend-mock-po-print:";
 const printStorageKey = (id: string) => `${printStoragePrefix}${id}`;
@@ -86,7 +87,7 @@ function savedPrintOrder(id: string) {
   }
 }
 const now = () => new Date().toISOString();
-const mint = () => crypto.randomUUID();
+const mint = () => newIdempotencyKey();
 const tenantId = fixtures.purchaseRequests[0].tenantId;
 const requester = fixtures.purchaseRequests[0].requestedBy;
 const approver = fixtures.purchaseRequests[0].decidedBy!;

@@ -20,12 +20,14 @@ import {
   cafeLegendIdentityFixtures,
   deleteMfaFactor,
   enrollMfaFactor,
+  extendCurrentSession,
   listMfaFactors,
   listSessions,
   MANAGEMENT_IDLE_MINUTES,
   mfaFactorIdSchema,
   mfaFactorSchema,
   MINUTE_MS,
+  recordSessionActivity,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -38,6 +40,7 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 /** Mock-only knob for the idle warning; ignored in a real build. */
 export const MOCK_SESSION_KNOB = "legend-mock-session";
@@ -176,6 +179,13 @@ function totpSecret(): string {
  * sign-in mock of the same endpoint.
  */
 export function staffCurrentAuthMock({ scenario }: { scenario: string }) {
+  const error = globalThis.localStorage?.getItem("legend-mock-auth-error");
+  if (error === "401" || error === "503")
+    throw new ApiError(
+      Number(error),
+      "MOCK_ERROR",
+      "Mock session read failed.",
+    );
   const base = cafeLegendIdentityFixtures;
   const owner = base.usersByKey.owner;
   const auth = state.get();
@@ -205,7 +215,7 @@ registerMock(listMfaFactors, ({ scenario }) => ({
 registerMock(enrollMfaFactor, ({ body }) => {
   const base = cafeLegendIdentityFixtures;
   const owner = base.usersByKey.owner;
-  const factorId = mfaFactorIdSchema.parse(crypto.randomUUID());
+  const factorId = mfaFactorIdSchema.parse(newIdempotencyKey());
   const factor = mfaFactorSchema.parse({
     id: factorId,
     userId: owner.id,
@@ -311,4 +321,34 @@ registerMock(revokeSession, ({ params }) => {
   auth.sessions = auth.sessions.filter(
     (view) => view.session.id !== params.sessionId,
   );
+});
+
+// AUTH-05: explicit activity extends a live staff session; reads do not.
+registerMock(extendCurrentSession, () => {
+  const session = currentSession();
+  const clock = new Date();
+  const path = (globalThis as { location?: { pathname?: string } }).location
+    ?.pathname;
+  if (
+    path?.startsWith("/masuk") ||
+    session.kind !== "management" ||
+    session.revokedAt !== null ||
+    clock.getTime() >= Date.parse(session.expiresAt) ||
+    clock.getTime() >=
+      Date.parse(session.lastSeenAt) + MANAGEMENT_IDLE_MINUTES * MINUTE_MS
+  )
+    throw new ApiError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk kembali.");
+  const result = recordSessionActivity({ session, now: clock, kind: "user" });
+  if (!result.write) return;
+  const auth = state.get();
+  if (idleKnobOn()) {
+    auth.idle = {
+      lastSeenAt: result.session.lastSeenAt,
+      expiresAt: result.session.expiresAt,
+    };
+  } else {
+    auth.sessions = auth.sessions.map((view) =>
+      view.current ? { ...view, session: result.session } : view,
+    );
+  }
 });

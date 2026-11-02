@@ -12,6 +12,7 @@ import {
   writeGuestSession,
   type StoredGuestSession,
 } from "./lib/guest-session.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const listeners = new Set<() => void>();
 let version = 0;
@@ -95,13 +96,7 @@ registerBearerProvider((path) => guestSessionTokenForPath(path));
 
 export function currentDeviceHash(): string {
   const store = persistentStorage();
-  const random = () =>
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.padEnd(
-          32,
-          "0",
-        );
+  const random = () => newIdempotencyKey();
   if (!store) return random().replace(/-/g, "").slice(0, 32).toLowerCase();
   try {
     return deviceHash(store, random);

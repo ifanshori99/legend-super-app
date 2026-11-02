@@ -72,10 +72,10 @@ export function JournalListPage({ legalEntityId }: { legalEntityId: string }) {
   const accounts = postableAccounts(accountsQuery.data ?? []);
 
   return (
-    <div className="grid min-w-0 gap-4">
+    <div className="grid min-w-0 gap-5">
       <section
         aria-label={t("accounting.journals.title")}
-        className="grid gap-3 rounded-xl border-(length:--border-w) border-border bg-card p-card sm:grid-cols-2 lg:grid-cols-4"
+        className="grid gap-3 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline sm:grid-cols-2 lg:grid-cols-4"
       >
         <FormField label={t("accounting.journals.from")} required>
           <Input

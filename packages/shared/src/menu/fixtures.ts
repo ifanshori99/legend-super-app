@@ -1,6 +1,10 @@
 import { cafeLegendFixtures } from "../core/index.ts";
-import { menuFixtureSchema } from "./schemas.ts";
-import type { MenuItem } from "./schemas.ts";
+import {
+  menuFixtureSchema,
+  menuItemSchema,
+  priceListItemSchema,
+} from "./schemas.ts";
+import type { MenuItem, PriceListItem } from "./schemas.ts";
 
 // Illustrative mock catalog; not the owner's confirmed menu or prices. Prices
 // are exclusive of tax and service charge (owner decision 2026-11-01): the WS-05
@@ -135,3 +139,41 @@ export const cafeLegendMenuFixtures = menuFixtureSchema.parse({
     },
   ],
 });
+
+/**
+ * legend-qf0i (owner Q23): a row created before the photo rule. It is active
+ * and has no `mediaId`, so the back office must keep listing it with the
+ * "Foto wajib" badge while every guest read hides it.
+ *
+ * Deliberately NOT part of `cafeLegendMenuFixtures`: the demo catalogue gives
+ * every item a photo (legend-4pki), so this legacy row is only injected by the
+ * mock `?mock=photo-missing` scenario and by the API tests.
+ */
+export const legacyPhotoMissingItem: MenuItem = menuItemSchema.parse({
+  ...base(7900),
+  brandId: brand.id,
+  categoryId: categories[0].id,
+  name: "Es Kopi Legacy",
+  description: "Item lama tanpa foto dari sebelum aturan Q23.",
+  type: "single",
+  stationId: stations[0].id,
+  course: "drink",
+  recipeId: null,
+  taxRuleId: null,
+  labels: [],
+  allergens: [],
+  mediaId: null,
+  isActive: true,
+  sortOrder: 90,
+});
+
+/** legend-qf0i: the legacy row is sellable, so it has a channel price. */
+export const legacyPhotoMissingPrice: PriceListItem = priceListItemSchema.parse(
+  {
+    ...base(7901),
+    priceListId: priceList.id,
+    itemId: legacyPhotoMissingItem.id,
+    variantId: null,
+    priceIdr: 18000,
+  },
+);

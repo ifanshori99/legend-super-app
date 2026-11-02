@@ -164,7 +164,9 @@ test("EDC-06 every settlement difference becomes a reconciliation case", async (
   // Automatic matching summary plus one case per difference (gateway + EDC).
   await expect(page.getByText("Baris cocok")).toBeVisible();
   await expect(page.getByText("128")).toBeVisible();
-  await expect(page.getByText("Kasus selisih")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Kasus selisih" }),
+  ).toBeVisible();
   await expect(page.getByText("EDC · BCA")).toBeVisible();
   await expect(page.getByText("EDC · Mandiri")).toBeVisible();
   await expect(page.getByText("Gateway").first()).toBeVisible();

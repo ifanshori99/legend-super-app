@@ -42,6 +42,7 @@ import { AttendanceResult } from "./attendance-result.tsx";
 import { LocationStatus } from "./location-status.tsx";
 import { QrScanField } from "./qr-scan-field.tsx";
 import { SelfieCapture } from "./selfie-capture.tsx";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type ClockMethod = "selfie_geo" | "rotating_qr";
 
@@ -167,7 +168,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
             deviceIdHash: capture.deviceIdHash,
             photoUploadRef,
             qrToken: capture.qrToken,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: newIdempotencyKey(),
           },
         };
       }

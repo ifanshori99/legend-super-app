@@ -37,6 +37,7 @@ import { INVENTORY_OUTLET_ID } from "../outlet";
 import { businessDateToday } from "../stock-lib";
 import { LIST_LIMIT } from "../lib";
 import { typeLabelKey } from "../opname-lib";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
@@ -72,7 +73,7 @@ export function CountFormDialog({
     Record<string, string | undefined>
   >({});
   const [formError, setFormError] = React.useState<string>();
-  const idempotencyKey = React.useRef(crypto.randomUUID());
+  const idempotencyKey = React.useRef(newIdempotencyKey());
 
   const locationRows = React.useMemo(
     () => locations.data?.data ?? [],
@@ -104,7 +105,7 @@ export function CountFormDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    idempotencyKey.current = crypto.randomUUID();
+    idempotencyKey.current = newIdempotencyKey();
   }, [open]);
 
   function toggleItem(itemId: string, checked: boolean) {
@@ -221,7 +222,7 @@ export function CountFormDialog({
             )}
           </p>
 
-          <div className="flex items-start justify-between gap-4 rounded-xl border p-3">
+          <div className="flex items-start justify-between gap-4 rounded-container border p-3">
             <div className="grid gap-0.5">
               <Label htmlFor="count-blind">{t("opname.create.blind")}</Label>
               <p className="text-sm leading-5 text-muted-foreground">
@@ -303,7 +304,7 @@ export function CountFormDialog({
                   </Button>
                 </div>
               </div>
-              <ul className="max-h-56 divide-y overflow-y-auto rounded-xl border">
+              <ul className="max-h-56 divide-y overflow-y-auto rounded-container border">
                 {filteredItems.map((item) => (
                   <li
                     key={item.id}

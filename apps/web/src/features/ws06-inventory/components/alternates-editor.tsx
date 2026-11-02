@@ -26,6 +26,7 @@ import {
   useItemAlternates,
 } from "../hooks";
 import { alternatesFor } from "../lib";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export function AlternatesEditor({
   itemId,
@@ -92,7 +93,7 @@ export function AlternatesEditor({
         body: {
           alternateItemId: parsed.data.alternateItemId,
           priority: Number(parsed.data.priority),
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
       },
       {

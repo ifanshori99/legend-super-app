@@ -49,6 +49,7 @@ import {
   useRefundablePayments,
   useRefunds,
 } from "../hooks";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const ALL = "all";
 
@@ -194,7 +195,7 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
   const [reason, setReason] = React.useState("");
   const [note, setNote] = React.useState("");
   // One key per dialog: a retry or double submit replays, never refunds twice.
-  const [idempotencyKey] = React.useState(() => crypto.randomUUID());
+  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -360,7 +361,7 @@ function ApproveRefundDialog({
   const toast = useToast();
   const approve = useApproveRefund();
   const [note, setNote] = React.useState("");
-  const [idempotencyKey] = React.useState(() => crypto.randomUUID());
+  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();

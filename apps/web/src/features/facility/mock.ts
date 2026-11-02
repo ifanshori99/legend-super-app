@@ -58,6 +58,7 @@ import "../../lib/mock/handlers/subscription-plans.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { businessDateInOutletZone } from "./flow.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
 const MINUTE = 60_000;
 const SLOT_STEP_MINUTES = 30;
@@ -533,7 +534,7 @@ registerMock(bookAccessTicket, ({ body }) => {
         quotaUsed: view.subscription.quotaUsed + 1,
       },
     });
-    entitlementLedgerId = crypto.randomUUID();
+    entitlementLedgerId = newIdempotencyKey();
   }
 
   const addons = (body.addonIds ?? []).flatMap((addonId) => {
@@ -683,7 +684,7 @@ registerMock(joinFacilityQueue, ({ body }) => {
   if (!area)
     throw new ApiError(404, "NOT_FOUND", "Area fasilitas tidak ditemukan.");
   const entry = facilityQueueEntrySchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: tenant.id,
     outletId: outlet.id,
     facilityId: facility.id,
@@ -721,7 +722,7 @@ registerMock(startFacilitySubscription, ({ body }) => {
   const startedAt = facilityAnchor(facility);
   const periodStart = businessDateInOutletZone(startedAt);
   const subscription = facilitySubscriptionSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: tenant.id,
     outletId: outlet.id,
     facilityId: plan.facilityId,
@@ -740,7 +741,7 @@ registerMock(startFacilitySubscription, ({ body }) => {
   // The mock recurring-billing provider settles the first invoice at once, the
   // way an approved DOIT payment does (alur U langkah 2).
   const invoice = subscriptionInvoiceSchema.parse({
-    id: crypto.randomUUID(),
+    id: newIdempotencyKey(),
     tenantId: tenant.id,
     outletId: outlet.id,
     subscriptionId: subscription.id,

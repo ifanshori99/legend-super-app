@@ -83,9 +83,10 @@ async function asTenant<T>(
     await client.query("BEGIN");
     await client.query("SET LOCAL ROLE legend_app");
     if (tenantId !== null)
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-        tenantId,
-      ]);
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
     return await run(client);
   } finally {
     await client.query("ROLLBACK");
@@ -112,9 +113,10 @@ async function openLockHolder(tenantId: string): Promise<PoolClient> {
   const client = await appPool.connect();
   await client.query("BEGIN");
   await client.query("SET LOCAL ROLE legend_app");
-  await client.query("SELECT set_config('app.tenant_id', $1, true)", [
-    tenantId,
-  ]);
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [tenantId],
+  );
   return client;
 }
 

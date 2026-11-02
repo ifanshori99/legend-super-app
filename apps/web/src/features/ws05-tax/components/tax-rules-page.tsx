@@ -38,6 +38,7 @@ import { PublishDialog } from "./publish-dialog";
 import { AppliesToSummary, ChannelsSummary } from "./summaries";
 import { TaxRuleDialog } from "./tax-rule-dialog";
 import { EffectiveBadge, VersionStatusBadge } from "./version-badges";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 type StatusFilter = RuleVersionStatus | "all";
 
@@ -155,7 +156,7 @@ export function TaxRulesPage() {
     publishRule.mutate(
       {
         params: { taxRuleId: publishing.id },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: newIdempotencyKey(),
       },
       {
         onSuccess: () => {

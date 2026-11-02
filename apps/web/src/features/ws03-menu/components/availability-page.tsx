@@ -45,6 +45,7 @@ import {
 import { describeSchedule } from "../lib";
 import { ConfirmDialog } from "./confirm-dialog";
 import { AvailabilityBadge } from "./status-badge";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const ALL = "all";
 const WEEK = [1, 2, 3, 4, 5, 6, 0] as const;
@@ -142,7 +143,7 @@ export function AvailabilityPage() {
         availabilityId: toggleTarget.id,
         body: {
           action: toggleTarget.status === "sold_out" ? "restore" : "sell_out",
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
         },
       },
       {

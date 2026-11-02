@@ -19,6 +19,7 @@ export type MockContext<E extends AnyEndpoint> = {
   body: Parsed<E["body"]>;
   scenario: MockScenario;
   signal?: AbortSignal;
+  headers?: { "Idempotency-Key"?: string };
 };
 
 /**

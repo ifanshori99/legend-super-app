@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { accountLabel, type DraftEvaluation } from "../lib";
+import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 export type EditorLine = {
   /** Stable React key; regenerated per row. */
@@ -31,7 +32,7 @@ export type EditorLine = {
 };
 
 export function blankEditorLine(): EditorLine {
-  return { key: crypto.randomUUID(), accountId: "", debit: "", credit: "" };
+  return { key: newIdempotencyKey(), accountId: "", debit: "", credit: "" };
 }
 
 export function JournalLinesEditor({
