@@ -1289,9 +1289,11 @@ function periodBounds(period: string): { from: string; toExclusive: string } {
 
 /**
  * Monthly PBJT recap per outlet (§3.14 "Laporan Pajak", D13): one row per
- * (rule code, rate) actually applied to sales in the period, from the
- * immutable per-sale snapshots. Gross sales are the menu-priced amounts before
- * discounts; the tax base is the DPP the tax was computed on.
+ * (rule code, rate) actually applied to PBJT sales in the period, from the
+ * immutable per-sale snapshots. PPN and other tax types are excluded: they are
+ * not regional PBJT revenue and have their own report. Gross sales are the
+ * menu-priced amounts before discounts; the tax base is the DPP the tax was
+ * computed on.
  */
 export async function getPbjtMonthlyRecap(
   context: ScopedTenantContext,
@@ -1322,6 +1324,9 @@ export async function getPbjtMonthlyRecap(
         and(
           eq(taxSnapshots.tenantId, context.tenant.tenantId),
           eq(taxSnapshots.outletId, outletId),
+          // PBJT recap only: a PPN or "other" snapshot must never land in the
+          // regional tax report (pre-review finding tax.service.ts:1318/1338).
+          eq(taxSnapshots.taxType, "pbjt"),
           sql`${taxSnapshots.businessDate} >= ${from}`,
           sql`${taxSnapshots.businessDate} < ${toExclusive}`,
         ),
@@ -1342,6 +1347,9 @@ export async function getPbjtMonthlyRecap(
         and(
           eq(taxSnapshots.tenantId, context.tenant.tenantId),
           eq(taxSnapshots.outletId, outletId),
+          // PBJT recap only: a PPN or "other" snapshot must never land in the
+          // regional tax report (pre-review finding tax.service.ts:1318/1338).
+          eq(taxSnapshots.taxType, "pbjt"),
           sql`${taxSnapshots.businessDate} >= ${from}`,
           sql`${taxSnapshots.businessDate} < ${toExclusive}`,
         ),
@@ -1395,8 +1403,10 @@ export type TaxSnapshotInput = {
  * Persists the tax parts of one sale for the PBJT recap, inside the sale's own
  * transaction: the caller (WS-04 order checkout, POS, facility) already ran
  * `calculateTax` and stores the same numbers on the bill. One row per rule
- * applied; a re-quote of the same source updates its rows instead of
- * duplicating them, so the period total never counts a bill twice.
+ * applied. A re-quote of the same source replaces the whole set (delete then
+ * insert) under a source-scoped advisory lock, so rows for rules the new
+ * calculation no longer applies cannot survive as obsolete snapshots and two
+ * concurrent re-quotes cannot interleave into a mixed set.
  */
 export async function recordTaxSnapshots(
   tx: Tx,
@@ -1418,51 +1428,46 @@ export async function recordTaxSnapshots(
       (serviceByRule.get(line.taxRuleId) ?? 0) + line.serviceChargeIdr,
     );
   }
-  for (const summary of input.result.taxes) {
+  // Serialize re-quotes of the same sale for the rest of this transaction.
+  // The lock key names the source row, so unrelated bills never contend.
+  const lockKey = `${context.tenant.tenantId}:${input.sourceType}:${input.sourceId}`;
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+  );
+  await tx
+    .delete(taxSnapshots)
+    .where(
+      and(
+        eq(taxSnapshots.tenantId, context.tenant.tenantId),
+        eq(taxSnapshots.sourceType, input.sourceType),
+        eq(taxSnapshots.sourceId, input.sourceId),
+      ),
+    );
+  const outletId = outletIdSchema.parse(input.outletId);
+  const rows = input.result.taxes.map((summary) => {
     const grossIdr = grossByRule.get(summary.taxRuleId);
     if (grossIdr === undefined)
       throw new TaxError(
         "TAX_RULE_NOT_FOUND",
         "A calculated tax line has no matching rule group.",
       );
-    await tx
-      .insert(taxSnapshots)
-      .values({
-        tenantId: context.tenant.tenantId,
-        outletId: outletIdSchema.parse(input.outletId),
-        sourceType: input.sourceType,
-        sourceId: input.sourceId,
-        businessDate: input.businessDate,
-        taxRuleId: summary.taxRuleId,
-        taxRuleCode: summary.code,
-        taxRuleVersion: summary.version,
-        taxType: summary.taxType,
-        rateBp: summary.rateBp,
-        priceIncludesTax: summary.priceIncludesTax,
-        grossIdr: idr(grossIdr),
-        taxBaseIdr: summary.taxBaseIdr,
-        serviceChargeIdr: idr(serviceByRule.get(summary.taxRuleId) ?? 0),
-        taxIdr: summary.taxIdr,
-      })
-      .onConflictDoUpdate({
-        target: [
-          taxSnapshots.tenantId,
-          taxSnapshots.sourceType,
-          taxSnapshots.sourceId,
-          taxSnapshots.taxRuleId,
-        ],
-        set: {
-          businessDate: input.businessDate,
-          taxRuleCode: summary.code,
-          taxRuleVersion: summary.version,
-          taxType: summary.taxType,
-          rateBp: summary.rateBp,
-          priceIncludesTax: summary.priceIncludesTax,
-          grossIdr: idr(grossIdr),
-          taxBaseIdr: summary.taxBaseIdr,
-          serviceChargeIdr: idr(serviceByRule.get(summary.taxRuleId) ?? 0),
-          taxIdr: summary.taxIdr,
-        },
-      });
-  }
+    return {
+      tenantId: context.tenant.tenantId,
+      outletId,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      businessDate: input.businessDate,
+      taxRuleId: summary.taxRuleId,
+      taxRuleCode: summary.code,
+      taxRuleVersion: summary.version,
+      taxType: summary.taxType,
+      rateBp: summary.rateBp,
+      priceIncludesTax: summary.priceIncludesTax,
+      grossIdr: idr(grossIdr),
+      taxBaseIdr: summary.taxBaseIdr,
+      serviceChargeIdr: idr(serviceByRule.get(summary.taxRuleId) ?? 0),
+      taxIdr: summary.taxIdr,
+    };
+  });
+  if (rows.length > 0) await tx.insert(taxSnapshots).values(rows);
 }
