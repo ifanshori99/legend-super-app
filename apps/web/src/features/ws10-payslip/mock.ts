@@ -13,7 +13,7 @@
 // lib/mock/handlers/hris-directory.ts; this file imports MOCK_ME/MOCK_OUTLET
 // from there instead of registering them again.
 import type { Idr } from "@starter/shared/core";
-import { businessDateOf, businessDateSchema, idr } from "@starter/shared/core";
+import { businessDateSchema, idr, localDateOf } from "@starter/shared/core";
 import type {
   EmployeeLoan,
   EmployeeLoanStatus,
@@ -147,7 +147,7 @@ function nextDeductionPeriodEnd(): string {
     fixtures.payrollPolicies.find(
       (policy) => policy.cycle.frequency === "monthly",
     ) ?? fixtures.payrollPolicies[0];
-  const today = businessDateOf(new Date(), outlet.timeZone);
+  const today = localDateOf(new Date(), outlet.timeZone);
   const reference = businessDateSchema.parse(
     new Date(Date.parse(`${today}T00:00:00.000Z`) + 40 * 86_400_000)
       .toISOString()

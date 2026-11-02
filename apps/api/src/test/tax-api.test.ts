@@ -4,7 +4,10 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
-import { businessDateOf } from "@starter/shared/core";
+import {
+  businessDateOf,
+  DEFAULT_BUSINESS_DAY_CLOCK,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -32,7 +35,7 @@ const owner = new Pool({
 const createdUsers: string[] = [];
 
 /** Today's business date in the outlet time zone, as the API computes it. */
-const today = () => businessDateOf(new Date());
+const today = () => businessDateOf(new Date(), DEFAULT_BUSINESS_DAY_CLOCK);
 
 async function signedInClient(name: string) {
   const client = agent(app);
@@ -349,7 +352,10 @@ describe("F11 service-charge rules and calculation settings", () => {
     const { client } = await ownerClient();
     // Effective tomorrow: publishing it must not change today's preview, which
     // the fixture bill asserts against the seeded configuration.
-    const tomorrow = businessDateOf(new Date(Date.now() + 86_400_000));
+    const tomorrow = businessDateOf(
+      new Date(Date.now() + 86_400_000),
+      DEFAULT_BUSINESS_DAY_CLOCK,
+    );
     const created = await client
       .post("/api/tax/settings")
       .set(originHeader)

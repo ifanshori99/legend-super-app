@@ -33,7 +33,7 @@ import {
   type AttendanceLog,
   type EmployeePii,
 } from "@starter/shared/hris";
-import { businessDateOf } from "@starter/shared/core";
+import { localDateOf } from "@starter/shared/core";
 import { ApiError } from "../../api/errors.ts";
 import { paginateFixture } from "../paginate.ts";
 import { registerMock } from "../registry.ts";
@@ -124,7 +124,7 @@ export function hrisMockLogsForOutletDate(
   return hrisMockLogs().filter(
     (log) =>
       log.outletId === outletId &&
-      businessDateOf(log.occurredAt, MOCK_OUTLET.timeZone) === businessDate,
+      localDateOf(log.occurredAt, MOCK_OUTLET.timeZone) === businessDate,
   );
 }
 
@@ -299,7 +299,7 @@ registerMock(listAttendanceLogs, ({ query, scenario }) => {
     .filter(
       (log) =>
         query.businessDate === undefined ||
-        businessDateOf(log.occurredAt, MOCK_OUTLET.timeZone) ===
+        localDateOf(log.occurredAt, MOCK_OUTLET.timeZone) ===
           query.businessDate,
     );
   return paginateFixture(rows, query, (log) => log.id, scenario);

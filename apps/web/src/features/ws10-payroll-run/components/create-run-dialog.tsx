@@ -6,7 +6,7 @@
 import * as React from "react";
 import { CalendarPlus } from "lucide-react";
 import { businessDateSchema } from "@starter/shared/core";
-import { businessDateOf } from "@starter/shared/core";
+import { businessDateOf, DEFAULT_BUSINESS_DAY_CUTOFF } from "@starter/shared/core";
 import type { PayrollRun } from "@starter/shared/hris/payroll";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,10 @@ export function CreateRunDialog({
       ?.policyIds ?? [];
   const [policyId, setPolicyId] = React.useState(policyIds[0] ?? "");
   const [referenceDate, setReferenceDate] = React.useState(() =>
-    businessDateOf(new Date(), PAYROLL_TIME_ZONE),
+    businessDateOf(new Date(), {
+        timeZone: PAYROLL_TIME_ZONE,
+        cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
+      }),
   );
   const [runType, setRunType] = React.useState<RunType>("regular");
   const [error, setError] = React.useState<string | null>(null);

@@ -22,6 +22,10 @@ import {
   type RecurringJournalStatus,
   type ReportGroup,
 } from "@starter/shared/accounting";
+import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  businessDateOf,
+} from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 
 // ---- Chart of accounts ----------------------------------------------------
@@ -418,11 +422,13 @@ export function journalReversalState(
 /** The outlet's business date; the outlet-context bead supplies the zone. */
 export const DEFAULT_OUTLET_TIME_ZONE = "Asia/Jakarta";
 
+/** Core `businessDateOf` with the outlet cutoff (owner Q39, default 04:00). */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = DEFAULT_OUTLET_TIME_ZONE,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(now);
+  return businessDateOf(now, { timeZone, cutoff });
 }
 
 /** First and last day of the month a business date falls in. */

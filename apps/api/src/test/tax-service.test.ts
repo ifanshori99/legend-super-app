@@ -8,6 +8,7 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   businessDateOf,
+  DEFAULT_BUSINESS_DAY_CLOCK,
   idr,
   outletIdSchema,
   type BusinessDate,
@@ -83,7 +84,7 @@ function ruleInput(overrides: Record<string, unknown> = {}) {
     includeServiceInBase: true,
     isActive: true,
     // R21: a version may not be published before today (outlet business date).
-    effectiveFrom: businessDateOf(new Date()),
+    effectiveFrom: businessDateOf(new Date(), DEFAULT_BUSINESS_DAY_CLOCK),
     ...overrides,
   };
 }

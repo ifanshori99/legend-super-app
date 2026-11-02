@@ -2,7 +2,7 @@
 // way components touch its data (docs/frontend.md "Custom hooks").
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { businessDateOf, type BusinessDate } from "@starter/shared/core";
+import { localDateOf, type BusinessDate } from "@starter/shared/core";
 import {
   attendanceDayQuery,
   attendanceQrQuery,
@@ -38,7 +38,7 @@ export function useBusinessDate(): BusinessDate | null {
   const now = useNow(60_000);
   return now === null
     ? null
-    : businessDateOf(new Date(now), ATTENDANCE_TIME_ZONE);
+    : localDateOf(new Date(now), ATTENDANCE_TIME_ZONE);
 }
 
 export function useAttendanceQr() {

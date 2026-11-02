@@ -3,7 +3,7 @@
 // already exists in the contract is imported, never re-implemented:
 // `weekStartOf`, `addBusinessDays`, `evaluateShiftCompliance`,
 // `isRosterPublished`, `shiftTemplateCrossesMidnight`, `workedMinutes`.
-import { businessDateOf } from "@starter/shared/core";
+import { localDateOf } from "@starter/shared/core";
 import {
   addBusinessDays,
   evaluateShiftCompliance,
@@ -64,7 +64,7 @@ const PUBLISHED_AT_FORMAT = new Intl.DateTimeFormat("id-ID", {
 
 /** The outlet's business date; the server derives published rows itself. */
 export function todayBusinessDate(): string {
-  return businessDateOf(new Date().toISOString(), ROSTER_TIME_ZONE);
+  return localDateOf(new Date().toISOString(), ROSTER_TIME_ZONE);
 }
 
 export function currentWeekStart(): string {

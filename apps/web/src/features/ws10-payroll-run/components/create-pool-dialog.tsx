@@ -74,11 +74,17 @@ export function CreatePoolDialog({
   const toast = useToast();
   const createPool = useCreatePool();
   const [start, setStart] = React.useState(() => {
-    const today = businessDateOf(new Date(), PAYROLL_TIME_ZONE);
+    const today = businessDateOf(new Date(), {
+        timeZone: PAYROLL_TIME_ZONE,
+        cutoff: "04:00",
+      });
     return `${today.slice(0, 7)}-01`;
   });
   const [end, setEnd] = React.useState(() =>
-    businessDateOf(new Date(), PAYROLL_TIME_ZONE),
+    businessDateOf(new Date(), {
+        timeZone: PAYROLL_TIME_ZONE,
+        cutoff: "04:00",
+      }),
   );
   const [amount, setAmount] = React.useState("");
   const [method, setMethod] = React.useState<ServiceChargeMethod>(

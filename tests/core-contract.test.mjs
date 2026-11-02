@@ -681,14 +681,14 @@ describe("dates and times", () => {
     assert.equal(core.timeOfDaySchema.safeParse("24:00").success, false);
   });
 
-  test("business date follows the outlet time zone", () => {
+  test("local calendar date follows the outlet time zone", () => {
     // 18:30 UTC on 1 Nov is already 2 Nov in Bandung (UTC+7).
     assert.equal(
-      core.businessDateOf("2026-11-01T18:30:00.000Z", core.DEFAULT_TIME_ZONE),
+      core.localDateOf("2026-11-01T18:30:00.000Z", core.DEFAULT_TIME_ZONE),
       "2026-11-02",
     );
     assert.equal(
-      core.businessDateOf(new Date("2026-11-01T16:59:59.000Z"), "Asia/Jakarta"),
+      core.localDateOf(new Date("2026-11-01T16:59:59.000Z"), "Asia/Jakarta"),
       "2026-11-01",
     );
     assert.equal(
@@ -697,8 +697,8 @@ describe("dates and times", () => {
     );
   });
 
-  test("business date range 0001-01-01..9999-12-31, zero-padded years", () => {
-    const at = (iso, zone) => core.businessDateOf(new Date(iso), zone);
+  test("local date range 0001-01-01..9999-12-31, zero-padded years", () => {
+    const at = (iso, zone) => core.localDateOf(new Date(iso), zone);
     assert.equal(at("0001-01-01T00:00:00.000Z", "UTC"), "0001-01-01");
     assert.equal(at("0999-06-15T00:00:00.000Z", "UTC"), "0999-06-15");
     assert.equal(at("9999-12-31T23:59:59.999Z", "UTC"), "9999-12-31");
@@ -709,7 +709,148 @@ describe("dates and times", () => {
       () => at("9999-12-31T20:00:00.000Z", "Asia/Jakarta"),
       RangeError,
     );
-    assert.throws(() => core.businessDateOf(new Date(Number.NaN)), RangeError);
+    assert.throws(() => core.localDateOf(new Date(Number.NaN)), RangeError);
+  });
+});
+
+describe("Q39 business day cutoff (owner 2026-11-03)", () => {
+  const zones = [
+    ["WIB", "Asia/Jakarta", 7],
+    ["WITA", "Asia/Makassar", 8],
+    ["WIT", "Asia/Jayapura", 9],
+  ];
+  // Local wall time on 2 Nov 2026 -> business date with cutoff 04:00.
+  const table = [
+    ["23:59", "2026-11-02"],
+    ["00:30", "2026-11-01"],
+    ["03:59", "2026-11-01"],
+    ["04:00", "2026-11-02"],
+  ];
+  /** UTC instant of local wall time on 2026-11-02 in a fixed-offset zone. */
+  const localInstant = (hhmm, offsetHours) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return new Date(Date.UTC(2026, 10, 2, h - offsetHours, m));
+  };
+
+  for (const [label, timeZone, offset] of zones) {
+    for (const [hhmm, expected] of table) {
+      test(`Q39 ${label} ${hhmm} local -> business date ${expected}`, () => {
+        const instant = localInstant(hhmm, offset);
+        const clock = { timeZone, cutoff: "04:00" };
+        assert.equal(core.businessDateOf(instant, clock), expected);
+        assert.equal(
+          core.businessDateOf(instant.toISOString(), clock),
+          expected,
+        );
+        const range = core.businessDayRange(expected, clock);
+        assert.ok(range.start <= instant && instant < range.end);
+      });
+    }
+
+    test(`Q39 ${label} businessDayRange is [cutoff, next cutoff)`, () => {
+      const clock = { timeZone, cutoff: "04:00" };
+      const { start, end } = core.businessDayRange("2026-11-01", clock);
+      assert.equal(
+        start.getTime(),
+        localInstant("04:00", offset).getTime() - 86_400_000,
+      );
+      assert.equal(end.getTime(), localInstant("04:00", offset).getTime());
+      assert.equal(core.businessDateOf(start, clock), "2026-11-01");
+      assert.equal(
+        core.businessDateOf(new Date(end.getTime() - 1), clock),
+        "2026-11-01",
+      );
+      assert.equal(core.businessDateOf(end, clock), "2026-11-02");
+    });
+  }
+
+  test("Q39 cutoff 00:00 equals the plain local calendar date", () => {
+    const clock = { timeZone: "Asia/Jakarta", cutoff: "00:00" };
+    for (const iso of [
+      "2026-11-01T16:59:59.000Z",
+      "2026-11-01T17:00:00.000Z",
+      "2026-11-02T03:00:00.000Z",
+    ])
+      assert.equal(
+        core.businessDateOf(iso, clock),
+        core.localDateOf(iso, "Asia/Jakarta"),
+      );
+    const { start, end } = core.businessDayRange("2026-11-02", clock);
+    assert.equal(start.toISOString(), "2026-11-01T17:00:00.000Z");
+    assert.equal(end.toISOString(), "2026-11-02T17:00:00.000Z");
+  });
+
+  test("Q39 crosses month and year boundaries", () => {
+    const clock = core.DEFAULT_BUSINESS_DAY_CLOCK;
+    // 01:00 WIB on 1 Jan 2027 is still business date 31 Dec 2026.
+    assert.equal(
+      core.businessDateOf("2026-12-31T18:00:00.000Z", clock),
+      "2026-12-31",
+    );
+    // 02:00 WIB on 1 Mar 2028 (leap year) is 29 Feb.
+    assert.equal(
+      core.businessDateOf("2028-02-29T19:00:00.000Z", clock),
+      "2028-02-29",
+    );
+    assert.equal(core.addBusinessDays("2028-02-28", 1), "2028-02-29");
+    assert.equal(core.addBusinessDays("2026-01-01", -1), "2025-12-31");
+  });
+
+  test("Q39 DST zone flips on the local wall clock at the cutoff", () => {
+    // Europe/Berlin switches 02:00 -> 03:00 on 29 Mar 2026; cutoff 04:00.
+    const clock = { timeZone: "Europe/Berlin", cutoff: "04:00" };
+    const { start, end } = core.businessDayRange("2026-03-29", clock);
+    assert.equal(start.toISOString(), "2026-03-29T02:00:00.000Z"); // 04:00 CEST
+    assert.equal(end.toISOString(), "2026-03-30T02:00:00.000Z");
+    assert.equal(
+      core.businessDateOf("2026-03-29T01:59:00.000Z", clock),
+      "2026-03-28",
+    );
+    assert.equal(
+      core.businessDateOf("2026-03-29T02:00:00.000Z", clock),
+      "2026-03-29",
+    );
+  });
+
+  test("Q39 cutoff setting is HH:mm 00:00..11:59, default 04:00", () => {
+    assert.equal(core.DEFAULT_BUSINESS_DAY_CUTOFF, "04:00");
+    assert.deepEqual(core.DEFAULT_BUSINESS_DAY_CLOCK, {
+      timeZone: "Asia/Jakarta",
+      cutoff: "04:00",
+    });
+    for (const ok of ["00:00", "04:00", "05:30", "11:59"])
+      assert.ok(core.businessDayCutoffSchema.safeParse(ok).success, ok);
+    for (const bad of ["12:00", "23:00", "4:00", "04:00:00", "24:00", ""])
+      assert.equal(
+        core.businessDayCutoffSchema.safeParse(bad).success,
+        false,
+        bad,
+      );
+    assert.throws(
+      () =>
+        core.businessDateOf(new Date(), {
+          timeZone: "Asia/Jakarta",
+          cutoff: "4am",
+        }),
+      RangeError,
+    );
+    assert.throws(
+      () =>
+        core.businessDateOf(
+          new Date(Number.NaN),
+          core.DEFAULT_BUSINESS_DAY_CLOCK,
+        ),
+      RangeError,
+    );
+    // 00:30 on 1 Jan 0001 would fall on 31 Dec 1 BC: outside the range.
+    assert.throws(
+      () =>
+        core.businessDateOf("0001-01-01T00:30:00.000Z", {
+          timeZone: "UTC",
+          cutoff: "04:00",
+        }),
+      RangeError,
+    );
   });
 });
 

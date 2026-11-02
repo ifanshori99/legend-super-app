@@ -3,7 +3,6 @@
 // the org tree composed from `org_units` + `positions` + `employees` (the
 // contract has no org-structure endpoint; the screen composes it). No React,
 // no fetching, so every rule here is testable on its own.
-import { businessDateOf } from "@starter/shared/core";
 import type { BusinessDate } from "@starter/shared/core";
 import {
   isContractExpiryReminderDue,

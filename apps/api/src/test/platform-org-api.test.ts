@@ -265,7 +265,7 @@ describe("Panel Platform API", () => {
 });
 
 describe("Tenant organisation API", () => {
-  it("TEN-06 creates a brand, legal entity and outlet from panel input", async () => {
+  it("TEN-06 Q39 creates a brand, legal entity and outlet (business day cutoff 04:00, audited change)", async () => {
     const { client } = await adminClient();
 
     const brandSlug = `brand-${randomBytes(4).toString("hex")}`;
@@ -321,6 +321,41 @@ describe("Tenant organisation API", () => {
     });
     expect(outlet.body.data.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(seededOutlet.id).not.toBe(outlet.body.data.id);
+
+    // Owner Q39: a new outlet starts its business day at 04:00 by default; the
+    // admin may move it (audited) but only inside 00:00..11:59.
+    expect(outlet.body.data.businessDayCutoff).toBe("04:00");
+    const moved = await client
+      .patch(`/api/org/outlets/${outlet.body.data.id}`)
+      .set(originHeader)
+      .send({ businessDayCutoff: "05:30" });
+    expect(moved.status).toBe(200);
+    expect(moved.body.data.businessDayCutoff).toBe("05:30");
+    const audit = await owner.query<{
+      event: { action: string; maskedChanges: unknown };
+    }>(
+      "SELECT event FROM audit_logs WHERE tenant_id = $1 AND outlet_id = $2 AND event->>'action' = 'outlet.business_day_cutoff.updated'",
+      [seededTenantId, outlet.body.data.id],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.event.maskedChanges).toEqual({
+      before: { businessDayCutoff: "04:00" },
+      after: { businessDayCutoff: "05:30" },
+    });
+    for (const bad of ["12:00", "23:00", "4:00", "04:00:00"]) {
+      const refused = await client
+        .patch(`/api/org/outlets/${outlet.body.data.id}`)
+        .set(originHeader)
+        .send({ businessDayCutoff: bad });
+      expect(refused.status).toBe(422);
+    }
+    // The DB check is the backstop for any writer that skips the contract.
+    await expect(
+      owner.query(
+        "UPDATE outlets SET business_day_cutoff = '13:00' WHERE id = $1",
+        [outlet.body.data.id],
+      ),
+    ).rejects.toThrow(/outlets_business_day_cutoff_check/);
   });
 
   it("TEN-02 rejects a client-supplied tenant on every org write", async () => {
@@ -356,7 +391,7 @@ describe("Tenant organisation API", () => {
     expect(scoped.data.map((outlet) => outlet.id)).toEqual([first!.id]);
 
     await expect(
-      updateOutlet(outletScoped, second!.id, { name: "Diubah" }),
+      updateOutlet(outletScoped, second!.id, { name: "Diubah" }, randomUUID()),
     ).rejects.toMatchObject({ code: "OUTLET_OUT_OF_SCOPE" });
     await expect(
       setOutletStatus(outletScoped, second!.id, {

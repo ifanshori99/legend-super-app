@@ -32,7 +32,7 @@ import {
   type Training,
   type TrainingCompletion,
 } from "@starter/shared/hris";
-import { businessDateOf } from "@starter/shared/core";
+import { localDateOf } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import {
@@ -225,7 +225,7 @@ registerMock(completeTraining, ({ params, body }) => {
       row.employeeId.toLowerCase() === MOCK_ME.id.toLowerCase(),
   ).length;
   const completedAt = new Date();
-  const businessDate = businessDateOf(
+  const businessDate = localDateOf(
     completedAt.toISOString(),
     MOCK_OUTLET.timeZone,
   );
