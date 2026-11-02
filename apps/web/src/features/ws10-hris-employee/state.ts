@@ -7,7 +7,9 @@
 // the server (`evaluateAttendanceSubmission` in @starter/shared/hris); this file
 // only names states the screen renders and the next action the employee takes.
 
-import { businessDateOf } from "@starter/shared/core";
+// Attendance days follow the shift roster, a wall-clock schedule: the plain
+// outlet-local calendar date (core `localDateOf`), not the Q39 business date.
+import { localDateOf } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 import type {
   AttendanceCorrectionStatus,
@@ -46,13 +48,13 @@ export function logsForBusinessDate(
   timeZone: string,
 ): readonly AttendanceLog[] {
   return sortLogsAsc(logs).filter(
-    (log) => businessDateOf(log.occurredAt, timeZone) === businessDate,
+    (log) => localDateOf(log.occurredAt, timeZone) === businessDate,
   );
 }
 
 /** The business date of an instant, named the way the attendance service does. */
 export function businessDateIn(timeZone: string, now: Date = new Date()) {
-  return businessDateOf(now, timeZone);
+  return localDateOf(now, timeZone);
 }
 
 /**
@@ -330,7 +332,7 @@ export function groupLogsByDate(
 ): LogDayGroup[] {
   const groups = new Map<string, AttendanceLog[]>();
   for (const log of logs) {
-    const date = businessDateOf(log.occurredAt, timeZone);
+    const date = localDateOf(log.occurredAt, timeZone);
     const bucket = groups.get(date);
     if (bucket) bucket.push(log);
     else groups.set(date, [log]);

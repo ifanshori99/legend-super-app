@@ -182,6 +182,7 @@ const outlets = core.outlets.map((ref, index) =>
         ? { latitude: -6.9175, longitude: 107.6191, radiusMeters: 100 }
         : null,
     timeZone: ref.timeZone,
+    businessDayCutoff: ref.businessDayCutoff,
     openingHours,
     edgeNodeId: null,
     status: ref.status,

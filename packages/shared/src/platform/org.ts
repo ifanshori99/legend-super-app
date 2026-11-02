@@ -23,6 +23,8 @@ import {
   uuidSchema,
   z,
   DEFAULT_TIME_ZONE,
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  businessDayCutoffSchema,
 } from "../core/index.ts";
 import { bankAccountIdSchema } from "../accounting/ids.ts";
 import {
@@ -291,6 +293,8 @@ export const outletSchema = z.strictObject({
   regionId: regionIdSchema.nullable(),
   geofence: geofenceSchema.nullable(),
   timeZone: timeZoneSchema,
+  /** Owner Q39: when the business day starts ("HH:mm", default 04:00). */
+  businessDayCutoff: businessDayCutoffSchema,
   openingHours: openingHoursSchema,
   edgeNodeId: uuidSchema.nullable(),
   status: outletStatusSchema,
@@ -307,6 +311,9 @@ export const createOutletInputSchema = clientInputSchema({
   regionId: regionIdSchema.nullable().default(null),
   geofence: geofenceSchema.nullable().default(null),
   timeZone: timeZoneSchema.default(DEFAULT_TIME_ZONE),
+  businessDayCutoff: businessDayCutoffSchema.default(
+    DEFAULT_BUSINESS_DAY_CUTOFF,
+  ),
   openingHours: openingHoursSchema,
 });
 export type CreateOutletInput = z.infer<typeof createOutletInputSchema>;
@@ -316,6 +323,7 @@ export const updateOutletInputSchema = clientInputSchema({
   address: z.string().trim().min(1).max(500).optional(),
   regionId: regionIdSchema.nullable().optional(),
   geofence: geofenceSchema.nullable().optional(),
+  businessDayCutoff: businessDayCutoffSchema.optional(),
   openingHours: openingHoursSchema.optional(),
 });
 export type UpdateOutletInput = z.infer<typeof updateOutletInputSchema>;

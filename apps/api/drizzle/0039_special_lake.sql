@@ -1,0 +1,2 @@
+ALTER TABLE "outlets" ADD COLUMN "business_day_cutoff" varchar(5) DEFAULT '04:00' NOT NULL;--> statement-breakpoint
+ALTER TABLE "outlets" ADD CONSTRAINT "outlets_business_day_cutoff_check" CHECK ("outlets"."business_day_cutoff" ~ '^(0[0-9]|1[01]):[0-5][0-9]$');
