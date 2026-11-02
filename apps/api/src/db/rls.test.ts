@@ -52,6 +52,12 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // write policy (INSERT/UPDATE/DELETE), and does not FORCE it so the
     // migration owner can repair rows. Proven by the test below.
     //
+    // public.payment_link_tokens: the guest holds a payment link token and has
+    // no tenant context yet (PRD §3.13, TEN-02). The row is only a SHA-256 token
+    // hash plus tenant/outlet/link ids — never an amount or guest data — so
+    // SELECT is open while writes stay tenant-checked (migration 0017). Its
+    // tenant table, payment_links, keeps the full restrictive policy.
+    //
     // public.session: authentication also runs BEFORE a tenant context exists
     // (the session cookie is what resolves the caller), so the device list and
     // the revoke path read this global §6 B table outside a tenant transaction;
@@ -69,6 +75,7 @@ describe("TEN-01/TEN-02 database role tenant isolation", () => {
     // tenant's number").
     const allowlist = [
       "public.tenant_domains",
+      "public.payment_link_tokens",
       "public.session",
       "public.login_challenges",
       "public.wa_inbound_messages",
