@@ -98,7 +98,7 @@ function TableCell({
     <td
       data-slot="table-cell"
       className={cn(
-        "h-row px-4 align-middle",
+        "h-row px-4 py-2.5 align-middle",
         numeric && "text-right whitespace-nowrap tabular",
         className,
       )}
