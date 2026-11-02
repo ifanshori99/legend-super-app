@@ -7,7 +7,7 @@
 // table-status guards, and cross-outlet denial of a lifecycle action.
 
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../app";
 import { idr, tenantIdSchema } from "@starter/shared/core";
@@ -20,7 +20,11 @@ import {
   createTable as createTableService,
   issueTableQr,
 } from "../services/floor.service";
-import { authenticateGuestSession } from "../services/table-session.service";
+import {
+  authenticateGuestSession,
+  setTableSessionSettlementLookup,
+  type TableSessionSettlement,
+} from "../services/table-session.service";
 import { agent, originHeader, signUp } from "./helpers";
 import {
   createTable,
@@ -33,10 +37,13 @@ import {
   seededOutletB,
   seededTenantId,
   staffWithRole,
+  waitForLockWaiters,
 } from "./floor-test-helpers";
 
 let app: Express;
 let staff: Awaited<ReturnType<typeof staffWithRole>>;
+/** The bill the settlement test double reports; null = unverifiable. */
+let settlement: TableSessionSettlement | null;
 const zoneIds: string[] = [];
 const tableIds: string[] = [];
 
@@ -77,13 +84,22 @@ async function closeSession(sessionId: string, body: Record<string, unknown>) {
 
 beforeAll(async () => {
   app = createApp();
+  // Test double for the settlement port (legend-e2x owns the real orders
+  // source). Tests below choose the bill explicitly; the default is a settled
+  // zero bill so the happy paths describe a paid table.
+  setTableSessionSettlementLookup(async () => settlement);
   staff = await staffWithRole(app, {
     template: "owner",
     label: "Session Owner",
   });
 });
 
+beforeEach(() => {
+  settlement = { billTotalIdr: idr(0), paidIdr: idr(0) };
+});
+
 afterAll(async () => {
+  setTableSessionSettlementLookup(null);
   await dropFloorRows({ tenantId: seededTenantId, zoneIds, tableIds });
   await owner.end();
 });
@@ -355,5 +371,199 @@ describe("table session lifecycle (legend-irw)", () => {
       .post(`/api/table-sessions/${session.body.data.session.id}/confirm`)
       .set(originHeader);
     expect(noRole.status).toBe(403);
+  });
+
+  // --- Codex pre-review regressions (legend-irw rework) -------------------
+
+  it("Codex pre-review HIGH: close fails closed when the bill cannot be verified or is unsettled", async () => {
+    const { token } = await newTable();
+    const session = await scan(app, { token });
+    const sessionId = session.body.data.session.id as string;
+
+    // The orders source is not wired: the bill is unverifiable, so a cleaned
+    // table alone must not be enough to close it.
+    settlement = null;
+    const unverified = await closeSession(sessionId, { tableCleaned: true });
+    expect(unverified.status).toBe(409);
+    expect(unverified.body.error.message).toMatch(/ORD-10/);
+    expect(unverified.body.error.message).toMatch(/diverifikasi/);
+
+    // A known outstanding bill is refused even when the table is cleaned.
+    settlement = { billTotalIdr: idr(75000), paidIdr: idr(25000) };
+    const outstanding = await closeSession(sessionId, { tableCleaned: true });
+    expect(outstanding.status).toBe(409);
+    expect(outstanding.body.error.message).toMatch(/ORD-10/);
+
+    // Nothing was closed by the refused attempts.
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM table_sessions WHERE id = $1",
+      [sessionId],
+    );
+    expect(rows[0]?.status).toBe("open");
+
+    // The explicit waiter override is the only way out; because the bill is
+    // still outstanding, the close is recorded as voided, never as paid.
+    const override = await closeSession(sessionId, {
+      tableCleaned: true,
+      waiterConfirmedEmpty: true,
+    });
+    expect(override.status).toBe(200);
+    expect(override.body.data.closedReason).toBe("voided");
+    const { rows: eventRows } = await owner.query<{
+      reason: string;
+      paid: string;
+    }>(
+      `SELECT event->'payload'->>'reason' AS reason,
+              event->'payload'->>'paidIdr' AS paid
+       FROM domain_event_outbox
+       WHERE tenant_id = $1 AND event->>'name' = 'table_session.closed'
+         AND event->'payload'->>'sessionId' = $2`,
+      [seededTenantId, sessionId],
+    );
+    expect(eventRows).toHaveLength(1);
+    expect(eventRows[0]).toEqual({ reason: "voided", paid: "25000" });
+
+    // A verified settled bill closes as paid_and_cleaned.
+    const settledTable = await newTable();
+    const settledSession = await scan(app, { token: settledTable.token });
+    settlement = { billTotalIdr: idr(60000), paidIdr: idr(60000) };
+    const settled = await closeSession(settledSession.body.data.session.id, {
+      tableCleaned: true,
+    });
+    expect(settled.status).toBe(200);
+    expect(settled.body.data.closedReason).toBe("paid_and_cleaned");
+  });
+
+  it("Codex pre-review HIGH: expiry refuses to close a session whose bill is unverified or unsettled", async () => {
+    const { token } = await newTable();
+    const first = await scan(app, { token });
+    const sessionId = first.body.data.session.id as string;
+    await owner.query(
+      "UPDATE table_sessions SET opened_at = now() - interval '13 hours', last_activity_at = now() - interval '13 hours' WHERE id = $1",
+      [sessionId],
+    );
+
+    settlement = null;
+    const unverified = await scan(app, {
+      token,
+      deviceHash: `device-${randomUUID()}`,
+    });
+    expect(unverified.status).toBe(409);
+    expect(unverified.body.error.message).toMatch(/ORD-10/);
+    expect(unverified.body.error.message).toMatch(/diverifikasi/);
+
+    settlement = { billTotalIdr: idr(90000), paidIdr: idr(0) };
+    const unsettled = await scan(app, {
+      token,
+      deviceHash: `device-${randomUUID()}`,
+    });
+    expect(unsettled.status).toBe(409);
+    expect(unsettled.body.error.message).toMatch(/ORD-10/);
+
+    // The expired session stays open instead of being voided by a rescan.
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM table_sessions WHERE id = $1",
+      [sessionId],
+    );
+    expect(rows[0]?.status).toBe("open");
+
+    // A verified settled bill lets expiry close it and the scan open fresh.
+    settlement = { billTotalIdr: idr(90000), paidIdr: idr(90000) };
+    const rescan = await scan(app, {
+      token,
+      deviceHash: `device-${randomUUID()}`,
+    });
+    expect(rescan.status).toBe(201);
+    expect(rescan.body.data.session.id).not.toBe(sessionId);
+    const { rows: closedRows } = await owner.query<{
+      status: string;
+      closed_reason: string;
+    }>("SELECT status, closed_reason FROM table_sessions WHERE id = $1", [
+      sessionId,
+    ]);
+    expect(closedRows[0]).toEqual({
+      status: "closed",
+      closed_reason: "expired",
+    });
+  });
+
+  it("Codex pre-review HIGH: concurrent close requests serialize on the session row (one close wins)", async () => {
+    const { token } = await newTable();
+    const session = await scan(app, { token });
+    const sessionId = session.body.data.session.id as string;
+
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT 1 FROM table_sessions WHERE id = $1 FOR UPDATE",
+        [sessionId],
+      );
+      // A supertest Test is lazy; `.then` starts each request now so both
+      // are queued on the row lock before the blocker is released.
+      const startClose = () =>
+        closeSession(sessionId, { tableCleaned: true }).then((res) => res);
+      const pending = [startClose(), startClose()];
+      // Both requests are now queued on the row lock; release it so the
+      // service decides each status edge from committed state.
+      await waitForLockWaiters(2);
+      await blocker.query("COMMIT");
+      const results = await Promise.all(pending);
+      expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+      const { rows } = await owner.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM domain_event_outbox
+         WHERE tenant_id = $1 AND event->>'name' = 'table_session.closed'
+           AND event->'payload'->>'sessionId' = $2`,
+        [seededTenantId, sessionId],
+      );
+      expect(rows[0]?.count).toBe(1);
+    } finally {
+      // No-op after COMMIT; rolls back when the test failed mid-lock.
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+    }
+  });
+
+  it("Codex pre-review HIGH: concurrent confirms serialize on the session row (one confirm wins)", async () => {
+    const zone = await createZone(staff.client, { paymentMode: "open_bill" });
+    zoneIds.push(zone.id);
+    const table = await createTable(staff.client, { zoneId: zone.id });
+    tableIds.push(table.id);
+    const qr = await issueQr(staff.client, table.id);
+    const session = await scan(app, { token: qr.token });
+    expect(session.body.data.session.status).toBe("pending_confirmation");
+    const sessionId = session.body.data.session.id as string;
+
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT 1 FROM table_sessions WHERE id = $1 FOR UPDATE",
+        [sessionId],
+      );
+      // A supertest Test is lazy; `.then` starts each request now so both
+      // are queued on the row lock before the blocker is released.
+      const startConfirm = () =>
+        staff.client
+          .post(`/api/table-sessions/${sessionId}/confirm`)
+          .set(originHeader)
+          .then((res) => res);
+      const pending = [startConfirm(), startConfirm()];
+      await waitForLockWaiters(2);
+      await blocker.query("COMMIT");
+      const results = await Promise.all(pending);
+      expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+      const { rows } = await owner.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM audit_logs
+         WHERE tenant_id = $1 AND event->>'action' = 'table_session.confirmed'
+           AND event->>'objectId' = $2`,
+        [seededTenantId, sessionId],
+      );
+      expect(rows[0]?.count).toBe(1);
+    } finally {
+      // No-op after COMMIT; rolls back when the test failed mid-lock.
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+    }
   });
 });

@@ -26,8 +26,10 @@ import {
   assertOutletInScope,
   CoreError,
   createUlid,
+  idr,
   toIsoDateTime,
   z,
+  type Idr,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -117,6 +119,55 @@ function sessionSealAad(tenantId: string, sessionId: string): string {
 function newSessionCredential(): { token: string; hash: string } {
   const token = randomBytes(32).toString("base64url");
   return { token, hash: credentialHash(token) };
+}
+
+/**
+ * Settlement port. The orders/bill module (legend-e2x) owns the per-session
+ * bill; it wires the lookup here. A null result means the bill cannot be
+ * verified, and every close path then fails closed instead of assuming the
+ * bill is paid (Codex pre-review HIGH: ORD-10 settlement must never be
+ * guessed).
+ */
+export type TableSessionSettlement = {
+  billTotalIdr: Idr;
+  paidIdr: Idr;
+};
+
+export type TableSessionSettlementLookup = (input: {
+  tx: Tx;
+  tenantId: TenantId;
+  sessionId: string;
+}) => Promise<TableSessionSettlement | null>;
+
+let settlementLookup: TableSessionSettlementLookup | null = null;
+
+/**
+ * Wiring point for the orders module (legend-e2x) and test double. Unset is
+ * the production default until the orders table exists: unverifiable bill.
+ */
+export function setTableSessionSettlementLookup(
+  lookup: TableSessionSettlementLookup | null,
+): void {
+  settlementLookup = lookup;
+}
+
+async function loadSettlement(
+  tx: Tx,
+  context: ScopedTenantContext,
+  sessionId: string,
+): Promise<TableSessionSettlement | null> {
+  if (settlementLookup === null) return null;
+  return settlementLookup({
+    tx,
+    tenantId: context.tenant.tenantId,
+    sessionId,
+  });
+}
+
+/** Outstanding rupiah, or null when settlement cannot be verified. */
+function outstandingOf(settlement: TableSessionSettlement | null): Idr | null {
+  if (settlement === null) return null;
+  return idr(Math.max(0, settlement.billTotalIdr - settlement.paidIdr));
 }
 
 /** Contract transition; an invalid status/action pair is a 409, not a 500. */
@@ -215,12 +266,18 @@ async function sessionDto(tx: Tx, row: SessionRow): Promise<TableSession> {
   return toSession(row, await participantsOf(tx, row.tenantId, row.id));
 }
 
+/**
+ * Loads one session inside the tenant transaction. Staff lifecycle writes pass
+ * `forUpdate` so concurrent confirm/close requests serialize on the row and
+ * the status edge is decided from the committed state (Codex pre-review HIGH).
+ */
 async function loadSession(
   tx: Tx,
   tenantId: TenantId,
   sessionId: string,
+  options: { forUpdate?: boolean } = {},
 ): Promise<SessionRow> {
-  const [row] = await tx
+  const query = tx
     .select()
     .from(tableSessions)
     .where(
@@ -229,6 +286,7 @@ async function loadSession(
         eq(tableSessions.id, sessionId),
       ),
     );
+  const [row] = options.forUpdate ? await query.for("update") : await query;
   if (!row) throw new CoreError("NOT_FOUND", "Sesi meja tidak ditemukan.");
   return row;
 }
@@ -451,6 +509,11 @@ function openSessionToken(row: SessionRow): string {
 /**
  * Closes an active session whose 12-hour credential window ran out. The guest
  * must rescan, which opens a fresh session (contract decision, ORD-04).
+ *
+ * ORD-10 (Codex pre-review HIGH): expiry may only close a session whose bill
+ * is verified settled. An unverifiable or outstanding bill fails closed, so
+ * the table stays bound to its session until staff settle or explicitly close
+ * it — an expiry must never erase an unsettled open bill.
  */
 async function expireSession(
   tx: Tx,
@@ -458,6 +521,15 @@ async function expireSession(
   row: SessionRow,
   now: Date,
 ): Promise<void> {
+  const settlement = await loadSettlement(tx, context, row.id);
+  const outstandingIdr = outstandingOf(settlement);
+  if (outstandingIdr !== 0)
+    throw new CoreError(
+      "CONFLICT",
+      outstandingIdr === null
+        ? "ORD-10: tagihan sesi meja sebelumnya belum dapat diverifikasi; minta staf menutup meja."
+        : "ORD-10: sesi meja sebelumnya masih memiliki tagihan belum lunas; minta staf menutup meja.",
+    );
   const credential = newSessionCredential();
   await tx
     .update(tableSessions)
@@ -485,8 +557,8 @@ async function expireSession(
       sessionId: row.id,
       tableId: row.tableId,
       reason: "expired",
-      billTotalIdr: 0,
-      paidIdr: 0,
+      billTotalIdr: settlement?.billTotalIdr ?? 0,
+      paidIdr: settlement?.paidIdr ?? 0,
       orderCount: 0,
       closedBy: "system",
     },
@@ -790,7 +862,9 @@ export async function confirmOpenBillSession(
   now = new Date(),
 ): Promise<TableSession> {
   return withTenant(db, context, async (tx) => {
-    const row = await loadSession(tx, context.tenant.tenantId, sessionId);
+    const row = await loadSession(tx, context.tenant.tenantId, sessionId, {
+      forUpdate: true,
+    });
     assertOutletInScope(context.outletScope, row.outletId);
     const status = nextStatus(row.status, "confirm");
     const [updated] = await tx
@@ -856,8 +930,10 @@ export async function confirmOpenBillSession(
  * ORD-10: close the session after the bill is settled and the table is
  * cleaned, or when a waiter explicitly confirms the table is empty. The guest
  * credential rotates on close, so it can never order for this session again
- * (ORD-04). Bill totals stay 0 until the orders table lands (legend-e2x); the
- * guard and the close event already carry the fields it will fill.
+ * (ORD-04). Bill totals come from the settlement port (legend-e2x); when the
+ * bill cannot be verified the close fails closed, and a supervisor override
+ * on an unsettled/unverified bill is recorded as voided (Codex pre-review
+ * HIGH: never assume the bill is paid).
  */
 export async function closeTableSession(
   context: ScopedTenantContext,
@@ -867,25 +943,32 @@ export async function closeTableSession(
   now = new Date(),
 ): Promise<TableSession> {
   return withTenant(db, context, async (tx) => {
-    const row = await loadSession(tx, context.tenant.tenantId, sessionId);
+    const row = await loadSession(tx, context.tenant.tenantId, sessionId, {
+      forUpdate: true,
+    });
     assertOutletInScope(context.outletScope, row.outletId);
     const status = nextStatus(row.status, "close");
-    const billOutstandingIdr = 0;
+    const settlement = await loadSettlement(tx, context, row.id);
+    // null = the orders module cannot prove the bill is settled; only the
+    // explicit waiter override may close that session.
+    const billOutstandingIdr = outstandingOf(settlement);
     const canClose =
       input.waiterConfirmedEmpty ||
       (billOutstandingIdr === 0 && input.tableCleaned);
     if (!canClose)
       throw new CoreError(
         "CONFLICT",
-        "ORD-10: meja belum bisa dikosongkan sebelum tagihan lunas atau dikonfirmasi waiter.",
+        billOutstandingIdr === null
+          ? "ORD-10: tagihan meja belum dapat diverifikasi; minta waiter mengonfirmasi meja kosong."
+          : "ORD-10: meja belum bisa dikosongkan sebelum tagihan lunas atau dikonfirmasi waiter.",
       );
     const credential = newSessionCredential();
-    // The supervisor override empties a table whose bill is outstanding;
-    // matching the floor board mock, that close is recorded as voided.
+    // Only a verified-settled bill counts as paid_and_cleaned; an override on
+    // an outstanding or unverifiable bill is a voided session.
     const closedReason =
-      billOutstandingIdr > 0
-        ? ("voided" as const)
-        : ("paid_and_cleaned" as const);
+      billOutstandingIdr === 0
+        ? ("paid_and_cleaned" as const)
+        : ("voided" as const);
     const [updated] = await tx
       .update(tableSessions)
       .set({
@@ -926,8 +1009,8 @@ export async function closeTableSession(
         sessionId: row.id,
         tableId: row.tableId,
         reason: closedReason,
-        billTotalIdr: 0,
-        paidIdr: 0,
+        billTotalIdr: settlement?.billTotalIdr ?? 0,
+        paidIdr: settlement?.paidIdr ?? 0,
         orderCount: 0,
         closedBy: "staff",
       },

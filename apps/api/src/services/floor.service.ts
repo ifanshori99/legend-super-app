@@ -184,11 +184,17 @@ async function zoneRow(tx: Tx, tenantId: TenantId, zoneId: string) {
   return row;
 }
 
-async function tableRow(tx: Tx, tenantId: TenantId, tableId: string) {
-  const [row] = await tx
+async function tableRow(
+  tx: Tx,
+  tenantId: TenantId,
+  tableId: string,
+  options: { forUpdate?: boolean } = {},
+) {
+  const query = tx
     .select()
     .from(tables)
     .where(and(eq(tables.tenantId, tenantId), eq(tables.id, tableId)));
+  const [row] = options.forUpdate ? await query.for("update") : await query;
   if (!row) throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
   return row;
 }
@@ -787,6 +793,10 @@ function openSealedToken(row: TableRow): string | null {
  * The table's current signed QR for printing. Never rotates: an existing seal
  * is opened and re-rendered so reprinting a floor does not invalidate the
  * stickers already on the tables (contract `issueTableQr`).
+ *
+ * The table row is locked while it is read: two concurrent first issues must
+ * not mint competing credentials where the loser's printed sticker would stop
+ * resolving (Codex pre-review MED).
  */
 export async function issueTableQr(
   context: ScopedTenantContext,
@@ -795,7 +805,9 @@ export async function issueTableQr(
   now = new Date(),
 ): Promise<TableQr> {
   return withTenant(db, context, async (tx) => {
-    const row = await tableRow(tx, context.tenant.tenantId, tableId);
+    const row = await tableRow(tx, context.tenant.tenantId, tableId, {
+      forUpdate: true,
+    });
     assertOutletInScope(context.outletScope, row.outletId);
     const existing = openSealedToken(row);
     if (existing !== null) {
@@ -873,7 +885,11 @@ export async function rotateTableQr(
   now = new Date(),
 ): Promise<TableQr> {
   return withTenant(db, context, async (tx) => {
-    const row = await tableRow(tx, context.tenant.tenantId, tableId);
+    // Same row lock as issuance: a rotate racing a first issue serializes, so
+    // the returned credential is always the one persisted last.
+    const row = await tableRow(tx, context.tenant.tenantId, tableId, {
+      forUpdate: true,
+    });
     assertOutletInScope(context.outletScope, row.outletId);
     const previousHash = row.qrTokenHash;
     // A rotation in the same millisecond as the previous issue would mint the

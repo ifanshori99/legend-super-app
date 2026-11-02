@@ -347,3 +347,32 @@ export async function scan(
       deviceHash: input.deviceHash ?? `device-${randomUUID()}`,
     });
 }
+
+/**
+ * Polls pg_stat_activity until `min` backends are waiting on a lock in this
+ * database. The serialization regression tests hold a row lock first and
+ * release it only once the competing requests are queued, so the outcome
+ * never depends on sleep timing or on which request wins the lock.
+ */
+export async function waitForLockWaiters(min: number): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const { rows } = await owner.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM pg_stat_activity
+       WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+    );
+    if (Number(rows[0]?.count ?? 0) >= min) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const { rows: waiters } = await owner.query<{
+    pid: number;
+    blockers: number[];
+    query: string;
+  }>(
+    `SELECT pid, pg_blocking_pids(pid) AS blockers, left(query, 80) AS query
+     FROM pg_stat_activity
+     WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+  );
+  throw new Error(
+    `Timed out waiting for ${min} lock waiters: ${JSON.stringify(waiters)}`,
+  );
+}

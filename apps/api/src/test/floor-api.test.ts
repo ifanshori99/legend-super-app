@@ -18,7 +18,9 @@ import { idr, tenantIdSchema } from "@starter/shared/core";
 import {
   createFloorZone,
   createTable as createTableService,
+  issueTableQr,
 } from "../services/floor.service";
+import { qrTokenHash } from "../services/qr-token";
 import { agent, originHeader, signUp } from "./helpers";
 import {
   createIsolatedTenant,
@@ -34,6 +36,7 @@ import {
   seededTenantId,
   staffOfIsolatedTenant,
   staffWithRole,
+  waitForLockWaiters,
   type IsolatedTenant,
 } from "./floor-test-helpers";
 
@@ -133,6 +136,51 @@ describe("floor editor (legend-irw)", () => {
     expect(oldScan.status).toBe(404);
     const newScan = await scan(app, { token: rotated.body.data.token });
     expect(newScan.status).toBe(201);
+  });
+
+  it("Codex pre-review MED: concurrent QR issuance returns one signed credential", async () => {
+    const zone = await createZone(staff.client);
+    zoneIds.push(zone.id);
+    const table = await createTable(staff.client, { zoneId: zone.id });
+    tableIds.push(table.id);
+
+    const blocker = await owner.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM tables WHERE id = $1 FOR UPDATE", [
+        table.id,
+      ]);
+      const pending = [
+        issueTableQr(
+          tenantContext(),
+          table.id,
+          staff.userId,
+          new Date("2026-01-01T00:00:00.000Z"),
+        ),
+        issueTableQr(
+          tenantContext(),
+          table.id,
+          staff.userId,
+          new Date("2026-01-01T00:00:01.000Z"),
+        ),
+      ];
+      await waitForLockWaiters(2);
+      await blocker.query("COMMIT");
+      const [first, second] = await Promise.all(pending);
+      // The loser reuses the credential the winner persisted instead of
+      // minting a competing sticker that would stop resolving.
+      expect(second.token).toBe(first.token);
+      expect(second.issuedAt).toBe(first.issuedAt);
+      const { rows } = await owner.query<{ hash: string }>(
+        "SELECT qr_token_hash AS hash FROM tables WHERE id = $1",
+        [table.id],
+      );
+      expect(rows[0]?.hash).toBe(qrTokenHash(first.token));
+    } finally {
+      // No-op after COMMIT; rolls back when the test failed mid-lock.
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+    }
   });
 
   it("enforces the editor guards: duplicate code 409, zone with tables 409, table with a session 409", async () => {
