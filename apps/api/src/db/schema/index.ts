@@ -28,3 +28,5 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+// WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
+export * from "./crm-promo";

@@ -13,6 +13,12 @@ import {
   isoDateTimeSchema,
 } from "../core/index.ts";
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
+import {
+  promoChannelSchema,
+  promoFreeItemSchema,
+  promotionSchema,
+  voucherSourceSchema,
+} from "./promo.ts";
 import type { EventCatalogEntry } from "../events/index.ts";
 
 const safeInt = (value: number) => Number.isSafeInteger(value);
@@ -35,6 +41,11 @@ export const crmEventNames = [
   "points.redeemed",
   "points.expired",
   "tier.changed",
+  // Promo engine (bead legend-7x4g, PRD §3.21).
+  "promotion.updated",
+  "promo_application.redeemed",
+  "promo_application.released",
+  "voucher.issued",
 ] as const;
 export type CrmEventName = (typeof crmEventNames)[number];
 
@@ -103,6 +114,76 @@ export const tierChangedPayloadSchema = z.strictObject({
 });
 export type TierChangedPayload = z.infer<typeof tierChangedPayloadSchema>;
 
+// ---- Promo engine events (bead legend-7x4g) --------------------------------
+
+/** A promotion was created or changed; edge nodes replicate the full rule. */
+export const promotionUpdatedPayloadSchema = z.strictObject({
+  change: z.enum(["created", "updated"]),
+  promotion: promotionSchema,
+});
+export type PromotionUpdatedPayload = z.infer<
+  typeof promotionUpdatedPayloadSchema
+>;
+
+const promoAppliedLineSchema = z.strictObject({
+  /** Null for a value voucher that has no promotion behind it. */
+  promotionId: uuidSchema.nullable(),
+  voucherId: uuidSchema.nullable(),
+  discountIdr: nonnegativeIdr,
+  freeItems: z.array(promoFreeItemSchema),
+});
+
+/**
+ * Promotions, vouchers and facility rewards committed with an order, in the
+ * order's transaction (LOY-03). WS-09 issues the facility entitlements.
+ */
+export const promoApplicationRedeemedPayloadSchema = z.strictObject({
+  orderId: ulidIdSchema<"OrderId">(),
+  outletId: uuidSchema,
+  customerProfileId: uuidSchema.nullable(),
+  channel: promoChannelSchema,
+  totalDiscountIdr: nonnegativeIdr,
+  applied: z.array(promoAppliedLineSchema),
+  facilityRewards: z.array(
+    z.strictObject({
+      facilityRewardId: uuidSchema,
+      promotionId: uuidSchema,
+      facilityProductId: uuidSchema,
+      quantity: z.number().int().positive().refine(safeInt),
+      expiresAt: isoDateTimeSchema.nullable(),
+    }),
+  ),
+});
+export type PromoApplicationRedeemedPayload = z.infer<
+  typeof promoApplicationRedeemedPayloadSchema
+>;
+
+/** A voided order gave its quota, budget, voucher and rewards back. */
+export const promoApplicationReleasedPayloadSchema = z.strictObject({
+  orderId: ulidIdSchema<"OrderId">(),
+  outletId: uuidSchema,
+  reason: z.string().min(1).max(300),
+  releasedDiscountIdr: nonnegativeIdr,
+  voucherIds: z.array(uuidSchema),
+  /** WS-09 revokes the entitlements issued for these rewards. */
+  facilityRewardIds: z.array(uuidSchema),
+});
+export type PromoApplicationReleasedPayload = z.infer<
+  typeof promoApplicationReleasedPayloadSchema
+>;
+
+/** A voucher was issued; the plain code is never part of an event. */
+export const voucherIssuedPayloadSchema = z.strictObject({
+  voucherId: uuidSchema,
+  promotionId: uuidSchema.nullable(),
+  customerProfileId: uuidSchema.nullable(),
+  source: voucherSourceSchema,
+  valueIdr: nonnegativeIdr.nullable(),
+  validFrom: isoDateTimeSchema,
+  validUntil: isoDateTimeSchema.nullable(),
+});
+export type VoucherIssuedPayload = z.infer<typeof voucherIssuedPayloadSchema>;
+
 const payloadSchemas: Record<
   CrmEventName,
   z.ZodType<Record<string, unknown>>
@@ -112,6 +193,10 @@ const payloadSchemas: Record<
   "points.redeemed": pointsRedeemedPayloadSchema,
   "points.expired": pointsExpiredPayloadSchema,
   "tier.changed": tierChangedPayloadSchema,
+  "promotion.updated": promotionUpdatedPayloadSchema,
+  "promo_application.redeemed": promoApplicationRedeemedPayloadSchema,
+  "promo_application.released": promoApplicationReleasedPayloadSchema,
+  "voucher.issued": voucherIssuedPayloadSchema,
 };
 
 /**
