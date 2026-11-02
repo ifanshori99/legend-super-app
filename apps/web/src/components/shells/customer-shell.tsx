@@ -5,7 +5,7 @@
 // more destinations gets a "Lainnya" sheet as the last slot (bead legend-oibk).
 // v3: page stays white (Legend); the active slot gets Metoric's active-nav
 // treatment as an accent-tint pill behind the icon (one accent detail, Q21).
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "cn";
 import { MoreHorizontal } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -62,6 +62,30 @@ function CountBadge({ count }: { count?: number }) {
   );
 }
 
+/** Clearance for the bar: one 64px slot row (slotClass `min-h-16`), the bar's
+ * 1px top border, and the device safe area it pads for. */
+const BAR_INSET = "calc(4rem + 1px + env(safe-area-inset-bottom))";
+
+// The Toaster renders its viewport at the app root (providers.tsx), outside
+// this shell's subtree, so an inline variable on the shell root would never
+// reach it. While a shell with a bottom bar is mounted the inset is written to
+// <html> and removed on unmount; management and ops shells never set it, so
+// they keep toast.tsx's 0px default. The counter keeps nested/preview shells
+// (a shell inside a preview of another shell) from clearing it too early.
+let barShells = 0;
+
+function useBarToastInset(active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    const root = document.documentElement;
+    if (barShells++ === 0)
+      root.style.setProperty("--toast-inset-bottom", BAR_INSET);
+    return () => {
+      if (--barShells === 0) root.style.removeProperty("--toast-inset-bottom");
+    };
+  }, [active]);
+}
+
 export function CustomerShell({
   brandName,
   logoUrl,
@@ -94,6 +118,7 @@ export function CustomerShell({
   const moreCount = overflow.reduce((sum, item) => sum + (item.count ?? 0), 0);
   const slots = primary.length + (overflow.length > 0 ? 1 : 0);
   const Main = embedded ? "div" : "main";
+  useBarToastInset(nav.length > 1);
   return (
     <ThemeScope
       density="hangat"
