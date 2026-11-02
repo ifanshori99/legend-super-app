@@ -58,10 +58,14 @@ export async function verifySessionMfa(email: string) {
   });
   try {
     const { rowCount } = await pool.query(
-      `UPDATE "session" SET mfa_verified_at = now()
+      // Stamp with the API clock, as identity-mfa.service does in production.
+      // The database clock (Colima VM) can run ahead of the API clock, and a
+      // verification dated in the future fails the role-grant re-auth age
+      // check (assertCanGrantRole: age >= 0) with REAUTH_REQUIRED (legend-p4ap).
+      `UPDATE "session" SET mfa_verified_at = $2
        WHERE revoked_at IS NULL
          AND user_id = (SELECT id FROM "user" WHERE email = $1)`,
-      [email],
+      [email, new Date()],
     );
     if (rowCount === 0) throw new Error(`No session for ${email}`);
   } finally {
