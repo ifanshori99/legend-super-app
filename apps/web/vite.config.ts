@@ -68,7 +68,20 @@ export default defineConfig(({ command, mode }) => {
     3000;
   return {
     envDir,
-    resolve: { tsconfigPaths: true },
+    resolve: {
+      tsconfigPaths: true,
+      // The demo photo map is swapped at build time (legend-6vki): mock/demo
+      // builds get the shared Unsplash map, a normal build an empty stub, so
+      // no `/sample/menu` path can enter the production bundle.
+      alias: {
+        "virtual:demo-photo-map": resolve(
+          import.meta.dirname,
+          demo
+            ? "src/lib/mock/demo-photos.ts"
+            : "src/lib/mock/demo-photos-empty.ts",
+        ),
+      },
+    },
     server: { port, strictPort: true },
     // True only while `vite dev` serves the app. Builds always report false,
     // which keeps pino's worker-thread transport (pino-pretty) out of the

@@ -12,7 +12,9 @@ downloaded once at 800 px on its long edge and re-encoded to stay at or below
 80 KB. They are demo fixtures only: they live outside `public/`, so a production
 build never copies them, and the name→photo map is compiled out of the client
 bundle. Production data never references these paths (a published menu item
-uses the outlet's own upload, owner Q23).
+uses the outlet's own upload, owner Q23). The public website demo reuses the
+same map and folder (bead legend-6vki), including the hero and gallery samples;
+its three earlier standalone JPGs were deleted.
 
 All photos are used under the [Unsplash License](https://unsplash.com/license).
 Photographer and source page per file:
@@ -26,6 +28,7 @@ Photographer and source page per file:
 | `ayam-geprek.jpg`       | Gennady Zakharin    | https://unsplash.com/photos/delicious-golden-fried-chicken-is-piled-on-a-plate-xdcr4Z-KTcU           |
 | `banana-bread.jpg`      | Cody Chan           | https://unsplash.com/photos/a-loaf-of-banana-bread-sitting-on-top-of-a-table-C0e3rplDKXg             |
 | `brownies.jpg`          | Mila                | https://unsplash.com/photos/stack-of-three-chocolate-brownies-on-a-plate-qY2aflptZMg                 |
+| `cafe-hero.jpg`         | clement proust      | https://unsplash.com/photos/modern-cafe-interior-with-tables-and-chairs-nD2kZmE6dMQ                  |
 | `burger.jpg`            | Amna Akram          | https://unsplash.com/photos/burger-dish-on-brown-copping-board--EadTPh9crA                           |
 | `cappuccino.jpg`        | Abbasali Fe         | https://unsplash.com/photos/cappuccino-latte-art-WDaN4s0w96Y                                         |
 | `carbonara.jpg`         | Chris Weiher        | https://unsplash.com/photos/spaghetti-carbonara-served-in-a-metal-pan-with-cheese-8sdRfiPf4Qo        |
@@ -68,4 +71,4 @@ Photographer and source page per file:
 
 `cappuccino.jpg`, `es-kopi-susu.jpg`, `mie-kuah.jpg`, `nasi-goreng.jpg` and
 `teh-melati.jpg` replaced the first uncredited samples of legend-h16t, so every
-photo added by this bead has a recorded photographer.
+photo in the folder has a recorded photographer.

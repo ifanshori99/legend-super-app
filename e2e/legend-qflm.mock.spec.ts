@@ -36,7 +36,7 @@ async function navigateClient(
 
 const SITE_TITLE = "Cafe Legend Bandung — Kopi & Dapur Nusantara";
 
-/** Demo photos live under public/sample/menu, served only in mock mode. */
+/** Demo photos are served from apps/web/demo, mock mode only (legend-6vki). */
 const DEMO_PHOTO = "/sample/menu/";
 
 test("F21 home shows the brand profile, hours, location, featured menu and promos", async ({

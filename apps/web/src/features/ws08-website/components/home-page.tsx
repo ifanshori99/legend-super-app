@@ -23,7 +23,7 @@ import {
   demoGalleryPhotos,
   demoHeroPhoto,
   demoMenuPhoto,
-} from "../lib/demo-media.ts";
+} from "@/lib/demo-media.ts";
 import { formatBusinessDate, formatHoursRange } from "../lib/hours.ts";
 import {
   AddressBlock,

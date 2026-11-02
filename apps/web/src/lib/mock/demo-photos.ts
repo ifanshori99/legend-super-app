@@ -91,3 +91,17 @@ export const demoPhotos: Record<string, string> = {
 export function demoMenuPhoto(name: string): string | null {
   return demoPhotos[name] ?? null;
 }
+
+/**
+ * Website demo hero: the cafe interior. The contract requires an https URL
+ * (`PublicSite.heroImages`), so the website overlays this local sample in mock
+ * mode instead of putting a relative path in the API payload.
+ */
+export function demoHeroPhoto(): string | null {
+  return "/sample/menu/cafe-hero.jpg";
+}
+
+/** Website demo gallery in display order (interior, then the coffee glass). */
+export function demoGalleryPhotos(): string[] {
+  return ["/sample/menu/cafe-hero.jpg", "/sample/menu/es-kopi-susu.jpg"];
+}
