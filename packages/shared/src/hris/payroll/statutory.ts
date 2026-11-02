@@ -225,7 +225,11 @@ export type TerParameters = z.infer<typeof terParametersSchema>;
 export const pph21AnnualParametersSchema = z.strictObject({
   /** Pasal 17 progressive brackets on annual taxable income (PKP). */
   brackets: rateBracketsSchema,
-  /** Biaya jabatan: rate of annual gross with an annual cap. */
+  /**
+   * Biaya jabatan: rate of annual gross with an annual cap. Always rounded
+   * DOWN to whole rupiah (fixed, not `roundingMode`): `roundingMode` applies to
+   * the tax amounts, and a rounded-down deduction never under-withholds.
+   */
   occupationalCostRateBp: basisPointsSchema,
   occupationalCostAnnualCapIdr: nonNegativeIdr,
   /** PKP is rounded down to this multiple before the brackets (e.g. 1,000). */

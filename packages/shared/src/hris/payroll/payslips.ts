@@ -26,6 +26,7 @@ import {
   decimal4Schema,
   uuidSchema,
   clientInputSchema,
+  idempotencyKeySchema,
   sumIdr,
 } from "../../core/index.ts";
 import type { Idr } from "../../core/index.ts";
@@ -265,6 +266,9 @@ export const payslipPinSchema = z
 
 export const viewMyPayslipInputSchema = clientInputSchema({
   pin: payslipPinSchema,
+  // A write (sets viewedAt, counts PIN attempts): retried with the same key,
+  // a network retry does not burn a second PIN attempt.
+  idempotencyKey: idempotencyKeySchema,
 });
 
 // ---- Run totals -----------------------------------------------------------

@@ -37,23 +37,42 @@ const dayOfMonth = z.number().int().min(1).max(28);
  * biweekly: 14-day periods counted from `anchorDate` (a period start).
  * daily: one-day periods for daily workers (pekerja harian).
  */
-export const payrollCycleSchema = z.discriminatedUnion("frequency", [
-  z.strictObject({
-    frequency: z.literal("monthly"),
-    cutoffDay: dayOfMonth.nullable(),
-    payDay: dayOfMonth.nullable(),
-    payMonthOffset: z.union([z.literal(0), z.literal(1)]),
-  }),
-  z.strictObject({
-    frequency: z.literal("biweekly"),
-    anchorDate: businessDateSchema,
-    payDaysAfterPeriodEnd: z.number().int().min(0).max(14),
-  }),
-  z.strictObject({
-    frequency: z.literal("daily"),
-    payDaysAfterPeriodEnd: z.number().int().min(0).max(7),
-  }),
-]);
+export const payrollCycleSchema = z
+  .discriminatedUnion("frequency", [
+    z.strictObject({
+      frequency: z.literal("monthly"),
+      cutoffDay: dayOfMonth.nullable(),
+      payDay: dayOfMonth.nullable(),
+      payMonthOffset: z.union([z.literal(0), z.literal(1)]),
+    }),
+    z.strictObject({
+      frequency: z.literal("biweekly"),
+      anchorDate: businessDateSchema,
+      payDaysAfterPeriodEnd: z.number().int().min(0).max(14),
+    }),
+    z.strictObject({
+      frequency: z.literal("daily"),
+      payDaysAfterPeriodEnd: z.number().int().min(0).max(7),
+    }),
+  ])
+  .superRefine((cycle, ctx) => {
+    // A monthly period with a cut-off ends on cutoffDay; paying in the same
+    // month on or before that day would pay before the period has closed
+    // (attendance and overtime not final). Pay later that month or next month.
+    if (
+      cycle.frequency === "monthly" &&
+      cycle.payMonthOffset === 0 &&
+      cycle.cutoffDay !== null &&
+      cycle.payDay !== null &&
+      cycle.payDay <= cycle.cutoffDay
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["payDay"],
+        message:
+          "With payMonthOffset 0 the pay day must fall after the cut-off day",
+      });
+  });
 export type PayrollCycle = z.infer<typeof payrollCycleSchema>;
 
 /**

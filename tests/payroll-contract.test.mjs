@@ -1353,6 +1353,20 @@ test("payroll cycles: monthly cut-off, biweekly anchor, daily; pay date never la
     payroll.payrollCycleSchema.safeParse({ ...monthly, cutoffDay: 31 }).success,
     false,
   );
+  // Same-month pay on or before the cut-off would pay before the period ends.
+  for (const payDay of [20, 25])
+    assert.equal(
+      payroll.payrollCycleSchema.safeParse({ ...monthly, payDay }).success,
+      false,
+    );
+  assert.equal(
+    payroll.payrollCycleSchema.safeParse({
+      ...monthly,
+      payDay: 5,
+      payMonthOffset: 1,
+    }).success,
+    true,
+  );
 });
 
 test("payroll events are catalogued (WS-10) and carry no per-employee salary", () => {
@@ -1405,6 +1419,14 @@ test("payroll endpoints: unique ids, strict bodies, tenant id rejected (TEN-02)"
   );
   assert.equal(
     payroll.viewMyPayslip.body.safeParse({ pin: "123456" }).success,
+    false,
+    "a PIN view is a write: it needs an idempotency key",
+  );
+  assert.equal(
+    payroll.viewMyPayslip.body.safeParse({
+      pin: "123456",
+      idempotencyKey: "payslip-view-0001",
+    }).success,
     true,
   );
   // The PWA list exposes no amounts before the PIN.
