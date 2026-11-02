@@ -57,7 +57,7 @@ export const opnameMessages = {
     type: "Jenis hitungan",
     blind: "Hitung buta",
     blindHint:
-      "Penghitung tidak melihat jumlah sistem selama menghitung (PRD §16).",
+      "Penghitung tidak melihat jumlah sistem selama menghitung.",
     businessDate: "Tanggal bisnis",
     businessDateHint: "Mengikuti zona waktu outlet.",
     items: "Item yang dihitung",
@@ -121,7 +121,7 @@ export const opnameMessages = {
       counting:
         "Masukkan jumlah fisik setiap baris. Setelah semua terisi, kirim untuk disetujui.",
       pending:
-        "Hitungan menunggu persetujuan orang lain sebelum penyesuaian dibukukan (INV-03).",
+        "Hitungan menunggu persetujuan orang lain sebelum penyesuaian dibukukan.",
       approved:
         "Sudah disetujui. Bukukan penyesuaian untuk menulis koreksi ke kartu stok.",
       posted: "Penyesuaian sudah dibukukan ke kartu stok.",
@@ -145,7 +145,7 @@ export const opnameMessages = {
       submitHint: "Hitungan dikunci sampai penyetuju memberi keputusan.",
       submitBlocked: "Isi jumlah fisik semua baris dulu sebelum mengirim.",
       approve: "Setujui hitungan",
-      approveHint: "Penyetuju harus orang lain dari penghitung (INV-03).",
+      approveHint: "Penyetuju harus orang lain dari penghitung.",
       reject: "Kembalikan untuk dihitung ulang",
       rejectHint: "Penghitung dapat memperbaiki baris lalu mengirim lagi.",
       post: "Bukukan penyesuaian",
