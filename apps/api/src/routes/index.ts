@@ -21,6 +21,7 @@ import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingRouter } from "./accounting.routes";
 import { approvalRouter } from "./platform-approval.routes";
+import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -74,3 +75,6 @@ apiRouter.use("/public/site", publicSiteRouter);
 apiRouter.use("/tax", taxRouter);
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
+// WS-08 promo engine shared by POS/QR/website (legend-7x4g).
+apiRouter.use("/promotions", promotionsRouter);
+apiRouter.use("/vouchers", vouchersRouter);

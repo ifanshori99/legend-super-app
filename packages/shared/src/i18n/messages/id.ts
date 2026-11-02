@@ -10,6 +10,7 @@ import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
+import { ownerDashboardMessages } from "./owner-dashboard.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -25,6 +26,8 @@ export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
   // beads never edit the same lines.
   login: loginMessages,
+  // Owner dashboard (PRD §3 F34), part 1 (legend-k8fk).
+  ownerDashboard: ownerDashboardMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
