@@ -1135,6 +1135,10 @@ const shiftAssignments: ShiftAssignment[] = [
   makeAssignment(18, 1014, 8002, weekOne, "published"),
   makeAssignment(19, 1014, 8002, dayTwo, "published"),
   makeAssignment(20, 1015, 8001, dayThree, "cancelled"),
+  // The employee PWA opens on the fixture "now" (2026-11-01T02:00Z = 09:00 WIB),
+  // so the Beranda has a shift in progress to show (PRD §3 "HRIS Self-Service
+  // Karyawan" — Beranda: jadwal hari ini).
+  makeAssignment(21, 1003, 8001, "2026-11-01", "published"),
 ];
 
 const shiftCompliancePolicy = shiftCompliancePolicySchema.parse({
