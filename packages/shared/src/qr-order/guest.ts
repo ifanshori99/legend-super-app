@@ -476,32 +476,6 @@ const itemOverlays: Record<string, ItemOverlay> = {
  */
 const soldOutNames = new Set(["Sup Buntut", "Cheesecake", "Mie Kuah"]);
 
-/**
- * Demo photos for the sample catalogue (DESIGN.md §4 "Media", owner Q24):
- * Unsplash-licensed images under `apps/web/public/sample/menu`, served only
- * while the demo runs on fixtures (the screen carries the "Contoh data"
- * label). Real outlets serve their own uploads, and the menu contract refuses
- * publishing an item without a photo (owner Q23), so this map is never
- * production data. An item that is not listed here keeps the designed
- * missing-photo state of MediaPlate (`missing="quiet"`).
- */
-const demoPhotos: Record<string, string> = {
-  // One latte-art cup stands in for the hot milk-espresso family, so the
-  // sample menu does not pretend to have eleven different photos.
-  Cappuccino: "/sample/menu/cappuccino.jpg",
-  "Cafe Latte": "/sample/menu/cappuccino.jpg",
-  "Flat White": "/sample/menu/cappuccino.jpg",
-  Piccolo: "/sample/menu/cappuccino.jpg",
-  Mocha: "/sample/menu/cappuccino.jpg",
-  "Caramel Latte": "/sample/menu/cappuccino.jpg",
-  "Vanilla Latte": "/sample/menu/cappuccino.jpg",
-  "Kopi Susu Aren": "/sample/menu/es-kopi-susu.jpg",
-  "Teh Tarik": "/sample/menu/teh-melati.jpg",
-  "Nasi Goreng Kampung": "/sample/menu/nasi-goreng.jpg",
-  "Nasi Goreng Ayam": "/sample/menu/nasi-goreng.jpg",
-  "Mie Kuah": "/sample/menu/mie-kuah.jpg",
-};
-
 const SUGAR_GROUP = fixtureId(4100);
 const TOPPING_GROUP = fixtureId(4401);
 const SPICE_GROUP = fixtureId(4402);
@@ -605,12 +579,20 @@ function zoneIsOpen(zone: FloorZone, at: Date): boolean {
 /**
  * Builds the public menu read model of one table from the menu contract
  * fixtures: channel prices, availability, and the presentation overlays above.
+ *
+ * `photoFor` is the mock/demo seam: the sample catalogue has no uploaded media,
+ * so the demo layer supplies its Unsplash samples by item name (owner Q17/Q24).
+ * A real build passes nothing and every item keeps the designed missing-photo
+ * state (`MediaPlate missing="quiet"`) until its upload exists (owner Q23).
  */
-export function buildQrMenu(input: {
-  table: Pick<Table, "id" | "code" | "capacity">;
-  zone: FloorZone;
-  at?: Date;
-}): QrMenu {
+export function buildQrMenu(
+  input: {
+    table: Pick<Table, "id" | "code" | "capacity">;
+    zone: FloorZone;
+    at?: Date;
+  },
+  options: { photoFor?: (itemName: string) => string | null } = {},
+): QrMenu {
   const menu = cafeLegendMenuFixtures;
   const { brand, outlets } = cafeLegendFixtures;
   const outlet = outlets[0];
@@ -662,7 +644,7 @@ export function buildQrMenu(input: {
         priceIdr: idr(base),
         labels: overlay.labels ?? item.labels,
         allergens: overlay.allergens ?? item.allergens,
-        photoUrl: demoPhotos[item.name] ?? null,
+        photoUrl: options.photoFor?.(item.name) ?? null,
         variants,
         modifierGroups: modifierGroupsFor(category.name, item.name),
         status: soldOut ? ("sold_out" as const) : ("available" as const),

@@ -39,6 +39,7 @@ import {
   type TableSessionView,
 } from "@starter/shared/qr-order";
 import { ApiError } from "../../lib/api/errors.ts";
+import { demoMenuPhoto } from "../../lib/mock/demo-photos.ts";
 import {
   createWs03Engine,
   type FloorSnapshot,
@@ -154,7 +155,10 @@ export function createEngine(
   const zoneOfTable = (table: Table) => floor.zoneOf(table);
   const menuOf = (session: TableSession): QrMenu => {
     const table = tableOfSession(session);
-    return buildQrMenu({ table, zone: zoneOfTable(table) });
+    return buildQrMenu(
+      { table, zone: zoneOfTable(table) },
+      { photoFor: demoMenuPhoto },
+    );
   };
 
   /** The session behind a guest call; closed sessions are gone for guests. */
@@ -241,7 +245,10 @@ export function createEngine(
   function scan(input: { qrToken: string; pax: number; deviceHash: string }) {
     const joined = floor.openOrJoinTableSession(input);
     callerParticipantId = joined.participant.id;
-    const menu = buildQrMenu({ table: joined.table, zone: joined.zone });
+    const menu = buildQrMenu(
+      { table: joined.table, zone: joined.zone },
+      { photoFor: demoMenuPhoto },
+    );
     const session = joined.session;
     return {
       outcome: joined.outcome,
@@ -263,7 +270,12 @@ export function createEngine(
 
   function menuFor(qrToken: string): QrMenu {
     const table = floor.tableForToken(qrToken);
-    return clone(buildQrMenu({ table, zone: zoneOfTable(table) }));
+    return clone(
+      buildQrMenu(
+        { table, zone: zoneOfTable(table) },
+        { photoFor: demoMenuPhoto },
+      ),
+    );
   }
 
   // ---- Cart -------------------------------------------------------------------
