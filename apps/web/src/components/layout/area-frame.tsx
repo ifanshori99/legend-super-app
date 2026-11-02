@@ -22,6 +22,7 @@ import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
+import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's
@@ -94,6 +95,9 @@ export function AreaFrame({
           </>
         }
       >
+        {/* PRD §3 F6: management sessions end after 30 idle minutes; the
+            warning rides the management shell so every screen shows it. */}
+        <IdleSessionWarning />
         {body}
       </ManagementShell>
     );

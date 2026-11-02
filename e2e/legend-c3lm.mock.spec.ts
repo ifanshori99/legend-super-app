@@ -41,7 +41,16 @@ test("member navigates points, missions, vouchers, visits and favorites (LOY-03)
   await expect(page.getByRole("heading", { name: "Poin saya" })).toBeVisible();
   await expect(page.getByText("Riwayat poin")).toBeVisible();
 
-  await page.getByRole("link", { name: "Misi" }).click();
+  // Misi sits in the "Lainnya" sheet: the bar is capped at five slots
+  // (DESIGN.md v2 §5, bead legend-oibk). The sheet is client-only, so retry
+  // until hydration has taken over the button.
+  await page.waitForFunction(() => Boolean(window.__TSR_ROUTER__));
+  const more = page.getByRole("button", { name: "Lainnya" });
+  await expect(async () => {
+    await more.click();
+    await expect(page.getByRole("dialog")).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 20_000 });
+  await page.getByRole("dialog").getByRole("link", { name: "Misi" }).click();
   await expect(page.getByRole("heading", { name: "Misi saya" })).toBeVisible();
   await expect(page.getByText("Stamp Card 10 Kopi")).toBeVisible();
 

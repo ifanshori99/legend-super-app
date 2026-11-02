@@ -8,6 +8,13 @@ import type { AreaAccess } from "./access.ts";
 import { AREAS, type AreaKey } from "./definitions.ts";
 import { holdsAny } from "./guard.ts";
 
+/**
+ * Management sidebar groups (DESIGN.md v2 §5, owner Q28), in display order.
+ * Items without a group sit first, under the area index.
+ */
+export const NAV_GROUPS = ["operations", "finance", "team"] as const;
+export type NavGroup = (typeof NAV_GROUPS)[number];
+
 export type AreaNavEntry = {
   readonly area: AreaKey;
   readonly labelKey: MessageKey;
@@ -18,6 +25,8 @@ export type AreaNavEntry = {
   readonly order?: number;
   /** Hide the item unless the visitor holds one of these (UI only). */
   readonly anyPermission?: readonly PermissionCode[];
+  /** Sidebar group in the management shell; other shells ignore it. */
+  readonly group?: NavGroup;
 };
 
 export type ResolvedNavItem = {
@@ -25,7 +34,35 @@ export type ResolvedNavItem = {
   href: string;
   icon: LucideIcon;
   current: boolean;
+  /** Translated group label; consecutive items share one heading. */
+  group?: string;
 };
+
+/**
+ * Bottom nav slots (DESIGN.md v2 §5: CustomerShell keeps ≤5 items, 64px, safe
+ * area). A sixth destination squeezes every label on a 390px phone, so the
+ * shell shows the first four and moves the rest into a "Lainnya" sheet
+ * (bead legend-oibk).
+ */
+export const BOTTOM_NAV_MAX_SLOTS = 5;
+
+/** First `maxSlots - 1` items stay in the bar; the rest go behind "Lainnya". */
+export function splitBottomNav<T>(
+  items: readonly T[],
+  maxSlots: number = BOTTOM_NAV_MAX_SLOTS,
+): { primary: readonly T[]; overflow: readonly T[] } {
+  if (maxSlots < 2)
+    throw new RangeError("splitBottomNav needs room for one item plus More");
+  if (items.length <= maxSlots) return { primary: items, overflow: [] };
+  return {
+    primary: items.slice(0, maxSlots - 1),
+    overflow: items.slice(maxSlots - 1),
+  };
+}
+
+function groupRank(entry: AreaNavEntry): number {
+  return entry.group ? NAV_GROUPS.indexOf(entry.group) + 1 : 0;
+}
 
 function matches(pathname: string, to: string): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
@@ -56,7 +93,10 @@ export function buildAreaNav(input: {
     .filter(
       (entry) => !entry.anyPermission || holdsAny(access, entry.anyPermission),
     )
-    .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
+    .sort(
+      (a, b) =>
+        groupRank(a) - groupRank(b) || (a.order ?? 100) - (b.order ?? 100),
+    );
   const current = visible
     .filter((entry) => matches(pathname, entry.to))
     .reduce<AreaNavEntry | null>(
@@ -69,5 +109,6 @@ export function buildAreaNav(input: {
     href: entry.to,
     icon: entry.icon,
     current: entry === current,
+    ...(entry.group ? { group: t(`nav.group.${entry.group}`) } : {}),
   }));
 }

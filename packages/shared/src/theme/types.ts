@@ -8,6 +8,10 @@ export const COLOR_TOKENS = [
   "background",
   "foreground",
   "card",
+  // Surface ladder (DESIGN.md v2 §6): page = background, then a band/canvas
+  // step and a raised step. Neutral, not tenant-overridable.
+  "surface-2",
+  "surface-3",
   "muted",
   "muted-foreground",
   "secondary",

@@ -2,8 +2,9 @@ import { Coins, Gift, Target, Ticket } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Customer bottom navigation (max 5 items incl. the area index): the member
-// PWA's four daily screens. Visits and favorites stay one tap away from the
-// overview so the bar does not overflow on a 360px phone.
+// PWA's daily screens. Points, rewards and vouchers are the three the bar
+// keeps next to Beranda; missions, facilities and Wi-Fi sit in the "Lainnya"
+// sheet (DESIGN.md v2 §5, bead legend-oibk).
 const nav: AreaNavEntry[] = [
   {
     area: "customer",
@@ -21,16 +22,16 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "customer",
-    labelKey: "member.nav.missions",
-    to: "/member/misi",
-    icon: Target,
+    labelKey: "member.nav.vouchers",
+    to: "/member/voucher",
+    icon: Ticket,
     order: 30,
   },
   {
     area: "customer",
-    labelKey: "member.nav.vouchers",
-    to: "/member/voucher",
-    icon: Ticket,
+    labelKey: "member.nav.missions",
+    to: "/member/misi",
+    icon: Target,
     order: 40,
   },
 ];

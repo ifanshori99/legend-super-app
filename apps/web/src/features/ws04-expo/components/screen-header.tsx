@@ -1,5 +1,7 @@
-// Page header shared by the two kitchen screens: title, the one-line purpose,
-// the screen switch, when the board was last read, and the manual refresh.
+// Toolbar shared by the two kitchen screens: the screen switch (a tab group),
+// when the board was last read, and the manual refresh. The OperationsShell
+// status bar already names the area, so the screen title is carried by the tab
+// group and repeated only for screen readers — no second visible page title.
 import type { ReactNode } from "react";
 import { RotateCw } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -28,14 +30,18 @@ export function KitchenScreenHeader({
   const t = useT();
   return (
     <header className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-xl leading-7 font-bold">{title}</h1>
-          <p className="max-w-prose text-sm leading-5 text-muted-foreground">
-            {intro}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-start gap-2">
+      {/* The tab group shows the screen name; the heading stays for the
+          document outline and screen readers (DESIGN.md §5: no duplicate
+          page title when the shell and the tab group already name the view). */}
+      <h1 className="sr-only">{title}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <KitchenScreenNav current={current} />
+        <div className="flex flex-wrap items-center gap-2">
+          {updatedAt && (
+            <p className="text-sm leading-5 text-muted-foreground tabular">
+              {t("expo.updatedAt", { time: formatOutletTime(updatedAt) })}
+            </p>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -48,14 +54,9 @@ export function KitchenScreenHeader({
           {actions}
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <KitchenScreenNav current={current} />
-        {updatedAt && (
-          <p className="text-sm leading-5 text-muted-foreground tabular">
-            {t("expo.updatedAt", { time: formatOutletTime(updatedAt) })}
-          </p>
-        )}
-      </div>
+      <p className="max-w-prose text-sm leading-5 text-muted-foreground">
+        {intro}
+      </p>
     </header>
   );
 }

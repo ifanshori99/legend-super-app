@@ -23,7 +23,8 @@ import {
   pollWhatsAppChallenge,
 } from "../services/identity-login.service";
 import { processInboundWhatsApp } from "../services/identity-wa-inbound.service";
-import { agent, originHeader } from "./helpers";
+import { whatsAppDigest } from "../lib/identity-digest.ts";
+import { agent, originHeader, signUp } from "./helpers";
 
 const SECRET = "test-kirim-webhook-secret";
 const fixtures = cafeLegendPlatformFixtures;
@@ -253,6 +254,225 @@ describe("WhatsApp reverse-OTP login", () => {
     // And a different browser never could, even holding the challenge id.
     const thief = agent(app);
     expect((await thief.get(path)).status).toBe(403);
+  });
+
+  it("AUTH-07 links a verified number to the current account without issuing a new session", async () => {
+    const browser = agent(app);
+    await signUp(browser);
+    const before = await browser.get("/api/auth/get-session");
+    const issued = await browser
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    expect(issued.status).toBe(201);
+    const { challenge, codeFormatted } = issued.body.data;
+    const delivered = await postWebhook(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${codeFormatted}`,
+      }),
+    );
+    expect(delivered.body.data.completed).toBe(1);
+    const polled = await browser.get(
+      `/api/auth/login-challenges/${challenge.id}`,
+    );
+    expect(polled.body.data.challenge.status).toBe("completed");
+    expect(polled.body.data.session).toBeNull();
+    const after = await browser.get("/api/auth/get-session");
+    expect(after.body.user.id).toBe(before.body.user.id);
+    expect(after.body.session.id).toBe(before.body.session.id);
+    const identity = await owner.query(
+      "SELECT user_id FROM user_identities WHERE type = 'whatsapp'",
+    );
+    expect(identity.rows).toEqual([{ user_id: before.body.user.id }]);
+    const audit = await owner.query(
+      "SELECT count(*)::int AS count FROM audit_logs WHERE event->>'action' = 'identity.linked' AND event->>'actorId' = $1",
+      [before.body.user.id],
+    );
+    const events = await owner.query(
+      "SELECT count(*)::int AS count FROM domain_event_outbox WHERE event->>'name' = 'identity.linked' AND event->'payload'->>'userId' = $1",
+      [before.body.user.id],
+    );
+    expect(audit.rows[0].count).toBe(1);
+    expect(events.rows[0].count).toBe(1);
+  });
+
+  it("AUTH-07 verifies an existing unverified WhatsApp identity on the same account", async () => {
+    const browser = agent(app);
+    await signUp(browser);
+    const current = await browser.get("/api/auth/get-session");
+    await owner.query(
+      "INSERT INTO user_identities (user_id, type, value_hash, verified_at) VALUES ($1, 'whatsapp', $2, NULL)",
+      [current.body.user.id, await whatsAppDigest(SENDER)],
+    );
+    const issued = await browser
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    const delivered = await postWebhook(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+      }),
+    );
+    expect(delivered.body.data.completed).toBe(1);
+    const rows = await owner.query(
+      "SELECT user_id, verified_at FROM user_identities WHERE user_id = $1",
+      [current.body.user.id],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0].verified_at).toBeTruthy();
+  });
+
+  it("AUTH-07 rejects a number already linked to another account", async () => {
+    const first = agent(app);
+    await signUp(first);
+    const issued = await first
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    await postWebhook(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+      }),
+    );
+    const second = agent(app);
+    await signUp(second);
+    const other = await second
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    const rejected = await postWebhook(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${other.body.data.codeFormatted}`,
+      }),
+    );
+    expect(rejected.body.data.completed).toBe(0);
+    const rows = await owner.query(
+      "SELECT count(*)::int AS count FROM user_identities WHERE type = 'whatsapp'",
+    );
+    expect(rows.rows[0].count).toBe(1);
+    const conflict = await second.get(
+      `/api/auth/login-challenges/${other.body.data.challenge.id}`,
+    );
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error.code).toBe("IDENTITY_ALREADY_LINKED");
+  });
+
+  it("AUTH-07 refuses linking after the initiating session is revoked", async () => {
+    const browser = agent(app);
+    await signUp(browser);
+    const current = await browser.get("/api/auth/get-session");
+    const issued = await browser
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    await owner.query("DELETE FROM session WHERE id = $1", [
+      current.body.session.id,
+    ]);
+    const rejected = await postWebhook(
+      loginMessage({
+        eventId: `wamid.${randomUUID()}`,
+        text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+      }),
+    );
+    expect(rejected.body.data.completed).toBe(0);
+    expect(
+      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
+        .rows[0].count,
+    ).toBe(0);
+  });
+
+  it("AUTH-02 rejects a provider id replayed with different content", async () => {
+    const eventId = `wamid.${randomUUID()}`;
+    expect(
+      (
+        await postWebhook(
+          loginMessage({ eventId, text: "MASUK LEGEND AAAAAA00" }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await postWebhook(
+          loginMessage({ eventId, text: "MASUK LEGEND AAAAAA01" }),
+        )
+      ).status,
+    ).toBe(409);
+  });
+
+  it("AUTH-02 treats a redelivery of a pre-fingerprint claim as a duplicate", async () => {
+    const eventId = `wamid.${randomUUID()}`;
+    const body = loginMessage({ eventId, text: "MASUK LEGEND AAAAAA02" });
+    expect((await postWebhook(body)).status).toBe(200);
+    // Rows claimed before migration 0029 have no request_hash.
+    await owner.query(
+      "UPDATE wa_inbound_messages SET request_hash = NULL WHERE provider_message_id = $1",
+      [eventId],
+    );
+    const replay = await postWebhook(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.duplicates).toBe(1);
+  });
+
+  it("AUTH-02 rolls back a failed link claim and retries the same delivery once", async () => {
+    const browser = agent(app);
+    await signUp(browser);
+    const issued = await browser
+      .post("/api/auth/login-challenges/whatsapp")
+      .set(originHeader)
+      .send({});
+    const message = {
+      eventId: `wamid.${randomUUID()}`,
+      receivingNumber: NUMBER_A,
+      sender: SENDER,
+      text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
+    };
+    await expect(
+      processInboundWhatsApp(message, {
+        afterLinkWrite: async () => {
+          throw new Error("injected failure");
+        },
+      }),
+    ).rejects.toThrow("injected failure");
+    expect(
+      (
+        await owner.query(
+          "SELECT count(*)::int AS count FROM wa_inbound_messages",
+        )
+      ).rows[0].count,
+    ).toBe(0);
+    expect(
+      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
+        .rows[0].count,
+    ).toBe(0);
+    expect((await processInboundWhatsApp(message)).kind).toBe("login");
+    expect((await processInboundWhatsApp(message)).duplicate).toBe(true);
+    expect(
+      (await owner.query("SELECT count(*)::int AS count FROM user_identities"))
+        .rows[0].count,
+    ).toBe(1);
+  });
+
+  it("AUTH-04 serializes concurrent messages from one sender at the ten-attempt limit", async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        processInboundWhatsApp({
+          eventId: `wamid.${randomUUID()}`,
+          receivingNumber: NUMBER_A,
+          sender: SENDER,
+          text: `MASUK LEGEND AAAA${i.toString().padStart(4, "0")}`,
+        }),
+      ),
+    );
+    expect(
+      outcomes.filter((outcome) => outcome.kind === "rejected"),
+    ).toHaveLength(10);
+    expect(
+      outcomes.filter((outcome) => outcome.kind === "rate_limited"),
+    ).toHaveLength(10);
   });
 
   it("AUTH-01 stores only keyed digests, never the code or the raw number", async () => {

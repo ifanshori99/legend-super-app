@@ -4,12 +4,14 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ShoppingBasket } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTableJourney } from "../../context";
 import { useChangeCartLine, useRemoveCartLine } from "../../hooks";
 import { Notice } from "../notice";
@@ -39,9 +41,12 @@ export function CartPage() {
 
   const heading = (
     <header className="grid gap-1">
-      <h1 className="text-3xl leading-9 font-bold tracking-tight">
-        {t("qrCart.cart.title")}
-      </h1>
+      <div className="flex items-center gap-2">
+        <h1 className="text-3xl leading-9 font-bold tracking-tight">
+          {t("qrCart.cart.title")}
+        </h1>
+        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+      </div>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("qrCart.cart.sharedHint")}
       </p>
@@ -81,7 +86,13 @@ export function CartPage() {
           <span className="sr-only">{t("qrCart.cart.loading")}</span>
           <Skeleton className="h-9 w-1/2" />
           {[0, 1, 2].map((key) => (
-            <Skeleton key={key} className="h-28 w-full rounded-2xl" />
+            <div key={key} className="flex gap-3 py-4">
+              <Skeleton className="size-[72px] shrink-0 rounded-media" />
+              <div className="grid flex-1 content-start gap-2">
+                <Skeleton className="h-5 w-2/3" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            </div>
           ))}
         </div>
       </div>
@@ -138,11 +149,15 @@ export function CartPage() {
         />
       ) : (
         <>
-          <ul className="grid gap-3">
+          <ul className="divide-y">
             {lines.map((line) => (
               <CartLineRow
                 key={line.id}
                 line={line}
+                photoUrl={
+                  menu?.items.find((item) => item.id === line.menuItemId)
+                    ?.photoUrl ?? null
+                }
                 soldOut={soldOutIds.has(line.menuItemId)}
                 mine={
                   line.addedByParticipantId === null || participantId === null
