@@ -66,6 +66,40 @@ test("member profile DTO never exposes the WhatsApp hash (PRD F3, §6.G.18)", ()
   assert.equal(f.profiles[0].whatsappHash.length, 64);
 });
 
+test("member overview carries tier progress and versioned consents (PRD §3.20)", () => {
+  const overview = f.memberOverview;
+  assert.equal(Object.hasOwn(overview.profile, "whatsappHash"), false);
+  assert.equal(overview.currentTier.id, f.profiles[0].tierId);
+  assert.equal(overview.nextTier, null); // Platinum is the highest tier
+  assert.equal(overview.tierProgressBp, 10_000);
+  assert.equal(overview.rollingSpendIdr, overview.profile.lifetimeSpendIdr);
+  assert.ok(overview.consents.length > 0);
+  assert.equal(
+    crm.memberOverviewSchema.safeParse({ ...overview, tierProgressBp: 10_001 })
+      .success,
+    false,
+  );
+});
+
+test("member visits and favorites are read-only, newest first (PRD §3.20)", () => {
+  const visits = f.memberVisits;
+  const favorites = f.memberFavorites;
+  for (let index = 1; index < visits.length; index += 1)
+    assert.ok(
+      Date.parse(visits[index - 1].visitedAt) >=
+        Date.parse(visits[index].visitedAt),
+      "visits are newest first",
+    );
+  for (let index = 1; index < favorites.length; index += 1)
+    assert.ok(favorites[index - 1].quantity >= favorites[index].quantity);
+  assert.equal(
+    crm.customerVisitSchema.safeParse({ ...visits[0], spendIdr: -1 }).success,
+    false,
+  );
+  assert.equal(crm.listMemberVisits.body, undefined);
+  assert.equal(crm.listMemberFavorites.body, undefined);
+});
+
 // ---- LOY-01 ---------------------------------------------------------------
 
 test("LOY-01 ledger is append-only and the balance always equals its sum", () => {
@@ -880,7 +914,7 @@ test("CRM events are registered in the WS-00 catalog with typed payloads (PRD §
 // ---- Endpoints ------------------------------------------------------------
 
 test("CRM endpoints are unique, typed and tenant-free client input (docs/frontend.md)", () => {
-  assert.equal(crm.crmEndpoints.length, 39);
+  assert.equal(crm.crmEndpoints.length, 42);
   const ids = crm.crmEndpoints.map((endpoint) => endpoint.id);
   assert.equal(new Set(ids).size, ids.length);
   for (const endpoint of crm.crmEndpoints) {
@@ -905,6 +939,16 @@ test("CRM endpoint contracts accept fixtures and reject tenant input (TEN-02)", 
     }),
   );
   assert.ok(crm.getCustomer360.response.parse({ data: f.customer360 }));
+  assert.ok(crm.getMemberOverview.response.parse({ data: f.memberOverview }));
+  assert.ok(
+    crm.listMemberVisits.response.parse({
+      data: f.memberVisits,
+      meta: { limit: 25, nextCursor: null },
+    }),
+  );
+  assert.ok(
+    crm.listMemberFavorites.response.parse({ data: f.memberFavorites }),
+  );
   assert.ok(
     crm.listFeedback.response.parse({
       data: f.feedback,
