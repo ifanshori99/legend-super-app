@@ -41,11 +41,15 @@ export function MenuTabs({ active }: { active: MenuSection }) {
       {TABS.map((tab) => {
         // Each screen names its own section. A pathname prefix match marked
         // "Item" current on every /kelola/menu/* page (review legend-cyu.12).
+        // Exact matching also stops the router from adding its own
+        // aria-current to the parent "Item" link on a child section, which
+        // left two current tabs in the same nav (legend-jda7).
         const current = tab.key === active;
         return (
           <Link
             key={tab.key}
             to={tab.to}
+            activeOptions={{ exact: true }}
             // On 390px the strip scrolls; keep the current tab in view.
             ref={
               current

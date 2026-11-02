@@ -42,10 +42,13 @@ import {
   campaignSchema,
   campaignStatusSchema,
   customer360Schema,
+  customerFavoriteItemSchema,
+  customerVisitSchema,
   feedbackActionSchema,
   feedbackKindSchema,
   feedbackSchema,
   feedbackStatusSchema,
+  memberOverviewSchema,
   missionWithProgressSchema,
   segmentDefinitionSchema,
   segmentPreviewSchema,
@@ -89,6 +92,12 @@ export const getMemberProfile = defineEndpoint({
   response: dataResponseSchema(customerProfileDtoSchema),
 });
 
+export const getMemberOverview = defineEndpoint({
+  method: "GET",
+  path: "/api/member/overview",
+  response: dataResponseSchema(memberOverviewSchema),
+});
+
 export const listMemberPoints = defineEndpoint({
   method: "GET",
   path: "/api/member/points",
@@ -126,6 +135,19 @@ export const listMemberVouchers = defineEndpoint({
   path: "/api/member/vouchers",
   query: cursorPageQuerySchema,
   response: page(voucherDtoSchema),
+});
+
+export const listMemberVisits = defineEndpoint({
+  method: "GET",
+  path: "/api/member/visits",
+  query: cursorPageQuerySchema,
+  response: page(customerVisitSchema),
+});
+
+export const listMemberFavorites = defineEndpoint({
+  method: "GET",
+  path: "/api/member/favorites",
+  response: dataResponseSchema(z.array(customerFavoriteItemSchema)),
 });
 
 export const updateMemberConsentInputSchema = clientInputSchema({
@@ -500,11 +522,14 @@ export const updateFeedback = defineEndpoint({
 /** Every CRM endpoint, for route registration and mock coverage checks. */
 export const crmEndpoints = [
   getMemberProfile,
+  getMemberOverview,
   listMemberPoints,
   listMemberRewards,
   redeemReward,
   listMemberMissions,
   listMemberVouchers,
+  listMemberVisits,
+  listMemberFavorites,
   updateMemberConsent,
   submitFeedback,
   listCustomers,
@@ -543,11 +568,14 @@ export const crmEndpoints = [
 /** Convenience aliases used by feature mocks and query keys. */
 export const memberEndpoints = {
   getMemberProfile,
+  getMemberOverview,
   listMemberPoints,
   listMemberRewards,
   redeemReward,
   listMemberMissions,
   listMemberVouchers,
+  listMemberVisits,
+  listMemberFavorites,
   updateMemberConsent,
   submitFeedback,
 } as const;

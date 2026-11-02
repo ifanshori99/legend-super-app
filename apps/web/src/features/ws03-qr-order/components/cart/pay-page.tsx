@@ -9,11 +9,11 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
+import { QrCode } from "@/components/ui/qr-code";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
 import { useGuestPayment, useRefreshSession } from "../../hooks";
-import { QrCodeImage } from "./qr-code";
 
 function timeOf(iso: string): string {
   const d = new Date(new Date(iso).getTime() + 7 * 3_600_000);
@@ -163,12 +163,14 @@ export function PayPage({ paymentId }: { paymentId: string }) {
           <h2 className="text-lg leading-7 font-semibold">
             {t("qrCart.pay.qrisTitle")}
           </h2>
-          <QrCodeImage
-            payload={payment.qrisPayload}
+          <QrCode
+            value={payment.qrisPayload}
             label={t("qrCart.pay.qrisAlt", {
               amount: formatRupiah(payment.amountIdr),
             })}
-            className="size-64"
+            margin={3}
+            svgClassName="size-full"
+            className="size-64 rounded-xl border p-2"
           />
           <p className="max-w-xs text-sm leading-5 text-muted-foreground">
             {t("qrCart.pay.qrisHint")}

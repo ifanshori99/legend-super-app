@@ -599,6 +599,32 @@ test("FAC-12 every full Rp30.000 of paid spend adds an hour and an account may h
   );
 });
 
+test("FAC-12: the quota refresh body is empty and rejects a client-supplied same-day spend", () => {
+  assert.equal(facility.refreshWifiQuota.method, "POST");
+  assert.equal(
+    facility.refreshWifiQuota.path,
+    "/api/wifi/sessions/current/refresh",
+  );
+  // The API derives spend from the account's settled payments; an empty body
+  // is the only accepted request.
+  assert.deepEqual(Object.keys(facility.refreshWifiQuotaSchema.shape), []);
+  assert.equal(facility.refreshWifiQuotaSchema.safeParse({}).success, true);
+  // A guest posting their own spend would raise their own quota.
+  const inflated = facility.refreshWifiQuotaSchema.safeParse({
+    sameDaySpendIdr: 90_000,
+  });
+  assert.equal(inflated.success, false);
+  assert.equal(
+    inflated.error.issues.some((issue) => issue.code === "unrecognized_keys"),
+    true,
+  );
+  assert.equal(
+    facility.refreshWifiQuotaSchema.safeParse({ sameDaySpendIdr: 0 }).success,
+    false,
+  );
+  assert.equal(facility.refreshWifiQuota.body, facility.refreshWifiQuotaSchema);
+});
+
 test("FAC-13 a spent quota throttles to the base speed and never disconnects", () => {
   assert.deepEqual(facility.wifiSpeedTierSchema.options, ["full", "base"]);
   assert.equal(facility.wifiSpeedTier(119, 120), "full");

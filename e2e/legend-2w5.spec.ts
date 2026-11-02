@@ -4,17 +4,18 @@
 // VITE_API_MOCK=true, so this spec runs against a mock dev server instead:
 //
 //   WEB_URL=http://localhost:3200 VITE_API_MOCK=true pnpm --filter @starter/web dev
-//   WS05_MOCK_URL=http://localhost:3200 pnpm exec playwright test e2e/legend-2w5.spec.ts
+//   LEGEND_MOCK_WEB_URL=http://localhost:3200 pnpm exec playwright test e2e/legend-2w5.spec.ts
 //
-// It skips (instead of failing) when WS05_MOCK_URL is unset, so the standard
-// runner stays green. Test names carry the acceptance IDs.
+// `pnpm test:e2e:mock` starts that server and sets LEGEND_MOCK_WEB_URL itself
+// (WS05_MOCK_URL still works). It skips (instead of failing) when neither is
+// set, so the standard runner stays green. Test names carry the acceptance IDs.
 import { expect, test } from "@playwright/test";
 
-const MOCK_URL = process.env.WS05_MOCK_URL;
+const MOCK_URL = process.env.LEGEND_MOCK_WEB_URL ?? process.env.WS05_MOCK_URL;
 
 test.skip(
   !MOCK_URL,
-  "Set WS05_MOCK_URL to a VITE_API_MOCK=true dev server to run the payment spec.",
+  "Set LEGEND_MOCK_WEB_URL to a VITE_API_MOCK=true dev server to run the payment spec.",
 );
 
 // Demo links from @starter/shared/payment fixtures (see features/ws05-payment/mock.ts).

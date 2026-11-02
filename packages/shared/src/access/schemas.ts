@@ -94,6 +94,19 @@ export const listRoleAssignmentsQuerySchema = cursorPageQuerySchema.extend({
 
 export const roleAssignmentListItemSchema = roleAssignmentSchema;
 
+/**
+ * GET /api/me/access (bead legend-t4y7): the signed-in account's effective
+ * permissions in the resolved tenant, plus `users.mfa_required` (§6 B) and
+ * whether this session passed a second factor (AUTH-05). Presentation and
+ * route-guard data only; the API authorizes every request again.
+ */
+export const myAccessViewSchema = z.strictObject({
+  permissions: z.array(tenantPermissionCodeSchema),
+  mfaRequired: z.boolean(),
+  mfaVerified: z.boolean(),
+});
+export type MyAccessView = z.infer<typeof myAccessViewSchema>;
+
 /** Upsert one matrix row. */
 export const upsertApprovalPolicySchema = clientInputSchema({
   actionType: approvalActionTypeSchema,
