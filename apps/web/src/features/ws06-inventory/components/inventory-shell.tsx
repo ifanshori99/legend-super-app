@@ -30,6 +30,27 @@ const TABS = [
     labelKey: "inventory.tabs.transfers",
     to: "/kelola/inventori/transfer",
   },
+  // Stock control (legend-vxj): stock card, balances & par, expiry, AI-08.
+  {
+    key: "stock",
+    labelKey: "inventoryStock.tabs.stock",
+    to: "/kelola/inventori/stok",
+  },
+  {
+    key: "balances",
+    labelKey: "inventoryStock.tabs.balances",
+    to: "/kelola/inventori/saldo",
+  },
+  {
+    key: "expiry",
+    labelKey: "inventoryStock.tabs.expiry",
+    to: "/kelola/inventori/kedaluwarsa",
+  },
+  {
+    key: "suggestions",
+    labelKey: "inventoryStock.tabs.suggestions",
+    to: "/kelola/inventori/saran",
+  },
 ] as const;
 
 export type InventorySection = (typeof TABS)[number]["key"];

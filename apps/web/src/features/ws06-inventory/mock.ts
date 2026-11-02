@@ -17,7 +17,9 @@ import {
 } from "@starter/shared/core";
 import {
   cafeLegendInventoryFixtures,
+  cafeLegendPurchasingFixtures,
   createInventoryItem,
+  createPurchaseRequest,
   createInventoryItemAlternate,
   createStockLocation,
   createStockTransfer,
@@ -30,11 +32,17 @@ import {
   inventoryItemSchema,
   listInventoryItemAlternates,
   listInventoryItems,
+  listParLevels,
   listStockBalances,
+  listStockBatches,
+  listStockLedger,
   listStockLocations,
   listStockTransfers,
   listUomConversions,
   listUoms,
+  purchaseRequestDetailSchema,
+  purchaseRequestLineSchema,
+  purchaseRequestSchema,
   stockBalanceSchema,
   stockLedgerEntrySchema,
   stockLocationSchema,
@@ -44,14 +52,20 @@ import {
   updateStockLocation,
   type InventoryItem,
   type InventoryItemAlternate,
+  type PurchaseRequest,
+  type PurchaseRequestDetail,
+  type PurchaseRequestLine,
   type StockBalance,
   type StockLedgerEntry,
   type StockLocation,
   type StockTransfer,
   type UomConversion,
 } from "@starter/shared/inventory";
+import { businessDateOf } from "./stock-lib.ts";
 
 const fixtures = cafeLegendInventoryFixtures;
+const inventory = cafeLegendInventoryFixtures;
+const purchasing = cafeLegendPurchasingFixtures;
 const uoms = fixtures.uoms;
 const tenantId = fixtures.items[0].tenantId;
 const fixtureOutletId = fixtures.locations[0].outletId;
@@ -472,4 +486,119 @@ registerMock(createStockTransfer, ({ body }) => {
     return created;
   });
   return { data: transfer };
+});
+
+// ---- Stock control (legend-vxj): par levels, batches, stock card, AI-08 ----
+// The stock card reads the same mutable ledger the transfer handler appends
+// to, so a transfer made in mock mode shows up on the stock card.
+
+registerMock(listParLevels, ({ query, scenario }) =>
+  paginateFixture(
+    inventory.parLevels.filter(
+      (level) =>
+        level.outletId === query.outletId &&
+        (!query.locationId || level.locationId === query.locationId) &&
+        (!query.inventoryItemId ||
+          level.inventoryItemId === query.inventoryItemId),
+    ),
+    query,
+    (level) => level.id,
+    scenario,
+  ),
+);
+
+registerMock(listStockBatches, ({ query, scenario }) =>
+  paginateFixture(
+    inventory.batches.filter(
+      (batch) =>
+        batch.outletId === query.outletId &&
+        (!query.locationId || batch.locationId === query.locationId) &&
+        (!query.inventoryItemId ||
+          batch.inventoryItemId === query.inventoryItemId) &&
+        (!query.expiresOnOrBefore ||
+          (batch.expiresOn !== null &&
+            batch.expiresOn <= query.expiresOnOrBefore)),
+    ),
+    query,
+    (batch) => batch.id,
+    scenario,
+  ),
+);
+
+// The stock card reads newest first, the way the API orders a ledger scan;
+// business-date filters use the outlet time zone (D-CORE-6).
+registerMock(listStockLedger, ({ query, scenario }) => {
+  const rows = state()
+    .ledger.filter(
+      (entry) =>
+        entry.outletId === query.outletId &&
+        (!query.locationId || entry.locationId === query.locationId) &&
+        (!query.inventoryItemId ||
+          entry.inventoryItemId === query.inventoryItemId) &&
+        (!query.movementType || entry.movementType === query.movementType) &&
+        (!query.fromDate ||
+          businessDateOf(entry.occurredAt) >= query.fromDate) &&
+        (!query.toDate || businessDateOf(entry.occurredAt) <= query.toDate),
+    )
+    .sort(
+      (a, b) =>
+        b.occurredAt.localeCompare(a.occurredAt) || b.id.localeCompare(a.id),
+    );
+  return paginateFixture(rows, query, (entry) => entry.id, scenario);
+});
+
+// ---- Draft purchase request (AI-08 suggestions → PR, PRD §4 Alur I) ------
+
+type PurchaseRequestState = {
+  requests: PurchaseRequest[];
+  lines: PurchaseRequestLine[];
+  /** Idempotency: the API returns the first result for a repeated key. */
+  byKey: Record<string, PurchaseRequestDetail>;
+};
+
+const purchaseRequestStore = createMockStore<PurchaseRequestState>(() => ({
+  requests: [...purchasing.purchaseRequests],
+  lines: [...purchasing.purchaseRequestLines],
+  byKey: {},
+}));
+
+registerMock(createPurchaseRequest, ({ body }) => {
+  const state = purchaseRequestStore.get();
+  const existing = state.byKey[body.idempotencyKey];
+  if (existing) return { data: existing };
+
+  // The server fills requester and tenant from the session (TEN-02); the mock
+  // reuses the fixture requester so the response parses like a real one.
+  const now = new Date().toISOString();
+  const request = purchaseRequestSchema.parse({
+    id: crypto.randomUUID(),
+    tenantId: purchasing.purchaseRequests[0].tenantId,
+    outletId: body.outletId,
+    requestedBy: purchasing.purchaseRequests[0].requestedBy,
+    status: "draft",
+    neededBy: body.neededBy,
+    note: body.note ?? null,
+    decidedBy: null,
+    decidedAt: null,
+    decisionNote: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const lines = body.lines.map((line) =>
+    purchaseRequestLineSchema.parse({
+      id: crypto.randomUUID(),
+      tenantId: request.tenantId,
+      purchaseRequestId: request.id,
+      inventoryItemId: line.inventoryItemId,
+      quantity: line.quantity,
+      uomId: line.uomId,
+    }),
+  );
+  const detail = purchaseRequestDetailSchema.parse({ request, lines });
+  purchaseRequestStore.set({
+    requests: [request, ...state.requests],
+    lines: [...state.lines, ...lines],
+    byKey: { ...state.byKey, [body.idempotencyKey]: detail },
+  });
+  return { data: detail };
 });
