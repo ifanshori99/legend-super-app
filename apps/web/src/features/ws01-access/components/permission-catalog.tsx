@@ -67,7 +67,7 @@ export function PermissionChecklist({
                     <label
                       key={permission.code}
                       htmlFor={id}
-                      className="flex min-h-control-sm cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors duration-(--duration-fast) hover:bg-accent"
+                      className="flex min-h-control-sm cursor-pointer items-start gap-2 rounded-control px-2 py-1.5 transition-colors duration-(--duration-fast) hover:bg-surface-2"
                     >
                       <Checkbox
                         id={id}

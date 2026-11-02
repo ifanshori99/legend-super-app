@@ -14,40 +14,38 @@ export function NotificationCenter() {
   const unread = unreadCount.data?.data.unread ?? 0;
 
   return (
-    <section aria-labelledby="notification-title" className="grid gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="grid min-w-0 gap-1">
-          <h2 id="notification-title" className="sr-only">
-            {t("notification.title")}
-          </h2>
-          <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
-            {t("notification.subtitle")}
-          </p>
-        </div>
-        {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
-      </div>
+    <section
+      aria-labelledby="notification-title"
+      className="grid grid-cols-[minmax(0,1fr)] gap-5"
+    >
+      <h2 id="notification-title" className="sr-only">
+        {t("notification.title")}
+      </h2>
 
       <Tabs defaultValue="inbox">
-        <TabsList>
-          <TabsTrigger value="inbox">
-            <Inbox aria-hidden="true" />
-            {t("notification.tabs.inbox")}
-            {unread > 0 && (
-              <>
-                <Badge tone="solid" aria-hidden="true">
-                  {unread}
-                </Badge>
-                <span className="sr-only">
-                  {t("notification.inbox.unreadCount", { count: unread })}
-                </span>
-              </>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="preferences">
-            <SlidersHorizontal aria-hidden="true" />
-            {t("notification.tabs.preferences")}
-          </TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center gap-2">
+          <TabsList>
+            <TabsTrigger value="inbox">
+              <Inbox aria-hidden="true" />
+              {t("notification.tabs.inbox")}
+              {unread > 0 && (
+                <>
+                  <Badge tone="solid" aria-hidden="true">
+                    {unread}
+                  </Badge>
+                  <span className="sr-only">
+                    {t("notification.inbox.unreadCount", { count: unread })}
+                  </span>
+                </>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="preferences">
+              <SlidersHorizontal aria-hidden="true" />
+              {t("notification.tabs.preferences")}
+            </TabsTrigger>
+          </TabsList>
+          {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
+        </div>
         <TabsContent value="inbox">
           <InboxPanel />
         </TabsContent>

@@ -72,12 +72,16 @@ test.describe("legend-e5z7 · kelola page gutter", () => {
     await open(page, "/kelola/menu");
     const metrics = await page.evaluate((selector) => {
       const content = document.querySelector(selector);
-      const heading = document.querySelector("#main-content h1");
-      if (!content || !heading) throw new Error("content or heading missing");
+      if (!content) throw new Error("shell content missing");
+      // v3 (legend-tqnd): the page title moved into the ManagementShell
+      // topbar, so measure the first thing the page frame renders instead.
+      const frame = content.lastElementChild;
+      const first = frame?.firstElementChild ?? frame;
+      if (!first) throw new Error("page frame missing");
       return {
         gutter: parseFloat(getComputedStyle(content).paddingLeft),
         offset:
-          heading.getBoundingClientRect().left -
+          first.getBoundingClientRect().left -
           content.getBoundingClientRect().left,
       };
     }, CONTENT);
