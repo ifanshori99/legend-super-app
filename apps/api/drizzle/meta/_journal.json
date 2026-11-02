@@ -267,6 +267,13 @@
       "when": 1793656730329,
       "tag": "0037_approval_requests_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793657884070,
+      "tag": "0038_approval_pending_by_module",
+      "breakpoints": true
     }
   ]
 }

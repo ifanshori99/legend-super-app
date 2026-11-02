@@ -665,11 +665,57 @@ describe("legend-y5q decisions (AUTH-06, MCP-04)", () => {
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
+
+  it("legend-y5q a hand-made inbox request never blocks the module's own approval for the same object", async () => {
+    const target = objectId();
+    // The inbox lets a user pick any objectId; it opens first.
+    const inbox = await openRequired({
+      sourceModule: "inbox",
+      actionType: "void",
+      requestedBy: users.cashier,
+      objectId: target,
+    });
+    const module = await openRequired({
+      actionType: "void",
+      requestedBy: users.cashier,
+      objectId: target,
+    });
+    expect(module.chainId).not.toBe(inbox.chainId);
+    // Still one pending request per (source module, action, object).
+    await expect(
+      open({
+        sourceModule: "inbox",
+        actionType: "void",
+        requestedBy: users.cashier,
+        objectId: target,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("legend-y5q a decision key reused on another level of the same chain is refused", async () => {
+    const opened = await openRequired({
+      actionType: "refund",
+      requestedBy: users.cashier,
+      amountIdr: 750_000,
+    });
+    const key = `decide-${randomUUID()}`;
+    await decide(users.supervisor, opened.request.id, "approved", { key });
+    const rows = await chain(opened.chainId);
+    expect(rows.map((row) => [row.level, row.status])).toEqual([
+      [1, "approved"],
+      [2, "pending"],
+    ]);
+    await expect(
+      decide(users.supervisor, rows[1]!.id, "approved", { key }),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
+    expect((await chain(opened.chainId))[1]?.status).toBe("pending");
+  });
 });
 
 /** Blocks until a cancellation is queued behind another transaction's row lock. */
 async function waitForApprovalLockWaiter(): Promise<void> {
-  for (let attempt = 0; attempt < 120; attempt++) {
+  // ~10 s budget: generous under CI load; the wait itself is not timing-based.
+  for (let attempt = 0; attempt < 400; attempt++) {
     const { rows } = await owner.query<{ waiting: number }>(
       `SELECT count(*)::int AS waiting FROM pg_stat_activity
        WHERE datname = current_database() AND state = 'active'

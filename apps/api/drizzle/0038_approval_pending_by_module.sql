@@ -1,0 +1,2 @@
+DROP INDEX "approval_requests_one_pending_key";--> statement-breakpoint
+CREATE UNIQUE INDEX "approval_requests_one_pending_key" ON "approval_requests" USING btree ("tenant_id","source_module","action_type","object_type","object_id") WHERE "approval_requests"."status" = 'pending';

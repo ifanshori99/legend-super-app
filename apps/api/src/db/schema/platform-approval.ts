@@ -113,10 +113,18 @@ export const approvalRequests = pgTable(
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
-    // One open level per (action, object): a second concurrent request for
-    // the same thing is refused instead of opening a parallel chain.
+    // One open level per (source module, action, object): a second concurrent
+    // request for the same thing is refused instead of opening a parallel
+    // chain. Scoped by source module so an inbox request (client-chosen
+    // objectId) can never block a module's own approval for the object.
     uniqueIndex("approval_requests_one_pending_key")
-      .on(table.tenantId, table.actionType, table.objectType, table.objectId)
+      .on(
+        table.tenantId,
+        table.sourceModule,
+        table.actionType,
+        table.objectType,
+        table.objectId,
+      )
       .where(sql`${table.status} = 'pending'`),
     uniqueIndex("approval_requests_create_key")
       .on(table.tenantId, table.requestedBy, table.createIdempotencyKey)

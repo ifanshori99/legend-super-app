@@ -27,9 +27,11 @@
 // - `approval.request.decide` permission over the same target.
 // Races: every mutation of a chain locks its level-1 row (FOR UPDATE), so two
 // concurrent approvals of one level produce exactly one decision; the partial
-// unique index allows one pending level per (action, object), and an advisory
-// lock serialises creation for one object. Idempotency keys are bound to a
-// request fingerprint (IDEMPOTENCY_KEY_REUSED on a different body).
+// unique index allows one pending level per (source module, action, object),
+// and an advisory lock serialises creation for one object. Idempotency keys are
+// bound to a request fingerprint (IDEMPOTENCY_KEY_REUSED on a different body);
+// a decision key is scoped per chain + approver, so reusing it on another
+// level of the same chain is refused too.
 // Deadline (§3 F7 "dengan batas waktu"): the worker sweep expires a pending
 // level after its deadline — fail closed, the action stays blocked — and the
 // source module plus the notification stream receive `approval.resolved`
@@ -585,10 +587,12 @@ export async function openApprovalRequest(
   if (requiredLevels < 1 || requiredLevels > APPROVAL_MAX_LEVELS)
     throw new AccessError("APPROVAL_POLICY_MISSING");
 
-  // One open request per (action, object): serialise creation for the object,
-  // then refuse a duplicate instead of opening a parallel chain.
+  // One open request per (source module, action, object): serialise creation
+  // for the object, then refuse a duplicate instead of opening a parallel
+  // chain. Scoped by source module so a hand-made inbox request (client-chosen
+  // objectId) can never block a module's own approval for the same object.
   await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`approval-object:${context.tenant.tenantId}:${input.actionType}:${objectType}:${objectId}`}, 0))`,
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`approval-object:${context.tenant.tenantId}:${input.sourceModule}:${input.actionType}:${objectType}:${objectId}`}, 0))`,
   );
   const [pending] = await tx
     .select({ id: approvalRequests.id })
@@ -596,6 +600,7 @@ export async function openApprovalRequest(
     .where(
       and(
         eq(approvalRequests.tenantId, context.tenant.tenantId),
+        eq(approvalRequests.sourceModule, input.sourceModule),
         eq(approvalRequests.actionType, input.actionType),
         eq(approvalRequests.objectType, objectType),
         eq(approvalRequests.objectId, objectId),
@@ -1005,6 +1010,21 @@ export async function decideApprovalRequest(
     const rows = await chainRows(tx, found.chainId);
     const row = rows.find((candidate) => candidate.id === requestId);
     if (!row) throw notFound();
+    // A decision key belongs to one level: reusing it on another level of the
+    // same chain (same approver) is a different request, not a replay.
+    if (
+      key !== null &&
+      rows.some(
+        (candidate) =>
+          candidate.id !== row.id &&
+          candidate.decisionIdempotencyKey === key &&
+          candidate.decidedBy?.toLowerCase() === approverId.toLowerCase(),
+      )
+    )
+      throw new CoreError(
+        "IDEMPOTENCY_KEY_REUSED",
+        "Idempotency key already used for a different decision.",
+      );
 
     // Idempotent replay: same body (and key, if any) → the stored decision.
     if (row.status !== "pending") {
