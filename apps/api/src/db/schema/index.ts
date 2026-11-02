@@ -26,3 +26,5 @@ export * from "./accounting";
 export * from "./identity";
 // WS-05 versioned tax / service-charge rules, calculation options, snapshots.
 export * from "./tax";
+
+export * from "./payment-admin";
