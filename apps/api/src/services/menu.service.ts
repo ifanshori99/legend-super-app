@@ -33,7 +33,10 @@ import {
 import {
   categorySchema,
   comboSchema,
+  MENU_PHOTO_REQUIRED_MESSAGE,
+  menuErrorHttpStatus,
   menuItemAdminSchema,
+  menuItemPhotoMissing,
   menuItemSchema,
   menuItemUpdatedEvent,
   menuUpdatedEvent,
@@ -895,6 +898,15 @@ async function requireStationOfBrand(
     );
 }
 
+/** Q23: an item without a photo can never be active (published). */
+function throwPhotoRequired(): never {
+  throw new HttpError(
+    menuErrorHttpStatus.MENU_PHOTO_REQUIRED,
+    "MENU_PHOTO_REQUIRED",
+    MENU_PHOTO_REQUIRED_MESSAGE,
+  );
+}
+
 async function requireMedia(
   tx: Tx,
   context: ScopedTenantContext,
@@ -1017,6 +1029,9 @@ export async function createItem(
     if (input.stationId)
       await requireStationOfBrand(tx, context, input.stationId, brandId);
     if (input.mediaId) await requireMedia(tx, context, input.mediaId);
+    // Q23: every item needs a photo. Creating one as active without a photo is
+    // the publish action and is refused; without `isActive` it is a draft.
+    if (menuItemPhotoMissing(input)) throwPhotoRequired();
     const sortOrder =
       input.sortOrder ??
       (await nextItemSortOrder(tx, context, input.categoryId));
@@ -1108,6 +1123,22 @@ export async function updateItem(
       );
     if (input.mediaId !== undefined && input.mediaId !== null)
       await requireMedia(tx, context, input.mediaId);
+    // Q23: activation and photo removal are the two writes that could publish
+    // an item without a photo. Check the state *after* this patch, so
+    // "mediaId + isActive in one request" is allowed. A legacy active item
+    // without a photo stays editable (only these two explicit writes fail) and
+    // can never be re-activated.
+    const resultIsActive = input.isActive ?? existing.isActive;
+    const resultMediaId =
+      input.mediaId !== undefined ? input.mediaId : existing.mediaId;
+    if (
+      menuItemPhotoMissing({
+        isActive: resultIsActive,
+        mediaId: resultMediaId,
+      }) &&
+      (input.isActive === true || input.mediaId === null)
+    )
+      throwPhotoRequired();
     const [row] = await tx
       .update(menuItems)
       .set({

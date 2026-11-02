@@ -182,6 +182,36 @@ function page(response: { body: unknown }) {
   };
 }
 
+/**
+ * Uploads a real menu photo through the storage fake and answers its media id
+ * (Q23: an item needs a photo before it can be active). The actor must hold
+ * menu.item.manage at an outlet it reaches.
+ */
+async function menuPhoto(actorUserId: string): Promise<string> {
+  const context = establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+  const png = await sharp({
+    create: { width: 8, height: 8, channels: 3, background: "#ffffff" },
+  })
+    .png()
+    .toBuffer();
+  const uploaded = await uploadMenuPhoto(
+    context,
+    actorUserId,
+    {
+      fileName: "foto.png",
+      contentType: "image/png",
+      dataBase64: png.toString("base64"),
+      width: 8,
+      height: 8,
+    },
+    { storage: new FakeObjectStorage() },
+  );
+  return uploaded.mediaId;
+}
+
 describe("legend-lmk menu API", () => {
   it("rejects anonymous callers, missing permissions and strict extra fields", async () => {
     expect((await agent(app).get("/api/menu/categories")).status).toBe(401);
@@ -277,7 +307,8 @@ describe("legend-lmk menu API", () => {
       brandId,
       categoryId,
       type: "single",
-      isActive: true,
+      // Q23: an item without a photo starts as a draft, never as published.
+      isActive: false,
       mediaUrl: null,
     });
 
@@ -370,10 +401,15 @@ describe("legend-lmk menu API", () => {
         name: `Ketersediaan ${randomBytes(2).toString("hex")}`,
       });
     const categoryId = data(category).id as string;
-    const item = await client
-      .post("/api/menu/items")
-      .set(originHeader)
-      .send({ brandId, categoryId, name: "Espresso Uji" });
+    // Q23: a restore republishes the item, so this one carries its photo.
+    const mediaId = await menuPhoto(userId);
+    const item = await client.post("/api/menu/items").set(originHeader).send({
+      brandId,
+      categoryId,
+      name: "Espresso Uji",
+      mediaId,
+      isActive: true,
+    });
     const itemId = data(item).id as string;
 
     const list = page(
@@ -980,5 +1016,228 @@ describe("legend-lmk menu API", () => {
         height: 8,
       });
     expect(unavailable.status).toBe(503);
+  });
+});
+
+// Owner decision Q23 (2026-11-02): every menu item must have a photo — no
+// placeholder in production. `isActive` is the published flag, so an item can
+// only be active (created active, activated, or restored from 86) with a
+// `mediaId`. Existing rows without a photo stay readable and editable; they
+// just cannot be published again.
+describe("legend-pnsa · Q23 menu item photo", () => {
+  async function owner() {
+    const { client, userId } = await menuClient("owner", {
+      type: "tenant",
+      id: null,
+    });
+    createdUserIds.push(userId);
+    return { client, userId };
+  }
+
+  async function categoryOf(
+    client: ReturnType<typeof agent>,
+    label: string,
+  ): Promise<string> {
+    const category = await client
+      .post("/api/menu/categories")
+      .set(originHeader)
+      .send({ brandId, name: `${label} ${randomBytes(2).toString("hex")}` });
+    return data(category).id as string;
+  }
+
+  it("Q23 MENU_PHOTO_REQUIRED: an item cannot be created active without a photo", async () => {
+    const { client, userId } = await owner();
+    const categoryId = await categoryOf(client, "Foto Buat");
+
+    const refused = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({ brandId, categoryId, name: "Tanpa Foto", isActive: true });
+    expect(refused.status).toBe(422);
+    expect(body(refused).error).toMatchObject({ code: "MENU_PHOTO_REQUIRED" });
+
+    // The default is a draft: the import template has no photo column, so
+    // imported rows must not become published items.
+    const draft = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({ brandId, categoryId, name: "Draf" });
+    expect(draft.status).toBe(201);
+    expect(data(draft)).toMatchObject({ isActive: false, mediaId: null });
+
+    // A media id outside this tenant is invisible under RLS: 404, no oracle.
+    const foreignPhoto = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({
+        brandId,
+        categoryId,
+        name: "Foto Asing",
+        mediaId: randomUUID(),
+        isActive: true,
+      });
+    expect(foreignPhoto.status).toBe(404);
+
+    const mediaId = await menuPhoto(userId);
+    const published = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({
+        brandId,
+        categoryId,
+        name: "Dengan Foto",
+        mediaId,
+        isActive: true,
+      });
+    expect(published.status).toBe(201);
+    expect(data(published)).toMatchObject({ isActive: true, mediaId });
+  });
+
+  it("Q23 update: activation and photo removal are refused; deactivate first", async () => {
+    const { client, userId } = await owner();
+    const categoryId = await categoryOf(client, "Foto Ubah");
+    const created = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({ brandId, categoryId, name: "Aktivasi Uji" });
+    const itemId = data(created).id as string;
+
+    const activated = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ isActive: true });
+    expect(activated.status).toBe(422);
+    expect(body(activated).error).toMatchObject({
+      code: "MENU_PHOTO_REQUIRED",
+    });
+
+    // Photo and activation in one request is one valid publish.
+    const mediaId = await menuPhoto(userId);
+    const published = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ mediaId, isActive: true });
+    expect(published.status).toBe(200);
+    expect(data(published)).toMatchObject({ isActive: true, mediaId });
+
+    const stripped = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ mediaId: null });
+    expect(stripped.status).toBe(422);
+    expect(body(stripped).error).toMatchObject({ code: "MENU_PHOTO_REQUIRED" });
+
+    // Deactivating in the same request is allowed, and the item is a draft.
+    const deactivated = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ mediaId: null, isActive: false });
+    expect(deactivated.status).toBe(200);
+    expect(data(deactivated)).toMatchObject({ isActive: false, mediaId: null });
+
+    const again = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ isActive: true });
+    expect(again.status).toBe(422);
+  });
+
+  it("Q23 legacy: an active item without a photo stays readable and editable but cannot be published again", async () => {
+    const { client, userId } = await owner();
+    const categoryId = await categoryOf(client, "Foto Lama");
+    const itemId = randomUUID();
+    const availabilityId = randomUUID();
+    await asOwnerTenant(tenantId, async (db) => {
+      await db.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, 'Item Lama', true, NULL)`,
+        [itemId, tenantId, brandId, categoryId],
+      );
+      await db.query(
+        `INSERT INTO item_availability (id, tenant_id, outlet_id, menu_item_id)
+         VALUES ($1, $2, $3, $4)`,
+        [availabilityId, tenantId, outletA, itemId],
+      );
+    });
+
+    // Reads and unrelated edits keep working.
+    expect((await client.get(`/api/menu/items/${itemId}`)).status).toBe(200);
+    const list = page(
+      await client.get(
+        `/api/menu/items?limit=100&brandId=${brandId}&search=Item%20Lama`,
+      ),
+    );
+    expect(list.data.some((row) => row.id === itemId)).toBe(true);
+    expect(
+      (
+        await client
+          .patch(`/api/menu/items/${itemId}`)
+          .set(originHeader)
+          .send({ name: "Item Lama Baru" })
+      ).status,
+    ).toBe(200);
+
+    // Publishing it again is refused, both by the item write and by 86 restore.
+    const activated = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ isActive: true });
+    expect(activated.status).toBe(422);
+    expect(body(activated).error).toMatchObject({
+      code: "MENU_PHOTO_REQUIRED",
+    });
+    const soldOut = await client
+      .post(`/api/menu/availability/${availabilityId}/status`)
+      .set(originHeader)
+      .send({ action: "sell_out", idempotencyKey: `86-${randomUUID()}` });
+    expect(soldOut.status).toBe(200);
+    const restore = await client
+      .post(`/api/menu/availability/${availabilityId}/status`)
+      .set(originHeader)
+      .send({ action: "restore", idempotencyKey: `86-${randomUUID()}` });
+    expect(restore.status).toBe(422);
+    expect(body(restore).error).toMatchObject({ code: "MENU_PHOTO_REQUIRED" });
+
+    // With a photo, restore works again.
+    const mediaId = await menuPhoto(userId);
+    expect(
+      (
+        await client
+          .patch(`/api/menu/items/${itemId}`)
+          .set(originHeader)
+          .send({ mediaId })
+      ).status,
+    ).toBe(200);
+    const restored = await client
+      .post(`/api/menu/availability/${availabilityId}/status`)
+      .set(originHeader)
+      .send({ action: "restore", idempotencyKey: `86-${randomUUID()}` });
+    expect(restored.status).toBe(200);
+    expect(data(restored).status).toBe("available");
+  });
+
+  it("Q23 TEN-03: an outlet manager cannot activate a brand item", async () => {
+    const { client: admin } = await owner();
+    const categoryId = await categoryOf(admin, "Foto Izin");
+    const created = await admin
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({ brandId, categoryId, name: "Item Izin" });
+    const itemId = data(created).id as string;
+
+    const manager = await menuClient("outlet_manager", {
+      type: "outlet",
+      id: outletA,
+    });
+    createdUserIds.push(manager.userId);
+    const attempt = await manager.client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ isActive: true });
+    // Item writes are brand-owned: an outlet-scoped manager has no brand reach.
+    expect(attempt.status).toBe(403);
+    expect(data(await admin.get(`/api/menu/items/${itemId}`))).toMatchObject({
+      isActive: false,
+    });
   });
 });

@@ -3,7 +3,7 @@
 // variant and modifier sections. Saves through the typed endpoints.
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, CircleAlert } from "lucide-react";
 import { z } from "zod";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { ApiError } from "@/lib/api/errors";
-import type { MenuItemAdmin } from "@starter/shared/menu";
+import {
+  menuItemPhotoMissing,
+  updateItemInputSchema,
+  type MenuItemAdmin,
+} from "@starter/shared/menu";
 import {
   useCategories,
   useCreateItem,
@@ -70,6 +74,8 @@ type FormValues = {
   image: MenuImageValue | null;
 };
 
+type ItemPatch = z.input<typeof updateItemInputSchema>;
+
 function initialValues(item: MenuItemAdmin | null): FormValues {
   return {
     name: item?.name ?? "",
@@ -80,12 +86,48 @@ function initialValues(item: MenuItemAdmin | null): FormValues {
     course: item?.course ?? NONE,
     labels: item?.labels ?? [],
     allergens: item?.allergens ?? [],
-    isActive: item?.isActive ?? true,
+    // Q23: a new item starts as a draft; it needs its photo before it can be
+    // shown in the menu (the API refuses an active item without a photo).
+    isActive: item?.isActive ?? false,
     image:
       item?.mediaId && item.mediaUrl
         ? { mediaId: item.mediaId, mediaUrl: item.mediaUrl }
         : null,
   };
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length && left.every((value, i) => value === right[i])
+  );
+}
+
+/**
+ * Only the fields the manager changed. The API refuses a write that would
+ * publish an item without a photo (Q23), and re-sending an unchanged
+ * `isActive: true` for an existing item is a publish: a legacy item without a
+ * photo must stay editable for everything else.
+ */
+function itemPatch(values: FormValues, item: MenuItemAdmin): ItemPatch {
+  const initial = initialValues(item);
+  const patch: ItemPatch = {};
+  if (values.name.trim() !== initial.name) patch.name = values.name.trim();
+  if (values.categoryId !== initial.categoryId)
+    patch.categoryId = values.categoryId;
+  if (values.description !== initial.description)
+    patch.description = values.description;
+  if (values.type !== initial.type) patch.type = values.type;
+  if (values.stationId !== initial.stationId)
+    patch.stationId = values.stationId === NONE ? null : values.stationId;
+  if (values.course !== initial.course)
+    patch.course = values.course === NONE ? null : values.course;
+  if (!sameList(values.labels, initial.labels)) patch.labels = values.labels;
+  if (!sameList(values.allergens, initial.allergens))
+    patch.allergens = values.allergens;
+  if ((values.image?.mediaId ?? null) !== (initial.image?.mediaId ?? null))
+    patch.mediaId = values.image?.mediaId ?? null;
+  if (values.isActive !== initial.isActive) patch.isActive = values.isActive;
+  return patch;
 }
 
 export function ItemEditorPage({ itemId }: { itemId: string }) {
@@ -205,6 +247,26 @@ function ItemEditor({
       : [...list, value];
   }
 
+  /** Q23: the item would be published without its mandatory photo. */
+  const photoRequired = menuItemPhotoMissing({
+    isActive: values.isActive,
+    mediaId: values.image?.mediaId ?? null,
+  });
+  const patch = item ? itemPatch(values, item) : null;
+  /**
+   * Q23: mirror of the API refusal — only a write that publishes (activation,
+   * or clearing the photo of an active item) is blocked. A legacy active item
+   * without a photo stays editable for everything else.
+   */
+  const publishBlocked = (() => {
+    if (!item || !patch) return photoRequired;
+    if (patch.isActive !== true && patch.mediaId !== null) return false;
+    return menuItemPhotoMissing({
+      isActive: patch.isActive ?? item.isActive,
+      mediaId: patch.mediaId !== undefined ? patch.mediaId : item.mediaId,
+    });
+  })();
+
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const parsed = schema.safeParse(values);
@@ -217,6 +279,13 @@ function ItemEditor({
     }
     setErrors({});
     setFormError(undefined);
+    // Q23: the photo is mandatory before an item can be shown in the menu, so
+    // this publish is blocked here instead of bouncing off the API.
+    if (publishBlocked) {
+      setTab("content");
+      setFormError(t("menu.editor.photoRequiredHint"));
+      return;
+    }
     const body = {
       name: parsed.data.name,
       categoryId: parsed.data.categoryId,
@@ -229,6 +298,12 @@ function ItemEditor({
       mediaId: values.image?.mediaId ?? null,
       isActive: values.isActive,
     };
+    const onError = (error: unknown) =>
+      setFormError(
+        error instanceof ApiError && error.code === "MENU_PHOTO_REQUIRED"
+          ? t("menu.editor.photoRequiredHint")
+          : t("menu.errors.saveFailed"),
+      );
     if (!itemId) {
       createItem.mutate(body, {
         onSuccess: (result) => {
@@ -238,17 +313,17 @@ function ItemEditor({
             params: { itemId: result.data.id },
           });
         },
-        onError: () => setFormError(t("menu.errors.saveFailed")),
+        onError,
       });
       return;
     }
     updateItem.mutate(
-      { itemId, body },
+      { itemId, body: patch ?? body },
       {
         onSuccess: () => {
           toast({ title: t("menu.editor.updatedToast"), tone: "success" });
         },
-        onError: () => setFormError(t("menu.errors.saveFailed")),
+        onError,
       },
     );
   }
@@ -491,6 +566,29 @@ function ItemEditor({
                     value={values.image}
                     onChange={(image) => update({ image })}
                   />
+                  {/* Q23: "Tampil di menu" needs the photo, so the reason is
+                      stated where the manager can fix it. A legacy active row
+                      keeps the note as a warning: it is readable and editable,
+                      but it cannot be published again until it has a photo. */}
+                  {photoRequired && (
+                    <p
+                      role={publishBlocked ? "alert" : undefined}
+                      className={
+                        publishBlocked
+                          ? "flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
+                          : "flex items-start gap-1.5 text-sm leading-5 text-warning"
+                      }
+                    >
+                      <CircleAlert
+                        className="mt-0.5 size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {t("menu.editor.photoRequired")}.{" "}
+                        {t("menu.editor.photoRequiredHint")}
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-start justify-between gap-3 border-t pt-4">
                   <div className="min-w-0">
