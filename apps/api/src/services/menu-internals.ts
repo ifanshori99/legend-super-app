@@ -3,7 +3,16 @@
 // pagination and the media-URL port. Not a public service surface — the
 // routers call menu.service.ts and menu-pricing.service.ts.
 
-import { and, asc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
@@ -26,6 +35,7 @@ import {
   brands,
   coreStorageObjects,
   domainEventOutbox,
+  menuItems,
   outlets,
 } from "../db/schema";
 import { HttpError } from "../lib/http-error";
@@ -639,6 +649,18 @@ export function pageOf<Row, Dto>(
 /** Escape LIKE wildcards so a search term matches literally. */
 export function likePattern(search: string): string {
   return `%${search.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+}
+
+// ---------------------------------------------------------------- guest reads
+
+/**
+ * Q23 (legend-qf0i): the SQL form of `menuItemVisibleToGuests` — a guest read
+ * only sees an active row that carries a photo. Legacy rows created before the
+ * rule stay in the back office (which does not use this condition) and never
+ * reach a public payload: QR order menu, POS item picker, website online menu.
+ */
+export function guestMenuItemCondition(): SQL {
+  return and(eq(menuItems.isActive, true), isNotNull(menuItems.mediaId)) as SQL;
 }
 
 // ---------------------------------------------------------------- media

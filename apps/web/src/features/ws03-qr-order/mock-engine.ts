@@ -17,6 +17,7 @@ import {
   computeQuote,
   GOOGLE_REVIEW_MIN_RATING,
   guestOrderIssueFixtures,
+  hidePhotoLessMenuItems,
   pointClaimFixture,
   qrOrderFixtures as F,
   quoteConfigForZone,
@@ -24,6 +25,7 @@ import {
   tableSessionTokenExpiresAt,
   type BillSplit,
   type CartLine,
+  type FloorZone,
   type GuestOrderIssue,
   type GuestPayment,
   type GuestPaymentMethod,
@@ -38,8 +40,13 @@ import {
   type TableSession,
   type TableSessionView,
 } from "@starter/shared/qr-order";
+import {
+  legacyPhotoMissingItem,
+  legacyPhotoMissingPrice,
+} from "@starter/shared/menu";
 import { ApiError } from "../../lib/api/errors.ts";
 import { demoMenuPhoto } from "../../lib/mock/demo-photos.ts";
+import { getScenario } from "../../lib/mock/control.ts";
 import {
   createWs03Engine,
   type FloorSnapshot,
@@ -137,6 +144,43 @@ function isActive(session: TableSession): boolean {
 }
 
 /**
+ * legend-qf0i (owner Q23): the guest copy of the menu hides every active item
+ * without a photo, the same rule the API read applies in SQL. With
+ * `?mock=photo-missing` the legacy row is injected *before* the filter, so the
+ * demo can prove the item exists (back office shows it with the "Foto wajib"
+ * badge) while a guest never sees it.
+ */
+function guestMenu(table: Table, zone: FloorZone): QrMenu {
+  const menu = buildQrMenu({ table, zone }, { photoFor: demoMenuPhoto });
+  const withLegacy =
+    getScenario() === "photo-missing"
+      ? { ...menu, items: [...menu.items, legacyGuestItem(menu)] }
+      : menu;
+  return hidePhotoLessMenuItems(withLegacy);
+}
+
+/** The legacy row as a guest menu item: active, priced, and without a photo. */
+function legacyGuestItem(menu: QrMenu): QrMenuItem {
+  const category = menu.categories[0];
+  if (!category) throw new RangeError("The menu fixtures need a category");
+  return {
+    id: legacyPhotoMissingItem.id,
+    categoryId: category.id,
+    name: legacyPhotoMissingItem.name,
+    description: legacyPhotoMissingItem.description,
+    type: legacyPhotoMissingItem.type,
+    priceIdr: legacyPhotoMissingPrice.priceIdr,
+    labels: legacyPhotoMissingItem.labels,
+    allergens: legacyPhotoMissingItem.allergens,
+    photoUrl: null,
+    variants: [],
+    modifierGroups: [],
+    status: "available",
+    sortOrder: legacyPhotoMissingItem.sortOrder,
+  };
+}
+
+/**
  * The QR guest engine. Pass the shared floor engine in the browser mock; the
  * default keeps one floor per engine for the Node contract test.
  */
@@ -155,10 +199,7 @@ export function createEngine(
   const zoneOfTable = (table: Table) => floor.zoneOf(table);
   const menuOf = (session: TableSession): QrMenu => {
     const table = tableOfSession(session);
-    return buildQrMenu(
-      { table, zone: zoneOfTable(table) },
-      { photoFor: demoMenuPhoto },
-    );
+    return guestMenu(table, zoneOfTable(table));
   };
 
   /** The session behind a guest call; closed sessions are gone for guests. */
@@ -245,10 +286,7 @@ export function createEngine(
   function scan(input: { qrToken: string; pax: number; deviceHash: string }) {
     const joined = floor.openOrJoinTableSession(input);
     callerParticipantId = joined.participant.id;
-    const menu = buildQrMenu(
-      { table: joined.table, zone: joined.zone },
-      { photoFor: demoMenuPhoto },
-    );
+    const menu = guestMenu(joined.table, joined.zone);
     const session = joined.session;
     return {
       outcome: joined.outcome,
@@ -270,12 +308,7 @@ export function createEngine(
 
   function menuFor(qrToken: string): QrMenu {
     const table = floor.tableForToken(qrToken);
-    return clone(
-      buildQrMenu(
-        { table, zone: zoneOfTable(table) },
-        { photoFor: demoMenuPhoto },
-      ),
-    );
+    return clone(guestMenu(table, zoneOfTable(table)));
   }
 
   // ---- Cart -------------------------------------------------------------------
