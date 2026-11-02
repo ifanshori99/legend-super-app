@@ -295,7 +295,13 @@ export type PbjtCsvHeaders = {
 };
 
 function csvCell(value: string | number): string {
-  const text = String(value);
+  // Text cells come from tenant input (rule codes). A leading = + - @ or
+  // control character makes Excel/Sheets evaluate the cell as a formula
+  // (CSV injection, OWASP), so text is prefixed with an apostrophe. Numbers
+  // are written as numbers and never prefixed.
+  const raw = String(value);
+  const text =
+    typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 

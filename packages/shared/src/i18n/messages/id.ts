@@ -2012,7 +2012,7 @@ export const id = {
     rules: {
       title: "Aturan pajak",
       description:
-        "Setiap perubahan dibuat sebagai versi baru dengan tanggal efektif. Versi yang sudah terbit tidak dapat diubah (R21).",
+        "Setiap perubahan dibuat sebagai versi baru dengan tanggal efektif. Versi yang sudah terbit tidak dapat diubah.",
       add: "Aturan baru",
       searchLabel: "Cari kode atau nama aturan",
       filterStatus: "Saring status versi",
@@ -2113,7 +2113,7 @@ export const id = {
     report: {
       title: "Rekap PBJT bulanan",
       subtitle:
-        "Rekap pajak per aturan untuk pelaporan ke pemerintah daerah (PRD §3.14). Angka berasal dari transaksi yang sudah diposting.",
+        "Rekap pajak per aturan untuk pelaporan ke pemerintah daerah. Angka berasal dari transaksi yang sudah diposting.",
       period: "Periode",
       export: "Unduh CSV",
       tableTitle: "Rincian per aturan pajak",
@@ -2151,7 +2151,7 @@ export const id = {
     publish: {
       ruleTitle: "Terbitkan {code} versi {version}?",
       serviceChargeTitle: "Terbitkan service charge {code} versi {version}?",
-      body: "Setelah terbit, versi ini tidak dapat diubah. Perubahan berikutnya dibuat sebagai versi baru dengan tanggal efektifnya sendiri (R21).",
+      body: "Setelah terbit, versi ini tidak dapat diubah. Perubahan berikutnya dibuat sebagai versi baru dengan tanggal efektifnya sendiri.",
       confirm: "Terbitkan",
     },
     form: {
@@ -2179,7 +2179,7 @@ export const id = {
         "Harga item yang tercakup sudah termasuk pajak dan service charge (harga nett); mesin menghitung dasarnya mundur.",
       includeServiceInBase: "Service charge masuk dasar pajak",
       includeServiceInBaseHint:
-        "DPP pajak mencakup service charge. Pastikan perlakuan ini dengan konsultan pajak (A20).",
+        "DPP pajak mencakup service charge. Pastikan perlakuan ini dengan konsultan pajak.",
       isActive: "Aturan aktif",
       isActiveHint:
         "Matikan untuk mengakhiri aturan ini mulai tanggal efektif.",

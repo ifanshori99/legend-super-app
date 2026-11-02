@@ -160,6 +160,31 @@ test(`${TAG} Laporan Pajak: the PBJT CSV carries every row and a totals line`, (
   assert.equal(lib.downloadTextFile("x.csv", "a,b"), false); // no DOM in Node
 });
 
+test(`${TAG} Laporan Pajak: CSV neutralizes formula-looking rule codes (CSV injection)`, () => {
+  const base = fixtures.pbjtRecap;
+  const recap = {
+    ...base,
+    rows: [{ ...base.rows[0], taxRuleCode: '=HYPERLINK("x","y")' }],
+  };
+  const headers = {
+    code: "Kode",
+    rate: "Tarif",
+    transactions: "Transaksi",
+    gross: "Bruto",
+    base: "Dasar",
+    service: "Service",
+    tax: "Pajak",
+    total: "Total",
+  };
+  const lines = lib.toPbjtCsv(recap, headers).trimEnd().split("\r\n");
+  assert.ok(lines[1].startsWith(`"'=HYPERLINK(""x"",""y"")"`), lines[1]);
+  for (const prefix of ["+", "-", "@"]) {
+    const row = { ...base.rows[0], taxRuleCode: `${prefix}1` };
+    const csv = lib.toPbjtCsv({ ...base, rows: [row] }, headers);
+    assert.equal(csv.split("\r\n")[1].split(",")[0], `'${prefix}1`);
+  }
+});
+
 test(`${TAG} period helpers accept YYYY-MM and render the Indonesian month`, () => {
   assert.equal(lib.isTaxPeriod("2026-11"), true);
   assert.equal(lib.isTaxPeriod("2026-13"), false);
