@@ -37,8 +37,9 @@ const published = {
 };
 /** Kota Bandung (BPS 3273, Jawa Barat). */
 export const BANDUNG_REGION = "ID-JB-3273";
-/** Private Room zone of Cafe Legend Bandung (WS-03 floor_zones). */
-export const PRIVATE_ROOM_ZONE_ID = tid(900);
+/** Private Room zone of Cafe Legend Bandung; matches the WS-03 floor fixture
+ * (`cafeLegendQrOrderFixtures.zones`, "Private Room Nusantara"). */
+export const PRIVATE_ROOM_ZONE_ID = "00000000-0000-4000-8000-000000000102";
 /** Facility service items (WS-09). */
 export const SHOWER_ITEM_ID = tid(910);
 export const BREAKFAST_PACKAGE_ITEM_ID = tid(911);
