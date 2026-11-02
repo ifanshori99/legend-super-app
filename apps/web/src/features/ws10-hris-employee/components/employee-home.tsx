@@ -29,9 +29,9 @@ function HomeSkeleton() {
         <Skeleton className="h-8 w-56" />
         <Skeleton className="h-4 w-36" />
       </div>
-      <Skeleton className="h-72 w-full rounded-xl" />
-      <Skeleton className="h-32 w-full rounded-xl" />
-      <Skeleton className="h-32 w-full rounded-xl" />
+      <Skeleton className="h-72 w-full rounded-container" />
+      <Skeleton className="h-32 w-full rounded-container" />
+      <Skeleton className="h-32 w-full rounded-container" />
     </div>
   );
 }
@@ -63,7 +63,7 @@ export function EmployeeHome() {
   return (
     <div className="grid gap-4">
       <header className="grid gap-1">
-        <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+        <h1 className="font-brand type-display-xl">
           {t("hris.home.greeting", { name: employee.fullName })}
         </h1>
         <p className="text-sm leading-5 text-muted-foreground">
@@ -79,9 +79,9 @@ export function EmployeeHome() {
       </header>
 
       {queued.length > 0 && (
-        <div className="flex items-start gap-3 rounded-xl border-(length:--border-w) bg-info-subtle p-3">
+        <div className="flex items-start gap-3 rounded-container bg-info-subtle p-3">
           <CloudOff
-            className="mt-0.5 size-4 shrink-0 text-info"
+            className="mt-0.5 size-5 shrink-0 text-info"
             aria-hidden="true"
           />
           <div className="grid gap-0.5">

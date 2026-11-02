@@ -68,12 +68,12 @@ export function RewardCard({
             <TypeIcon aria-hidden="true" />
             {t(`member.rewards.type.${reward.type}`)}
           </Badge>
-          <h3 className="text-base leading-6 font-semibold">{reward.name}</h3>
+          <h3 className="type-heading">{reward.name}</h3>
           <p className="text-sm leading-5 text-muted-foreground">
             {reward.description}
           </p>
         </div>
-        <p className="tabular shrink-0 text-base leading-6 font-semibold whitespace-nowrap">
+        <p className="tabular type-heading shrink-0 whitespace-nowrap">
           {t("member.rewards.cost", {
             points: formatNumber(reward.pointsCost),
           })}

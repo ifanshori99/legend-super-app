@@ -16,7 +16,7 @@ export function SectionError({
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border-(length:--border-w) bg-card p-card"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
     >
       <p className="text-sm leading-5 font-medium">
         {title ?? t("state.errorTitle")}

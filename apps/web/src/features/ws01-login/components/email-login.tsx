@@ -8,6 +8,7 @@ import { ChevronLeft, MailCheck, Send } from "lucide-react";
 import { createMagicLinkChallengeSchema } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { FormField, fieldErrors } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { useRequestMagicLink } from "../hooks";
@@ -45,7 +46,7 @@ export function EmailLoginScreen({ returnTo }: { returnTo?: string }) {
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="mx-auto grid w-full max-w-md gap-5">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-3 min-h-11">
           <Link to="/masuk">
@@ -56,10 +57,10 @@ export function EmailLoginScreen({ returnTo }: { returnTo?: string }) {
       </div>
 
       <header className="grid gap-2">
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-brand type-display-xl">
           {t("login.email.heading")}
         </h1>
-        <p className="text-base leading-6 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.email.subtitle")}
         </p>
       </header>
@@ -91,42 +92,44 @@ export function EmailLoginScreen({ returnTo }: { returnTo?: string }) {
           </Button>
         </div>
       ) : (
-        <form
-          onSubmit={submit}
-          className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
-          aria-busy={request.isPending}
-        >
-          <FormField
-            label={t("login.email.addressLabel")}
-            hint={t("login.email.addressHint")}
-            error={fieldError}
-            required
+        <Card>
+          <form
+            onSubmit={submit}
+            className="grid gap-4"
+            aria-busy={request.isPending}
           >
-            <Input
-              name="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              placeholder={t("login.email.addressPlaceholder")}
+            <FormField
+              label={t("login.email.addressLabel")}
+              hint={t("login.email.addressHint")}
+              error={fieldError}
               required
-              maxLength={254}
-              autoFocus
-            />
-          </FormField>
-          {request.isError && <InlineFailure error={request.error} />}
-          <Button
-            type="submit"
-            size="lg"
-            className="w-full"
-            loading={request.isPending}
-          >
-            <Send aria-hidden="true" />
-            {t("login.email.submit")}
-          </Button>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("login.email.privacy")}
-          </p>
-        </form>
+            >
+              <Input
+                name="email"
+                type="email"
+                autoComplete="email"
+                inputMode="email"
+                placeholder={t("login.email.addressPlaceholder")}
+                required
+                maxLength={254}
+                autoFocus
+              />
+            </FormField>
+            {request.isError && <InlineFailure error={request.error} />}
+            <Button
+              type="submit"
+              size="lg"
+              className="w-full"
+              loading={request.isPending}
+            >
+              <Send aria-hidden="true" />
+              {t("login.email.submit")}
+            </Button>
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("login.email.privacy")}
+            </p>
+          </form>
+        </Card>
       )}
     </div>
   );

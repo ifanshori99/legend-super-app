@@ -26,9 +26,7 @@ export function MemberPageHeader({
           {t("member.signup.backToOverview")}
         </Link>
       )}
-      <h1 className="font-brand text-3xl leading-9 font-bold tracking-tight">
-        {title}
-      </h1>
+      <h1 className="font-brand type-display-xl">{title}</h1>
       {intro && (
         <p className="max-w-prose text-sm leading-5 text-muted-foreground">
           {intro}

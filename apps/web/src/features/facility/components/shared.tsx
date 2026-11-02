@@ -52,7 +52,7 @@ export function ApiFailure({
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-2 rounded-lg bg-danger-subtle px-3 py-2 text-sm leading-5 text-danger",
+        "flex items-start gap-2 rounded-container bg-danger-subtle px-3 py-2 text-sm leading-5 text-danger",
         className,
       )}
     >
@@ -70,37 +70,43 @@ export function ApiFailure({
 const STEP_KEYS = ["login", "schedule", "extras", "pay"] as const;
 export type BookingStep = (typeof STEP_KEYS)[number];
 
-/** Where the guest is in the booking journey (alur S langkah 2–4). */
+/** Where the guest is in the booking journey (alur S langkah 2–4). The v3
+ * progress track mirrors the tab group: the current step is a card chip with a
+ * hairline ring on the `surface-2` track, never an accent fill (Q21). */
 export function JourneyStepper({ current }: { current: BookingStep }) {
   const t = useT();
   const currentIndex = STEP_KEYS.indexOf(current);
   return (
     <ol
       aria-label={t("facility.steps.label")}
-      className="flex items-center gap-1 text-xs leading-5 font-medium"
+      className="flex w-fit max-w-full items-center gap-0.5 overflow-x-auto rounded-control border-(length:--border-w) bg-surface-2 p-1 [scrollbar-width:none]"
     >
       {STEP_KEYS.map((step, index) => {
         const done = index < currentIndex;
         const active = index === currentIndex;
         return (
-          <li key={step} className="flex min-w-0 items-center gap-1">
+          <li
+            key={step}
+            className="flex shrink-0 items-center gap-0.5 text-sm leading-5"
+          >
             {index > 0 && (
               <span
                 aria-hidden="true"
-                className="mx-1 h-px w-2 bg-border sm:w-4"
+                className="mx-1 hidden h-px w-3 shrink-0 bg-border sm:block"
               />
             )}
             <span
               aria-current={active ? "step" : undefined}
               className={cn(
-                "flex min-w-0 items-center gap-1 rounded-full px-2 py-1",
-                active && "bg-primary text-primary-foreground font-semibold",
+                "flex items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-2.5 py-1.5 font-medium whitespace-nowrap transition-colors duration-(--duration-fast)",
+                active &&
+                  "bg-card font-semibold text-foreground shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]",
                 done && "text-foreground",
                 !active && !done && "text-muted-foreground",
               )}
             >
               {done ? (
-                <Check className="size-3.5" aria-hidden="true" />
+                <Check className="size-4 shrink-0" aria-hidden="true" />
               ) : (
                 <span className="tabular" aria-hidden="true">
                   {index + 1}
@@ -129,7 +135,9 @@ export function LoadingCard({ lines = 3 }: { lines?: number }) {
   );
 }
 
-/** A labelled block inside a page: heading + body (no nested cards). */
+/** A labelled block inside a page: heading + body. The block is not itself a
+ * card, so the frame a step puts inside it (a `Card`, a divided list container)
+ * never ends up nested in another card (DESIGN.md §4). */
 export function Section({
   title,
   children,
@@ -144,7 +152,7 @@ export function Section({
   return (
     <section className={cn("grid gap-3", className)}>
       <div className="flex items-baseline justify-between gap-2">
-        <h2 className="text-base leading-6 font-semibold">{title}</h2>
+        <h2 className="font-brand type-heading">{title}</h2>
         {action}
       </div>
       {children}

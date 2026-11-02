@@ -596,3 +596,54 @@ export const itemAvailability = pgTable(
     ),
   ],
 );
+
+/**
+ * `menu_item_daily_usage` (T, O): quantity sold per item and outlet business
+ * date (PRD §8 "Ketersediaan" — batas stok menu harian, bead legend-h2a).
+ *
+ * The counter is the race-safe side of `item_availability.daily_limit`: order
+ * lines reserve through one atomic upsert, so concurrent orders can never
+ * oversell. It is operational, not replicated to the edge (the edge node owns
+ * its own offline counters and reconciles on sync), so it has no tombstone.
+ */
+export const menuItemDailyUsage = pgTable(
+  "menu_item_daily_usage",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId,
+    outletId: uuid("outlet_id").notNull(),
+    menuItemId: uuid("menu_item_id").notNull(),
+    businessDate: businessDate("business_date").notNull(),
+    quantity: integer("quantity").notNull().default(0),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("menu_item_daily_usage_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    foreignKey({
+      name: "menu_item_daily_usage_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "menu_item_daily_usage_item_fk",
+      columns: [table.tenantId, table.menuItemId],
+      foreignColumns: [menuItems.tenantId, menuItems.id],
+    }),
+    uniqueIndex("menu_item_daily_usage_key").on(
+      table.tenantId,
+      table.outletId,
+      table.menuItemId,
+      table.businessDate,
+    ),
+    index("menu_item_daily_usage_outlet_date_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.businessDate,
+    ),
+    check("menu_item_daily_usage_quantity_check", sql`${table.quantity} >= 0`),
+  ],
+);

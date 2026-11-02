@@ -47,16 +47,16 @@ export function Notice({
       role={live ? "status" : undefined}
       aria-live={live ? "polite" : undefined}
       className={cn(
-        "grid gap-3 rounded-xl p-card sm:grid-cols-[auto_minmax(0,1fr)]",
+        "grid gap-3 rounded-container p-card sm:grid-cols-[auto_minmax(0,1fr)]",
         TONE_CLASS[tone],
         className,
       )}
     >
-      <span className="grid size-10 place-items-center rounded-full bg-background/60">
+      <span className="grid size-10 shrink-0 place-items-center rounded-container bg-background/70">
         <Icon className="size-5" aria-hidden="true" />
       </span>
-      <div className="grid gap-1">
-        <p className="text-base leading-6 font-semibold">{title}</p>
+      <div className="grid min-w-0 gap-1">
+        <p className="type-heading">{title}</p>
         {hint && <div className="text-sm leading-5">{hint}</div>}
         {action && <div className="mt-1">{action}</div>}
       </div>
@@ -79,7 +79,7 @@ export function InlineFailure({
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-2 rounded-lg bg-danger-subtle px-3 py-2 text-sm leading-5 text-danger",
+        "flex items-start gap-2 rounded-field bg-danger-subtle px-3 py-2 text-sm leading-5 text-danger",
         className,
       )}
     >

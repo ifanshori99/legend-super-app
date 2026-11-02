@@ -13,13 +13,13 @@ export function VoucherCard({ voucher }: { voucher: VoucherDto }) {
   return (
     <Card className="gap-2">
       <div className="flex items-start justify-between gap-3">
-        <div className="grid gap-0.5">
-          <p className="text-sm leading-5 font-medium text-muted-foreground">
+        <div className="grid min-w-0 gap-0.5">
+          <p className="type-eyebrow text-muted-foreground">
             {t(`member.vouchers.source.${voucher.source}`)}
           </p>
           {voucher.valueIdr !== null && (
-            <p className="text-xl leading-7 font-semibold">
-              <Money amount={voucher.valueIdr} size="lg" />
+            <p>
+              <Money amount={voucher.valueIdr} size="stat" />
             </p>
           )}
         </div>

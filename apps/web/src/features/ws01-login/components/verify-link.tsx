@@ -9,6 +9,7 @@ import { ChevronLeft, MailX, LogIn } from "lucide-react";
 import type { LoginResult } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { errorCode } from "../flow";
 import { useCompleteMagicLink } from "../hooks";
 import { InlineFailure, Notice } from "./shared";
@@ -48,7 +49,7 @@ export function VerifyLinkScreen({
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="mx-auto grid w-full max-w-md gap-5">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-3 min-h-11">
           <Link to="/masuk">
@@ -59,10 +60,10 @@ export function VerifyLinkScreen({
       </div>
 
       <header className="grid gap-2">
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-brand type-display-xl">
           {t("login.verify.heading")}
         </h1>
-        <p className="text-base leading-6 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.verify.subtitle")}
         </p>
       </header>
@@ -99,7 +100,7 @@ export function VerifyLinkScreen({
           }
         />
       ) : (
-        <section className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card">
+        <Card className="gap-4">
           <Button
             size="lg"
             className="w-full"
@@ -120,7 +121,7 @@ export function VerifyLinkScreen({
           <p className="text-sm leading-5 text-muted-foreground">
             {t("login.verify.note")}
           </p>
-        </section>
+        </Card>
       )}
     </div>
   );

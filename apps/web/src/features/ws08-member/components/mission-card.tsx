@@ -68,7 +68,7 @@ export function MissionCard({ item }: { item: MissionWithProgress }) {
       </div>
 
       <div className="grid gap-1">
-        <h3 className="text-base leading-6 font-semibold">{mission.name}</h3>
+        <h3 className="type-heading">{mission.name}</h3>
         <p className="text-sm leading-5 text-muted-foreground">
           {mission.description}
         </p>
@@ -83,8 +83,8 @@ export function MissionCard({ item }: { item: MissionWithProgress }) {
                 className={cn(
                   "grid size-6 place-items-center rounded-full border-(length:--border-w)",
                   index < current
-                    ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border bg-muted text-muted-foreground",
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-surface-2 text-muted-foreground",
                 )}
               >
                 <Stamp className="size-3" />
