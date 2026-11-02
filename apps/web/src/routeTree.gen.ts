@@ -69,6 +69,10 @@ import { Route as KelolaKelolaInventoriSaranRouteImport } from './routes/_kelola
 import { Route as KelolaKelolaInventoriSatuanRouteImport } from './routes/_kelola/kelola.inventori.satuan'
 import { Route as KelolaKelolaInventoriStokRouteImport } from './routes/_kelola/kelola.inventori.stok'
 import { Route as KelolaKelolaInventoriTransferRouteImport } from './routes/_kelola/kelola.inventori.transfer'
+import { Route as KelolaKelolaLoyaltyIndexRouteImport } from './routes/_kelola/kelola.loyalty.index'
+import { Route as KelolaKelolaLoyaltyMisiRouteImport } from './routes/_kelola/kelola.loyalty.misi'
+import { Route as KelolaKelolaLoyaltyRewardRouteImport } from './routes/_kelola/kelola.loyalty.reward'
+import { Route as KelolaKelolaLoyaltyTierRouteImport } from './routes/_kelola/kelola.loyalty.tier'
 import { Route as KelolaKelolaMejaIndexRouteImport } from './routes/_kelola/kelola.meja.index'
 import { Route as KelolaKelolaMejaQrRouteImport } from './routes/_kelola/kelola.meja.qr'
 import { Route as KelolaKelolaMenuIndexRouteImport } from './routes/_kelola/kelola.menu.index'
@@ -391,6 +395,28 @@ const KelolaKelolaInventoriTransferRoute =
     path: '/kelola/inventori/transfer',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaLoyaltyIndexRoute =
+  KelolaKelolaLoyaltyIndexRouteImport.update({
+    id: '/kelola/loyalty/',
+    path: '/kelola/loyalty/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaLoyaltyMisiRoute = KelolaKelolaLoyaltyMisiRouteImport.update({
+  id: '/kelola/loyalty/misi',
+  path: '/kelola/loyalty/misi',
+  getParentRoute: () => KelolaRoute,
+} as any)
+const KelolaKelolaLoyaltyRewardRoute =
+  KelolaKelolaLoyaltyRewardRouteImport.update({
+    id: '/kelola/loyalty/reward',
+    path: '/kelola/loyalty/reward',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaLoyaltyTierRoute = KelolaKelolaLoyaltyTierRouteImport.update({
+  id: '/kelola/loyalty/tier',
+  path: '/kelola/loyalty/tier',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaKelolaMejaIndexRoute = KelolaKelolaMejaIndexRouteImport.update({
   id: '/kelola/meja/',
   path: '/kelola/meja/',
@@ -537,6 +563,9 @@ export interface FileRoutesByFullPath {
   '/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
   '/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferRouteWithChildren
+  '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -550,6 +579,7 @@ export interface FileRoutesByFullPath {
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/kelola/inventori/': typeof KelolaKelolaInventoriIndexRoute
+  '/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
   '/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
@@ -603,6 +633,9 @@ export interface FileRoutesByTo {
   '/kelola/inventori/saran': typeof KelolaKelolaInventoriSaranRoute
   '/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
+  '/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -616,6 +649,7 @@ export interface FileRoutesByTo {
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/kelola/inventori': typeof KelolaKelolaInventoriIndexRoute
+  '/kelola/loyalty': typeof KelolaKelolaLoyaltyIndexRoute
   '/kelola/meja': typeof KelolaKelolaMejaIndexRoute
   '/kelola/menu': typeof KelolaKelolaMenuIndexRoute
   '/kelola/pajak': typeof KelolaKelolaPajakIndexRoute
@@ -684,6 +718,9 @@ export interface FileRoutesById {
   '/_kelola/kelola/inventori/satuan': typeof KelolaKelolaInventoriSatuanRoute
   '/_kelola/kelola/inventori/stok': typeof KelolaKelolaInventoriStokRoute
   '/_kelola/kelola/inventori/transfer': typeof KelolaKelolaInventoriTransferRouteWithChildren
+  '/_kelola/kelola/loyalty/misi': typeof KelolaKelolaLoyaltyMisiRoute
+  '/_kelola/kelola/loyalty/reward': typeof KelolaKelolaLoyaltyRewardRoute
+  '/_kelola/kelola/loyalty/tier': typeof KelolaKelolaLoyaltyTierRoute
   '/_kelola/kelola/meja/qr': typeof KelolaKelolaMejaQrRoute
   '/_kelola/kelola/menu/$itemId': typeof KelolaKelolaMenuItemIdRoute
   '/_kelola/kelola/menu/harga': typeof KelolaKelolaMenuHargaRoute
@@ -697,6 +734,7 @@ export interface FileRoutesById {
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_kelola/kelola/inventori/': typeof KelolaKelolaInventoriIndexRoute
+  '/_kelola/kelola/loyalty/': typeof KelolaKelolaLoyaltyIndexRoute
   '/_kelola/kelola/meja/': typeof KelolaKelolaMejaIndexRoute
   '/_kelola/kelola/menu/': typeof KelolaKelolaMenuIndexRoute
   '/_kelola/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
@@ -755,6 +793,9 @@ export interface FileRouteTypes {
     | '/kelola/inventori/satuan'
     | '/kelola/inventori/stok'
     | '/kelola/inventori/transfer'
+    | '/kelola/loyalty/misi'
+    | '/kelola/loyalty/reward'
+    | '/kelola/loyalty/tier'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
@@ -768,6 +809,7 @@ export interface FileRouteTypes {
     | '/member/fasilitas/'
     | '/t/$token/'
     | '/kelola/inventori/'
+    | '/kelola/loyalty/'
     | '/kelola/meja/'
     | '/kelola/menu/'
     | '/kelola/pajak/'
@@ -821,6 +863,9 @@ export interface FileRouteTypes {
     | '/kelola/inventori/saran'
     | '/kelola/inventori/satuan'
     | '/kelola/inventori/stok'
+    | '/kelola/loyalty/misi'
+    | '/kelola/loyalty/reward'
+    | '/kelola/loyalty/tier'
     | '/kelola/meja/qr'
     | '/kelola/menu/$itemId'
     | '/kelola/menu/harga'
@@ -834,6 +879,7 @@ export interface FileRouteTypes {
     | '/member/fasilitas'
     | '/t/$token'
     | '/kelola/inventori'
+    | '/kelola/loyalty'
     | '/kelola/meja'
     | '/kelola/menu'
     | '/kelola/pajak'
@@ -901,6 +947,9 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/inventori/satuan'
     | '/_kelola/kelola/inventori/stok'
     | '/_kelola/kelola/inventori/transfer'
+    | '/_kelola/kelola/loyalty/misi'
+    | '/_kelola/kelola/loyalty/reward'
+    | '/_kelola/kelola/loyalty/tier'
     | '/_kelola/kelola/meja/qr'
     | '/_kelola/kelola/menu/$itemId'
     | '/_kelola/kelola/menu/harga'
@@ -914,6 +963,7 @@ export interface FileRouteTypes {
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_kelola/kelola/inventori/'
+    | '/_kelola/kelola/loyalty/'
     | '/_kelola/kelola/meja/'
     | '/_kelola/kelola/menu/'
     | '/_kelola/kelola/pajak/'
@@ -1361,6 +1411,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaInventoriTransferRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/loyalty/': {
+      id: '/_kelola/kelola/loyalty/'
+      path: '/kelola/loyalty'
+      fullPath: '/kelola/loyalty/'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/misi': {
+      id: '/_kelola/kelola/loyalty/misi'
+      path: '/kelola/loyalty/misi'
+      fullPath: '/kelola/loyalty/misi'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyMisiRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/reward': {
+      id: '/_kelola/kelola/loyalty/reward'
+      path: '/kelola/loyalty/reward'
+      fullPath: '/kelola/loyalty/reward'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyRewardRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/loyalty/tier': {
+      id: '/_kelola/kelola/loyalty/tier'
+      path: '/kelola/loyalty/tier'
+      fullPath: '/kelola/loyalty/tier'
+      preLoaderRoute: typeof KelolaKelolaLoyaltyTierRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/meja/': {
       id: '/_kelola/kelola/meja/'
       path: '/kelola/meja'
@@ -1622,6 +1700,9 @@ interface KelolaRouteChildren {
   KelolaKelolaInventoriSatuanRoute: typeof KelolaKelolaInventoriSatuanRoute
   KelolaKelolaInventoriStokRoute: typeof KelolaKelolaInventoriStokRoute
   KelolaKelolaInventoriTransferRoute: typeof KelolaKelolaInventoriTransferRouteWithChildren
+  KelolaKelolaLoyaltyMisiRoute: typeof KelolaKelolaLoyaltyMisiRoute
+  KelolaKelolaLoyaltyRewardRoute: typeof KelolaKelolaLoyaltyRewardRoute
+  KelolaKelolaLoyaltyTierRoute: typeof KelolaKelolaLoyaltyTierRoute
   KelolaKelolaMejaQrRoute: typeof KelolaKelolaMejaQrRoute
   KelolaKelolaMenuItemIdRoute: typeof KelolaKelolaMenuItemIdRoute
   KelolaKelolaMenuHargaRoute: typeof KelolaKelolaMenuHargaRoute
@@ -1633,6 +1714,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakOpsiRoute: typeof KelolaKelolaPajakOpsiRoute
   KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
   KelolaKelolaInventoriIndexRoute: typeof KelolaKelolaInventoriIndexRoute
+  KelolaKelolaLoyaltyIndexRoute: typeof KelolaKelolaLoyaltyIndexRoute
   KelolaKelolaMejaIndexRoute: typeof KelolaKelolaMejaIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
   KelolaKelolaPajakIndexRoute: typeof KelolaKelolaPajakIndexRoute
@@ -1651,6 +1733,9 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaInventoriStokRoute: KelolaKelolaInventoriStokRoute,
   KelolaKelolaInventoriTransferRoute:
     KelolaKelolaInventoriTransferRouteWithChildren,
+  KelolaKelolaLoyaltyMisiRoute: KelolaKelolaLoyaltyMisiRoute,
+  KelolaKelolaLoyaltyRewardRoute: KelolaKelolaLoyaltyRewardRoute,
+  KelolaKelolaLoyaltyTierRoute: KelolaKelolaLoyaltyTierRoute,
   KelolaKelolaMejaQrRoute: KelolaKelolaMejaQrRoute,
   KelolaKelolaMenuItemIdRoute: KelolaKelolaMenuItemIdRoute,
   KelolaKelolaMenuHargaRoute: KelolaKelolaMenuHargaRoute,
@@ -1662,6 +1747,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakOpsiRoute: KelolaKelolaPajakOpsiRoute,
   KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
   KelolaKelolaInventoriIndexRoute: KelolaKelolaInventoriIndexRoute,
+  KelolaKelolaLoyaltyIndexRoute: KelolaKelolaLoyaltyIndexRoute,
   KelolaKelolaMejaIndexRoute: KelolaKelolaMejaIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
   KelolaKelolaPajakIndexRoute: KelolaKelolaPajakIndexRoute,

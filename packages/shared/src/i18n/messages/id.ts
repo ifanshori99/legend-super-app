@@ -6,6 +6,7 @@
 // {name} and are filled by the translator.
 
 import { kdsMessages } from "./kds.ts";
+import { loyaltyMessages } from "./loyalty.ts";
 import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
@@ -24,6 +25,9 @@ export const id = {
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
+  // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
+  // same lines (legend-m8ow).
+  loyalty: loyaltyMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -545,6 +549,7 @@ export const id = {
       purchasing: "Purchasing",
       accounting: "Akuntansi",
       crm: "CRM",
+      loyalty: "Loyalty",
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",
