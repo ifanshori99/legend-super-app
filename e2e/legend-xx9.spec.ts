@@ -84,7 +84,9 @@ test.describe("legend-xx9 · menu back office", () => {
     await expect(row.getByText("Habis (86)")).toBeVisible();
   });
 
-  test("F8 Ketersediaan: restore needs the photo (Q23)", async ({ page }) => {
+  test("F8 Ketersediaan: every demo item restores after 86 (legend-qury)", async ({
+    page,
+  }) => {
     await page.goto("/kelola/menu/ketersediaan?mock=normal", NAV);
     async function toggle(name: string, action: string) {
       const row = page.getByRole("row").filter({ hasText: name }).first();
@@ -95,27 +97,15 @@ test.describe("legend-xx9 · menu back office", () => {
         .click();
       return row;
     }
-    // A demo item with its sample photo goes back on sale.
-    const cappuccino = await toggle("Cappuccino", "Tandai habis");
-    await expect(cappuccino.getByText("Habis (86)")).toBeVisible();
-    await toggle("Cappuccino", "Aktifkan lagi");
-    await expect(
-      page.getByText("Cappuccino aktif lagi.").first(),
-    ).toBeVisible();
-    // A photo-less item stays sold out and the reason is stated.
-    const espresso = await toggle("Espresso", "Tandai habis");
-    await expect(espresso.getByText("Habis (86)")).toBeVisible();
-    await toggle("Espresso", "Aktifkan lagi");
-    await expect(
-      page
-        .getByText("Unggah foto item sebelum menampilkannya di menu.")
-        .first(),
-    ).toBeVisible();
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Batal" })
-      .click();
-    await expect(espresso.getByText("Habis (86)")).toBeVisible();
+    // The demo seed gives every fixture item a sample photo (legend-qury), so
+    // restoring after 86 works for all of them; the refusal path stays covered
+    // by the API tests for a real item without an upload (Q23).
+    for (const name of ["Cappuccino", "Espresso"]) {
+      const row = await toggle(name, "Tandai habis");
+      await expect(row.getByText("Habis (86)")).toBeVisible();
+      await toggle(name, "Aktifkan lagi");
+      await expect(page.getByText(`${name} aktif lagi.`).first()).toBeVisible();
+    }
   });
 
   test("F8 Harga per Kanal: edit the dine-in price grid", async ({ page }) => {

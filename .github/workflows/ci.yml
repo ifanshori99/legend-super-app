@@ -42,12 +42,86 @@ jobs:
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
-      # Mock-mode FE specs: a Vite dev server with VITE_API_MOCK=true, no
-      # database (bead legend-n2sp). Uses the browser installed above.
-      - run: pnpm test:e2e:mock
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: browser-test-results
           path: test-results/
+          retention-days: 7
+
+  # Mock-mode FE specs (bead legend-n2sp): a Vite dev server with
+  # VITE_API_MOCK=true, no database. The suite is ~224 tests / ~11 min on one
+  # worker, so CI shards it over two parallel jobs (bead legend-x5be). Each job
+  # gets its own mock web server port (playwright.mock.config.ts reads
+  # LEGEND_MOCK_PORT) and writes its own blob report; mock-e2e-report merges
+  # them into one browsable HTML artifact. Locally the suite stays
+  # single-worker on purpose — see docs/frontend.md §6.
+  mock-e2e:
+    name: Mock e2e (shard ${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            port: 3225
+          - shard: 2
+            port: 3235
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm run setup
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Run mock e2e shard ${{ matrix.shard }}/2
+        run: pnpm test:e2e:mock --shard=${{ matrix.shard }}/2
+        env:
+          LEGEND_MOCK_PORT: ${{ matrix.port }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: mock-e2e-results-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 7
+
+  mock-e2e-report:
+    name: Merge mock e2e reports
+    if: always()
+    needs: [mock-e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm run setup
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      - name: Merge shard reports
+        run: |
+          if [ ! -d all-blob-reports ] || [ -z "$(ls -A all-blob-reports)" ]; then
+            echo "No blob reports were produced; nothing to merge."
+            exit 0
+          fi
+          pnpm exec playwright merge-reports --reporter=html,list ./all-blob-reports
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mock-e2e-report
+          path: playwright-report
           retention-days: 7

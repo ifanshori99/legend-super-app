@@ -94,26 +94,10 @@ type MenuState = MenuFixture & {
 // The contract fixtures do not model the item↔group link yet (follow-up
 // bead), so the mock seeds two drinks with the sugar-level group to make the
 // screen reviewable.
-/**
- * Demo photos for the sample catalogue (owner Q23/Q24: Unsplash samples only in
- * mock/demo, same files and mapping as the QR order demo, legend-h16t). Items
- * listed here get a mock media row so the demo can still restore them after a
- * 86 (a restore needs the photo, Q23); the rest keep the "Foto wajib" state.
- */
-const demoPhotos: Record<string, string> = {
-  Cappuccino: "/sample/menu/cappuccino.jpg",
-  "Cafe Latte": "/sample/menu/cappuccino.jpg",
-  "Flat White": "/sample/menu/cappuccino.jpg",
-  Piccolo: "/sample/menu/cappuccino.jpg",
-  Mocha: "/sample/menu/cappuccino.jpg",
-  "Caramel Latte": "/sample/menu/cappuccino.jpg",
-  "Vanilla Latte": "/sample/menu/cappuccino.jpg",
-  "Kopi Susu Aren": "/sample/menu/es-kopi-susu.jpg",
-  "Teh Tarik": "/sample/menu/teh-melati.jpg",
-  "Nasi Goreng Kampung": "/sample/menu/nasi-goreng.jpg",
-  "Nasi Goreng Ayam": "/sample/menu/nasi-goreng.jpg",
-  "Mie Kuah": "/sample/menu/mie-kuah.jpg",
-};
+// The demo photo map lives in lib/mock so a normal build compiles the sample
+// paths out (legend-4pki): items with a photo get a mock media row so the demo
+// can restore them after an 86 (a restore needs the photo, Q23).
+import { demoPhotos } from "../../lib/mock/demo-photos.ts";
 
 function seedState(): MenuState {
   const fixtures = structuredClone(cafeLegendMenuFixtures);

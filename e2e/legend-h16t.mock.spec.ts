@@ -61,12 +61,14 @@ test("Q22 the menu card leads with a square photo plate and prints the sample la
     cappuccino.getByRole("button", { name: /^Pilih opsi untuk Cappuccino$/ }),
   ).toBeVisible();
 
-  // Items without a sample photo keep the designed quiet plate (no art).
-  const withoutPhoto = cards(page).filter({ hasText: "Americano" });
-  await expect(
-    withoutPhoto.locator('[data-slot="media-plate"][data-missing="quiet"]'),
-  ).toBeVisible();
-  await expect(withoutPhoto.locator("img")).toHaveCount(0);
+  // Every demo item has a sample photo (legend-4pki); Americano shares the
+  // black-coffee glass. The quiet plate stays the real-outlet state for an item
+  // without an upload and is no longer reachable in the sample catalogue.
+  const americano = cards(page).filter({ hasText: "Americano" });
+  await expect(americano.locator("img")).toHaveAttribute(
+    "src",
+    /\/sample\/menu\/espresso\.jpg$/,
+  );
 });
 
 test("Q22 a sold-out card greys its photo, says Habis and offers no add button", async ({
