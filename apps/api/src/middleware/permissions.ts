@@ -17,6 +17,8 @@ import type { Request, RequestHandler } from "express";
 import {
   AccessError,
   outletReachOf,
+  stationIdSchema,
+  stationReachOf,
   type PermissionCode,
 } from "@starter/shared/access";
 import {
@@ -150,6 +152,119 @@ export function requireMenuPermission(
       throw new AccessError(
         "PERMISSION_DENIED",
         "Your account cannot manage the menu in this tenant.",
+      );
+    contexts.set(req, context);
+    res.setHeader("Cache-Control", "private, no-store");
+    next();
+  };
+}
+
+/**
+ * Station-aware read gate for a station-bound list (kitchen station config,
+ * a KDS station selector): the same reach as requireMenuPermission, plus a
+ * station-only grant, whose outlets come from the stations the caller reaches
+ * for `permission` (legend-fsb7). Use it ONLY on routes whose service filters
+ * the rows with `permittedStationIds` — the context is outlet-wide because RLS
+ * cannot filter by station, so the service is what keeps a station-scoped
+ * caller inside its own station(s).
+ */
+export function requireStationScopePermission(
+  permission: PermissionCode,
+): RequestHandler {
+  return async (req, res, next) => {
+    const snapshot = await loadRequestAccess(req);
+    let context = snapshot.contextFor(permission, { type: "tenant" });
+    if (!context) {
+      const tenant = getTenantContext(req);
+      const data = dataByRequest.get(req);
+      if (!data)
+        throw new Error("requireStationScopePermission() without access data");
+      const principal = {
+        tenantId: tenant.tenantId,
+        userId: userIdSchema.parse(getAuth(req).user.id),
+        assignments: data.assignments,
+      } as const;
+      const reach = outletReachOf({
+        principal,
+        roles: data.roles,
+        org: data.org,
+        now: new Date(),
+        permission,
+      });
+      if (reach !== null) {
+        context = establishScopedTenantContext(tenant, reach);
+      } else {
+        // Station-only grant: the stations it reaches are the outlets the
+        // service may read, and the service narrows to those stations.
+        const stations = stationReachOf({
+          principal,
+          roles: data.roles,
+          org: data.org,
+          now: new Date(),
+          permission,
+        });
+        const outletIds = [
+          ...new Set(
+            stations.flatMap((stationId) => {
+              const station = data.org.stations.find(
+                (row) => row.id.toLowerCase() === stationId.toLowerCase(),
+              );
+              return station ? [station.outletId] : [];
+            }),
+          ),
+        ];
+        if (outletIds.length > 0)
+          context = establishScopedTenantContext(tenant, {
+            kind: "outlets",
+            outletIds,
+          });
+      }
+    }
+    if (!context)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Anda hanya dapat mengakses stasiun yang ditugaskan.",
+      );
+    contexts.set(req, context);
+    res.setHeader("Cache-Control", "private, no-store");
+    next();
+  };
+}
+
+/**
+ * Requires `permission` on one station and mints the context a station-bound
+ * route (KDS board, ticket bump, kitchen station config, a printer bound to a
+ * station) runs with (legend-fsb7, TEN-03). The station id comes from the
+ * verified request (path, body or resolved record) and is schema-validated;
+ * a station-scoped assignment reaches only its own station, outlet/brand/
+ * tenant scopes every station they contain, and an unknown station fails
+ * closed. The minted context's RLS reach is the station's outlet, so the
+ * service MUST re-assert the station on every query and mutation
+ * (`assertStationPermission` in services/station-access.ts) and fail closed
+ * when the station of the resource cannot be determined.
+ */
+export function requireStationPermission(
+  permission: PermissionCode,
+  stationIdOf: (req: Request) => string | undefined,
+): RequestHandler {
+  return async (req, res, next) => {
+    const snapshot = await loadRequestAccess(req);
+    const raw = stationIdOf(req);
+    // A station-bound route without a determinable station grants nothing.
+    if (raw === undefined)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Stasiun tidak dapat ditentukan untuk aksi ini.",
+      );
+    const stationId = stationIdSchema.parse(raw);
+    const context = snapshot.contextFor(permission, {
+      type: "station",
+      id: stationId,
+    });
+    if (!context)
+      throw new AccessError(
+        "PERMISSION_DENIED",
+        "Anda hanya dapat mengakses stasiun yang ditugaskan.",
       );
     contexts.set(req, context);
     res.setHeader("Cache-Control", "private, no-store");

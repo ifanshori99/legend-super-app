@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { useQueries } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import type {
   KitchenTicketDetail,
   StationBoard,
@@ -34,6 +35,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api/errors.ts";
+import type { AreaAccess } from "@/lib/areas/access";
 import {
   useBoard,
   useKdsActions,
@@ -77,13 +79,23 @@ const TIMER_BAND = {
 
 export function KdsPage() {
   const t = useT();
+  const { access } = useRouteContext({ strict: false }) as {
+    access: AreaAccess;
+  };
   const stations = useStations();
   const names = useMenuStations();
   const [selected, setSelected] = useState<StationId | null>(null);
+  // Station authorization (legend-fsb7): a station-scoped account only polls
+  // and shows the stations in its reach. The API denies the rest with 403, so
+  // asking for them would be a wasted request on every cycle.
+  const permitted = new Set<string>(access.stations);
   const active = (stations.data ?? [])
-    .filter((station) => station.isActive)
+    .filter((station) => station.isActive && permitted.has(station.stationId))
     .sort((a, b) => a.displayOrder - b.displayOrder);
-  const stationId = selected ?? active[0]?.stationId;
+  const stationId =
+    selected !== null && permitted.has(selected)
+      ? selected
+      : active[0]?.stationId;
   const station = names.data?.find((row) => row.id === stationId);
   // The station switch carries each station's live queue (DESIGN.md §5: zones
   // and stations are a group with counts). The open station's count reuses its

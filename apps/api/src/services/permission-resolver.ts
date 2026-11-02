@@ -13,10 +13,13 @@
 // `@starter/shared/access` (`authorize`, `outletReachOf`); nothing here
 // re-implements the catalog or the scope rules.
 //
-// Station scope: the menu/KDS schema (`stations`) belongs to WS-03 and has not
-// landed. The org index therefore reports no stations, so a station-scoped
-// assignment grants nothing yet (fail closed). The wiring bead must add the
-// stations query here; see the report.
+// Station scope: the org index carries the tenant's live stations (WS-03 menu
+// schema, legend-lmk), so a station-scoped assignment resolves to its station.
+// A station-only grant deliberately produces no outlet-wide reach in
+// `outletReachOf` (TEN-03): the only context it can mint is the station target
+// in `contextFor`, whose RLS reach is that station's outlet, and every
+// station-bound service re-asserts the station from this same snapshot
+// (legend-fsb7).
 
 import {
   PERMISSION_CODES,
@@ -26,12 +29,14 @@ import {
   authorize,
   isAssignmentActive,
   outletReachOf,
+  stationReachOf,
   userRequiresMfa,
   type AccessTarget,
   type OrgIndex,
   type PermissionCode,
   type RoleAssignment,
   type RoleGrant,
+  type StationId,
 } from "@starter/shared/access";
 import {
   brandIdSchema,
@@ -196,6 +201,27 @@ export async function loadTenantAccess(
   );
 }
 
+/**
+ * The caller's access snapshot read on an open tenant transaction, so a
+ * service write and its authorization see one snapshot. Shared by the menu
+ * internals and the station-bound services (legend-fsb7).
+ */
+export async function accessSnapshotInTransaction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  now: Date,
+): Promise<AccessSnapshot> {
+  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  return resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  });
+}
+
 export type AccessSnapshotInput = {
   readonly tenant: TenantContext;
   readonly userId: string;
@@ -224,11 +250,21 @@ export type AccessSnapshot = {
   /**
    * The server-minted context for a permitted action, or null. Its outlet
    * reach is what `withTenant` installs as app.outlet_ids for RLS (TEN-03).
+   * A station target is the one exception to outlet reach: a station-scoped
+   * assignment mints the station's outlet here so the station-bound route can
+   * run, and the service must assert the station itself (legend-fsb7).
    */
   readonly contextFor: (
     permission: PermissionCode,
     target: AccessTarget,
   ) => ScopedTenantContext | null;
+  /**
+   * Stations the caller may work on for `permission` (§3.8: "Hanya KDS
+   * stasiun yang ditugaskan"). This is the list station-bound services filter
+   * and assert against; a station-scoped assignment yields only its own
+   * station(s), a wider scope every station it reaches (legend-fsb7).
+   */
+  readonly stationsFor: (permission: PermissionCode) => StationId[];
 };
 
 /**
@@ -293,9 +329,32 @@ export function resolveAccessSnapshot(
       now: input.now,
       permission,
     });
-    if (reach === null) return null;
-    return establishScopedTenantContext(input.tenant, reach);
+    if (reach !== null)
+      return establishScopedTenantContext(input.tenant, reach);
+    // Station-bound route (legend-fsb7): RLS is outlet-level, so the context
+    // carries the station's outlet. Minted only for an authorized station
+    // target; services assert the station on every query and mutation, so the
+    // outlet reach never widens what a station-scoped grant may touch.
+    if (target.type === "station") {
+      const station = input.org.stations.find(
+        (row) => row.id.toLowerCase() === target.id.toLowerCase(),
+      );
+      if (station)
+        return establishScopedTenantContext(input.tenant, {
+          kind: "outlets",
+          outletIds: [station.outletId],
+        });
+    }
+    return null;
   };
+  const stationsFor = (permission: PermissionCode): StationId[] =>
+    stationReachOf({
+      principal,
+      roles: input.roles,
+      org: input.org,
+      now: input.now,
+      permission,
+    });
 
   return {
     tenant: input.tenant,
@@ -306,5 +365,6 @@ export function resolveAccessSnapshot(
     templateKeys: [...templateKeys],
     allows,
     contextFor,
+    stationsFor,
   };
 }

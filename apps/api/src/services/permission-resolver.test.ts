@@ -154,14 +154,58 @@ describe("TEN-03 permission resolver", () => {
     expect(
       barista.allows("kds.ticket.process", { type: "outlet", id: bandung }),
     ).toBe(false);
-    // A station-only grant cannot produce an outlet-wide RLS context; the
-    // caller must fail closed until a station-aware context exists (WS-03).
+    // A station-only grant cannot produce outlet-wide reach: no tenant,
+    // brand or outlet target mints a context, so a non-station route stays
+    // closed (TEN-03). A station target is the one exception: the context's
+    // RLS reach is that station's outlet and the service re-asserts the
+    // station itself (legend-fsb7).
+    expect(
+      barista.contextFor("kds.ticket.process", { type: "tenant" }),
+    ).toBeNull();
+    expect(
+      barista.contextFor("kds.ticket.process", { type: "outlet", id: bandung }),
+    ).toBeNull();
+    const stationContext = barista.contextFor("kds.ticket.process", {
+      type: "station",
+      id: stationBarKopi,
+    });
+    expect(
+      stationContext?.outletScope.kind === "outlets"
+        ? stationContext.outletScope.outletIds
+        : null,
+    ).toEqual([station.outletId]);
+    // Another station is outside the assignment and mints nothing.
     expect(
       barista.contextFor("kds.ticket.process", {
         type: "station",
-        id: stationBarKopi,
+        id: fx.stations.find((row) => row.code === "dapur_panas")!.id,
       }),
     ).toBeNull();
+  });
+
+  it("station reach lists only the stations a permission reaches (legend-fsb7)", () => {
+    expect(snapshotFor("barista").stationsFor("kds.ticket.process")).toEqual([
+      stationBarKopi,
+    ]);
+    expect(snapshotFor("cook").stationsFor("kds.ticket.process")).toEqual([
+      fx.stations.find((row) => row.code === "dapur_panas")!.id,
+    ]);
+    // An outlet-scoped role reaches every station of its outlet, not others.
+    // Kitchen Lead holds kds.ticket.process at outlet scope (fixture user
+    // kitchenLead); Outlet Manager has no ticket permission, so it reaches no
+    // station for it.
+    expect(
+      snapshotFor("kitchenLead").stationsFor("kds.ticket.process"),
+    ).toEqual(
+      fx.stations
+        .filter((row) => row.outletId === bandung)
+        .map((row) => row.id),
+    );
+    expect(
+      snapshotFor("outletManager").stationsFor("kds.ticket.process"),
+    ).toEqual([]);
+    // No permission, no station.
+    expect(snapshotFor("barista").stationsFor("menu.item.view")).toEqual([]);
   });
 
   it("AUTH-05 reports mfa_required per §6 B without granting the factor", () => {
