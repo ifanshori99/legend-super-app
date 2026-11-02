@@ -20,12 +20,14 @@ import {
   cafeLegendIdentityFixtures,
   deleteMfaFactor,
   enrollMfaFactor,
+  extendCurrentSession,
   listMfaFactors,
   listSessions,
   MANAGEMENT_IDLE_MINUTES,
   mfaFactorIdSchema,
   mfaFactorSchema,
   MINUTE_MS,
+  recordSessionActivity,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -311,4 +313,34 @@ registerMock(revokeSession, ({ params }) => {
   auth.sessions = auth.sessions.filter(
     (view) => view.session.id !== params.sessionId,
   );
+});
+
+// AUTH-05: explicit activity extends a live staff session; reads do not.
+registerMock(extendCurrentSession, () => {
+  const session = currentSession();
+  const clock = new Date();
+  const path = (globalThis as { location?: { pathname?: string } }).location
+    ?.pathname;
+  if (
+    path?.startsWith("/masuk") ||
+    session.kind !== "management" ||
+    session.revokedAt !== null ||
+    clock.getTime() >= Date.parse(session.expiresAt) ||
+    clock.getTime() >=
+      Date.parse(session.lastSeenAt) + MANAGEMENT_IDLE_MINUTES * MINUTE_MS
+  )
+    throw new ApiError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk kembali.");
+  const result = recordSessionActivity({ session, now: clock, kind: "user" });
+  if (!result.write) return;
+  const auth = state.get();
+  if (idleKnobOn()) {
+    auth.idle = {
+      lastSeenAt: result.session.lastSeenAt,
+      expiresAt: result.session.expiresAt,
+    };
+  } else {
+    auth.sessions = auth.sessions.map((view) =>
+      view.current ? { ...view, session: result.session } : view,
+    );
+  }
 });

@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useCurrentAuth } from "../hooks";
+import { useCurrentAuth, useExtendStaffSession } from "../hooks";
 import { idleWarningVisible, minutesUntilExpiry } from "../state";
 
 /**
@@ -49,6 +49,7 @@ export function IdleSessionWarning() {
   // 30-minute idle end (§3 F6) would never come. The view refreshes on real
   // activity instead: each navigation, and the "stay" button.
   const auth = useCurrentAuth();
+  const extend = useExtendStaffSession();
   const [dismissedFor, setDismissedFor] = React.useState<string | null>(null);
   const { refetch } = auth;
   const { pathname } = useLocation();
@@ -69,10 +70,14 @@ export function IdleSessionWarning() {
   if (!session || !now) return null;
   if (!idleWarningVisible({ session, now, dismissedFor })) return null;
 
-  function stay() {
-    setDismissedFor(session?.expiresAt ?? null);
-    // Any user activity pushes the idle deadline server-side.
-    void refetch();
+  async function stay() {
+    try {
+      await extend.mutateAsync();
+      await refetch({ throwOnError: true });
+      setDismissedFor(session?.expiresAt ?? null);
+    } catch {
+      // Keep the warning visible so the user can retry.
+    }
   }
 
   return (
@@ -97,6 +102,11 @@ export function IdleSessionWarning() {
             minutes: minutesUntilExpiry(session, now),
           })}
         </p>
+        {extend.isError && (
+          <p role="alert" className="text-sm text-destructive">
+            {t("staffAuth.errors.loadTitle")}
+          </p>
+        )}
         <DialogFooter>
           <Button
             variant="outline"
@@ -104,7 +114,9 @@ export function IdleSessionWarning() {
           >
             {t("staffAuth.idle.dismiss")}
           </Button>
-          <Button onClick={stay}>{t("staffAuth.idle.stay")}</Button>
+          <Button onClick={() => void stay()} loading={extend.isPending}>
+            {t("staffAuth.idle.stay")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
