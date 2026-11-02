@@ -3,10 +3,12 @@
 // permission, the service owns the rules and the audit/event writes.
 //
 // Endpoints match @starter/shared/identity/endpoints.ts exactly (roles,
-// role-assignments, approval-policies). Re-authentication for grants is read
-// from the verified session (`lib/mfa.ts` fails closed today; legend-6xf owns
-// the factor store), so a grant without a recent second factor answers
-// REAUTH_REQUIRED.
+// role-assignments, approval-policies). Re-authentication for grants is the
+// session's verified second factor (legend-6xf `session.mfa_verified_at`),
+// which the service requires to be within ROLE_GRANT_REAUTH_MAX_AGE_MS
+// (5 minutes, @starter/shared/access); an older or absent verification answers
+// REAUTH_REQUIRED. The strict body schema carries no code, so the session is
+// the only source (legend-ma2v).
 
 import { Router } from "express";
 import {
@@ -23,13 +25,14 @@ import {
 } from "@starter/shared/identity";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
+import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
   requireTenantPermission,
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
-import { verifiedMfaAt } from "../lib/mfa";
+import { loadSessionRow } from "../services/identity-session.service";
 import {
   createCustomRole,
   endRoleAssignment,
@@ -43,7 +46,14 @@ import {
 
 export const accessRouter = Router();
 
-accessRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// AUTH-05: role administration is back office; an MFA role needs a verified
+// second factor on this session (legend-qfvu).
+accessRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+);
 
 // ------------------------------------------------------------------- roles
 
@@ -116,16 +126,18 @@ accessRouter.post(
   jsonBody,
   async (req, res) => {
     const input = grantRoleSchema.parse(req.body);
-    // PRD §3.7 Pemberian Role: re-authentication within 5 minutes. Until the
-    // factor store lands this is null, so the service answers REAUTH_REQUIRED.
-    const reauthenticatedAt = await verifiedMfaAt(req);
+    // PRD §3.7 Pemberian Role: re-authentication within 5 minutes. The
+    // verification is the session's second factor (legend-6xf) — the strict
+    // grant body has no field to carry a code — and the service rejects a
+    // verification older than ROLE_GRANT_REAUTH_MAX_AGE_MS.
+    const session = await loadSessionRow(getAuth(req).session.id);
+    const reauthenticatedAt = session?.mfaVerifiedAt ?? null;
     const assignment = await grantRoleAssignment(
       getScopedTenantContext(req),
       input,
       {
         actorUserId: getAuth(req).user.id,
-        reauthenticatedAt:
-          reauthenticatedAt === null ? null : new Date(reauthenticatedAt),
+        reauthenticatedAt,
         mfaVerified: reauthenticatedAt !== null,
       },
     );

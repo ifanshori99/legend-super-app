@@ -18,7 +18,13 @@ import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import { setAuditWriter, type AuditEntry } from "../services/audit-writer";
 import { grantRoleAssignment } from "../services/access.service";
-import { agent, originHeader, setRole, signUp } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 const app = createApp();
 const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -38,13 +44,17 @@ function scopedContext(tenantId = seededTenantId): ScopedTenantContext {
   );
 }
 
-async function signedIn(name = "RBAC user") {
+async function signedIn(name = "RBAC user", options: { mfa?: boolean } = {}) {
   const client = agent(app);
-  await signUp(client, name);
+  const email = await signUp(client, name);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   createdUserIds.push(userId);
-  return { client, userId };
+  // AUTH-05: /api/access and /api/org are closed until this session verified a
+  // second factor (legend-qfvu mounted the gate). Suites about the pre-MFA
+  // snapshot opt out with { mfa: false }.
+  if (options.mfa ?? true) await verifySessionMfa(email);
+  return { client, userId, email };
 }
 
 async function roleIdOf(
@@ -114,7 +124,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
   it("TEN-03 fails closed without an assignment and lists effective codes with one", async () => {
     expect((await agent(app).get("/api/me/access")).status).toBe(401);
 
-    const plain = await signedIn("No role");
+    const plain = await signedIn("No role", { mfa: false });
     const empty = await plain.client.get("/api/me/access");
     expect(empty.status).toBe(200);
     expect(empty.body.data).toEqual({
@@ -123,7 +133,7 @@ describe("legend-t4y7 GET /api/me/access", () => {
       mfaVerified: false,
     });
 
-    const ownerUser = await signedIn("Owner Access");
+    const ownerUser = await signedIn("Owner Access", { mfa: false });
     await assign(ownerUser.userId, "owner");
     const access = await ownerUser.client.get("/api/me/access");
     expect(access.status).toBe(200);
@@ -377,8 +387,10 @@ describe("§3.7 Pemberian Role", () => {
     expect(self.status).toBe(403);
     expect(self.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
 
+    // A session whose second factor was verified within the 5-minute window
+    // is the re-authentication (legend-ma2v): the grant goes through over HTTP.
     const grantee = await signedIn("Grantee");
-    const noReauth = await grantor.client
+    const granted = await grantor.client
       .post("/api/access/role-assignments")
       .set(originHeader)
       .send({
@@ -386,9 +398,34 @@ describe("§3.7 Pemberian Role", () => {
         roleId: cashierRole,
         scope: { type: "outlet", id: bandung },
       });
-    // No factor store yet (lib/mfa.ts), so re-auth is absent and denied.
-    expect(noReauth.status).toBe(401);
-    expect(noReauth.body.error.code).toBe("REAUTH_REQUIRED");
+    expect(granted.status).toBe(201);
+    expect(granted.body.data).toMatchObject({
+      userId: grantee.userId,
+      scope: { type: "outlet", id: bandung },
+    });
+
+    // The same session past the window cannot grant again.
+    await owner.query(
+      // The session must stay internally consistent (sessionSchema), so age
+      // its creation and activity along with the verification.
+      `UPDATE "session"
+       SET created_at = now() - interval '10 minutes',
+           last_seen_at = now() - interval '6 minutes',
+           mfa_verified_at = now() - interval '6 minutes'
+       WHERE user_id = $1`,
+      [grantor.userId],
+    );
+    const staleGrantee = await signedIn("Grantee Stale");
+    const stale = await grantor.client
+      .post("/api/access/role-assignments")
+      .set(originHeader)
+      .send({
+        userId: staleGrantee.userId,
+        roleId: cashierRole,
+        scope: { type: "outlet", id: bandung },
+      });
+    expect(stale.status).toBe(401);
+    expect(stale.body.error.code).toBe("REAUTH_REQUIRED");
   });
 
   it("TEN-03 a verified grant is scoped, audited, emitted and revocable", async () => {

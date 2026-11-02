@@ -46,3 +46,25 @@ export async function setRole(email: string, role: string | null) {
     await pool.end();
   }
 }
+
+// AUTH-05: back-office and platform APIs are closed until this session verified
+// a second factor. The real TOTP path (enroll → verify) is covered by
+// identity-mfa-api.test.ts; every other suite marks the session verified here so
+// it keeps testing its own concern.
+export async function verifySessionMfa(email: string) {
+  const pool = new Pool({
+    connectionString: process.env.STARTER_TEST_DATABASE_URL,
+    max: 1,
+  });
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE "session" SET mfa_verified_at = now()
+       WHERE revoked_at IS NULL
+         AND user_id = (SELECT id FROM "user" WHERE email = $1)`,
+      [email],
+    );
+    if (rowCount === 0) throw new Error(`No session for ${email}`);
+  } finally {
+    await pool.end();
+  }
+}
