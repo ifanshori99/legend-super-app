@@ -93,6 +93,10 @@ export function CustomerDisplayScreen() {
       </div>
     );
 
+  // While the customer pays, the QR owns the right column and the totals move
+  // under the lines: a 1366×768 second screen (common for customer displays)
+  // then shows the whole code without scrolling (Opus review legend-azt).
+  const paying = state.state === "awaiting_payment" && state.qris !== null;
   return (
     <div className="flex h-full flex-col gap-4">
       {header}
@@ -109,30 +113,33 @@ export function CustomerDisplayScreen() {
       <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,30rem)] lg:items-start 2xl:grid-cols-[minmax(0,1fr)_minmax(0,34rem)]">
         {/* Full-bleed list header + divided rows: a plain card surface, not a
             `Card` (its `p-card` cannot be stripped by tw-merge). */}
-        <section
-          aria-labelledby="display-order"
-          className="min-w-0 overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b-(length:--border-w) p-4">
-            <h2 id="display-order" className="type-title">
-              {t("posDisplay.order", { number: state.orderNumber ?? "—" })}
-            </h2>
-            <div className="flex items-center gap-2">
-              <DisplayStateBadge state={state.state} />
-              <span className="text-sm leading-5 text-muted-foreground tabular">
-                {t("posDisplay.itemCount", {
-                  count: totalQuantity(state.lines),
-                })}
-              </span>
+        <div className="grid min-w-0 gap-4">
+          <section
+            aria-labelledby="display-order"
+            className="min-w-0 overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b-(length:--border-w) p-4">
+              <h2 id="display-order" className="type-title">
+                {t("posDisplay.order", { number: state.orderNumber ?? "—" })}
+              </h2>
+              <div className="flex items-center gap-2">
+                <DisplayStateBadge state={state.state} />
+                <span className="text-sm leading-5 text-muted-foreground tabular">
+                  {t("posDisplay.itemCount", {
+                    count: totalQuantity(state.lines),
+                  })}
+                </span>
+              </div>
             </div>
-          </div>
-          <BillLines lines={state.lines} />
-        </section>
+            <BillLines lines={state.lines} />
+          </section>
+          {paying && <BillTotals state={state} />}
+        </div>
         <aside className="grid min-w-0 gap-4">
-          <BillTotals state={state} />
+          {!paying && <BillTotals state={state} />}
           {state.state === "paid" ? (
             <PaidPanel state={state} />
-          ) : state.state === "awaiting_payment" && state.qris ? (
+          ) : paying && state.qris ? (
             <QrisPanel qris={state.qris} />
           ) : (
             <OrderingHint />

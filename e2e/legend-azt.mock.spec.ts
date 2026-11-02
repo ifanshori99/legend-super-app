@@ -107,6 +107,10 @@ test("F11/F13 customer display: an expired QRIS is refreshed, not left payable",
   // The terminal served a code that already expired: the screen says so and
   // reads again; the next read carries a live code with a countdown.
   await expect(page.getByText("Kode kedaluwarsa, menyegarkan…")).toBeVisible();
+  // The dead code is removed, not dimmed: a faded QR still scans.
+  await expect(
+    page.getByRole("img", { name: /Kode QRIS pembayaran/ }),
+  ).toHaveCount(0);
   await expect(page.getByText(/^Berlaku \d+:\d{2}$/)).toBeVisible({
     timeout: 15_000,
   });
@@ -136,4 +140,20 @@ test("F11 customer display: a bill still being taken has no QR yet", async ({
   await expect(page.getByText("Pesanan dicatat")).toBeVisible();
   await expect(page.getByText("Kasir masih mencatat pesanan")).toBeVisible();
   await expect(page.getByRole("img", { name: /Kode QRIS/ })).toHaveCount(0);
+});
+
+test("F11 customer display: the whole QRIS fits a 1366×768 second screen", async ({
+  page,
+}) => {
+  test.slow();
+  // A common customer-display panel size (Opus review legend-azt): the code
+  // must be scannable without scrolling.
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await openDisplay(page);
+  const qr = page.getByRole("img", { name: /Kode QRIS pembayaran/ });
+  await expect(qr).toBeVisible();
+  const box = await qr.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.y + box!.height).toBeLessThanOrEqual(768);
+  await expect(page.locator('data[value="120100"]').first()).toBeInViewport();
 });

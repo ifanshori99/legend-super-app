@@ -39,21 +39,26 @@ export function QrisPanel({ qris }: { qris: CustomerDisplayQris }) {
       <p className="text-sm leading-5 text-muted-foreground">
         {t("posDisplay.qris.hint")}
       </p>
-      <div
-        className={cn(
-          "grid justify-items-center gap-3 transition-opacity duration-(--duration-base)",
-          expired && "opacity-40",
+      <div className="grid justify-items-center gap-3">
+        {/* An expired code is removed, not dimmed: a faded QR still scans
+            (PRD §3 F13, the customer must never pay a dead code). */}
+        {expired ? (
+          <div
+            aria-hidden="true"
+            className="size-58 rounded-container border-(length:--border-w) border-dashed border-border bg-surface-2 sm:size-62 2xl:size-78"
+          />
+        ) : (
+          <QrCode
+            value={qris.payload}
+            label={t("posDisplay.qris.alt", { amount })}
+            size={288}
+            svgClassName="size-52 sm:size-56 2xl:size-72"
+            className="rounded-container border-(length:--border-w) border-border p-3"
+          />
         )}
-      >
-        <QrCode
-          value={qris.payload}
-          label={t("posDisplay.qris.alt", { amount })}
-          size={288}
-          svgClassName="size-52 sm:size-56 2xl:size-72"
-          className="rounded-container border-(length:--border-w) border-border p-3"
-        />
         <p
-          aria-live="polite"
+          // Announce the switch to "expired", not every countdown second.
+          aria-live={expired ? "polite" : "off"}
           className={cn(
             "flex items-center gap-2 text-sm leading-5",
             expired
