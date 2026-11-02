@@ -95,7 +95,7 @@ export const opnameMessages = {
     },
     blindNotice: "Sesi hitung buta",
     blindNoticeHint:
-      "Angka sistem dan nilai selisih disembunyikan sampai hitungan dikirim.",
+      "Angka sistem dan nilai selisih hanya terlihat oleh penyetuju setelah hitungan dikirim.",
     progressTitle: "Progres hitung",
     progress: "{counted} dari {total} baris",
     linesTitle: "Baris hitungan",

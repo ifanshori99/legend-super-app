@@ -425,7 +425,7 @@ export function CountDetailPage({
   const lines = React.useMemo(() => detail?.lines ?? [], [detail]);
   const count = detail?.count;
   const progress = countProgress(lines);
-  const showSystem = count ? !hidesSystemQty(count) : false;
+  const showSystem = count ? !hidesSystemQty(count, canApprove) : false;
   const nameOf = (line: StockCountLine) =>
     itemById.get(line.inventoryItemId)?.name ??
     line.inventoryItemId.slice(0, 8);
@@ -628,9 +628,9 @@ export function CountDetailPage({
   if (!count) return null;
 
   const counting = count.status === "counting";
-  const reviewable = ["pending_approval", "approved", "posted"].includes(
-    count.status,
-  );
+  const reviewable =
+    ["pending_approval", "approved", "posted"].includes(count.status) &&
+    !hidesSystemQty(count, canApprove);
   const totalVariance = varianceTotalIdr(lines);
   const differingLines = varianceLineCount(lines);
   const noticeTone = NOTICE_TONE[count.status];
@@ -732,7 +732,7 @@ export function CountDetailPage({
         <NoticeIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <div className="grid gap-0.5">
           <p className="font-medium">{t(NOTICE_KEY[count.status])}</p>
-          {count.blind && hidesSystemQty(count) && (
+          {count.blind && hidesSystemQty(count, canApprove) && (
             <>
               <p className="font-medium">{t("opname.detail.blindNotice")}</p>
               <p>{t("opname.detail.blindNoticeHint")}</p>

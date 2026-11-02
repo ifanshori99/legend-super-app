@@ -129,14 +129,17 @@ export function canApproveCount(
 
 /**
  * A blind count hides the system quantity while it is still being counted
- * (PRD §16 "hitung buta"). Once submitted, the approver sees the variance.
+ * (PRD §16 "hitung buta", Alur J step 2). Once submitted, only the approver
+ * sees the variance: a rejected count goes back to `counting`, so a counter
+ * who saw the system figures during review would defeat the blind recount.
  */
 export function hidesSystemQty(
   count: Pick<StockCount, "status" | "blind">,
+  canApprove = false,
 ): boolean {
-  return (
-    count.blind && (count.status === "draft" || count.status === "counting")
-  );
+  if (!count.blind) return false;
+  if (count.status === "draft" || count.status === "counting") return true;
+  return count.status === "pending_approval" && !canApprove;
 }
 
 /** counted − system in base units, or null when the line is not counted. */

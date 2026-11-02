@@ -120,10 +120,17 @@ test("INV-03: a count cannot be submitted until every line has a physical quanti
   });
 });
 
-test("INV-03: a blind count hides the system quantity only while counting", () => {
+test("INV-03: a blind count hides the system quantity while counting and from non-approvers in review", () => {
   assert.equal(hidesSystemQty(count({ status: "draft" })), true);
   assert.equal(hidesSystemQty(count({ status: "counting" })), true);
-  assert.equal(hidesSystemQty(count({ status: "pending_approval" })), false);
+  assert.equal(hidesSystemQty(count({ status: "counting" }), true), true);
+  // A reject sends the count back to counting, so the counter must not see
+  // the system figures during review (Alur J step 2).
+  assert.equal(hidesSystemQty(count({ status: "pending_approval" })), true);
+  assert.equal(
+    hidesSystemQty(count({ status: "pending_approval" }), true),
+    false,
+  );
   assert.equal(hidesSystemQty(count({ status: "approved" })), false);
   assert.equal(
     hidesSystemQty(count({ status: "counting", blind: false })),
