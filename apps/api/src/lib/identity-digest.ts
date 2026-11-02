@@ -38,7 +38,7 @@ function digestKey(): Buffer {
  * per use, so a digest can never be replayed against a different purpose.
  */
 export type IdentityDigestPurpose =
-  "login-code" | "browser-binding" | "client-ip";
+  "login-code" | "browser-binding" | "client-ip" | "inbound-request";
 
 /** HMAC-SHA-256 hex of `<purpose>\0<value>`. */
 export function identityDigest(

@@ -1,0 +1,1 @@
+ALTER TABLE "wa_inbound_messages" ADD COLUMN "request_hash" varchar(64);

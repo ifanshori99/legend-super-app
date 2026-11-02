@@ -34,23 +34,37 @@
 // webhook pesan masuk tanpa isi pesan"); only the provider id, the keyed sender
 // digest and the outcome.
 
-import { and, eq, gt, ne } from "drizzle-orm";
+import { and, eq, gt, ne, isNull, sql } from "drizzle-orm";
 import {
   assertLoginMessageRateLimit,
   LOGIN_MESSAGE_RATE_WINDOW_MINUTES,
   loginCodeFromMessage,
   MINUTE_MS,
   normalizeWhatsAppNumber,
+  identityLinkedEvent,
 } from "@starter/shared/identity";
-import { CoreError, z } from "@starter/shared/core";
+import { CoreError, createUlid, z } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { db } from "../db";
-import { loginChallenges, tenants, waInboundMessages } from "../db/schema";
+import {
+  loginChallenges,
+  tenants,
+  waInboundMessages,
+  userIdentities,
+  session,
+} from "../db/schema";
 import { withTenant } from "../db/tenant";
-import { loginCodeDigest, whatsAppDigest } from "../lib/identity-digest";
+import {
+  identityDigest,
+  loginCodeDigest,
+  whatsAppDigest,
+} from "../lib/identity-digest.ts";
+import { sealSecret } from "../lib/secrets.ts";
+import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import { resolveWhatsAppAccount } from "./identity-account.service";
 import { resolveWhatsAppChannel } from "./identity-login.service";
 
@@ -146,14 +160,36 @@ export function parseKirimdevPayload(
   return messages;
 }
 
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+// Keep connections available for the existing Better Auth account resolver.
+// Waiting webhook requests hold no database connection.
+const MAX_INBOUND_TRANSACTIONS = 4;
+let inboundTransactions = 0;
+const inboundWaiters: Array<() => void> = [];
+async function withInboundSlot<T>(run: () => Promise<T>): Promise<T> {
+  if (inboundTransactions < MAX_INBOUND_TRANSACTIONS) inboundTransactions++;
+  else await new Promise<void>((resolve) => inboundWaiters.push(resolve));
+  try {
+    return await run();
+  } finally {
+    const next = inboundWaiters.shift();
+    if (next) next();
+    else inboundTransactions--;
+  }
+}
+
 export type ProcessInboundDeps = {
   readonly now?: Date;
   /** Test seam; production resolves the identity graph row. */
   readonly resolveAccount?: typeof resolveWhatsAppAccount;
+  /** Test seam to verify link, audit, outbox and claim roll back together. */
+  readonly afterLinkWrite?: () => Promise<void>;
 };
 
 /** Records the outcome of a claimed message; the claim itself is the dedupe. */
 async function finish(
+  tx: Transaction,
   id: string,
   values: {
     kind: InboundKind;
@@ -161,7 +197,7 @@ async function finish(
     challengeId?: string | null;
   },
 ): Promise<void> {
-  await db
+  await tx
     .update(waInboundMessages)
     .set({
       kind: values.kind,
@@ -173,13 +209,14 @@ async function finish(
 
 /** AUTH-04: at most 10 login messages per number per hour. */
 async function underPerNumberLimit(
+  tx: Transaction,
   fromHash: string,
   now: Date,
 ): Promise<boolean> {
   const windowStart = new Date(
     now.getTime() - LOGIN_MESSAGE_RATE_WINDOW_MINUTES * MINUTE_MS,
   );
-  const rows = await db
+  const rows = await tx
     .select({ processedAt: waInboundMessages.processedAt })
     .from(waInboundMessages)
     .where(
@@ -211,72 +248,129 @@ export async function processInboundWhatsApp(
   message: InboundWhatsAppMessage,
   deps: ProcessInboundDeps = {},
 ): Promise<InboundOutcome> {
-  const now = deps.now ?? new Date();
   const fromHash = await whatsAppDigest(message.sender);
-
-  // Claim the provider message id. A duplicate delivery conflicts and stops
-  // here; nothing below can run twice for the same message.
-  const claimed = await db
-    .insert(waInboundMessages)
-    .values({
-      providerMessageId: message.eventId,
-      receivingNumber: message.receivingNumber,
-      fromHash,
-      kind: "unknown",
-      processedAt: now,
-      createdAt: now,
-    })
-    .onConflictDoNothing({ target: waInboundMessages.providerMessageId })
-    .returning({ id: waInboundMessages.id });
-  const claim = claimed[0];
-  if (!claim) return { eventId: message.eventId, duplicate: true, kind: null };
-
-  const code = loginCodeFromMessage(message.text);
-  if (code === null) {
-    // Not a login message: recorded, no reply, no quota use.
-    return { eventId: message.eventId, duplicate: false, kind: "unknown" };
-  }
-
-  if (!(await underPerNumberLimit(fromHash, now))) {
-    await finish(claim.id, { kind: "rate_limited" });
-    return { eventId: message.eventId, duplicate: false, kind: "rate_limited" };
-  }
-
-  const challenge = await pendingChallengeFor(
-    code,
-    message.receivingNumber,
-    now,
-  );
-  if (challenge.kind !== "found") {
-    await finish(claim.id, { kind: "rejected" });
-    return { eventId: message.eventId, duplicate: false, kind: "rejected" };
-  }
-
-  // The number is proven; resolve or create the account it belongs to.
-  const account = await (deps.resolveAccount ?? resolveWhatsAppAccount)(
-    message.sender,
-    now,
+  const requestHash = identityDigest(
+    "inbound-request",
+    JSON.stringify([message.receivingNumber, message.sender, message.text]),
   );
 
-  const completed = await completeChallenge({
-    challengeId: challenge.id,
-    tenantId: challenge.tenantId,
-    brandId: challenge.brandId,
-    receivingNumber: message.receivingNumber,
-    userId: account.userId,
-    now,
-  });
-  const kind: InboundKind = completed ? "login" : "rejected";
-  await finish(claim.id, {
-    kind,
-    tenantId: challenge.tenantId,
-    challengeId: challenge.id,
-  });
-  return { eventId: message.eventId, duplicate: false, kind };
+  return withInboundSlot(() =>
+    db.transaction(async (tx) => {
+      // AUTH-04 serializes the quota check and insertion for each sender.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${fromHash}, 0))`,
+      );
+      const now = deps.now ?? new Date();
+
+      // Claim the provider message id. A duplicate delivery conflicts and stops
+      // here; nothing below can run twice for the same message.
+      const claimed = await tx
+        .insert(waInboundMessages)
+        .values({
+          providerMessageId: message.eventId,
+          requestHash,
+          receivingNumber: message.receivingNumber,
+          fromHash,
+          kind: "unknown",
+          processedAt: now,
+          createdAt: now,
+        })
+        .onConflictDoNothing({ target: waInboundMessages.providerMessageId })
+        .returning({ id: waInboundMessages.id });
+      const claim = claimed[0];
+      if (!claim) {
+        const [previous] = await tx
+          .select({ requestHash: waInboundMessages.requestHash })
+          .from(waInboundMessages)
+          .where(eq(waInboundMessages.providerMessageId, message.eventId));
+        if (!previous?.requestHash || previous.requestHash !== requestHash)
+          throw new CoreError(
+            "CONFLICT",
+            "Pesan webhook tidak cocok dengan percobaan sebelumnya.",
+          );
+        return { eventId: message.eventId, duplicate: true, kind: null };
+      }
+
+      const code = loginCodeFromMessage(message.text);
+      if (code === null) {
+        // Not a login message: recorded, no reply, no quota use.
+        return { eventId: message.eventId, duplicate: false, kind: "unknown" };
+      }
+
+      if (!(await underPerNumberLimit(tx, fromHash, now))) {
+        await finish(tx, claim.id, { kind: "rate_limited" });
+        return {
+          eventId: message.eventId,
+          duplicate: false,
+          kind: "rate_limited",
+        };
+      }
+
+      const challenge = await pendingChallengeFor(
+        tx,
+        code,
+        message.receivingNumber,
+        now,
+      );
+      if (challenge.kind !== "found") {
+        await finish(tx, claim.id, { kind: "rejected" });
+        return { eventId: message.eventId, duplicate: false, kind: "rejected" };
+      }
+
+      if (challenge.linkUserId !== null) {
+        const completed = await completeLink(
+          tx,
+          {
+            ...challenge,
+            receivingNumber: message.receivingNumber,
+            sender: message.sender,
+            now,
+          },
+          deps.afterLinkWrite,
+        );
+        const kind: InboundKind = completed ? "login" : "rejected";
+        await finish(tx, claim.id, {
+          kind,
+          tenantId: challenge.tenantId,
+          challengeId: challenge.id,
+        });
+        return { eventId: message.eventId, duplicate: false, kind };
+      }
+
+      // The number is proven; resolve or create the account it belongs to.
+      const account = await (deps.resolveAccount ?? resolveWhatsAppAccount)(
+        message.sender,
+        now,
+      );
+
+      const completed = await completeChallenge(tx, {
+        challengeId: challenge.id,
+        tenantId: challenge.tenantId,
+        brandId: challenge.brandId,
+        receivingNumber: message.receivingNumber,
+        userId: account.userId,
+        now,
+      });
+      const kind: InboundKind = completed ? "login" : "rejected";
+      await finish(tx, claim.id, {
+        kind,
+        tenantId: challenge.tenantId,
+        challengeId: challenge.id,
+      });
+      return { eventId: message.eventId, duplicate: false, kind };
+    }),
+  );
 }
 
 type ChallengeMatch =
-  | { kind: "found"; id: string; tenantId: string; brandId: string | null }
+  | {
+      kind: "found";
+      id: string;
+      tenantId: string;
+      brandId: string | null;
+      linkUserId: string | null;
+      linkSessionId: string | null;
+    }
   | { kind: "none" };
 
 /**
@@ -285,11 +379,12 @@ type ChallengeMatch =
  * pending row is swept while we are here.
  */
 async function pendingChallengeFor(
+  tx: Transaction,
   code: string,
   receivingNumber: string,
   now: Date,
 ): Promise<ChallengeMatch> {
-  const rows = await db
+  const rows = await tx
     .select({
       id: loginChallenges.id,
       tenantId: loginChallenges.tenantId,
@@ -297,6 +392,8 @@ async function pendingChallengeFor(
       status: loginChallenges.status,
       expiresAt: loginChallenges.expiresAt,
       receivingNumber: loginChallenges.receivingNumber,
+      linkUserId: loginChallenges.linkUserId,
+      linkSessionId: loginChallenges.linkSessionId,
     })
     .from(loginChallenges)
     .where(
@@ -310,7 +407,7 @@ async function pendingChallengeFor(
   const row = rows[0];
   if (!row || row.status !== "pending") return { kind: "none" };
   if (row.expiresAt.getTime() <= now.getTime()) {
-    await db
+    await tx
       .update(loginChallenges)
       .set({ status: "expired" })
       .where(
@@ -332,6 +429,8 @@ async function pendingChallengeFor(
     id: row.id,
     tenantId: row.tenantId,
     brandId: row.brandId,
+    linkUserId: row.linkUserId,
+    linkSessionId: row.linkSessionId,
   };
 }
 
@@ -340,53 +439,251 @@ async function pendingChallengeFor(
  * still be active and must still route this receiving number to itself. The
  * conditional UPDATE is what makes completion single-use.
  */
-async function completeChallenge(input: {
-  challengeId: string;
-  tenantId: string;
-  brandId: string | null;
-  receivingNumber: string;
-  userId: string;
-  now: Date;
-}): Promise<boolean> {
+async function completeChallenge(
+  transaction: Transaction,
+  input: {
+    challengeId: string;
+    tenantId: string;
+    brandId: string | null;
+    receivingNumber: string;
+    userId: string;
+    now: Date;
+  },
+): Promise<boolean> {
   const tenant = establishTenantContext({
     tenantId: input.tenantId,
     brandId: input.brandId,
     source: "webhook",
   });
   const context = establishScopedTenantContext(tenant, { kind: "tenant" });
-  return withTenant(db, context, async (tx) => {
-    const [tenantRow] = await tx
-      .select({ status: tenants.status })
-      .from(tenants)
-      .where(eq(tenants.id, input.tenantId))
-      .limit(1);
-    if (tenantRow?.status !== "active") return false;
-    // Resolve the tenant from the receiving number: the tenant's own active
-    // integration must still name this number, otherwise this message is not
-    // theirs to complete.
-    const channel = await resolveWhatsAppChannel(tx, context).catch(
-      (error: unknown) => {
-        if (error instanceof CoreError && error.code === "SERVICE_UNAVAILABLE")
-          return null;
-        throw error;
-      },
-    );
-    if (!channel || channel.routingNumber !== input.receivingNumber)
-      return false;
-    const updated = await tx
-      .update(loginChallenges)
-      .set({
-        status: "completed",
-        matchedUserId: input.userId,
-        completedAt: input.now,
-      })
-      .where(
-        and(
-          eq(loginChallenges.id, input.challengeId),
-          eq(loginChallenges.status, "pending"),
-        ),
-      )
-      .returning({ id: loginChallenges.id });
-    return updated.length === 1;
+  return withTenant(
+    transaction as unknown as typeof db,
+    context,
+    async (tx) => {
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, input.tenantId))
+        .limit(1);
+      if (tenantRow?.status !== "active") return false;
+      // Resolve the tenant from the receiving number: the tenant's own active
+      // integration must still name this number, otherwise this message is not
+      // theirs to complete.
+      const channel = await resolveWhatsAppChannel(tx, context).catch(
+        (error: unknown) => {
+          if (
+            error instanceof CoreError &&
+            error.code === "SERVICE_UNAVAILABLE"
+          )
+            return null;
+          throw error;
+        },
+      );
+      if (!channel || channel.routingNumber !== input.receivingNumber)
+        return false;
+      const updated = await tx
+        .update(loginChallenges)
+        .set({
+          status: "completed",
+          matchedUserId: input.userId,
+          completedAt: input.now,
+        })
+        .where(
+          and(
+            eq(loginChallenges.id, input.challengeId),
+            eq(loginChallenges.status, "pending"),
+          ),
+        )
+        .returning({ id: loginChallenges.id });
+      return updated.length === 1;
+    },
+  );
+}
+
+/** AUTH-07: the proof attaches only to the session that requested it. */
+async function completeLink(
+  transaction: Transaction,
+  input: {
+    id: string;
+    tenantId: string;
+    brandId: string | null;
+    linkUserId: string | null;
+    linkSessionId: string | null;
+    receivingNumber: string;
+    sender: string;
+    now: Date;
+  },
+  afterLinkWrite?: () => Promise<void>,
+): Promise<boolean> {
+  if (!input.linkUserId || !input.linkSessionId) return false;
+  const userId = input.linkUserId;
+  const tenant = establishTenantContext({
+    tenantId: input.tenantId,
+    brandId: input.brandId,
+    source: "webhook",
   });
+  const context = establishScopedTenantContext(tenant, { kind: "tenant" });
+  const digest = await whatsAppDigest(input.sender);
+  return withTenant(
+    transaction as unknown as typeof db,
+    context,
+    async (tx) => {
+      // Serialize both the challenge and all attempts for this number.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${digest}, 0))`,
+      );
+      const [challenge] = await tx
+        .select()
+        .from(loginChallenges)
+        .where(eq(loginChallenges.id, input.id))
+        .for("update");
+      if (
+        !challenge ||
+        challenge.status !== "pending" ||
+        challenge.expiresAt <= input.now ||
+        challenge.linkUserId !== userId ||
+        challenge.linkSessionId !== input.linkSessionId
+      )
+        return false;
+      const [active] = await tx
+        .select({ id: session.id })
+        .from(session)
+        .where(
+          and(
+            eq(session.id, input.linkSessionId!),
+            eq(session.userId, userId),
+            isNull(session.revokedAt),
+            gt(session.expiresAt, input.now),
+          ),
+        )
+        .for("update");
+      if (!active) return false;
+      const [tenantRow] = await tx
+        .select({ status: tenants.status })
+        .from(tenants)
+        .where(eq(tenants.id, input.tenantId));
+      if (tenantRow?.status !== "active") return false;
+      const channel = await resolveWhatsAppChannel(tx, context).catch(
+        (error: unknown) => {
+          if (
+            error instanceof CoreError &&
+            error.code === "SERVICE_UNAVAILABLE"
+          )
+            return null;
+          throw error;
+        },
+      );
+      if (!channel || channel.routingNumber !== input.receivingNumber)
+        return false;
+      const [existing] = await tx
+        .select()
+        .from(userIdentities)
+        .where(
+          and(
+            eq(userIdentities.type, "whatsapp"),
+            eq(userIdentities.valueHash, digest),
+          ),
+        );
+      if (existing && existing.userId !== userId) {
+        // Preserve the actual match without exposing it to the polling browser.
+        // A cancelled link with a different matched user is the conflict signal.
+        await tx
+          .update(loginChallenges)
+          .set({ status: "cancelled", matchedUserId: existing.userId })
+          .where(eq(loginChallenges.id, input.id));
+        return false;
+      }
+      let identity = existing;
+      if (!identity || identity.verifiedAt === null) {
+        if (identity) {
+          const [verified] = await tx
+            .update(userIdentities)
+            .set({
+              verifiedAt: input.now,
+              valueEncrypted:
+                identity.valueEncrypted ??
+                sealSecret(input.sender, `user_identity:whatsapp:${digest}`),
+            })
+            .where(eq(userIdentities.id, identity.id))
+            .returning();
+          if (!verified) throw new Error("Identity could not be verified");
+          identity = verified;
+        } else {
+          const [inserted] = await tx
+            .insert(userIdentities)
+            .values({
+              userId,
+              type: "whatsapp",
+              valueHash: digest,
+              valueEncrypted: sealSecret(
+                input.sender,
+                `user_identity:whatsapp:${digest}`,
+              ),
+              verifiedAt: input.now,
+              isPrimary: false,
+            })
+            .onConflictDoNothing()
+            .returning();
+          if (!inserted) return false;
+          identity = inserted;
+        }
+        await afterLinkWrite?.();
+        const def = identityLinkedEvent;
+        const event = def.envelopeSchema.parse({
+          id: createUlid(),
+          tenantId: input.tenantId,
+          outletId: null,
+          name: def.name,
+          version: def.version,
+          aggregateType: def.entry.aggregateType,
+          aggregateId: identity.id,
+          sequence: 1,
+          occurredAt: input.now.toISOString(),
+          actor: { type: "user", id: userId },
+          deviceId: null,
+          idempotencyKey: `identity.linked:${identity.id}`,
+          payloadSchemaRef: def.payloadSchemaRef,
+          payload: {
+            identityId: identity.id,
+            userId,
+            type: "whatsapp",
+            isPrimary: identity.isPrimary,
+          },
+        });
+        await appendOutbox(tx, context, {
+          id: createUlid(),
+          event,
+          destination: "cloud-sync",
+          direction: null,
+          peerId: null,
+        });
+        await recordAudit(tx, context, {
+          id: createUlid(),
+          tenantId: input.tenantId,
+          outletId: null,
+          actorType: "user",
+          actorId: userId,
+          deviceId: null,
+          action: "identity.linked",
+          objectType: "user_identity",
+          objectId: identity.id,
+          reason: null,
+          maskedChanges: { before: null, after: { type: "whatsapp" } },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: input.now.toISOString(),
+        });
+      }
+      await tx
+        .update(loginChallenges)
+        .set({
+          status: "completed",
+          matchedUserId: userId,
+          completedAt: input.now,
+        })
+        .where(eq(loginChallenges.id, input.id));
+      return true;
+    },
+  );
 }

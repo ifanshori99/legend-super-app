@@ -27,7 +27,7 @@
 // tenant scoping of these global tables lives here, not in RLS (coordinator
 // decision, docs/plan/contracts.md `login_challenges`).
 
-import { and, eq, gt, isNull, or } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import {
   assertChallengeRateLimit,
   assertLoginChallengeSessionClaimable,
@@ -213,6 +213,7 @@ export async function issueWhatsAppChallenge(
   tenant: TenantContext,
   request: {
     bindingNonce: string;
+    link?: { userId: string; sessionId: string } | null;
     ip: string | null;
     userAgent: string | null;
   },
@@ -227,6 +228,12 @@ export async function issueWhatsAppChallenge(
   const issued = await withTenant(db, context, async (tx) => {
     await assertTenantActive(tx, context);
     const channel = await resolveWhatsAppChannel(tx, context);
+    for (const key of [bindingHash, ipHash]
+      .filter((value): value is string => value !== null)
+      .sort())
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+      );
     await assertPerDeviceLimit(tx, { bindingHash, ipHash, now });
     const [row] = await tx
       .insert(loginChallenges)
@@ -236,6 +243,8 @@ export async function issueWhatsAppChallenge(
         channel: "whatsapp_inbound",
         codeHash: loginCodeDigest(code),
         browserBindingHash: bindingHash,
+        linkUserId: request.link?.userId ?? null,
+        linkSessionId: request.link?.sessionId ?? null,
         receivingNumber: channel.routingNumber,
         status: "pending",
         expiresAt: new Date(now.getTime() + LOGIN_CODE_TTL_MINUTES * MINUTE_MS),
@@ -311,6 +320,7 @@ export async function pollWhatsAppChallenge(
   challengeId: string,
   request: {
     bindingNonce: string | null;
+    link?: { userId: string; sessionId: string } | null;
     ip: string | null;
     userAgent: string | null;
   },
@@ -320,6 +330,19 @@ export async function pollWhatsAppChallenge(
   const row = await loadChallenge(challengeId);
   if (!row) throw new CoreError("NOT_FOUND", "Kode masuk tidak ditemukan.");
   assertBinding(row, request.bindingNonce);
+  if (row.linkUserId !== null) {
+    if (
+      request.link?.userId !== row.linkUserId ||
+      request.link?.sessionId !== row.linkSessionId
+    )
+      throw new CoreError("FORBIDDEN", "Sesi penautan tidak cocok.");
+    if (
+      row.status === "cancelled" &&
+      row.matchedUserId !== null &&
+      row.matchedUserId !== row.linkUserId
+    )
+      throw new IdentityError("IDENTITY_ALREADY_LINKED");
+  }
 
   if (row.status === "pending") {
     const expired = expireLoginChallenge(toChallenge(row), now);
@@ -336,6 +359,9 @@ export async function pollWhatsAppChallenge(
       );
     return { view: pendingView(expired), session: null };
   }
+
+  if (row.linkUserId !== null)
+    return { view: pendingView(toChallenge(row)), session: null };
 
   if (row.status !== "completed" || row.matchedUserId === null)
     return { view: pendingView(toChallenge(row)), session: null };
