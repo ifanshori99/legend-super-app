@@ -24,6 +24,7 @@ import {
   type NotificationRecipientResolver,
 } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
+import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -147,6 +148,14 @@ const relay = createRelayRuntime({
     await relayOutbox(db, context, runtime.enqueue, (gap) =>
       handlers.requestMissing(context, gap),
     );
+    // §3 F7 approval deadlines (legend-y5q): expire overdue levels and append
+    // approval.resolved for the source module + notifications. Fail closed: a
+    // sweep error never blocks the relay, the next tick retries.
+    try {
+      await expireDueApprovalRequests(context);
+    } catch {
+      console.error("Approval deadline sweep failed");
+    }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
     if (!handlers.notificationDelivery) return;
