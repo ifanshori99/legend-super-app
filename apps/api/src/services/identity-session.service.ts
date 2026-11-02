@@ -172,6 +172,33 @@ export async function touchSession(input: {
     .where(eq(session.id, row.id));
 }
 
+/** Explicit extensions allowed per session per window. The activity write is
+ * already throttled to one a minute; this caps the row-lock traffic too.
+ * In-process is enough on the single API VM (owner budget note). */
+export const SESSION_EXTEND_RATE_LIMIT = 10;
+const SESSION_EXTEND_RATE_WINDOW_MS = MINUTE_MS;
+const extendHits = new Map<string, { windowStart: number; count: number }>();
+
+function assertExtendRateLimit(sessionId: string, now: number): void {
+  if (extendHits.size > 10_000) {
+    for (const [key, hit] of extendHits)
+      if (now - hit.windowStart >= SESSION_EXTEND_RATE_WINDOW_MS)
+        extendHits.delete(key);
+  }
+  const hit = extendHits.get(sessionId);
+  if (!hit || now - hit.windowStart >= SESSION_EXTEND_RATE_WINDOW_MS) {
+    extendHits.set(sessionId, { windowStart: now, count: 1 });
+    return;
+  }
+  hit.count += 1;
+  if (hit.count > SESSION_EXTEND_RATE_LIMIT)
+    throw new HttpError(
+      429,
+      "RATE_LIMITED",
+      "Terlalu banyak permintaan. Coba lagi sebentar.",
+    );
+}
+
 /** AUTH-05: a staff session may extend only while its idle window is live.
  * Lock the row through the check and throttled activity write so concurrent
  * extensions or revocations cannot resurrect it. */
@@ -179,6 +206,7 @@ export async function extendCurrentSession(input: {
   readonly sessionId: string;
   readonly userId: string;
 }): Promise<void> {
+  assertExtendRateLimit(input.sessionId, Date.now());
   await db.transaction(async (tx) => {
     const [row] = await tx
       .select()

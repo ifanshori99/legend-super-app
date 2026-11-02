@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Clock } from "lucide-react";
-import { useLocation } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ApiError } from "@/lib/api/errors";
 import { useCurrentAuth, useExtendStaffSession } from "../hooks";
 import { idleWarningVisible, minutesUntilExpiry } from "../state";
 
@@ -53,6 +54,7 @@ export function IdleSessionWarning() {
   const [dismissedFor, setDismissedFor] = React.useState<string | null>(null);
   const { refetch } = auth;
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const firstPath = React.useRef(true);
   React.useEffect(() => {
     if (firstPath.current) {
@@ -75,8 +77,16 @@ export function IdleSessionWarning() {
       await extend.mutateAsync();
       await refetch({ throwOnError: true });
       setDismissedFor(session?.expiresAt ?? null);
-    } catch {
-      // Keep the warning visible so the user can retry.
+    } catch (error) {
+      // AUTH-05: an ended session (idle, revoked, expired) cannot be revived;
+      // send the user to sign-in and back here. Other failures keep the
+      // warning open with an error so the user can retry.
+      if (error instanceof ApiError && error.status === 401)
+        void navigate({
+          to: "/masuk",
+          search: { lanjut: pathname },
+          replace: true,
+        });
     }
   }
 
@@ -104,7 +114,7 @@ export function IdleSessionWarning() {
         </p>
         {extend.isError && (
           <p role="alert" className="text-sm text-destructive">
-            {t("staffAuth.errors.loadTitle")}
+            {t("staffAuth.idle.extendFailed")}
           </p>
         )}
         <DialogFooter>

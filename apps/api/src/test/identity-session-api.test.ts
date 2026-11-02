@@ -11,6 +11,7 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import {
   loadSessionRow,
+  SESSION_EXTEND_RATE_LIMIT,
   sessionPolicy,
   toWireSession,
   touchSession,
@@ -255,6 +256,25 @@ describe("session policy (§3 F6 Sesi & Perangkat)", () => {
           .set("Cookie", cookie)
       ).status,
     ).toBe(403);
+  });
+
+  it("AUTH-05 rate-limits explicit session activity per session", async () => {
+    const email = await signUp(agent(app), "Manajer Ramai");
+    const { cookie } = await signIn(email);
+    const id = await sessionIdOf(cookie);
+    await owner.query("UPDATE session SET kind = 'management' WHERE id = $1", [
+      id,
+    ]);
+    const path = "/api/auth/sessions/current/activity";
+    for (let i = 0; i < SESSION_EXTEND_RATE_LIMIT; i += 1)
+      expect(
+        (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+          .status,
+      ).toBe(204);
+    expect(
+      (await request(app).post(path).set(originHeader).set("Cookie", cookie))
+        .status,
+    ).toBe(429);
   });
 
   it("AUTH-05 cannot resurrect an idle, expired or revoked session", async () => {
