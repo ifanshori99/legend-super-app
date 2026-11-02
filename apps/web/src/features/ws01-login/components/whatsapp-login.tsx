@@ -285,7 +285,11 @@ export function WhatsAppLogin({
         </div>
         <div className="grid gap-3">
           <Button asChild size="lg" className="w-full">
-            <a href={issued.whatsAppDeepLink} target="_blank" rel="noopener">
+            <a
+              href={issued.whatsAppDeepLink}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               <MessageCircle aria-hidden="true" />
               {t("login.whatsapp.openWhatsApp")}
             </a>

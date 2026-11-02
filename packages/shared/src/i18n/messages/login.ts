@@ -124,7 +124,7 @@ export const loginMessages = {
       "Poin tidak bisa dikumpulkan atau ditukar sebelum nomor WhatsApp terhubung. Tiket fasilitas juga butuh nomor yang bisa dihubungi.",
     bonusNote:
       "Bonus poin untuk penautan diatur outlet dan muncul di rincian program saat aktif.",
-    action: "Hubungkan dengan WhatsApp",
+    action: "Hubungkan WhatsApp",
     panelHeading: "Kirim kode dari WhatsApp-mu",
     signedOutTitle: "Masuk dulu",
     signedOutHint:

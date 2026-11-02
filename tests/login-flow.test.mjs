@@ -12,6 +12,7 @@ import { beforeEach, describe, test } from "node:test";
 import {
   cafeLegendIdentityFixtures as fx,
   formatLoginCode,
+  googleLoginStartSchema,
   loginChallengeSchema,
   loginChallengeViewSchema,
   LOGIN_CODE_PATTERN,
@@ -165,6 +166,28 @@ describe("WhatsApp challenge states (AUTH-01)", () => {
     assert.equal(loginErrorKey(new Error("boom")), "login.errors.generic");
   });
 
+  test("AUTH-01: server-built navigation URLs are https only (no javascript:)", () => {
+    // The screens put these straight into an href / location.assign.
+    for (const bad of [
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "http://wa.me/1",
+    ]) {
+      assert.equal(
+        googleLoginStartSchema.safeParse({ authorizationUrl: bad }).success,
+        false,
+        bad,
+      );
+    }
+    assert.equal(
+      googleLoginStartSchema.safeParse({
+        authorizationUrl:
+          "https://accounts.google.com/o/oauth2/v2/auth?state=x",
+      }).success,
+      true,
+    );
+  });
+
   test("AUTH-01: the return path stays on this app (open redirect is refused)", () => {
     for (const value of ["/member", "/t/abc/bill", "/", "/masuk?lanjut=/x"]) {
       assert.equal(safeReturnPath(value), value);
@@ -178,10 +201,24 @@ describe("WhatsApp challenge states (AUTH-01)", () => {
       assert.equal(safeReturnPath(value), undefined, value);
       assert.equal(returnPathSchema.safeParse(value).success, false, value);
     }
-    // Browsers normalize "\" to "/" in URLs, so "/\evil.example" is a
-    // protocol-relative "//evil.example". The contract's regex misses it; the
-    // screen's own guard refuses it (follow-up bead: tighten returnPathSchema).
-    assert.equal(safeReturnPath("/\\evil.example"), undefined);
+    // Browsers normalize "\" to "/" and drop tab/CR/LF inside URLs, so each of
+    // these becomes a protocol-relative "//evil.example". The contract the
+    // /masuk routes validate `?lanjut=` with must refuse them (Opus review,
+    // legend-baa), not only the screen helper.
+    for (const value of [
+      "/\\evil.example",
+      "/\t/evil.example",
+      "/\n/evil.example",
+      "/\r/evil.example",
+      "/ /evil.example",
+    ]) {
+      assert.equal(safeReturnPath(value), undefined, JSON.stringify(value));
+      assert.equal(
+        returnPathSchema.safeParse(value).success,
+        false,
+        JSON.stringify(value),
+      );
+    }
     assert.equal(safeReturnPath(undefined), undefined);
     assert.equal(safeReturnPath(""), undefined);
     assert.equal(signInPath("/member"), "/masuk?lanjut=%2Fmember");

@@ -11,12 +11,13 @@
 // The challenge state machine itself lives in the contract
 // (@starter/shared/identity, machines.ts); this file only reads its output.
 
-import type {
-  LoginChallenge,
-  LoginChallengeView,
+import {
+  returnPathSchema,
+  type LoginChallenge,
+  type LoginChallengeView,
 } from "@starter/shared/identity";
 
-/** Two minutes between polls while the guest sends the message (AUTH-01 flow). */
+/** Two seconds between polls while the guest sends the message (AUTH-01 flow). */
 export const LOGIN_POLL_MS = 2_000;
 
 /** What the requesting browser can see of its own challenge. */
@@ -139,22 +140,16 @@ export function postLoginPath(session: {
 
 /**
  * A return path from the URL is untrusted: only a same-origin path, never a
- * protocol-relative `//host` or another scheme (open redirect). Mirrors the
- * contract's returnPathSchema (max 300, `/` but not `//`) and is stricter about
- * a backslash after the first slash, because browsers normalize `\` to `/` in
- * URLs — `/\evil.example` would become `//evil.example`. The parity test in
- * tests/login-flow.test.mjs keeps the rest in step.
+ * protocol-relative `//host`, another scheme, or a backslash/whitespace form a
+ * browser normalizes into one (`/\evil.example`, `/<TAB>/evil.example`). The
+ * screens validate `?lanjut=` with the contract's returnPathSchema; this is the
+ * same rule for code that builds a sign-in URL, so the two can never drift.
  */
-const RETURN_PATH_PATTERN = /^\/(?![\\/])/;
-const RETURN_PATH_MAX = 300;
-
 export function safeReturnPath(
   value: string | null | undefined,
 ): string | undefined {
   if (!value) return undefined;
-  return value.length <= RETURN_PATH_MAX && RETURN_PATH_PATTERN.test(value)
-    ? value
-    : undefined;
+  return returnPathSchema.safeParse(value).success ? value : undefined;
 }
 
 /** Build the `/masuk?...` URL a page uses to hand the visitor to sign-in. */

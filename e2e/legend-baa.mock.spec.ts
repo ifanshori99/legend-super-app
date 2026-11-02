@@ -192,7 +192,7 @@ test("AUTH-07: points wait for a verified number, so Google asks to link WhatsAp
   await expect(
     page.getByText(/Poin tidak bisa dikumpulkan atau ditukar/),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Hubungkan dengan WhatsApp" }).click();
+  await page.getByRole("button", { name: "Hubungkan WhatsApp" }).click();
   await expect(page.getByText(CODE)).toBeVisible();
   // Exact: the points paragraph above also contains "nomor WhatsApp terhubung".
   await expect(
@@ -224,4 +224,65 @@ test("AUTH-01: a failed start explains the fix, and 390px has no sideways scroll
   await expect(page.getByRole("alert")).toContainText(
     "Tidak ada koneksi internet. Sambungkan perangkatmu, lalu coba lagi.",
   );
+});
+
+test("AUTH-01: a backslash or tab return path cannot leave the app (open redirect)", async ({
+  page,
+}) => {
+  test.slow();
+  // "/\evil.example" and "/<TAB>/evil.example" both normalize to
+  // "//evil.example" in a browser; the contract refuses them, so the sign-in
+  // lands on the default home instead (Opus review, legend-baa).
+  for (const lanjut of ["%2F%5Cevil.example", "%2F%09%2Fevil.example"]) {
+    await page.goto(`/masuk?lanjut=${lanjut}`);
+    await waitForHydration(page);
+    await page.getByRole("button", { name: "Masuk dengan WhatsApp" }).click();
+    await expect(page.getByText(CODE)).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Ke halaman member" }),
+    ).toHaveAttribute("href", "/member", { timeout: 20_000 });
+    expect(new URL(page.url()).pathname).toBe("/masuk");
+  }
+});
+
+test("AUTH-07: the link-WhatsApp screen keeps its 16px gutter at 360px and 390px", async ({
+  page,
+}) => {
+  test.slow();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/masuk/hubungkan?mock=normal");
+  await waitForHydration(page);
+  expect(
+    await page.evaluate(() =>
+      Math.max(
+        ...[...document.querySelectorAll("#main-content section")].map(
+          (node) => node.getBoundingClientRect().right,
+        ),
+      ),
+    ),
+  ).toBeLessThanOrEqual(360 - 15);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/masuk/hubungkan?mock=normal");
+  await waitForHydration(page);
+  await expect(
+    page.getByText(/Poin tidak bisa dikumpulkan atau ditukar/),
+  ).toBeVisible();
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+  const right = await page.evaluate(() =>
+    Math.max(
+      ...[
+        ...document.querySelectorAll(
+          "#main-content section, #main-content [role=status], #main-content h1",
+        ),
+      ].map((node) => node.getBoundingClientRect().right),
+    ),
+  );
+  expect(right).toBeLessThanOrEqual(390 - 15);
+  await page.screenshot({
+    path: "docs/design/screenshots/legend-baa/masuk-hubungkan-390-light.png",
+    fullPage: true,
+  });
 });
