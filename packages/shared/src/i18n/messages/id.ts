@@ -5,6 +5,7 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
@@ -14,6 +15,7 @@ import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
 import { reservationMessages } from "./reservation.ts";
+import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 
 export const id = {
@@ -30,6 +32,11 @@ export const id = {
   qrRecovery: qrRecoveryMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // Staff second factor, security settings and device sessions (legend-9bh;
+  // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
+  ...ws01AuthMessages,
+  // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
+  access: accessMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
@@ -757,16 +764,93 @@ export const id = {
       kitchen: "Dapur",
       approvals: "Approval",
       inventory: "Inventori",
-      purchasing: "Purchasing",
+      purchasing: "Pengadaan",
       accounting: "Akuntansi",
       crm: "CRM",
       loyalty: "Loyalty",
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",
+      access: "Akses & Peran",
       payments: "Pembayaran",
       tax: "Pajak & service charge",
       taxReport: "Laporan pajak",
+    },
+  },
+  purchasing: {
+    title: "Pengadaan",
+    subtitle:
+      "Kelola permintaan pembelian dan pesanan supplier dalam satu alur.",
+    requests: "Permintaan pembelian",
+    orders: "Purchase order",
+    newRequest: "Buat permintaan",
+    requestForm: "Permintaan baru",
+    item: "Bahan",
+    quantity: "Jumlah",
+    lineNumber: "Bahan {number}",
+    addLine: "Tambah bahan",
+    suggestionsTitle: "Saran pembelian AI-08",
+    suggestionsHint:
+      "Perkiraan sementara berdasarkan batas par dan stok saat ini, bukan prakiraan AI. Periksa jumlah sebelum menyimpan.",
+    suggestionsError: "Saran stok belum dapat dimuat.",
+    suggestionsEmpty: "Tidak ada bahan di bawah batas minimum par.",
+    suggestionValues: "Stok {onHand} · Maksimum {parMax} · Saran {quantity}",
+    useSuggestion: "Gunakan saran {name}",
+    removeLine: "Hapus bahan",
+    neededBy: "Dibutuhkan pada",
+    note: "Catatan",
+    saveRequest: "Simpan permintaan",
+    selectItem: "Pilih bahan",
+    requestList: "Daftar permintaan",
+    orderList: "Daftar purchase order",
+    noOutlet: "Belum ada outlet tersedia",
+    noOutletHint: "Pilih atau tambahkan outlet sebelum membuat permintaan.",
+    mockLink: "Tautan contoh membuka tampilan cetak di perangkat ini.",
+    noRequests: "Belum ada permintaan pembelian",
+    noOrders: "Belum ada purchase order",
+    emptyHint: "Buat permintaan untuk memulai pengadaan.",
+    open: "Lihat detail",
+    requestDetail: "Detail permintaan",
+    orderDetail: "Detail purchase order",
+    submit: "Ajukan",
+    approve: "Setujui",
+    reject: "Tolak",
+    reason: "Alasan penolakan",
+    createOrder: "Buat PO",
+    supplier: "Supplier",
+    chooseSupplier: "Pilih supplier",
+    expectedDate: "Perkiraan tiba",
+    unitPrice: "Harga satuan (Rp)",
+    saveOrder: "Simpan PO",
+    orderForm: "Buat purchase order",
+    printTitle: "Cetak purchase order",
+    printAction: "Cetak / simpan PDF",
+    printHelp: "Gunakan menu cetak untuk menyimpan sebagai PDF.",
+    printEmpty: "Purchase order tidak memiliki bahan",
+    price: "Harga satuan",
+    lineTotal: "Jumlah",
+    subtotal: "Subtotal",
+    tax: "Pajak",
+    total: "Total",
+    sendEmail: "Kirim email",
+    email: "Email supplier",
+    share: "Buat tautan PDF",
+    preview: "Pratinjau cetak",
+    shareLink: "Tautan PDF",
+    invalid: "Periksa data yang wajib diisi dan coba lagi.",
+    actionError: "Tindakan tidak berhasil. Periksa data lalu coba lagi.",
+    offline: "Tidak ada koneksi. Periksa jaringan lalu coba lagi.",
+    status: {
+      draft: "Draf",
+      pending_approval: "Menunggu persetujuan",
+      approved: "Disetujui",
+      rejected: "Ditolak",
+      converted: "Sudah dibuat PO",
+      cancelled: "Dibatalkan",
+      sent: "Terkirim",
+      partially_received: "Diterima sebagian",
+      received: "Diterima",
+      closed: "Ditutup",
     },
   },
   // Notification center, preferences and web push opt-in (PRD §3.15, §2 PWA).
@@ -1218,6 +1302,7 @@ export const id = {
     mfaTitle: "Verifikasi dua langkah diperlukan",
     mfaHint:
       "Area ini hanya terbuka setelah verifikasi dua langkah selesai. Masuk ulang dan selesaikan verifikasi.",
+    mfaVerify: "Verifikasi sekarang",
     backHome: "Kembali ke beranda",
   },
   area: {

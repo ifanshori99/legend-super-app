@@ -231,11 +231,20 @@ registerMock(startGoogleLogin, () => {
 
 // ------------------------------------------------------------- identity view
 
-registerMock(getCurrentAuth, ({ scenario }) => {
+/**
+ * The customer side of GET /api/auth/me. Exported because ws01-auth mocks the
+ * staff side of the same endpoint; lib/mock/handlers/current-auth.ts picks one
+ * per page in the browser (one endpoint, one registered mock).
+ */
+export function customerCurrentAuthMock({ scenario }: { scenario: string }): {
+  data: CurrentAuthView;
+} {
   // `empty`: no session in this browser — the link prompt's signed-out state.
   if (scenario === "empty")
     throw new ApiError(401, "UNAUTHORIZED", "Belum masuk.");
   if (auth.get() === "customer")
     return { data: customerAuthView(newCustomerSession(new Date())) };
   return { data: idFx.currentAuth };
-});
+}
+
+registerMock(getCurrentAuth, customerCurrentAuthMock);
