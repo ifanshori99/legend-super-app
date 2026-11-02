@@ -17,7 +17,7 @@ test.skip(
 
 const NAV = { waitUntil: "networkidle" as const };
 
-test("LOY-01/LOY-03: the program screen shows and saves the earn ratio, expiry policy and point value", async ({
+test("PRD §3.20 Program: the program screen shows and saves the earn ratio, expiry policy and point value", async ({
   page,
 }) => {
   await page.goto(`${MOCK_URL}/kelola/loyalty?mock=normal`, NAV);
@@ -47,7 +47,7 @@ test("LOY-01/LOY-03: the program screen shows and saves the earn ratio, expiry p
   ).toBeVisible();
 });
 
-test("LOY-03: a reward can be added with its own stock and validity window", async ({
+test("PRD §3.20 Reward: a reward can be added with its own stock and validity window", async ({
   page,
 }) => {
   const errors: string[] = [];

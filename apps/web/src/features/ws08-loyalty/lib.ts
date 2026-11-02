@@ -9,7 +9,11 @@
 // live here so the forms stay thin and the rules are testable.
 
 import type { EndpointInput } from "@starter/shared/api";
-import { idrSchema } from "@starter/shared/core";
+import {
+  DEFAULT_TIME_ZONE,
+  businessDateOf,
+  idrSchema,
+} from "@starter/shared/core";
 import type { MessageKey, TranslateVars } from "@starter/shared/i18n";
 import type {
   LoyaltyProgram,
@@ -61,19 +65,60 @@ export function parseMultiplier(input: string): number | null {
   return bp;
 }
 
-/** Calendar day of an instant, as `<input type="date">` wants it. */
-export function dateInputValue(iso: string): string {
-  return iso.slice(0, 10);
+/**
+ * Outlet business day of an instant, as `<input type="date">` wants it
+ * (docs/plan/AGENT_PLAYBOOK.md: business dates in the outlet time zone).
+ */
+export function dateInputValue(
+  iso: string,
+  timeZone: string = DEFAULT_TIME_ZONE,
+): string {
+  return businessDateOf(iso, timeZone);
+}
+
+/** Minutes the zone is ahead of UTC at that instant (WIB = +420). */
+function zoneOffsetMinutes(instant: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(instant);
+  const part = (type: string) =>
+    Number(parts.find((entry) => entry.type === type)?.value ?? 0);
+  const wall = Date.UTC(
+    part("year"),
+    part("month") - 1,
+    part("day"),
+    part("hour"),
+    part("minute"),
+    part("second"),
+  );
+  return Math.round((wall - Math.floor(instant / 1000) * 1000) / 60_000);
 }
 
 /**
- * `<input type="date">` value → instant. A validity range names whole days, so
- * the start is the UTC day opening and the end the UTC day close; the browser
- * posts the same day back, so the field round-trips without shifting a day.
+ * `<input type="date">` value → instant. A validity range names whole outlet
+ * business days, so the start is the day opening and the end the day close in
+ * the outlet time zone ("2026-11-01" start in WIB = 2026-10-31T17:00:00Z); the
+ * field round-trips through dateInputValue without shifting a day.
  */
-export function isoFromDateInput(value: string, edge: "start" | "end"): string {
-  const time = edge === "start" ? "00:00:00.000Z" : "23:59:59.000Z";
-  return `${value}T${time}`;
+export function isoFromDateInput(
+  value: string,
+  edge: "start" | "end",
+  timeZone: string = DEFAULT_TIME_ZONE,
+): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const wall =
+    edge === "start"
+      ? Date.UTC(year, month - 1, day, 0, 0, 0)
+      : Date.UTC(year, month - 1, day, 23, 59, 59);
+  const offset = zoneOffsetMinutes(wall, timeZone);
+  return new Date(wall - offset * 60_000).toISOString();
 }
 
 /** True when the URL asks mock mode for a non-normal scenario (?mock=empty). */
@@ -90,6 +135,11 @@ export function parseWholeNumber(input: string): number | null {
   return Number.isSafeInteger(value) ? value : null;
 }
 
+/** A business date passes through; an instant becomes its outlet day. */
+function calendarDay(value: string): string {
+  return value.length > 10 ? businessDateOf(value) : value;
+}
+
 const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
   day: "numeric",
   month: "short",
@@ -98,17 +148,17 @@ const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
 });
 
 /**
- * "2026-10-01" or an ISO instant → "1 Okt 2026". Parsed as a UTC calendar day,
- * so the server render and the browser render agree on the day.
+ * "2026-10-01" or an ISO instant → "1 Okt 2026". An instant is read as its
+ * outlet business day, so server and browser renders agree on the day.
  */
 export function formatDateLabel(value: string): string {
-  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+  const [year, month, day] = calendarDay(value).split("-").map(Number);
   return DAY_FORMAT.format(Date.UTC(year, month - 1, day));
 }
 
 /** "2026-10-01" or an ISO instant → "01/10/2026" for compact table cells. */
 export function formatDateShort(value: string): string {
-  const [year, month, day] = value.slice(0, 10).split("-");
+  const [year, month, day] = calendarDay(value).split("-");
   return `${day}/${month}/${year}`;
 }
 
@@ -440,7 +490,7 @@ export function validateRewardForm(
   if (
     form.validUntil.trim() !== "" &&
     form.validFrom.trim() !== "" &&
-    form.validUntil <= form.validFrom
+    form.validUntil < form.validFrom
   )
     errors.validUntil = "loyalty.rewards.errors.validUntil";
   if (form.type === "voucher") {

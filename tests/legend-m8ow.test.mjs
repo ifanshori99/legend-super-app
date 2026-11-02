@@ -138,9 +138,9 @@ test("PRD §3.20: the tier form only accepts a 1x-10x multiplier", () => {
   assert.equal(lib.formatMultiplier(10_000), "1×");
 });
 
-// ---- Rewards (PRD §3.20 "Reward Katalog"; LOY-03) ------------------------
+// ---- Rewards (PRD §3.20 "Reward Katalog") --------------------------------
 
-test("LOY-03: the reward list serves stock and validity from the contract fixtures", async () => {
+test("PRD §3.20 Reward: the reward list serves stock and validity from the contract fixtures", async () => {
   const page = await get("/api/loyalty/rewards", { limit: "100" });
   assert.equal(page.data.length, fixtures.rewards.length);
   const first = page.data.find(
@@ -159,7 +159,7 @@ test("LOY-03: the reward list serves stock and validity from the contract fixtur
   assert.ok(inactive.data.every((reward) => !reward.isActive));
 });
 
-test("LOY-03: the reward form needs a valid stock and validity window before save", () => {
+test("PRD §3.20 Reward: the reward form needs a valid stock and validity window before save", () => {
   const base = {
     ...lib.emptyRewardForm(),
     name: "Voucher Uji",
@@ -190,7 +190,7 @@ test("LOY-03: the reward form needs a valid stock and validity window before sav
   );
 });
 
-test("LOY-03: creating a voucher reward keeps points, stock and validity", async () => {
+test("PRD §3.20 Reward: creating a voucher reward keeps points, stock and validity", async () => {
   const body = lib.rewardBody({
     ...lib.emptyRewardForm(),
     name: "Voucher Uji",
@@ -204,11 +204,36 @@ test("LOY-03: creating a voucher reward keeps points, stock and validity", async
   const created = await send("POST", "/api/loyalty/rewards", body);
   assert.equal(created.data.stock, 5);
   assert.equal(created.data.voucherValueIdr, 10_000);
-  assert.equal(created.data.validFrom, "2026-11-01T00:00:00.000Z");
-  assert.equal(created.data.validUntil, "2026-12-31T23:59:59.000Z");
+  assert.equal(created.data.validFrom, "2026-10-31T17:00:00.000Z");
+  assert.equal(created.data.validUntil, "2026-12-31T16:59:59.000Z");
 
   const page = await get("/api/loyalty/rewards", { limit: "100" });
   assert.ok(page.data.some((reward) => reward.id === created.data.id));
+});
+
+test("legend-m8ow review: reward validity uses outlet (WIB) business days and round-trips", () => {
+  // Business dates live in the outlet time zone (AGENT_PLAYBOOK §2), not UTC.
+  assert.equal(
+    lib.isoFromDateInput("2026-11-01", "start"),
+    "2026-10-31T17:00:00.000Z",
+  );
+  assert.equal(
+    lib.isoFromDateInput("2026-11-01", "end"),
+    "2026-11-01T16:59:59.000Z",
+  );
+  assert.equal(lib.dateInputValue("2026-10-31T17:00:00.000Z"), "2026-11-01");
+  assert.equal(lib.dateInputValue("2026-11-01T16:59:59.000Z"), "2026-11-01");
+  assert.equal(lib.formatDateShort("2026-10-31T17:00:00.000Z"), "01/11/2026");
+  // A one-day reward (from = until) is valid: the end is that day's close.
+  const oneDay = {
+    ...lib.emptyRewardForm(),
+    name: "Hari Ini",
+    type: "voucher",
+    voucherValue: "10000",
+    validFrom: "2026-11-01",
+    validUntil: "2026-11-01",
+  };
+  assert.equal(lib.validateRewardForm(oneDay).validUntil, undefined);
 });
 
 // ---- Missions (PRD §3.20 "Mission") -------------------------------------
