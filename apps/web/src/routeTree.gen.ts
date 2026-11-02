@@ -72,6 +72,7 @@ import { Route as KelolaKelolaMenuStasiunRouteImport } from './routes/_kelola/ke
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
+import { Route as KelolaKelolaPengadaanPoIdCetakRouteImport } from './routes/_kelola/kelola.pengadaan_.po.$id.cetak'
 
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
@@ -385,6 +386,12 @@ const CustomerTTokenPayPaymentIdRoute =
     path: '/pay/$paymentId',
     getParentRoute: () => CustomerTTokenRoute,
   } as any)
+const KelolaKelolaPengadaanPoIdCetakRoute =
+  KelolaKelolaPengadaanPoIdCetakRouteImport.update({
+    id: '/kelola/pengadaan_/po/$id/cetak',
+    path: '/kelola/pengadaan/po/$id/cetak',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
@@ -439,6 +446,7 @@ export interface FileRoutesByFullPath {
   '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
@@ -491,6 +499,7 @@ export interface FileRoutesByTo {
   '/pos/meja': typeof OpsPosMejaIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/kelola/pengadaan/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -557,6 +566,7 @@ export interface FileRoutesById {
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
+  '/_kelola/kelola/pengadaan_/po/$id/cetak': typeof KelolaKelolaPengadaanPoIdCetakRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -613,6 +623,7 @@ export interface FileRouteTypes {
     | '/pos/meja/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/pengadaan/po/$id/cetak'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -665,6 +676,7 @@ export interface FileRouteTypes {
     | '/pos/meja'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
+    | '/kelola/pengadaan/po/$id/cetak'
   id:
     | '__root__'
     | '/_auth'
@@ -730,6 +742,7 @@ export interface FileRouteTypes {
     | '/_ops/pos/meja/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
+    | '/_kelola/kelola/pengadaan_/po/$id/cetak'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1190,6 +1203,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomerTTokenPayPaymentIdRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
+    '/_kelola/kelola/pengadaan_/po/$id/cetak': {
+      id: '/_kelola/kelola/pengadaan_/po/$id/cetak'
+      path: '/kelola/pengadaan/po/$id/cetak'
+      fullPath: '/kelola/pengadaan/po/$id/cetak'
+      preLoaderRoute: typeof KelolaKelolaPengadaanPoIdCetakRouteImport
+      parentRoute: typeof KelolaRoute
+    }
   }
 }
 
@@ -1308,6 +1328,7 @@ interface KelolaRouteChildren {
   KelolaKelolaMenuStasiunRoute: typeof KelolaKelolaMenuStasiunRoute
   KelolaKelolaMejaIndexRoute: typeof KelolaKelolaMejaIndexRoute
   KelolaKelolaMenuIndexRoute: typeof KelolaKelolaMenuIndexRoute
+  KelolaKelolaPengadaanPoIdCetakRoute: typeof KelolaKelolaPengadaanPoIdCetakRoute
 }
 
 const KelolaRouteChildren: KelolaRouteChildren = {
@@ -1323,6 +1344,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaMenuStasiunRoute: KelolaKelolaMenuStasiunRoute,
   KelolaKelolaMejaIndexRoute: KelolaKelolaMejaIndexRoute,
   KelolaKelolaMenuIndexRoute: KelolaKelolaMenuIndexRoute,
+  KelolaKelolaPengadaanPoIdCetakRoute: KelolaKelolaPengadaanPoIdCetakRoute,
 }
 
 const KelolaRouteWithChildren =

@@ -12,6 +12,9 @@ import {
   getPurchaseOrder,
   getPurchaseRequest,
   listInventoryItems,
+  listStockBalances,
+  listParLevels,
+  listStockLocations,
   listPurchaseOrders,
   listPurchaseRequests,
   listSupplierCatalog,
@@ -30,11 +33,57 @@ import {
   transitionPurchaseRequest,
 } from "@starter/shared/inventory";
 
-const store = createMockStore(() => ({
-  requests: structuredClone(fixtures.purchaseRequestDetails),
-  orders: structuredClone(fixtures.purchaseOrderDetails),
-  receipts: new Map<string, { fingerprint: string; value: unknown }>(),
-}));
+const printStoragePrefix = "legend-mock-po-print:";
+const printStorageKey = (id: string) => `${printStoragePrefix}${id}`;
+let initialSeed = true;
+const store = createMockStore(() => {
+  // The first seed is a page load; later seeds are explicit mock resets.
+  if (!initialSeed && typeof window !== "undefined") {
+    try {
+      const keys = Object.keys(window.localStorage).filter((key) =>
+        key.startsWith(printStoragePrefix),
+      );
+      for (const key of keys) window.localStorage.removeItem(key);
+    } catch {
+      // Storage can be disabled.
+    }
+  }
+  initialSeed = false;
+  return {
+    requests: structuredClone(fixtures.purchaseRequestDetails),
+    orders: structuredClone(fixtures.purchaseOrderDetails),
+    receipts: new Map<string, { fingerprint: string; value: unknown }>(),
+  };
+});
+// Preserve a sent document for the print route in a new tab or after reload.
+// Persisted documents do not appear in lists after reload.
+
+function savePrintOrder(
+  detail: (typeof fixtures.purchaseOrderDetails)[number],
+) {
+  try {
+    if (typeof window !== "undefined")
+      window.localStorage.setItem(
+        printStorageKey(detail.purchaseOrder.id),
+        JSON.stringify(detail),
+      );
+  } catch {
+    // In-memory view remains available if storage is disabled.
+  }
+}
+function savedPrintOrder(id: string) {
+  try {
+    if (typeof window === "undefined") return undefined;
+    const raw = window.localStorage.getItem(printStorageKey(id));
+    if (!raw) return undefined;
+    const parsed = purchaseOrderDetailSchema.safeParse(JSON.parse(raw));
+    return parsed.success && parsed.data.purchaseOrder.id === id
+      ? parsed.data
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const now = () => new Date().toISOString();
 const mint = () => crypto.randomUUID();
 const tenantId = fixtures.purchaseRequests[0].tenantId;
@@ -101,6 +150,40 @@ registerMock(listSuppliers, ({ query, scenario }) =>
     scenario,
   ),
 );
+registerMock(listStockBalances, ({ query, scenario }) =>
+  paginateFixture(
+    inventory.balances.filter(
+      (x) =>
+        x.outletId === query.outletId &&
+        (!query.locationId || x.locationId === query.locationId) &&
+        (!query.inventoryItemId || x.inventoryItemId === query.inventoryItemId),
+    ),
+    query,
+    (x) => `${x.locationId}:${x.inventoryItemId}`,
+    scenario,
+  ),
+);
+registerMock(listParLevels, ({ query, scenario }) =>
+  paginateFixture(
+    inventory.parLevels.filter(
+      (x) =>
+        x.outletId === query.outletId &&
+        (!query.locationId || x.locationId === query.locationId) &&
+        (!query.inventoryItemId || x.inventoryItemId === query.inventoryItemId),
+    ),
+    query,
+    (x) => x.id,
+    scenario,
+  ),
+);
+registerMock(listStockLocations, ({ query, scenario }) =>
+  paginateFixture(
+    inventory.locations.filter((x) => x.outletId === query.outletId),
+    query,
+    (x) => x.id,
+    scenario,
+  ),
+);
 registerMock(listInventoryItems, ({ query, scenario }) =>
   paginateFixture(inventory.items, query, (x) => x.id, scenario),
 );
@@ -127,6 +210,7 @@ registerMock(getPurchaseOrder, ({ params }) => ({
     store
       .get()
       .orders.find((x) => x.purchaseOrder.id === params.purchaseOrderId) ??
+    savedPrintOrder(params.purchaseOrderId) ??
     missing(),
 }));
 registerMock(createPurchaseRequest, ({ body }) =>
@@ -286,6 +370,7 @@ registerMock(sendPurchaseOrder, ({ params, body }) =>
       sentAt: now(),
       sentTo: body.email ?? null,
     });
+    savePrintOrder(detail);
     return {
       data: {
         purchaseOrder: detail.purchaseOrder,
@@ -293,7 +378,7 @@ registerMock(sendPurchaseOrder, ({ params, body }) =>
         sentTo: body.channel === "email" ? body.email! : null,
         shareUrl:
           body.channel === "share_link"
-            ? `https://legend.example/purchase-orders/${detail.purchaseOrder.id}.pdf`
+            ? `${typeof window === "undefined" ? "https://legend.example" : window.location.origin}/kelola/pengadaan/po/${detail.purchaseOrder.id}/cetak`
             : null,
         expiresAt:
           body.channel === "share_link"

@@ -3,6 +3,9 @@ import {
   getPurchaseOrder,
   getPurchaseRequest,
   listInventoryItems,
+  listStockBalances,
+  listParLevels,
+  listStockLocations,
   listPurchaseOrders,
   listPurchaseRequests,
   listSupplierCatalog,
@@ -36,3 +39,10 @@ export const supplierCatalogQuery = (id: string) =>
     params: { supplierId: id },
     query: { limit: 100 },
   });
+
+export const stockBalancesQuery = (outletId: string) =>
+  endpointQueryOptions(listStockBalances, { query: { outletId, limit: 100 } });
+export const parLevelsQuery = (outletId: string) =>
+  endpointQueryOptions(listParLevels, { query: { outletId, limit: 100 } });
+export const stockLocationsQuery = (outletId: string) =>
+  endpointQueryOptions(listStockLocations, { query: { outletId, limit: 100 } });

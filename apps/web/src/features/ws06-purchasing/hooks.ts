@@ -17,6 +17,12 @@ export const usePurchaseRequest = (id: string) =>
   useQuery({ ...queries.purchaseRequestQuery(id), enabled: Boolean(id) });
 export const usePurchaseOrder = (id: string) =>
   useQuery({ ...queries.purchaseOrderQuery(id), enabled: Boolean(id) });
+export const useStockBalances = (id: string) =>
+  useQuery({ ...queries.stockBalancesQuery(id), enabled: Boolean(id) });
+export const useParLevels = (id: string) =>
+  useQuery({ ...queries.parLevelsQuery(id), enabled: Boolean(id) });
+export const useStockLocations = (id: string) =>
+  useQuery({ ...queries.stockLocationsQuery(id), enabled: Boolean(id) });
 export const useSuppliers = () => useQuery(queries.suppliersQuery());
 export const useInventoryItems = () => useQuery(queries.inventoryItemsQuery());
 export const useUoms = () => useQuery(queries.uomsQuery());

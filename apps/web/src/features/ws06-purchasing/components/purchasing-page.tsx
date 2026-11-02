@@ -36,11 +36,15 @@ import {
   usePurchaseRequest,
   usePurchaseRequests,
   useSendPurchaseOrder,
+  useStockBalances,
+  useStockLocations,
+  useParLevels,
   useSuppliers,
   useTransitionPurchaseOrder,
   useTransitionPurchaseRequest,
   useUoms,
 } from "../hooks";
+import { purchaseSuggestions } from "../suggestions";
 
 const statusKeys = {
   draft: "purchasing.status.draft",
@@ -84,7 +88,7 @@ function ItemSelect({
       </SelectTrigger>
       <SelectContent>
         {items.map((item) => (
-          <SelectItem key={item.id} value={item.id}>
+          <SelectItem key={item.id} value={item.id} className="min-h-11">
             {item.name}
           </SelectItem>
         ))}
@@ -106,18 +110,42 @@ function RequestForm({
 }) {
   const t = useT();
   const create = useCreatePurchaseRequest();
-  const [itemId, setItemId] = React.useState("");
-  const [quantity, setQuantity] = React.useState("");
+  const balances = useStockBalances(outletId);
+  const parLevels = useParLevels(outletId);
+  const locations = useStockLocations(outletId);
+  const suggestions = purchaseSuggestions({
+    items,
+    balances: balances.data?.data ?? [],
+    parLevels: parLevels.data?.data ?? [],
+  });
+  const suggestionsLoading =
+    balances.isPending || parLevels.isPending || locations.isPending;
+  const suggestionsFailed =
+    balances.isError || parLevels.isError || locations.isError;
+  const nextLine = React.useRef(1);
+  const [lines, setLines] = React.useState([
+    { key: 0, itemId: "", quantity: "" },
+  ]);
+  const updateLine = (
+    key: number,
+    change: Partial<{ itemId: string; quantity: string }>,
+  ) =>
+    setLines((current) =>
+      current.map((line) => (line.key === key ? { ...line, ...change } : line)),
+    );
   const [neededBy, setNeededBy] = React.useState("");
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState(false);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const item = items.find((row) => row.id === itemId);
     const result = createPurchaseRequestInputSchema.safeParse({
       outletId,
       neededBy,
-      lines: [{ inventoryItemId: itemId, quantity, uomId: item?.baseUomId }],
+      lines: lines.map((line) => ({
+        inventoryItemId: line.itemId,
+        quantity: line.quantity,
+        uomId: items.find((item) => item.id === line.itemId)?.baseUomId,
+      })),
       note: note || null,
       idempotencyKey: crypto.randomUUID(),
     });
@@ -133,30 +161,161 @@ function RequestForm({
     }
   }
   return (
-    <Card>
+    <Card className="min-w-0">
       <h2 className="text-lg font-semibold">{t("purchasing.requestForm")}</h2>
-      <form onSubmit={submit} className="grid gap-4">
-        <FormField label={t("purchasing.item")} required>
-          <ItemSelect items={items} value={itemId} onChange={setItemId} />
+      <form onSubmit={submit} className="grid min-w-0 gap-4">
+        <section
+          aria-labelledby="purchase-suggestions"
+          className="grid min-w-0 gap-3 rounded-md border border-border p-4"
+        >
+          <div>
+            <h3 id="purchase-suggestions" className="font-semibold">
+              {t("purchasing.suggestionsTitle")}
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {t("purchasing.suggestionsHint")}
+            </p>
+          </div>
+          {suggestionsLoading ? (
+            <p>{t("common.loading")}</p>
+          ) : suggestionsFailed ? (
+            <div role="alert" className="grid gap-2">
+              <p>{t("purchasing.suggestionsError")}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-fit"
+                onClick={() => {
+                  void balances.refetch();
+                  void parLevels.refetch();
+                  void locations.refetch();
+                }}
+              >
+                {t("common.retry")}
+              </Button>
+            </div>
+          ) : suggestions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("purchasing.suggestionsEmpty")}
+            </p>
+          ) : (
+            <ul className="min-w-0 divide-y">
+              {suggestions.map((suggestion) => (
+                <li
+                  key={suggestion.key}
+                  className="flex min-w-0 flex-wrap items-center justify-between gap-3 py-3"
+                >
+                  <div>
+                    <p className="font-medium">{suggestion.item.name}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {
+                        locations.data?.data.find(
+                          (location) => location.id === suggestion.locationId,
+                        )?.name
+                      }{" "}
+                      ·{" "}
+                      {t("purchasing.suggestionValues", {
+                        onHand: suggestion.onHand,
+                        parMax: suggestion.parMax,
+                        quantity: suggestion.suggestedQty,
+                      })}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-auto max-w-full whitespace-normal py-2 text-left"
+                    onClick={() =>
+                      setLines((current) => {
+                        const next = {
+                          itemId: suggestion.item.id,
+                          quantity: suggestion.suggestedQty,
+                        };
+                        const blank = current.find(
+                          (line) => !line.itemId && !line.quantity,
+                        );
+                        return blank
+                          ? current.map((line) =>
+                              line.key === blank.key
+                                ? { ...line, ...next }
+                                : line,
+                            )
+                          : [...current, { key: nextLine.current++, ...next }];
+                      })
+                    }
+                  >
+                    {t("purchasing.useSuggestion", {
+                      name: suggestion.item.name,
+                    })}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        {lines.map((line, index) => (
+          <div
+            key={line.key}
+            className="grid gap-4 rounded-md border border-border p-4"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-medium">
+                {t("purchasing.lineNumber", { number: index + 1 })}
+              </h3>
+              {lines.length > 1 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() =>
+                    setLines((current) =>
+                      current.filter((row) => row.key !== line.key),
+                    )
+                  }
+                >
+                  {t("purchasing.removeLine")}
+                </Button>
+              )}
+            </div>
+            <FormField label={t("purchasing.item")} required>
+              <ItemSelect
+                items={items}
+                value={line.itemId}
+                onChange={(itemId) => updateLine(line.key, { itemId })}
+              />
+            </FormField>
+            <FormField label={t("purchasing.quantity")} required>
+              <Input
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                value={line.quantity}
+                onChange={(event) =>
+                  updateLine(line.key, { quantity: event.target.value })
+                }
+              />
+            </FormField>
+          </div>
+        ))}
+        <Button
+          type="button"
+          variant="outline"
+          className="w-fit"
+          onClick={() =>
+            setLines((current) => [
+              ...current,
+              { key: nextLine.current++, itemId: "", quantity: "" },
+            ])
+          }
+        >
+          {t("purchasing.addLine")}
+        </Button>
+        <FormField label={t("purchasing.neededBy")} required>
+          <Input
+            type="date"
+            value={neededBy}
+            onChange={(event) => setNeededBy(event.target.value)}
+          />
         </FormField>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label={t("purchasing.quantity")} required>
-            <Input
-              type="number"
-              min="0.0001"
-              step="0.0001"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-            />
-          </FormField>
-          <FormField label={t("purchasing.neededBy")} required>
-            <Input
-              type="date"
-              value={neededBy}
-              onChange={(e) => setNeededBy(e.target.value)}
-            />
-          </FormField>
-        </div>
         <FormField label={t("purchasing.note")}>
           <Textarea value={note} onChange={(e) => setNote(e.target.value)} />
         </FormField>
@@ -351,7 +510,11 @@ function OrderForm({
             </SelectTrigger>
             <SelectContent>
               {suppliers.map((supplier) => (
-                <SelectItem key={supplier.id} value={supplier.id}>
+                <SelectItem
+                  key={supplier.id}
+                  value={supplier.id}
+                  className="min-h-11"
+                >
                   {supplier.name}
                 </SelectItem>
               ))}
@@ -574,13 +737,11 @@ function OrderDetail({
           <FormField label={t("purchasing.shareLink")}>
             <Input readOnly value={url} />
           </FormField>
-          {import.meta.env.VITE_API_MOCK !== "true" && (
-            <Button asChild variant="outline">
-              <a href={url} target="_blank" rel="noreferrer">
-                {t("purchasing.preview")}
-              </a>
-            </Button>
-          )}
+          <Button asChild variant="outline" className="min-h-11">
+            <a href={url} target="_blank" rel="noreferrer">
+              {t("purchasing.preview")}
+            </a>
+          </Button>
         </div>
       )}
     </Card>
@@ -627,7 +788,7 @@ export function PurchasingPage() {
   const supplierRows = suppliers.data?.data ?? [];
   const units = uoms.data?.data ?? [];
   return (
-    <main className="mx-auto grid w-full max-w-7xl gap-6 p-4 sm:p-6">
+    <main className="mx-auto grid w-full max-w-7xl gap-6 p-4 sm:p-6 [&_button]:min-h-11 [&_input]:min-h-11 [&_textarea]:min-h-11">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">{t("purchasing.title")}</h1>
