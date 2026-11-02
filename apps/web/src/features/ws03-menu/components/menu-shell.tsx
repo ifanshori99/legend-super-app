@@ -83,7 +83,7 @@ export function MenuPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4 p-4 sm:p-6">
+    <div className="grid min-w-0 gap-4">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl leading-7 font-semibold">{t("menu.title")}</h1>

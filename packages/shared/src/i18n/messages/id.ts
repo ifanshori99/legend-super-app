@@ -1261,6 +1261,7 @@ export const id = {
       mismatch: "Selisih",
       openCases: "Kasus terbuka",
       variance: "Total selisih",
+      summaryLabel: "Ringkasan rekonsiliasi",
       source: "Sumber",
       sourceGateway: "Gateway",
       sourceEdc: "EDC",
@@ -2895,6 +2896,7 @@ export const id = {
       totalRow: "Total",
       totalTax: "Total pajak",
       totalBase: "Total dasar pajak",
+      summaryLabel: "Ringkasan PBJT",
       transactions: "Transaksi",
       viewRows: "Lihat rincian",
       csv: {

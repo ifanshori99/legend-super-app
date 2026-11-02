@@ -72,7 +72,7 @@ export function AccessPage({
 }) {
   const t = useT();
   return (
-    <div className="grid min-w-0 gap-4 p-4 sm:p-6">
+    <div className="grid min-w-0 gap-4">
       <header className="grid gap-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">

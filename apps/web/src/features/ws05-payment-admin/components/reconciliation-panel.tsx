@@ -26,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type {
@@ -101,10 +101,11 @@ export function ReconciliationPanel() {
       </div>
 
       {summary.isPending ? (
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
-          {Array.from({ length: 5 }, (_, index) => (
+        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
             <Skeleton key={index} className="h-24" />
           ))}
+          <Skeleton className="h-24 sm:col-span-2 lg:col-span-4" />
         </div>
       ) : summary.isError ? (
         <div className="rounded-xl border-(length:--border-w) bg-card">
@@ -115,7 +116,12 @@ export function ReconciliationPanel() {
           />
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-5">
+        // Owner Q30 (DESIGN.md v2): related metrics share one strip with
+        // hairline dividers instead of separate cards.
+        <StatStrip
+          label={t("paymentAdmin.reconciliation.summaryLabel")}
+          columns={4}
+        >
           <StatTile
             label={t("paymentAdmin.reconciliation.matched")}
             value={summary.data.data.matchedLines}
@@ -133,11 +139,11 @@ export function ReconciliationPanel() {
             value={summary.data.data.openCases}
           />
           <StatTile
+            className="lg:col-span-4"
             label={t("paymentAdmin.reconciliation.variance")}
             value={<Money amount={summary.data.data.varianceIdr} />}
-            className="col-span-2 lg:col-span-1"
           />
-        </div>
+        </StatStrip>
       )}
 
       <DataTableShell

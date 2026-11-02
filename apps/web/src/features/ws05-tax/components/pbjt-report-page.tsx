@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { Input } from "@/components/ui/input";
 import { Money, NumberDisplay } from "@/components/ui/money";
-import { StatTile } from "@/components/ui/stat-tile";
+import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import {
   Table,
   TableBody,
@@ -64,7 +64,8 @@ export function PbjtReportPage({
   return (
     <div className="grid min-w-0 gap-4">
       {recap && sums && (
-        <div className="grid gap-3 sm:grid-cols-3">
+        // Owner Q30 (DESIGN.md v2): one strip, hairline dividers.
+        <StatStrip label={t("tax.report.summaryLabel")} columns={3}>
           <StatTile
             label={t("tax.report.totalTax")}
             value={<Money amount={recap.totalTaxIdr} />}
@@ -81,7 +82,7 @@ export function PbjtReportPage({
             value={<NumberDisplay value={sums.transactionCount} />}
             context={formatTaxPeriod(recap.period)}
           />
-        </div>
+        </StatStrip>
       )}
 
       <div id="pbjt-rincian" className="grid min-w-0 gap-4">

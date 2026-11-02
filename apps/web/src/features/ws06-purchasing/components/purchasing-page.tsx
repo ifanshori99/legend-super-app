@@ -831,7 +831,7 @@ export function PurchasingPage() {
   const supplierRows = suppliers.data?.data ?? [];
   const units = uoms.data?.data ?? [];
   return (
-    <main className="mx-auto grid w-full max-w-7xl gap-6 p-4 sm:p-6 [&_button]:min-h-11 [&_input]:min-h-11 [&_textarea]:min-h-11">
+    <main className="mx-auto grid w-full max-w-7xl gap-6 [&_button]:min-h-11 [&_input]:min-h-11 [&_textarea]:min-h-11">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">{t("purchasing.title")}</h1>
