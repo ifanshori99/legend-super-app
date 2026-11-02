@@ -65,6 +65,7 @@ import { JournalLinesTable } from "./lines-table";
 import { ReasonDialog } from "./reason-dialog";
 import { RecurringJournalDialog } from "./recurring-journal-dialog";
 import { RecurringJournalStatusBadge } from "./status-badge";
+import { useCanPostJournals } from "../guard";
 
 const ACTION_META: Record<
   RecurringJournalAction,
@@ -112,6 +113,9 @@ export function RecurringJournalsPage({
   const accountsQuery = useAccounts(legalEntityId);
   const outletsQuery = useOutlets();
   const transition = useTransitionRecurringJournal(legalEntityId);
+  const canWrite = useCanPostJournals();
+  const actionsFor = (status: RecurringJournal["status"]) =>
+    canWrite ? recurringJournalActions(status) : [];
 
   const [createOpen, setCreateOpen] = React.useState(false);
   const [linesTemplate, setLinesTemplate] =
@@ -173,12 +177,12 @@ export function RecurringJournalsPage({
     }
   };
 
-  const addButton = (
+  const addButton = canWrite ? (
     <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
       <Plus aria-hidden="true" />
       {t("accounting.recurring.add")}
     </Button>
-  );
+  ) : undefined;
 
   return (
     <div className="grid min-w-0 gap-4">
@@ -241,20 +245,20 @@ export function RecurringJournalsPage({
                   >
                     {t("accounting.recurring.viewLines")}
                   </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`${t("accounting.recurring.actions.menu")} ${template.description}`}
-                      >
-                        <MoreHorizontal aria-hidden="true" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {recurringJournalActions(template.status).map(
-                        (action) => {
+                  {actionsFor(template.status).length > 0 && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`${t("accounting.recurring.actions.menu")} ${template.description}`}
+                        >
+                          <MoreHorizontal aria-hidden="true" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {actionsFor(template.status).map((action) => {
                           const meta = ACTION_META[action];
                           const Icon = meta.icon;
                           return (
@@ -278,10 +282,10 @@ export function RecurringJournalsPage({
                               {t(meta.labelKey)}
                             </DropdownMenuItem>
                           );
-                        },
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
               </div>
             </li>
@@ -357,20 +361,20 @@ export function RecurringJournalsPage({
                       >
                         {t("accounting.recurring.viewLines")}
                       </Button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`${t("accounting.recurring.actions.menu")} ${template.description}`}
-                          >
-                            <MoreHorizontal aria-hidden="true" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          {recurringJournalActions(template.status).map(
-                            (action) => {
+                      {actionsFor(template.status).length > 0 && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`${t("accounting.recurring.actions.menu")} ${template.description}`}
+                            >
+                              <MoreHorizontal aria-hidden="true" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {actionsFor(template.status).map((action) => {
                               const meta = ACTION_META[action];
                               const Icon = meta.icon;
                               return (
@@ -394,10 +398,10 @@ export function RecurringJournalsPage({
                                   {t(meta.labelKey)}
                                 </DropdownMenuItem>
                               );
-                            },
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

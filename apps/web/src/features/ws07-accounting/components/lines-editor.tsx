@@ -2,6 +2,7 @@
 // enters amounts, so the ACC-01 rules are visible while typing: exactly one
 // side per row, whole rupiah, at least two rows, totals equal. Validation text
 // comes from the catalog; the contract (evaluateManualDraft) decides.
+import * as React from "react";
 import { CircleAlert, CircleCheck, Plus, Trash2 } from "lucide-react";
 import type { Account } from "@starter/shared/accounting";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -47,6 +48,9 @@ export function JournalLinesEditor({
   disabled?: boolean;
 }) {
   const t = useT();
+  // Field ids come from useId + row position, not the random row key, so the
+  // server render and hydration agree on every id/htmlFor pair.
+  const baseId = React.useId();
 
   const update = (index: number, patch: Partial<EditorLine>) => {
     onChange(
@@ -89,7 +93,10 @@ export function JournalLinesEditor({
             className="grid min-w-0 gap-2 rounded-lg border-(length:--border-w) border-border p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_2.25rem] sm:items-start"
           >
             <div className="grid gap-1">
-              <Label htmlFor={`line-${row.key}-account`} className="sm:sr-only">
+              <Label
+                htmlFor={`${baseId}-line-${index}-account`}
+                className="sm:sr-only"
+              >
                 {t("accounting.manual.form.account", { line })}
               </Label>
               <Select
@@ -98,7 +105,7 @@ export function JournalLinesEditor({
                 disabled={disabled}
               >
                 <SelectTrigger
-                  id={`line-${row.key}-account`}
+                  id={`${baseId}-line-${index}-account`}
                   className="h-control-sm"
                   aria-invalid={issue === undefined ? undefined : true}
                 >
@@ -116,11 +123,14 @@ export function JournalLinesEditor({
               </Select>
             </div>
             <div className="grid gap-1">
-              <Label htmlFor={`line-${row.key}-debit`} className="sm:sr-only">
+              <Label
+                htmlFor={`${baseId}-line-${index}-debit`}
+                className="sm:sr-only"
+              >
                 {t("accounting.manual.form.debit", { line })}
               </Label>
               <Input
-                id={`line-${row.key}-debit`}
+                id={`${baseId}-line-${index}-debit`}
                 value={row.debit}
                 onChange={(event) =>
                   update(index, { debit: event.target.value })
@@ -134,11 +144,14 @@ export function JournalLinesEditor({
               />
             </div>
             <div className="grid gap-1">
-              <Label htmlFor={`line-${row.key}-credit`} className="sm:sr-only">
+              <Label
+                htmlFor={`${baseId}-line-${index}-credit`}
+                className="sm:sr-only"
+              >
                 {t("accounting.manual.form.credit", { line })}
               </Label>
               <Input
-                id={`line-${row.key}-credit`}
+                id={`${baseId}-line-${index}-credit`}
                 value={row.credit}
                 onChange={(event) =>
                   update(index, { credit: event.target.value })

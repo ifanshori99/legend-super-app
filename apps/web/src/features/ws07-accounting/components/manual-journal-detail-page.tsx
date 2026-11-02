@@ -134,7 +134,8 @@ export function ManualJournalDetailPage({
   const entityName = entitiesQuery.data?.find(
     (entity) => entity.id === row.legalEntityId,
   )?.name;
-  const actions = manualJournalActions(row.status);
+  // View-only users see the status and lines but no write action.
+  const actions = canPost ? manualJournalActions(row.status) : [];
   const canDecide = actions.includes("approve") && canPost;
 
   return (

@@ -26,6 +26,7 @@ import {
   accountTreeRows,
   matchesAccount,
 } from "../lib";
+import { useCanPostJournals } from "../guard";
 import { AccountFormDialog } from "./account-form-dialog";
 import { AccountStatusBadge } from "./status-badge";
 
@@ -36,6 +37,7 @@ export function ChartOfAccountsPage({
 }) {
   const t = useT();
   const accountsQuery = useAccounts(legalEntityId);
+  const canWrite = useCanPostJournals();
   const [search, setSearch] = React.useState("");
   const [formOpen, setFormOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Account | null>(null);
@@ -80,7 +82,7 @@ export function ChartOfAccountsPage({
         noResults={search.trim() !== "" && visible.length === 0}
         rowCount={accounts.length}
         actions={
-          state === "empty" ? undefined : (
+          state === "empty" || !canWrite ? undefined : (
             <Button type="button" onClick={openCreate} size="sm">
               <Plus aria-hidden="true" />
               {t("accounting.coa.add")}
@@ -90,12 +92,12 @@ export function ChartOfAccountsPage({
         empty={{
           title: t("accounting.coa.emptyTitle"),
           description: t("accounting.coa.emptyHint"),
-          action: (
+          action: canWrite ? (
             <Button type="button" onClick={openCreate} size="sm">
               <Plus aria-hidden="true" />
               {t("accounting.coa.add")}
             </Button>
-          ),
+          ) : undefined,
         }}
       >
         {/* Phones: one row per account, everything a controller needs. */}
@@ -127,15 +129,17 @@ export function ChartOfAccountsPage({
                 </span>
                 <AccountStatusBadge active={account.isActive} />
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`${t("accounting.coa.edit")} ${account.code} ${account.name}`}
-                onClick={() => openEdit(account)}
-              >
-                <Pencil aria-hidden="true" />
-              </Button>
+              {canWrite && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`${t("accounting.coa.edit")} ${account.code} ${account.name}`}
+                  onClick={() => openEdit(account)}
+                >
+                  <Pencil aria-hidden="true" />
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -186,15 +190,17 @@ export function ChartOfAccountsPage({
                     <AccountStatusBadge active={account.isActive} />
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`${t("accounting.coa.edit")} ${account.code} ${account.name}`}
-                      onClick={() => openEdit(account)}
-                    >
-                      <Pencil aria-hidden="true" />
-                    </Button>
+                    {canWrite && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${t("accounting.coa.edit")} ${account.code} ${account.name}`}
+                        onClick={() => openEdit(account)}
+                      >
+                        <Pencil aria-hidden="true" />
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

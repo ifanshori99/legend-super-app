@@ -37,6 +37,7 @@ import {
   linesTotal,
 } from "../lib";
 import { ManualJournalStatusBadge } from "./status-badge";
+import { useCanPostJournals } from "../guard";
 
 const ALL = "all";
 const STATUSES = Object.keys(JOURNAL_STATUS_KEYS) as ManualJournalStatus[];
@@ -47,6 +48,7 @@ export function ManualJournalListPage({
   legalEntityId: string;
 }) {
   const t = useT();
+  const canWrite = useCanPostJournals();
   const [status, setStatus] = React.useState<string>(ALL);
   const list = useManualJournalsInfinite({
     legalEntityId,
@@ -62,14 +64,14 @@ export function ManualJournalListPage({
         ? "empty"
         : "ready";
 
-  const newButton = (
+  const newButton = canWrite ? (
     <Button asChild size="sm">
       <Link to="/kelola/akuntansi/jurnal-manual/baru">
         <Plus aria-hidden="true" />
         {t("accounting.manual.new")}
       </Link>
     </Button>
-  );
+  ) : undefined;
 
   return (
     <div className="grid min-w-0 gap-4">

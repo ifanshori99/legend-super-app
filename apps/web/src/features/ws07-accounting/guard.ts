@@ -2,10 +2,10 @@
 // requires dashboard.management.view + MFA; a page additionally needs its own
 // accounting permission (docs/frontend.md "Page guard"). The API re-checks
 // everything; this only avoids showing a screen the visitor cannot use.
-import { notFound } from "@tanstack/react-router";
+import { notFound, useRouteContext } from "@tanstack/react-router";
 import type { PermissionCode } from "@starter/shared/access";
 import type { AreaAccess } from "@/lib/areas/access";
-import { evaluateGuard } from "@/lib/areas/guard";
+import { evaluateGuard, holdsAny } from "@/lib/areas/guard";
 
 /** Journal viewers need `accounting.journal.view`; posting adds `.post`. */
 export const ACCOUNTING_VIEW: readonly PermissionCode[] = [
@@ -23,4 +23,17 @@ export function accountingGuard(anyOf: readonly PermissionCode[]) {
     );
     if (gate.status !== "allowed") throw notFound();
   };
+}
+
+/**
+ * Whether the visitor may write (create/edit accounts, draft, submit, reverse,
+ * manage recurring templates). Fails closed when the route context carries no
+ * access, so a view-only finance user never sees a write action the API would
+ * refuse anyway.
+ */
+export function useCanPostJournals(): boolean {
+  const context = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  return context.access ? holdsAny(context.access, ACCOUNTING_POST) : false;
 }

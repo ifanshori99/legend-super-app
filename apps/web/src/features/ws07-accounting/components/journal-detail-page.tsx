@@ -40,6 +40,7 @@ import {
 } from "../lib";
 import { AccountingPage } from "./accounting-shell";
 import { JournalLinesTable } from "./lines-table";
+import { useCanPostJournals } from "../guard";
 
 export function JournalDetailPage({
   journalEntryId,
@@ -56,6 +57,7 @@ export function JournalDetailPage({
   const outletsQuery = useOutlets();
   const entitiesQuery = useLegalEntities();
   const reverse = useReverseJournal(journalEntryId);
+  const canWrite = useCanPostJournals();
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [entryDate, setEntryDate] = React.useState(businessDateToday());
@@ -323,7 +325,7 @@ export function JournalDetailPage({
                 </Button>
               </div>
             )}
-            {reversalState === "reversible" && (
+            {reversalState === "reversible" && canWrite && (
               <div className="grid gap-2">
                 <p className="text-sm leading-5 text-muted-foreground">
                   {t("accounting.journal.reverseHint")}
