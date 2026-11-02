@@ -31,6 +31,7 @@ export const TENANT_CONTEXT_SOURCES = [
   "mcp_token", // MCP OAuth token issued for one tenant
   "job", // background job payload written by the server (carries tenant_id)
   "webhook", // provider account / receiving WhatsApp number -> tenant
+  "link_token", // signed guest link token (payment link, e-receipt) -> tenant
 ] as const;
 export type TenantContextSource = (typeof TENANT_CONTEXT_SOURCES)[number];
 
