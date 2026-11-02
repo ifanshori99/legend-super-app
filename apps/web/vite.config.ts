@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, realpathSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -14,6 +14,7 @@ const envDir = resolve(import.meta.dirname, "../..");
 // never lists them. Mock-mode dev serves them from here; a demo build copies
 // them into the output (scripts/demo-sample-photos.mjs).
 const demoSampleDir = resolve(import.meta.dirname, "demo");
+const demoSampleRoot = resolve(demoSampleDir, "sample");
 const contentTypes: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -36,17 +37,32 @@ function demoSampleAssets(enabled: boolean): Plugin {
         } catch {
           return next();
         }
-        const file = resolve(demoSampleDir, `.${decoded}`);
-        // Stay inside demo/: a `..` in the URL must not read other files.
-        if (!file.startsWith(`${demoSampleDir}/`) || !existsSync(file))
+        // Stay inside demo/sample/: a `..` (plain or encoded) or a symlink in
+        // the URL must not read other files, and only regular files are
+        // streamed (a directory would throw EISDIR from the read stream).
+        let file: string;
+        try {
+          file = realpathSync(resolve(demoSampleDir, `.${decoded}`));
+          if (
+            !file.startsWith(`${realpathSync(demoSampleRoot)}/`) ||
+            !statSync(file).isFile()
+          )
+            return next();
+        } catch {
           return next();
+        }
         response.setHeader(
           "content-type",
           contentTypes[extname(file).toLowerCase()] ??
             "application/octet-stream",
         );
         response.setHeader("cache-control", "public, max-age=3600");
-        createReadStream(file).pipe(response);
+        createReadStream(file)
+          .on("error", () => {
+            if (!response.headersSent) response.statusCode = 500;
+            response.end();
+          })
+          .pipe(response);
       });
     },
   };
