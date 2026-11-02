@@ -116,7 +116,17 @@ try {
     const files = readdirSync(resolve(root, "tests"))
       .filter((file) => file.endsWith(".test.mjs"))
       .map((file) => `tests/${file}`);
-    await run(process.execPath, ["--test", ...files], testEnv);
+    // LEGEND_TEST_CONCURRENCY caps parallel node:test processes so several
+    // agents' gates on one 16 GB machine do not starve the OS (2026-11-03 panic).
+    const concurrency = process.env.LEGEND_TEST_CONCURRENCY;
+    const concurrencyArgs = /^[1-9]\d*$/.test(concurrency ?? "")
+      ? [`--test-concurrency=${concurrency}`]
+      : [];
+    await run(
+      process.execPath,
+      ["--test", ...concurrencyArgs, ...files],
+      testEnv,
+    );
   } else {
     // The Playwright servers run these builds with NODE_ENV=production, so
     // build them the same way. Vite inlines NODE_ENV: a test-env build would

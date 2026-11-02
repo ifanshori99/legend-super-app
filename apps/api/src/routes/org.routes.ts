@@ -23,7 +23,7 @@ import {
   outletIdSchema,
   z,
 } from "@starter/shared/core";
-import { requireAuth } from "../middleware/auth";
+import { getAuth, requireAuth } from "../middleware/auth";
 import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import {
   getScopedTenantContext,
@@ -111,7 +111,12 @@ orgRouter.patch("/outlets/:outletId", manage, jsonBody, async (req, res) => {
   const outletId = outletIdSchema.parse(req.params.outletId);
   const input = updateOutletInputSchema.parse(req.body);
   res.json({
-    data: await updateOutlet(getScopedTenantContext(req), outletId, input),
+    data: await updateOutlet(
+      getScopedTenantContext(req),
+      outletId,
+      input,
+      getAuth(req).user.id,
+    ),
   });
 });
 

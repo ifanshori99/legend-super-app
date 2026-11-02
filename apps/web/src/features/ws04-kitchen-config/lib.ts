@@ -6,6 +6,11 @@ import type {
   CapacityRuleInput,
   CapacitySchedule,
 } from "@starter/shared/kitchen";
+import {
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  addBusinessDays,
+  businessDateOf,
+} from "@starter/shared/core";
 
 /** PRD §3 F12 "Order Pacing": the windows the config screen offers. */
 export const CAPACITY_WINDOWS = [15, 30, 45, 60] as const;
@@ -177,16 +182,16 @@ export function periodIncludesDate(
 
 /**
  * Last seven outlet business days including today. "Today" is the outlet's
- * calendar day, not UTC's: 01:00 WIB on 2 Nov is still 1 Nov in UTC, and the
- * report must still default to 2 Nov (business dates are the outlet's).
+ * business date (core `businessDateOf`, owner Q39 cutoff, default 04:00), not
+ * UTC's: 05:00 WIB on 2 Nov is still 1 Nov in UTC, yet the report defaults to
+ * 2 Nov; 01:00 WIB on 2 Nov is still business date 1 Nov.
  */
 export function recentBusinessPeriod(
   now: Date,
   timeZone: string,
   days = 7,
+  cutoff: string = DEFAULT_BUSINESS_DAY_CUTOFF,
 ): { startDate: string; endDate: string } {
-  const endDate = new Intl.DateTimeFormat("en-CA", { timeZone }).format(now);
-  const [year, month, day] = endDate.split("-").map(Number);
-  const start = new Date(Date.UTC(year, month - 1, day - (days - 1)));
-  return { startDate: start.toISOString().slice(0, 10), endDate };
+  const endDate = businessDateOf(now, { timeZone, cutoff });
+  return { startDate: addBusinessDays(endDate, -(days - 1)), endDate };
 }

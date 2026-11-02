@@ -52,6 +52,7 @@ import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
 import { appendOutbox } from "./core-outbox";
 import { restoreExpiredSoldOut } from "./menu-availability";
+import { outletBusinessDayClock } from "./outlet-clock";
 import {
   EVENT_DESTINATION,
   MENU_PRICE_MANAGE_PERMISSION,
@@ -847,7 +848,7 @@ export async function readChannelPriceGrid(
 /**
  * Staff/order-path read of the effective channel grid, scoped and gated:
  * `menu.price.view` at the outlet, business date from the outlet's own time
- * zone. The POS/ojol order services call this instead of trusting a client
+ * zone and business-day cutoff (owner Q39). The POS/ojol order services call this instead of trusting a client
  * price (PRD §8; ORD-05).
  */
 export async function resolveChannelPrices(
@@ -859,7 +860,10 @@ export async function resolveChannelPrices(
   return withTenant(db, context, async (tx) => {
     const outletId = await resolveOutlet(tx, context, input.outletId);
     const [outlet] = await tx
-      .select({ timezone: outlets.timezone })
+      .select({
+        timezone: outlets.timezone,
+        businessDayCutoff: outlets.businessDayCutoff,
+      })
       .from(outlets)
       .where(
         and(
@@ -879,7 +883,7 @@ export async function resolveChannelPrices(
     return readChannelPriceGrid(tx, context, {
       outletId,
       channel: input.channel,
-      businessDate: businessDateOf(now, outlet.timezone),
+      businessDate: businessDateOf(now, outletBusinessDayClock(outlet)),
     });
   });
 }
