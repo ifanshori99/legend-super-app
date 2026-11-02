@@ -8,8 +8,11 @@
 //   ?mock=empty       no factor enrolled (enrollment) and no device sessions
 //   ?mock=error       every call fails (see lib/mock/control.ts)
 //
-// A mock-only knob shows the idle warning without waiting 22 minutes:
-//   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m
+// A mock-only knob shows the idle warning without waiting 28 minutes:
+//   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m;
+//   the deadline is seeded once and never moves on a /me read: GET /api/auth/me
+//   is exempt from session activity (legend-91i), so refetching it cannot
+//   extend the session
 //   localStorage.removeItem("legend-mock-session")
 //
 // Verification accepts any six digits except 000000 (wrong-code state).
@@ -19,8 +22,10 @@ import {
   enrollMfaFactor,
   listMfaFactors,
   listSessions,
+  MANAGEMENT_IDLE_MINUTES,
   mfaFactorIdSchema,
   mfaFactorSchema,
+  MINUTE_MS,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -39,10 +44,17 @@ export const MOCK_SESSION_KNOB = "legend-mock-session";
 
 type PendingFactor = { enrollment: MfaEnrollment; factor: MfaFactor };
 
+/** The idle knob's session; seeded once so every read sees the same deadline. */
+type IdleDemo = {
+  expiresAt: string;
+  lastSeenAt: string;
+};
+
 type AuthMockState = {
   factors: MfaFactor[];
   sessions: SessionView[];
   pending: Map<string, PendingFactor>;
+  idle: IdleDemo | null;
 };
 
 const now = () => Date.now();
@@ -92,14 +104,44 @@ const seed = (): AuthMockState => ({
   ),
   sessions: seedSessions(),
   pending: new Map(),
+  idle: null,
 });
 
 const state = createMockStore<AuthMockState>(seed);
 
-/** The idle knob shortens this one session's idle end for a demo. */
+/**
+ * The idle knob's demo deadline, seeded once per mock session and kept in the
+ * store (bead legend-dw4d). Recomputing `now + 110s` on every fetch made the
+ * deadline a moving target: the warning's dismissal could never match it, so
+ * the dialog reopened after every refetch.
+ */
+function idleDeadline(): IdleDemo {
+  const auth = state.get();
+  if (auth.idle !== null) return auth.idle;
+  const expiresAt = at(110_000);
+  auth.idle = {
+    expiresAt,
+    // A management session's deadline is lastSeenAt + 30 minutes (§3 F6), so
+    // the demo starts from a genuinely idle session.
+    lastSeenAt: new Date(
+      Date.parse(expiresAt) - MANAGEMENT_IDLE_MINUTES * MINUTE_MS,
+    ).toISOString(),
+  };
+  return auth.idle;
+}
+
+/**
+ * The current session as the idle knob presents it. Reads (/me, the device
+ * list) only display the demo deadline; none of them counts as activity
+ * (GET /api/auth/me is exempt from session activity, legend-91i).
+ */
 function withIdleKnob(session: Session): Session {
-  if (!idleKnobOn()) return session;
-  return { ...session, lastSeenAt: at(-3 * 60_000), expiresAt: at(110_000) };
+  if (!idleKnobOn()) {
+    state.get().idle = null; // leaving the demo starts a fresh one
+    return session;
+  }
+  const demo = idleDeadline();
+  return { ...session, lastSeenAt: demo.lastSeenAt, expiresAt: demo.expiresAt };
 }
 
 function currentSession(): Session {
