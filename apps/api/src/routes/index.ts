@@ -3,6 +3,7 @@ import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
 import { healthRouter } from "./health.routes";
+import { inventoryRouter } from "./inventory.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
@@ -10,6 +11,10 @@ import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
+import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
+import { qrRouter } from "./qr.routes";
+import { tableSessionsRouter } from "./table-sessions.routes";
+import { paymentRouter } from "./payment.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -36,5 +41,16 @@ apiRouter.use("/internal", internalRouter);
 // RBAC administration (WS-01) and the caller's effective access (legend-t4y7).
 apiRouter.use("/access", accessRouter);
 apiRouter.use("/me", meRouter);
+// Inventory & warehouse (WS-06, bead legend-98t).
+apiRouter.use("/inventory", inventoryRouter);
+// Customer payment links and intents (WS-05, PRD §3.13). Public by token.
+apiRouter.use("/payments", paymentRouter);
 // Fail closed until production tenant membership and role resolvers are wired.
 apiRouter.use("/notifications", createNotificationRouter());
+// WS-03 floor: zones/tables editor, live board, signed table QR and the staff
+// table-session lifecycle; /qr is the public guest scan (legend-irw).
+apiRouter.use("/floor", floorRouter);
+apiRouter.use("/outlets", outletFloorRouter);
+apiRouter.use("/tables", tablesRouter);
+apiRouter.use("/table-sessions", tableSessionsRouter);
+apiRouter.use("/qr", qrRouter);

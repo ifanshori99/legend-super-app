@@ -29,7 +29,13 @@ import {
   requireSupportAccess,
   requestSupportAccess,
 } from "../services/platform-support.service";
-import { agent, originHeader, setRole, signUp } from "./helpers";
+import {
+  agent,
+  originHeader,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 const app = createApp();
 const fixtures = cafeLegendPlatformFixtures;
@@ -95,6 +101,10 @@ async function adminClient() {
      WHERE tenant_id = $1 AND template_key = 'owner'`,
     [seededTenantId, userId],
   );
+  // AUTH-05: the owner template requires MFA, so the platform panel and the
+  // tenant back office stay closed until the session verifies a factor
+  // (legend-qfvu). The TOTP path itself is covered by identity-mfa-api.test.ts.
+  await verifySessionMfa(email);
   return { client, userId };
 }
 
@@ -246,7 +256,9 @@ describe("Panel Platform API", () => {
         accessMode: "read_only",
         mfaCode: "123456",
       });
-    // lib/mfa.ts fails closed: no stored factors yet, so no session is opened.
+    // The second factor is re-verified per request (TEN-04): "123456" matches
+    // no enrolled factor, so no support session is opened. The enroll → verify
+    // path is identity-mfa-api.test.ts.
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe("FORBIDDEN");
   });

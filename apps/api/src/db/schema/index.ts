@@ -18,4 +18,7 @@ export * from "./platform-access";
 export * from "./core-audit";
 export * from "./core-storage";
 export * from "./notification";
+export * from "./inventory";
+export * from "./floor";
+export * from "./payment";
 export * from "./identity";
