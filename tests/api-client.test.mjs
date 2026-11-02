@@ -414,6 +414,25 @@ describe("typed endpoint caller", () => {
     resetMocks();
   });
 
+  test("legend-8tv6 sends a validated Idempotency-Key and rejects unsafe headers", async () => {
+    await call(api.listExampleOutlets, undefined, {
+      headers: { "Idempotency-Key": "attempt-123" },
+    });
+    assert.deepEqual(calls[0].request.headers, {
+      "Idempotency-Key": "attempt-123",
+    });
+    for (const headers of [
+      { "Idempotency-Key": "bad key" },
+      { Authorization: "secret" },
+    ]) {
+      const error = await failure(
+        call(api.listExampleOutlets, undefined, { headers }),
+      );
+      assert.equal(error.code, "VALIDATION_ERROR");
+    }
+    assert.equal(calls.length, 1);
+  });
+
   test("builds the path, sends parsed query and returns the typed page", async () => {
     // A handler registered here replaces the example one for this contract.
     registerMock(

@@ -3,6 +3,7 @@
 // redeploy. One row per online method, each saved on its own so two changes
 // never overwrite each other.
 import * as React from "react";
+import { useAttemptKey } from "../use-attempt-key";
 import { Check } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -179,6 +180,7 @@ function RouteRow({
   const t = useT();
   const toast = useToast();
   const update = useUpdatePaymentRoute();
+  const attempt = useAttemptKey();
   const enabledProviders = providers.filter((provider) => provider.enabled);
   const [provider, setProvider] = React.useState(route.provider);
   const [fallback, setFallback] = React.useState(
@@ -193,18 +195,20 @@ function RouteRow({
   const dirty = changed && !update.isPending;
 
   const save = () => {
-    update.mutate(
-      {
-        method: route.method,
-        body: {
-          outletId: scope.outletId,
-          provider,
-          fallbackProvider: fallback === NO_FALLBACK ? null : fallback,
-          enabled,
-        },
+    const input = {
+      method: route.method,
+      body: {
+        outletId: scope.outletId,
+        provider,
+        fallbackProvider: fallback === NO_FALLBACK ? null : fallback,
+        enabled,
       },
+    };
+    update.mutate(
+      { ...input, idempotencyKey: attempt.keyFor(input) },
       {
         onSuccess: () => {
+          attempt.settle();
           toast({
             title: t("paymentAdmin.routing.saved", {
               method: t(methodLabelKey(route.method)),
