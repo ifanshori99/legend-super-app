@@ -14,6 +14,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { reservationMessages } from "./reservation.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 
@@ -29,6 +30,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
+  reservation: reservationMessages,
   // Staff second factor, security settings and device sessions (legend-9bh;
   // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
   ...ws01AuthMessages,
@@ -753,6 +756,7 @@ export const id = {
     },
     operations: {
       floor: "Papan Meja",
+      reservations: "Reservasi",
     },
     management: {
       dashboard: "Dasbor",

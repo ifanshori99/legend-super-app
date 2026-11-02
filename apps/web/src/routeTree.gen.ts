@@ -52,6 +52,7 @@ import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelo
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
+import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
 import { Route as PlatformPlatformKeamananRouteImport } from './routes/_platform/platform.keamanan'
@@ -324,6 +325,11 @@ const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
 const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
   id: '/pos/',
   path: '/pos/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
+  id: '/pos/reservasi',
+  path: '/pos/reservasi',
   getParentRoute: () => OpsRoute,
 } as any)
 const OwnerOwnerIndexRoute = OwnerOwnerIndexRouteImport.update({
@@ -741,6 +747,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
   '/masuk/google': typeof PublicMasukGoogleRoute
@@ -842,6 +849,7 @@ export interface FileRoutesByTo {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
   '/masuk/google': typeof PublicMasukGoogleRoute
@@ -956,6 +964,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/_public/masuk/email': typeof PublicMasukEmailRoute
   '/_public/masuk/google': typeof PublicMasukGoogleRoute
@@ -1061,6 +1070,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
     | '/masuk/google'
@@ -1162,6 +1172,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
     | '/masuk/google'
@@ -1275,6 +1286,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pembayaran'
     | '/_kelola/kelola/pengadaan'
     | '/_ops/operasional/koneksi'
+    | '/_ops/pos/reservasi'
     | '/_platform/platform/keamanan'
     | '/_public/masuk/email'
     | '/_public/masuk/google'
@@ -1668,6 +1680,13 @@ declare module '@tanstack/react-router' {
       path: '/pos'
       fullPath: '/pos/'
       preLoaderRoute: typeof OpsPosIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/reservasi': {
+      id: '/_ops/pos/reservasi'
+      path: '/pos/reservasi'
+      fullPath: '/pos/reservasi'
+      preLoaderRoute: typeof OpsPosReservasiRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_owner/owner/': {
@@ -2411,12 +2430,14 @@ const KitchenRouteWithChildren =
 
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
+  OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
 }
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
+  OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
 }
