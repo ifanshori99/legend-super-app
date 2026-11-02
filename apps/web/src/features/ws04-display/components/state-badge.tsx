@@ -1,11 +1,6 @@
 // State badge of the display: always icon + text, never color alone
 // (DESIGN.md §4 Badge; WCAG 1.4.1).
-import {
-  CircleCheck,
-  Clock,
-  QrCode,
-  type LucideIcon,
-} from "lucide-react";
+import { CircleCheck, Clock, QrCode, type LucideIcon } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";

@@ -20,16 +20,13 @@ export function DisplayHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-xl leading-7 font-bold">{t("posDisplay.title")}</h1>
+        <h1 className="type-display">{t("posDisplay.title")}</h1>
         <p className="max-w-prose text-sm leading-5 text-muted-foreground">
           {t("posDisplay.intro")}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Badge
-          tone="neutral"
-          className="rounded-full px-2.5 py-1 text-sm [&_svg]:size-4"
-        >
+        <Badge tone="neutral" className="px-3 py-1 text-sm [&_svg]:size-4">
           <Monitor aria-hidden="true" />
           {t("posDisplay.idle.paired")}
         </Badge>

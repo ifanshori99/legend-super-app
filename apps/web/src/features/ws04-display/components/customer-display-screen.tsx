@@ -7,6 +7,7 @@
 import { Clock, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors.ts";
@@ -23,12 +24,17 @@ import { DisplayStateBadge } from "./state-badge.tsx";
 function OrderingHint() {
   const t = useT();
   return (
-    <section className="flex items-start gap-3 rounded-xl border-(length:--border-w) bg-card p-card">
-      <Clock className="mt-0.5 size-5 shrink-0 text-info" aria-hidden="true" />
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("posDisplay.orderingHint")}
-      </p>
-    </section>
+    <Card>
+      <div className="flex items-start gap-3">
+        <Clock
+          className="mt-0.5 size-5 shrink-0 text-info"
+          aria-hidden="true"
+        />
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("posDisplay.orderingHint")}
+        </p>
+      </div>
+    </Card>
   );
 }
 
@@ -53,8 +59,8 @@ export function CustomerDisplayScreen() {
           className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,30rem)]"
         >
           <span className="sr-only">{t("posDisplay.loading")}</span>
-          <Skeleton className="h-80 w-full rounded-xl" />
-          <Skeleton className="h-80 w-full rounded-xl" />
+          <Skeleton className="h-80 w-full rounded-container" />
+          <Skeleton className="h-80 w-full rounded-container" />
         </div>
       </div>
     );
@@ -94,27 +100,31 @@ export function CustomerDisplayScreen() {
         <Badge
           tone="warning"
           role="status"
-          className="rounded-full px-3 py-1 text-sm whitespace-normal [&_svg]:size-4"
+          className="px-3 py-1 text-sm whitespace-normal [&_svg]:size-4"
         >
           <WifiOff aria-hidden="true" />
           {t("posDisplay.staleNotice")}
         </Badge>
       )}
-      <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,30rem)] lg:items-start">
+      <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,30rem)] lg:items-start 2xl:grid-cols-[minmax(0,1fr)_minmax(0,34rem)]">
+        {/* Full-bleed list header + divided rows: a plain card surface, not a
+            `Card` (its `p-card` cannot be stripped by tw-merge). */}
         <section
           aria-labelledby="display-order"
-          className="min-w-0 rounded-xl border-(length:--border-w) bg-card"
+          className="min-w-0 overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline"
         >
-          <div className="flex flex-wrap items-center gap-2 border-b-(length:--border-w) p-4">
-            <h2 id="display-order" className="text-lg leading-7 font-semibold">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b-(length:--border-w) p-4">
+            <h2 id="display-order" className="type-title">
               {t("posDisplay.order", { number: state.orderNumber ?? "—" })}
             </h2>
-            <DisplayStateBadge state={state.state} />
-            <p className="ml-auto text-sm leading-5 text-muted-foreground tabular">
-              {t("posDisplay.quantityTimes", {
-                count: totalQuantity(state.lines),
-              })}
-            </p>
+            <div className="flex items-center gap-2">
+              <DisplayStateBadge state={state.state} />
+              <span className="text-sm leading-5 text-muted-foreground tabular">
+                {t("posDisplay.itemCount", {
+                  count: totalQuantity(state.lines),
+                })}
+              </span>
+            </div>
           </div>
           <BillLines lines={state.lines} />
         </section>

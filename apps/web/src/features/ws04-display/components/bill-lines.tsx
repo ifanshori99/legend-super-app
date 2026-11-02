@@ -13,7 +13,10 @@ export function BillLines({ lines }: { lines: CustomerDisplayLine[] }) {
       </p>
     );
   return (
-    <ul aria-label={t("posDisplay.linesLabel")} className="divide-y divide-border">
+    <ul
+      aria-label={t("posDisplay.linesLabel")}
+      className="divide-y divide-border"
+    >
       {lines.map((line, index) => (
         <li
           key={`${index}-${line.name}`}
@@ -21,21 +24,21 @@ export function BillLines({ lines }: { lines: CustomerDisplayLine[] }) {
         >
           <span
             aria-hidden="true"
-            className="mt-0.5 inline-flex min-w-9 shrink-0 justify-center rounded-md bg-muted px-2 py-0.5 text-sm leading-5 font-semibold tabular"
+            className="mt-0.5 inline-flex min-w-10 shrink-0 justify-center rounded-md bg-surface-3 px-2 py-0.5 text-sm leading-5 font-semibold tabular"
           >
             {t("posDisplay.quantityTimes", { count: line.quantity })}
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-(length:--density-text) leading-7 font-semibold break-words">
-              {line.name}
-            </p>
+            {/* The wall display is read from a step back, so item names take
+                the 21px title step, not body size. */}
+            <p className="type-title break-words">{line.name}</p>
             {line.note && (
               <p className="text-sm leading-5 text-muted-foreground">
                 {t("posDisplay.note", { note: line.note })}
               </p>
             )}
           </div>
-          <Money amount={line.lineTotalIdr} className="font-semibold" />
+          <Money amount={line.lineTotalIdr} size="lg" />
         </li>
       ))}
     </ul>

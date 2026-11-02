@@ -52,6 +52,7 @@ import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelo
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
+import { Route as OpsPosCustomerDisplayRouteImport } from './routes/_ops/pos.customer-display'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
@@ -328,6 +329,11 @@ const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
 const OpsPosIndexRoute = OpsPosIndexRouteImport.update({
   id: '/pos/',
   path: '/pos/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosCustomerDisplayRoute = OpsPosCustomerDisplayRouteImport.update({
+  id: '/pos/customer-display',
+  path: '/pos/customer-display',
   getParentRoute: () => OpsRoute,
 } as any)
 const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
@@ -768,6 +774,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -873,6 +880,7 @@ export interface FileRoutesByTo {
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/masuk/email': typeof PublicMasukEmailRoute
@@ -991,6 +999,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
+  '/_ops/pos/customer-display': typeof OpsPosCustomerDisplayRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
   '/_public/masuk/email': typeof PublicMasukEmailRoute
@@ -1100,6 +1109,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/customer-display'
     | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1205,6 +1215,7 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/operasional/koneksi'
+    | '/pos/customer-display'
     | '/pos/reservasi'
     | '/platform/keamanan'
     | '/masuk/email'
@@ -1322,6 +1333,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pembayaran'
     | '/_kelola/kelola/pengadaan'
     | '/_ops/operasional/koneksi'
+    | '/_ops/pos/customer-display'
     | '/_ops/pos/reservasi'
     | '/_platform/platform/keamanan'
     | '/_public/masuk/email'
@@ -1719,6 +1731,13 @@ declare module '@tanstack/react-router' {
       path: '/pos'
       fullPath: '/pos/'
       preLoaderRoute: typeof OpsPosIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/customer-display': {
+      id: '/_ops/pos/customer-display'
+      path: '/pos/customer-display'
+      fullPath: '/pos/customer-display'
+      preLoaderRoute: typeof OpsPosCustomerDisplayRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_ops/pos/reservasi': {
@@ -2497,6 +2516,7 @@ const KitchenRouteWithChildren =
 
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
+  OpsPosCustomerDisplayRoute: typeof OpsPosCustomerDisplayRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
@@ -2504,6 +2524,7 @@ interface OpsRouteChildren {
 
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
+  OpsPosCustomerDisplayRoute: OpsPosCustomerDisplayRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,

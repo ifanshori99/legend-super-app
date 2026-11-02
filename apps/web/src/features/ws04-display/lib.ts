@@ -39,7 +39,10 @@ export function secondsUntilExpiry(expiresAt: string, nowMs: number): number {
 }
 
 /** True while the screen must not present the code as payable. */
-export function isQrisExpired(qris: CustomerDisplayQris, nowMs: number): boolean {
+export function isQrisExpired(
+  qris: CustomerDisplayQris,
+  nowMs: number,
+): boolean {
   return secondsUntilExpiry(qris.expiresAt, nowMs) <= 0;
 }
 
@@ -64,8 +67,6 @@ export const TENDER_LABEL: Record<PosTenderMethod, MessageKey> = {
 };
 
 /** Total quantity of the bill, e.g. 4 for 2× coffee + 1× rice + 1× pastry. */
-export function totalQuantity(
-  lines: readonly { quantity: number }[],
-): number {
+export function totalQuantity(lines: readonly { quantity: number }[]): number {
   return lines.reduce((sum, line) => sum + line.quantity, 0);
 }

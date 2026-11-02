@@ -12,8 +12,6 @@ export const posDisplayMessages = {
   offlineHint:
     "Sambungkan kembali perangkat ke jaringan kasir; layar menyambung sendiri.",
   staleNotice: "Koneksi terputus. Menampilkan data terakhir.",
-  idleTitle: "Layar siap",
-  idleHint: "Pesanan dari terminal POS akan tampil di sini.",
   idle: {
     welcome: "Selamat datang",
     hint: "Silakan tunggu sebentar. Pesanan Anda akan tampil di layar ini.",
@@ -29,6 +27,7 @@ export const posDisplayMessages = {
   },
   linesLabel: "Daftar item pesanan",
   quantityTimes: "{count}×",
+  itemCount: "{count} item",
   note: "Catatan: {note}",
   emptyLines: "Belum ada item di pesanan ini.",
   totals: {
@@ -41,15 +40,14 @@ export const posDisplayMessages = {
     total: "Total",
   },
   qris: {
-    label: "Pembayaran QRIS",
     title: "Pindai untuk membayar",
     hint: "Buka aplikasi bank atau e-wallet, lalu pindai kode ini.",
-    amount: "Nominal",
     expires: "Berlaku {time}",
     expired: "Kode kedaluwarsa, menyegarkan…",
     alt: "Kode QRIS pembayaran {amount}",
   },
-  orderingHint: "Kasir sedang mencatat pesanan. Total muncul setelah selesai.",
+  orderingHint:
+    "Kasir masih mencatat pesanan. Total diperbarui saat item ditambahkan.",
   paid: {
     title: "Pembayaran berhasil",
     hint: "Terima kasih. Silakan tunggu pesanan Anda.",

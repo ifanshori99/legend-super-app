@@ -6,16 +6,12 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import type { CustomerDisplayQris } from "@starter/shared/pos";
 import { formatRupiah } from "@starter/shared/i18n";
+import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
-import { Money } from "@/components/ui/money";
-import { cn } from "@/lib/utils";
-import {
-  formatCountdown,
-  isQrisExpired,
-  secondsUntilExpiry,
-} from "../lib.ts";
-import { DisplayQr } from "./display-qr.tsx";
+import { Card } from "@/components/ui/card";
+import { QrCode } from "@/components/ui/qr-code";
+import { formatCountdown, isQrisExpired, secondsUntilExpiry } from "../lib.ts";
 
 /** Re-renders once a second so the countdown stays true. */
 function useNowMs(): number {
@@ -35,57 +31,51 @@ export function QrisPanel({ qris }: { qris: CustomerDisplayQris }) {
   const amount = formatRupiah(qris.amountIdr);
 
   return (
-    <section
-      aria-labelledby="display-qris"
-      className="rounded-xl border-(length:--border-w) bg-card p-card"
-    >
+    <Card>
       <div className="flex flex-wrap items-center gap-2">
-        <h2 id="display-qris" className="text-lg leading-7 font-semibold">
-          {t("posDisplay.qris.title")}
-        </h2>
-        <Badge tone="brand">QRIS</Badge>
+        <h2 className="type-title">{t("posDisplay.qris.title")}</h2>
+        <Badge tone="brand">{t("posDisplay.tender.qris")}</Badge>
       </div>
       <p className="text-sm leading-5 text-muted-foreground">
         {t("posDisplay.qris.hint")}
       </p>
       <div
         className={cn(
-          "mx-auto w-full max-w-72 transition-opacity duration-(--duration-base)",
+          "grid justify-items-center gap-3 transition-opacity duration-(--duration-base)",
           expired && "opacity-40",
         )}
       >
-        <DisplayQr
-          payload={qris.payload}
+        <QrCode
+          value={qris.payload}
           label={t("posDisplay.qris.alt", { amount })}
+          size={288}
+          svgClassName="size-52 sm:size-56 2xl:size-72"
+          className="rounded-container border-(length:--border-w) border-border p-3"
         />
+        <p
+          aria-live="polite"
+          className={cn(
+            "flex items-center gap-2 text-sm leading-5",
+            expired
+              ? "font-semibold text-warning"
+              : "text-muted-foreground tabular",
+          )}
+        >
+          {expired ? (
+            <>
+              <Loader2
+                className="size-4 motion-safe:animate-spin"
+                aria-hidden="true"
+              />
+              {t("posDisplay.qris.expired")}
+            </>
+          ) : (
+            t("posDisplay.qris.expires", {
+              time: formatCountdown(remaining),
+            })
+          )}
+        </p>
       </div>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-sm leading-5 text-muted-foreground">
-          {t("posDisplay.qris.amount")}
-        </span>
-        <Money amount={qris.amountIdr} size="lg" />
-      </div>
-      <p
-        aria-live="polite"
-        className={cn(
-          "flex items-center gap-2 text-sm leading-5",
-          expired ? "font-semibold text-warning" : "text-muted-foreground tabular",
-        )}
-      >
-        {expired ? (
-          <>
-            <Loader2
-              className="size-4 motion-safe:animate-spin"
-              aria-hidden="true"
-            />
-            {t("posDisplay.qris.expired")}
-          </>
-        ) : (
-          t("posDisplay.qris.expires", {
-            time: formatCountdown(remaining),
-          })
-        )}
-      </p>
-    </section>
+    </Card>
   );
 }

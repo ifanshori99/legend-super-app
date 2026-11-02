@@ -10,24 +10,18 @@ export function IdleSlide() {
   return (
     <section
       aria-labelledby="display-idle"
-      className="flex min-h-[24rem] flex-1 flex-col items-center justify-center gap-4 rounded-xl border-(length:--border-w) bg-card p-card text-center"
+      className="flex min-h-[24rem] flex-1 flex-col items-center justify-center gap-4 rounded-container border-(length:--border-w) bg-card p-card text-center shadow-hairline"
     >
-      <p className="text-sm leading-5 font-semibold tracking-wide text-muted-foreground uppercase">
+      <p className="type-eyebrow text-muted-foreground">
         {t("app.defaultBrand")}
       </p>
-      <h2
-        id="display-idle"
-        className="text-3xl leading-9 font-bold tracking-tight sm:text-4xl sm:leading-10"
-      >
+      <h2 id="display-idle" className="type-display-xl">
         {t("posDisplay.idle.welcome")}
       </h2>
       <p className="max-w-md text-(length:--density-text) leading-7 text-muted-foreground">
         {t("posDisplay.idle.hint")}
       </p>
-      <Badge
-        tone="neutral"
-        className="rounded-full px-3 py-1 text-sm [&_svg]:size-4"
-      >
+      <Badge tone="neutral" className="px-3 py-1 text-sm [&_svg]:size-4">
         <Monitor aria-hidden="true" />
         {t("posDisplay.idle.waiting")}
       </Badge>

@@ -53,10 +53,7 @@ test("PRD §3 F11/F13: the display reads again before the QRIS expires", () => {
   );
   // The code expires in 3 seconds: read again then, not 5 seconds later.
   assert.equal(
-    displayRefetchMs(
-      { state: "awaiting_payment", qris: qris(3_000) },
-      NOW,
-    ),
+    displayRefetchMs({ state: "awaiting_payment", qris: qris(3_000) }, NOW),
     3_000,
   );
   // A long-lived code keeps the normal poll interval.
@@ -69,10 +66,7 @@ test("PRD §3 F11/F13: the display reads again before the QRIS expires", () => {
   );
   // An already-expired code retries within a second (never a dead code stays).
   assert.equal(
-    displayRefetchMs(
-      { state: "awaiting_payment", qris: qris(-1_000) },
-      NOW,
-    ),
+    displayRefetchMs({ state: "awaiting_payment", qris: qris(-1_000) }, NOW),
     DISPLAY_MIN_REFETCH_MS,
   );
 });

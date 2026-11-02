@@ -58,7 +58,9 @@ test("F11 customer display: a live bill shows its items, total and QRIS", async 
   ).toBeVisible();
   await expect(page.getByText("Service charge")).toBeVisible();
   await expect(page.getByText("Pajak")).toBeVisible();
-  await expect(page.getByText("Rp 120.100").first()).toBeVisible();
+  // The hero total is a `<data>` value; the v3 Money tier renders the `Rp`
+  // prefix at 0.6em, so the figure is the stable assertion.
+  await expect(page.locator('data[value="120100"]').first()).toBeVisible();
 
   // The dynamic QRIS, its amount and the countdown under it.
   await expect(
@@ -91,9 +93,7 @@ test("F11 customer display: an error says how to fix it", async ({ page }) => {
 test("F11 customer display: offline is its own state", async ({ page }) => {
   test.slow();
   await openDisplay(page, "?mock=offline");
-  await expect(
-    page.getByText("Layar pelanggan sedang offline"),
-  ).toBeVisible();
+  await expect(page.getByText("Layar pelanggan sedang offline")).toBeVisible();
   await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
 });
 
@@ -123,8 +123,8 @@ test("F11 customer display: a paid bill shows the tenders and the change", async
   ).toBeVisible();
   await expect(page.getByText("Tunai")).toBeVisible();
   await expect(page.getByText("Poin")).toBeVisible();
-  await expect(page.getByText("Kembalian")).toBeVisible();
-  await expect(page.getByText("Rp 4.900")).toBeVisible();
+  await expect(page.getByText("Kembalian", { exact: true })).toBeVisible();
+  await expect(page.locator('data[value="4900"]')).toBeVisible();
 });
 
 test("F11 customer display: a bill still being taken has no QR yet", async ({
@@ -134,8 +134,6 @@ test("F11 customer display: a bill still being taken has no QR yet", async ({
   await setDisplayState(page, "ordering");
   await openDisplay(page);
   await expect(page.getByText("Pesanan dicatat")).toBeVisible();
-  await expect(
-    page.getByText("Kasir sedang mencatat pesanan"),
-  ).toBeVisible();
+  await expect(page.getByText("Kasir masih mencatat pesanan")).toBeVisible();
   await expect(page.getByRole("img", { name: /Kode QRIS/ })).toHaveCount(0);
 });
