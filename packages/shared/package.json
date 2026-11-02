@@ -40,6 +40,7 @@
     "./delivery": "./src/delivery/index.ts",
     "./website": "./src/website/index.ts",
     "./hris": "./src/hris/index.ts",
+    "./hris/payroll": "./src/hris/payroll/index.ts",
     "./platform": "./src/platform/index.ts",
     "./dashboard": "./src/dashboard/index.ts",
     "./operations": "./src/operations/index.ts"

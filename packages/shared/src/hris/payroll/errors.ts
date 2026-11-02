@@ -1,0 +1,88 @@
+// Payroll-domain error codes (docs/plan/contracts.md D-CORE-4: domain
+// contracts declare their own UPPER_SNAKE codes). The API error handler maps
+// PayrollError the way it maps CoreError. Every code fails closed: a payslip is
+// never computed with a guessed or zero rate.
+
+export const payrollErrorHttpStatus = {
+  /** No published statutory table of that type covers the date (R20). */
+  PAYROLL_STATUTORY_TABLE_NOT_FOUND: 422,
+  /** Two published versions of one table start on the same date. */
+  PAYROLL_STATUTORY_TABLE_AMBIGUOUS: 409,
+  /** A published statutory version is immutable; publish a new version. */
+  PAYROLL_STATUTORY_TABLE_IMMUTABLE: 409,
+  /** A new version may not start before today (mirrors tax R21). */
+  PAYROLL_STATUTORY_TABLE_BACKDATED: 422,
+  /** PTKP status or income missing from a TER/PTKP table. */
+  PAYROLL_TER_BRACKET_NOT_FOUND: 422,
+  /** Status transition not allowed by the payroll run state machine. */
+  PAYROLL_RUN_INVALID_TRANSITION: 409,
+  /** Lock requested without both approvals (PAYR-01). */
+  PAYROLL_RUN_NOT_APPROVED: 409,
+  /** The second approver is the HR approver, or a reversal approver is the
+   * requester (PRD §3 Matriks Approval: approver differs from requester). */
+  PAYROLL_APPROVER_NOT_DISTINCT: 403,
+  /** The run is locked/paid/reversed: inputs and results are frozen (PAYR-02). */
+  PAYROLL_RUN_FROZEN: 409,
+  /** The run's config snapshot names a table version that is not available. */
+  PAYROLL_SNAPSHOT_MISMATCH: 409,
+  /** Bank file rows/total differ from the run's bank-transfer net (PAYR-04). */
+  PAYROLL_BANK_FILE_MISMATCH: 409,
+  /** Kasbon request above the policy limit (PRD §3 D.31). */
+  PAYROLL_LOAN_LIMIT_EXCEEDED: 422,
+  /** Reimbursement above the category/position limit (PRD §3 D.31). */
+  PAYROLL_REIMBURSEMENT_LIMIT_EXCEEDED: 422,
+  /** Invalid kasbon/reimbursement/service-charge-pool transition. */
+  PAYROLL_INVALID_TRANSITION: 409,
+  /** Wrong or locked payslip PIN (PRD §3 D.30 Slip Gaji: PIN-protected). */
+  PAYSLIP_PIN_INVALID: 403,
+  PAYSLIP_PIN_LOCKED: 423,
+} as const satisfies Record<string, number>;
+
+export type PayrollErrorCode = keyof typeof payrollErrorHttpStatus;
+export const PAYROLL_ERROR_CODES = Object.keys(
+  payrollErrorHttpStatus,
+) as PayrollErrorCode[];
+
+/** Safe Indonesian fallback messages; the UI maps `code` to catalog text. */
+const defaultMessages: Record<PayrollErrorCode, string> = {
+  PAYROLL_STATUTORY_TABLE_NOT_FOUND:
+    "Tabel tarif yang berlaku untuk tanggal ini belum diterbitkan.",
+  PAYROLL_STATUTORY_TABLE_AMBIGUOUS:
+    "Lebih dari satu versi tabel tarif berlaku pada tanggal yang sama.",
+  PAYROLL_STATUTORY_TABLE_IMMUTABLE:
+    "Tabel tarif yang sudah terbit tidak dapat diubah; buat versi baru.",
+  PAYROLL_STATUTORY_TABLE_BACKDATED:
+    "Tanggal efektif tidak boleh sebelum hari ini.",
+  PAYROLL_TER_BRACKET_NOT_FOUND:
+    "Kategori atau lapisan TER untuk karyawan ini tidak ditemukan.",
+  PAYROLL_RUN_INVALID_TRANSITION: "Perubahan status payroll tidak diizinkan.",
+  PAYROLL_RUN_NOT_APPROVED:
+    "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",
+  PAYROLL_APPROVER_NOT_DISTINCT:
+    "Penyetuju harus berbeda dari penyetuju sebelumnya atau pemohon.",
+  PAYROLL_RUN_FROZEN:
+    "Payroll yang sudah dikunci tidak dapat dihitung ulang atau diubah.",
+  PAYROLL_SNAPSHOT_MISMATCH:
+    "Versi tarif yang dipakai payroll ini tidak tersedia.",
+  PAYROLL_BANK_FILE_MISMATCH:
+    "Total file transfer tidak sama dengan gaji bersih.",
+  PAYROLL_LOAN_LIMIT_EXCEEDED: "Jumlah kasbon melebihi batas maksimal.",
+  PAYROLL_REIMBURSEMENT_LIMIT_EXCEEDED:
+    "Jumlah reimbursement melebihi batas kategori.",
+  PAYROLL_INVALID_TRANSITION: "Perubahan status pengajuan tidak diizinkan.",
+  PAYSLIP_PIN_INVALID: "PIN slip gaji salah.",
+  PAYSLIP_PIN_LOCKED:
+    "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
+};
+
+export class PayrollError extends Error {
+  readonly code: PayrollErrorCode;
+  readonly status: number;
+
+  constructor(code: PayrollErrorCode, message: string = defaultMessages[code]) {
+    super(message);
+    this.name = "PayrollError";
+    this.code = code;
+    this.status = payrollErrorHttpStatus[code];
+  }
+}
