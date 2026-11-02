@@ -14,6 +14,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
@@ -32,6 +33,8 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // POS customer display (PRD §3 F11 "Customer Display"), bead legend-azt.
+  posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
   // Public brand website (PRD §3.24): home, online menu, reservation/member
