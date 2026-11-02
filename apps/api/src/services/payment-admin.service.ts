@@ -7,7 +7,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import * as contract from "@starter/shared/payment/admin";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
@@ -33,6 +33,32 @@ const conflict = (message: string) => new HttpError(409, "CONFLICT", message);
 
 type Intent = typeof paymentIntents.$inferSelect;
 type Refund = typeof paymentRefunds.$inferSelect;
+// Evidence and fund rows are written under the intent lock by settlement.
+// Compute in PostgreSQL numeric and bigint to avoid rounding aggregate sums.
+async function refundableBalance(tx: Tx, intent: Intent) {
+  const result = await tx.execute(sql`
+    SELECT
+      (SELECT coalesce(sum(amount_idr), 0) FROM payment_evidence
+       WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid)::text AS received,
+      (SELECT coalesce(sum(amount_idr), 0) FROM payment_unallocated_funds
+       WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid)::text AS unallocated,
+      (SELECT coalesce(sum(amount_idr), 0) FROM payment_refunds
+       WHERE tenant_id = ${intent.tenantId} AND payment_intent_id = ${intent.id}::uuid
+         AND status <> 'failed' AND unallocated_fund_id IS NULL)::text AS reserved
+  `);
+  const row = result.rows[0]!;
+  const allocated =
+    BigInt(String(row.received)) - BigInt(String(row.unallocated));
+  const cap =
+    allocated < 0n
+      ? 0n
+      : allocated > BigInt(intent.amountIdr)
+        ? BigInt(intent.amountIdr)
+        : allocated;
+  const reserved = BigInt(String(row.reserved));
+  return { cap, reserved };
+}
+
 async function paymentInfo(tx: Tx, intent: Intent) {
   const [link] = await tx
     .select()
@@ -187,22 +213,8 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const [reserved] = await tx
-          .select({
-            total: sql<number>`coalesce(sum(${paymentRefunds.amountIdr}), 0)`,
-          })
-          .from(paymentRefunds)
-          .where(
-            and(
-              eq(paymentRefunds.tenantId, context.tenant.tenantId),
-              eq(paymentRefunds.paymentIntentId, intent.id),
-              sql`${paymentRefunds.status} <> 'failed'`,
-              // Excess (unallocated) money is refunded against its own fund
-              // row, never against the bill's paid amount (PAY-04).
-              isNull(paymentRefunds.unallocatedFundId),
-            ),
-          );
-        if (Number(reserved?.total ?? 0) + body.amountIdr > intent.amountIdr)
+        const { cap, reserved } = await refundableBalance(tx, intent);
+        if (reserved + BigInt(body.amountIdr) > cap)
           throw conflict("Refund exceeds available paid amount.");
         const now = new Date();
         const [row] = await tx
@@ -265,21 +277,8 @@ export async function listRefundablePayments(
     const payments = [];
     for (const intent of intents) {
       if (!intent.paidAt) continue;
-      const [sum] = await tx
-        .select({
-          total: sql<number>`coalesce(sum(${paymentRefunds.amountIdr}), 0)`,
-        })
-        .from(paymentRefunds)
-        .where(
-          and(
-            eq(paymentRefunds.tenantId, intent.tenantId),
-            eq(paymentRefunds.paymentIntentId, intent.id),
-            sql`${paymentRefunds.status} <> 'failed'`,
-            isNull(paymentRefunds.unallocatedFundId),
-          ),
-        );
-      const reserved = Number(sum?.total ?? 0);
-      if (reserved >= intent.amountIdr) continue;
+      const { cap, reserved } = await refundableBalance(tx, intent);
+      if (reserved >= cap) continue;
       const { link, outlet } = await paymentInfo(tx, intent);
       payments.push(
         contract.refundablePaymentSchema.parse({
@@ -288,9 +287,9 @@ export async function listRefundablePayments(
           outletId: intent.outletId,
           outletName: outlet.name,
           method: intent.method,
-          paidAmountIdr: intent.amountIdr,
-          refundedAmountIdr: reserved,
-          refundableAmountIdr: intent.amountIdr - reserved,
+          paidAmountIdr: Number(cap),
+          refundedAmountIdr: Number(reserved),
+          refundableAmountIdr: Number(cap - reserved),
           paidAt: intent.paidAt.toISOString(),
         }),
       );

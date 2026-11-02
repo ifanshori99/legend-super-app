@@ -156,6 +156,14 @@ afterAll(async () => {
     "DELETE FROM payment_refunds WHERE payment_intent_id = $1",
     [raceIntentId],
   );
+  await owner.query(
+    "DELETE FROM payment_unallocated_funds WHERE payment_intent_id = $1",
+    [raceIntentId],
+  );
+  await owner.query(
+    "DELETE FROM payment_evidence WHERE payment_intent_id = $1",
+    [raceIntentId],
+  );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     [intentId, raceIntentId, otherIntent],
   ]);
@@ -267,6 +275,12 @@ describe("WS-05 payment administration", () => {
   });
 
   it("PAY-04 concurrent refunds cannot reserve more than the paid amount", async () => {
+    await owner.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 100000, now())`,
+      [tenantId, outletA, raceIntentId, `late-${raceIntentId}`],
+    );
+
     const responses = await Promise.all(
       [1, 2].map(() =>
         manager
@@ -288,6 +302,10 @@ describe("WS-05 payment administration", () => {
       [raceIntentId],
     );
     expect(result.rows[0]?.total).toBe("60000");
+    await owner.query(
+      "DELETE FROM payment_evidence WHERE payment_intent_id = $1",
+      [raceIntentId],
+    );
   });
 
   it("PAY-04 refunding unallocated funds creates a pending approval", async () => {
@@ -333,6 +351,38 @@ describe("WS-05 payment administration", () => {
         note: "Credit not wired",
       });
     expect(credit.status).toBe(503);
+  });
+
+  it("PAY-04 late payment cannot refund the same unallocated money as a bill refund", async () => {
+    await owner.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 100000, now())`,
+      [tenantId, outletA, raceIntentId, `late-${raceIntentId}`],
+    );
+
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds (tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+       VALUES ($1, $2, $3, 40000, 'overpayment')`,
+      [tenantId, outletA, raceIntentId],
+    );
+    const listing = await manager.get(
+      `/api/payments/admin/refunds/refundable?outletId=${outletA}`,
+    );
+    expect(
+      listing.body.data.payments.find(
+        (p: { paymentIntentId: string }) => p.paymentIntentId === raceIntentId,
+      ),
+    ).toBeUndefined();
+    const response = await manager
+      .post("/api/payments/admin/refunds")
+      .set(originHeader)
+      .send({
+        idempotencyKey: `late-refund-${randomUUID()}`,
+        paymentIntentId: raceIntentId,
+        amountIdr: 1,
+        reason: "Late payment refund",
+      });
+    expect(response.status).toBe(409);
   });
 
   it("EDC-06 resolves a settlement difference only with a note", async () => {
