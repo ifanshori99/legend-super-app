@@ -19,7 +19,7 @@ const SheetTrigger = SheetPrimitive.Trigger;
 const SheetClose = SheetPrimitive.Close;
 
 const sheetVariants = cva(
-  "fixed z-50 flex flex-col gap-4 overflow-y-auto border-border bg-card p-card text-foreground shadow-overlay outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:duration-(--duration-slow) data-[state=closed]:duration-(--duration-base)",
+  "fixed z-50 flex flex-col gap-4 overflow-y-auto border-border bg-card p-card text-foreground shadow-overlay outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:duration-(--duration-slow) data-[state=open]:ease-sheet data-[state=closed]:duration-(--duration-base)",
   {
     variants: {
       side: {
@@ -27,7 +27,7 @@ const sheetVariants = cva(
           "inset-y-0 right-0 w-[min(24rem,calc(100%-3rem))] border-l data-[state=open]:slide-in-from-right data-[state=closed]:slide-out-to-right",
         left: "inset-y-0 left-0 w-[min(20rem,calc(100%-3rem))] border-r data-[state=open]:slide-in-from-left data-[state=closed]:slide-out-to-left",
         bottom:
-          "inset-x-0 bottom-0 max-h-[90dvh] rounded-t-2xl border-t pb-[max(var(--card-pad),env(safe-area-inset-bottom))] data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom",
+          "inset-x-0 bottom-0 max-h-[90dvh] rounded-t-sheet border-t pb-[max(var(--card-pad),env(safe-area-inset-bottom))] data-[state=open]:slide-in-from-bottom data-[state=closed]:slide-out-to-bottom",
       },
     },
     defaultVariants: { side: "right" },

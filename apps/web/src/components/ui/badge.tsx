@@ -85,12 +85,25 @@ export const ORDER_STATUSES = [
 ] as const;
 export const TIMER_STATUSES = ["onTrack", "near", "late"] as const;
 
+// v2 (owner Q25): the one state that needs action now (late timer, table
+// waiting) uses the solid fill; everything else stays tinted.
+const SOLID: Record<Tone, string> = {
+  neutral: "bg-foreground text-background",
+  success: "bg-success text-success-foreground",
+  warning: "bg-warning text-warning-foreground",
+  danger: "bg-danger text-danger-foreground",
+  info: "bg-info text-info-foreground",
+};
+
 function StatusPill({
   status,
+  solid = false,
   children,
   className,
 }: {
   status: StatusKind;
+  /** Solid fill for the urgent state only (DESIGN.md §4 Status). */
+  solid?: boolean;
   /** Overrides the catalog label, e.g. "Siap · 2 item". */
   children?: React.ReactNode;
   className?: string;
@@ -101,9 +114,11 @@ function StatusPill({
     <span
       data-slot="status-pill"
       data-status={status}
+      data-solid={solid || undefined}
       className={cn(
         badgeVariants({ tone }),
         "rounded-full px-2.5 text-sm",
+        solid && SOLID[tone],
         className,
       )}
     >
