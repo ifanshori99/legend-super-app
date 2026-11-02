@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { MessageCircle, ShieldCheck } from "lucide-react";
 import type { LoginChallengeIssued } from "@starter/shared/identity";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { useT } from "@/components/i18n";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
 import { formatClock, loginChallengeOutcome } from "../flow";
@@ -69,21 +70,23 @@ export function LoginStep({
   const ended = outcome === "expired" || outcome === "cancelled";
 
   return (
-    <div className="grid gap-4">
-      <div className="grid gap-1">
-        <h2 className="flex items-center gap-2 text-xl leading-7 font-semibold">
+    <Card className="w-full max-w-md gap-4">
+      <div className="flex items-start gap-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
           <ShieldCheck className="size-5" aria-hidden="true" />
-          {t("facility.login.title")}
-        </h2>
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("facility.login.hint")}
-        </p>
+        </span>
+        <div className="grid gap-1">
+          <h2 className="font-brand type-title">{t("facility.login.title")}</h2>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("facility.login.hint")}
+          </p>
+        </div>
       </div>
 
       {issued === null || ended ? (
         <div className="grid gap-3">
           {ended && (
-            <div className="grid gap-0.5 rounded-lg bg-muted px-3 py-2 text-sm leading-5">
+            <div className="grid gap-0.5 rounded-container bg-surface-2 px-3 py-2 text-sm leading-5">
               <p className="font-semibold">
                 {t("facility.login.expiredTitle")}
               </p>
@@ -98,12 +101,12 @@ export function LoginStep({
           </Button>
         </div>
       ) : (
-        <div className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card">
+        <div className="grid gap-4">
           <div className="grid gap-1">
-            <p className="text-sm leading-5 font-medium text-muted-foreground">
+            <p className="type-eyebrow text-muted-foreground">
               {t("facility.login.codeLabel")}
             </p>
-            <p className="font-mono text-3xl leading-tight font-semibold tracking-widest tabular">
+            <p className="font-mono text-2xl leading-8 font-semibold tracking-widest tabular">
               {issued.codeFormatted}
             </p>
             <p className="text-sm leading-5 text-muted-foreground tabular">
@@ -123,7 +126,7 @@ export function LoginStep({
             {t("facility.login.sendHint")}
           </p>
 
-          <div className="hidden gap-2 sm:grid sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+          <div className="hidden gap-3 sm:grid sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
             <AccessTicketQr
               value={issued.whatsAppDeepLink}
               label={t("facility.login.qrLabel")}
@@ -167,6 +170,6 @@ export function LoginStep({
           {t("facility.login.mockHint")}
         </p>
       )}
-    </div>
+    </Card>
   );
 }

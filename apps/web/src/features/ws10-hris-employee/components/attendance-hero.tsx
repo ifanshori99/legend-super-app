@@ -6,13 +6,7 @@ import { Coffee, LogIn, LogOut, Play, type LucideIcon } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AttendanceType } from "@starter/shared/hris";
 import { useAttendanceDay } from "../hooks.ts";
 import {
@@ -54,7 +48,9 @@ export function AttendanceHero({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>{t("hris.home.attendanceTitle")}</CardTitle>
+          <CardTitle className="font-brand type-title">
+            {t("hris.home.attendanceTitle")}
+          </CardTitle>
         </CardHeader>
         <SectionSkeleton rows={3} />
       </Card>
@@ -63,7 +59,9 @@ export function AttendanceHero({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>{t("hris.home.attendanceTitle")}</CardTitle>
+          <CardTitle className="font-brand type-title">
+            {t("hris.home.attendanceTitle")}
+          </CardTitle>
         </CardHeader>
         <SectionError
           title={t("hris.state.logsError")}
@@ -104,10 +102,11 @@ export function AttendanceHero({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>{t("hris.home.attendanceTitle")}</CardTitle>
-        <CardDescription>{dateHint}</CardDescription>
-        <CardAction>
+      <div className="grid gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="font-brand type-title">
+            {t("hris.home.attendanceTitle")}
+          </h3>
           <StatusPill
             status={
               status === "not_started"
@@ -119,10 +118,13 @@ export function AttendanceHero({
           >
             {t(dayStatusTitleKey(status))}
           </StatusPill>
-        </CardAction>
-      </CardHeader>
+        </div>
+        <p className="text-sm leading-5 text-muted-foreground">{dateHint}</p>
+      </div>
 
-      <TodayTimeline logs={logs} timeZone={timeZone} />
+      <div className="rounded-container bg-surface-2 px-3 py-1">
+        <TodayTimeline logs={logs} timeZone={timeZone} />
+      </div>
 
       <div className="grid gap-2">
         <Button asChild size="lg" className="w-full">

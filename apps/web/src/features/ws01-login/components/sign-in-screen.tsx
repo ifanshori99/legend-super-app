@@ -14,6 +14,7 @@ import { Globe, Mail, ShieldAlert } from "lucide-react";
 import type { Session } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { postLoginPath } from "../flow";
 import { Notice } from "./shared";
 import { SignedIn } from "./signed-in";
@@ -38,15 +39,15 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
   }, [result, returnTo, navigate]);
 
   return (
-    <div className="grid gap-6">
+    <div className="mx-auto grid w-full max-w-md gap-5">
       <header className="grid gap-2">
-        <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+        <p className="type-eyebrow text-muted-foreground">
           {t("login.eyebrow")}
         </p>
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-brand type-display-xl">
           {t("login.heading", { brand })}
         </h1>
-        <p className="text-base leading-6 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.subtitle")}
         </p>
       </header>
@@ -59,23 +60,25 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
         />
       ) : (
         <>
-          <WhatsAppLogin
-            copy={{
-              heading: t("login.whatsapp.heading"),
-              hint: t("login.whatsapp.hint"),
-              action: t("login.whatsapp.action"),
-            }}
-            returnTo={returnTo}
-            onSignedIn={setResult}
-          />
+          <Card className="gap-5">
+            <WhatsAppLogin
+              copy={{
+                heading: t("login.whatsapp.heading"),
+                hint: t("login.whatsapp.hint"),
+                action: t("login.whatsapp.action"),
+              }}
+              returnTo={returnTo}
+              onSignedIn={setResult}
+            />
 
-          <div className="grid gap-3">
-            <div className="flex items-center gap-3 text-xs font-medium tracking-wider text-muted-foreground uppercase">
+            <div className="flex items-center gap-3">
               <span className="h-px flex-1 bg-border" aria-hidden="true" />
-              <span>{t("login.or")}</span>
+              <span className="type-eyebrow text-muted-foreground">
+                {t("login.or")}
+              </span>
               <span className="h-px flex-1 bg-border" aria-hidden="true" />
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2">
               <Button asChild variant="outline" size="lg">
                 <Link to="/masuk/email" search={{ lanjut: returnTo }}>
                   <Mail aria-hidden="true" />
@@ -89,7 +92,7 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
                 </Link>
               </Button>
             </div>
-          </div>
+          </Card>
 
           <Notice
             tone="warning"

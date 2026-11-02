@@ -12,6 +12,7 @@ import { Coins, ShieldCheck, UserRound } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/feedback-state";
 import { errorCode, loginErrorKey } from "../flow";
@@ -32,15 +33,15 @@ export function LinkWhatsAppScreen() {
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="mx-auto grid w-full max-w-md gap-5">
       <header className="grid gap-2">
-        <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+        <p className="type-eyebrow text-muted-foreground">
           {t("login.link.eyebrow")}
         </p>
-        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+        <h1 className="font-brand type-display-xl">
           {t("login.link.heading")}
         </h1>
-        <p className="text-base leading-6 text-muted-foreground">
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("login.link.subtitle")}
         </p>
       </header>
@@ -59,16 +60,12 @@ export function LinkWhatsAppScreen() {
           }
         />
       ) : auth.isPending ? (
-        <div
-          role="status"
-          aria-busy="true"
-          className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card"
-        >
+        <Card role="status" aria-busy="true" className="gap-3">
           <span className="sr-only">{t("login.link.verifying")}</span>
           <Skeleton className="h-6 w-2/5" />
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-control-lg w-full" />
-        </div>
+        </Card>
       ) : auth.isError ? (
         errorCode(auth.error) === "UNAUTHORIZED" ? (
           <Notice
@@ -115,14 +112,16 @@ export function LinkWhatsAppScreen() {
               </div>
             }
           />
-          <WhatsAppLogin
-            copy={{
-              heading: t("login.link.panelHeading"),
-              hint: t("login.whatsapp.hint"),
-              action: t("login.link.action"),
-            }}
-            onSignedIn={() => void onLinked()}
-          />
+          <Card className="gap-4">
+            <WhatsAppLogin
+              copy={{
+                heading: t("login.link.panelHeading"),
+                hint: t("login.whatsapp.hint"),
+                action: t("login.link.action"),
+              }}
+              onSignedIn={() => void onLinked()}
+            />
+          </Card>
         </>
       )}
     </div>

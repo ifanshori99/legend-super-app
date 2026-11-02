@@ -14,10 +14,10 @@ export function FavoriteList({
 }) {
   const t = useT();
   return (
-    <ol className="divide-y divide-border rounded-xl border-(length:--border-w) bg-card">
+    <ol className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
       {favorites.map((item, index) => (
-        <li key={item.menuItemId} className="flex items-start gap-3 p-card">
-          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-brand-subtle text-sm font-semibold tabular">
+        <li key={item.menuItemId} className="flex items-start gap-3 px-4 py-3">
+          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-container bg-surface-3 text-xs font-semibold tabular">
             {formatNumber(index + 1)}
           </span>
           <div className="min-w-0 flex-1">

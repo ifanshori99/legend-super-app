@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { formatNumber } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
+import { ThemeScope } from "@/components/theme-scope";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/feedback-state";
@@ -54,7 +55,7 @@ export function MemberOverviewPage() {
   return (
     <div className="grid gap-6">
       <header className="flex flex-wrap items-start justify-between gap-2">
-        <h1 className="font-brand text-3xl leading-9 font-bold tracking-tight">
+        <h1 className="font-brand type-display-xl">
           {t("member.overview.greeting", { name: overview.profile.name })}
         </h1>
         <MembershipStatusBadge status={overview.profile.membershipStatus} />
@@ -78,7 +79,10 @@ export function MemberOverviewPage() {
         program={overview.program}
       />
 
-      <TierCard overview={overview} />
+      {/* Design v3: the tier card is the one ink band on the page (ceremony). */}
+      <ThemeScope mode="dark" className="rounded-container">
+        <TierCard overview={overview} />
+      </ThemeScope>
 
       <MemberSection
         title={t("member.overview.missionsTitle")}
@@ -114,7 +118,7 @@ export function MemberOverviewPage() {
             {t("member.rewards.empty")}
           </p>
         ) : (
-          <ul className="divide-y divide-border rounded-xl border-(length:--border-w) bg-card">
+          <ul className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
             {rewardsQuery.data.data.slice(0, 3).map((reward) => (
               <li
                 key={reward.id}
@@ -195,9 +199,7 @@ export function MemberOverviewPage() {
       </MemberSection>
 
       <Card className="gap-2">
-        <h2 className="text-base leading-6 font-semibold">
-          {t("member.overview.membershipTitle")}
-        </h2>
+        <h2 className="type-heading">{t("member.overview.membershipTitle")}</h2>
         <p className="text-sm leading-5 text-muted-foreground">
           {membershipActive
             ? t("member.overview.membershipActive")

@@ -3477,6 +3477,7 @@ export const id = {
     },
     kpiLabel: "Angka kunci peran {role}",
     kpiEmpty: "Belum ada data",
+    kpiFailed: "Gagal dimuat",
     unitSuffix: {
       percent: "%",
       minutes: "mnt",

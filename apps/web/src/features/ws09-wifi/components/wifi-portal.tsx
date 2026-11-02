@@ -27,12 +27,10 @@ export function WifiPortal({
 }) {
   const t = useT();
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-5">
       <header className="grid gap-2">
-        <h1 className="font-brand text-3xl font-bold tracking-tight sm:text-4xl">
-          {t("wifi.title")}
-        </h1>
-        <p className="text-(length:--density-text) leading-6 text-muted-foreground">
+        <h1 className="font-brand type-display-xl">{t("wifi.title")}</h1>
+        <p className="max-w-prose text-sm leading-5 text-muted-foreground">
           {t("wifi.intro")}
         </p>
       </header>
@@ -93,7 +91,7 @@ function PortalSkeleton() {
   return (
     <div
       aria-busy="true"
-      className="grid gap-4 rounded-xl border-(length:--border-w) bg-card p-card"
+      className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
     >
       <span className="sr-only">{t("wifi.loading")}</span>
       <div className="flex items-start justify-between gap-3">

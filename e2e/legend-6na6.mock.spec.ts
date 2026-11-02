@@ -76,15 +76,19 @@ test("F36: the management home composes the GM home from the layout and its repo
     page.getByRole("heading", { name: "Kotak approval", exact: true }),
   ).toHaveCount(0);
 
-  // DASH-01: the strip links to the report that produced the numbers, with the
-  // same period and outlet the run used.
-  const source = page
-    .getByRole("link", { name: /Penjualan per kanal/ })
-    .first();
-  await expect(source).toHaveAttribute(
-    "href",
-    /^\/reports\/sales\/per-channel\?.*startDate=2026-11-01.*endDate=2026-11-01/,
-  );
+  // DASH-01: the strip names the report that produced the numbers. The report
+  // screens do not exist yet (legend-tp3x), so it is plain text, never a link
+  // that lands on a 404; it becomes a link once the route is generated.
+  const region = page.getByRole("region", { name: "Angka kunci peran GM" });
+  await expect(
+    region.locator("..").getByText("Penjualan per kanal"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /Penjualan per kanal/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('a[href^="/reports"], a[href^="/audit"]'),
+  ).toHaveCount(0);
 });
 
 test("F36: switching the role tab swaps the targets, the numbers and the queue", async ({

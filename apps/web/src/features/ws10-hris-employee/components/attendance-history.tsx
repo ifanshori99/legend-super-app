@@ -67,7 +67,7 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
         </span>
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-64 w-full rounded-xl" />
+        <Skeleton className="h-64 w-full rounded-container" />
       </div>
     );
 
@@ -93,7 +93,7 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
           </Link>
         </Button>
         <header className="grid gap-1">
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+          <h1 className="font-brand type-display-xl">
             {t("hris.history.title")}
           </h1>
           <p className="text-sm leading-5 text-muted-foreground">
@@ -139,33 +139,33 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
             <div className="grid gap-4">
               {groups.map((group) => (
                 <section key={group.businessDate} className="grid gap-2">
-                  <h2 className="text-sm leading-5 font-semibold text-muted-foreground">
+                  <h2 className="type-eyebrow text-muted-foreground tabular">
                     {formatBusinessDate(group.businessDate, zone)}
                   </h2>
                   <Card>
-                    <ul className="divide-y">
+                    <ul className="divide-y divide-border">
                       {group.logs.map((log) => {
                         const Icon = ATTENDANCE_TYPE_ICONS[log.type];
                         return (
                           <li
                             key={log.id}
-                            className="flex items-center gap-2 py-2.5"
+                            className="flex items-center gap-3 py-3"
                           >
-                            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
-                              <Icon className="size-4" aria-hidden="true" />
+                            <span className="grid size-10 shrink-0 place-items-center rounded-container bg-surface-3 text-muted-foreground">
+                              <Icon className="size-5" aria-hidden="true" />
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm leading-5 font-medium">
+                              <p className="truncate font-medium">
                                 {t(typeShortLabelKey(log.type))}
                               </p>
-                              <p className="truncate text-xs leading-4 text-muted-foreground">
+                              <p className="truncate text-sm leading-5 text-muted-foreground">
                                 {t(methodLabelKey(log.method))}
                                 {log.geoDistanceM !== null &&
                                   ` · ${log.geoDistanceM} m`}
                               </p>
                             </div>
                             <div className="grid shrink-0 justify-items-end gap-1">
-                              <span className="tabular text-sm leading-5 font-semibold">
+                              <span className="tabular font-semibold">
                                 {formatTime(log.occurredAt, zone)}
                               </span>
                               {log.validity !== "valid" && (
@@ -228,11 +228,11 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
           ) : (
             <div className="grid gap-4">
               <Card>
-                <ul className="divide-y">
+                <ul className="divide-y divide-border">
                   {corrections.corrections.map((correction) => (
                     <li key={correction.id} className="grid gap-1 py-3">
                       <div className="flex items-start justify-between gap-3">
-                        <p className="text-sm leading-5 font-medium">
+                        <p className="font-medium tabular">
                           {t("hris.history.requestedType", {
                             type: t(typeLabelKey(correction.requestedType)),
                             time: formatTime(
@@ -248,7 +248,7 @@ export function AttendanceHistory({ initialTab }: { initialTab: HistoryTab }) {
                         </StatusPill>
                       </div>
                       <p className="text-sm leading-5">{correction.reason}</p>
-                      <p className="text-xs leading-4 text-muted-foreground">
+                      <p className="text-sm leading-5 text-muted-foreground">
                         {correction.attendanceLogId === null &&
                           `${t("hris.correction.noLog")} · `}
                         {t("hris.history.requestedAt", {

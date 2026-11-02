@@ -118,14 +118,11 @@ export function SessionTimer({
   return (
     <div className={cn("grid gap-3", className)}>
       <div className="grid gap-1">
-        <p className="flex items-center gap-1.5 text-sm leading-5 font-medium text-muted-foreground">
-          <AlarmClock className="size-4" aria-hidden="true" />
+        <p className="flex items-center gap-1.5 type-eyebrow text-muted-foreground">
+          <AlarmClock className="size-3.5" aria-hidden="true" />
           {label}
         </p>
-        <p
-          className="text-3xl leading-tight font-semibold tracking-tight tabular"
-          aria-live="off"
-        >
+        <p className="type-display tabular" aria-live="off">
           {value}
         </p>
         <p className="text-sm leading-5 text-muted-foreground">{detail}</p>
@@ -142,7 +139,7 @@ export function SessionTimer({
       {state === "reminder" && (
         <p
           role="status"
-          className="rounded-lg bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
+          className="rounded-container bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
         >
           <span className="font-semibold">
             {t("facility.ticket.reminderTitle")}.

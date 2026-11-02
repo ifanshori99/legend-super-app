@@ -86,7 +86,7 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
     <div className="grid gap-4">
       <Card className="gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg leading-7 font-semibold">
+          <h2 className="font-brand type-title">
             {t("member.overview.membershipTitle")}
           </h2>
           <MembershipStatusBadge status={overview.profile.membershipStatus} />
@@ -99,9 +99,7 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
 
         <div className="grid gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm leading-5 font-semibold">
-              {t("member.signup.whatsappTitle")}
-            </p>
+            <p className="type-heading">{t("member.signup.whatsappTitle")}</p>
             <Badge tone={verified ? "success" : "warning"}>
               {verified ? (
                 <CheckCircle2 aria-hidden="true" />
@@ -130,9 +128,7 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
         </div>
 
         <div className="grid gap-1.5">
-          <p className="text-sm leading-5 font-semibold">
-            {t("member.signup.requirements")}
-          </p>
+          <p className="type-heading">{t("member.signup.requirements")}</p>
           <ul className="grid gap-1.5">
             <MembershipRequirement met={verified}>
               {t("member.signup.requirementVerified")}
@@ -146,7 +142,7 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
 
       <Card className="gap-4">
         <div className="grid gap-1">
-          <h2 className="text-lg leading-7 font-semibold">
+          <h2 className="font-brand type-title">
             {t("member.signup.consentTitle")}
           </h2>
           <p className="text-sm leading-5 text-muted-foreground">
@@ -188,7 +184,7 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
         {!values.loyalty && (
           <p
             role="status"
-            className="flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
+            className="flex items-start gap-2 rounded-container bg-warning-subtle px-3 py-2 text-sm leading-5 text-warning"
           >
             <CircleAlert
               className="mt-0.5 size-4 shrink-0"

@@ -8,13 +8,7 @@ import { useState } from "react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import type { WifiQuotaView } from "@starter/shared/facility";
 import {
   formatMinutes,
@@ -39,31 +33,33 @@ export function QuotaPanel({
   const nearLimit = shouldRemind(remainingMinutes);
   const menuToken = tableMenuToken(tableToken);
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("wifi.quotaLabel")}</CardTitle>
-        <CardDescription>
-          {t(throttled ? "wifi.speedBaseHint" : "wifi.speedFullHint")}
-        </CardDescription>
-        <CardAction>
-          <StatusPill status={throttled ? "warning" : "success"}>
-            {t(throttled ? "wifi.speedBase" : "wifi.speedFull")}
-          </StatusPill>
-        </CardAction>
-      </CardHeader>
+    <Card className="gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+        <h3 className="type-eyebrow text-muted-foreground">
+          {t("wifi.quotaLabel")}
+        </h3>
+        <StatusPill status={throttled ? "warning" : "success"}>
+          {t(throttled ? "wifi.speedBase" : "wifi.speedFull")}
+        </StatusPill>
+      </div>
       <QuotaMeter
         usedMinutes={session.usedMinutes}
         quotaMinutes={session.quotaMinutes}
         remainingMinutes={remainingMinutes}
         speedTier={session.speedTier}
       />
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("wifi.quotaNote")}
-      </p>
+      <div className="grid gap-1">
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t(throttled ? "wifi.speedBaseHint" : "wifi.speedFullHint")}
+        </p>
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("wifi.quotaNote")}
+        </p>
+      </div>
       {(nearLimit || throttled) && (
-        <div className="grid gap-3 rounded-lg bg-warning-subtle p-4">
+        <div className="grid gap-3 rounded-container bg-warning-subtle p-4">
           <div className="grid gap-1">
-            <p className="flex items-center gap-2 text-sm leading-5 font-semibold text-warning">
+            <p className="flex items-center gap-2 type-heading text-warning">
               <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
               {t(throttled ? "wifi.spentTitle" : "wifi.reminderTitle")}
             </p>
@@ -84,13 +80,14 @@ export function QuotaPanel({
         <Button
           variant="outline"
           size="sm"
+          className="w-fit"
           onClick={() => setAddHourOpen(true)}
         >
           {t("wifi.addHour")}
         </Button>
       )}
       {menuToken && (
-        <div className="grid gap-2 border-t pt-4">
+        <div className="grid gap-2 border-t-(length:--border-w) pt-4">
           <p className="text-sm leading-5 text-muted-foreground">
             {t("wifi.orderHint")}
           </p>
