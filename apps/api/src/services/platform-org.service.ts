@@ -9,6 +9,7 @@
 // and `platform_packages` are global tables with explicit GRANTs to legend_app.
 // Tenant-owned rows are only reached through org.service.ts, under RLS.
 
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, ilike, lt, or } from "drizzle-orm";
 import { PlatformError } from "@starter/shared/platform";
 import type {
@@ -26,10 +27,16 @@ import {
   tenantSchema,
 } from "@starter/shared/platform";
 import { decodeCursor, encodeCursor } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import type { TenantStatus } from "@starter/shared/platform";
 import { db } from "../db";
 import { platformPackages, tenants } from "../db/schema";
+import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { seedTenantRoleTemplates } from "./access.service";
 
 type TenantRow = typeof tenants.$inferSelect;
 type PackageRow = typeof platformPackages.$inferSelect;
@@ -139,11 +146,17 @@ export async function getTenantOrThrow(tenantId: string): Promise<Tenant> {
 }
 
 /**
- * TEN-06: a tenant is created from panel input, active from the start.
- * The first-admin appointment (createTenantInput.firstAdmin) belongs to the
+ * TEN-06: a tenant is created from panel input, active from the start, together
+ * with its 17 tenant-level role templates (PRD §3.7, bead legend-4f9). The
+ * first-admin appointment (createTenantInput.firstAdmin) belongs to the
  * identity/RBAC beads: it needs the `users`/user_identities tables and a role
  * assignment, neither of which exists yet. The requested admin is validated
  * with the rest of the body and deliberately not turned into a stub row.
+ *
+ * The insert runs inside a tenant transaction because `roles` is a tenant
+ * table with RLS; minting the context for the id before the row exists is
+ * safe (TEN-02: the platform action chose it, never a client parameter), and
+ * the tenant and its templates commit together or not at all.
  */
 export async function createTenant(
   input: CreateTenantInput,
@@ -153,22 +166,35 @@ export async function createTenant(
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
   if (outside.length > 0) throw new PlatformError("MODULE_NOT_IN_PACKAGE");
 
-  const [row] = await db
-    .insert(tenants)
-    .values({
-      slug: input.slug,
-      name: input.name,
-      plan: input.plan,
-      deploymentMode: input.deploymentMode,
-      featureFlags: input.featureFlags,
-      limits: input.limits,
-      createdBy: actorUserId,
-    })
-    .onConflictDoNothing({ target: tenants.slug })
-    .returning();
-  if (!row)
-    throw new HttpError(409, "CONFLICT", "That tenant slug is already taken.");
-  return toTenant(row);
+  const tenantId = randomUUID();
+  const context = establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .insert(tenants)
+      .values({
+        id: tenantId,
+        slug: input.slug,
+        name: input.name,
+        plan: input.plan,
+        deploymentMode: input.deploymentMode,
+        featureFlags: input.featureFlags,
+        limits: input.limits,
+        createdBy: actorUserId,
+      })
+      .onConflictDoNothing({ target: tenants.slug })
+      .returning();
+    if (!row)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "That tenant slug is already taken.",
+      );
+    await seedTenantRoleTemplates(tx, row.id);
+    return toTenant(row);
+  });
 }
 
 /** Suspension is reversible, archiving is final (contract state machine). */

@@ -82,6 +82,25 @@ export const registerPushSubscription = defineEndpoint({
   body: pushSubscriptionInputSchema,
   response: dataResponseSchema(pushSubscriptionSchema),
 });
+/**
+ * The tenant's VAPID public key for PushManager.subscribe. Served at runtime
+ * per tenant (one web build serves every tenant), never baked into the
+ * bundle. `null` while the tenant has web push off or no key configured.
+ */
+export const pushPublicKeySchema = z.strictObject({
+  vapidPublicKey: z
+    .string()
+    .min(80)
+    .max(100)
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .nullable(),
+});
+export type PushPublicKey = z.infer<typeof pushPublicKeySchema>;
+export const getPushPublicKey = defineEndpoint({
+  method: "GET",
+  path: "/api/notifications/push-key",
+  response: dataResponseSchema(pushPublicKeySchema),
+});
 export const removePushSubscription = defineEndpoint({
   method: "DELETE",
   path: "/api/notifications/push-subscriptions/:subscriptionId",
@@ -135,6 +154,7 @@ export const notificationEndpoints = [
   getNotificationPreferences,
   updateNotificationPreferences,
   registerPushSubscription,
+  getPushPublicKey,
   removePushSubscription,
   getNotificationPolicy,
   updateNotificationPolicy,

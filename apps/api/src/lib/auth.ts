@@ -45,6 +45,15 @@ export const auth = betterAuth({
     // sign-up, and password routes keep their strict per-client limits.
     customRules: { "/get-session": false },
   },
+  session: {
+    // PRD v1.7 §3 F6 "Sesi & Perangkat": a customer session lasts 90 days.
+    // Management sessions are cut to 30 idle minutes by the identity gate
+    // (middleware/identity.ts), which rewrites expires_at on activity.
+    expiresIn: 90 * 24 * 60 * 60,
+    // Better Auth slides the expiry only after updateAge; setting it equal to
+    // the lifetime keeps a customer session at its 90-day end.
+    updateAge: 90 * 24 * 60 * 60,
+  },
   advanced: {
     cookiePrefix: siteConfig.id,
     // PRD §6: every id is a UUID, and org rows store the acting user's id next

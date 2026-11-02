@@ -76,18 +76,30 @@ describe("Wi-Fi quota engine (FAC-12, FAC-13)", () => {
     const before = await get("/api/wifi/sessions/current");
     assert.equal(before.data.session.quotaMinutes, 300);
 
-    const paid = await post("/api/wifi/sessions/current/refresh", {
-      sameDaySpendIdr: 120_000,
-    });
+    // A paid order lands on the account; the refresh request itself is empty.
+    wifiMockControl.pay(120_000);
+    const paid = await post("/api/wifi/sessions/current/refresh", {});
     // 4 full Rp30.000 steps → 4 hours on top of the 2 free hours.
     assert.equal(paid.data.session.quotaMinutes, 360);
     assert.equal(paid.data.remainingMinutes, 315);
   });
 
+  test("FAC-12 the refresh endpoint rejects a client-supplied same-day spend", async () => {
+    const error = await failure(
+      post("/api/wifi/sessions/current/refresh", {
+        sameDaySpendIdr: 20_000_000,
+      }),
+    );
+    assert.equal(error.status, 400);
+    assert.equal(error.code, "VALIDATION_ERROR");
+    // The rejected body granted nothing: the quota stays on server-side spend.
+    const current = await get("/api/wifi/sessions/current");
+    assert.equal(current.data.session.quotaMinutes, 300);
+  });
+
   test("FAC-12 the allowance never exceeds one day", async () => {
-    const paid = await post("/api/wifi/sessions/current/refresh", {
-      sameDaySpendIdr: 20_000_000,
-    });
+    wifiMockControl.pay(20_000_000);
+    const paid = await post("/api/wifi/sessions/current/refresh", {});
     assert.equal(
       paid.data.session.quotaMinutes,
       facility.WIFI_MAX_DAILY_MINUTES,
@@ -122,9 +134,8 @@ describe("Wi-Fi quota engine (FAC-12, FAC-13)", () => {
 
   test("FAC-13 paying again restores the full speed for the rest of the day", async () => {
     wifiMockControl.consume(300);
-    const paid = await post("/api/wifi/sessions/current/refresh", {
-      sameDaySpendIdr: 210_000,
-    });
+    wifiMockControl.pay(210_000);
+    const paid = await post("/api/wifi/sessions/current/refresh", {});
     // 7 full steps → 7 hours + 2 free hours.
     assert.equal(paid.data.session.quotaMinutes, 540);
     assert.equal(paid.data.session.speedTier, "full");

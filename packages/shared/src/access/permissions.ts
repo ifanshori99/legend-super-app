@@ -80,6 +80,10 @@ const entries = [
   ["menu.availability.toggle", []],
   ["floor.table.view", []],
   ["floor.table.manage", []],
+  // Floor operations on a live session (PRD §3.9 Operasi Meja, Keamanan Sesi
+  // "dikonfirmasi waiter atau kasir", ORD-10): confirm/close a session, move,
+  // merge, move items, table status. Layout editing stays floor.table.manage.
+  ["floor.table.operate", []],
   ["order.view", []],
   ["order.create", []],
   ["order.recovery.handle", []],

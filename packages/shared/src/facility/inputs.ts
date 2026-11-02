@@ -191,10 +191,15 @@ export const wifiPolicyQuerySchema = z.strictObject({
   zoneId: uuidSchema,
 });
 
-/** Optional spend refresh: the portal asks after a payment lands (FAC-12). */
-export const refreshWifiQuotaSchema = clientInputSchema({
-  sameDaySpendIdr: nonnegativeIdr,
-});
+/**
+ * Optional spend refresh: the portal asks after a payment lands (FAC-12).
+ *
+ * The body is empty on purpose. Same-day spend is derived by the API from the
+ * account's settled payments of the outlet business day; accepting a client
+ * number would let a guest raise their own quota. The strict empty object
+ * rejects `{ sameDaySpendIdr }` instead of ignoring it.
+ */
+export const refreshWifiQuotaSchema = clientInputSchema({});
 
 export const wifiSessionParamsSchema = z.strictObject({
   sessionId: wifiSessionIdSchema,

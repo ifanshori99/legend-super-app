@@ -1,7 +1,6 @@
 // The pending code: QRIS, Virtual Account or bank transfer instructions. The
 // code's status is the provider's, polled by the page; this card only shows
 // what to do and how long the code lives (PRD §3.13 "QRIS Dinamis", ~10 min).
-import { QRCodeSVG } from "qrcode.react";
 import { Clock, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -18,25 +17,23 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Money } from "@/components/ui/money";
+import { QrCode } from "@/components/ui/qr-code";
 import type { CustomerPaymentIntent } from "@starter/shared/payment";
 import { PAYMENT_METHOD_LABEL } from "../labels";
 import { formatCountdown } from "../status";
 import { CopyField } from "./copy-field";
 
-/** QRIS needs black-on-white to scan in both themes; the SVG paints its own. */
+/** QRIS needs black-on-white to scan in both themes; the shared renderer plate does. */
 function QrisCode({ payload, label }: { payload: string; label: string }) {
   const t = useT();
   return (
     <div className="grid justify-items-center gap-3">
-      <div className="rounded-xl border-(length:--border-w) border-border bg-card p-3">
-        <QRCodeSVG
-          value={payload}
-          size={236}
-          level="M"
-          marginSize={2}
-          title={label}
-        />
-      </div>
+      <QrCode
+        value={payload}
+        label={label}
+        size={236}
+        className="rounded-xl border-(length:--border-w) border-border p-3"
+      />
       <p className="max-w-sm text-center text-sm leading-5 text-muted-foreground">
         {t("payment.qrisHint")}
       </p>

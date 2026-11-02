@@ -1,14 +1,10 @@
 // Tenant organisation routes (PRD v1.7 §3 F4; TEN-02/03/06). The tenant comes
 // from the server-minted context (domain/token), never from the request. Every
-// handler runs after requireAuth, the origin check, requireTenantContext and an
-// org.* permission; the service then enforces the caller's outlet scope.
-//
-// Outlet scope: role assignments are not stored yet (RBAC bead legend-4f9), so
-// these routes hand the service a tenant-wide scope. The services already take
-// any ScopedTenantContext and filter/deny by outlet, which is what the TEN-03
-// test exercises; legend-4f9 only has to swap the scope source here.
+// handler runs after requireAuth, the origin check, requireTenantContext and
+// `org.structure.manage` from stored role assignments (legend-4f9); the service
+// then enforces the caller's outlet scope.
 
-import { Router, type Request } from "express";
+import { Router } from "express";
 import {
   addDomainInputSchema,
   createBrandInputSchema,
@@ -27,12 +23,15 @@ import {
   outletIdSchema,
   z,
 } from "@starter/shared/core";
-import { establishScopedTenantContext } from "@starter/shared/core/server";
-import type { ScopedTenantContext } from "@starter/shared/core";
-import { requireAuth, requirePermission } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
+import { requireBackOfficeSurface } from "../middleware/identity-surface";
+import {
+  getScopedTenantContext,
+  requireTenantPermission,
+} from "../middleware/permissions";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
-import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { requireTenantContext } from "../middleware/tenant";
 import {
   addDomain,
   createBrand,
@@ -53,32 +52,31 @@ import { listSupportAccess } from "../services/platform-support.service";
 
 export const orgRouter = Router();
 
-orgRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// AUTH-05: a tenant member whose active role requires MFA cannot use the back
+// office until this session verified a second factor (legend-qfvu).
+orgRouter.use(
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+);
 
-/** Server-minted tenant context -> the scope services enforce (TEN-03). */
-function scoped(req: Request): ScopedTenantContext {
-  return establishScopedTenantContext(getTenantContext(req), {
-    kind: "tenant",
-  });
-}
-
-// One org permission for reads and writes; the Legend RBAC catalog splits
-// reads (org.*.view) when role_assignments land (legend-4f9).
-const manage = requirePermission({ org: ["structure-manage"] });
+// TEN-03: role assignments determine both permission and service scope.
+const manage = requireTenantPermission("org.structure.manage");
 
 orgRouter.get("/modules", manage, async (req, res) => {
-  res.json({ data: await getFeatureFlags(scoped(req)) });
+  res.json({ data: await getFeatureFlags(getScopedTenantContext(req)) });
 });
 
 // ------------------------------------------------------------------- brands
 
 orgRouter.get("/brands", manage, async (req, res) => {
-  res.json(await listBrands(scoped(req)));
+  res.json(await listBrands(getScopedTenantContext(req)));
 });
 
 orgRouter.post("/brands", manage, jsonBody, async (req, res) => {
   const input = createBrandInputSchema.parse(req.body);
-  const brand = await createBrand(scoped(req), input);
+  const brand = await createBrand(getScopedTenantContext(req), input);
   res.status(201).location(`/api/org/brands/${brand.id}`).json({
     data: brand,
   });
@@ -87,7 +85,9 @@ orgRouter.post("/brands", manage, jsonBody, async (req, res) => {
 orgRouter.patch("/brands/:brandId", manage, jsonBody, async (req, res) => {
   const brandId = brandIdSchema.parse(req.params.brandId);
   const input = updateBrandInputSchema.parse(req.body);
-  res.json({ data: await updateBrand(scoped(req), brandId, input) });
+  res.json({
+    data: await updateBrand(getScopedTenantContext(req), brandId, input),
+  });
 });
 
 // ------------------------------------------------------------------ outlets
@@ -96,12 +96,12 @@ orgRouter.get("/outlets", manage, async (req, res) => {
   const query = cursorPageQuerySchema
     .extend({ brandId: brandIdSchema.optional() })
     .parse(req.query);
-  res.json(await listOutlets(scoped(req), query));
+  res.json(await listOutlets(getScopedTenantContext(req), query));
 });
 
 orgRouter.post("/outlets", manage, jsonBody, async (req, res) => {
   const input = createOutletInputSchema.parse(req.body);
-  const outlet = await createOutlet(scoped(req), input);
+  const outlet = await createOutlet(getScopedTenantContext(req), input);
   res.status(201).location(`/api/org/outlets/${outlet.id}`).json({
     data: outlet,
   });
@@ -110,7 +110,9 @@ orgRouter.post("/outlets", manage, jsonBody, async (req, res) => {
 orgRouter.patch("/outlets/:outletId", manage, jsonBody, async (req, res) => {
   const outletId = outletIdSchema.parse(req.params.outletId);
   const input = updateOutletInputSchema.parse(req.body);
-  res.json({ data: await updateOutlet(scoped(req), outletId, input) });
+  res.json({
+    data: await updateOutlet(getScopedTenantContext(req), outletId, input),
+  });
 });
 
 orgRouter.post(
@@ -120,19 +122,24 @@ orgRouter.post(
   async (req, res) => {
     const outletId = outletIdSchema.parse(req.params.outletId);
     const input = setOutletStatusInputSchema.parse(req.body);
-    res.json({ data: await setOutletStatus(scoped(req), outletId, input) });
+    res.json({
+      data: await setOutletStatus(getScopedTenantContext(req), outletId, input),
+    });
   },
 );
 
 // ------------------------------------------------------------ legal entities
 
 orgRouter.get("/legal-entities", manage, async (req, res) => {
-  res.json(await listLegalEntities(scoped(req)));
+  res.json(await listLegalEntities(getScopedTenantContext(req)));
 });
 
 orgRouter.post("/legal-entities", manage, jsonBody, async (req, res) => {
   const input = createLegalEntityInputSchema.parse(req.body);
-  const legalEntity = await createLegalEntity(scoped(req), input);
+  const legalEntity = await createLegalEntity(
+    getScopedTenantContext(req),
+    input,
+  );
   res
     .status(201)
     .location(`/api/org/legal-entities/${legalEntity.id}`)
@@ -147,7 +154,11 @@ orgRouter.patch(
     const legalEntityId = legalEntityIdSchema.parse(req.params.legalEntityId);
     const input = updateLegalEntityInputSchema.parse(req.body);
     res.json({
-      data: await updateLegalEntity(scoped(req), legalEntityId, input),
+      data: await updateLegalEntity(
+        getScopedTenantContext(req),
+        legalEntityId,
+        input,
+      ),
     });
   },
 );
@@ -155,12 +166,12 @@ orgRouter.patch(
 // ------------------------------------------------------------------ domains
 
 orgRouter.get("/domains", manage, async (req, res) => {
-  res.json(await listDomains(scoped(req)));
+  res.json(await listDomains(getScopedTenantContext(req)));
 });
 
 orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
   const input = addDomainInputSchema.parse(req.body);
-  const domain = await addDomain(scoped(req), input);
+  const domain = await addDomain(getScopedTenantContext(req), input);
   res.status(201).location(`/api/org/domains/${domain.id}`).json({
     data: domain,
   });
@@ -168,7 +179,7 @@ orgRouter.post("/domains", manage, jsonBody, async (req, res) => {
 
 orgRouter.delete("/domains/:domainId", manage, async (req, res) => {
   const domainId = tenantDomainIdSchema.parse(req.params.domainId);
-  await removeDomain(scoped(req), domainId);
+  await removeDomain(getScopedTenantContext(req), domainId);
   res.status(204).end();
 });
 
@@ -182,5 +193,5 @@ orgRouter.get("/support-access", manage, async (req, res) => {
       limit: cursorPageQuerySchema.shape.limit,
     })
     .parse(req.query);
-  res.json(await listSupportAccess(scoped(req), query));
+  res.json(await listSupportAccess(getScopedTenantContext(req), query));
 });
