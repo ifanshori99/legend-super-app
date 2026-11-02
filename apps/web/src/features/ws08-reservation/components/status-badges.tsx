@@ -87,20 +87,19 @@ export function DepositBadge({
   return (
     <Badge tone={tone} className={className}>
       <Icon aria-hidden="true" />
-      {hasDeposit
-        ? t(depositStatusKey(status))
-        : t("reservation.deposit.none")}
+      {hasDeposit ? t(depositStatusKey(status)) : t("reservation.deposit.none")}
     </Badge>
   );
 }
 
-const WAITLIST_STYLE: Record<WaitlistStatus, { tone: Tone; icon: LucideIcon }> = {
-  waiting: { tone: "warning", icon: Clock },
-  called: { tone: "info", icon: BellRing },
-  seated: { tone: "success", icon: Users },
-  left: { tone: "neutral", icon: Ban },
-  cancelled: { tone: "neutral", icon: Ban },
-};
+const WAITLIST_STYLE: Record<WaitlistStatus, { tone: Tone; icon: LucideIcon }> =
+  {
+    waiting: { tone: "warning", icon: Clock },
+    called: { tone: "info", icon: BellRing },
+    seated: { tone: "success", icon: Users },
+    left: { tone: "neutral", icon: Ban },
+    cancelled: { tone: "neutral", icon: Ban },
+  };
 
 export function WaitlistStatusBadge({
   status,

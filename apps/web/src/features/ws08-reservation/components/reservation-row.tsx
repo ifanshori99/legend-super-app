@@ -6,7 +6,7 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Money } from "@/components/ui/money";
 import type { Reservation } from "@starter/shared/reservation";
-import { formatClock } from "../lib";
+import { formatClock, reservationSourceKey } from "../lib";
 import { DepositBadge, ReservationStatusBadge } from "./status-badges";
 
 export function ReservationRow({
@@ -59,25 +59,29 @@ export function ReservationRow({
             </Badge>
           )}
         </span>
-        <span className="flex items-center gap-1 text-sm text-muted-foreground tabular">
-          <Users className="size-4" aria-hidden="true" />
-          {t("reservation.list.pax", { count: reservation.pax })}
-          {reservation.tableIds.length === 0 ? (
-            <>
-              <span aria-hidden="true">·</span>
-              {t("reservation.list.noTables")}
-            </>
-          ) : (
-            <>
-              <span aria-hidden="true">·</span>
-              {t("reservation.list.tables", {
-                codes: reservation.tableIds
-                  .map((tableId) => tableCodes.get(tableId) ?? tableId)
-                  .join(", "),
-              })}
-            </>
-          )}
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground tabular">
+          <span className="flex items-center gap-1">
+            <Users className="size-4" aria-hidden="true" />
+            {t("reservation.list.pax", { count: reservation.pax })}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>
+            {reservation.tableIds.length === 0
+              ? t("reservation.list.noTables")
+              : t("reservation.list.tables", {
+                  codes: reservation.tableIds
+                    .map((tableId) => tableCodes.get(tableId) ?? tableId)
+                    .join(", "),
+                })}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>{t(reservationSourceKey(reservation.source))}</span>
         </span>
+        {reservation.note && (
+          <span className="min-w-0 truncate text-sm text-muted-foreground">
+            {reservation.note}
+          </span>
+        )}
       </span>
 
       <span className="flex flex-wrap items-center justify-between gap-2 sm:flex-col sm:items-end">

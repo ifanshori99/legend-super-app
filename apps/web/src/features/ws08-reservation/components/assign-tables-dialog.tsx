@@ -48,22 +48,21 @@ export function AssignTablesDialog({
   // its slots, and a past one cannot overlap this slot.
   const others = useReservations(outletId, { limit: RESERVATION_PAGE_SIZE });
   const assign = useAssignTables();
+  // The parent mounts this dialog on open, so the selection always starts from
+  // what the reservation holds right now.
   const [selected, setSelected] = React.useState<TableId[]>([
     ...reservation.tableIds,
   ]);
 
-  // Reopening the dialog always starts from what the reservation holds now.
-  React.useEffect(() => {
-    if (open) setSelected([...reservation.tableIds]);
-  }, [open, reservation.tableIds]);
-
   const conflicts = React.useMemo(
-    () =>
-      conflictingReservations(reservation, others.data?.data ?? []),
+    () => conflictingReservations(reservation, others.data?.data ?? []),
     [reservation, others.data],
   );
 
-  const seats = selectedSeats(floor.data?.tables.map((row) => row.table) ?? [], selected);
+  const seats = selectedSeats(
+    floor.data?.tables.map((row) => row.table) ?? [],
+    selected,
+  );
   const missing = seatsMissing(reservation.pax, seats);
   const error = assign.error ? t(reservationErrorKey(assign.error)) : null;
 
@@ -136,7 +135,9 @@ export function AssignTablesDialog({
               </p>
               <p
                 className={
-                  missing > 0 ? "text-warning tabular" : "text-muted-foreground tabular"
+                  missing > 0
+                    ? "text-warning tabular"
+                    : "text-muted-foreground tabular"
                 }
               >
                 {missing > 0

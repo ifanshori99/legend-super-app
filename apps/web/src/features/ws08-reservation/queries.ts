@@ -49,7 +49,10 @@ export const reservationsQuery = (
     retry: 1,
   });
 
-export const reservationDetailQuery = (outletId: string, reservationId: string) =>
+export const reservationDetailQuery = (
+  outletId: string,
+  reservationId: string,
+) =>
   queryOptions({
     queryKey: endpointQueryKey(getReservation, {
       params: { outletId, reservationId },
@@ -74,8 +77,7 @@ export const waitlistQuery = (outletId: string, query: WaitlistQuery) =>
       params: { outletId },
       query,
     }),
-    queryFn: ({ signal }) =>
-      api.fetchWaitlist({ outletId }, query, { signal }),
+    queryFn: ({ signal }) => api.fetchWaitlist({ outletId }, query, { signal }),
     refetchInterval: DESK_REFETCH_MS,
     staleTime: DESK_REFETCH_MS / 3,
     retry: 1,

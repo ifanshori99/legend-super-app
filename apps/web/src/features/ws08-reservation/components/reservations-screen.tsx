@@ -15,6 +15,27 @@ import { WaitlistTab } from "./waitlist-tab";
 
 export type ReservationTab = "schedule" | "waitlist" | "packages";
 
+function ScreenHeader({ outletName }: { outletName?: string }) {
+  const t = useT();
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="text-2xl leading-8 font-bold">
+          {t("reservation.title")}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {t("reservation.subtitle")}
+        </p>
+      </div>
+      {outletName && (
+        <p className="text-sm font-semibold">
+          {t("reservation.outletContext", { name: outletName })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ReservationsScreen({
   tab,
   date,
@@ -56,34 +77,30 @@ export function ReservationsScreen({
 
   if (outlets.error)
     return (
-      <ErrorState
-        title={t("reservation.list.errorTitle")}
-        description={t("reservation.list.errorHint")}
-        onRetry={() => void outlets.refetch()}
-      />
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+        <ScreenHeader />
+        <ErrorState
+          title={t("reservation.list.errorTitle")}
+          description={t("reservation.list.errorHint")}
+          onRetry={() => void outlets.refetch()}
+        />
+      </div>
     );
 
   if (!outlet)
     return (
-      <EmptyState
-        title={t("reservation.errors.noOutletTitle")}
-        description={t("reservation.errors.noOutletHint")}
-      />
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+        <ScreenHeader />
+        <EmptyState
+          title={t("reservation.errors.noOutletTitle")}
+          description={t("reservation.errors.noOutletHint")}
+        />
+      </div>
     );
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl leading-8 font-bold">{t("reservation.title")}</h1>
-          <p className="text-sm text-muted-foreground">
-            {t("reservation.subtitle")}
-          </p>
-        </div>
-        <p className="text-sm font-semibold">
-          {t("reservation.outletContext", { name: outlet.name })}
-        </p>
-      </div>
+      <ScreenHeader outletName={outlet.name} />
 
       <Tabs
         value={tab}

@@ -81,7 +81,9 @@ function requireOutlet(requested: string): void {
 
 // ---- Stores ---------------------------------------------------------------
 
-const reservations = createMockStore(() => structuredClone(fixtures.reservations));
+const reservations = createMockStore(() =>
+  structuredClone(fixtures.reservations),
+);
 const slots = createMockStore(() => structuredClone(fixtures.tableSlots));
 const waitlist = createMockStore(() => structuredClone(fixtures.waitlist));
 const packages = createMockStore(() => structuredClone(fixtures.packages));
@@ -112,9 +114,9 @@ function saveReservation(next: Reservation): Reservation {
  * table change: closed reservations keep their history with `releasedAt`.
  */
 function saveSlots(reservation: Reservation): void {
-  const kept = slots.get().filter(
-    (slot) => slot.reservationId !== reservation.id,
-  );
+  const kept = slots
+    .get()
+    .filter((slot) => slot.reservationId !== reservation.id);
   const next: ReservationTableSlot[] = reservationSlots(reservation).map(
     (slot) =>
       reservationTableSlotSchema.parse({
@@ -130,20 +132,18 @@ function saveSlots(reservation: Reservation): void {
 
 /** RSV-01: no chosen table may be held by another live reservation. */
 function assertTablesFree(reservation: Reservation, tableIds: string[]): void {
-  const others = reservations
-    .get()
-    .filter((row) => row.id !== reservation.id);
+  const others = reservations.get().filter((row) => row.id !== reservation.id);
   const taken = conflictingReservations(reservation, others);
-  for (const tableId of tableIds) if (taken.has(tableId)) fail("RESERVATION_SLOT_TAKEN");
+  for (const tableId of tableIds)
+    if (taken.has(tableId)) fail("RESERVATION_SLOT_TAKEN");
 }
 
 function detailOf(reservation: Reservation) {
   return {
     reservation,
     preOrder:
-      preOrders
-        .get()
-        .find((row) => row.reservationId === reservation.id) ?? null,
+      preOrders.get().find((row) => row.reservationId === reservation.id) ??
+      null,
     tableSlots: slots
       .get()
       .filter((slot) => slot.reservationId === reservation.id),
@@ -166,15 +166,18 @@ registerMock(listReservations, ({ params, query, scenario }) => {
   const rows = reservations
     .get()
     .filter((row) => {
-      if (query.status !== undefined && row.status !== query.status) return false;
-      if (query.zoneId !== undefined && row.zoneId !== query.zoneId) return false;
+      if (query.status !== undefined && row.status !== query.status)
+        return false;
+      if (query.zoneId !== undefined && row.zoneId !== query.zoneId)
+        return false;
       const date = businessDateOf(row.reservedFor, outlet.timeZone);
       // No `date` means "all upcoming" (the contract's list query); a date
       // filter asks for that business date, past or future.
       return query.date === undefined ? date >= today : date === query.date;
     })
     .sort(
-      (left, right) => Date.parse(left.reservedFor) - Date.parse(right.reservedFor),
+      (left, right) =>
+        Date.parse(left.reservedFor) - Date.parse(right.reservedFor),
     );
   return paginateFixture(rows, query, (row) => row.id, scenario);
 });
@@ -205,14 +208,15 @@ registerMock(assignReservationTables, ({ params, body }) => {
 registerMock(seatReservation, ({ params, body }) => {
   requireOutlet(params.outletId);
   const current = findReservation(params.reservationId);
-  if (!canTransitionReservation(current.status, "seated"))
-    fail("RESERVATION_TRANSITION_INVALID");
-  // RSV-02: a required DP is settled before the guest sits.
+  // RSV-02: a required DP is settled before the guest sits. Checked before the
+  // status machine so a pending-DP booking reports the actionable cause.
   if (
     current.policy.depositRequirement === "required" &&
     !depositIsSettled(current.depositStatus)
   )
     fail("RESERVATION_DEPOSIT_UNPAID");
+  if (!canTransitionReservation(current.status, "seated"))
+    fail("RESERVATION_TRANSITION_INVALID");
   assertTablesFree(current, body.tableIds);
   const tableSessionId = tableSessionIdSchema.parse(mintId());
   const at = nowIso();
@@ -351,7 +355,9 @@ registerMock(listWaitlist, ({ params, query, scenario }) => {
   const rows = sortWaitlist(
     waitlist
       .get()
-      .filter((row) => query.status === undefined || row.status === query.status),
+      .filter(
+        (row) => query.status === undefined || row.status === query.status,
+      ),
   );
   return paginateFixture(rows, query, (row) => row.id, scenario);
 });
@@ -366,9 +372,7 @@ registerMock(callWaitlistEntry, ({ params }) => {
     status: "called",
     calledAt: nowIso(),
   });
-  waitlist.set(
-    waitlist.get().map((row) => (row.id === next.id ? next : row)),
-  );
+  waitlist.set(waitlist.get().map((row) => (row.id === next.id ? next : row)));
   return { data: next };
 });
 
@@ -385,9 +389,7 @@ registerMock(resolveWaitlistEntry, ({ params, body }) => {
     leftAt: body.resolution === "left" ? at : current.leftAt,
     estimatedWaitMinutes: null,
   });
-  waitlist.set(
-    waitlist.get().map((row) => (row.id === next.id ? next : row)),
-  );
+  waitlist.set(waitlist.get().map((row) => (row.id === next.id ? next : row)));
   return {
     data: {
       entry: next,

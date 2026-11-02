@@ -17,6 +17,7 @@ import {
 import type {
   Reservation,
   ReservationStatus,
+  ReservationTableSlot,
   WaitlistEntry,
   WaitlistStatus,
 } from "@starter/shared/reservation";
@@ -94,13 +95,10 @@ export function formatDayShort(date: string): string {
 }
 
 /** "Hari ini" / "Besok" / the long date, relative to the outlet's today. */
-export function dayHeading(
-  date: string,
-  today: string,
-  t: Translate,
-): string {
+export function dayHeading(date: string, today: string, t: Translate): string {
   if (date === today) return t("reservation.list.dayToday");
-  if (date === shiftBusinessDate(today, 1)) return t("reservation.list.dayTomorrow");
+  if (date === shiftBusinessDate(today, 1))
+    return t("reservation.list.dayTomorrow");
   return formatDayLabel(date);
 }
 
@@ -127,19 +125,19 @@ export function groupByBusinessDate(
     .map(([date, rows]) => ({
       date,
       rows: [...rows].sort(
-        (left, right) => Date.parse(left.reservedFor) - Date.parse(right.reservedFor),
+        (left, right) =>
+          Date.parse(left.reservedFor) - Date.parse(right.reservedFor),
       ),
     }));
 }
 
 // ---- Table slots and conflicts (RSV-01) ------------------------------------
 
-type Slot = {
-  tableId: string;
-  startsAt: string;
-  endsAt: string;
-  releasedAt: string | null;
-};
+/** The contract's slot shape; the overlap rule is typed on the same fields. */
+type Slot = Pick<
+  ReservationTableSlot,
+  "tableId" | "startsAt" | "endsAt" | "releasedAt"
+>;
 
 /** Live slots a reservation holds; a closed reservation keeps released history. */
 export function reservationSlots(reservation: Reservation): Slot[] {
@@ -168,10 +166,7 @@ export function conflictingReservations(
   others: readonly Reservation[],
 ): Map<string, Reservation> {
   const startsAt = target.reservedFor;
-  const endsAt = reservationEndsAt(
-    target.reservedFor,
-    target.durationMinutes,
-  );
+  const endsAt = reservationEndsAt(target.reservedFor, target.durationMinutes);
   const conflicts = new Map<string, Reservation>();
   for (const other of others) {
     if (other.id === target.id) continue;
@@ -293,8 +288,7 @@ export function reservationActions(
   reservation: Reservation,
 ): ReservationActions {
   const status = reservation.status;
-  const open =
-    status === "pending_deposit" || status === "confirmed";
+  const open = status === "pending_deposit" || status === "confirmed";
   const depositSettled =
     reservation.policy.depositRequirement !== "required" ||
     reservation.depositStatus === "paid" ||
@@ -338,15 +332,21 @@ const WAITLIST_RANK: Record<WaitlistStatus, number> = {
   cancelled: 4,
 };
 
-export function sortWaitlist(entries: readonly WaitlistEntry[]): WaitlistEntry[] {
+export function sortWaitlist(
+  entries: readonly WaitlistEntry[],
+): WaitlistEntry[] {
   return [...entries].sort((left, right) => {
     const rank = WAITLIST_RANK[left.status] - WAITLIST_RANK[right.status];
-    return rank !== 0 ? rank : Date.parse(left.joinedAt) - Date.parse(right.joinedAt);
+    return rank !== 0
+      ? rank
+      : Date.parse(left.joinedAt) - Date.parse(right.joinedAt);
   });
 }
 
 /** Entries still in the queue (waiting or called). */
-export function activeWaitlist(entries: readonly WaitlistEntry[]): WaitlistEntry[] {
+export function activeWaitlist(
+  entries: readonly WaitlistEntry[],
+): WaitlistEntry[] {
   return entries.filter(
     (entry) => entry.status === "waiting" || entry.status === "called",
   );
@@ -369,9 +369,7 @@ export function waitlistStatusKey(status: WaitlistStatus): MessageKey {
 }
 
 /** DP badge text: "Tanpa DP" when the snapshot requires none (RSV-02). */
-export function depositLabelKey(
-  reservation: Reservation,
-): MessageKey {
+export function depositLabelKey(reservation: Reservation): MessageKey {
   if (reservation.policy.depositRequirement === "none")
     return "reservation.deposit.none";
   return depositStatusKey(reservation.depositStatus);

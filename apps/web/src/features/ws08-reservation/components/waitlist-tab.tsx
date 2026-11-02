@@ -82,38 +82,41 @@ function WaitlistRow({
           <WaitlistStatusBadge status={entry.status} />
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground tabular">
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1 whitespace-nowrap">
             <Users className="size-4" aria-hidden="true" />
             {t("reservation.waitlist.pax", { count: entry.pax })}
           </span>
-          <span>
-            {t("reservation.waitlist.joined", {
+          {[
+            t("reservation.waitlist.joined", {
               time: formatClock(entry.joinedAt, timeZone),
-            })}
-          </span>
-          <span>
-            {entry.estimatedWaitMinutes === null
+            }),
+            entry.estimatedWaitMinutes === null
               ? t("reservation.waitlist.estimateUnknown")
               : t("reservation.waitlist.estimate", {
                   minutes: entry.estimatedWaitMinutes,
-                })}
-          </span>
-          <span>{zoneName}</span>
-          {entry.calledAt && (
-            <span>
-              {t("reservation.waitlist.calledAt", {
-                time: formatClock(entry.calledAt, timeZone),
-              })}
+                }),
+            zoneName,
+            ...(entry.calledAt
+              ? [
+                  t("reservation.waitlist.calledAt", {
+                    time: formatClock(entry.calledAt, timeZone),
+                  }),
+                ]
+              : []),
+          ].map((item) => (
+            <span key={item} className="whitespace-nowrap">
+              {item}
             </span>
-          )}
+          ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-2 sm:justify-end">
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
         {actions.call && (
           <Button
             type="button"
             size="sm"
             loading={busy}
+            className="w-full sm:w-auto"
             onClick={onCall}
             aria-label={t("reservation.waitlist.call", { name: entry.name })}
           >
@@ -122,12 +125,24 @@ function WaitlistRow({
           </Button>
         )}
         {actions.seat && (
-          <Button type="button" size="sm" variant="outline" onClick={onSeat}>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={onSeat}
+          >
             {t("reservation.waitlist.seat")}
           </Button>
         )}
         {actions.leave && (
-          <Button type="button" size="sm" variant="ghost" onClick={onLeave}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="w-full sm:w-auto"
+            onClick={onLeave}
+          >
             {t("reservation.waitlist.leave")}
           </Button>
         )}
@@ -136,7 +151,7 @@ function WaitlistRow({
             type="button"
             size="sm"
             variant="ghost"
-            className="text-danger"
+            className="w-full text-danger sm:w-auto"
             onClick={onCancel}
           >
             {t("reservation.waitlist.cancel")}
@@ -302,12 +317,14 @@ export function WaitlistTab({
         </section>
       )}
 
-      <SeatWaitlistDialog
-        entry={seatEntry}
-        onOpenChange={(open) => !open && setSeatEntry(null)}
-        outletId={outletId}
-        timeZone={timeZone}
-      />
+      {seatEntry && (
+        <SeatWaitlistDialog
+          entry={seatEntry}
+          onOpenChange={(open) => !open && setSeatEntry(null)}
+          outletId={outletId}
+          timeZone={timeZone}
+        />
+      )}
     </div>
   );
 }

@@ -64,7 +64,10 @@ export function TablePicker({
   return (
     <div className="grid min-w-0 gap-3">
       <Tabs value={zoneId} onValueChange={setZoneId} className="min-w-0">
-        <TabsList aria-label={t("reservation.assign.zoneTabs")} className="min-w-0">
+        <TabsList
+          aria-label={t("reservation.assign.zoneTabs")}
+          className="min-w-0"
+        >
           <TabsTrigger value={ALL_ZONES}>
             {t("reservation.assign.zoneAll")} ({tables.length})
           </TabsTrigger>

@@ -45,7 +45,11 @@ function useInvalidate(endpoints: readonly AnyEndpoint[]) {
 }
 
 /** A write can change the schedule, the open detail and the floor board. */
-const RESERVATION_WRITES = [listReservations, getReservation, getFloorBoard] as const;
+const RESERVATION_WRITES = [
+  listReservations,
+  getReservation,
+  getFloorBoard,
+] as const;
 
 function useReservationMutation<TVariables, TResult>(
   mutationFn: (variables: TVariables) => Promise<TResult>,

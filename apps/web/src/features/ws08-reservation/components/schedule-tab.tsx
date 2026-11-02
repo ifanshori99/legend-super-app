@@ -16,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatTile } from "@/components/ui/stat-tile";
 import {
   RESERVATION_STATUSES,
   type ReservationStatus,
@@ -49,11 +48,7 @@ function ScheduleSkeleton() {
         <Skeleton className="h-control w-44" />
         <Skeleton className="h-control w-40" />
       </div>
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }, (_, index) => (
-          <Skeleton key={index} className="h-24 w-full rounded-xl" />
-        ))}
-      </div>
+      <Skeleton className="h-14 w-full rounded-xl" />
       {Array.from({ length: 3 }, (_, index) => (
         <Skeleton key={index} className="h-24 w-full rounded-xl" />
       ))}
@@ -116,6 +111,26 @@ export function ScheduleTab({
     onDateChange(undefined);
     onStatusChange(undefined);
   };
+  const summary = [
+    { key: "reservation.summary.total" as const, value: rows.length },
+    {
+      key: "reservation.summary.pending" as const,
+      value: counts.pending_deposit,
+    },
+    {
+      key: "reservation.summary.confirmed" as const,
+      value: counts.confirmed,
+    },
+    { key: "reservation.summary.seated" as const, value: counts.seated },
+  ];
+  /**
+   * RSV-01 on the row itself: one of *its* tables is also held by another live
+   * reservation in the same slot.
+   */
+  const hasConflict = (reservation: (typeof rows)[number]) => {
+    const taken = conflictingReservations(reservation, rows);
+    return reservation.tableIds.some((tableId) => taken.has(tableId));
+  };
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
@@ -131,20 +146,56 @@ export function ScheduleTab({
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="grid gap-1">
-          <Label htmlFor="reservation-date">
-            {t("reservation.filters.dateLabel")}
-          </Label>
-          <Input
-            id="reservation-date"
-            type="date"
-            value={date ?? ""}
-            onChange={(event) =>
-              onDateChange(event.target.value === "" ? undefined : event.target.value)
-            }
-            className="w-44"
-          />
+      <div className="flex flex-wrap items-end gap-2">
+        {/* Mobile: the date keeps its narrow column and the status select gets
+            the rest, so "Semua status" never truncates. From sm they are two
+            fixed fields in one row. */}
+        <div className="grid min-w-0 grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-2 sm:flex sm:gap-2">
+          <div className="grid min-w-0 gap-1 sm:w-40">
+            <Label htmlFor="reservation-date" className="max-sm:sr-only">
+              {t("reservation.filters.dateLabel")}
+            </Label>
+            <Input
+              id="reservation-date"
+              type="date"
+              value={date ?? ""}
+              onChange={(event) =>
+                onDateChange(
+                  event.target.value === "" ? undefined : event.target.value,
+                )
+              }
+              className="w-full sm:w-40"
+            />
+          </div>
+          <div className="grid min-w-0 gap-1 sm:w-48">
+            <Label htmlFor="reservation-status" className="max-sm:sr-only">
+              {t("reservation.filters.statusLabel")}
+            </Label>
+            <Select
+              value={status ?? ALL_STATUSES}
+              onValueChange={(value) =>
+                onStatusChange(
+                  value === ALL_STATUSES
+                    ? undefined
+                    : (value as ReservationStatus),
+                )
+              }
+            >
+              <SelectTrigger id="reservation-status" className="w-full sm:w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_STATUSES}>
+                  {t("reservation.filters.allStatuses")}
+                </SelectItem>
+                {STATUS_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {t(reservationStatusKey(option))}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -164,58 +215,21 @@ export function ScheduleTab({
             {t("reservation.filters.clearDate")}
           </Button>
         </div>
-        <div className="grid gap-1">
-          <Label htmlFor="reservation-status">
-            {t("reservation.filters.statusLabel")}
-          </Label>
-          <Select
-            value={status ?? ALL_STATUSES}
-            onValueChange={(value) =>
-              onStatusChange(
-                value === ALL_STATUSES
-                  ? undefined
-                  : (value as ReservationStatus),
-              )
-            }
-          >
-            <SelectTrigger id="reservation-status" className="w-44">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_STATUSES}>
-                {t("reservation.filters.allStatuses")}
-              </SelectItem>
-              {STATUS_OPTIONS.map((option) => (
-                <SelectItem key={option} value={option}>
-                  {t(reservationStatusKey(option))}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <p className="text-sm text-muted-foreground tabular" aria-live="polite">
-          {t("reservation.filters.count", { count: rows.length })}
-        </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <StatTile
-          label={t("reservation.summary.total")}
-          value={<span className="tabular">{rows.length}</span>}
-        />
-        <StatTile
-          label={t("reservation.summary.pending")}
-          value={<span className="tabular">{counts.pending_deposit}</span>}
-        />
-        <StatTile
-          label={t("reservation.summary.confirmed")}
-          value={<span className="tabular">{counts.confirmed}</span>}
-        />
-        <StatTile
-          label={t("reservation.summary.seated")}
-          value={<span className="tabular">{counts.seated}</span>}
-        />
-      </div>
+      <dl
+        aria-label={t("reservation.summary.label")}
+        className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border-(length:--border-w) bg-card px-3 py-2"
+      >
+        {summary.map((item) => (
+          <div key={item.key} className="flex items-baseline gap-2">
+            <dt className="text-sm text-muted-foreground">{t(item.key)}</dt>
+            <dd className="text-xl leading-7 font-semibold tabular">
+              {item.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
 
       {rows.length === 0 ? (
         <EmptyState
@@ -246,9 +260,7 @@ export function ScheduleTab({
                       reservation={reservation}
                       timeZone={timeZone}
                       tableCodes={tableCodes}
-                      conflict={
-                        conflictingReservations(reservation, rows).size > 0
-                      }
+                      conflict={hasConflict(reservation)}
                       onOpen={() => onOpen(reservation.id)}
                     />
                   </li>

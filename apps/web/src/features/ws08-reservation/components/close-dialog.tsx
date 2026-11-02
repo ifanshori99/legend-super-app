@@ -43,19 +43,12 @@ export function CloseReservationDialog({
   const cancel = useCancelReservation();
   const noShow = useMarkNoShow();
   const mutation = mode === "cancel" ? cancel : noShow;
+  // Mounted per open by the detail sheet, so these start clean every time.
   const [text, setText] = React.useState("");
   const [showError, setShowError] = React.useState(false);
   const [result, setResult] = React.useState<ReservationCloseResult | null>(
     null,
   );
-
-  React.useEffect(() => {
-    if (open) {
-      setText("");
-      setShowError(false);
-      setResult(null);
-    }
-  }, [open]);
 
   const reasonMissing = mode === "cancel" && text.trim() === "";
   const fieldError =
@@ -110,7 +103,9 @@ export function CloseReservationDialog({
 
         {result ? (
           <div className="grid gap-2 rounded-lg bg-muted p-3 text-sm">
-            <p className="font-semibold">{t("reservation.cancel.outcomeTitle")}</p>
+            <p className="font-semibold">
+              {t("reservation.cancel.outcomeTitle")}
+            </p>
             {result.depositOutcome.resolution === "nothing_paid" ? (
               <p>{t("reservation.cancel.nothingPaid")}</p>
             ) : (
@@ -125,7 +120,10 @@ export function CloseReservationDialog({
                   {t("reservation.cancel.forfeited")}
                 </dt>
                 <dd className="text-right">
-                  <Money amount={result.depositOutcome.forfeitedIdr} size="sm" />
+                  <Money
+                    amount={result.depositOutcome.forfeitedIdr}
+                    size="sm"
+                  />
                 </dd>
               </dl>
             )}

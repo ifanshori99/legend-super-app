@@ -25,7 +25,11 @@ import {
   seatsMissing,
   tablesHeldAt,
 } from "../lib";
-import { useFloorPlan, useReservations, useResolveWaitlistEntry } from "../hooks";
+import {
+  useFloorPlan,
+  useReservations,
+  useResolveWaitlistEntry,
+} from "../hooks";
 import { TablePicker } from "./table-picker";
 
 export function SeatWaitlistDialog({
@@ -34,7 +38,7 @@ export function SeatWaitlistDialog({
   outletId,
   timeZone,
 }: {
-  entry: WaitlistEntry | null;
+  entry: WaitlistEntry;
   onOpenChange: (open: boolean) => void;
   outletId: string;
   timeZone: string;
@@ -44,6 +48,7 @@ export function SeatWaitlistDialog({
   const floor = useFloorPlan(outletId);
   const others = useReservations(outletId, { limit: RESERVATION_PAGE_SIZE });
   const resolve = useResolveWaitlistEntry();
+  // Mounted per guest by the waitlist, so the selection starts empty.
   const [selected, setSelected] = React.useState<TableId[]>([]);
 
   // A walk-in sits now: only reservations holding a slot at this instant block
@@ -53,19 +58,15 @@ export function SeatWaitlistDialog({
     [others.data],
   );
 
-  React.useEffect(() => {
-    if (entry) setSelected([]);
-  }, [entry]);
-
   const seats = selectedSeats(
     floor.data?.tables.map((row) => row.table) ?? [],
     selected,
   );
-  const missing = seatsMissing(entry?.pax ?? 0, seats);
+  const missing = seatsMissing(entry.pax, seats);
   const error = resolve.error ? t(reservationErrorKey(resolve.error)) : null;
 
   const submit = () => {
-    if (!entry || selected.length === 0) return;
+    if (selected.length === 0) return;
     resolve.mutate(
       {
         outletId,
@@ -86,19 +87,20 @@ export function SeatWaitlistDialog({
   };
 
   return (
-    <Dialog open={entry !== null} onOpenChange={onOpenChange}>
+    <Dialog open onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {entry ? t("reservation.waitlist.seatTitle", { name: entry.name }) : ""}
+            {t("reservation.waitlist.seatTitle", { name: entry.name })}
           </DialogTitle>
-          <DialogDescription>
-            {t("reservation.assign.hint")}
-          </DialogDescription>
+          <DialogDescription>{t("reservation.assign.hint")}</DialogDescription>
         </DialogHeader>
 
         {floor.isPending ? (
-          <div aria-busy="true" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div
+            aria-busy="true"
+            className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+          >
             <span className="sr-only" role="status">
               {t("reservation.assign.loading")}
             </span>
@@ -127,26 +129,24 @@ export function SeatWaitlistDialog({
               onChange={setSelected}
               formatTime={(instant) => formatClock(instant, timeZone)}
             />
-            {entry && (
-              <p
-                className={
-                  missing > 0
-                    ? "text-sm text-warning tabular"
-                    : "text-sm text-muted-foreground tabular"
-                }
-              >
-                {missing > 0
-                  ? t("reservation.assign.seatsShort", {
-                      seats,
-                      pax: entry.pax,
-                      missing,
-                    })
-                  : t("reservation.assign.seatsEnough", {
-                      seats,
-                      pax: entry.pax,
-                    })}
-              </p>
-            )}
+            <p
+              className={
+                missing > 0
+                  ? "text-sm text-warning tabular"
+                  : "text-sm text-muted-foreground tabular"
+              }
+            >
+              {missing > 0
+                ? t("reservation.assign.seatsShort", {
+                    seats,
+                    pax: entry.pax,
+                    missing,
+                  })
+                : t("reservation.assign.seatsEnough", {
+                    seats,
+                    pax: entry.pax,
+                  })}
+            </p>
           </div>
         )}
 

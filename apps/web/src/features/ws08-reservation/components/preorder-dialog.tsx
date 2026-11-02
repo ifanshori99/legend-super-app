@@ -51,14 +51,11 @@ export function PreOrderDialog({
   const toast = useToast();
   const packages = usePackages(outletId);
   const place = usePlacePreOrder();
-  const [selectedId, setSelectedId] =
-    React.useState<ReservationPackage["id"] | null>(null);
-
-  React.useEffect(() => {
-    if (open) setSelectedId(null);
-  }, [open]);
-
-  const now = Date.now();
+  const [selectedId, setSelectedId] = React.useState<
+    ReservationPackage["id"] | null
+  >(null);
+  // One clock read per mount: the lead-time check must not drift mid-dialog.
+  const [now] = React.useState(() => Date.now());
   const rows = packages.data ?? [];
   const error = place.error ? t(reservationErrorKey(place.error)) : null;
 
@@ -80,7 +77,9 @@ export function PreOrderDialog({
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t("reservation.preOrder.title")}</DialogTitle>
-          <DialogDescription>{t("reservation.preOrder.hint")}</DialogDescription>
+          <DialogDescription>
+            {t("reservation.preOrder.hint")}
+          </DialogDescription>
         </DialogHeader>
 
         {packages.isPending ? (
@@ -123,11 +122,14 @@ export function PreOrderDialog({
                       "grid w-full gap-1 rounded-xl border-(length:--border-w) bg-card p-card text-left text-foreground transition-colors duration-(--duration-fast)",
                       "hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
                       selected && "border-primary bg-accent",
-                      !available && "cursor-not-allowed opacity-60 hover:bg-card",
+                      !available &&
+                        "cursor-not-allowed opacity-60 hover:bg-card",
                     )}
                   >
                     <span className="flex flex-wrap items-baseline justify-between gap-2">
-                      <span className="text-base font-semibold">{pack.name}</span>
+                      <span className="text-base font-semibold">
+                        {pack.name}
+                      </span>
                       <span className="flex items-baseline gap-1">
                         <Money
                           amount={pack.pricePerPaxIdr}

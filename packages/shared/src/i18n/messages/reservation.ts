@@ -73,8 +73,10 @@ export const reservationMessages = {
     dayTomorrow: "Besok",
     total: "{count} reservasi",
     conflict: "Bentrok meja",
-    conflictHint: "Meja reservasi ini juga dipesan tamu lain pada jam yang sama.",
-    moreNote: "Menampilkan {count} reservasi pertama. Persempit dengan tanggal atau status untuk melihat sisanya.",
+    conflictHint:
+      "Meja reservasi ini juga dipesan tamu lain pada jam yang sama.",
+    moreNote:
+      "Menampilkan {count} reservasi pertama. Persempit dengan tanggal atau status untuk melihat sisanya.",
   },
   detail: {
     title: "Detail reservasi",
@@ -98,12 +100,11 @@ export const reservationMessages = {
     policyTitle: "Kebijakan saat reservasi dibuat",
     policyVersion: "Versi {version}, dibekukan {time}",
     policyNoDeposit: "Tanpa DP",
-    policyDeposit: "DP {amount}",
-    policyRefundWindow:
-      "Batal ≥ {hours} jam sebelumnya: DP kembali penuh",
+    policyDepositLabel: "DP",
+    policyMinimumSpendLabel: "Minimum belanja",
+    policyRefundWindow: "Batal ≥ {hours} jam sebelumnya: DP kembali penuh",
     policyLateCancel: "Batal di dalam jendela: DP kembali {percent}%",
     policyNoShow: "Tidak datang: DP kembali {percent}%",
-    policyMinimumSpend: "Minimum belanja {amount}",
     depositTitle: "DP",
     depositPaidHint: "DP dialokasikan ke tagihan saat tamu duduk (RSV-02).",
     depositPendingHint: "Tautan pembayaran DP dikirim ke tamu.",
@@ -133,8 +134,7 @@ export const reservationMessages = {
       close: "Tutup",
       seatWithTable: "Dudukkan di meja {codes}",
     },
-    seatNeedsTable:
-      "Tentukan meja lewat “Atur meja” sebelum mendudukkan tamu.",
+    seatNeedsTable: "Tentukan meja lewat “Atur meja” sebelum mendudukkan tamu.",
     sessionOpen: "Sesi meja sudah dibuka.",
   },
   assign: {
@@ -257,7 +257,8 @@ export const reservationMessages = {
     queue: "Antrean hari ini",
     done: "Sudah selesai",
     callNotificationTitle: "Panggilan daftar tunggu",
-    callNotificationBody: "{name}, meja Anda siap. Silakan menuju meja resepsionis.",
+    callNotificationBody:
+      "{name}, meja Anda siap. Silakan menuju meja resepsionis.",
     queueCount: "{count} tamu",
   },
   packages: {
@@ -278,7 +279,8 @@ export const reservationMessages = {
   errors: {
     noOutletTitle: "Belum ada outlet",
     noOutletHint: "Tambahkan outlet aktif dulu agar reservasi bisa dikelola.",
-    RESERVATION_SLOT_TAKEN: "Meja itu sudah dipesan tamu lain pada jam tersebut.",
+    RESERVATION_SLOT_TAKEN:
+      "Meja itu sudah dipesan tamu lain pada jam tersebut.",
     RESERVATION_DEPOSIT_UNPAID: "DP reservasi belum dibayar.",
     RESERVATION_TRANSITION_INVALID:
       "Status reservasi tidak dapat diubah ke tahap tersebut.",

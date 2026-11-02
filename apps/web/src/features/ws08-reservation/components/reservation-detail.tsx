@@ -199,19 +199,24 @@ function DetailBody({
         <h3 className="text-sm font-semibold">
           {t("reservation.detail.policyTitle")}
         </h3>
-        <div className="grid gap-1 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
+        <div className="grid gap-1.5 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
           <p className="tabular">
             {t("reservation.detail.policyVersion", {
               version: reservation.policy.version,
               time: formatClock(reservation.policy.capturedAt, timeZone),
             })}
           </p>
-          <p>
-            {reservation.policy.depositRequirement === "none"
-              ? t("reservation.detail.policyNoDeposit")
-              : t("reservation.detail.policyDeposit", {
-                  amount: reservation.policy.depositAmountIdr,
-                })}
+          <p className="flex items-baseline justify-between gap-3">
+            <span>{t("reservation.detail.policyDepositLabel")}</span>
+            {reservation.policy.depositRequirement === "none" ? (
+              <span>{t("reservation.detail.policyNoDeposit")}</span>
+            ) : (
+              <Money
+                amount={reservation.policy.depositAmountIdr}
+                size="sm"
+                className="font-semibold text-foreground"
+              />
+            )}
           </p>
           <p>
             {t("reservation.detail.policyRefundWindow", {
@@ -220,7 +225,9 @@ function DetailBody({
           </p>
           <p>
             {t("reservation.detail.policyLateCancel", {
-              percent: percentLabel(reservation.policy.lateCancellationRefundBp),
+              percent: percentLabel(
+                reservation.policy.lateCancellationRefundBp,
+              ),
             })}
           </p>
           <p>
@@ -229,10 +236,13 @@ function DetailBody({
             })}
           </p>
           {reservation.policy.minimumSpendIdr > 0 && (
-            <p>
-              {t("reservation.detail.policyMinimumSpend", {
-                amount: reservation.policy.minimumSpendIdr,
-              })}
+            <p className="flex items-baseline justify-between gap-3">
+              <span>{t("reservation.detail.policyMinimumSpendLabel")}</span>
+              <Money
+                amount={reservation.policy.minimumSpendIdr}
+                size="sm"
+                className="font-semibold text-foreground"
+              />
             </p>
           )}
         </div>
@@ -294,7 +304,10 @@ function DetailBody({
           </h3>
           <ul className="grid list-none gap-1 p-0 text-sm text-muted-foreground">
             {slots.map((slot) => (
-              <li key={slot.id} className="flex flex-wrap items-center gap-2 tabular">
+              <li
+                key={slot.id}
+                className="flex flex-wrap items-center gap-2 tabular"
+              >
                 <span className="font-semibold text-foreground">
                   {tableCodes.get(slot.tableId) ?? slot.tableId}
                 </span>
@@ -367,26 +380,32 @@ function DetailBody({
         )}
       </DialogFooter>
 
-      <AssignTablesDialog
-        open={assignOpen}
-        onOpenChange={setAssignOpen}
-        outletId={outletId}
-        timeZone={timeZone}
-        reservation={reservation}
-      />
-      <PreOrderDialog
-        open={preOrderOpen}
-        onOpenChange={setPreOrderOpen}
-        outletId={outletId}
-        reservation={reservation}
-      />
-      <CloseReservationDialog
-        open={closeMode !== null}
-        onOpenChange={(open) => !open && setCloseMode(null)}
-        outletId={outletId}
-        reservation={reservation}
-        mode={closeMode ?? "cancel"}
-      />
+      {assignOpen && (
+        <AssignTablesDialog
+          open
+          onOpenChange={setAssignOpen}
+          outletId={outletId}
+          timeZone={timeZone}
+          reservation={reservation}
+        />
+      )}
+      {preOrderOpen && (
+        <PreOrderDialog
+          open
+          onOpenChange={setPreOrderOpen}
+          outletId={outletId}
+          reservation={reservation}
+        />
+      )}
+      {closeMode !== null && (
+        <CloseReservationDialog
+          open
+          onOpenChange={(open) => !open && setCloseMode(null)}
+          outletId={outletId}
+          reservation={reservation}
+          mode={closeMode}
+        />
+      )}
     </>
   );
 }
@@ -406,10 +425,7 @@ export function ReservationDetailDialog({
   reservationId: string | null;
 }) {
   const t = useT();
-  const detail = useReservationDetail(
-    outletId,
-    reservationId ?? undefined,
-  );
+  const detail = useReservationDetail(outletId, reservationId ?? undefined);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

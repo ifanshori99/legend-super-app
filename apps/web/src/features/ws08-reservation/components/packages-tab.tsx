@@ -44,12 +44,9 @@ export function PackagesTab({ outletId }: { outletId: string }) {
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
-      <div className="grid gap-1">
-        <h2 className="text-base font-semibold">{t("reservation.packages.title")}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t("reservation.packages.subtitle")}
-        </p>
-      </div>
+      <p className="text-sm text-muted-foreground">
+        {t("reservation.packages.subtitle")}
+      </p>
       <ul className="grid list-none gap-2 p-0 md:grid-cols-2">
         {packages.data.map((pack) => (
           <li
@@ -76,22 +73,26 @@ export function PackagesTab({ outletId }: { outletId: string }) {
                 {t("reservation.packages.perPax")}
               </span>
             </p>
-            <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm text-muted-foreground tabular">
-              <span className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground tabular">
+              <span className="flex items-center gap-1 whitespace-nowrap">
                 <Users className="size-4" aria-hidden="true" />
                 {t("reservation.packages.paxRange", {
                   min: pack.minPax,
                   max: pack.maxPax,
                 })}
               </span>
-              <span>
-                {t("reservation.packages.leadTime", {
+              {[
+                t("reservation.packages.leadTime", {
                   hours: pack.leadTimeHours,
-                })}
-              </span>
-              <span>
-                {t("reservation.packages.items", { count: pack.items.length })}
-              </span>
+                }),
+                t("reservation.packages.items", {
+                  count: pack.items.length,
+                }),
+              ].map((item) => (
+                <span key={item} className="whitespace-nowrap">
+                  {item}
+                </span>
+              ))}
             </div>
           </li>
         ))}

@@ -35,11 +35,7 @@ export const RESERVATION_PAGE_SIZE = 100;
  * accessible outlets and open the first active one.
  */
 export const fetchOutlets = (options?: CallOptions) =>
-  callEndpoint(
-    listExampleOutlets,
-    { query: { limit: 20 } },
-    options,
-  );
+  callEndpoint(listExampleOutlets, { query: { limit: 20 } }, options);
 
 export const fetchReservations = (
   params: Params<typeof listReservationsEndpoint>,
@@ -50,8 +46,7 @@ export const fetchReservations = (
 export const fetchReservation = async (
   params: Params<typeof getReservationEndpoint>,
   options?: CallOptions,
-) =>
-  (await callEndpoint(getReservationEndpoint, { params }, options)).data;
+) => (await callEndpoint(getReservationEndpoint, { params }, options)).data;
 
 /** RSV-01: the server refuses a table another reservation holds. */
 export const assignTables = async (
@@ -89,13 +84,8 @@ export const markNoShow = async (
   body: Body<typeof markReservationNoShowEndpoint>,
   options?: CallOptions,
 ) =>
-  (
-    await callEndpoint(
-      markReservationNoShowEndpoint,
-      { params, body },
-      options,
-    )
-  ).data;
+  (await callEndpoint(markReservationNoShowEndpoint, { params, body }, options))
+    .data;
 
 export const placePreOrder = async (
   params: Params<typeof placeReservationPreOrderEndpoint>,
@@ -114,9 +104,8 @@ export const fetchPackages = async (
   params: Params<typeof listReservationPackagesEndpoint>,
   options?: CallOptions,
 ) =>
-  (
-    await callEndpoint(listReservationPackagesEndpoint, { params }, options)
-  ).data;
+  (await callEndpoint(listReservationPackagesEndpoint, { params }, options))
+    .data;
 
 export const fetchWaitlist = (
   params: Params<typeof listWaitlistEndpoint>,
@@ -128,8 +117,7 @@ export const fetchWaitlist = (
 export const callWaitlistEntry = async (
   params: Params<typeof callWaitlistEntryEndpoint>,
   options?: CallOptions,
-) =>
-  (await callEndpoint(callWaitlistEntryEndpoint, { params }, options)).data;
+) => (await callEndpoint(callWaitlistEntryEndpoint, { params }, options)).data;
 
 export const resolveWaitlistEntry = async (
   params: Params<typeof resolveWaitlistEntryEndpoint>,
