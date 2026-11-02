@@ -39,11 +39,11 @@ function StateLayout({
     >
       <span
         className={cn(
-          "grid size-12 place-items-center rounded-full",
+          "grid size-14 place-items-center rounded-full",
           iconClass,
         )}
       >
-        <Icon className="size-6" aria-hidden="true" />
+        <Icon className="size-7" aria-hidden="true" />
       </span>
       <div className="grid max-w-sm gap-1">
         <p className="text-base leading-6 font-semibold">{title}</p>
@@ -64,7 +64,7 @@ function EmptyState({ title, description, icon = Inbox, ...rest }: StateProps) {
     <StateLayout
       data-slot="empty-state"
       icon={icon}
-      iconClass="bg-muted text-muted-foreground"
+      iconClass="bg-surface-3 text-foreground"
       title={title ?? t("state.emptyTitle")}
       description={description ?? t("state.emptyHint")}
       {...rest}

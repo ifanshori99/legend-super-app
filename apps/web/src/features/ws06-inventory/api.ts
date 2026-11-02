@@ -1,90 +1,98 @@
-// One typed caller per inventory endpoint these screens use (docs/frontend.md
+// One typed caller per inventory endpoint this back office uses (docs/frontend.md
 // "Typed endpoints and mock mode"). Components never call these directly: the
-// hooks in ./hooks.ts own cache keys and invalidation. Detail, create and
-// transition calls unwrap the `{ data }` envelope so screens hold the domain
-// object; list calls keep the cursor page as the API returns it.
+// hooks in ./hooks.ts own cache keys and invalidation.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
-  createStockCount as createStockCountEndpoint,
-  createWasteLog as createWasteLogEndpoint,
-  getStockCount,
+  createInventoryItem as createInventoryItemEndpoint,
+  createInventoryItemAlternate as createAlternateEndpoint,
+  createStockLocation as createStockLocationEndpoint,
+  createStockTransfer as createStockTransferEndpoint,
+  createUomConversion as createUomConversionEndpoint,
+  deleteInventoryItemAlternate as deleteAlternateEndpoint,
+  deleteUomConversion as deleteUomConversionEndpoint,
+  getInventoryItem,
+  listInventoryItemAlternates,
   listInventoryItems,
-  listStockCounts,
+  listStockBalances,
   listStockLocations,
+  listStockTransfers,
+  listUomConversions,
   listUoms,
-  listWasteLogs,
-  postStockCountTransition as postStockCountTransitionEndpoint,
-  updateStockCountLine as updateStockCountLineEndpoint,
+  updateInventoryItem as updateInventoryItemEndpoint,
+  updateStockLocation as updateStockLocationEndpoint,
 } from "@starter/shared/inventory";
-import { listItems as listMenuItemsEndpoint } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint";
 
+type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
 type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
-type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
-// ---- Lookups -------------------------------------------------------------
+// ---- Reads ---------------------------------------------------------------
 
 export const listItems = (query: Query<typeof listInventoryItems>) =>
   callEndpoint(listInventoryItems, { query });
 
-export const listLocations = (query: Query<typeof listStockLocations>) =>
-  callEndpoint(listStockLocations, { query });
+export const getItem = (params: Params<typeof getInventoryItem>) =>
+  callEndpoint(getInventoryItem, { params });
 
 export const listUnits = (query: Query<typeof listUoms>) =>
   callEndpoint(listUoms, { query });
 
-export const listMenu = (query: Query<typeof listMenuItemsEndpoint>) =>
-  callEndpoint(listMenuItemsEndpoint, { query });
+export const listConversions = (params: Params<typeof listUomConversions>) =>
+  callEndpoint(listUomConversions, { params });
 
-// ---- Stock counts (PRD §16 "Stok Opname", INV-03) ------------------------
+export const listLocations = (query: Query<typeof listStockLocations>) =>
+  callEndpoint(listStockLocations, { query });
 
-export const listCounts = (query: Query<typeof listStockCounts>) =>
-  callEndpoint(listStockCounts, { query });
+export const listBalances = (query: Query<typeof listStockBalances>) =>
+  callEndpoint(listStockBalances, { query });
 
-export async function getCount(
-  params: Params<typeof getStockCount>,
-  signal?: AbortSignal,
-) {
-  const { data } = await callEndpoint(getStockCount, { params }, { signal });
-  return data;
-}
+export const listAlternates = (
+  params: Params<typeof listInventoryItemAlternates>,
+) => callEndpoint(listInventoryItemAlternates, { params });
 
-export async function createCount(
-  body: Body<typeof createStockCountEndpoint>,
-) {
-  const { data } = await callEndpoint(createStockCountEndpoint, { body });
-  return data;
-}
+export const listTransfers = (query: Query<typeof listStockTransfers>) =>
+  callEndpoint(listStockTransfers, { query });
 
-export async function updateCountLine(
-  params: Params<typeof updateStockCountLineEndpoint>,
-  body: Body<typeof updateStockCountLineEndpoint>,
-) {
-  const { data } = await callEndpoint(updateStockCountLineEndpoint, {
-    params,
-    body,
-  });
-  return data;
-}
+// ---- Item writes ---------------------------------------------------------
 
-export async function transitionCount(
-  params: Params<typeof postStockCountTransitionEndpoint>,
-  body: Body<typeof postStockCountTransitionEndpoint>,
-) {
-  const { data } = await callEndpoint(postStockCountTransitionEndpoint, {
-    params,
-    body,
-  });
-  return data;
-}
+export const createItem = (body: Body<typeof createInventoryItemEndpoint>) =>
+  callEndpoint(createInventoryItemEndpoint, { body });
 
-// ---- Waste and spoilage (PRD §16 "Waste & Spoilage") ---------------------
+export const updateItem = (
+  params: Params<typeof updateInventoryItemEndpoint>,
+  body: Body<typeof updateInventoryItemEndpoint>,
+) => callEndpoint(updateInventoryItemEndpoint, { params, body });
 
-export const listWaste = (query: Query<typeof listWasteLogs>) =>
-  callEndpoint(listWasteLogs, { query });
+// ---- Setup writes --------------------------------------------------------
 
-export async function recordWaste(body: Body<typeof createWasteLogEndpoint>) {
-  const { data } = await callEndpoint(createWasteLogEndpoint, { body });
-  return data;
-}
+export const createLocation = (
+  body: Body<typeof createStockLocationEndpoint>,
+) => callEndpoint(createStockLocationEndpoint, { body });
+
+export const updateLocation = (
+  params: Params<typeof updateStockLocationEndpoint>,
+  body: Body<typeof updateStockLocationEndpoint>,
+) => callEndpoint(updateStockLocationEndpoint, { params, body });
+
+export const createAlternate = (
+  params: Params<typeof createAlternateEndpoint>,
+  body: Body<typeof createAlternateEndpoint>,
+) => callEndpoint(createAlternateEndpoint, { params, body });
+
+export const deleteAlternate = (
+  params: Params<typeof deleteAlternateEndpoint>,
+) => callEndpoint(deleteAlternateEndpoint, { params });
+
+export const createConversion = (
+  params: Params<typeof createUomConversionEndpoint>,
+  body: Body<typeof createUomConversionEndpoint>,
+) => callEndpoint(createUomConversionEndpoint, { params, body });
+
+export const deleteConversion = (
+  params: Params<typeof deleteUomConversionEndpoint>,
+) => callEndpoint(deleteUomConversionEndpoint, { params });
+
+export const createTransfer = (
+  body: Body<typeof createStockTransferEndpoint>,
+) => callEndpoint(createStockTransferEndpoint, { body });

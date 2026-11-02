@@ -1,16 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { OpnamePage } from "@/features/ws06-inventory/components/opname-shell";
+import { InventoryPage } from "@/features/ws06-inventory/components/inventory-shell";
 import { WastePage } from "@/features/ws06-inventory/components/waste-page";
 import { inventoryGuard } from "@/features/ws06-inventory/guard";
-import { isMockScenarioRequest } from "@/features/ws06-inventory/opname-lib";
+import {
+  isMockScenarioRequest,
+  LIST_LIMIT,
+} from "@/features/ws06-inventory/lib";
+import {
+  menuQuery,
+  wasteQuery,
+} from "@/features/ws06-inventory/opname-queries";
+import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import {
   itemsQuery,
   locationsQuery,
-  menuQuery,
   unitsQuery,
-  wasteQuery,
 } from "@/features/ws06-inventory/queries";
-import { INVENTORY_OUTLET_ID } from "@/features/ws06-inventory/outlet";
 import { holdsAny } from "@/lib/areas/guard";
 
 // /kelola/inventori/waste — waste and spoilage log (PRD §16 "Waste &
@@ -23,18 +28,22 @@ export const Route = createFileRoute("/_kelola/kelola/inventori/waste")({
       ? undefined
       : Promise.all([
           context.queryClient.ensureQueryData(
-            wasteQuery({
+            wasteQuery({ outletId: INVENTORY_OUTLET_ID, limit: LIST_LIMIT }),
+          ),
+          context.queryClient.ensureQueryData(
+            itemsQuery({ limit: LIST_LIMIT }),
+          ),
+          context.queryClient.ensureQueryData(
+            menuQuery({ limit: LIST_LIMIT, status: "active" }),
+          ),
+          context.queryClient.ensureQueryData(
+            unitsQuery({ limit: LIST_LIMIT }),
+          ),
+          context.queryClient.ensureQueryData(
+            locationsQuery({
               outletId: INVENTORY_OUTLET_ID,
-              limit: 100,
+              limit: LIST_LIMIT,
             }),
-          ),
-          context.queryClient.ensureQueryData(itemsQuery({ limit: 100 })),
-          context.queryClient.ensureQueryData(
-            menuQuery({ limit: 100, status: "active" }),
-          ),
-          context.queryClient.ensureQueryData(unitsQuery({ limit: 100 })),
-          context.queryClient.ensureQueryData(
-            locationsQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }),
           ),
         ]),
   component: WasteScreen,
@@ -43,8 +52,8 @@ export const Route = createFileRoute("/_kelola/kelola/inventori/waste")({
 function WasteScreen() {
   const { access } = Route.useRouteContext();
   return (
-    <OpnamePage active="waste">
+    <InventoryPage active="waste">
       <WastePage canRecord={holdsAny(access, ["inventory.waste.record"])} />
-    </OpnamePage>
+    </InventoryPage>
   );
 }

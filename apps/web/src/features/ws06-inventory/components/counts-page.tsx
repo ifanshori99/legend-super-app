@@ -11,23 +11,26 @@ import {
   DataTableShell,
   type DataState,
 } from "@/components/ui/data-table-shell";
-import { SegmentedControl } from "@/components/ui/segmented-control";
-import { useStockCounts, useStockLocations } from "../hooks";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useStockCounts } from "../opname-hooks";
+import { useStockLocations } from "../hooks";
 import {
   countMatchesFilter,
-  formatBusinessDate,
   matchesCountSearch,
   typeLabelKey,
   type CountFilter,
 } from "../opname-lib";
+import { formatBusinessDate } from "../stock-lib";
 import { CountStatusBadge } from "./count-status";
 import { CountFormDialog } from "./count-form-dialog";
 
-export function CountsPage({
-  canCount,
-}: {
-  canCount: boolean;
-}) {
+export function CountsPage({ canCount }: { canCount: boolean }) {
   const t = useT();
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState<CountFilter>("all");
@@ -54,7 +57,8 @@ export function CountsPage({
         .filter((count) =>
           matchesCountSearch(
             count,
-            locationName.get(count.locationId) ?? t("opname.list.unknownLocation"),
+            locationName.get(count.locationId) ??
+              t("opname.list.unknownLocation"),
             search,
           ),
         ),
@@ -93,17 +97,31 @@ export function CountsPage({
       }}
       actions={
         <>
-          <SegmentedControl
+          <Select
             value={filter}
-            onValueChange={setFilter}
-            label={t("opname.list.filterLabel")}
-            options={[
-              { value: "all", label: t("opname.list.filters.all") },
-              { value: "active", label: t("opname.list.filters.active") },
-              { value: "pending", label: t("opname.list.filters.pending") },
-              { value: "done", label: t("opname.list.filters.done") },
-            ]}
-          />
+            onValueChange={(value) => setFilter(value as CountFilter)}
+          >
+            <SelectTrigger
+              className="h-control-sm w-full sm:w-40"
+              aria-label={t("opname.list.filterLabel")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">
+                {t("opname.list.filters.all")}
+              </SelectItem>
+              <SelectItem value="active">
+                {t("opname.list.filters.active")}
+              </SelectItem>
+              <SelectItem value="pending">
+                {t("opname.list.filters.pending")}
+              </SelectItem>
+              <SelectItem value="done">
+                {t("opname.list.filters.done")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
           {addButton}
         </>
       }
@@ -121,7 +139,7 @@ export function CountsPage({
             <Link
               to="/kelola/inventori/opname/$countId"
               params={{ countId: count.id }}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 transition-colors duration-(--duration-fast) hover:bg-accent/60 focus-visible:bg-accent/60"
+              className="grid gap-2 px-4 py-3 transition-colors duration-(--duration-fast) hover:bg-accent/60 focus-visible:bg-accent/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-3"
             >
               <div className="grid min-w-0 gap-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -144,7 +162,7 @@ export function CountsPage({
                   {count.note ? ` · ${count.note}` : ""}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 sm:justify-end">
                 <CountStatusBadge status={count.status} />
                 <ChevronRight
                   className="size-4 text-muted-foreground"

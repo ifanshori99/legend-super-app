@@ -14,10 +14,17 @@ import { tenantContext } from "./middleware/tenant";
 import { errorHandler, notFound } from "./middleware/error-handler";
 import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
+import { setAuditWriter } from "./services/audit-writer";
+import { coreAuditWriter } from "./services/core-audit-writer";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
+
+// Sensitive tenant writes (RBAC, approval matrix) append their audit row on
+// the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
+// Tests may swap the writer; without one the port fails closed with a 503.
+setAuditWriter(coreAuditWriter);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 

@@ -65,7 +65,9 @@ export function PhotoField({
             onClick={() => inputRef.current?.click()}
           >
             <ImagePlus aria-hidden="true" />
-            {previewUrl ? t("waste.form.photoChange") : t("waste.form.photoChoose")}
+            {previewUrl
+              ? t("waste.form.photoChange")
+              : t("waste.form.photoChoose")}
           </Button>
           {previewUrl && (
             <Button type="button" variant="ghost" size="sm" onClick={onClear}>

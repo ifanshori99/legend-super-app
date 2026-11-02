@@ -4,10 +4,7 @@
 // moving-average cost (INV: "nilai kerugian").
 import * as React from "react";
 import { parseDecimal4 } from "@starter/shared/core";
-import type {
-  WasteReason,
-  WasteTargetType,
-} from "@starter/shared/inventory";
+import type { WasteReason, WasteTargetType } from "@starter/shared/inventory";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,13 +29,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { ApiError } from "@/lib/api/errors";
-import {
-  useCreateWasteLog,
-  useInventoryItems,
-  useMenuItems,
-  useStockLocations,
-  useUnits,
-} from "../hooks";
+import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
+import { useCreateWasteLog, useMenuItems } from "../opname-hooks";
+import { LIST_LIMIT } from "../lib";
 import { INVENTORY_OUTLET_ID } from "../outlet";
 import { WASTE_REASONS, wasteReasonKey } from "../opname-lib";
 import {
@@ -62,9 +55,9 @@ export function WasteFormDialog({
 }) {
   const t = useT();
   const toast = useToast();
-  const items = useInventoryItems();
+  const items = useInventoryItems({ limit: LIST_LIMIT });
   const menu = useMenuItems();
-  const units = useUnits();
+  const units = useUnits({ limit: LIST_LIMIT });
   const locations = useStockLocations();
   const createWaste = useCreateWasteLog();
 
@@ -77,9 +70,9 @@ export function WasteFormDialog({
   const [note, setNote] = React.useState("");
   const [photo, setPhoto] = React.useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
-  const [errors, setErrors] = React.useState<Record<string, string | undefined>>(
-    {},
-  );
+  const [errors, setErrors] = React.useState<
+    Record<string, string | undefined>
+  >({});
   const [formError, setFormError] = React.useState<string>();
   const idempotencyKey = React.useRef(crypto.randomUUID());
 
@@ -107,22 +100,20 @@ export function WasteFormDialog({
     [locations.data],
   );
 
+  const effectiveLocationId =
+    locationId !== "" ? locationId : (locationRows[0]?.id ?? "");
   const selectedItem = activeItems.find((item) => item.id === targetId);
   const unit =
     targetType === "inventory_item"
-      ? (selectedItem ? unitCode.get(selectedItem.baseUomId) : undefined)
+      ? selectedItem
+        ? unitCode.get(selectedItem.baseUomId)
+        : undefined
       : t("waste.unit.portion");
 
   React.useEffect(() => {
     if (!open) return;
     idempotencyKey.current = crypto.randomUUID();
   }, [open]);
-
-  React.useEffect(() => {
-    if (!open || locationId !== "") return;
-    const first = locationRows[0];
-    if (first) setLocationId(first.id);
-  }, [locationId, locationRows, open]);
 
   React.useEffect(
     () => () => {
@@ -185,7 +176,8 @@ export function WasteFormDialog({
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const nextErrors: Record<string, string | undefined> = {};
-    if (locationId === "") nextErrors.location = t("waste.form.errorLocation");
+    if (effectiveLocationId === "")
+      nextErrors.location = t("waste.form.errorLocation");
     if (targetId === "") nextErrors.target = t("waste.form.errorTarget");
     const normalized = quantity.trim().replace(",", ".");
     if (!QTY_PATTERN.test(normalized) || parseDecimal4(normalized) <= 0n)
@@ -198,7 +190,7 @@ export function WasteFormDialog({
     createWaste.mutate(
       {
         outletId: INVENTORY_OUTLET_ID,
-        locationId,
+        locationId: effectiveLocationId,
         targetType,
         targetId,
         quantity: normalized,
@@ -247,7 +239,10 @@ export function WasteFormDialog({
               }}
               label={t("waste.form.targetType")}
               options={[
-                { value: "inventory_item", label: t("waste.target.inventory_item") },
+                {
+                  value: "inventory_item",
+                  label: t("waste.target.inventory_item"),
+                },
                 { value: "menu_item", label: t("waste.target.menu_item") },
               ]}
             />
@@ -288,8 +283,8 @@ export function WasteFormDialog({
               </SelectContent>
             </Select>
           </FormField>
-          {(targetType === "inventory_item" ? activeItems : menuItems).length ===
-            0 && (
+          {(targetType === "inventory_item" ? activeItems : menuItems)
+            .length === 0 && (
             <p className="text-sm text-muted-foreground">
               {targetType === "inventory_item"
                 ? t("waste.form.noItems")
@@ -297,26 +292,25 @@ export function WasteFormDialog({
             </p>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <FormField
-              label={t("waste.form.quantity")}
+          <FormField
+            label={
+              unit
+                ? `${t("waste.form.quantity")} (${unit})`
+                : t("waste.form.quantity")
+            }
+            id="waste-quantity"
+            hint={t("waste.form.quantityHint")}
+            error={errors.quantity}
+            required
+          >
+            <Input
               id="waste-quantity"
-              hint={t("waste.form.quantityHint")}
-              error={errors.quantity}
-              required
-            >
-              <Input
-                id="waste-quantity"
-                inputMode="decimal"
-                autoComplete="off"
-                value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
-              />
-            </FormField>
-            <FormField label={t("waste.form.unit")}>
-              <Input value={unit ?? ""} readOnly disabled />
-            </FormField>
-          </div>
+              inputMode="decimal"
+              autoComplete="off"
+              value={quantity}
+              onChange={(event) => setQuantity(event.target.value)}
+            />
+          </FormField>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
@@ -326,9 +320,11 @@ export function WasteFormDialog({
               error={errors.location}
               required
             >
-              <Select value={locationId} onValueChange={setLocationId}>
+              <Select value={effectiveLocationId} onValueChange={setLocationId}>
                 <SelectTrigger id="waste-location">
-                  <SelectValue placeholder={t("waste.form.locationPlaceholder")} />
+                  <SelectValue
+                    placeholder={t("waste.form.locationPlaceholder")}
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {locationRows.map((location) => (
@@ -350,7 +346,9 @@ export function WasteFormDialog({
                 onValueChange={(value) => setReason(value as WasteReason)}
               >
                 <SelectTrigger id="waste-reason">
-                  <SelectValue placeholder={t("waste.form.reasonPlaceholder")} />
+                  <SelectValue
+                    placeholder={t("waste.form.reasonPlaceholder")}
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {WASTE_REASONS.map((row) => (

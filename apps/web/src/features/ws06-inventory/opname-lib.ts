@@ -1,11 +1,7 @@
-// Pure helpers for the stock-opname and waste screens (bead legend-fzx).
-// Keeping the rules here makes them testable without a browser and gives the
-// UI one place to mirror the contract state machine (INV-03).
-import {
-  formatDecimal4,
-  parseDecimal4,
-  type Decimal4,
-} from "@starter/shared/core";
+// Pure rules for the stock-opname and waste screens (bead legend-fzx). Kept
+// separate from lib.ts / stock-lib.ts so the parallel WS-06 FE beads never
+// edited one helper file; formatting and list paging come from those modules.
+import { formatDecimal4, parseDecimal4 } from "@starter/shared/core";
 import type {
   StockCount,
   StockCountAction,
@@ -17,7 +13,7 @@ import type {
   WasteTargetType,
 } from "@starter/shared/inventory";
 import type { MessageKey } from "@starter/shared/i18n";
-import { INVENTORY_TIME_ZONE } from "./outlet";
+import { formatQuantity } from "./stock-lib.ts";
 
 export type CountCapabilities = {
   /** inventory.opname.count — start, enter lines, submit, cancel. */
@@ -30,15 +26,6 @@ export const NO_COUNT_CAPABILITIES: CountCapabilities = {
   canCount: false,
   canApprove: false,
 };
-
-export const STOCK_COUNT_STATUSES: readonly StockCountStatus[] = [
-  "draft",
-  "counting",
-  "pending_approval",
-  "approved",
-  "posted",
-  "cancelled",
-];
 
 const STATUS_KEY: Record<StockCountStatus, MessageKey> = {
   draft: "opname.status.draft",
@@ -152,18 +139,10 @@ export function hidesSystemQty(
   );
 }
 
-/** Trim a fixed 4-decimal quantity for display: "14.0000" → "14". */
-export function formatQuantity(value: Decimal4 | string): string {
-  const [whole, fraction = ""] = value.split(".");
-  const trimmed = fraction.replace(/0+$/, "");
-  return trimmed.length > 0 ? `${whole}.${trimmed}` : whole;
-}
-
 /** counted − system in base units, or null when the line is not counted. */
 export function lineDelta(line: StockCountLine): string | null {
   if (line.countedQty === null) return null;
-  const delta =
-    parseDecimal4(line.countedQty) - parseDecimal4(line.systemQty);
+  const delta = parseDecimal4(line.countedQty) - parseDecimal4(line.systemQty);
   return formatQuantity(formatDecimal4(delta));
 }
 
@@ -173,7 +152,10 @@ export function lineVarianceIdr(line: StockCountLine): number | null {
 
 export function varianceLineCount(lines: readonly StockCountLine[]): number {
   return lines.filter(
-    (line) => line.countedQty !== null && lineVarianceIdr(line) !== null && lineVarianceIdr(line) !== 0,
+    (line) =>
+      line.countedQty !== null &&
+      lineVarianceIdr(line) !== null &&
+      lineVarianceIdr(line) !== 0,
   ).length;
 }
 
@@ -200,52 +182,6 @@ export function countMatchesFilter(
   filter: CountFilter,
 ): boolean {
   return filter === "all" || statusGroup(count.status) === filter;
-}
-
-/** Business date (YYYY-MM-DD) in the outlet time zone (D-CORE-6). */
-export function businessDateToday(
-  timeZone: string = INVENTORY_TIME_ZONE,
-  now: Date = new Date(),
-): string {
-  // en-CA renders YYYY-MM-DD, which is the contract's business date format.
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
-export function formatBusinessDate(value: string): string {
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
-export function formatDateTime(
-  value: string,
-  timeZone: string = INVENTORY_TIME_ZONE,
-): string {
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone,
-  }).format(new Date(value));
-}
-
-/** Short stable reference for a user id; the full id stays in the title. */
-export function shortRef(id: string): string {
-  return id.slice(-8);
-}
-
-export function isMockScenarioRequest(searchStr: string): boolean {
-  return /(?:^|[?&])mock=/.test(searchStr);
 }
 
 export const WASTE_REASONS: readonly WasteReason[] = [

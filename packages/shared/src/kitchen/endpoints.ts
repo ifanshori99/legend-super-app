@@ -192,6 +192,18 @@ export const getPacing = defineEndpoint({
   response: dataResponseSchema(pacingSnapshotSchema),
 });
 
+/**
+ * Kitchen config reads the capacity rules before replacing them (bead
+ * legend-uq2). `updateCapacityRules` replaces a station's whole list, so the
+ * screen needs the current rows to edit without dropping a window.
+ */
+export const listCapacityRules = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/kitchen/capacity-rules",
+  params: outletParams,
+  response: dataResponseSchema(z.array(capacityRuleSchema)),
+});
+
 /** Kitchen config replaces one station's capacity rules in one call. */
 export const updateCapacityRules = defineEndpoint({
   method: "PUT",

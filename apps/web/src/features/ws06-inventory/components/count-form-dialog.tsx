@@ -31,9 +31,12 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
-import { useCreateStockCount, useInventoryItems, useStockLocations, useUnits } from "../hooks";
+import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
+import { useCreateStockCount } from "../opname-hooks";
 import { INVENTORY_OUTLET_ID } from "../outlet";
-import { businessDateToday, typeLabelKey } from "../opname-lib";
+import { businessDateToday } from "../stock-lib";
+import { LIST_LIMIT } from "../lib";
+import { typeLabelKey } from "../opname-lib";
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
@@ -50,8 +53,8 @@ export function CountFormDialog({
   const navigate = useNavigate();
   const toast = useToast();
   const locations = useStockLocations();
-  const items = useInventoryItems();
-  const units = useUnits();
+  const items = useInventoryItems({ limit: LIST_LIMIT });
+  const units = useUnits({ limit: LIST_LIMIT });
   const createCount = useCreateStockCount();
 
   const [locationId, setLocationId] = React.useState("");
@@ -65,9 +68,9 @@ export function CountFormDialog({
   );
   const [search, setSearch] = React.useState("");
   const [note, setNote] = React.useState("");
-  const [errors, setErrors] = React.useState<Record<string, string | undefined>>(
-    {},
-  );
+  const [errors, setErrors] = React.useState<
+    Record<string, string | undefined>
+  >({});
   const [formError, setFormError] = React.useState<string>();
   const idempotencyKey = React.useRef(crypto.randomUUID());
 
@@ -87,6 +90,10 @@ export function CountFormDialog({
         .sort((a, b) => a.name.localeCompare(b.name, "id-ID")),
     [items.data],
   );
+  // The first location is the default; deriving it avoids a setState effect
+  // (React lint: set-state-in-effect) and keeps the Select controlled.
+  const effectiveLocationId =
+    locationId !== "" ? locationId : (locationRows[0]?.id ?? "");
   const filteredItems = React.useMemo(() => {
     const needle = search.trim().toLocaleLowerCase("id-ID");
     if (needle === "") return activeItems;
@@ -100,12 +107,6 @@ export function CountFormDialog({
     idempotencyKey.current = crypto.randomUUID();
   }, [open]);
 
-  React.useEffect(() => {
-    if (!open || locationId !== "") return;
-    const first = locationRows[0];
-    if (first) setLocationId(first.id);
-  }, [open, locationId, locationRows]);
-
   function toggleItem(itemId: string, checked: boolean) {
     setSelected((current) => {
       const next = new Set(current);
@@ -118,7 +119,7 @@ export function CountFormDialog({
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const nextErrors: Record<string, string | undefined> = {};
-    if (locationId === "")
+    if (effectiveLocationId === "")
       nextErrors.location = t("opname.create.errorLocation");
     if (type === "cycle" && selected.size === 0)
       nextErrors.items = t("opname.create.errorItems");
@@ -131,7 +132,7 @@ export function CountFormDialog({
     createCount.mutate(
       {
         outletId: INVENTORY_OUTLET_ID,
-        locationId,
+        locationId: effectiveLocationId,
         type,
         blind,
         businessDate,
@@ -169,7 +170,9 @@ export function CountFormDialog({
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{t("opname.create.title")}</DialogTitle>
-          <DialogDescription>{t("opname.create.description")}</DialogDescription>
+          <DialogDescription>
+            {t("opname.create.description")}
+          </DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={submit} noValidate>
           <FormField
@@ -178,9 +181,11 @@ export function CountFormDialog({
             error={locationField}
             required
           >
-            <Select value={locationId} onValueChange={setLocationId}>
+            <Select value={effectiveLocationId} onValueChange={setLocationId}>
               <SelectTrigger id="count-location">
-                <SelectValue placeholder={t("opname.create.locationPlaceholder")} />
+                <SelectValue
+                  placeholder={t("opname.create.locationPlaceholder")}
+                />
               </SelectTrigger>
               <SelectContent>
                 {locationRows.map((location) => (
@@ -279,7 +284,10 @@ export function CountFormDialog({
                     onClick={() =>
                       setSelected(
                         (current) =>
-                          new Set([...current, ...filteredItems.map((i) => i.id)]),
+                          new Set([
+                            ...current,
+                            ...filteredItems.map((i) => i.id),
+                          ]),
                       )
                     }
                   >

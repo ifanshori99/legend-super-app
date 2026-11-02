@@ -6,13 +6,6 @@ export const opnameMessages = {
   title: "Stok opname",
   subtitle:
     "Hitung stok fisik penuh atau per siklus, catat selisihnya dalam rupiah, lalu setujui penyesuaian sebelum dibukukan.",
-  tabs: {
-    counts: "Stok opname",
-    waste: "Waste & susut",
-  },
-  nav: {
-    counts: "Stok opname",
-  },
   type: {
     full: "Hitung penuh",
     cycle: "Hitung siklus",
@@ -79,7 +72,8 @@ export const opnameMessages = {
     submit: "Buat sesi",
     successTitle: "Sesi opname dibuat",
     successBody: "Mulai hitung untuk mengisi jumlah fisik.",
-    noLocations: "Belum ada lokasi stok. Lengkapi lokasi gudang terlebih dahulu.",
+    noLocations:
+      "Belum ada lokasi stok. Lengkapi lokasi gudang terlebih dahulu.",
     noItems: "Belum ada item aktif untuk dihitung.",
     errorLocation: "Pilih lokasi penyimpanan.",
     errorItems: "Pilih minimal satu item untuk hitung siklus.",
@@ -111,6 +105,7 @@ export const opnameMessages = {
     noResults: "Tidak ada item yang cocok",
     noResultsHint: "Hapus kata kunci untuk melihat semua baris.",
     line: {
+      item: "Item",
       system: "Sistem",
       counted: "Fisik",
       difference: "Selisih",
@@ -135,7 +130,8 @@ export const opnameMessages = {
     },
     summary: {
       title: "Ringkasan selisih",
-      description: "Nilai selisih dihitung dari kuantitas × biaya rata-rata bergerak.",
+      description:
+        "Nilai selisih dihitung dari kuantitas × biaya rata-rata bergerak.",
       total: "Total nilai selisih",
       lines: "{count} baris berselisih",
       noVariance: "Tidak ada selisih pada sesi ini",
@@ -149,12 +145,12 @@ export const opnameMessages = {
       submitHint: "Hitungan dikunci sampai penyetuju memberi keputusan.",
       submitBlocked: "Isi jumlah fisik semua baris dulu sebelum mengirim.",
       approve: "Setujui hitungan",
-      approveHint:
-        "Penyetuju harus orang lain dari penghitung (INV-03).",
+      approveHint: "Penyetuju harus orang lain dari penghitung (INV-03).",
       reject: "Kembalikan untuk dihitung ulang",
       rejectHint: "Penghitung dapat memperbaiki baris lalu mengirim lagi.",
       post: "Bukukan penyesuaian",
-      postHint: "Menulis baris penyesuaian ke kartu stok; tidak dapat dibatalkan.",
+      postHint:
+        "Menulis baris penyesuaian ke kartu stok; tidak dapat dibatalkan.",
       cancel: "Batalkan sesi",
       cancelHint: "Sesi batal tidak membukukan penyesuaian apa pun.",
       saving: "Menyimpan…",
@@ -209,7 +205,6 @@ export const wasteMessages = {
   title: "Waste & susut",
   subtitle:
     "Catat bahan atau menu yang terbuang dengan alasan baku dan foto bukti opsional; nilai kerugian dihitung dari biaya rata-rata.",
-  nav: "Waste & susut",
   record: "Catat waste",
   target: {
     inventory_item: "Bahan",
@@ -272,7 +267,8 @@ export const wasteMessages = {
     reason: "Alasan baku",
     reasonPlaceholder: "Pilih alasan",
     note: "Catatan",
-    noteHint: "Jelaskan singkat penyebabnya, misalnya susu pecah saat shift pagi.",
+    noteHint:
+      "Jelaskan singkat penyebabnya, misalnya susu pecah saat shift pagi.",
     photo: "Foto bukti",
     photoHint:
       "Opsional. JPEG, PNG, atau WebP maksimal 5 MB. Foto membantu audit waste.",

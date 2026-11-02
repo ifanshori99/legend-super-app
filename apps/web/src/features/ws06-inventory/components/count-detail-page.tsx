@@ -36,24 +36,20 @@ import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import {
   useCountTransition,
-  useInventoryItems,
   useSaveCountLine,
   useStockCount,
-  useStockLocations,
-  useUnits,
-} from "../hooks";
+} from "../opname-hooks";
+import { formatQuantity, LIST_LIMIT } from "../lib";
+import { formatBusinessDate, formatDateTime, shortId } from "../stock-lib";
 import {
   allowedCountActions,
   canApproveCount,
   countProgress,
-  formatBusinessDate,
-  formatDateTime,
-  formatQuantity,
   hidesSystemQty,
   lineDelta,
-  shortRef,
   varianceLineCount,
   varianceTotalIdr,
   typeLabelKey,
@@ -109,7 +105,12 @@ const TOAST_KEY: Record<StockCountAction, MessageKey> = {
 };
 
 const NOTICE_KEY: Record<
-  "draft" | "counting" | "pending_approval" | "approved" | "posted" | "cancelled",
+  | "draft"
+  | "counting"
+  | "pending_approval"
+  | "approved"
+  | "posted"
+  | "cancelled",
   MessageKey
 > = {
   draft: "opname.detail.notice.draft",
@@ -121,7 +122,12 @@ const NOTICE_KEY: Record<
 };
 
 const NOTICE_TONE: Record<
-  "draft" | "counting" | "pending_approval" | "approved" | "posted" | "cancelled",
+  | "draft"
+  | "counting"
+  | "pending_approval"
+  | "approved"
+  | "posted"
+  | "cancelled",
   "info" | "warning" | "success" | "neutral"
 > = {
   draft: "neutral",
@@ -138,7 +144,13 @@ function normalizeQty(value: string): string {
   return value.trim().replace(",", ".");
 }
 
-function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
+function MetaItem({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid min-w-0 gap-0.5">
       <dt className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -155,7 +167,9 @@ function Progress({ counted, total }: { counted: number; total: number }) {
   return (
     <div className="grid gap-1.5">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-sm font-medium">{t("opname.detail.progressTitle")}</p>
+        <p className="text-sm font-medium">
+          {t("opname.detail.progressTitle")}
+        </p>
         <p className="text-sm tabular text-muted-foreground">
           {t("opname.detail.progress", { counted, total })}
         </p>
@@ -217,7 +231,7 @@ function CountLineRow({
               <span className="tabular">{formatQuantity(line.systemQty)}</span>
             </span>
           )}
-          {delta !== null && (
+          {showSystem && delta !== null && (
             <span>
               {t("opname.detail.line.difference")}:{" "}
               <span className="tabular">{delta}</span>
@@ -289,58 +303,72 @@ function VarianceList({
 }) {
   const t = useT();
   return (
-    <ul className="divide-y">
-      {lines.map((line) => {
-        const variance = line.varianceIdr;
-        const delta = lineDelta(line);
-        return (
-          <li
-            key={line.id}
-            className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)_8rem] sm:items-center"
-          >
-            <div className="min-w-0">
-              <p className="truncate text-(length:--density-text) font-medium">
-                {nameOf(line)}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                {t("opname.detail.line.unit", { unit: unitOf(line) })}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm sm:contents">
-              <div>
-                <span className="text-xs text-muted-foreground sm:hidden">
-                  {t("opname.detail.line.system")}{" "}
-                </span>
-                <span className="tabular">{formatQuantity(line.systemQty)}</span>
+    <div>
+      <div className="hidden grid-cols-[minmax(0,1fr)_repeat(3,6rem)_8rem] gap-2 border-b px-4 py-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase sm:grid">
+        <span>{t("opname.detail.line.item")}</span>
+        <span className="text-right">{t("opname.detail.line.system")}</span>
+        <span className="text-right">{t("opname.detail.line.counted")}</span>
+        <span className="text-right">{t("opname.detail.line.difference")}</span>
+        <span className="text-right">{t("opname.detail.line.value")}</span>
+      </div>
+      <ul className="divide-y">
+        {lines.map((line) => {
+          const variance = line.varianceIdr;
+          const delta = lineDelta(line);
+          return (
+            <li
+              key={line.id}
+              className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_repeat(3,6rem)_8rem] sm:items-center"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-(length:--density-text) font-medium">
+                  {nameOf(line)}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {t("opname.detail.line.unit", { unit: unitOf(line) })}
+                </p>
               </div>
-              <div>
-                <span className="text-xs text-muted-foreground sm:hidden">
-                  {t("opname.detail.line.counted")}{" "}
-                </span>
-                <span className="tabular">
-                  {line.countedQty === null
-                    ? "—"
-                    : formatQuantity(line.countedQty)}
-                </span>
+              <div className="grid grid-cols-3 gap-x-4 text-sm sm:contents">
+                <div className="sm:text-right">
+                  <span className="text-xs text-muted-foreground sm:hidden">
+                    {t("opname.detail.line.system")}{" "}
+                  </span>
+                  <span className="tabular">
+                    {formatQuantity(line.systemQty)}
+                  </span>
+                </div>
+                <div className="sm:text-right">
+                  <span className="text-xs text-muted-foreground sm:hidden">
+                    {t("opname.detail.line.counted")}{" "}
+                  </span>
+                  <span className="tabular">
+                    {line.countedQty === null
+                      ? "—"
+                      : formatQuantity(line.countedQty)}
+                  </span>
+                </div>
+                <div className="sm:text-right">
+                  <span className="text-xs text-muted-foreground sm:hidden">
+                    {t("opname.detail.line.difference")}{" "}
+                  </span>
+                  <span className="tabular">{delta ?? "—"}</span>
+                </div>
               </div>
-              <div>
+              <div className="flex items-baseline justify-between text-sm sm:block sm:text-right">
                 <span className="text-xs text-muted-foreground sm:hidden">
-                  {t("opname.detail.line.difference")}{" "}
+                  {t("opname.detail.line.value")}
                 </span>
-                <span className="tabular">{delta ?? "—"}</span>
-              </div>
-              <div className="text-right">
                 {variance === null ? (
                   <span className="text-muted-foreground">—</span>
                 ) : (
                   <Money amount={variance} />
                 )}
               </div>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -358,14 +386,16 @@ export function CountDetailPage({
   const t = useT();
   const toast = useToast();
   const detailQuery = useStockCount(stockCountId);
-  const itemsQuery = useInventoryItems();
-  const unitsQuery = useUnits();
+  const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
+  const unitsQuery = useUnits({ limit: LIST_LIMIT });
   const locationsQuery = useStockLocations();
   const saveLine = useSaveCountLine();
   const transition = useCountTransition();
 
   const [drafts, setDrafts] = React.useState<Record<string, string>>({});
-  const [lineErrors, setLineErrors] = React.useState<Record<string, string>>({});
+  const [lineErrors, setLineErrors] = React.useState<Record<string, string>>(
+    {},
+  );
   const [search, setSearch] = React.useState("");
   const [dialog, setDialog] = React.useState<DialogAction | null>(null);
   const [actionError, setActionError] = React.useState<string>();
@@ -397,16 +427,20 @@ export function CountDetailPage({
   const progress = countProgress(lines);
   const showSystem = count ? !hidesSystemQty(count) : false;
   const nameOf = (line: StockCountLine) =>
-    itemById.get(line.inventoryItemId)?.name ?? line.inventoryItemId.slice(0, 8);
+    itemById.get(line.inventoryItemId)?.name ??
+    line.inventoryItemId.slice(0, 8);
   const unitOf = (line: StockCountLine) =>
     itemById.get(line.inventoryItemId)?.unit ?? "";
 
   const filteredLines = React.useMemo(() => {
     const needle = search.trim().toLocaleLowerCase("id-ID");
     if (needle === "") return lines;
-    return lines.filter((line) =>
-      nameOf(line).toLocaleLowerCase("id-ID").includes(needle),
-    );
+    return lines.filter((line) => {
+      const name =
+        itemById.get(line.inventoryItemId)?.name ??
+        line.inventoryItemId.slice(0, 8);
+      return name.toLocaleLowerCase("id-ID").includes(needle);
+    });
   }, [lines, search, itemById]);
 
   const actions = count
@@ -503,8 +537,9 @@ export function CountDetailPage({
         if (normalized === (line.countedQty ?? "")) return null;
         return { line, normalized };
       })
-      .filter((entry): entry is { line: StockCountLine; normalized: string } =>
-        entry !== null,
+      .filter(
+        (entry): entry is { line: StockCountLine; normalized: string } =>
+          entry !== null,
       );
     for (const entry of pending) {
       if (!QTY_PATTERN.test(entry.normalized)) {
@@ -530,7 +565,8 @@ export function CountDetailPage({
     setActionError(undefined);
     const filled = lines.every((line) => {
       const raw = drafts[line.id];
-      const normalized = raw === undefined ? (line.countedQty ?? "") : normalizeQty(raw);
+      const normalized =
+        raw === undefined ? (line.countedQty ?? "") : normalizeQty(raw);
       return QTY_PATTERN.test(normalized);
     });
     if (!filled) {
@@ -540,6 +576,9 @@ export function CountDetailPage({
     try {
       const flushed = await flushLines();
       if (!flushed) return;
+      // Every user intent gets its own key: reusing the start key would make
+      // the API (and the mock) replay the earlier transition idempotently.
+      idempotencyKey.current = crypto.randomUUID();
       runTransition("submit");
     } catch {
       setActionError(t("opname.detail.line.saveError"));
@@ -635,7 +674,7 @@ export function CountDetailPage({
             </Badge>
           )}
         </div>
-        <dl className="grid gap-x-6 gap-y-3 rounded-xl border p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border p-4 lg:grid-cols-4">
           <MetaItem label={t("opname.detail.meta.location")}>
             {locationName.get(count.locationId) ?? "—"}
           </MetaItem>
@@ -646,13 +685,13 @@ export function CountDetailPage({
           </MetaItem>
           <MetaItem label={t("opname.detail.meta.counter")}>
             <span className="tabular" title={count.countedBy}>
-              {shortRef(count.countedBy)}
+              {shortId(count.countedBy)}
             </span>
           </MetaItem>
           <MetaItem label={t("opname.detail.meta.approver")}>
             {count.approvedBy ? (
               <span className="tabular" title={count.approvedBy}>
-                {shortRef(count.approvedBy)}
+                {shortId(count.approvedBy)}
               </span>
             ) : (
               <span className="text-muted-foreground">
@@ -662,9 +701,7 @@ export function CountDetailPage({
           </MetaItem>
           {count.countedAt && (
             <MetaItem label={t("opname.detail.meta.countedAt")}>
-              <span className="tabular">
-                {formatDateTime(count.countedAt)}
-              </span>
+              <span className="tabular">{formatDateTime(count.countedAt)}</span>
             </MetaItem>
           )}
           {count.approvedAt && (
@@ -696,7 +733,10 @@ export function CountDetailPage({
         <div className="grid gap-0.5">
           <p className="font-medium">{t(NOTICE_KEY[count.status])}</p>
           {count.blind && hidesSystemQty(count) && (
-            <p>{t("opname.detail.blindNoticeHint")}</p>
+            <>
+              <p className="font-medium">{t("opname.detail.blindNotice")}</p>
+              <p>{t("opname.detail.blindNoticeHint")}</p>
+            </>
           )}
           {count.status === "pending_approval" &&
             !canApproveCount(count, actorId) && (
@@ -784,8 +824,7 @@ export function CountDetailPage({
                     : formatQuantity(line.countedQty))
                 }
                 saving={
-                  saveLine.isPending &&
-                  saveLine.variables?.lineId === line.id
+                  saveLine.isPending && saveLine.variables?.lineId === line.id
                 }
                 saveError={lineErrors[line.id]}
                 onChange={(value) => {
@@ -810,7 +849,10 @@ export function CountDetailPage({
         </section>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 grid gap-2 border-t bg-background px-4 py-3 sm:static sm:mx-0 sm:flex sm:items-center sm:justify-between sm:rounded-xl sm:border sm:px-4">
+      <div
+        data-slot="count-action-bar"
+        className="sticky bottom-0 z-10 -mx-4 grid gap-2 border-t bg-background px-4 py-3 sm:static sm:mx-0 sm:flex sm:items-center sm:justify-between sm:rounded-xl sm:border sm:px-4"
+      >
         <div className="grid gap-0.5 text-sm text-muted-foreground">
           {count.status === "pending_approval" && !canApprove && (
             <span>{t("opname.detail.actions.selfApproval")}</span>
@@ -866,6 +908,9 @@ export function CountDetailPage({
             <Button onClick={() => openDialog("post")}>
               {t("opname.detail.actions.post")}
             </Button>
+          )}
+          {!primaryAction && counting && canCount && !progress.complete && (
+            <Button disabled>{t("opname.detail.actions.submit")}</Button>
           )}
         </div>
       </div>

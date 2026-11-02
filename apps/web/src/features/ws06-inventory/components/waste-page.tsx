@@ -21,16 +21,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatTile } from "@/components/ui/stat-tile";
+import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
+import { useMenuItems, useWasteLogs } from "../opname-hooks";
+import { formatQuantity, LIST_LIMIT } from "../lib";
+import { formatDateTime } from "../stock-lib";
 import {
-  useInventoryItems,
-  useMenuItems,
-  useStockLocations,
-  useUnits,
-  useWasteLogs,
-} from "../hooks";
-import {
-  formatDateTime,
-  formatQuantity,
   matchesWasteSearch,
   wasteLossTotal,
   wasteReasonKey,
@@ -48,9 +43,9 @@ export function WastePage({ canRecord }: { canRecord: boolean }) {
   const [formOpen, setFormOpen] = React.useState(false);
 
   const logsQuery = useWasteLogs();
-  const itemsQuery = useInventoryItems();
+  const itemsQuery = useInventoryItems({ limit: LIST_LIMIT });
   const menuQuery = useMenuItems();
-  const unitsQuery = useUnits();
+  const unitsQuery = useUnits({ limit: LIST_LIMIT });
   const locationsQuery = useStockLocations();
 
   const targets = React.useMemo(() => {
@@ -154,10 +149,7 @@ export function WastePage({ canRecord }: { canRecord: boolean }) {
           }}
           actions={
             <>
-              <Select
-                value={reasonFilter}
-                onValueChange={setReasonFilter}
-              >
+              <Select value={reasonFilter} onValueChange={setReasonFilter}>
                 <SelectTrigger
                   className="h-control-sm w-full sm:w-44"
                   aria-label={t("waste.filters.reason")}
@@ -190,10 +182,7 @@ export function WastePage({ canRecord }: { canRecord: boolean }) {
             {filtered.map((log) => {
               const target = targets.get(log.targetId);
               return (
-                <li
-                  key={log.id}
-                  className="grid gap-2 px-4 py-3"
-                >
+                <li key={log.id} className="grid gap-2 px-4 py-3">
                   <div className="flex min-w-0 items-start justify-between gap-3">
                     <div className="grid min-w-0 gap-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -206,8 +195,7 @@ export function WastePage({ canRecord }: { canRecord: boolean }) {
                       </div>
                       <p className="text-sm text-muted-foreground">
                         <span className="tabular">
-                          {formatQuantity(log.quantity)}{" "}
-                          {target?.unit ?? ""}
+                          {formatQuantity(log.quantity)} {target?.unit ?? ""}
                         </span>
                         {locationName.get(log.locationId)
                           ? ` · ${locationName.get(log.locationId)}`
