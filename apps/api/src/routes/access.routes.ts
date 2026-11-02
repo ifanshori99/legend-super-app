@@ -92,13 +92,19 @@ accessRouter.patch(
   async (req, res) => {
     const { roleId } = roleParamsSchema.parse(req.params);
     const input = updateCustomRoleSchema.parse(req.body);
+    // A custom-role edit may add permissions only when they are held or when
+    // the editor is a re-authenticated Owner/Admin Tenant (PRD §3.7). Same
+    // pattern as the grant path below: the session's second factor is the
+    // re-authentication (legend-6xf `session.mfa_verified_at`), and the service
+    // rejects one older than ROLE_GRANT_REAUTH_MAX_AGE_MS (legend-ma2v).
+    const session = await loadSessionRow(getAuth(req).session.id);
+    const reauthenticatedAt = session?.mfaVerifiedAt ?? null;
     res.json({
-      data: await updateCustomRole(
-        getScopedTenantContext(req),
-        roleId,
-        input,
-        getAuth(req).user.id,
-      ),
+      data: await updateCustomRole(getScopedTenantContext(req), roleId, input, {
+        actorUserId: getAuth(req).user.id,
+        reauthenticatedAt,
+        mfaVerified: reauthenticatedAt !== null,
+      }),
     });
   },
 );

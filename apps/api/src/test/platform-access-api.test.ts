@@ -337,6 +337,70 @@ describe("§3.7 no self-elevation through role edits or assignment ends", () => 
     expect(byOwner.body.data.permissions).toContain("audit.log.view");
   });
 
+  it("§3.7 a role editor may add a permission they hold but not one they lack", async () => {
+    const boss = await signedIn("Held Permission Owner");
+    await assign(boss.userId, "owner");
+    const target = await boss.client
+      .post("/api/access/roles")
+      .set(originHeader)
+      .send({
+        name: `Held target ${unique()}`,
+        permissions: ["access.role.view", "access.role.manage"],
+        allowedScopeTypes: ["tenant"],
+      });
+    expect(target.status).toBe(201);
+    const targetId = target.body.data.id as string;
+    createdRoleIds.push(targetId);
+    const editorRole = await boss.client
+      .post("/api/access/roles")
+      .set(originHeader)
+      .send({
+        name: `Held editor ${unique()}`,
+        permissions: ["access.role.manage", "report.operational.view"],
+        allowedScopeTypes: ["tenant"],
+      });
+    expect(editorRole.status).toBe(201);
+    createdRoleIds.push(editorRole.body.data.id);
+
+    const editor = await signedIn("Held Permission Editor");
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $4)`,
+      [seededTenantId, editor.userId, editorRole.body.data.id, boss.userId],
+    );
+
+    // The editor holds report.operational.view through their own role, so the
+    // grant rule allows adding it to another custom role.
+    const held = await editor.client
+      .patch(`/api/access/roles/${targetId}`)
+      .set(originHeader)
+      .send({
+        permissions: [
+          "access.role.view",
+          "access.role.manage",
+          "report.operational.view",
+        ],
+      });
+    expect(held.status).toBe(200);
+    expect(held.body.data.permissions).toContain("report.operational.view");
+
+    // payroll.view is not held and the session has no re-auth, so still 403.
+    const unheld = await editor.client
+      .patch(`/api/access/roles/${targetId}`)
+      .set(originHeader)
+      .send({
+        permissions: [
+          "access.role.view",
+          "access.role.manage",
+          "report.operational.view",
+          "payroll.view",
+        ],
+      });
+    expect(unheld.status).toBe(403);
+    expect(unheld.body.error.code).toBe("SELF_ELEVATION_FORBIDDEN");
+  });
+
   it("§3.7 ending an assignment never extends or re-activates it", async () => {
     const grantor = await signedIn("End Grantor");
     await assign(grantor.userId, "owner");
