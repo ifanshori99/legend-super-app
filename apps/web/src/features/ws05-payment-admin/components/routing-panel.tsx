@@ -41,7 +41,7 @@ export function RoutingPanel() {
     return <RoutingSkeleton />;
   if (current.isError) {
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <div className="rounded-container border-(length:--border-w) bg-card">
         <ErrorState
           title={t("paymentAdmin.loadErrorTitle")}
           description={t("paymentAdmin.loadErrorHint")}
@@ -60,9 +60,9 @@ export function RoutingPanel() {
       aria-labelledby="routing-title"
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card">
+      <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
         <div className="grid min-w-0 gap-1">
-          <h2 id="routing-title" className="text-base leading-6 font-semibold">
+          <h2 id="routing-title" className="type-title">
             {t("paymentAdmin.tabs.routing")}
           </h2>
           <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
@@ -122,7 +122,7 @@ export function RoutingPanel() {
       </div>
 
       {view.routes.length === 0 ? (
-        <div className="rounded-xl border-(length:--border-w) bg-card">
+        <div className="rounded-container border-(length:--border-w) bg-card">
           <EmptyState
             title={t("paymentAdmin.routing.emptyTitle")}
             description={t("paymentAdmin.routing.emptyHint")}
@@ -132,7 +132,7 @@ export function RoutingPanel() {
         <>
           <div
             aria-hidden="true"
-            className="hidden gap-3 rounded-xl border-(length:--border-w) bg-muted p-card lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_auto_auto] lg:items-center"
+            className="hidden gap-3 rounded-container border-(length:--border-w) bg-surface-2 p-card lg:grid lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_auto_auto] lg:items-center"
           >
             <span className="text-sm leading-5 font-semibold">
               {t("paymentAdmin.routing.method")}
@@ -222,7 +222,7 @@ function RouteRow({
   };
 
   return (
-    <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_auto_auto] lg:items-center">
+    <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_auto_auto] lg:items-center">
       <div className="grid min-w-0 gap-0.5">
         <p className="font-semibold">{t(methodLabelKey(route.method))}</p>
         {scope.scope === "outlet" && (

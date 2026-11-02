@@ -8,6 +8,7 @@ import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
 import { ApiError } from "@/lib/api/errors";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
@@ -150,92 +151,92 @@ export function ManualJournalDetailPage({
           </Button>
         </div>
 
-        <section className="rounded-xl border-(length:--border-w) border-border bg-card">
-          <header className="grid gap-2 border-b border-border p-card">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-xl leading-7 font-semibold">
-                {row.description}
-              </h2>
-              <ManualJournalStatusBadge status={row.status} />
-            </div>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t(MANUAL_KIND_KEYS[row.kind])} ·{" "}
-              {formatBusinessDate(row.entryDate)}
-              {entityName ? ` · ${entityName}` : ""}
-            </p>
-          </header>
-          <dl className="grid gap-4 p-card sm:grid-cols-2 lg:grid-cols-3">
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.manual.detail.createdAt")}
-              </dt>
-              <dd className="tabular">{formatDateTime(row.createdAt)}</dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.manual.detail.submittedAt")}
-              </dt>
-              <dd className="tabular">
-                {row.submittedAt
-                  ? formatDateTime(row.submittedAt)
-                  : t("accounting.journal.empty")}
-              </dd>
-            </div>
-            <div className="grid gap-0.5">
-              <dt className="text-sm text-muted-foreground">
-                {t("accounting.manual.detail.decidedAt")}
-              </dt>
-              <dd className="tabular">
-                {row.decidedAt
-                  ? formatDateTime(row.decidedAt)
-                  : t("accounting.journal.empty")}
-              </dd>
-            </div>
-            {row.rejectionReason && (
-              <div className="grid gap-0.5 sm:col-span-2 lg:col-span-3">
-                <dt className="text-sm text-muted-foreground">
-                  {t("accounting.manual.detail.rejectionReason")}
-                </dt>
-                <dd>{row.rejectionReason}</dd>
+        <CardShell>
+          <CardShellBody>
+            <header className="grid gap-2 border-b border-border p-card">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="type-title">{row.description}</h2>
+                <ManualJournalStatusBadge status={row.status} />
               </div>
-            )}
-            {row.postedEntryId && (
-              <div className="grid gap-1 sm:col-span-2 lg:col-span-3">
-                <dt className="text-sm text-muted-foreground">
-                  {t("accounting.manual.detail.postedEntry")}
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t(MANUAL_KIND_KEYS[row.kind])} ·{" "}
+                {formatBusinessDate(row.entryDate)}
+                {entityName ? ` · ${entityName}` : ""}
+              </p>
+            </header>
+            <dl className="grid gap-4 p-card sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.manual.detail.createdAt")}
                 </dt>
-                <dd>
-                  <Button asChild variant="outline" size="sm">
-                    <Link
-                      to="/kelola/akuntansi/jurnal/$journalEntryId"
-                      params={{ journalEntryId: row.postedEntryId }}
-                    >
-                      <ExternalLink aria-hidden="true" />
-                      {t("accounting.manual.detail.openPosted")}
-                    </Link>
-                  </Button>
+                <dd className="tabular">{formatDateTime(row.createdAt)}</dd>
+              </div>
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.manual.detail.submittedAt")}
+                </dt>
+                <dd className="tabular">
+                  {row.submittedAt
+                    ? formatDateTime(row.submittedAt)
+                    : t("accounting.journal.empty")}
                 </dd>
               </div>
+              <div className="grid gap-0.5">
+                <dt className="type-eyebrow text-muted-foreground">
+                  {t("accounting.manual.detail.decidedAt")}
+                </dt>
+                <dd className="tabular">
+                  {row.decidedAt
+                    ? formatDateTime(row.decidedAt)
+                    : t("accounting.journal.empty")}
+                </dd>
+              </div>
+              {row.rejectionReason && (
+                <div className="grid gap-0.5 sm:col-span-2 lg:col-span-3">
+                  <dt className="type-eyebrow text-muted-foreground">
+                    {t("accounting.manual.detail.rejectionReason")}
+                  </dt>
+                  <dd>{row.rejectionReason}</dd>
+                </div>
+              )}
+              {row.postedEntryId && (
+                <div className="grid gap-1 sm:col-span-2 lg:col-span-3">
+                  <dt className="type-eyebrow text-muted-foreground">
+                    {t("accounting.manual.detail.postedEntry")}
+                  </dt>
+                  <dd>
+                    <Button asChild variant="outline" size="sm">
+                      <Link
+                        to="/kelola/akuntansi/jurnal/$journalEntryId"
+                        params={{ journalEntryId: row.postedEntryId }}
+                      >
+                        <ExternalLink aria-hidden="true" />
+                        {t("accounting.manual.detail.openPosted")}
+                      </Link>
+                    </Button>
+                  </dd>
+                </div>
+              )}
+            </dl>
+            {accountsQuery.isPending ? (
+              <div className="grid gap-2 p-card" aria-busy="true">
+                <span className="sr-only">{t("common.loading")}</span>
+                <Skeleton className="h-row" />
+                <Skeleton className="h-row" />
+              </div>
+            ) : (
+              <JournalLinesTable
+                lines={row.lines}
+                accounts={accounts}
+                outlets={outlets}
+              />
             )}
-          </dl>
-          {accountsQuery.isPending ? (
-            <div className="grid gap-2 p-card" aria-busy="true">
-              <span className="sr-only">{t("common.loading")}</span>
-              <Skeleton className="h-row" />
-              <Skeleton className="h-row" />
-            </div>
-          ) : (
-            <JournalLinesTable
-              lines={row.lines}
-              accounts={accounts}
-              outlets={outlets}
-            />
-          )}
-        </section>
+          </CardShellBody>
+        </CardShell>
 
         <section
           aria-label={t("accounting.manual.actions.approve")}
-          className="grid gap-3 rounded-xl border-(length:--border-w) border-border bg-card p-card"
+          className="grid gap-3 rounded-container border-(length:--border-w) border-border bg-card p-card shadow-hairline"
         >
           {row.status === "pending_approval" && (
             <p className="text-sm leading-5 text-muted-foreground">

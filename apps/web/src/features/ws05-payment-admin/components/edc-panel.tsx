@@ -77,7 +77,7 @@ export function EdcPanel() {
   if (routing.isPending && outlets.length === 0) return <EdcSkeleton />;
   if (routing.isError) {
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <div className="rounded-container border-(length:--border-w) bg-card">
         <ErrorState
           title={t("paymentAdmin.loadErrorTitle")}
           description={t("paymentAdmin.loadErrorHint")}
@@ -88,7 +88,7 @@ export function EdcPanel() {
   }
   if (selectedOutletId === null) {
     return (
-      <div className="rounded-xl border-(length:--border-w) bg-card">
+      <div className="rounded-container border-(length:--border-w) bg-card">
         <Skeleton className="h-40" />
       </div>
     );
@@ -99,9 +99,9 @@ export function EdcPanel() {
       aria-labelledby="edc-title"
       className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
     >
-      <div className="grid gap-3 rounded-xl border-(length:--border-w) bg-card p-card sm:flex sm:items-end sm:justify-between">
+      <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline sm:flex sm:items-end sm:justify-between">
         <div className="grid min-w-0 gap-1">
-          <h2 id="edc-title" className="text-base leading-6 font-semibold">
+          <h2 id="edc-title" className="type-title">
             {t("paymentAdmin.tabs.edc")}
           </h2>
           <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
