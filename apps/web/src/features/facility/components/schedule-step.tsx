@@ -3,7 +3,7 @@
 // with the wait estimate, or a slot; when no unit is free the wait queue is the
 // way in. FAC-06: units that are dirty or under maintenance are shown as
 // blocked and never offered.
-import { CalendarClock, Clock, Users } from "lucide-react";
+import { CalendarClock, Check, Clock, Users } from "lucide-react";
 import type {
   FacilityAvailability,
   FacilityQueueEntry,
@@ -11,6 +11,7 @@ import type {
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { cn } from "cn";
@@ -108,47 +109,47 @@ export function ScheduleStep({
 
   return (
     <div className="grid gap-5">
-      <h2 className="text-xl leading-7 font-semibold">
-        {t("facility.schedule.title")}
-      </h2>
+      <h2 className="font-brand type-title">{t("facility.schedule.title")}</h2>
 
-      <Section title={t("facility.schedule.dayLabel")}>
-        <SegmentedControl
-          label={t("facility.schedule.dayLabel")}
-          value={String(dayOffset)}
-          onValueChange={(value) => onDayChange(value === "1" ? 1 : 0)}
-          options={[
-            { value: "0", label: t("facility.schedule.dayToday") },
-            { value: "1", label: t("facility.schedule.dayTomorrow") },
-          ]}
-        />
-      </Section>
+      <Card>
+        <Section title={t("facility.schedule.dayLabel")}>
+          <SegmentedControl
+            label={t("facility.schedule.dayLabel")}
+            value={String(dayOffset)}
+            onValueChange={(value) => onDayChange(value === "1" ? 1 : 0)}
+            options={[
+              { value: "0", label: t("facility.schedule.dayToday") },
+              { value: "1", label: t("facility.schedule.dayTomorrow") },
+            ]}
+          />
+        </Section>
 
-      <Section title={t("facility.schedule.areaLabel")}>
-        <SegmentedControl
-          label={t("facility.schedule.areaLabel")}
-          value={draft.areaId ?? ""}
-          onValueChange={(areaId) =>
-            onDraftChange({ ...draft, areaId, timing: null })
-          }
-          options={data.areas.map((item) => ({
-            value: item.areaId,
-            label: item.name,
-          }))}
-        />
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t("facility.schedule.areaHint")}
-        </p>
-      </Section>
+        <Section title={t("facility.schedule.areaLabel")}>
+          <SegmentedControl
+            label={t("facility.schedule.areaLabel")}
+            value={draft.areaId ?? ""}
+            onValueChange={(areaId) =>
+              onDraftChange({ ...draft, areaId, timing: null })
+            }
+            options={data.areas.map((item) => ({
+              value: item.areaId,
+              label: item.name,
+            }))}
+          />
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("facility.schedule.areaHint")}
+          </p>
+        </Section>
+      </Card>
 
       {queueEntry ? (
         <Section title={t("facility.schedule.joinedTitle")}>
-          <div className="grid gap-2 rounded-xl border-(length:--border-w) bg-card p-card">
-            <div className="flex items-center justify-between gap-2">
+          <Card className="gap-3">
+            <div className="flex items-start justify-between gap-2">
               <p className="font-semibold">
                 {t("facility.schedule.joinedTitle")}
               </p>
-              <Badge tone="info">
+              <Badge tone="info" className="mt-0.5">
                 {t(`facility.schedule.queueStatus.${queueEntry.status}`)}
               </Badge>
             </div>
@@ -168,126 +169,134 @@ export function ScheduleStep({
               {t("facility.schedule.leaveQueue")}
             </Button>
             {queueError !== null && <ApiFailure error={queueError} />}
-          </div>
+          </Card>
         </Section>
       ) : (
         <>
-          <Section title={t("facility.schedule.timingLabel")}>
-            <SegmentedControl
-              label={t("facility.schedule.timingLabel")}
-              value={timingKind ?? ""}
-              onValueChange={setTiming}
-              options={[
-                { value: "now", label: t("facility.schedule.now") },
-                { value: "slot", label: t("facility.schedule.slot") },
-              ]}
-            />
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm leading-5 text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5">
-                <Users className="size-4" aria-hidden="true" />
-                {t("facility.schedule.queueLength", {
-                  count: data.waitEstimate.queueLength,
-                })}
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <Clock className="size-4" aria-hidden="true" />
-                {waitNow
-                  ? t("facility.schedule.waitEstimateNow")
-                  : t("facility.schedule.waitEstimate", {
-                      minutes: data.waitEstimate.estimatedWaitMinutes,
-                    })}
-              </span>
-            </div>
-          </Section>
-
-          {timingKind === "now" && (
-            <div className="grid gap-2 rounded-xl border-(length:--border-w) bg-card p-card">
-              <p className="font-semibold">
-                {nowAvailable
-                  ? t("facility.schedule.nowAvailable", {
-                      count:
-                        area?.units.filter(
-                          (unit) =>
-                            unit.bookable && unit.status === "available",
-                        ).length ?? 0,
-                    })
-                  : t("facility.schedule.nowUnavailable")}
-              </p>
-              {nowAvailable && firstSlot && (
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {t("facility.schedule.slotHint", {
-                    minutes: slotSessionMinutes(firstSlot),
-                    cleaning: slotCleaningMinutes(firstSlot),
+          <Card>
+            <Section title={t("facility.schedule.timingLabel")}>
+              <SegmentedControl
+                label={t("facility.schedule.timingLabel")}
+                value={timingKind ?? ""}
+                onValueChange={setTiming}
+                options={[
+                  { value: "now", label: t("facility.schedule.now") },
+                  { value: "slot", label: t("facility.schedule.slot") },
+                ]}
+              />
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm leading-5 text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Users className="size-4" aria-hidden="true" />
+                  {t("facility.schedule.queueLength", {
+                    count: data.waitEstimate.queueLength,
                   })}
-                </p>
-              )}
-              {!nowAvailable && area && (
-                <>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {t("facility.schedule.blockedHint")}
-                  </p>
-                  <Button
-                    variant="secondary"
-                    onClick={() => onJoinQueue(area.areaId)}
-                    loading={queuePending}
-                  >
-                    {t("facility.schedule.joinQueue")}
-                  </Button>
-                  {queueError !== null && <ApiFailure error={queueError} />}
-                </>
-              )}
-            </div>
-          )}
-
-          {timingKind === "slot" && (
-            <Section title={t("facility.schedule.slot")}>
-              {slots.length === 0 ? (
-                <EmptyState
-                  icon={CalendarClock}
-                  title={t("facility.schedule.noSlots")}
-                  description={t("facility.schedule.noSlotsHint")}
-                />
-              ) : (
-                <>
-                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-                    {slots.map((slot) => {
-                      const selected =
-                        draft.timing?.kind === "slot" &&
-                        draft.timing.startsAt === slot.startsAt;
-                      return (
-                        <button
-                          key={slot.startsAt}
-                          type="button"
-                          aria-pressed={selected}
-                          onClick={() =>
-                            onDraftChange({
-                              ...draft,
-                              timing: { kind: "slot", startsAt: slot.startsAt },
-                            })
-                          }
-                          className={cn(
-                            "flex h-control items-center justify-center rounded-control border-(length:--border-w) text-sm font-semibold tabular transition-colors duration-(--duration-fast)",
-                            selected
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-input bg-background hover:bg-accent",
-                          )}
-                        >
-                          {formatClock(slot.startsAt)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {slots[0] &&
-                      t("facility.schedule.slotHint", {
-                        minutes: slotSessionMinutes(slots[0]),
-                        cleaning: slotCleaningMinutes(slots[0]),
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Clock className="size-4" aria-hidden="true" />
+                  {waitNow
+                    ? t("facility.schedule.waitEstimateNow")
+                    : t("facility.schedule.waitEstimate", {
+                        minutes: data.waitEstimate.estimatedWaitMinutes,
                       })}
-                  </p>
-                </>
-              )}
+                </span>
+              </div>
             </Section>
-          )}
+
+            {timingKind === "now" && (
+              <div className="grid gap-3 rounded-container bg-surface-2 p-3">
+                <p className="font-semibold">
+                  {nowAvailable
+                    ? t("facility.schedule.nowAvailable", {
+                        count:
+                          area?.units.filter(
+                            (unit) =>
+                              unit.bookable && unit.status === "available",
+                          ).length ?? 0,
+                      })
+                    : t("facility.schedule.nowUnavailable")}
+                </p>
+                {nowAvailable && firstSlot && (
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {t("facility.schedule.slotHint", {
+                      minutes: slotSessionMinutes(firstSlot),
+                      cleaning: slotCleaningMinutes(firstSlot),
+                    })}
+                  </p>
+                )}
+                {!nowAvailable && area && (
+                  <>
+                    <p className="text-sm leading-5 text-muted-foreground">
+                      {t("facility.schedule.blockedHint")}
+                    </p>
+                    <Button
+                      variant="secondary"
+                      onClick={() => onJoinQueue(area.areaId)}
+                      loading={queuePending}
+                    >
+                      {t("facility.schedule.joinQueue")}
+                    </Button>
+                    {queueError !== null && <ApiFailure error={queueError} />}
+                  </>
+                )}
+              </div>
+            )}
+
+            {timingKind === "slot" && (
+              <Section title={t("facility.schedule.slot")}>
+                {slots.length === 0 ? (
+                  <EmptyState
+                    icon={CalendarClock}
+                    title={t("facility.schedule.noSlots")}
+                    description={t("facility.schedule.noSlotsHint")}
+                  />
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                      {slots.map((slot) => {
+                        const selected =
+                          draft.timing?.kind === "slot" &&
+                          draft.timing.startsAt === slot.startsAt;
+                        return (
+                          <button
+                            key={slot.startsAt}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() =>
+                              onDraftChange({
+                                ...draft,
+                                timing: {
+                                  kind: "slot",
+                                  startsAt: slot.startsAt,
+                                },
+                              })
+                            }
+                            className={cn(
+                              "inline-flex h-control items-center justify-center gap-1.5 rounded-control border-(length:--border-w) px-2 text-sm font-semibold tabular pressable",
+                              selected
+                                ? "border-foreground bg-foreground text-background"
+                                : "border-border bg-card text-foreground hover:bg-surface-2",
+                            )}
+                          >
+                            {selected && (
+                              <Check className="size-4" aria-hidden="true" />
+                            )}
+                            {formatClock(slot.startsAt)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-sm leading-5 text-muted-foreground">
+                      {slots[0] &&
+                        t("facility.schedule.slotHint", {
+                          minutes: slotSessionMinutes(slots[0]),
+                          cleaning: slotCleaningMinutes(slots[0]),
+                        })}
+                    </p>
+                  </>
+                )}
+              </Section>
+            )}
+          </Card>
 
           {blocked > 0 && (
             <p className="text-sm leading-5 text-muted-foreground">

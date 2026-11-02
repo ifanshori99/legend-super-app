@@ -96,8 +96,8 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
           {t("common.loading")}
         </span>
         <Skeleton className="h-8 w-40" />
-        <Skeleton className="h-64 w-full rounded-xl" />
-        <Skeleton className="h-48 w-full rounded-xl" />
+        <Skeleton className="h-64 w-full rounded-container" />
+        <Skeleton className="h-48 w-full rounded-container" />
       </div>
     );
 
@@ -195,7 +195,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
           </Link>
         </Button>
         <header className="grid gap-1">
-          <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+          <h1 className="font-brand type-display-xl">
             {t(typeTitleKey(type))}
           </h1>
           <p className="text-sm leading-5 text-muted-foreground">
@@ -219,7 +219,9 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
         <>
           <Card>
             <CardHeader>
-              <CardTitle>{t("hris.attendance.stepSelfie")}</CardTitle>
+              <CardTitle className="font-brand type-title">
+                {t("hris.attendance.stepSelfie")}
+              </CardTitle>
               <CardDescription>
                 {t("hris.attendance.stepSelfieHint")}
               </CardDescription>
@@ -229,7 +231,9 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
 
           <Card>
             <CardHeader>
-              <CardTitle>{t("hris.attendance.stepDetails")}</CardTitle>
+              <CardTitle className="font-brand type-title">
+                {t("hris.attendance.stepDetails")}
+              </CardTitle>
               <CardDescription>
                 {t(
                   method === "selfie_geo"
@@ -301,21 +305,25 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
 
           <Card>
             <CardHeader>
-              <CardTitle>{t("hris.attendance.stepSubmit")}</CardTitle>
+              <CardTitle className="font-brand type-title">
+                {t("hris.attendance.stepSubmit")}
+              </CardTitle>
             </CardHeader>
 
-            <dl className="grid gap-2 text-sm leading-5">
+            <dl className="grid gap-2 rounded-container bg-surface-2 p-3 text-sm leading-5">
               <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-muted-foreground">
                   {t("hris.attendance.summaryMethod")}
                 </dt>
-                <dd className="font-medium">{t(methodLabelKey(method))}</dd>
+                <dd className="text-right font-medium">
+                  {t(methodLabelKey(method))}
+                </dd>
               </div>
               <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-muted-foreground">
                   {t("hris.attendance.summarySelfie")}
                 </dt>
-                <dd className="font-medium">
+                <dd className="text-right font-medium">
                   {selfie
                     ? t("hris.attendance.photoReady")
                     : t("hris.attendance.photoMissing")}
@@ -345,7 +353,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
                   <dt className="text-muted-foreground">
                     {t("hris.attendance.summaryQr")}
                   </dt>
-                  <dd className="font-medium">
+                  <dd className="text-right font-medium">
                     {looksLikeQrToken(qrToken)
                       ? t("hris.attendance.qrReady")
                       : t("hris.attendance.qrMissing")}
@@ -355,7 +363,7 @@ export function AttendanceClock({ type }: { type: AttendanceType }) {
             </dl>
 
             {!online && (
-              <div className="grid gap-1 rounded-lg bg-warning-subtle p-3">
+              <div className="grid gap-1 rounded-container bg-warning-subtle p-3">
                 <p className="text-sm leading-5 font-semibold">
                   {t("hris.attendance.offlineTitle")}
                 </p>

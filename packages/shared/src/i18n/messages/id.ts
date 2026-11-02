@@ -3418,4 +3418,105 @@ export const id = {
       operationsLight: "Operasional terang — POS kasir dan pickup display",
     },
   },
+  // Management home per role (PRD §3.36 "Beranda per Role", bead legend-6na6).
+  // Tile titles, report names and metric names are contract data; the text here
+  // is the page chrome, role names, tile kinds and queue descriptions.
+  managementHome: {
+    businessDate: "Tanggal usaha {date}",
+    outletCount: "{count} outlet",
+    generatedAt: "Diperbarui {time}",
+    rolesLabel: "Peran",
+    role: {
+      gm: "GM",
+      outlet_manager: "Manajer outlet",
+      kitchen_lead: "Kepala dapur",
+      purchasing: "Purchasing",
+      finance: "Keuangan",
+      hr: "HR",
+      marketing: "Marketing",
+    },
+    roleHint: {
+      gm: "Kinerja outlet hari ini dan approval yang menunggu keputusan Anda.",
+      outlet_manager:
+        "Okupansi meja, stok kritis outlet, dan antrean operasional.",
+      kitchen_lead: "Antrean tiket dapur dan waktu saji per stasiun.",
+      purchasing:
+        "Pembelian, utang supplier, dan PR/PO yang menunggu approval.",
+      finance: "Posisi kas dan bank serta approval keuangan.",
+      hr: "Keterlambatan, lembur, cuti, dan koreksi absensi.",
+      marketing: "Member baru, member aktif, dan ulasan yang menunggu respons.",
+    },
+    section: {
+      workQueue: "Antrean kerja",
+      workQueueHint: "Tugas dan angka yang menjadi tanggung jawab peran ini.",
+      approvals: "Kotak approval",
+      reports: "Laporan dan audit",
+      reportsHint: "Katalog laporan dan jejak audit sesuai izin Anda.",
+    },
+    kind: {
+      kpi: "KPI",
+      queue: "Antrean",
+      approval: "Approval",
+      link: "Tautan",
+    },
+    period: {
+      today: "Hari ini",
+      yesterday: "Kemarin",
+      this_week: "Minggu ini",
+      last_week: "Minggu lalu",
+      this_month: "Bulan ini",
+      last_month: "Bulan lalu",
+      this_quarter: "Kuartal ini",
+      last_quarter: "Kuartal lalu",
+      this_year: "Tahun ini",
+      year_to_date: "Tahun berjalan",
+      custom: "Periode khusus",
+    },
+    kpiLabel: "Angka kunci peran {role}",
+    kpiEmpty: "Belum ada data",
+    kpiFailed: "Gagal dimuat",
+    unitSuffix: {
+      percent: "%",
+      minutes: "mnt",
+    },
+    sourceLabel: "Laporan sumber:",
+    queue: {
+      approvals: "Kotak approval",
+      kitchen_queue: "Antrean dapur",
+      waiter_calls: "Panggilan waiter",
+      reviews: "Ulasan pelanggan",
+      alerts: "Peringatan anomali",
+      critical_stock: "Stok kritis",
+      devices: "Perangkat outlet",
+      documents: "Dokumen",
+      daily_summary: "Ringkasan harian",
+      facility_units: "Status bilik",
+    },
+    queueHint: {
+      approvals:
+        "Permintaan dari semua modul dan draf aksi Tanya AI yang menunggu keputusan.",
+      kitchen_queue:
+        "Tiket yang sedang dikerjakan dapur beserta target waktunya.",
+      waiter_calls: "Panggilan tamu yang belum direspons staf.",
+      reviews: "Ulasan tamu yang belum ditanggapi.",
+      alerts:
+        "Anomali void, diskon, refund, selisih kas, dan perangkat bermasalah.",
+      critical_stock:
+        "Bahan di bawah par level yang perlu dibeli atau dipindahkan.",
+      devices: "Perangkat outlet yang perlu diperiksa.",
+      documents: "Laporan bulanan dan dokumen yang dibagikan pengelola.",
+      daily_summary: "Ringkasan tutup hari yang dikirim ke pemilik.",
+      facility_units:
+        "Bilik shower yang terpakai, tersedia, atau perlu dibersihkan.",
+    },
+    emptyWorkQueue: "Belum ada antrean untuk peran ini",
+    emptyWorkQueueHint:
+      "Antrean muncul setelah modul sumber mengirim data untuk peran ini.",
+    noRoles: "Belum ada peran yang memiliki antrean",
+    noRolesHint: "Hubungi admin bila peran Anda belum memiliki modul kerja.",
+    offlineTitle: "Anda sedang offline",
+    offlineHint: "Antrean dimuat ulang setelah koneksi kembali.",
+    reload: "Muat ulang",
+    refresh: "Perbarui",
+  },
 } as const;

@@ -34,7 +34,7 @@ function TicketCard({ view }: { view: AccessTicketView }) {
   return (
     <Card className="gap-3">
       <CardHeader>
-        <CardTitle>
+        <CardTitle className="tabular">
           {t("facility.ticket.schedule", {
             date: formatDateLabel(ticket.slot.startsAt),
             from: formatClock(ticket.slot.startsAt),
@@ -77,10 +77,10 @@ function SubscriptionSummary({
   return (
     <Card className="gap-3">
       <CardHeader>
-        <CardTitle>
+        <CardTitle className="font-brand type-title">
           {view ? view.plan.name : t("facility.list.noSubscription")}
         </CardTitle>
-        <CardDescription>
+        <CardDescription className="tabular">
           {view
             ? t("facility.list.quota", {
                 used: view.subscription.quotaUsed,
@@ -133,7 +133,7 @@ export function FacilityListScreen() {
   return (
     <div className="grid gap-6 pb-4">
       <header className="grid gap-1">
-        <h1 className="text-2xl leading-8 font-semibold tracking-tight">
+        <h1 className="font-brand type-display-xl">
           {t("facility.list.title")}
         </h1>
         <p className="text-sm leading-5 text-muted-foreground">
@@ -179,7 +179,7 @@ export function FacilityListScreen() {
               <div className="grid gap-3">
                 {active.length > 0 && (
                   <div className="grid gap-3">
-                    <h3 className="text-sm leading-5 font-semibold text-muted-foreground">
+                    <h3 className="type-eyebrow text-muted-foreground">
                       {t("facility.list.activeTicket")}
                     </h3>
                     {active.map((view) => (
@@ -189,7 +189,7 @@ export function FacilityListScreen() {
                 )}
                 {history.length > 0 && (
                   <div className="grid gap-3">
-                    <h3 className="text-sm leading-5 font-semibold text-muted-foreground">
+                    <h3 className="type-eyebrow text-muted-foreground">
                       {t("facility.list.history")}
                     </h3>
                     {history.map((view) => (

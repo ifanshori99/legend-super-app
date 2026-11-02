@@ -7,6 +7,7 @@ import { CreditCard } from "lucide-react";
 import type { FacilityAddon, FacilityProduct } from "@starter/shared/facility";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Money } from "@/components/ui/money";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
 import { formatClock } from "../flow";
@@ -48,78 +49,86 @@ export function ReviewStep({
 
   return (
     <div className="grid gap-5">
-      <h2 className="text-xl leading-7 font-semibold">
-        {t("facility.review.title")}
-      </h2>
+      <h2 className="font-brand type-title">{t("facility.review.title")}</h2>
 
-      <dl className="grid gap-2 rounded-xl border-(length:--border-w) bg-card p-card text-sm leading-5">
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">{t("facility.review.area")}</dt>
-          <dd className="font-medium">{areaName}</dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">
-            {t("facility.review.timing")}
-          </dt>
-          <dd className="font-medium tabular">{timing}</dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">
-            {t("facility.review.product")}
-          </dt>
-          <dd className="font-medium">{product.name}</dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">
-            {t("facility.review.addons")}
-          </dt>
-          <dd className="text-right font-medium">
-            {addons.length > 0
-              ? addons.map((addon) => addon.name).join(", ")
-              : t("facility.review.noAddons")}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">
-            {redeeming
-              ? t("facility.review.sourceSubscription")
-              : t("facility.review.sourcePurchase")}
-          </dt>
-          <dd className="font-medium">
-            {redeeming ? t("facility.review.redeemTotal") : "QRIS"}
-          </dd>
-        </div>
-        <div className="mt-1 flex items-baseline justify-between gap-3 border-t pt-2">
-          <dt className="font-semibold">{t("facility.review.total")}</dt>
-          <dd>
-            <Money amount={payableIdr} size="lg" />
-          </dd>
-        </div>
-        <p className="text-muted-foreground">{t("facility.extras.taxNote")}</p>
-      </dl>
+      <Card>
+        <dl className="grid gap-3 text-sm leading-5">
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {t("facility.review.area")}
+            </dt>
+            <dd className="text-right font-medium">{areaName}</dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {t("facility.review.timing")}
+            </dt>
+            <dd className="text-right font-medium tabular">{timing}</dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {t("facility.review.product")}
+            </dt>
+            <dd className="text-right font-medium">{product.name}</dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="shrink-0 text-muted-foreground">
+              {t("facility.review.addons")}
+            </dt>
+            <dd className="min-w-0 text-right font-medium">
+              {addons.length > 0
+                ? addons.map((addon) => addon.name).join(", ")
+                : t("facility.review.noAddons")}
+            </dd>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {redeeming
+                ? t("facility.review.sourceSubscription")
+                : t("facility.review.sourcePurchase")}
+            </dt>
+            <dd className="text-right font-medium">
+              {redeeming ? t("facility.review.redeemTotal") : "QRIS"}
+            </dd>
+          </div>
+          <div className="grid gap-1 border-t pt-3">
+            <dt className="type-eyebrow text-muted-foreground">
+              {t("facility.review.total")}
+            </dt>
+            <dd>
+              <Money amount={payableIdr} size="stat" />
+            </dd>
+          </div>
+        </dl>
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("facility.extras.taxNote")}
+        </p>
+      </Card>
 
       {error !== null && <ApiFailure error={error} />}
 
-      {!needsPayment ? (
+      <div className="grid gap-2">
         <Button size="lg" onClick={onPay} loading={pending}>
-          {t("facility.review.issueTicket")}
+          {needsPayment && <CreditCard aria-hidden="true" />}
+          {needsPayment
+            ? pending
+              ? t("facility.review.paying")
+              : t("facility.review.pay")
+            : t("facility.review.issueTicket")}
         </Button>
-      ) : (
-        <div className="grid gap-2">
-          <Button size="lg" onClick={onPay} loading={pending}>
-            <CreditCard aria-hidden="true" />
-            {pending ? t("facility.review.paying") : t("facility.review.pay")}
-          </Button>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("facility.extras.payHint")}
-          </p>
-          {API_MOCK && (
+        {needsPayment && (
+          <>
             <p className="text-sm leading-5 text-muted-foreground">
-              {t("facility.review.mockPayNote")}
+              {t("facility.extras.payHint")}
             </p>
-          )}
-        </div>
-      )}
+            {API_MOCK && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("facility.review.mockPayNote")}
+              </p>
+            )}
+          </>
+        )}
+      </div>
 
       <Button variant="outline" onClick={onBack} disabled={pending}>
         {t("facility.review.change")}
