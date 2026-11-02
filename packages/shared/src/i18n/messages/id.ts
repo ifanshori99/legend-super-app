@@ -15,6 +15,7 @@ import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
 import { reservationMessages } from "./reservation.ts";
+import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
@@ -33,6 +34,9 @@ export const id = {
   qrRecovery: qrRecoveryMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // Public brand website (PRD §3.24): home, online menu, reservation/member
+  // entry, SEO copy. One file so the website bead never edits this catalog body.
+  website: websiteMessages,
   // Staff second factor, security settings and device sessions (legend-9bh;
   // PRD §3 F6 "Staf — Login Web", AUTH-05) in its own file.
   ...ws01AuthMessages,
