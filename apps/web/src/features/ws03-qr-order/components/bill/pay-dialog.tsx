@@ -106,8 +106,8 @@ export function PayDialog({
               key={value}
               value={value}
               className={cn(
-                "flex min-h-14 items-center gap-3 rounded-xl border-(length:--border-w) border-input p-3 text-left transition-colors duration-(--duration-fast) hover:bg-accent",
-                "data-[state=checked]:border-primary data-[state=checked]:bg-accent",
+                "flex min-h-14 items-center gap-3 rounded-container border-(length:--border-w) border-input p-3 text-left transition-colors duration-(--duration-fast) hover:bg-surface-2",
+                "data-[state=checked]:border-primary data-[state=checked]:bg-primary-tint data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
               )}
             >
               <Icon className="size-6 shrink-0" aria-hidden="true" />

@@ -175,7 +175,7 @@ export function SplitPanel({
   return (
     <section aria-labelledby="bill-split" className="grid gap-4">
       <div className="grid gap-1">
-        <h2 id="bill-split" className="text-lg leading-7 font-semibold">
+        <h2 id="bill-split" className="type-title">
           {t("qrOrders.bill.splitTitle")}
         </h2>
         <p className="text-sm text-muted-foreground">
@@ -236,7 +236,7 @@ export function SplitPanel({
           {participants.map((participant) => (
             <div
               key={participant.id}
-              className="flex min-h-12 items-center gap-3 rounded-xl border-(length:--border-w) px-3"
+              className="flex min-h-12 items-center gap-3 rounded-container border-(length:--border-w) px-3"
             >
               <Checkbox
                 id={`split-person-${participant.id}`}
@@ -267,7 +267,7 @@ export function SplitPanel({
           <p className="text-sm text-muted-foreground">
             {t("qrOrders.bill.itemHint")}
           </p>
-          <ul className="divide-y rounded-xl border-(length:--border-w)">
+          <ul className="divide-y rounded-container border-(length:--border-w)">
             {orderItems.map((item) => (
               <li key={item.id} className="grid gap-2 p-card">
                 <div className="flex items-baseline justify-between gap-3">
@@ -314,7 +314,7 @@ export function SplitPanel({
         <p className="font-semibold">{t("qrOrders.bill.previewTitle")}</p>
         {preview ? (
           <>
-            <ul className="divide-y rounded-xl border-(length:--border-w) px-card">
+            <ul className="divide-y rounded-container border-(length:--border-w) px-card">
               {preview.map((row, index) => (
                 <li
                   key={`${row.label}-${index}`}

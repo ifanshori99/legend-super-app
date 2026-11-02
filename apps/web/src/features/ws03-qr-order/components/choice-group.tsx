@@ -20,7 +20,7 @@ export type ChoiceOption = {
 };
 
 const ROW =
-  "flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-xl border-(length:--border-w) bg-card px-3 py-2 text-left transition-colors duration-(--duration-fast) has-[:disabled]:cursor-not-allowed has-[:disabled]:text-muted-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring";
+  "flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-container border-(length:--border-w) bg-card px-3 py-2 text-left transition-colors duration-(--duration-fast) has-[:disabled]:cursor-not-allowed has-[:disabled]:text-muted-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring";
 
 function OptionPrice({ option }: { option: ChoiceOption }) {
   const t = useT();
@@ -73,7 +73,7 @@ export function ChoiceGroup({
               htmlFor={id}
               className={cn(
                 ROW,
-                checked ? "border-primary bg-accent" : "border-border",
+                checked ? "border-primary bg-primary-tint" : "border-border",
                 invalid && !checked && "border-danger",
               )}
             >
@@ -108,7 +108,7 @@ export function ChoiceGroup({
             htmlFor={id}
             className={cn(
               ROW,
-              checked ? "border-primary bg-accent" : "border-border",
+              checked ? "border-primary bg-primary-tint" : "border-border",
             )}
           >
             <Checkbox

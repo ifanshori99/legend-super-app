@@ -1,10 +1,10 @@
 // The created split parts and the "pay my share" action (ORD-06: the parts add
 // up exactly to the bill total, shown as a check line).
-import { CircleCheck, Clock } from "lucide-react";
+import { CircleCheck } from "lucide-react";
 import type { BillSplit, SessionBill } from "@starter/shared/qr-order";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 
@@ -41,10 +41,10 @@ export function SplitList({
   };
   return (
     <section aria-labelledby="bill-shares" className="grid gap-3">
-      <h2 id="bill-shares" className="text-lg leading-7 font-semibold">
+      <h2 id="bill-shares" className="type-title">
         {t("qrOrders.bill.listTitle")}
       </h2>
-      <ul className="divide-y rounded-xl border-(length:--border-w)">
+      <ul className="divide-y rounded-container border-(length:--border-w)">
         {splits.map((split) => {
           const mine =
             split.participantId === null ||
@@ -61,15 +61,13 @@ export function SplitList({
                   <Money amount={split.amountIdr} size="lg" />
                 </div>
                 {split.status === "paid" ? (
-                  <Badge tone="success">
-                    <CircleCheck aria-hidden="true" />
+                  <StatusPill status="success">
                     {t("qrOrders.bill.sharePaid")}
-                  </Badge>
+                  </StatusPill>
                 ) : (
-                  <Badge tone="warning">
-                    <Clock aria-hidden="true" />
+                  <StatusPill status="warning">
                     {t("qrOrders.bill.sharePending")}
-                  </Badge>
+                  </StatusPill>
                 )}
               </div>
               {split.status === "pending" &&

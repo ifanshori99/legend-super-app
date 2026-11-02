@@ -33,11 +33,11 @@ export function ClaimCard({
   return (
     <section
       aria-labelledby="bill-claim"
-      className="grid gap-3 rounded-xl border-(length:--border-w) p-card"
+      className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
     >
       <div className="flex items-center gap-2">
         <Icon className="size-5 shrink-0" aria-hidden="true" />
-        <h2 id="bill-claim" className="font-semibold">
+        <h2 id="bill-claim" className="type-title">
           {t("qrOrders.bill.claimTitle")}
         </h2>
       </div>
