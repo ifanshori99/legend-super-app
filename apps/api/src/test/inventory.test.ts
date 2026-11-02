@@ -11,7 +11,7 @@
 // - the API slice: items/UOMs/locations/ledger/balances/batches, idempotency,
 //   optimistic concurrency and permission checks.
 import { randomUUID } from "node:crypto";
-import { Client, Pool } from "pg";
+import { Client, Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   businessDateSchema,
@@ -31,6 +31,7 @@ import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import {
   createStockBatch,
+  inventoryLocationLockKey,
   listStockBalances,
   listStockBatches,
   recordStockMovement,
@@ -102,6 +103,19 @@ async function rejectsWithCode(
   );
   expect(error).toBeInstanceOf(CoreError);
   expect((error as CoreError).code).toBe(code);
+}
+
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+/** Opens a legend_app transaction the test controls (holds locks deliberately). */
+async function openLockHolder(tenantId: string): Promise<PoolClient> {
+  const client = await appPool.connect();
+  await client.query("BEGIN");
+  await client.query("SET LOCAL ROLE legend_app");
+  await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+    tenantId,
+  ]);
+  return client;
 }
 
 async function insertUom(
@@ -545,6 +559,375 @@ describe("TEN-01/TEN-02 inventory isolation", () => {
       }),
       "OUTLET_OUT_OF_SCOPE",
     );
+  });
+});
+
+describe("pre-review regressions", () => {
+  it("HIGH :816 values an outflow from the locked balance, not a stale cost read", async () => {
+    const location = await insertLocation(
+      tenantA,
+      outletA,
+      `Cost lock ${randomUUID().slice(0, 6)}`,
+    );
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId: location,
+      inventoryItemId: itemId,
+      movementType: "receipt",
+      quantity: decimal4("10.0000"),
+      unitCostIdr: decimal4("1000.0000"),
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      actor: { type: "system" },
+    });
+
+    // A concurrent receipt holds the balance row and re-weights the average;
+    // it commits only after the outflow has started. The outflow must read the
+    // average from the row it locked (2000), never the stale committed 1000.
+    const holder = await openLockHolder(tenantA);
+    let outflow: Promise<unknown> | undefined;
+    try {
+      await holder.query(
+        "UPDATE stock_balances SET avg_cost_idr = '2000.0000' WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3",
+        [tenantA, location, itemId],
+      );
+      outflow = recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "sale",
+        quantity: decimal4("-1.0000"),
+        sourceType: "order",
+        sourceId: "01JBQ7Z8K0A1B2C3D4E5F6G7H8",
+        actor: { type: "system" },
+      });
+      await sleep(300);
+      await holder.query("COMMIT");
+      const entry = (await outflow) as { unitCostIdr: string };
+      expect(entry.unitCostIdr).toBe("2000.0000");
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await outflow?.catch(() => undefined);
+    }
+  });
+
+  it("HIGH :962 masks costs for a role without inventory.cost.view", async () => {
+    const warehouseUser = await signedIn("Warehouse Cost Mask");
+    await assignRole(warehouseUser.userId, "warehouse", {
+      type: "outlet",
+      id: outletA,
+    });
+
+    const ledger = await warehouseUser.client.get(
+      `/api/inventory/stock-ledger?outletId=${outletA}&limit=100&inventoryItemId=${itemId}`,
+    );
+    expect(ledger.status).toBe(200);
+    expect(ledger.body.data.length).toBeGreaterThan(0);
+    expect(
+      ledger.body.data.every(
+        (row: { unitCostIdr: string }) => row.unitCostIdr === "0.0000",
+      ),
+    ).toBe(true);
+
+    const balances = await warehouseUser.client.get(
+      `/api/inventory/balances?outletId=${outletA}&limit=100&inventoryItemId=${itemId}`,
+    );
+    expect(balances.status).toBe(200);
+    expect(
+      balances.body.data.every(
+        (row: { avgCostIdr: string }) => row.avgCostIdr === "0.0000",
+      ),
+    ).toBe(true);
+
+    // The separate cost permission still reveals the real numbers.
+    const ownerUser = await signedIn("Owner Cost Unmasked");
+    await assignRole(ownerUser.userId, "owner", { type: "tenant" });
+    const ownerLedger = await ownerUser.client.get(
+      `/api/inventory/stock-ledger?outletId=${outletA}&limit=100&inventoryItemId=${itemId}`,
+    );
+    expect(ownerLedger.status).toBe(200);
+    expect(
+      ownerLedger.body.data.some(
+        (row: { unitCostIdr: string }) => row.unitCostIdr !== "0.0000",
+      ),
+    ).toBe(true);
+    const ownerBalances = await ownerUser.client.get(
+      `/api/inventory/balances?outletId=${outletA}&limit=100&inventoryItemId=${itemId}`,
+    );
+    expect(
+      ownerBalances.body.data.some(
+        (row: { avgCostIdr: string }) => row.avgCostIdr !== "0.0000",
+      ),
+    ).toBe(true);
+  });
+
+  it("HIGH :1102 serialises the rebuild and movements on the tenant+location lock", async () => {
+    const location = await insertLocation(
+      tenantA,
+      outletA,
+      `Rebuild lock ${randomUUID().slice(0, 6)}`,
+    );
+    const holder = await openLockHolder(tenantA);
+    let rebuilt = false;
+    let posted = false;
+    let rebuild: Promise<unknown> | undefined;
+    let movement: Promise<unknown> | undefined;
+    try {
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [inventoryLocationLockKey(tenantA, location)],
+      );
+      rebuild = rebuildStockBalances(
+        tenantContext(),
+        serviceUserId,
+        outletA,
+      ).then((result) => {
+        rebuilt = true;
+        return result;
+      });
+      movement = recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "receipt",
+        quantity: decimal4("1.0000"),
+        unitCostIdr: decimal4("500.0000"),
+        sourceType: "goods_receipt",
+        sourceId: randomUUID(),
+        actor: { type: "system" },
+      }).then((entry) => {
+        posted = true;
+        return entry;
+      });
+      await sleep(400);
+      expect(rebuilt).toBe(false);
+      expect(posted).toBe(false);
+      await holder.query("COMMIT");
+      await rebuild;
+      await movement;
+      expect(posted).toBe(true);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await Promise.allSettled([rebuild, movement]);
+    }
+  });
+
+  it("HIGH :779 posts a retried movement once and rejects a reused key", async () => {
+    const location = await insertLocation(
+      tenantA,
+      outletA,
+      `Retry ${randomUUID().slice(0, 6)}`,
+    );
+    const idempotencyKey = `movement-${randomUUID()}`;
+    const posting = () =>
+      recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "receipt" as const,
+        quantity: decimal4("2.0000"),
+        unitCostIdr: decimal4("500.0000"),
+        sourceType: "goods_receipt" as const,
+        sourceId: "5b0f3c2e-6f4a-4c1e-9a3b-2f5d8e1a4c70",
+        idempotencyKey,
+        actor: { type: "system" as const },
+      });
+
+    const [first, second] = await Promise.all([posting(), posting()]);
+    expect(second.id).toBe(first.id);
+    const count = await owner.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM stock_ledger WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3",
+      [tenantA, location, itemId],
+    );
+    expect(count.rows[0]!.count).toBe(1);
+    const balances = await listStockBalances(tenantContext(), serviceUserId, {
+      outletId: outletA,
+      limit: 10,
+      locationId: location,
+      inventoryItemId: itemId,
+    });
+    expect(balances.data).toHaveLength(1);
+    expect(balances.data[0]!.quantity).toBe("2.0000");
+
+    await rejectsWithCode(
+      recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "receipt",
+        quantity: decimal4("3.0000"),
+        unitCostIdr: decimal4("500.0000"),
+        sourceType: "goods_receipt",
+        sourceId: "5b0f3c2e-6f4a-4c1e-9a3b-2f5d8e1a4c70",
+        idempotencyKey,
+        actor: { type: "system" },
+      }),
+      "IDEMPOTENCY_KEY_REUSED",
+    );
+  });
+
+  it("HIGH :779 replays a retried transfer instead of posting the stock twice", async () => {
+    const from = await insertLocation(
+      tenantA,
+      outletA,
+      `Retry from ${randomUUID().slice(0, 6)}`,
+    );
+    const to = await insertLocation(
+      tenantA,
+      outletA,
+      `Retry to ${randomUUID().slice(0, 6)}`,
+    );
+    for (const location of [from, to]) {
+      await recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "receipt",
+        quantity: decimal4("10.0000"),
+        unitCostIdr: decimal4("1000.0000"),
+        sourceType: "goods_receipt",
+        sourceId: randomUUID(),
+        actor: { type: "system" },
+      });
+    }
+    const idempotencyKey = `transfer-${randomUUID()}`;
+    const transfer = () =>
+      recordStockTransfer(tenantContext(), serviceUserId, {
+        outletId: outletA,
+        fromLocationId: from,
+        toLocationId: to,
+        lines: [{ inventoryItemId: itemId, quantity: decimal4("4.0000") }],
+        idempotencyKey,
+      });
+
+    const first = await transfer();
+    const second = await transfer();
+    expect(second.id).toBe(first.id);
+    const count = await owner.query<{ count: number }>(
+      "SELECT count(*)::int AS count FROM stock_ledger WHERE tenant_id = $1 AND source_type = 'stock_transfer' AND source_id = $2",
+      [tenantA, ulidToUuid(first.id)],
+    );
+    expect(count.rows[0]!.count).toBe(2);
+
+    await rejectsWithCode(
+      recordStockTransfer(tenantContext(), serviceUserId, {
+        outletId: outletA,
+        fromLocationId: from,
+        toLocationId: to,
+        lines: [{ inventoryItemId: itemId, quantity: decimal4("5.0000") }],
+        idempotencyKey,
+      }),
+      "IDEMPOTENCY_KEY_REUSED",
+    );
+  });
+
+  it("MED :714 walks an equal-timestamp batch cursor without repeating a row", async () => {
+    const location = await insertLocation(
+      tenantA,
+      outletA,
+      `Batches ${randomUUID().slice(0, 6)}`,
+    );
+    const receivedAt = "2026-10-30T03:00:00.000Z";
+    const created: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const batch = await createStockBatch(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        batchCode: `B-${index}-${randomUUID().slice(0, 4)}`,
+        receivedAt,
+      });
+      created.push(batch.id);
+    }
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const result = await listStockBatches(tenantContext(), serviceUserId, {
+        outletId: outletA,
+        limit: 1,
+        locationId: location,
+        inventoryItemId: itemId,
+        cursor,
+      });
+      seen.push(...result.data.map((row) => row.id));
+      if (!result.meta.nextCursor) break;
+      cursor = result.meta.nextCursor;
+    }
+    expect(seen).toHaveLength(created.length);
+    expect([...seen].sort()).toEqual([...created].sort());
+  });
+
+  it("MED :1190 makes opposing transfers wait on the same location lock order", async () => {
+    const left = await insertLocation(
+      tenantA,
+      outletA,
+      `Opposing left ${randomUUID().slice(0, 6)}`,
+    );
+    const right = await insertLocation(
+      tenantA,
+      outletA,
+      `Opposing right ${randomUUID().slice(0, 6)}`,
+    );
+    for (const location of [left, right]) {
+      await recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId: location,
+        inventoryItemId: itemId,
+        movementType: "receipt",
+        quantity: decimal4("5.0000"),
+        unitCostIdr: decimal4("1000.0000"),
+        sourceType: "goods_receipt",
+        sourceId: randomUUID(),
+        actor: { type: "system" },
+      });
+    }
+
+    // Both transfers start with the lowest-sorted location, so holding that
+    // one lock parks both of them before either can take a row lock.
+    const firstLock = [left, right].sort()[0]!;
+    const holder = await openLockHolder(tenantA);
+    let forwardDone = false;
+    let backwardDone = false;
+    let forward: Promise<unknown> | undefined;
+    let backward: Promise<unknown> | undefined;
+    try {
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [inventoryLocationLockKey(tenantA, firstLock)],
+      );
+      forward = recordStockTransfer(tenantContext(), serviceUserId, {
+        outletId: outletA,
+        fromLocationId: left,
+        toLocationId: right,
+        lines: [{ inventoryItemId: itemId, quantity: decimal4("1.0000") }],
+      }).then((result) => {
+        forwardDone = true;
+        return result;
+      });
+      backward = recordStockTransfer(tenantContext(), serviceUserId, {
+        outletId: outletA,
+        fromLocationId: right,
+        toLocationId: left,
+        lines: [{ inventoryItemId: itemId, quantity: decimal4("1.0000") }],
+      }).then((result) => {
+        backwardDone = true;
+        return result;
+      });
+      await sleep(400);
+      expect(forwardDone).toBe(false);
+      expect(backwardDone).toBe(false);
+      await holder.query("COMMIT");
+      await Promise.all([forward, backward]);
+      expect(forwardDone).toBe(true);
+      expect(backwardDone).toBe(true);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await Promise.allSettled([forward, backward]);
+    }
   });
 });
 

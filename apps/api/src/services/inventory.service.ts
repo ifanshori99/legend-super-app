@@ -20,7 +20,19 @@
 // - Expected failures are translated to `HttpError` / `CoreError` with documented
 //   statuses (the inventory contract defines no HTTP mapping, docs/backend.md).
 
-import { and, asc, desc, eq, gt, lte, or, sql, type SQL } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  lt,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
@@ -42,7 +54,12 @@ import {
   type PermissionCode,
 } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
-import type { BusinessDate, Decimal4, IsoDateTime } from "@starter/shared/core";
+import type {
+  BusinessDate,
+  Decimal4,
+  IsoDateTime,
+  TenantId,
+} from "@starter/shared/core";
 import {
   applyStockMovement,
   createInventoryItemInputSchema,
@@ -110,6 +127,22 @@ const ULID_SOURCE_TYPES: ReadonlySet<StockSourceType> = new Set([
 
 // --------------------------------------------------------------- guards
 
+/** Access snapshot inside the tenant transaction (permission + outlet scope). */
+async function loadAccessSnapshot(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+) {
+  const data = await loadTenantAccessInTransaction(tx, context, actorUserId);
+  return resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId: actorUserId,
+    ...data,
+    mfaVerified: false,
+    now: new Date(),
+  });
+}
+
 /** Server-side permission check, independent of the route middleware. */
 async function assertPermission(
   tx: Tx,
@@ -118,14 +151,7 @@ async function assertPermission(
   permission: PermissionCode,
   target: AccessTarget,
 ): Promise<void> {
-  const data = await loadTenantAccessInTransaction(tx, context, actorUserId);
-  const snapshot = resolveAccessSnapshot({
-    tenant: context.tenant,
-    userId: actorUserId,
-    ...data,
-    mfaVerified: false,
-    now: new Date(),
-  });
+  const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
   if (!snapshot.allows(permission, target))
     throw new AccessError("PERMISSION_DENIED");
 }
@@ -170,6 +196,35 @@ function negate(quantity: Decimal4): Decimal4 {
   return formatDecimal4(-parseDecimal4(quantity));
 }
 
+/**
+ * Advisory-lock key for one tenant+location balance family. Movements and the
+ * balance rebuild take the same key, so a rebuild cannot fold a ledger while a
+ * movement for that location is in flight (pre-review :1102).
+ */
+export function inventoryLocationLockKey(
+  tenantId: string,
+  locationId: string,
+): string {
+  return `inventory:balance:${tenantId}:${locationId}`;
+}
+
+/**
+ * Takes the per-location transaction locks in ascending key order. Sorting is
+ * what stops two opposing transfers from holding the same two locations in
+ * opposite order (pre-review :1190); advisory locks are re-entrant, so nested
+ * movement calls on an already locked location do not block themselves.
+ */
+async function lockInventoryLocations(
+  tx: Tx,
+  tenantId: string,
+  locationIds: readonly string[],
+): Promise<void> {
+  for (const locationId of [...new Set(locationIds)].sort())
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${inventoryLocationLockKey(tenantId, locationId)}, 0))`,
+    );
+}
+
 // ------------------------------------------------------------------ mappers
 
 type ItemRow = typeof inventoryItems.$inferSelect;
@@ -179,6 +234,8 @@ type LocationRow = typeof stockLocations.$inferSelect;
 type LedgerRow = typeof stockLedger.$inferSelect;
 type BalanceRow = typeof stockBalances.$inferSelect;
 type BatchRow = typeof stockBatches.$inferSelect;
+type TransferRow = typeof stockTransfers.$inferSelect;
+type TransferLineRow = typeof stockTransferLines.$inferSelect;
 
 function toItem(row: ItemRow): InventoryItem {
   return inventoryItemSchema.parse({
@@ -227,7 +284,7 @@ function toLocation(row: LocationRow) {
   });
 }
 
-function toLedgerEntry(row: LedgerRow): StockLedgerEntry {
+function toLedgerEntry(row: LedgerRow, withCost = true): StockLedgerEntry {
   return stockLedgerEntrySchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -236,7 +293,9 @@ function toLedgerEntry(row: LedgerRow): StockLedgerEntry {
     inventoryItemId: row.inventoryItemId,
     movementType: row.movementType,
     quantity: row.quantity,
-    unitCostIdr: row.unitCostIdr,
+    // Unit costs are financial data: callers without `inventory.cost.view`
+    // get the stock card with the cost masked (pre-review :962).
+    unitCostIdr: withCost ? row.unitCostIdr : decimal4("0.0000"),
     batchId: row.batchId,
     sourceType: row.sourceType,
     sourceId: sourceIdFromDb(row.sourceType, row.sourceId),
@@ -244,14 +303,14 @@ function toLedgerEntry(row: LedgerRow): StockLedgerEntry {
   });
 }
 
-function toBalance(row: BalanceRow) {
+function toBalance(row: BalanceRow, withCost = true) {
   return stockBalanceSchema.parse({
     tenantId: row.tenantId,
     outletId: row.outletId,
     locationId: row.locationId,
     inventoryItemId: row.inventoryItemId,
     quantity: row.quantity,
-    avgCostIdr: row.avgCostIdr,
+    avgCostIdr: withCost ? row.avgCostIdr : decimal4("0.0000"),
     updatedAt: row.updatedAt.toISOString(),
   });
 }
@@ -266,6 +325,26 @@ function toBatch(row: BatchRow): StockBatch {
     batchCode: row.batchCode,
     expiresOn: row.expiresOn,
     receivedAt: row.receivedAt.toISOString(),
+  });
+}
+
+function toTransfer(
+  row: TransferRow,
+  lines: readonly TransferLineRow[],
+): StockTransfer {
+  return stockTransferSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    fromLocationId: row.fromLocationId,
+    toLocationId: row.toLocationId,
+    lines: lines.map((line) => ({
+      inventoryItemId: line.inventoryItemId,
+      quantity: line.quantity,
+    })),
+    movedBy: row.movedBy,
+    occurredAt: row.occurredAt.toISOString(),
+    note: row.note,
   });
 }
 
@@ -711,9 +790,11 @@ export async function listStockBatches(
       const at = new Date(receivedAt);
       if (Number.isNaN(at.getTime()))
         throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+      // Strict keyset on the descending primary key: `receivedAt <= cursor`
+      // would return the cursor row again and repeat a page (pre-review :714).
       filters.push(
         or(
-          lte(stockBatches.receivedAt, at),
+          lt(stockBatches.receivedAt, at),
           and(
             eq(stockBatches.receivedAt, at),
             sql`${stockBatches.id} < ${id}::uuid`,
@@ -773,8 +854,67 @@ export type StockMovementInput = {
   sourceType: StockSourceType;
   sourceId: string;
   occurredAt?: IsoDateTime;
+  /**
+   * Retry guard (pre-review :779). Repeating the same key with the same
+   * request returns the first posting; a different request fails
+   * IDEMPOTENCY_KEY_REUSED. Callers that retry a document should pass a key.
+   */
+  idempotencyKey?: string;
   actor: { type: "user"; id: string } | { type: "system" };
 };
+
+/**
+ * Fingerprint of the request as the caller sent it, not of resolved defaults,
+ * so an outflow that omits `unitCostIdr` stays replayable after the average
+ * moved. Values are canonicalised at Decimal4 precision.
+ */
+function movementFingerprint(input: StockMovementInput): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.outletId,
+        input.locationId,
+        input.inventoryItemId,
+        input.movementType,
+        formatDecimal4(parseDecimal4(input.quantity)),
+        input.unitCostIdr === undefined
+          ? null
+          : formatDecimal4(parseDecimal4(input.unitCostIdr)),
+        input.batchId ?? null,
+        input.sourceType,
+        sourceIdToDb(input.sourceId),
+        input.occurredAt ?? null,
+      ]),
+    )
+    .digest("hex");
+}
+
+async function findMovementByKey(
+  tx: Tx,
+  tenantId: TenantId,
+  idempotencyKey: string,
+): Promise<LedgerRow | null> {
+  const [row] = await tx
+    .select()
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, tenantId),
+        eq(stockLedger.idempotencyKey, idempotencyKey),
+      ),
+    );
+  return row ?? null;
+}
+
+/** Same key + same request returns the first posting; a different one is a 409. */
+function replayMovement(row: LedgerRow, fingerprint: string): StockLedgerEntry {
+  if (row.requestFingerprint !== fingerprint)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "This idempotency key was used for a different stock posting.",
+    );
+  return toLedgerEntry(row);
+}
 
 export async function recordStockMovementInTransaction(
   tx: Tx,
@@ -783,6 +923,8 @@ export async function recordStockMovementInTransaction(
 ): Promise<StockLedgerEntry> {
   assertOutlet(context, input.outletId);
   const occurredAt = input.occurredAt ?? new Date().toISOString();
+  const fingerprint =
+    input.idempotencyKey === undefined ? null : movementFingerprint(input);
   // The contract schema is the single source of direction/pair/sign rules.
   const candidate = stockLedgerEntrySchema.parse({
     id: createUlid(Date.parse(occurredAt)),
@@ -803,6 +945,23 @@ export async function recordStockMovementInTransaction(
   if (candidate.batchId !== null)
     await requireBatch(tx, input.outletId, candidate.batchId, candidate);
 
+  if (input.idempotencyKey !== undefined) {
+    const replayed = await findMovementByKey(
+      tx,
+      context.tenant.tenantId,
+      input.idempotencyKey,
+    );
+    if (replayed) return replayMovement(replayed, fingerprint!);
+  }
+
+  // Lock before reading: the advisory lock serialises the balance rebuild
+  // (pre-review :1102) and the row lock makes the fallback moving-average
+  // cost race-free, because it is read from the locked row (pre-review :816).
+  await lockInventoryLocations(tx, context.tenant.tenantId, [
+    candidate.locationId,
+  ]);
+  const balance = await lockStockBalance(tx, context, candidate);
+
   // An outflow without an explicit cost is valued at the location's current
   // moving average (PRD §16 "Metode Biaya"); an inflow must carry its cost.
   let unitCostIdr = input.unitCostIdr;
@@ -813,47 +972,59 @@ export async function recordStockMovementInTransaction(
         "VALIDATION_ERROR",
         "A stock-in movement needs its unit cost.",
       );
-    const [balance] = await tx
-      .select({ avgCostIdr: stockBalances.avgCostIdr })
-      .from(stockBalances)
-      .where(
-        and(
-          eq(stockBalances.locationId, candidate.locationId),
-          eq(stockBalances.inventoryItemId, candidate.inventoryItemId),
-        ),
-      );
-    unitCostIdr = balance?.avgCostIdr ?? decimal4("0.0000");
+    unitCostIdr = balance.avgCostIdr;
   }
   const entry = stockLedgerEntrySchema.parse({
     ...candidate,
     unitCostIdr,
   });
 
-  await tx.insert(stockLedger).values({
-    id: entry.id,
-    tenantId: context.tenant.tenantId,
-    outletId: entry.outletId,
-    locationId: entry.locationId,
-    inventoryItemId: entry.inventoryItemId,
-    movementType: entry.movementType,
-    quantity: entry.quantity,
-    unitCostIdr: entry.unitCostIdr,
-    batchId: entry.batchId,
-    sourceType: entry.sourceType,
-    sourceId: sourceIdToDb(entry.sourceId),
-    occurredAt: new Date(entry.occurredAt),
-  });
-  await applyMovementToBalance(tx, context, entry);
+  const inserted = await tx
+    .insert(stockLedger)
+    .values({
+      id: entry.id,
+      tenantId: context.tenant.tenantId,
+      outletId: entry.outletId,
+      locationId: entry.locationId,
+      inventoryItemId: entry.inventoryItemId,
+      movementType: entry.movementType,
+      quantity: entry.quantity,
+      unitCostIdr: entry.unitCostIdr,
+      batchId: entry.batchId,
+      sourceType: entry.sourceType,
+      sourceId: sourceIdToDb(entry.sourceId),
+      idempotencyKey: input.idempotencyKey ?? null,
+      requestFingerprint: fingerprint,
+      occurredAt: new Date(entry.occurredAt),
+    })
+    .onConflictDoNothing({
+      target: [stockLedger.tenantId, stockLedger.idempotencyKey],
+    })
+    .returning();
+  if (inserted.length === 0) {
+    // A concurrent retry won the key while this transaction waited on the
+    // unique index; replay its committed row instead of posting twice.
+    if (input.idempotencyKey === undefined)
+      throw new Error("Stock ledger insert returned no row");
+    const replayed = await findMovementByKey(
+      tx,
+      context.tenant.tenantId,
+      input.idempotencyKey,
+    );
+    if (!replayed) throw new Error("Idempotent stock posting disappeared");
+    return replayMovement(replayed, fingerprint!);
+  }
+  await applyMovementToLockedBalance(tx, balance, entry);
   await appendStockMovedEvent(tx, context, entry, input.actor);
   return entry;
 }
 
-/** Upserts then locks the balance row, so concurrent movements serialise. */
-async function applyMovementToBalance(
+/** Ensures the balance row exists, then locks it; the caller holds the advisory lock. */
+async function lockStockBalance(
   tx: Tx,
   context: ScopedTenantContext,
   entry: StockLedgerEntry,
-): Promise<void> {
+): Promise<BalanceRow> {
   await tx
     .insert(stockBalances)
     .values({
@@ -877,6 +1048,15 @@ async function applyMovementToBalance(
     )
     .for("update");
   if (!balance) throw new Error("Stock balance row disappeared");
+  return balance;
+}
+
+/** Applies one movement to the already locked balance row. */
+async function applyMovementToLockedBalance(
+  tx: Tx,
+  balance: BalanceRow,
+  entry: StockLedgerEntry,
+): Promise<void> {
   const next = applyStockMovement(balance, entry, ROUNDING_MODE);
   await tx
     .update(stockBalances)
@@ -887,8 +1067,8 @@ async function applyMovementToBalance(
     })
     .where(
       and(
-        eq(stockBalances.locationId, entry.locationId),
-        eq(stockBalances.inventoryItemId, entry.inventoryItemId),
+        eq(stockBalances.locationId, balance.locationId),
+        eq(stockBalances.inventoryItemId, balance.inventoryItemId),
       ),
     );
 }
@@ -952,13 +1132,14 @@ export async function listStockLedger(
 ): Promise<CursorPage<StockLedgerEntry>> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.view",
-      outletTarget(query.outletId),
-    );
+    // The stock card is operational data, but unit costs are financial data:
+    // callers without `inventory.cost.view` see the movements with costs
+    // masked instead of being denied the whole card (pre-review :962).
+    const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+    const target = outletTarget(query.outletId);
+    if (!snapshot.allows("inventory.stock.view", target))
+      throw new AccessError("PERMISSION_DENIED");
+    const withCost = snapshot.allows("inventory.cost.view", target);
     const filters: SQL[] = [eq(stockLedger.outletId, query.outletId)];
     if (query.locationId)
       filters.push(eq(stockLedger.locationId, query.locationId));
@@ -1009,7 +1190,7 @@ export async function listStockLedger(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map(toLedgerEntry),
+      data: page.map((row) => toLedgerEntry(row, withCost)),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -1036,13 +1217,13 @@ export async function listStockBalances(
 ): Promise<CursorPage<ReturnType<typeof toBalance>>> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.view",
-      outletTarget(query.outletId),
-    );
+    // Average costs follow the same financial gate as ledger unit costs
+    // (pre-review :962): mask them for callers without `inventory.cost.view`.
+    const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+    const target = outletTarget(query.outletId);
+    if (!snapshot.allows("inventory.stock.view", target))
+      throw new AccessError("PERMISSION_DENIED");
+    const withCost = snapshot.allows("inventory.cost.view", target);
     const filters: SQL[] = [eq(stockBalances.outletId, query.outletId)];
     if (query.locationId)
       filters.push(eq(stockBalances.locationId, query.locationId));
@@ -1071,7 +1252,7 @@ export async function listStockBalances(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map(toBalance),
+      data: page.map((row) => toBalance(row, withCost)),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -1099,12 +1280,28 @@ export async function rebuildStockBalances(
     await assertPermission(tx, context, actorUserId, "inventory.cost.view", {
       type: "tenant",
     });
+    // Hold every location lock of the outlet before folding. A movement for one
+    // of these locations has either committed before this snapshot or waits
+    // for the rebuild; it can never slip between the fold and the delete/insert
+    // of the derived rows (pre-review :1102).
+    const locations = await tx
+      .select({ id: stockLocations.id })
+      .from(stockLocations)
+      .where(eq(stockLocations.outletId, outletId));
+    await lockInventoryLocations(
+      tx,
+      context.tenant.tenantId,
+      locations.map((location) => location.id),
+    );
     const rows = await tx
       .select()
       .from(stockLedger)
       .where(eq(stockLedger.outletId, outletId))
       .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
-    const derived = foldStockLedger(rows.map(toLedgerEntry), ROUNDING_MODE);
+    const derived = foldStockLedger(
+      rows.map((row) => toLedgerEntry(row)),
+      ROUNDING_MODE,
+    );
     await tx.delete(stockBalances).where(eq(stockBalances.outletId, outletId));
     if (derived.length > 0)
       await tx.insert(stockBalances).values(
@@ -1131,7 +1328,73 @@ export type CreateStockTransferInput = {
   lines: { inventoryItemId: string; quantity: Decimal4 }[];
   note?: string | null;
   occurredAt?: IsoDateTime;
+  /** Retry guard: the same key replays the first document (pre-review :779). */
+  idempotencyKey?: string;
 };
+
+/** Canonical line set for idempotency comparisons (order- and scale-free). */
+function canonicalTransferLines(
+  lines: readonly { inventoryItemId: string; quantity: Decimal4 }[],
+): string {
+  return JSON.stringify(
+    [...lines]
+      .map(
+        (line) =>
+          [
+            line.inventoryItemId,
+            formatDecimal4(parseDecimal4(line.quantity)),
+          ] as const,
+      )
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  );
+}
+
+/** Same key + same request returns the stored document; a different one is a 409. */
+function replayTransfer(
+  row: TransferRow,
+  lines: readonly TransferLineRow[],
+  requested: StockTransfer,
+  requestedOccurredAt: boolean,
+): StockTransfer {
+  const transfer = toTransfer(row, lines);
+  const same =
+    transfer.outletId === requested.outletId &&
+    transfer.fromLocationId === requested.fromLocationId &&
+    transfer.toLocationId === requested.toLocationId &&
+    transfer.movedBy === requested.movedBy &&
+    transfer.note === requested.note &&
+    (!requestedOccurredAt || transfer.occurredAt === requested.occurredAt) &&
+    canonicalTransferLines(transfer.lines) ===
+      canonicalTransferLines(requested.lines);
+  if (!same)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "This idempotency key was used for a different stock transfer.",
+    );
+  return transfer;
+}
+
+async function findTransferByKey(
+  tx: Tx,
+  tenantId: TenantId,
+  idempotencyKey: string,
+): Promise<{ row: TransferRow; lines: TransferLineRow[] } | null> {
+  const [row] = await tx
+    .select()
+    .from(stockTransfers)
+    .where(
+      and(
+        eq(stockTransfers.tenantId, tenantId),
+        eq(stockTransfers.idempotencyKey, idempotencyKey),
+      ),
+    );
+  if (!row) return null;
+  const lines = await tx
+    .select()
+    .from(stockTransferLines)
+    .where(eq(stockTransferLines.transferId, row.id));
+  return { row, lines };
+}
 
 /**
  * Posts one transfer as paired `transfer_out`/`transfer_in` ledger rows at the
@@ -1147,6 +1410,12 @@ export async function recordStockTransfer(
 ): Promise<StockTransfer> {
   assertOutlet(context, input.outletId);
   const occurredAt = input.occurredAt ?? new Date().toISOString();
+  const requestedOccurredAt = input.occurredAt !== undefined;
+  if (
+    input.idempotencyKey !== undefined &&
+    !/^[A-Za-z0-9._:-]{8,100}$/.test(input.idempotencyKey)
+  )
+    throw new HttpError(422, "VALIDATION_ERROR", "Check the idempotency key.");
   const transfer = stockTransferSchema.parse({
     id: createUlid(Date.parse(occurredAt)),
     tenantId: context.tenant.tenantId,
@@ -1168,16 +1437,62 @@ export async function recordStockTransfer(
     );
     await requireLocation(tx, transfer.outletId, transfer.fromLocationId);
     await requireLocation(tx, transfer.outletId, transfer.toLocationId);
-    await tx.insert(stockTransfers).values({
-      id: transfer.id,
-      tenantId: context.tenant.tenantId,
-      outletId: transfer.outletId,
-      fromLocationId: transfer.fromLocationId,
-      toLocationId: transfer.toLocationId,
-      movedBy: actorUserId,
-      occurredAt: new Date(transfer.occurredAt),
-      note: transfer.note,
-    });
+    if (input.idempotencyKey !== undefined) {
+      const existing = await findTransferByKey(
+        tx,
+        context.tenant.tenantId,
+        input.idempotencyKey,
+      );
+      if (existing)
+        return replayTransfer(
+          existing.row,
+          existing.lines,
+          transfer,
+          requestedOccurredAt,
+        );
+    }
+    // Fixed lock order across both locations before reading either balance:
+    // two opposing transfers can no longer deadlock (pre-review :1190), and a
+    // concurrent rebuild waits for the transfer (pre-review :1102).
+    await lockInventoryLocations(tx, context.tenant.tenantId, [
+      transfer.fromLocationId,
+      transfer.toLocationId,
+    ]);
+    const inserted = await tx
+      .insert(stockTransfers)
+      .values({
+        id: transfer.id,
+        tenantId: context.tenant.tenantId,
+        outletId: transfer.outletId,
+        fromLocationId: transfer.fromLocationId,
+        toLocationId: transfer.toLocationId,
+        movedBy: actorUserId,
+        idempotencyKey: input.idempotencyKey ?? null,
+        occurredAt: new Date(transfer.occurredAt),
+        note: transfer.note,
+      })
+      .onConflictDoNothing({
+        target: [stockTransfers.tenantId, stockTransfers.idempotencyKey],
+      })
+      .returning();
+    if (inserted.length === 0) {
+      // A concurrent retry stored the same key while this transaction waited;
+      // replay it instead of posting the stock twice (pre-review :779).
+      if (input.idempotencyKey === undefined)
+        throw new Error("Stock transfer insert returned no row");
+      const existing = await findTransferByKey(
+        tx,
+        context.tenant.tenantId,
+        input.idempotencyKey,
+      );
+      if (!existing) throw new Error("Idempotent stock transfer disappeared");
+      return replayTransfer(
+        existing.row,
+        existing.lines,
+        transfer,
+        requestedOccurredAt,
+      );
+    }
     await tx.insert(stockTransferLines).values(
       transfer.lines.map((line) => ({
         tenantId: context.tenant.tenantId,
@@ -1187,8 +1502,8 @@ export async function recordStockTransfer(
         quantity: line.quantity,
       })),
     );
-    // Stable order: two concurrent transfers can never lock the same two
-    // balance rows in opposite order (deadlock).
+    // Stable line order plus the location locks taken above keeps concurrent
+    // transfers from taking the same rows in opposite order.
     const lines = [...transfer.lines].sort((left, right) =>
       left.inventoryItemId < right.inventoryItemId ? -1 : 1,
     );
@@ -1220,6 +1535,10 @@ export async function recordStockTransfer(
         sourceType: "stock_transfer",
         sourceId: transfer.id,
         occurredAt: transfer.occurredAt,
+        idempotencyKey:
+          input.idempotencyKey === undefined
+            ? undefined
+            : `${input.idempotencyKey}:${line.inventoryItemId}:out`,
         actor: { type: "user", id: actorUserId },
       });
       await recordStockMovementInTransaction(tx, context, {
@@ -1232,6 +1551,10 @@ export async function recordStockTransfer(
         sourceType: "stock_transfer",
         sourceId: transfer.id,
         occurredAt: transfer.occurredAt,
+        idempotencyKey:
+          input.idempotencyKey === undefined
+            ? undefined
+            : `${input.idempotencyKey}:${line.inventoryItemId}:in`,
         actor: { type: "user", id: actorUserId },
       });
     }

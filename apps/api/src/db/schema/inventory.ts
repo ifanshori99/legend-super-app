@@ -296,11 +296,28 @@ export const stockLedger = pgTable(
       .$type<StockSourceType>()
       .notNull(),
     sourceId: uuid("source_id").notNull(),
+    /**
+     * Retry guard (pre-review :779): the caller's key for this posting plus a
+     * fingerprint of the request. The unique index makes a second insert with
+     * the same key a no-op; the service replays the first row when the
+     * fingerprint matches and answers IDEMPOTENCY_KEY_REUSED otherwise.
+     */
+    idempotencyKey: varchar("idempotency_key", { length: 255 }),
+    requestFingerprint: varchar("request_fingerprint", { length: 64 }),
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
+    // NULL keys stay distinct, so postings without a key are never deduped.
+    uniqueIndex("stock_ledger_tenant_idempotency_key_idx").on(
+      table.tenantId,
+      table.idempotencyKey,
+    ),
+    check(
+      "stock_ledger_idempotency_pair_check",
+      sql`(${table.idempotencyKey} IS NULL) = (${table.requestFingerprint} IS NULL)`,
+    ),
     foreignKey({
       name: "stock_ledger_location_fk",
       columns: [table.tenantId, table.outletId, table.locationId],
@@ -444,6 +461,8 @@ export const stockTransfers = pgTable(
     movedBy: text("moved_by")
       .notNull()
       .references(() => user.id),
+    /** Retry guard: a replayed transfer returns the first document (pre-review :779). */
+    idempotencyKey: varchar("idempotency_key", { length: 100 }),
     occurredAt: timestamp("occurred_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -451,6 +470,10 @@ export const stockTransfers = pgTable(
   },
   (table) => [
     unique("stock_transfers_tenant_id_id_key").on(table.tenantId, table.id),
+    uniqueIndex("stock_transfers_tenant_idempotency_key_idx").on(
+      table.tenantId,
+      table.idempotencyKey,
+    ),
     unique("stock_transfers_tenant_outlet_id_key").on(
       table.tenantId,
       table.outletId,
