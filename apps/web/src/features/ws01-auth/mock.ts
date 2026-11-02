@@ -10,8 +10,9 @@
 //
 // A mock-only knob shows the idle warning without waiting 28 minutes:
 //   localStorage["legend-mock-session"] = "idle"  → current session ends in 2m;
-//   the next /me read ("Lanjut bekerja") moves the deadline once, like the
-//   real activity write on a guarded request
+//   the deadline is seeded once and never moves on a /me read: GET /api/auth/me
+//   is exempt from session activity (legend-91i), so refetching it cannot
+//   extend the session
 //   localStorage.removeItem("legend-mock-session")
 //
 // Verification accepts any six digits except 000000 (wrong-code state).
@@ -25,7 +26,6 @@ import {
   mfaFactorIdSchema,
   mfaFactorSchema,
   MINUTE_MS,
-  recordSessionActivity,
   revokeSession,
   sessionSchema,
   sessionViewSchema,
@@ -48,8 +48,6 @@ type PendingFactor = { enrollment: MfaEnrollment; factor: MfaFactor };
 type IdleDemo = {
   expiresAt: string;
   lastSeenAt: string;
-  /** /me reads so far; the first one only presents the demo snapshot. */
-  reads: number;
 };
 
 type AuthMockState = {
@@ -128,14 +126,14 @@ function idleDeadline(): IdleDemo {
     lastSeenAt: new Date(
       Date.parse(expiresAt) - MANAGEMENT_IDLE_MINUTES * MINUTE_MS,
     ).toISOString(),
-    reads: 0,
   };
   return auth.idle;
 }
 
 /**
- * The current session as the idle knob presents it. Listing devices is a
- * display read: it shows the demo deadline but never counts as activity.
+ * The current session as the idle knob presents it. Reads (/me, the device
+ * list) only display the demo deadline; none of them counts as activity
+ * (GET /api/auth/me is exempt from session activity, legend-91i).
  */
 function withIdleKnob(session: Session): Session {
   if (!idleKnobOn()) {
@@ -146,38 +144,6 @@ function withIdleKnob(session: Session): Session {
   return { ...session, lastSeenAt: demo.lastSeenAt, expiresAt: demo.expiresAt };
 }
 
-/**
- * Reading /me counts as user activity once the demo snapshot has been shown:
- * "Lanjut bekerja" refetches it, so the deadline moves to now + 30 idle minutes
- * once, exactly like touchSession on a guarded request (§3 F6,
- * recordSessionActivity). The contract throttles further writes for a minute.
- */
-function withIdleActivity(session: Session): Session {
-  const shown = withIdleKnob(session);
-  const auth = state.get();
-  if (auth.idle === null) return shown; // knob off
-  if (auth.idle.reads === 0) {
-    // The first read is what shows the warning, not yet user activity.
-    auth.idle = { ...auth.idle, reads: 1 };
-    return shown;
-  }
-  const activity = recordSessionActivity({
-    session: { ...shown, kind: "management" },
-    now: new Date(),
-    kind: "user",
-  });
-  auth.idle = {
-    ...auth.idle,
-    lastSeenAt: activity.session.lastSeenAt,
-    expiresAt: activity.session.expiresAt,
-  };
-  return {
-    ...session,
-    lastSeenAt: auth.idle.lastSeenAt,
-    expiresAt: auth.idle.expiresAt,
-  };
-}
-
 function currentSession(): Session {
   const view = state.get().sessions.find((row) => row.current);
   if (!view)
@@ -186,7 +152,7 @@ function currentSession(): Session {
       "UNAUTHORIZED",
       "Sesi tidak ditemukan. Masuk kembali.",
     );
-  return withIdleActivity(view.session);
+  return withIdleKnob(view.session);
 }
 
 function findFactor(factorId: string): MfaFactor {

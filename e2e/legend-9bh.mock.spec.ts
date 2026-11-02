@@ -106,14 +106,17 @@ test("AUTH-05: the idle warning appears before a management session ends", async
   ).toBeVisible();
   await expect(page.getByText(/Sisa waktu sekitar/)).toBeVisible();
 
+  const heading = page.getByRole("heading", {
+    name: "Sesi akan segera berakhir",
+  });
   await page.getByRole("button", { name: "Lanjut bekerja" }).click();
-  // The dismissal hides the dialog synchronously; the refetch lands on the next
-  // task. Wait for it so a mock that keeps moving `expiresAt` (legend-dw4d)
-  // cannot pass by closing the dialog only for a frame.
+  await expect(heading).toHaveCount(0);
+  // The mock is in-process (no network request to await), and the refetch it
+  // starts settles within a few ms at 0 latency. Hold the absence check past
+  // it, so a deadline that moves per read (legend-dw4d) cannot pass by closing
+  // the dialog only until the refetch lands.
   await page.waitForTimeout(300);
-  await expect(
-    page.getByRole("heading", { name: "Sesi akan segera berakhir" }),
-  ).toHaveCount(0);
+  await expect(heading).toHaveCount(0);
 });
 
 test("AUTH-05: the security page shows honest empty states", async ({
