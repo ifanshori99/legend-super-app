@@ -496,9 +496,10 @@ test("INV-02 recipe lines are summed at NUMERIC(14,4) and rounded once (PRD §6.
     yieldUomId: uomId("pcs"),
     theoreticalCostIdr: "0.0000",
   });
-  // Three 1 g lines at Rp 0.3333/g with 2% waste: each is 0.339966 rupiah,
-  // which whole-rupiah line rounding would turn into 0. Summed at 4 dp:
-  // 3 x 0.3400 = 1.0200 total, 0.5100 per yield unit (2 portions).
+  // Three 1 g lines at Rp 0.3333/g with 2% waste: each line draws
+  // 1 ÷ 0.98 = 1.0204 g gross and costs 0.3401 rupiah, which whole-rupiah line
+  // rounding would turn into 0. Summed at 4 dp: 3 x 0.3401 = 1.0203 total,
+  // 0.5102 per yield unit (2 portions).
   const lines = [1, 2, 3].map((n) =>
     inventory.recipeLineSchema.parse({
       id: `00000000-0000-4000-8000-0000000000f${n}`,
@@ -522,8 +523,131 @@ test("INV-02 recipe lines are summed at NUMERIC(14,4) and rounded once (PRD §6.
     recipe.id,
     "half_up",
   );
-  assert.equal(cost.unitCostIdr, "0.5100");
+  assert.equal(cost.unitCostIdr, "0.5102");
   assert.equal(cost.totalCostIdr, 1);
+});
+
+test("INV-02 recipe waste is a yield loss: 100 g net at 10% draws 111.1111 g gross (owner Q19)", () => {
+  assert.equal(
+    inventory.grossRecipeQuantity("100.0000", 1_000, "half_up"),
+    "111.1111",
+  );
+  assert.equal(
+    inventory.grossRecipeQuantity("100.0000", 0, "half_up"),
+    "100.0000",
+  );
+  assert.throws(
+    () => inventory.grossRecipeQuantity("100.0000", 10_000, "half_up"),
+    RangeError,
+  );
+  // A 100% loss has no finite gross quantity, so it never reaches a recipe.
+  const lineInput = {
+    componentType: "item",
+    componentId: fixtures.items[0].id,
+    quantity: "1.0000",
+    uomId: fixtures.items[0].baseUomId,
+    wastePctBp: 10_000,
+  };
+  assert.equal(
+    inventory.recipeLineInputSchema.safeParse(lineInput).success,
+    false,
+  );
+  assert.equal(
+    inventory.recipeLineSchema.safeParse({
+      ...lineInput,
+      id: "00000000-0000-4000-8000-0000000000f9",
+      tenantId: fixtures.items[0].tenantId,
+      recipeId: recipeByName("Kopi Susu Aren").id,
+    }).success,
+    false,
+  );
+
+  // 100 g at Rp 10/g with 10% waste costs the 111.1111 g gross draw.
+  const coffee = itemByName("Kopi Arabika Gayo");
+  const recipe = inventory.recipeSchema.parse({
+    ...recipeByName("Kopi Susu Aren"),
+    id: "00000000-0000-4000-8000-0000000000c7",
+    name: "Yield loss",
+    outputItemId: null,
+    theoreticalCostIdr: "0.0000",
+  });
+  const line = inventory.recipeLineSchema.parse({
+    id: "00000000-0000-4000-8000-0000000000d6",
+    tenantId: recipe.tenantId,
+    recipeId: recipe.id,
+    componentType: "item",
+    componentId: coffee.id,
+    quantity: "100.0000",
+    uomId: coffee.baseUomId,
+    wastePctBp: 1_000,
+  });
+  const cost = inventory.theoreticalRecipeCost(
+    {
+      recipes: [recipe],
+      recipeLines: [line],
+      items: fixtures.items,
+      conversions: [],
+      unitCosts: new Map([[coffee.id, "10.0000"]]),
+    },
+    recipe.id,
+    "half_up",
+  );
+  assert.equal(cost.unitCostIdr, "1111.1111");
+  assert.equal(cost.totalCostIdr, 1_111);
+});
+
+test("INV-02 nested recipe waste is a yield loss too (owner Q19)", () => {
+  const coffee = itemByName("Kopi Arabika Gayo");
+  const cup = itemByName("Cup 16oz");
+  const nested = inventory.recipeSchema.parse({
+    ...recipeByName("Sirup Gula Aren"),
+    id: "00000000-0000-4000-8000-0000000000c5",
+    name: "Nested yield",
+    outputItemId: cup.id,
+    yieldQuantity: "1.0000",
+    yieldUomId: cup.baseUomId,
+    theoreticalCostIdr: "0.0000",
+  });
+  const nestedLine = inventory.recipeLineSchema.parse({
+    id: "00000000-0000-4000-8000-0000000000d4",
+    tenantId: nested.tenantId,
+    recipeId: nested.id,
+    componentType: "item",
+    componentId: coffee.id,
+    quantity: "10.0000",
+    uomId: coffee.baseUomId,
+    wastePctBp: 0,
+  });
+  const wrapper = inventory.recipeSchema.parse({
+    ...nested,
+    id: "00000000-0000-4000-8000-0000000000c6",
+    name: "Wrapper yield",
+    outputItemId: null,
+  });
+  const wrapperLine = inventory.recipeLineSchema.parse({
+    id: "00000000-0000-4000-8000-0000000000d5",
+    tenantId: wrapper.tenantId,
+    recipeId: wrapper.id,
+    componentType: "recipe",
+    componentId: nested.id,
+    quantity: "1.0000",
+    uomId: cup.baseUomId,
+    wastePctBp: 5_000,
+  });
+  const cost = inventory.theoreticalRecipeCost(
+    {
+      recipes: [nested, wrapper],
+      recipeLines: [nestedLine, wrapperLine],
+      items: fixtures.items,
+      conversions: [],
+      unitCosts: new Map([[coffee.id, "1.0000"]]),
+    },
+    wrapper.id,
+    "half_up",
+  );
+  // Rp 10 per nested portion, and a 50% loss doubles the draw to Rp 20.
+  assert.equal(cost.unitCostIdr, "20.0000");
+  assert.equal(cost.totalCostIdr, 20);
 });
 
 test("INV-03 stock counts approve and post only through the state machine (PRD §16 Stok Opname)", () => {
