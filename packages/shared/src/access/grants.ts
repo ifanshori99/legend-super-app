@@ -13,6 +13,7 @@ import {
 import { permissionsRequireMfa, type RoleTemplate } from "./roles.ts";
 import {
   assertAuthorized,
+  authorize,
   isAssignmentActive,
   type AccessPrincipal,
   type AccessTarget,
@@ -112,7 +113,12 @@ export function assertCanGrantRole(input: {
     mfaVerified: input.grantorMfaVerified,
   };
   const assignmentId = assertAuthorized(authorization);
-  const topAuthority = topAuthorityAssignment(input);
+  const excludedTarget =
+    input.role.templateKey !== null &&
+    TOP_AUTHORITY_EXCLUDED_TARGETS.includes(input.role.templateKey);
+  const topAuthority = excludedTarget
+    ? null
+    : topAuthorityAssignment(input, "access.role.assign");
   if (topAuthority !== null) return topAuthority;
   for (const permission of input.role.permissions)
     assertAuthorized({ ...authorization, permission });
@@ -121,22 +127,19 @@ export function assertCanGrantRole(input: {
 
 /**
  * The grantor's active tenant-scoped Owner/Admin Tenant assignment that may
- * use the top-authority path for this grant, or null. Requires a verified
- * second factor regardless of the role's own MFA flag.
+ * use the top-authority path for a grant or custom-role edit, or null.
+ * Requires a verified second factor regardless of the role's own MFA flag.
  */
-function topAuthorityAssignment(input: {
-  readonly grantor: AccessPrincipal;
-  readonly grantorRoles: readonly GrantorRole[];
-  readonly grantorMfaVerified: boolean;
-  readonly role: GrantableRole;
-  readonly now: Date;
-}): RoleAssignmentId | null {
+function topAuthorityAssignment(
+  input: {
+    readonly grantor: AccessPrincipal;
+    readonly grantorRoles: readonly GrantorRole[];
+    readonly grantorMfaVerified: boolean;
+    readonly now: Date;
+  },
+  permission: PermissionCode,
+): RoleAssignmentId | null {
   if (input.grantorMfaVerified !== true) return null;
-  if (
-    input.role.templateKey !== null &&
-    TOP_AUTHORITY_EXCLUDED_TARGETS.includes(input.role.templateKey)
-  )
-    return null;
   const top: readonly string[] = ROLE_GRANT_TOP_AUTHORITY_TEMPLATES;
   const byId = new Map(
     input.grantorRoles.map((role) => [role.id.toLowerCase(), role] as const),
@@ -151,10 +154,65 @@ function topAuthorityAssignment(input: {
     const role = byId.get(row.roleId.toLowerCase());
     if (!role || typeof role.templateKey !== "string") continue;
     if (!top.includes(role.templateKey)) continue;
-    if (!role.permissions.includes("access.role.assign")) continue;
+    if (!role.permissions.includes(permission)) continue;
     return row.id;
   }
   return null;
+}
+
+/**
+ * Custom-role edit rule (coordinator decision C6, bead legend-vbws; PRD §3.7
+ * "Pemberian Role — pengguna tidak dapat menaikkan hak dirinya sendiri").
+ *
+ * Adding permissions to a custom role follows the same grant rule as handing
+ * out a role: the editor must hold every added permission at tenant scope,
+ * unless the editor is a tenant Owner / Admin Tenant with MFA verified and a
+ * re-authentication within ROLE_GRANT_REAUTH_MAX_AGE_MS. Removing permissions
+ * and renaming are not grants, so the caller checks them separately.
+ *
+ * Holding is a role-assignment fact, not a surface check: the surface
+ * second-factor rule (AUTH-05) is enforced by the back-office guard and must
+ * not turn an owner without a fresh factor into an editor who cannot even add
+ * the permissions they hold.
+ */
+export function assertCanEditCustomRole(input: {
+  readonly grantor: AccessPrincipal;
+  readonly grantorRoles: readonly GrantorRole[];
+  readonly grantorMfaVerified: boolean;
+  readonly grantorReauthenticatedAt: Date | null;
+  readonly addedPermissions: readonly PermissionCode[];
+  readonly org: OrgIndex;
+  readonly now: Date;
+}): void {
+  if (input.addedPermissions.length === 0) return;
+  const authorization = {
+    principal: input.grantor,
+    roles: input.grantorRoles,
+    org: input.org,
+    permission: "access.role.manage" as const,
+    target: { type: "tenant" } as const,
+    now: input.now,
+    surface: "pos" as const,
+    mfaVerified: false,
+  };
+  // The service also gates the route on access.role.manage; keep the pure
+  // rule self-contained so contract and API tests exercise the same decision.
+  assertAuthorized(authorization);
+  const reauthAt = input.grantorReauthenticatedAt?.getTime();
+  const age =
+    reauthAt === undefined ? Infinity : input.now.getTime() - reauthAt;
+  if (
+    age >= 0 &&
+    age <= ROLE_GRANT_REAUTH_MAX_AGE_MS &&
+    topAuthorityAssignment(input, "access.role.manage") !== null
+  )
+    return;
+  for (const permission of input.addedPermissions)
+    if (!authorize({ ...authorization, permission }).allowed)
+      throw new AccessError(
+        "SELF_ELEVATION_FORBIDDEN",
+        "Anda hanya dapat menambahkan izin yang Anda miliki sendiri.",
+      );
 }
 
 /**
