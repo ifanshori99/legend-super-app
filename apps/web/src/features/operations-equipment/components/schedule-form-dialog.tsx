@@ -89,7 +89,7 @@ export function ScheduleFormDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    const nextDueAt = datetimeLocalToIso(nextDue);
+    const nextDueAt = datetimeLocalToIso(nextDue, timeZone);
     const payload = {
       outletId,
       equipmentId,

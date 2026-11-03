@@ -94,6 +94,11 @@ export function HandoverFormDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+    // The receiving shift confirms (OPS-05), so it must be another shift.
+    if (fromShift && fromShift === toShift) {
+      setError(t("opsEquipment.handover.form.sameShift"));
+      return;
+    }
     const payload = {
       outletId,
       fromShiftTemplateId: fromShift,
@@ -205,6 +210,7 @@ export function HandoverFormDialog({
                   value={notes[key]}
                   onChange={(event) => updateNote(key, event.target.value)}
                   rows={2}
+                  maxLength={1000}
                 />
               </FormField>
             ))}
