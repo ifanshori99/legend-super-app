@@ -88,10 +88,11 @@ services:
       postgres: { condition: service_healthy }
     mem_limit: 384m
   caddy:
-    image: caddy:2-alpine
+    image: ${CADDY_IMAGE:-caddy:2.10-alpine}
     logging: *bounded-logging
     restart: unless-stopped
-    ports: ["80:80", "443:443", "443:443/udp"]
+    # TCP 80/443 only: Cloudflare reaches the origin over TCP.
+    ports: ["80:80", "443:443"]
     environment:
       TLS_ASK_TOKEN: ${TLS_ASK_TOKEN:?Set TLS_ASK_TOKEN}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}

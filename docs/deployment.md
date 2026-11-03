@@ -302,8 +302,11 @@ builds and this script do not purchase or provision infrastructure.
 
 ### Deployment security checklist
 
-- Restrict origin ports 80 and 443 to current Cloudflare IP ranges at the host
-  firewall; do not publish PostgreSQL, API, web, or the local Caddy ask bridge.
+- Restrict origin ports 80 and 443 to current Cloudflare IP ranges; do not
+  publish PostgreSQL, API, web, or the local Caddy ask bridge. Docker-published
+  ports bypass `ufw`/INPUT rules, so enforce the allowlist in the cloud
+  provider's security group or in the `DOCKER-USER` iptables chain, and verify
+  from a non-Cloudflare address that 80/443 are refused.
   Use Cloudflare Full (strict) and verify custom-domain issuance and renewal.
 - Set `TRUST_PROXY=2` for Cloudflare → Caddy → API and set
   `PUBLIC_RATE_LIMIT_INTERNAL_IPS=172.29.17.10` for this compose network. Ensure
