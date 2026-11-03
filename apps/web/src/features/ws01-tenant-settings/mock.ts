@@ -31,13 +31,16 @@ import {
 import { COLOR_TOKENS } from "@starter/shared/theme";
 import { cafeLegendTextFixtures } from "@starter/shared/text";
 import { ApiError } from "@/lib/api/errors";
+import { newIdempotencyKey } from "@/lib/idempotency";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import { deleteTextOverride, importOrgConfig } from "./endpoints";
 
 const fixtures = cafeLegendPlatformFixtures;
 const nowIso = () => new Date().toISOString();
-const newId = () => crypto.randomUUID();
+// A plain-http LAN origin has no crypto.randomUUID; the seed runs at module
+// load, so an unguarded call would break every mock handler (legend-zrdy).
+const newId = () => newIdempotencyKey();
 const newSecretRef = () => `sec_${newId().replaceAll("-", "")}`;
 const actorId = fixtures.integrations[0]!.credentials!.setBy;
 

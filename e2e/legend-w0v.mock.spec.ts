@@ -167,7 +167,11 @@ test("F17 production batches move draft -> in_progress -> completed only", async
   const createDialog = page.getByRole("dialog");
   await createDialog.getByLabel("Jumlah batch").fill("2");
   await createDialog.getByRole("button", { name: "Buat perintah" }).click();
-  await expect(page.getByText("Perintah produksi dibuat")).toBeVisible();
+  // The toast also renders its text inside the assertive announcement
+  // ("Notifikasi …"), so pin the visible node.
+  await expect(
+    page.getByText("Perintah produksi dibuat", { exact: true }),
+  ).toBeVisible();
 
   // Newest first: the created draft is the first body row.
   const row = page.getByRole("table").getByRole("row").nth(1);
