@@ -188,11 +188,12 @@ test("FAC-08 the emergency button raises a signal and Tangani records the respon
   await expect(
     page.getByRole("heading", { level: 1, name: "Layar darurat" }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
-  // The seeded damage signal is unanswered, so the alarm state is on.
-  await expect(page.getByText("Darurat aktif")).toBeVisible();
+  // The seeded open damage report is a maintenance matter (incident log
+  // only): it must not raise the alarm state (PRD §4 Alur V).
+  await expect(page.getByText("Tidak ada darurat aktif")).toBeVisible();
   await expect(
     page.locator('[data-slot="emergency-alert"][data-unit-code="W2"]'),
-  ).toBeVisible();
+  ).toHaveCount(0);
 
   await page
     .locator('[data-slot="emergency-unit-button"][data-unit-code="P1"]')
@@ -200,6 +201,7 @@ test("FAC-08 the emergency button raises a signal and Tangani records the respon
   await expect(
     page.getByText("Sinyal darurat bilik P1 terkirim.").first(),
   ).toBeVisible();
+  await expect(page.getByText("Darurat aktif", { exact: true })).toBeVisible();
 
   const alert = page.locator(
     '[data-slot="emergency-alert"][data-unit-code="P1"]',

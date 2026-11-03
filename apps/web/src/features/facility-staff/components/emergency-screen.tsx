@@ -27,6 +27,7 @@ import {
   INCIDENT_TYPE_KEYS,
   areaName,
   clock,
+  isEmergencySignal,
   responseSeconds,
   sortActiveAlerts,
   useElapsedSeconds,
@@ -83,7 +84,7 @@ function ActiveAlertCard({
         data-slot="emergency-alert"
         data-incident-id={incident.id}
         data-unit-code={unitCode ?? "none"}
-        className="h-full border-2 border-danger"
+        className="h-full border-2 border-s-[6px] border-danger"
       >
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -164,7 +165,8 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
   const rows = board.data?.rows ?? [];
   const serverTime = board.data?.serverTime;
   const areas = config.data?.areas ?? [];
-  const all = incidents.data?.data ?? [];
+  // Damage reports live in the incident log only (see isEmergencySignal).
+  const all = (incidents.data?.data ?? []).filter(isEmergencySignal);
   const active = sortActiveAlerts(all);
   const responded = all
     .filter((incident) => incident.respondedAt !== null)
@@ -366,9 +368,11 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
                 .sort((a, b) => a.unit.sortOrder - b.unit.sortOrder)
                 .map((row) => (
                   <li key={row.unit.id}>
+                    {/* Outline in the danger colour: solid red stays reserved
+                        for the live alarm and its Tangani action (Q25). */}
                     <Button
                       type="button"
-                      variant="destructive"
+                      variant="outline"
                       size="lg"
                       data-slot="emergency-unit-button"
                       data-unit-code={row.unit.code}
@@ -380,7 +384,7 @@ export function EmergencyScreen({ facilityId }: { facilityId?: string }) {
                         raise.isPending &&
                         raise.variables?.unitId === row.unit.id
                       }
-                      className="h-auto min-h-28 w-full flex-col gap-1 py-4"
+                      className="h-auto min-h-28 w-full flex-col gap-1 border-danger py-4 text-danger hover:bg-danger-subtle"
                       onClick={() => raisePanic(row)}
                     >
                       <Siren className="size-7" aria-hidden="true" />

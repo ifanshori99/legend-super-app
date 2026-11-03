@@ -129,12 +129,18 @@ export function boardCounts(
   };
 }
 
-/** The due cleaning tasks on the board: one open task per dirty unit. */
+/**
+ * The due cleaning tasks on the board: one open task per dirty unit. A unit
+ * flagged for maintenance keeps its open task but cannot be cleaned until it is
+ * released (the unit machine refuses start/complete), so it is not "due".
+ */
 export function dueCleaningTasks(
   rows: readonly FacilityUnitBoardRow[],
 ): { row: FacilityUnitBoardRow; task: CleaningTask }[] {
   return rows.flatMap((row) =>
-    row.cleaningTask && row.cleaningTask.completedAt === null
+    row.cleaningTask &&
+    row.cleaningTask.completedAt === null &&
+    (row.unit.status === "needs_cleaning" || row.unit.status === "cleaning")
       ? [{ row, task: row.cleaningTask }]
       : [],
   );
@@ -211,6 +217,15 @@ export function sortIncidentLog(
     if (openA !== openB) return openA ? -1 : 1;
     return Date.parse(b.triggeredAt) - Date.parse(a.triggeredAt);
   });
+}
+
+/**
+ * PRD v1.7 §4 Alur V: the emergency screen carries the booth panic button and
+ * the ticket-screen help button. A damage report is a maintenance matter and
+ * stays in the incident log, so it never raises the alarm state.
+ */
+export function isEmergencySignal(incident: FacilityIncident): boolean {
+  return incident.type === "panic" || incident.type === "assist";
 }
 
 /** Oldest unanswered signal first: it waited longest. */

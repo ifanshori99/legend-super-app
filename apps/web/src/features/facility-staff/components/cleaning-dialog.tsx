@@ -5,8 +5,9 @@
 //
 // The photo is a local preview only: the screen stores a UUID media id in the
 // ticket's `mediaIds` (the contract shape), but no storage upload exists yet —
-// wiring it to the WS-00 storage adapter is a follow-up (reported with bead
-// legend-1oi9).
+// the WS-00 upload transport is the same open item as the waste photo
+// (bead legend-7nv1). Type and size are guarded here so the later upload only
+// ever receives a photo the storage adapter accepts.
 import * as React from "react";
 import { X } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -30,6 +31,7 @@ import {
   type CleaningTask,
 } from "@starter/shared/facility";
 import { newIdempotencyKey } from "@/lib/idempotency";
+import { useOnline } from "@/lib/use-online";
 import { useCompleteCleaningTask, useStartCleaningTask } from "../hooks.ts";
 import {
   CHECKLIST_KEYS,
@@ -38,6 +40,9 @@ import {
 } from "../view.ts";
 
 type Checks = Record<CleaningChecklistKey, boolean>;
+
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 function initialChecks(task: CleaningTask): Checks {
   const checks = Object.fromEntries(
@@ -69,6 +74,9 @@ export function CleaningDialog({
     mediaId: string;
   } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [photoError, setPhotoError] = React.useState<string | null>(null);
+  const online = useOnline();
+  const photoInputRef = React.useRef<HTMLInputElement>(null);
   const checklistTitleId = React.useId();
 
   React.useEffect(() => {
@@ -190,14 +198,29 @@ export function CleaningDialog({
         <FormField
           label={t("facilityStaff.cleaning.dialog.photoLabel")}
           hint={t("facilityStaff.cleaning.dialog.photoHint")}
+          error={photoError ?? undefined}
         >
           <Input
+            ref={photoInputRef}
             type="file"
-            accept="image/*"
+            accept={PHOTO_TYPES.join(",")}
+            capture="environment"
             data-slot="cleaning-photo-input"
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (!file) return;
+              // `accept` is only a hint to the picker; guard the real file.
+              const reject = !PHOTO_TYPES.includes(file.type)
+                ? t("facilityStaff.cleaning.dialog.photoWrongType")
+                : file.size > PHOTO_MAX_BYTES
+                  ? t("facilityStaff.cleaning.dialog.photoTooLarge")
+                  : null;
+              if (reject) {
+                setPhotoError(reject);
+                event.target.value = "";
+                return;
+              }
+              setPhotoError(null);
               setPhoto({
                 url: URL.createObjectURL(file),
                 // Mock-only media id: the stored contract value is a uuid; the
@@ -207,6 +230,16 @@ export function CleaningDialog({
             }}
           />
         </FormField>
+
+        {photo && !online && (
+          <p
+            role="status"
+            data-slot="cleaning-photo-offline"
+            className="text-sm text-warning"
+          >
+            {t("facilityStaff.cleaning.dialog.photoOffline")}
+          </p>
+        )}
 
         {photo && (
           <div className="grid max-w-xs gap-2">
@@ -222,7 +255,11 @@ export function CleaningDialog({
               variant="ghost"
               size="sm"
               className="justify-self-start"
-              onClick={() => setPhoto(null)}
+              onClick={() => {
+                setPhoto(null);
+                // Clear the picker too, so its file name does not linger.
+                if (photoInputRef.current) photoInputRef.current.value = "";
+              }}
             >
               <X aria-hidden="true" />
               {t("facilityStaff.cleaning.dialog.removePhoto")}
