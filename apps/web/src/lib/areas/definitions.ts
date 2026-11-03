@@ -137,7 +137,7 @@ export const AREAS: Readonly<Record<AreaKey, AreaDefinition>> = {
   },
   kelola: {
     key: "kelola",
-    basePaths: ["/kelola"],
+    basePaths: ["/kelola", "/reports", "/audit"],
     indexPath: "/kelola",
     density: "padat",
     shell: "management",

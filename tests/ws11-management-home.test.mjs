@@ -184,7 +184,7 @@ describe("management home KPI values (DASH-02)", () => {
       lines.map((line) => line.code),
       [...tile.metricCodes],
     );
-    assert.deepEqual(lines[0].value, { unit: "idr", valueIdr: 44_750_000 });
+    assert.deepEqual(lines[0].value, { unit: "idr", valueIdr: 7_420_000 });
     assert.equal(home.formatPercent("68.4000"), "68,4");
     assert.equal(home.secondsToMinutes(780), 13);
     // A metric the run does not carry is "no data", never zero.

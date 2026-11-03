@@ -73,7 +73,13 @@ export function Toaster({ children }: { children: React.ReactNode }) {
             </ToastPrimitive.Root>
           );
         })}
-        <ToastPrimitive.Viewport className="fixed inset-x-0 bottom-0 z-[60] flex flex-col gap-2 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] outline-none sm:inset-x-auto sm:right-0 sm:w-96" />
+        {/* A page can lift toasts above its own chrome (e.g. the customer bottom
+            nav) by setting --toast-inset-bottom; it defaults to 0px. */}
+        <ToastPrimitive.Viewport
+          label={t("toast.region")}
+          style={{ bottom: "var(--toast-inset-bottom, 0px)" }}
+          className="fixed inset-x-0 bottom-0 z-[60] flex flex-col gap-2 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] outline-none sm:inset-x-auto sm:right-0 sm:w-96"
+        />
       </ToastPrimitive.Provider>
     </ToastContext.Provider>
   );

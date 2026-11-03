@@ -5,6 +5,11 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { auditSettingsMessages } from "./audit-settings.ts";
+import { ownerInsightsMessages } from "./owner-insights.ts";
+import { reportBuilderMessages } from "./report-builder.ts";
+import { reportViewerMessages } from "./report-viewer.ts";
+import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
@@ -15,6 +20,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { promoMessages } from "./promo.ts";
 import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
@@ -36,6 +42,11 @@ export const id = {
   login: loginMessages,
   // Owner dashboard (PRD §3 F34), part 1 (legend-k8fk).
   ownerDashboard: ownerDashboardMessages,
+  auditSettings: auditSettingsMessages,
+  ownerInsights: ownerInsightsMessages,
+  reportBuilder: reportBuilderMessages,
+  reportViewer: reportViewerMessages,
+  shareholderHome: shareholderHomeMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
@@ -65,6 +76,8 @@ export const id = {
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
+  // Promo engine admin (PRD §3.21), own file (legend-oadp).
+  promo: promoMessages,
   // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
   accounting: accountingMessages,
   // WS-10 HRIS screens (PRD §3 F26-F32): one file per bead so the parallel
@@ -805,6 +818,7 @@ export const id = {
       accounting: "Akuntansi",
       crm: "CRM",
       loyalty: "Loyalty",
+      promo: "Promo",
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",

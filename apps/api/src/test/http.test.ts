@@ -70,7 +70,15 @@ describe("HTTP plumbing", () => {
     const unsafe = await request(app)
       .get("/api/health")
       .set("X-Request-Id", "bad id <script>");
-    expect(unsafe.headers["x-request-id"]).not.toContain("bad");
+    // A freshly minted UUID can randomly contain the hex substring "bad", so
+    // the response must be a new canonical v4 UUID, not merely a value that
+    // avoids that substring.
+    const unsafeId = unsafe.headers["x-request-id"];
+    expect(unsafeId).toBeDefined();
+    expect(unsafeId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(unsafeId).not.toBe("bad id <script>");
   });
 
   it("refuses oversized Better Auth bodies before they are read", async () => {

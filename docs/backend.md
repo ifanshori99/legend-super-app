@@ -189,3 +189,30 @@ For a domain whose contract does not define HTTP statuses (currently inventory
 and purchasing), services must explicitly translate expected failures to
 `HttpError` with a documented status. Unrecognized exceptions remain generic
 500 responses. Zod errors retain the starter's 422 validation response.
+
+## Promo engine lock order
+
+Checkout (`redeemPromotions`), void (`releasePromotions`) and partial refund
+(`recomputeAfterPartialRefund`) run inside their caller's transaction and take
+the same locks in the same order, so checkout, void and refund never deadlock
+(PRD §3.21; beads legend-9w77 + legend-e5it):
+
+1. The order row — the caller locks it (insert / `FOR UPDATE`) before calling
+   in;
+2. The per-order advisory lock `promo:<tenant>:<order_id>`;
+3. The `promotion_order_applications` row — release/refund only; redeem inserts
+   it at the end;
+4. The presented voucher row (`resolveCode` / `application.voucher_id`);
+5. The customer-day advisory lock `promo-minspend:<tenant>:<outlet>:
+<customer>:<business date>` (owner Q40), for an identified customer;
+6. The candidate promotion rows, `SELECT ... FOR UPDATE ORDER BY id` — only the
+   promotions that can apply to this bill (`lockCandidatePromotions`);
+7. The customer's `promotion_customer_usage` rows, by promotion id.
+
+Never lock a promotion row before the voucher and customer-day steps, and never
+lock promotions out of id order. The guarded counter `UPDATE`s repeat the cap
+in their `WHERE` clause and the table `CHECK`s repeat it again, so an
+over-redemption stays impossible even if a caller skipped a lock. The
+application row stores `paid_idr`, `refunded_paid_idr` and `rules_snapshot` at
+redeem time: a partial refund rechecks the original rules and can never pay out
+more than the guest paid (owner Q41).

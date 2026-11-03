@@ -87,7 +87,7 @@ values. Use the Tailwind class (`bg-primary`, `text-muted-foreground`, …), nev
 | Surface         | `card` (`bg-card`, alias `bg-surface`) | `#ffffff` | `#1b1a18` | cards (inner card of a shell), popovers, sheets                        |
 | Canvas (step 2) | `surface-2`                            | `#f7f6f4` | `#161513` | management/ops work area, customer bands, tab track, row hover         |
 | Shell (derived) | `shell`                                | `#fbfaf9` | `#181715` | v3: outer layer of a double-shell card, management sidebar, ops topbar |
-| Raised (step 3) | `surface-3`                            | `#f1efec` | `#242220` | occupied table, neutral badge, skeletons, media gaps, avatar chip      |
+| Raised (step 3) | `surface-3`                            | `#f1efec` | `#242220` | occupied table, neutral badge, media gaps, avatar chip; not `skeleton` |
 | Muted surface   | `muted`                                | `#f5f4f2` | `#211f1d` | disabled fields                                                        |
 | Hint text       | `muted-foreground`                     | `#5f5b55` | `#aaa59d` | secondary text, labels, captions (AA on every surface incl. shell)     |
 | Secondary fill  | `secondary`                            | `#f0eeeb` | `#2a2825` | secondary button (KDS "Selesai")                                       |

@@ -45,12 +45,14 @@ import type {
   PromotionBenefit,
   PromotionCondition,
   PromotionApplicationResult,
+  PromotionRuleSnapshot,
   PromotionStatus,
   VoucherSource,
   VoucherStatus,
 } from "@starter/shared/crm";
 import type { UserId } from "@starter/shared/core";
 import {
+  businessDate,
   idrColumn,
   outletIdColumn,
   tenantIdColumn,
@@ -258,7 +260,33 @@ export const promotionOrderApplications = pgTable(
     voucherId: uuid("voucher_id"),
     /** Server-priced bill before promotions (ROI revenue input). */
     subtotalIdr: idrColumn("subtotal_idr").notNull(),
+    /**
+     * Bill value given back by partial refunds (owner Q41, legend-e5it). The
+     * bill's spend is `subtotal_idr - refunded_subtotal_idr` (same-day
+     * minimum-spend total, Q40).
+     */
+    refundedSubtotalIdr: idrColumn("refunded_subtotal_idr")
+      .notNull()
+      .default(sql`0`),
     totalDiscountIdr: idrColumn("total_discount_idr").notNull(),
+    /**
+     * What the guest actually owed for the goods after promotions at redeem
+     * time (`subtotal_idr - total_discount_idr`). Partial refunds can never
+     * pay out more than this in total (owner Q41; `refunded_paid_idr` tracks
+     * the part already paid out). Null only on rows from before 0042; the
+     * refund falls back to the current amounts for those.
+     */
+    paidIdr: idrColumn("paid_idr"),
+    /** Payout already returned by partial refunds (owner Q41). */
+    refundedPaidIdr: idrColumn("refunded_paid_idr")
+      .notNull()
+      .default(sql`0`),
+    /**
+     * The promotion rules this order redeemed (conditions + benefit only), so
+     * a later partial refund rechecks the bill against what it actually
+     * bought, not against an edited promotion (owner Q41 snapshot decision).
+     */
+    rulesSnapshot: jsonb("rules_snapshot").$type<PromotionRuleSnapshot>(),
     result: jsonb("result").$type<PromotionApplicationResult>().notNull(),
     status: varchar("status", { length: 20 })
       .$type<"applied" | "released">()
@@ -298,6 +326,24 @@ export const promotionOrderApplications = pgTable(
       "promotion_order_applications_amount_check",
       sql`${table.subtotalIdr} >= 0 AND ${table.totalDiscountIdr} >= 0 AND ${table.totalDiscountIdr} <= ${table.subtotalIdr}`,
     ),
+    check(
+      "promotion_order_applications_refund_check",
+      sql`${table.refundedSubtotalIdr} >= 0 AND ${table.refundedSubtotalIdr} <= ${table.subtotalIdr}`,
+    ),
+    // Q41: payouts never exceed what the guest paid for the goods.
+    check(
+      "promotion_order_applications_refunded_paid_check",
+      sql`${table.refundedPaidIdr} >= 0 AND (${table.paidIdr} IS NULL OR ${table.refundedPaidIdr} <= ${table.paidIdr})`,
+    ),
+    // Same-day spend of one customer at one outlet (Q40, legend-e5it).
+    index("promotion_order_applications_customer_day_idx")
+      .on(
+        table.tenantId,
+        table.outletId,
+        table.customerProfileId,
+        table.redeemedAt,
+      )
+      .where(sql`${table.customerProfileId} IS NOT NULL`),
   ],
 );
 
@@ -398,6 +444,12 @@ export const facilityRewards = pgTable(
     entitlementId: uuid("entitlement_id"),
     /** Set when the source order is voided (WS-09 revokes the entitlement). */
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /**
+     * Outlet business date of a same-day minimum-spend reward (owner Q40,
+     * legend-e5it): one live reward per promotion, customer, outlet and day.
+     * Null for rewards without a minimum-spend condition.
+     */
+    businessDate: businessDate("business_date"),
   },
   (table) => [
     foreignKey({
@@ -419,7 +471,56 @@ export const facilityRewards = pgTable(
       table.tenantId,
       table.customerProfileId,
     ),
+    // Race backstop for "once per day" (Q40): the service also serializes on
+    // a per customer/outlet/day advisory lock.
+    uniqueIndex("facility_rewards_daily_key")
+      .on(
+        table.tenantId,
+        table.outletId,
+        table.promotionId,
+        table.customerProfileId,
+        table.businessDate,
+      )
+      .where(
+        sql`${table.businessDate} IS NOT NULL AND ${table.revokedAt} IS NULL`,
+      ),
     check("facility_rewards_quantity_check", sql`${table.quantity} > 0`),
+  ],
+);
+
+/**
+ * Per-outlet promotion switch (contract PromotionOutlet, bead legend-e5it).
+ * PRD §3.21 is silent on per-outlet promotions; the contract reads "an outlet
+ * may switch a promotion off", so a promotion with no row for an outlet runs
+ * there and `enabled = false` switches it off at that outlet only (existing
+ * tenant-wide promotions keep working). Outlet-owned: tenant + outlet RLS.
+ */
+export const promotionOutlets = pgTable(
+  "promotion_outlets",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    promotionId: uuid("promotion_id").notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    enabled: boolean("enabled").notNull(),
+    updatedBy: text("updated_by").$type<UserId>(),
+    updatedAt,
+  },
+  (table) => [
+    primaryKey({
+      name: "promotion_outlets_pkey",
+      columns: [table.tenantId, table.promotionId, table.outletId],
+    }),
+    foreignKey({
+      name: "promotion_outlets_promotion_fk",
+      columns: [table.tenantId, table.promotionId],
+      foreignColumns: [promotions.tenantId, promotions.id],
+    }),
+    foreignKey({
+      name: "promotion_outlets_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("promotion_outlets_outlet_idx").on(table.tenantId, table.outletId),
   ],
 );
 

@@ -44,6 +44,19 @@ function figuresOf(result: ReportResult): string {
   );
 }
 
+/**
+ * Whether a run for this exact question is already registered. A screen that
+ * would otherwise serve different numbers for the same key yields to the
+ * first owner (registration order is the feature folder order of the glob).
+ */
+export function hasMockReportRun(
+  reportCode: string,
+  groupBy: readonly string[],
+  period: { readonly startDate: string; readonly endDate: string },
+): boolean {
+  return runs.has(runKey(reportCode, groupBy, period));
+}
+
 /** Registers the runs a screen can serve (record keys are labels only). */
 export function registerMockReportRuns(
   registered: Readonly<Record<string, ReportResult>>,
