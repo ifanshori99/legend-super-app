@@ -43,9 +43,14 @@ test.describe("F19 utang, aset and anggaran", () => {
 
     await page
       .getByRole("button", { name: /Rincian Komunitas Lari Bandung/ })
+      .filter({ visible: true })
       .click();
-    await expect(page.getByText("Rincian kelompok umur").first()).toBeVisible();
-    await expect(page.getByText("Belum jatuh tempo").first()).toBeVisible();
+    await expect(
+      page.getByText("Rincian kelompok umur").filter({ visible: true }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Belum jatuh tempo").filter({ visible: true }).first(),
+    ).toBeVisible();
   });
 
   test("F19-Aset: register an asset, then dispose it and see the gain", async ({
