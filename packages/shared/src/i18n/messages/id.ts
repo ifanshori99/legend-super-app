@@ -32,6 +32,14 @@ import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
+import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
+import { employeeMasterMessages } from "./ws10-employee-master.ts";
+import { learningMessages } from "./ws10-learning.ts";
+import { lifecycleMessages } from "./ws10-lifecycle.ts";
+import { payrollConfigMessages } from "./ws10-payroll-config.ts";
+import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payslipMessages } from "./ws10-payslip.ts";
+import { rosterMessages } from "./ws10-roster.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -88,6 +96,16 @@ export const id = {
     report: accountingReportMessages,
     share: accountingShareMessages,
   },
+  // WS-10 HRIS screens (PRD §3 F26-F32): one file per bead so the parallel
+  // squad never edits the same catalog lines.
+  employeeMaster: employeeMasterMessages,
+  attendanceQr: attendanceQrMessages,
+  roster: rosterMessages,
+  lifecycle: lifecycleMessages,
+  payrollConfig: payrollConfigMessages,
+  payrollRun: payrollRunMessages,
+  payslip: payslipMessages,
+  learning: learningMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
