@@ -11,6 +11,7 @@
 // - SETUP-03 par levels (range, one per location+item, outlet scope)
 // - SETUP-04 tenant inventory settings (bounds, concurrency, audit)
 // - TEN-01/TEN-03 isolation across tenants and outlets
+import type { UomId } from "@starter/shared/inventory";
 import { randomUUID } from "node:crypto";
 import { Pool, type Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -185,10 +186,10 @@ async function signedIn(name: string) {
 }
 
 let ownerUserId: string;
-let uomKg: string;
-let uomG: string;
-let uomPack: string;
-let uomPcs: string;
+let uomKg: UomId;
+let uomG: UomId;
+let uomPack: UomId;
+let uomPcs: UomId;
 let itemA: string;
 let itemB: string;
 let locationA1: string;
@@ -216,10 +217,10 @@ beforeAll(async () => {
       randomUUID(),
     ],
   );
-  uomKg = await insertUom("kg");
-  uomG = await insertUom("g");
-  uomPack = await insertUom("pk");
-  uomPcs = await insertUom("pc");
+  uomKg = (await insertUom("kg")) as UomId;
+  uomG = (await insertUom("g")) as UomId;
+  uomPack = (await insertUom("pk")) as UomId;
+  uomPcs = (await insertUom("pc")) as UomId;
   itemA = await insertItem(uomKg, "Gula Setup");
   itemB = await insertItem(uomKg, "Gula Aren Setup");
   locationA1 = await insertLocation(outletA, "Gudang Setup");
