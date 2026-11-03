@@ -35,7 +35,7 @@ type Intent = typeof paymentIntents.$inferSelect;
 type Refund = typeof paymentRefunds.$inferSelect;
 // Evidence and fund rows are written under the intent lock by settlement.
 // Compute in PostgreSQL numeric and bigint to avoid rounding aggregate sums.
-async function refundableBalance(tx: Tx, intent: Intent) {
+export async function refundableBalance(tx: Tx, intent: Intent) {
   const result = await tx.execute(sql`
     SELECT
       (SELECT coalesce(sum(amount_idr), 0) FROM payment_evidence

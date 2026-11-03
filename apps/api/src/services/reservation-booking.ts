@@ -8,8 +8,11 @@
 //   lock, so two simultaneous bookings for the last table cannot both win
 //   (RSV-01); the gist exclusion constraint is the database backstop.
 // - The policy in force is frozen into `policy_snapshot` (RSV-03).
-// - A required DP is opened through the deposit port (WS-05 payment intent); a
-//   reservation is `pending_deposit` until the intent is settled (RSV-02).
+// - A required DP is opened through the deposit port as a WS-05 bill link; a
+//   reservation is `pending_deposit` until an intent on that link is settled
+//   (RSV-02). With no usable payment gateway a DP booking is refused (503)
+//   before any table is held.
+// - Stale unpaid DP holds of the outlet are released first (reservation-sweeps).
 // - Every mutation takes an idempotency key bound to a request fingerprint.
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -61,6 +64,7 @@ import {
   type Tx,
 } from "./reservation-core.ts";
 import { reservationDepositPort } from "./reservation-ports.ts";
+import { sweepStaleDepositHolds } from "./reservation-sweeps.ts";
 import {
   addDays,
   candidateStarts,
@@ -310,13 +314,13 @@ function createdFrom(
   tenantId: string,
 ): ReservationCreated {
   const deposit =
-    row.depositPaymentId !== null &&
+    row.depositPaymentLinkId !== null &&
     row.depositLinkSealed !== null &&
     row.depositLinkExpiresAt !== null
       ? {
-          paymentIntentId: row.depositPaymentId,
+          paymentLinkId: row.depositPaymentLinkId,
           amountIdr: row.depositIdr,
-          paymentUrl: openSecret(
+          paymentPath: openSecret(
             row.depositLinkSealed,
             linkAad(tenantId, row.id),
           ),
@@ -352,9 +356,13 @@ async function buildCreated(
 }
 
 /**
- * Opens the DP for a `pending_deposit` reservation (steps run outside the
- * booking transaction because the payment service has its own). If the
- * payment side fails the booking is closed again and its tables released.
+ * Opens the DP bill link for a `pending_deposit` reservation (steps run outside
+ * the booking transaction because the payment service has its own). If the
+ * payment side fails the booking is closed again and its tables released; if
+ * this process dies in between, the deposit sweep releases the hold after the
+ * payment window (reservation-sweeps.ts). Two racing replays may each open a
+ * link; only the first stored one is ever returned, the other token is
+ * discarded unseen (and its link expires with the window).
  */
 async function attachDeposit(
   context: ScopedTenantContext,
@@ -366,7 +374,7 @@ async function attachDeposit(
   const row = await withTenant(db, context, async (tx) =>
     lockReservation(tx, context, outletId, reservationId),
   );
-  if (row.depositPaymentId !== null || row.status !== "pending_deposit")
+  if (row.depositPaymentLinkId !== null || row.status !== "pending_deposit")
     return buildCreated(context, outletId, reservationId);
   const snapshot = reservationPolicySnapshotSchema.parse(row.policySnapshot);
   let opened;
@@ -377,7 +385,6 @@ async function attachDeposit(
       reservationId,
       amountIdr: row.depositIdr,
       expiresInMinutes: snapshot.paymentWindowMinutes,
-      idempotencyKey: `reservation-dp:${reservationId}`,
       now,
     });
   } catch (error) {
@@ -426,13 +433,17 @@ async function attachDeposit(
   }
   return withTenant(db, context, async (tx) => {
     const locked = await lockReservation(tx, context, outletId, reservationId);
-    if (locked.depositPaymentId === null) {
+    // Never attach a payable link to a booking the sweep already released.
+    if (
+      locked.depositPaymentLinkId === null &&
+      locked.status === "pending_deposit"
+    ) {
       await tx
         .update(reservations)
         .set({
-          depositPaymentId: opened.paymentIntentId,
+          depositPaymentLinkId: opened.paymentLinkId,
           depositLinkSealed: sealSecret(
-            opened.paymentUrl,
+            opened.paymentPath,
             linkAad(context.tenant.tenantId, reservationId),
           ),
           depositLinkExpiresAt: new Date(opened.expiresAt),
@@ -520,6 +531,13 @@ export async function createReservation(
           return { kind: "needs_deposit", reservationId: id };
         }
         const policy = await loadPolicy(tx, context, outletId);
+        // RSV-02: a DP booking needs a working online payment; refuse it
+        // before anything is held (fail closed; the guest contacts the venue).
+        if (
+          policy.depositRequirement === "required" &&
+          policy.depositAmountIdr > 0
+        )
+          await reservationDepositPort().assertReady(context);
         const reservedFor = new Date(input.reservedFor);
         const duration = input.durationMinutes ?? policy.defaultDurationMinutes;
         if (reservedFor <= now)
@@ -543,6 +561,9 @@ export async function createReservation(
             .map((zone) => zone.id),
         );
         await lockOutletHolds(tx, context, outletId);
+        // Release this outlet's lapsed unpaid DP holds first, so a stale hold
+        // never blocks a new guest even when the worker is behind.
+        await sweepStaleDepositHolds(tx, context, now, { outletId });
         const endsAt = new Date(reservedFor.getTime() + duration * MINUTE);
         const busy = await busyTables(
           tx,

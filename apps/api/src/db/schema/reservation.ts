@@ -18,7 +18,11 @@
 //   fingerprint (same key + same request replays the stored result, same key +
 //   another request is a conflict).
 //
-// The DP itself is a WS-05 payment intent (`payment_intents`, composite FK).
+// The DP is collected through a WS-05 bill link (`payment_links`): booking opens
+// the link (`deposit_payment_link_id`); the guest later creates an intent on the
+// hosted page; once an intent on that link is settled it is recorded as
+// `deposit_payment_id` (composite FKs to both). A DP refund is a WS-05 refund
+// request (`payment_refunds`), referenced by `refund_payment_refund_id`.
 // Customer profiles (legend-111j) do not exist yet, so `customer_profile_id`
 // carries no foreign key.
 //
@@ -51,7 +55,8 @@ import type {
 } from "@starter/shared/reservation";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns.ts";
 import { floorZones, tables, tableSessions } from "./floor.ts";
-import { paymentIntents } from "./payment.ts";
+import { paymentIntents, paymentLinks } from "./payment.ts";
+import { paymentRefunds } from "./payment-admin.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
 /** PostgreSQL `tstzrange`, read and written as text (never rebuilt by hand). */
@@ -159,9 +164,15 @@ export const reservations = pgTable(
     pax: smallint("pax").notNull(),
     zoneId: uuid("zone_id"),
     depositIdr: idrColumn("deposit_idr").notNull(),
-    /** `payment_intents.id` of the DP; null until the link is opened. */
+    /**
+     * `payment_intents.id` of the SETTLED DP; null until an intent on the DP
+     * link is paid (rows written before the link model may hold the intent
+     * opened at booking).
+     */
     depositPaymentId: uuid("deposit_payment_id"),
-    /** Sealed DP payment URL so an idempotent replay can return it again. */
+    /** WS-05 bill link the guest pays the DP through; null until attached. */
+    depositPaymentLinkId: uuid("deposit_payment_link_id"),
+    /** Sealed DP payment path so an idempotent replay can return it again. */
     depositLinkSealed: text("deposit_link_sealed"),
     depositLinkExpiresAt: timestamp("deposit_link_expires_at", {
       withTimezone: true,
@@ -181,6 +192,8 @@ export const reservations = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     closeReason: varchar("close_reason", { length: 300 }),
+    /** User who cancelled / marked the no-show; null when the system closed it. */
+    closedBy: text("closed_by"),
     /** DP split decided from the snapshot at cancel / no-show (RSV-03). */
     depositRefundIdr: idrColumn("deposit_refund_idr"),
     depositForfeitedIdr: idrColumn("deposit_forfeited_idr"),
@@ -188,6 +201,14 @@ export const reservations = pgTable(
       .$type<RefundStatus>()
       .notNull()
       .default("not_required"),
+    /** WS-05 refund request created for the DP refund; set with `requested`. */
+    refundPaymentRefundId: uuid("refund_payment_refund_id"),
+    /** Failed refund-request attempts (retry sweep bookkeeping). */
+    refundAttempts: integer("refund_attempts").notNull().default(0),
+    /** Earliest next retry; null = due now (or retries exhausted, see audit). */
+    refundNextAttemptAt: timestamp("refund_next_attempt_at", {
+      withTimezone: true,
+    }),
     tableSessionId: uuid("table_session_id"),
     createdBy: uuid("created_by"),
     createdAt,
@@ -210,6 +231,24 @@ export const reservations = pgTable(
       columns: [table.tenantId, table.depositPaymentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
+    foreignKey({
+      name: "reservations_deposit_link_fk",
+      columns: [table.tenantId, table.depositPaymentLinkId],
+      foreignColumns: [paymentLinks.tenantId, paymentLinks.id],
+    }),
+    foreignKey({
+      name: "reservations_refund_fk",
+      columns: [table.tenantId, table.refundPaymentRefundId],
+      foreignColumns: [paymentRefunds.tenantId, paymentRefunds.id],
+    }),
+    // One reservation per DP link: the payment.paid consumer finds it by link.
+    uniqueIndex("reservations_deposit_link_key")
+      .on(table.tenantId, table.depositPaymentLinkId)
+      .where(sql`${table.depositPaymentLinkId} IS NOT NULL`),
+    // Refund retry sweep: pending refunds due for another attempt.
+    index("reservations_refund_due_idx")
+      .on(table.tenantId, table.refundNextAttemptAt)
+      .where(sql`${table.refundStatus} = 'pending'`),
     foreignKey({
       name: "reservations_table_session_fk",
       columns: [table.tenantId, table.tableSessionId],
@@ -265,6 +304,15 @@ export const reservations = pgTable(
     check(
       "reservations_refund_status_check",
       sql`${table.refundStatus} IN ('not_required', 'pending', 'requested')`,
+    ),
+    // `requested` means the WS-05 refund request row exists, and only then.
+    check(
+      "reservations_refund_request_check",
+      sql`(${table.refundStatus} = 'requested') = (${table.refundPaymentRefundId} IS NOT NULL)`,
+    ),
+    check(
+      "reservations_refund_attempts_check",
+      sql`${table.refundAttempts} >= 0`,
     ),
   ],
 );

@@ -1,7 +1,7 @@
 // Shared building blocks of the reservation services (PRD v1.7 §3.22; RSV-01..03;
 // bead legend-t8bz): permission check, idempotency binding, event/audit writers,
 // row mapping to the contract, table holds and DP reconciliation.
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { AccessTarget, PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
@@ -296,6 +296,9 @@ export const RESERVATION_AUDIT_SAFE_FIELDS = [
   "depositForfeitedIdr",
   "policyVersion",
   "resolution",
+  "refundStatus",
+  "refundAttempts",
+  "paymentRefundId",
 ] as const;
 
 /** Sensitive writes (cancel, no-show, refund/forfeit decisions) are audited. */
@@ -321,7 +324,7 @@ export async function auditReservation(
       tenantId: context.tenant.tenantId,
       outletId: input.outletId,
       actorType: input.actorUserId === null ? "system" : "user",
-      actorId: input.actorUserId ?? "system",
+      actorId: input.actorUserId,
       deviceId: null,
       action: input.action,
       objectType: "reservation",
@@ -399,10 +402,45 @@ export async function loadDepositStatuses(
   return map;
 }
 
+type IntentStatus = (typeof paymentIntents.$inferSelect)["status"];
+
+/**
+ * The contract's `depositStatus` for a row (RSV-02), total over valid rows:
+ * - no DP: null;
+ * - a recorded intent: its WS-05 status (`intentStatus`). If that lookup came
+ *   back empty, the row still says what it was: a `deposit_payment_id` is
+ *   only recorded for a settled intent, so `paid` (and `pending` for a legacy
+ *   row still waiting);
+ * - awaited (pending_deposit, no settled intent yet, link attached or still
+ *   being attached): `pending`, or `expired` once the link's window passed;
+ * - closed without anything paid: null.
+ */
+export function deriveDepositStatus(
+  row: ReservationRow,
+  intentStatus: IntentStatus | null,
+  now: Date = new Date(),
+): IntentStatus | null {
+  if (row.depositIdr === 0) return null;
+  if (row.depositPaymentId !== null)
+    return (
+      intentStatus ?? (row.status === "pending_deposit" ? "pending" : "paid")
+    );
+  if (row.status !== "pending_deposit") return null;
+  return row.depositLinkExpiresAt !== null && row.depositLinkExpiresAt <= now
+    ? "expired"
+    : "pending";
+}
+
+/**
+ * Maps a row to the contract. Total over every row the database accepts: a
+ * booking still waiting for its DP link, an awaited DP without an intent, and
+ * a settled DP later refunded (`refunded` / `partially_refunded`) all map, so
+ * one row can never fail a whole staff list.
+ */
 export function toReservation(
   row: ReservationRow,
   holds: readonly HoldRow[],
-  depositStatus: (typeof paymentIntents.$inferSelect)["status"] | null,
+  depositStatus: IntentStatus | null,
 ): Reservation {
   return reservationSchema.parse({
     id: row.id,
@@ -423,8 +461,8 @@ export function toReservation(
       ),
     ],
     depositIdr: row.depositIdr,
-    depositPaymentId: row.depositPaymentId,
-    depositStatus: row.depositPaymentId === null ? null : depositStatus,
+    depositPaymentId: row.depositIdr === 0 ? null : row.depositPaymentId,
+    depositStatus: deriveDepositStatus(row, depositStatus),
     policy: reservationPolicySnapshotSchema.parse(row.policySnapshot),
     status: row.status,
     note: row.note,
@@ -555,10 +593,156 @@ export async function releaseHolds(
 // ------------------------------------------------------------ DP reconciliation
 
 /**
- * RSV-02: a reservation waiting for its DP becomes `confirmed` once the payment
- * intent is settled, and is closed as `cancelled` (nothing paid) when the
- * payment window passed unpaid. Idempotent; call it with the row locked.
- * Returns the (possibly updated) row.
+ * Grace for a DP booking whose bill link was never attached (a crash or a
+ * payment-side failure between the booking commit and the link). PRD §3 F22 /
+ * §3.22 "DP & Kebijakan" set no value; the safest default is the snapshot's own
+ * payment window (the guest could not have paid any longer than that), and this
+ * constant only applies when the snapshot cannot be read.
+ */
+export const DEPOSIT_ATTACH_GRACE_MINUTES = 30;
+/** `close_reason` of a reservation closed because its DP was never paid. */
+export const DEPOSIT_NOT_PAID_REASON = "deposit_not_paid";
+
+function paymentWindowMinutes(row: ReservationRow): number {
+  const parsed = reservationPolicySnapshotSchema.safeParse(row.policySnapshot);
+  return parsed.success
+    ? parsed.data.paymentWindowMinutes
+    : DEPOSIT_ATTACH_GRACE_MINUTES;
+}
+
+export type DepositState = {
+  /** First settled (`paid` / `partially_refunded`) intent of the DP, if any. */
+  readonly settledIntentId: string | null;
+  /**
+   * Until when the DP can still be paid: the link's expiry, extended by any
+   * pending intent the guest already opened on it (a QR shown just before the
+   * link expired stays payable for its own lifetime); without a link, the
+   * creation time plus the payment window (the attach grace).
+   */
+  readonly payableUntil: Date;
+};
+
+/**
+ * RSV-02: the DP's state derived from WS-05. A reservation's DP is the bill
+ * link it opened; any settled intent on that link pays it. Rows written before
+ * the link model carry the intent directly in `deposit_payment_id`.
+ */
+export async function loadDepositState(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: ReservationRow,
+): Promise<DepositState> {
+  const match: SQL[] = [];
+  if (row.depositPaymentLinkId !== null)
+    match.push(eq(paymentIntents.paymentLinkId, row.depositPaymentLinkId));
+  if (row.depositPaymentId !== null)
+    match.push(eq(paymentIntents.id, row.depositPaymentId));
+  const intents =
+    match.length === 0
+      ? []
+      : await tx
+          .select({
+            id: paymentIntents.id,
+            status: paymentIntents.status,
+            expiresAt: paymentIntents.expiresAt,
+            paidAt: paymentIntents.paidAt,
+          })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              or(...match),
+            ),
+          )
+          .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id));
+  const settled = intents.find((intent) => depositIsSettled(intent.status));
+  let payableUntil =
+    row.depositLinkExpiresAt ??
+    new Date(row.createdAt.getTime() + paymentWindowMinutes(row) * 60_000);
+  for (const intent of intents)
+    if (intent.status === "pending" && intent.expiresAt > payableUntil)
+      payableUntil = intent.expiresAt;
+  return { settledIntentId: settled?.id ?? null, payableUntil };
+}
+
+/**
+ * Closes a `pending_deposit` reservation whose DP was never paid: status
+ * `cancelled`, nothing paid / refunded / forfeited, holds released, one
+ * `reservation.cancelled` event (closedBy system) and an audit row. No-op when
+ * the row already left `pending_deposit`. Caller holds the row lock.
+ */
+export async function cancelUnpaidDeposit(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: ReservationRow,
+  now: Date,
+): Promise<ReservationRow> {
+  const [updated] = await tx
+    .update(reservations)
+    .set({
+      status: "cancelled",
+      closedAt: now,
+      closeReason: DEPOSIT_NOT_PAID_REASON,
+      closedBy: null,
+      depositRefundIdr: idr(0),
+      depositForfeitedIdr: idr(0),
+      refundStatus: "not_required",
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(reservations.tenantId, context.tenant.tenantId),
+        eq(reservations.id, row.id),
+        eq(reservations.status, "pending_deposit"),
+      ),
+    )
+    .returning();
+  if (!updated) return row;
+  await releaseHolds(tx, context, row.id, now);
+  const snapshot = reservationPolicySnapshotSchema.safeParse(
+    row.policySnapshot,
+  );
+  const version = snapshot.success ? snapshot.data.version : "unknown";
+  await appendReservationEvent(tx, context, "reservation.cancelled", {
+    reservationId: row.id,
+    outletId: row.outletId,
+    actorUserId: null,
+    now,
+    payload: {
+      reservationId: row.id,
+      closedBy: "system",
+      reason: DEPOSIT_NOT_PAID_REASON,
+      depositPaidIdr: 0,
+      depositRefundIdr: 0,
+      depositForfeitedIdr: 0,
+      policyVersion: version,
+    },
+  });
+  await auditReservation(tx, context, {
+    actorUserId: null,
+    outletId: row.outletId,
+    action: "reservation.cancelled",
+    reservationId: row.id,
+    reason: DEPOSIT_NOT_PAID_REASON,
+    before: { status: row.status, depositPaidIdr: 0 },
+    after: {
+      status: "cancelled",
+      depositRefundIdr: 0,
+      depositForfeitedIdr: 0,
+      policyVersion: version,
+    },
+    now,
+  });
+  return updated;
+}
+
+/**
+ * RSV-02: a reservation waiting for its DP becomes `confirmed` once an intent
+ * on its DP link is settled (that intent is recorded as `deposit_payment_id`),
+ * and is closed as `cancelled` (nothing paid) once the DP can no longer be
+ * paid. Idempotent and replay safe (conditional on `pending_deposit`; the
+ * events are keyed per reservation); call it with the row locked. Returns the
+ * (possibly updated) row.
  */
 export async function reconcileDeposit(
   tx: Tx,
@@ -566,16 +750,16 @@ export async function reconcileDeposit(
   row: ReservationRow,
   now: Date,
 ): Promise<ReservationRow> {
-  if (row.status !== "pending_deposit" || row.depositPaymentId === null)
-    return row;
-  const statuses = await loadDepositStatuses(tx, context, [
-    row.depositPaymentId,
-  ]);
-  const status = statuses.get(row.depositPaymentId) ?? null;
-  if (depositIsSettled(status)) {
+  if (row.status !== "pending_deposit") return row;
+  const state = await loadDepositState(tx, context, row);
+  if (state.settledIntentId !== null) {
     const [updated] = await tx
       .update(reservations)
-      .set({ status: "confirmed", updatedAt: now })
+      .set({
+        status: "confirmed",
+        depositPaymentId: state.settledIntentId,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(reservations.tenantId, context.tenant.tenantId),
@@ -592,55 +776,13 @@ export async function reconcileDeposit(
       now,
       payload: {
         reservationId: row.id,
-        depositPaymentId: row.depositPaymentId,
+        depositPaymentId: state.settledIntentId,
         depositIdr: row.depositIdr,
       },
     });
     return updated;
   }
-  const expired =
-    row.depositLinkExpiresAt !== null && row.depositLinkExpiresAt <= now;
-  if (
-    expired &&
-    (status === "pending" || status === "expired" || status === "failed")
-  ) {
-    const [updated] = await tx
-      .update(reservations)
-      .set({
-        status: "cancelled",
-        closedAt: now,
-        closeReason: "DP tidak dibayar sampai batas waktu.",
-        depositRefundIdr: idr(0),
-        depositForfeitedIdr: idr(0),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(reservations.tenantId, context.tenant.tenantId),
-          eq(reservations.id, row.id),
-          eq(reservations.status, "pending_deposit"),
-        ),
-      )
-      .returning();
-    if (!updated) return row;
-    await releaseHolds(tx, context, row.id, now);
-    const snapshot = reservationPolicySnapshotSchema.parse(row.policySnapshot);
-    await appendReservationEvent(tx, context, "reservation.cancelled", {
-      reservationId: row.id,
-      outletId: row.outletId,
-      actorUserId: null,
-      now,
-      payload: {
-        reservationId: row.id,
-        closedBy: "system",
-        reason: "DP tidak dibayar sampai batas waktu.",
-        depositPaidIdr: 0,
-        depositRefundIdr: 0,
-        depositForfeitedIdr: 0,
-        policyVersion: snapshot.version,
-      },
-    });
-    return updated;
-  }
+  if (state.payableUntil <= now)
+    return cancelUnpaidDeposit(tx, context, row, now);
   return row;
 }

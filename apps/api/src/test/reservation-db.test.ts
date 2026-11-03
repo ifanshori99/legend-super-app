@@ -2,8 +2,8 @@
 // overlap under concurrency, RSV-02 paid DP is a deposit allocated on arrival,
 // RSV-03 cancellation follows the snapshot taken at booking; TEN-01..03
 // isolation; bead legend-t8bz). Runs the real services with the restricted app
-// role (RLS enforced); the payment side is a test double of the deposit port
-// that writes real payment_links / payment_intents rows like WS-05 does.
+// role (RLS enforced); the DP goes through the real WS-05 adapter (bill link,
+// hosted-page intent, verified confirmation) with a gateway test double.
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { createPaymentIntentInputSchema } from "@starter/shared/payment";
 import {
   assignReservationTablesInputSchema,
   cancelReservationInputSchema,
@@ -20,6 +21,7 @@ import {
   markNoShowInputSchema,
   reservationAvailabilityQuerySchema,
   seatReservationInputSchema,
+  type ReservationCreated,
 } from "@starter/shared/reservation";
 import { db } from "../db";
 import { reservations } from "../db/schema/reservation";
@@ -38,9 +40,14 @@ import {
 } from "../services/reservation-lifecycle.ts";
 import { zonedInstant } from "../services/reservation-plan.ts";
 import {
-  setReservationDepositPort,
-  type ReservationDepositPort,
-} from "../services/reservation-ports.ts";
+  setPaymentGateway,
+  type GatewayIntent,
+  type GatewayIntentRequest,
+  type PaymentGatewayPort,
+} from "../services/payment-gateway.ts";
+import { confirmPayment, createIntent } from "../services/payment.service.ts";
+import { createPaymentReservationDepositPort } from "../services/reservation-deposit-payment.ts";
+import { setReservationDepositPort } from "../services/reservation-ports.ts";
 import {
   createIsolatedTenant,
   createTable,
@@ -96,87 +103,70 @@ let staff: Staff;
 let isolated: IsolatedTenant | undefined;
 const zoneIds: string[] = [];
 const tableIds: string[] = [];
-const intentIds: string[] = [];
 const linkIds: string[] = [];
-const refunds: { paymentIntentId: string; refundIdr: number }[] = [];
-const openedByKey = new Map<string, { id: string; url: string; exp: string }>();
 
-/** A deposit port that behaves like WS-05: one intent per idempotency key. */
-const depositPort: ReservationDepositPort = {
-  async openDeposit(input) {
-    const cached = openedByKey.get(input.idempotencyKey);
-    if (cached)
-      return {
-        paymentIntentId: cached.id,
-        paymentUrl: cached.url,
-        expiresAt: cached.exp,
-      };
-    const linkId = randomUUID();
-    const intentId = randomUUID();
-    const expiresAt = new Date(
-      input.now.getTime() + input.expiresInMinutes * 60_000,
-    );
-    await asOwner(seededTenantId, async (client) => {
-      await client.query(
-        `INSERT INTO payment_links
-           (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $6, 'reservation-test')`,
-        [
-          linkId,
-          seededTenantId,
-          input.outletId,
-          randomUUID().replaceAll("-", "").padEnd(64, "0"),
-          `RSV-${linkId.slice(0, 8)}`,
-          input.amountIdr,
-        ],
-      );
-      await client.query(
-        `INSERT INTO payment_intents
-           (id, tenant_id, outlet_id, payment_link_id, reservation_id, method, provider, amount_idr,
-            idempotency_key, status, instructions, expires_at)
-         VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', $6, $7, 'pending',
-                 '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}', $8)`,
-        [
-          intentId,
-          seededTenantId,
-          input.outletId,
-          linkId,
-          input.reservationId,
-          input.amountIdr,
-          input.idempotencyKey,
-          expiresAt,
-        ],
-      );
-    });
-    linkIds.push(linkId);
-    intentIds.push(intentId);
-    const opened = {
-      id: intentId,
-      url: `https://pay.example.test/${intentId}`,
-      exp: expiresAt.toISOString(),
+/**
+ * Gateway test double behind the real WS-05 path: like the provider, one
+ * payable code per idempotency key (a retry returns the same code).
+ */
+class FakeGateway implements PaymentGatewayPort {
+  readonly provider = "doit";
+  private readonly byKey = new Map<string, GatewayIntent>();
+  async health() {
+    return { status: "available" as const };
+  }
+  async createIntent(input: GatewayIntentRequest): Promise<GatewayIntent> {
+    const cached = this.byKey.get(input.idempotencyKey);
+    if (cached) return cached;
+    const created: GatewayIntent = {
+      providerRef: `FAKE-RSV-${randomUUID()}`,
+      instructions: {
+        method: "qris",
+        qrPayload: "00020101021226FAKERSV",
+        issuer: null,
+      },
+      expiresAt: input.expiresAt,
     };
-    openedByKey.set(input.idempotencyKey, opened);
+    this.byKey.set(input.idempotencyKey, created);
+    return created;
+  }
+  async getStatus(input: { providerRef: string }) {
     return {
-      paymentIntentId: opened.id,
-      paymentUrl: opened.url,
-      expiresAt: opened.exp,
+      status: "pending" as const,
+      providerRef: input.providerRef,
+      amountIdr: null,
     };
-  },
-  async requestRefund(input) {
-    refunds.push({
-      paymentIntentId: input.paymentIntentId,
-      refundIdr: input.refundIdr,
-    });
-  },
-};
+  }
+  async channels() {
+    return [];
+  }
+}
 
-async function payDeposit(intentId: string) {
-  await asOwner(seededTenantId, (client) =>
-    client.query(
-      "UPDATE payment_intents SET status = 'paid', paid_at = now() WHERE id = $1",
-      [intentId],
-    ),
+/**
+ * The guest pays the DP the WS-05 way: opens the hosted page (token from the
+ * returned path), creates a QRIS intent, and the verified webhook confirms it.
+ */
+async function payDeposit(created: ReservationCreated): Promise<string> {
+  const deposit = created.deposit!;
+  linkIds.push(deposit.paymentLinkId);
+  const token = deposit.paymentPath.slice("/bayar/".length);
+  const intent = await createIntent(
+    tenantScope(),
+    token,
+    createPaymentIntentInputSchema.parse({
+      method: "qris",
+      channelCode: null,
+      idempotencyKey: `rsv-pay-${created.reservation.id}`,
+    }),
   );
+  await confirmPayment(tenantScope(), intent.id, {
+    source: "verified_webhook",
+    method: "qris",
+    amountIdr: deposit.amountIdr,
+    providerRef: `PAID-${intent.id}`,
+    at: new Date().toISOString(),
+  });
+  return intent.id;
 }
 
 type PolicySeed = {
@@ -272,14 +262,21 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   app = createApp();
   staff = await staffWithRole(app, { template: "owner", label: "Rsv Owner" });
-  setReservationDepositPort(depositPort);
+  setPaymentGateway(new FakeGateway());
+  setReservationDepositPort(createPaymentReservationDepositPort());
   await setPolicy({ version: "base-1" });
 });
 
 afterAll(async () => {
   setReservationDepositPort(null);
+  setPaymentGateway(null);
   await asOwner(seededTenantId, async (client) => {
     const rsv = `(SELECT id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2))`;
+    const links = await client.query<{ id: string }>(
+      "SELECT deposit_payment_link_id AS id FROM reservations WHERE tenant_id = $1 AND zone_id = ANY($2) AND deposit_payment_link_id IS NOT NULL",
+      [seededTenantId, zoneIds],
+    );
+    const allLinks = [...new Set([...linkIds, ...links.rows.map((r) => r.id)])];
     await client.query(
       `DELETE FROM reservation_deposit_allocations WHERE tenant_id = $1 AND reservation_id IN ${rsv}`,
       [seededTenantId, zoneIds],
@@ -300,13 +297,27 @@ afterAll(async () => {
       "DELETE FROM reservation_policies WHERE tenant_id = $1 AND outlet_id = $2",
       [seededTenantId, seededOutletA],
     );
+    const intents = `(SELECT id FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[]))`;
+    for (const table of [
+      "payment_refunds",
+      "payment_evidence",
+      "payment_unallocated_funds",
+    ])
+      await client.query(
+        `DELETE FROM ${table} WHERE tenant_id = $1 AND payment_intent_id IN ${intents}`,
+        [seededTenantId, allLinks],
+      );
     await client.query(
-      "DELETE FROM payment_intents WHERE tenant_id = $1 AND id = ANY($2)",
-      [seededTenantId, intentIds],
+      "DELETE FROM payment_admin_idempotency WHERE tenant_id = $1 AND key LIKE 'reservation-refund:%'",
+      [seededTenantId],
     );
     await client.query(
-      "DELETE FROM payment_links WHERE tenant_id = $1 AND id = ANY($2)",
-      [seededTenantId, linkIds],
+      "DELETE FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])",
+      [seededTenantId, allLinks],
+    );
+    await client.query(
+      "DELETE FROM payment_links WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [seededTenantId, allLinks],
     );
   });
   await dropFloorRows({ tenantId: seededTenantId, zoneIds, tableIds });
@@ -507,7 +518,9 @@ describe("RSV-02 the paid DP is a deposit allocated on arrival", () => {
     );
     expect(created.reservation.status).toBe("pending_deposit");
     expect(created.deposit?.amountIdr).toBe(100_000);
-    expect(created.deposit?.paymentUrl.startsWith("https://")).toBe(true);
+    expect(created.deposit?.paymentPath.startsWith("/bayar/")).toBe(true);
+    expect(created.reservation.depositPaymentId).toBeNull();
+    expect(created.reservation.depositStatus).toBe("pending");
     const id = created.reservation.id;
 
     // Tentative hold: staff may assign tables before the DP is paid.
@@ -537,7 +550,7 @@ describe("RSV-02 the paid DP is a deposit allocated on arrival", () => {
       ),
     ).rejects.toMatchObject({ code: "RESERVATION_DEPOSIT_UNPAID" });
 
-    await payDeposit(created.deposit!.paymentIntentId);
+    await payDeposit(created);
     const seatKey = key();
     const seated = await seatReservation(
       tenantScope(),
@@ -624,7 +637,7 @@ describe("RSV-03 cancellation follows the policy snapshot", () => {
       bookedAt,
     );
     expect(created.reservation.policy.version).toBe("snap-1");
-    await payDeposit(created.deposit!.paymentIntentId);
+    const paidIntentId = await payDeposit(created);
 
     // The outlet now refunds nothing and has no free window: must not matter.
     await setPolicy({
@@ -635,7 +648,6 @@ describe("RSV-03 cancellation follows the policy snapshot", () => {
       lateBp: 0,
       noShowBp: 0,
     });
-    const refundsBefore = refunds.length;
     const closed = await cancelReservation(
       tenantScope(),
       staff.userId,
@@ -653,8 +665,15 @@ describe("RSV-03 cancellation follows the policy snapshot", () => {
       forfeitedIdr: 50_000,
       policyVersion: "snap-1",
     });
-    expect(refunds.slice(refundsBefore)).toEqual([
-      { paymentIntentId: created.deposit!.paymentIntentId, refundIdr: 50_000 },
+    // The refund is a WS-05 refund request (approval stays with WS-05).
+    const refundRows = await asOwner(seededTenantId, (client) =>
+      client.query<{ amount_idr: string; status: string }>(
+        "SELECT amount_idr::text, status FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2",
+        [seededTenantId, paidIntentId],
+      ),
+    );
+    expect(refundRows.rows).toEqual([
+      { amount_idr: "50000", status: "pending" },
     ]);
     expect(await liveHolds(created.reservation.id)).toEqual([]);
     expect(await eventNames(created.reservation.id)).toContain(
@@ -697,7 +716,7 @@ describe("RSV-03 cancellation follows the policy snapshot", () => {
       key(),
       new Date(dayAt("2027-03-10", "09:00")),
     );
-    await payDeposit(early.deposit!.paymentIntentId);
+    await payDeposit(early);
     const full = await cancelReservation(
       tenantScope(),
       staff.userId,
@@ -720,7 +739,7 @@ describe("RSV-03 cancellation follows the policy snapshot", () => {
       key(),
       new Date(dayAt("2027-03-10", "09:00")),
     );
-    await payDeposit(late.deposit!.paymentIntentId);
+    await payDeposit(late);
     await expect(
       markReservationNoShow(
         tenantScope(),
