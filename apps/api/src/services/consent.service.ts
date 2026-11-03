@@ -32,6 +32,7 @@ import {
 import { db } from "../db/index.ts";
 import { consents } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isStaffConsentSourceAllowed } from "@starter/shared/crm";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 
@@ -130,7 +131,20 @@ export async function recordConsent(
   input: RecordConsentInput,
   actorUserId: string,
 ): Promise<ConsentRecord> {
-  assertTenantWide(context);
+  // legend-ovi8 / LOY-04: this back-office path is staff-only; member_pwa and
+  // website consents come from the customer's own session, never from staff.
+  if (!isStaffConsentSourceAllowed(input.source))
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Staff can only record consent from the cashier or an import.",
+    );
+  // Opus review: cashier/outlet_manager hold crm.consent.record (coordinator
+  // decision) and work outlet-scoped. A consent is a tenant-wide customer fact,
+  // so an outlet-scoped member may record one, but only as witnessed at the
+  // counter; bulk `import` stays tenant-wide.
+  if (context.outletScope.kind !== "tenant" && input.source !== "cashier")
+    assertTenantWide(context);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     await tx.execute(
@@ -183,7 +197,12 @@ export async function recordConsent(
       {
         id: createUlid(),
         tenantId,
-        outletId: null,
+        // An outlet-scoped recorder (cashier, legend-ovi8) audits under the
+        // first outlet it reaches; tenant-wide audits need tenant scope.
+        outletId:
+          context.outletScope.kind === "tenant"
+            ? null
+            : [...context.outletScope.outletIds].sort()[0],
         actorType: "user",
         actorId: actorUserId,
         deviceId: null,

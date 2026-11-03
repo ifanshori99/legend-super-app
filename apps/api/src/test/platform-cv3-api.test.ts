@@ -23,17 +23,23 @@ const subjectId = randomUUID();
 // A key no other suite writes in the seeded tenant.
 const overrideKey = "terms.showerRoom";
 
-async function tenantMember(template: string) {
+async function tenantMember(template: string, outletId?: string) {
   const client = agent(app);
   const email = await signUp(client, `Uji cv3 ${template}`);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   const assigned = await owner.query(
     `INSERT INTO role_assignments
-       (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
-     SELECT $1, $2, id, 'tenant', now() - interval '1 minute', $2 FROM roles
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     SELECT $1, $2, id, $4, $5::uuid, now() - interval '1 minute', $2 FROM roles
      WHERE tenant_id = $1 AND template_key = $3`,
-    [seededTenantId, userId, template],
+    [
+      seededTenantId,
+      userId,
+      template,
+      outletId ? "outlet" : "tenant",
+      outletId ?? null,
+    ],
   );
   if (assigned.rowCount !== 1) throw new Error(`No ${template} role template`);
   await verifySessionMfa(email);
@@ -188,5 +194,54 @@ describe("cv3 consent routes", () => {
       .get("/api/consents")
       .query({ subjectId, view: "latest" });
     expect(denied.status).toBe(403);
+  });
+});
+
+describe("ovi8 consent write permission", () => {
+  const body = {
+    subjectId,
+    purpose: "ai",
+    policyVersion: "2026-11",
+    decision: "granted",
+  };
+
+  it("LOY-04 legend-ovi8 staff cannot claim member_pwa or website as the source", async () => {
+    const client = await tenantMember("marketing");
+    for (const source of ["member_pwa", "website"]) {
+      const res = await client
+        .post("/api/consents")
+        .set(originHeader)
+        .send({ ...body, source });
+      expect(res.status).toBe(422);
+    }
+  });
+
+  it("LOY-04 legend-ovi8 an outlet-scoped cashier records a cashier consent but not an import", async () => {
+    const cashier = await tenantMember(
+      "cashier",
+      cafeLegendPlatformFixtures.outlets[0].id,
+    );
+    const imported = await cashier
+      .post("/api/consents")
+      .set(originHeader)
+      .send({ ...body, source: "import" });
+    expect(imported.status).toBe(403);
+    const counter = await cashier
+      .post("/api/consents")
+      .set(originHeader)
+      .send({ ...body, source: "cashier" });
+    expect(counter.status).toBe(201);
+  });
+
+  it("LOY-04 legend-ovi8 a role without crm.consent.record gets 403 on POST", async () => {
+    const waiter = await tenantMember(
+      "waiter",
+      cafeLegendPlatformFixtures.outlets[0].id,
+    );
+    const res = await waiter
+      .post("/api/consents")
+      .set(originHeader)
+      .send({ ...body, source: "cashier" });
+    expect(res.status).toBe(403);
   });
 });

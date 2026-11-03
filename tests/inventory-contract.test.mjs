@@ -1234,3 +1234,101 @@ test("setup writes: locations, alternates, conversions and transfers (PRD §16, 
     true,
   );
 });
+
+test("par level writes validate the range and reject tenant fields (PRD §16 Par Level, TEN-02)", () => {
+  const [location] = fixtures.locations;
+  const item = fixtures.items[0];
+  const par = {
+    outletId: location.outletId,
+    locationId: location.id,
+    inventoryItemId: item.id,
+    parMin: "2.0000",
+    parMax: "10.0000",
+    idempotencyKey: "fixture-par-0001",
+  };
+  assert.equal(
+    inventory.createParLevelInputSchema.safeParse(par).success,
+    true,
+  );
+  assert.equal(
+    inventory.createParLevelInputSchema.safeParse({ ...par, parMax: "1.0000" })
+      .success,
+    false,
+    "parMax below parMin",
+  );
+  assert.equal(
+    inventory.createParLevelInputSchema.safeParse({
+      ...par,
+      tenantId: item.tenantId,
+    }).success,
+    false,
+  );
+  const withoutKey = { ...par };
+  delete withoutKey.idempotencyKey;
+  assert.equal(
+    inventory.createParLevelInputSchema.safeParse(withoutKey).success,
+    false,
+    "writes carry an idempotency key",
+  );
+  assert.equal(
+    inventory.updateParLevelInputSchema.safeParse({ parMax: "12.0000" })
+      .success,
+    true,
+  );
+  assert.equal(
+    inventory.updateParLevelInputSchema.safeParse({}).success,
+    false,
+  );
+  assert.equal(
+    inventory.updateParLevelInputSchema.safeParse({
+      parMin: "5.0000",
+      parMax: "4.0000",
+    }).success,
+    false,
+  );
+  for (const endpoint of [
+    inventory.createParLevel,
+    inventory.updateParLevel,
+    inventory.deleteParLevel,
+  ])
+    assert.ok(inventory.inventoryEndpoints.includes(endpoint), endpoint.id);
+});
+
+test("tenant inventory settings: deduction mode and expiry window are bounded (PRD §16 Pemotongan Otomatis, Batch & Kedaluwarsa)", () => {
+  const input = {
+    recipeDeductionMode: "close_of_day",
+    expiryWarningDays: 7,
+    expectedUpdatedAt: null,
+    idempotencyKey: "fixture-settings-0001",
+  };
+  assert.equal(
+    inventory.updateInventorySettingsInputSchema.safeParse(input).success,
+    true,
+  );
+  for (const bad of [
+    { recipeDeductionMode: "weekly" },
+    { expiryWarningDays: 0 },
+    { expiryWarningDays: 366 },
+    { expiryWarningDays: 2.5 },
+    { tenantId: fixtures.items[0].tenantId },
+  ])
+    assert.equal(
+      inventory.updateInventorySettingsInputSchema.safeParse({
+        ...input,
+        ...bad,
+      }).success,
+      false,
+      JSON.stringify(bad),
+    );
+  assert.equal(
+    inventory.inventorySettingsSchema.safeParse({
+      tenantId: fixtures.items[0].tenantId,
+      recipeDeductionMode: inventory.DEFAULT_RECIPE_DEDUCTION_MODE,
+      expiryWarningDays: inventory.DEFAULT_EXPIRY_WARNING_DAYS,
+      updatedAt: null,
+    }).success,
+    true,
+  );
+  assert.equal(inventory.getInventorySettings.method, "GET");
+  assert.equal(inventory.updateInventorySettings.method, "PUT");
+});

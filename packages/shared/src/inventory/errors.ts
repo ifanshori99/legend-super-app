@@ -26,6 +26,10 @@ export const INVENTORY_ERROR_CODES = [
   "STOCK_COUNT_SELF_APPROVAL",
   /** The requested production-order action is not allowed from its status. */
   "PRODUCTION_INVALID_TRANSITION",
+  /** A stock-out would take the location below zero on hand (F16/F17). */
+  "INSUFFICIENT_STOCK",
+  /** Production could not resolve a single kitchen location for the outlet. */
+  "PRODUCTION_LOCATION_UNRESOLVED",
 ] as const;
 
 export const inventoryErrorCodeSchema = z.enum(INVENTORY_ERROR_CODES);

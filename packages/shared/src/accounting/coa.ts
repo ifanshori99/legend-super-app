@@ -200,6 +200,8 @@ export const POSTING_ACCOUNT_ROLES = {
   loyalty_breakage_revenue: "revenue",
   rounding: "revenue",
   asset_disposal_result: "revenue",
+  revaluation_surplus: "equity",
+  asset_revaluation_loss: "expense",
   cogs: "expense",
   waste_expense: "expense",
   inventory_adjustment: "expense",
@@ -368,6 +370,13 @@ const standardRows: Row[] = [
   ["3101", "Modal Disetor", "equity", "3100"],
   ["3102", "Laba Ditahan", "equity", "3100", ["retained_earnings"]],
   ["3103", "Ekuitas Saldo Awal", "equity", "3100", ["opening_balance_equity"]],
+  [
+    "3104",
+    "Surplus Revaluasi Aset Tetap",
+    "equity",
+    "3100",
+    ["revaluation_surplus"],
+  ],
   ["4100", "Pendapatan Usaha", "revenue", null],
   [
     "4101",
@@ -434,6 +443,13 @@ const standardRows: Row[] = [
   ],
   ["8100", "Beban Lain-lain", "other_expense", null],
   ["8101", "Beban Administrasi Bank", "other_expense", "8100"],
+  [
+    "8102",
+    "Rugi Revaluasi Aset Tetap",
+    "other_expense",
+    "8100",
+    ["asset_revaluation_loss"],
+  ],
 ];
 
 /** Standard F&B chart (PRD §3.19); a template, copied per legal entity and editable. */

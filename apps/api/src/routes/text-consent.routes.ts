@@ -17,6 +17,7 @@ import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
+  requireMenuPermission,
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
@@ -64,18 +65,29 @@ textOverridesRouter.put(
 
 export const consentRouter = Router();
 const viewCustomers = requireTenantPermission("crm.customer.view");
+// legend-ovi8: recording consent is a write, not a customer-view read. The
+// cashier template is outlet-scoped, so the gate mints the caller's reachable
+// scope (tenant or their outlets) instead of demanding a tenant-wide grant;
+// recordConsent limits outlet-scoped callers to source "cashier".
+const recordConsentPermission = requireMenuPermission("crm.consent.record");
 
 consentRouter.get("/", ...base, viewCustomers, async (req, res) => {
   const query = listConsentsQuerySchema.parse(req.query);
   res.json(await listConsents(getScopedTenantContext(req), query));
 });
 
-consentRouter.post("/", ...base, viewCustomers, jsonBody, async (req, res) => {
-  const input = recordConsentInputSchema.parse(req.body);
-  const consent = await recordConsent(
-    getScopedTenantContext(req),
-    input,
-    getAuth(req).user.id,
-  );
-  res.status(201).json({ data: consent });
-});
+consentRouter.post(
+  "/",
+  ...base,
+  recordConsentPermission,
+  jsonBody,
+  async (req, res) => {
+    const input = recordConsentInputSchema.parse(req.body);
+    const consent = await recordConsent(
+      getScopedTenantContext(req),
+      input,
+      getAuth(req).user.id,
+    );
+    res.status(201).json({ data: consent });
+  },
+);
