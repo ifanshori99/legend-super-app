@@ -79,6 +79,10 @@ export function ReportLinesTable({ report }: { report: TaxReport }) {
             </dl>
           </li>
         ))}
+        <li className="flex items-center justify-between gap-2 p-card font-medium">
+          <span>{t("accounting.tax.report.totalTax")}</span>
+          <Money amount={report.amountIdr} />
+        </li>
       </ul>
       <div className="hidden md:block">
         <Table className="min-w-[44rem]">

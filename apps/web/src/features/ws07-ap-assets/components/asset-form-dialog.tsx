@@ -67,6 +67,7 @@ function FixedAssetForm({
   const create = useCreateFixedAsset();
   const outletsQuery = useAccountingOutlets();
   const today = React.useMemo(() => businessDateToday(), []);
+  const outletFieldId = React.useId();
   const [values, setValues] = React.useState({
     name: "",
     acquiredOn: today,
@@ -247,12 +248,15 @@ function FixedAssetForm({
               className="tabular"
             />
           </FormField>
-          <FormField label={t("accounting.ap.assets.form.outlet")}>
+          <FormField
+            id={outletFieldId}
+            label={t("accounting.ap.assets.form.outlet")}
+          >
             <Select
               value={values.outletId}
               onValueChange={(outletId) => patch({ outletId })}
             >
-              <SelectTrigger className="h-control-sm">
+              <SelectTrigger id={outletFieldId} className="h-control-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

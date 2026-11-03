@@ -5,11 +5,12 @@
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import type { FiscalPeriod } from "@starter/shared/accounting";
-import { accountingKeys } from "../ws07-accounting/queries";
+import { accountingKeys, fiscalPeriodsQuery } from "../ws07-accounting/queries";
 import * as api from "./api";
 import type {
   BalanceSheetQuery,
@@ -39,6 +40,15 @@ export {
 } from "../ws07-accounting/hooks";
 
 export const DRILL_DOWN_PAGE_SIZE = 20;
+
+/** Fiscal periods of several entities (multi-entity official/estimate label). */
+export function useEntityFiscalPeriods(legalEntityIds: readonly string[]) {
+  return useQueries({
+    queries: legalEntityIds.map((legalEntityId) =>
+      fiscalPeriodsQuery(legalEntityId),
+    ),
+  });
+}
 
 // ---- Statement queries -----------------------------------------------------
 

@@ -21,12 +21,22 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL to a web server running VITE_API_MOCK.",
 );
 
-/** The fixture ledger is November 2026 (cafeLegendAccountingFixtures). */
+/**
+ * The fixture ledger is November 2026 and its business date is
+ * `cafeLegendAccountingFixtures.asOf` = 2026-11-30 (the date the mock close
+ * checks against); September and October are closed, November is open. The
+ * browser clock is pinned there so the screens' default "current month"
+ * range is November in any wall-clock month (pattern: legend-nv3y).
+ */
+const FIXTURE_NOW = new Date("2026-11-30T12:00:00.000+07:00");
 const RANGE = { from: "2026-11-01", to: "2026-11-30" } as const;
+const CLOSED_OCTOBER = { from: "2026-10-01", to: "2026-10-31" } as const;
+const MOCK_ACTOR_KEY = "legend-mock-accounting-actor";
 /** The corrections in the fixture: the final internet bill lands on 6106. */
 const INTERNET_CORRECTION = "e1000000-0000-4000-8000-00000000000c";
 
 async function open(page: Page, path: string) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(`${base}${path}`);
   // Hydration settles after load; a fill before React attaches would be wiped
   // by the first client render.
@@ -38,15 +48,29 @@ async function open(page: Page, path: string) {
 }
 
 /**
- * The statement screens default to the month of the business date. The
- * fixtures hold November 2026, so the spec pins the range: a run in another
- * month would otherwise assert (and capture) an empty statement.
+ * The statement screens default to the month of the business date (pinned to
+ * the fixture by `open`); the explicit range keeps the assertions readable.
  */
-async function pinNovember(page: Page) {
-  // The range clamps itself: fill "from" first, then "to".
-  await page.getByLabel("Dari tanggal").fill(RANGE.from);
-  await page.getByLabel("Sampai tanggal").fill(RANGE.to);
+async function pinRange(page: Page, range: { from: string; to: string }) {
+  // The range clamps itself: widen with "to" first when moving later, and
+  // with "from" first when moving earlier.
+  if (range.from < (await page.getByLabel("Dari tanggal").inputValue())) {
+    await page.getByLabel("Dari tanggal").fill(range.from);
+    await page.getByLabel("Sampai tanggal").fill(range.to);
+  } else {
+    await page.getByLabel("Sampai tanggal").fill(range.to);
+    await page.getByLabel("Dari tanggal").fill(range.from);
+  }
 }
+
+async function pinNovember(page: Page) {
+  await pinRange(page, RANGE);
+}
+
+const basisBadge = (page: Page, region: string, basis: string) =>
+  page
+    .getByRole("region", { name: region })
+    .locator(`[data-slot="badge"][data-basis="${basis}"]`);
 
 test.describe("financial statements and period close", () => {
   test("ACC-03: statement types switch and a P&L row drills down to its journal", async ({
@@ -227,7 +251,98 @@ test.describe("financial statements and period close", () => {
     ).toBeVisible();
   });
 
+  test("closed periods are labelled official, open or mixed ranges estimate", async ({
+    page,
+  }) => {
+    await open(page, "/kelola/akuntansi/laporan?mock=normal");
+    // The default range is the pinned fixture month: November, still open.
+    await expect(page.getByLabel("Dari tanggal")).toHaveValue(RANGE.from);
+    await expect(basisBadge(page, "Laba rugi", "estimate")).toBeVisible();
+    await expect(
+      page.getByRole("note").filter({ hasText: "Angka sementara (estimasi)" }),
+    ).toContainText("Nov 2026");
+
+    // October is closed: official, from the close snapshot.
+    await pinRange(page, CLOSED_OCTOBER);
+    await expect(basisBadge(page, "Laba rugi", "official")).toBeVisible();
+    await expect(
+      page
+        .getByRole("note")
+        .filter({ hasText: "Angka resmi dari periode tertutup" }),
+    ).toContainText("Okt 2026");
+
+    // A range spanning closed October and open November is an estimate.
+    await pinRange(page, { from: "2026-10-15", to: "2026-11-15" });
+    await expect(basisBadge(page, "Laba rugi", "estimate")).toBeVisible();
+    await expect(
+      page.getByRole("note").filter({ hasText: "Angka sementara (estimasi)" }),
+    ).toContainText("Okt 2026");
+
+    const typeControl = page.getByRole("radiogroup", { name: "Jenis laporan" });
+
+    // Multi-entity carries the label too (every entity must be closed).
+    await typeControl.getByRole("radio", { name: "Multi-entitas" }).click();
+    await expect(basisBadge(page, "Multi-entitas", "estimate")).toBeVisible();
+    await pinRange(page, CLOSED_OCTOBER);
+    await expect(basisBadge(page, "Multi-entitas", "official")).toBeVisible();
+
+    // Balance sheet as of the end of closed October: official and balanced.
+    await typeControl.getByRole("radio", { name: "Neraca" }).click();
+    await expect(basisBadge(page, "Neraca", "official")).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Neraca" })
+        .getByText("Seimbang", { exact: true }),
+    ).toBeVisible();
+  });
+
+  test("AUTH-06: the API refuses a reopen approval by the requester and the screen says so", async ({
+    page,
+  }) => {
+    // Mock mode acts as one user for every write (finance), like one session.
+    await page.addInitScript(
+      (key) => localStorage.setItem(key, "finance"),
+      MOCK_ACTOR_KEY,
+    );
+    await open(page, "/kelola/akuntansi/tutup-periode?mock=normal");
+    const periods = page.getByRole("region", { name: "Periode fiskal" });
+    const requests = page.getByRole("region", {
+      name: "Permintaan buka ulang",
+    });
+    const octoberRow = periods
+      .getByRole("row")
+      .filter({ hasText: /^Okt 2026/ })
+      .filter({ visible: true });
+
+    const reason = "Uji AUTH-06: pemohon mencoba menyetujui sendiri.";
+    await octoberRow.getByRole("button", { name: "Ajukan buka ulang" }).click();
+    const requestDialog = page.getByRole("dialog", {
+      name: "Ajukan buka ulang Okt 2026",
+    });
+    await requestDialog.getByLabel("Alasan buka ulang").fill(reason);
+    await requestDialog
+      .getByRole("button", { name: "Kirim permintaan" })
+      .click();
+    const requestRow = requests.getByRole("row").filter({ hasText: reason });
+    await expect(requestRow).toBeVisible({ timeout: 15_000 });
+
+    // The button is not hidden: the server is the check, not the screen.
+    await requestRow.getByRole("button", { name: "Setujui" }).click();
+    await page
+      .getByRole("dialog", { name: /Setujui buka ulang Okt 2026/ })
+      .getByRole("button", { name: "Ya, buka ulang" })
+      .click();
+    await expect(
+      page.getByText(/tidak dapat menyetujuinya sendiri/).first(),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(requestRow.getByText("Menunggu persetujuan")).toBeVisible();
+    await expect(
+      octoberRow.getByText("Tertutup", { exact: true }),
+    ).toBeVisible();
+  });
+
   test("every statement has empty and error states", async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.setViewportSize({ width: 390, height: 900 });
 
     await page.goto(`${base}/kelola/akuntansi/laporan?mock=empty`, {

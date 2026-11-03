@@ -213,6 +213,29 @@ register(finalizeTaxReport, ({ params, body }) => {
 
 // ---- Export (final → exported) --------------------------------------------
 
+function xmlText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+/**
+ * Stand-in for the server-written Coretax file: the stored report values in a
+ * plain XML envelope (mock only; the real DJP schema is the API's job and the
+ * real file carries the unmasked tax ids, which the browser never sees).
+ */
+function mockCoretaxXml(report: TaxReport): string {
+  const lines = report.lines
+    .map(
+      (line) =>
+        `  <Line subjectType="${line.subjectType}" subjectName="${xmlText(line.subjectName)}" baseIdr="${line.baseIdr}" taxIdr="${line.taxIdr}"/>`,
+    )
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<MockCoretaxExport type="${report.type}" period="${report.period}" amountIdr="${report.amountIdr}">\n${lines}\n</MockCoretaxExport>\n`;
+}
+
 register(exportTaxReport, ({ params, body }) => {
   const current = state.get();
   const replayKey = `export:${params.taxReportId}:${body.idempotencyKey}`;
@@ -235,10 +258,12 @@ register(exportTaxReport, ({ params, body }) => {
     taxReportId: report.id,
     fileKey,
     fileName: `coretax-${report.type}-${report.period}.xml`,
-    // The mock has no storage adapter; a stable example origin keeps the URL
-    // shape the API will return. The screen never opens it, it downloads the
-    // on-screen recap rows instead.
-    downloadUrl: `https://storage.cafelegend.example/${fileKey}`,
+    // The mock has no storage adapter, so the "signed URL" is a data: URL of
+    // the file the server would store. The screen downloads whatever URL the
+    // endpoint returns and never builds the file itself.
+    downloadUrl: `data:application/xml;charset=utf-8,${encodeURIComponent(
+      mockCoretaxXml(report),
+    )}`,
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
   });
   const next = taxReportSchema.parse({

@@ -1,7 +1,9 @@
 // Multi-entity P&L: one column per legal entity. The first column is sticky so
 // the account stays visible while the table scrolls at 390px. Per-entity
 // amounts and section totals come from each entity's P&L; the combined column
-// only has the net profit the contract provides.
+// only has the net profit the contract provides. The official/estimate label
+// covers every entity in the report: one open month anywhere makes it an
+// estimate.
 import { ListTree } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -16,14 +18,20 @@ import {
 } from "@/components/ui/table";
 import {
   REPORT_GROUP_KEYS,
+  combineStatementBases,
   drillDownQueryFor,
   hasMultiEntityAccountRows,
   multiEntityRows,
+  statementBasis,
   statementQueryFor,
   type MultiEntityRowView,
   type StatementViewProps,
 } from "../lib";
-import { useLegalEntities, useMultiEntityStatement } from "../hooks";
+import {
+  useEntityFiscalPeriods,
+  useLegalEntities,
+  useMultiEntityStatement,
+} from "../hooks";
 import { StatementFrame } from "./statement-frame";
 
 function dash() {
@@ -48,6 +56,18 @@ export function MultiEntityView({
   const rows = report ? multiEntityRows(report) : [];
   const empty = report !== undefined && !hasMultiEntityAccountRows(rows);
   const entityCount = report?.entities.length ?? 0;
+  const periodQueries = useEntityFiscalPeriods(
+    report?.entities.map((entity) => entity.legalEntityId) ?? [],
+  );
+  const basis =
+    !report || periodQueries.some((query) => query.isPending)
+      ? null
+      : combineStatementBases(
+          periodQueries.map((query) =>
+            // A failed period read cannot prove a close: estimate.
+            statementBasis(query.data ?? [], params.from, params.to),
+          ),
+        ).basis;
   const entityName = (legalEntityId: string) =>
     entitiesQuery.data?.find((entity) => entity.id === legalEntityId)?.name ??
     t("accounting.report.multi.entityFallback");
@@ -82,6 +102,7 @@ export function MultiEntityView({
       empty={empty}
       onRetry={() => void statement.refetch()}
       onReset={onResetRange}
+      basis={basis}
     >
       <div>
         <Table className={entityCount > 1 ? "min-w-[48rem]" : "min-w-0"}>
@@ -211,7 +232,8 @@ export function MultiEntityView({
           </TableBody>
         </Table>
         <p className="border-t border-border px-card py-3 text-sm leading-5 text-muted-foreground">
-          {t("accounting.report.multi.note")}
+          {t("accounting.report.multi.note")}{" "}
+          {t("accounting.report.basis.multiEntityNote")}
         </p>
       </div>
     </StatementFrame>

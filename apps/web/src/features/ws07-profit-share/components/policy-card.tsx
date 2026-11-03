@@ -146,6 +146,7 @@ function PolicyForm({
   entity: ProfitEntity;
 }) {
   const t = useT();
+  const frequencyFieldId = React.useId();
   const toast = useToast();
   const update = useUpdateProfitEntity(entity.id);
   const [reserveBp, setReserveBp] = React.useState(
@@ -223,14 +224,17 @@ function PolicyForm({
               className="tabular"
             />
           </FormField>
-          <FormField label={t("accounting.share.entityForm.frequency")}>
+          <FormField
+            id={frequencyFieldId}
+            label={t("accounting.share.entityForm.frequency")}
+          >
             <Select
               value={frequency}
               onValueChange={(value) =>
                 setFrequency(value as DistributionFrequency)
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id={frequencyFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

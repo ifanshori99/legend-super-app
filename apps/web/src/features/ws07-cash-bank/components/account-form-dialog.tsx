@@ -181,6 +181,7 @@ function BankAccountForm({
           />
         </FormField>
         <FormField
+          id="cash-account-gl"
           label={t("accounting.cash.accounts.form.gl")}
           hint={
             cashAccounts.length === 0
@@ -195,7 +196,7 @@ function BankAccountForm({
             onValueChange={(value) => update({ glAccountId: value })}
             disabled={cashAccounts.length === 0}
           >
-            <SelectTrigger>
+            <SelectTrigger id="cash-account-gl">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

@@ -244,12 +244,13 @@ function StatementImportWizard({
       {step === 1 && (
         <div className="grid gap-4">
           <FormField
+            id="cash-import-account"
             label={t("accounting.cash.import.source.account")}
             hint={t("accounting.cash.import.source.accountHint")}
             required
           >
             <Select value={accountId} onValueChange={setAccountId}>
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-account">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -309,6 +310,7 @@ function StatementImportWizard({
             })}
           </p>
           <FormField
+            id="cash-import-delimiter"
             label={t("accounting.cash.import.mapping.delimiter")}
             required
           >
@@ -320,7 +322,7 @@ function StatementImportWizard({
                 })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-delimiter">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -349,6 +351,7 @@ function StatementImportWizard({
             </Label>
           </div>
           <FormField
+            id="cash-import-datecolumn"
             label={t("accounting.cash.import.mapping.dateColumn")}
             required
           >
@@ -358,7 +361,7 @@ function StatementImportWizard({
                 updateMapping({ dateColumn: Number(value) })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-datecolumn">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -373,6 +376,7 @@ function StatementImportWizard({
             </Select>
           </FormField>
           <FormField
+            id="cash-import-dateformat"
             label={t("accounting.cash.import.mapping.dateFormat")}
             required
           >
@@ -384,7 +388,7 @@ function StatementImportWizard({
                 })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-dateformat">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -399,6 +403,7 @@ function StatementImportWizard({
             </Select>
           </FormField>
           <FormField
+            id="cash-import-descriptioncolumn"
             label={t("accounting.cash.import.mapping.descriptionColumn")}
             required
           >
@@ -408,7 +413,7 @@ function StatementImportWizard({
                 updateMapping({ descriptionColumn: Number(value) })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-descriptioncolumn">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -423,6 +428,7 @@ function StatementImportWizard({
             </Select>
           </FormField>
           <FormField
+            id="cash-import-amountkind"
             label={t("accounting.cash.import.mapping.amountKind")}
             required
           >
@@ -441,7 +447,7 @@ function StatementImportWizard({
                 })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-amountkind">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -456,6 +462,7 @@ function StatementImportWizard({
           </FormField>
           {mapping.amount.kind === "signed" ? (
             <FormField
+              id="cash-import-amountcolumn"
               label={t("accounting.cash.import.mapping.amountColumn")}
               required
             >
@@ -467,7 +474,7 @@ function StatementImportWizard({
                   })
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger id="cash-import-amountcolumn">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -484,6 +491,7 @@ function StatementImportWizard({
           ) : (
             <>
               <FormField
+                id="cash-import-debitcolumn"
                 label={t("accounting.cash.import.mapping.debitColumn")}
                 required
               >
@@ -500,7 +508,7 @@ function StatementImportWizard({
                     });
                   }}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="cash-import-debitcolumn">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -515,6 +523,7 @@ function StatementImportWizard({
                 </Select>
               </FormField>
               <FormField
+                id="cash-import-creditcolumn"
                 label={t("accounting.cash.import.mapping.creditColumn")}
                 required
               >
@@ -531,7 +540,7 @@ function StatementImportWizard({
                     });
                   }}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="cash-import-creditcolumn">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -548,6 +557,7 @@ function StatementImportWizard({
             </>
           )}
           <FormField
+            id="cash-import-decimalseparator"
             label={t("accounting.cash.import.mapping.decimalSeparator")}
             required
           >
@@ -559,7 +569,7 @@ function StatementImportWizard({
                 })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-decimalseparator">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -569,6 +579,7 @@ function StatementImportWizard({
             </Select>
           </FormField>
           <FormField
+            id="cash-import-referencecolumn"
             label={t("accounting.cash.import.mapping.referenceColumn")}
           >
             <Select
@@ -583,7 +594,7 @@ function StatementImportWizard({
                 })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="cash-import-referencecolumn">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

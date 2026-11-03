@@ -10,6 +10,17 @@ import { captureScreenshot } from "./screenshots.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 
+// The accounting fixtures live in November 2026 and name 2026-11-05 as their
+// "today" (cafeLegendAccountingFixtures.asOf in
+// packages/shared/src/accounting/fixtures.ts). The aging report, the budget
+// period and every form default derive from the browser's business date, so
+// the clock is pinned there (mid-morning WIB, past the 04:00 cutoff) and the
+// spec passes in any wall-clock month. setFixedTime only fixes Date; timers
+// keep running.
+const FIXTURE_DATE = "2026-11-05";
+const FIXTURE_PERIOD = FIXTURE_DATE.slice(0, 7);
+const FIXTURE_NOW = new Date(`${FIXTURE_DATE}T10:00:00.000+07:00`);
+
 test.describe.configure({ timeout: 60_000 });
 
 test.skip(
@@ -18,6 +29,7 @@ test.skip(
 );
 
 async function open(page: Page, path: string) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(`${base}${path}?mock=normal`, { waitUntil: "networkidle" });
   // v3 (legend-vvth): the management topbar owns the page h1.
   await expect(
@@ -63,12 +75,19 @@ test.describe("F19 utang, aset and anggaran", () => {
 
     await page.getByRole("button", { name: "Daftarkan aset" }).first().click();
     const form = page.getByRole("dialog");
+    // Defaults come from the (pinned) business date.
+    await expect(form.getByLabel("Tanggal perolehan")).toHaveValue(
+      FIXTURE_DATE,
+    );
+    await expect(form.getByLabel("Mulai disusutkan")).toHaveValue(
+      FIXTURE_PERIOD,
+    );
     await form.getByLabel("Nama aset").fill("Mesin uji E2E F19");
-    await form.getByLabel("Tanggal perolehan").fill("2026-11-03");
+    await form.getByLabel("Tanggal perolehan").fill(FIXTURE_DATE);
     await form.getByLabel("Harga perolehan").fill("12.000.000");
     await form.getByLabel("Nilai residu").fill("0");
     await form.getByLabel("Masa manfaat (bulan)").fill("12");
-    await form.getByLabel("Mulai disusutkan").fill("2026-11");
+    await form.getByLabel("Mulai disusutkan").fill(FIXTURE_PERIOD);
     await form.getByRole("button", { name: "Simpan aset" }).click();
 
     await expect(
@@ -86,7 +105,10 @@ test.describe("F19 utang, aset and anggaran", () => {
       detail.getByRole("heading", { name: "Mesin uji E2E F19" }),
     ).toBeVisible();
     await detail.getByRole("button", { name: "Jual/Lepas" }).click();
-    await detail.getByLabel("Tanggal pelepasan").fill("2026-11-05");
+    await expect(detail.getByLabel("Tanggal pelepasan")).toHaveValue(
+      FIXTURE_DATE,
+    );
+    await detail.getByLabel("Tanggal pelepasan").fill(FIXTURE_DATE);
     await detail.getByLabel("Hasil penjualan").fill("15000000");
     await detail.getByLabel("Alasan pelepasan").fill("Uji pelepasan E2E F19");
     // 15.000.000 proceeds − 12.000.000 carrying amount.
@@ -109,6 +131,9 @@ test.describe("F19 utang, aset and anggaran", () => {
   }) => {
     await open(page, "/kelola/akuntansi/anggaran");
     await expect(page.getByRole("heading", { name: "Anggaran" })).toBeVisible();
+    await expect(page.getByLabel("Periode", { exact: true })).toHaveValue(
+      FIXTURE_PERIOD,
+    );
 
     await page.getByRole("button", { name: "Atur anggaran" }).first().click();
     const dialog = page.getByRole("dialog");
@@ -126,6 +151,7 @@ test.describe("F19 utang, aset and anggaran", () => {
 
   test("F19: empty and error states offer a way forward", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 });
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.goto(`${base}/kelola/akuntansi/anggaran?mock=empty`, {
       waitUntil: "networkidle",
     });
@@ -170,6 +196,7 @@ for (const width of [390, 1440]) {
         (value) => localStorage.setItem("legend-theme", value),
         theme,
       );
+      await page.clock.setFixedTime(FIXTURE_NOW);
       for (const screen of SCREENS) {
         await page.goto(`${base}${screen.path}?mock=normal`, {
           waitUntil: "networkidle",

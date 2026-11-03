@@ -123,6 +123,9 @@ function ProfitEntityForm({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  const typeFieldId = React.useId();
+  const sourceFieldId = React.useId();
+  const frequencyFieldId = React.useId();
   const toast = useToast();
   const create = useCreateProfitEntity();
   const legalEntities = useLegalEntities();
@@ -219,14 +222,18 @@ function ProfitEntityForm({
           />
         </FormField>
         <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label={t("accounting.share.entityForm.type")} required>
+          <FormField
+            id={typeFieldId}
+            label={t("accounting.share.entityForm.type")}
+            required
+          >
             <Select
               value={values.type}
               onValueChange={(type) =>
                 patch({ type: type as ProfitEntityType, sourceId: "" })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id={typeFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -240,6 +247,7 @@ function ProfitEntityForm({
             </Select>
           </FormField>
           <FormField
+            id={sourceFieldId}
             label={t("accounting.share.entityForm.source")}
             hint={t("accounting.share.entityForm.sourceHint")}
             error={errors.outletId ?? errors.legalEntityId ?? errors.type}
@@ -249,7 +257,7 @@ function ProfitEntityForm({
               value={values.sourceId}
               onValueChange={(sourceId) => patch({ sourceId })}
             >
-              <SelectTrigger>
+              <SelectTrigger id={sourceFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -276,14 +284,17 @@ function ProfitEntityForm({
               className="tabular"
             />
           </FormField>
-          <FormField label={t("accounting.share.entityForm.frequency")}>
+          <FormField
+            id={frequencyFieldId}
+            label={t("accounting.share.entityForm.frequency")}
+          >
             <Select
               value={values.frequency}
               onValueChange={(frequency) =>
                 patch({ frequency: frequency as DistributionFrequency })
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id={frequencyFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

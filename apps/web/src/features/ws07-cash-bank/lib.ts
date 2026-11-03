@@ -323,6 +323,30 @@ function cellAt(cells: readonly string[], index: number): string {
   return (cells[index] ?? "").trim();
 }
 
+/**
+ * One amount cell through the contract parser, plus a guard the parser lacks:
+ * more than two digits after the decimal separator means the separator was
+ * chosen wrong ("15.000" read with "." would silently become Rp15), so the
+ * row is refused instead of imported a thousand times too small.
+ */
+function parseAmountCell(text: string, decimalSeparator: "," | "."): number {
+  const unsigned = text.replace(/[\s()+-]|Rp/gi, "");
+  const separatorAt = unsigned.lastIndexOf(decimalSeparator);
+  if (separatorAt !== -1 && unsigned.length - separatorAt - 1 > 2)
+    throw new Error("amount");
+  return parseBankCsvAmount(text, decimalSeparator);
+}
+
+/** Banks often fill the unused debit/credit column with "0,00": treat as empty. */
+function isZeroAmountCell(text: string, decimalSeparator: "," | "."): boolean {
+  if (text === "") return false;
+  try {
+    return parseAmountCell(text, decimalSeparator) === 0;
+  } catch {
+    return false;
+  }
+}
+
 function errorRow(
   rowNumber: number,
   description: string,
@@ -401,10 +425,16 @@ export function buildImportPreview(
           );
           continue;
         }
-        amountIdr = parseBankCsvAmount(text, mapping.decimalSeparator);
+        amountIdr = parseAmountCell(text, mapping.decimalSeparator);
       } else {
-        const debitText = cellAt(cells, mapping.amount.debitColumn);
-        const creditText = cellAt(cells, mapping.amount.creditColumn);
+        const debitRaw = cellAt(cells, mapping.amount.debitColumn);
+        const creditRaw = cellAt(cells, mapping.amount.creditColumn);
+        const debitText = isZeroAmountCell(debitRaw, mapping.decimalSeparator)
+          ? ""
+          : debitRaw;
+        const creditText = isZeroAmountCell(creditRaw, mapping.decimalSeparator)
+          ? ""
+          : creditRaw;
         if (debitText !== "" && creditText !== "") {
           preview.push(
             errorRow(
@@ -427,10 +457,14 @@ export function buildImportPreview(
           );
           continue;
         }
-        amountIdr =
-          creditText !== ""
-            ? parseBankCsvAmount(creditText, mapping.decimalSeparator)
-            : -parseBankCsvAmount(debitText, mapping.decimalSeparator);
+        const value = parseAmountCell(
+          creditText !== "" ? creditText : debitText,
+          mapping.decimalSeparator,
+        );
+        // The column carries the direction; a signed value inside a debit or
+        // credit column is ambiguous, so the row is refused, never flipped.
+        if (value < 0) throw new Error("amount");
+        amountIdr = creditText !== "" ? value : -value;
       }
     } catch {
       preview.push(
@@ -758,7 +792,11 @@ export function openCases(
 export function totalOpenDifference(
   cases: readonly ReconciliationCase[],
 ): number {
-  return openCases(cases).reduce((sum, row) => sum + row.differenceIdr, 0);
+  // Absolute: a +100k and a -100k case are 200k to resolve, not Rp0.
+  return openCases(cases).reduce(
+    (sum, row) => sum + Math.abs(row.differenceIdr),
+    0,
+  );
 }
 
 /** "Belum cocok" includes lines already inside a case (both need a person). */

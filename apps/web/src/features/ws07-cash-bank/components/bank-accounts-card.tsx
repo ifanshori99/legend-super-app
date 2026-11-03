@@ -51,7 +51,8 @@ export function BankAccountsCard({
       rowCount={accounts.length}
       actions={
         canWrite && state !== "empty" ? (
-          <Button type="button" size="sm" onClick={onAdd}>
+          // Outline: the screen's one filled action is "Impor mutasi".
+          <Button type="button" variant="outline" size="sm" onClick={onAdd}>
             <Plus aria-hidden="true" />
             {t("accounting.cash.accounts.add")}
           </Button>

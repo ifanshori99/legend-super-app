@@ -55,6 +55,7 @@ export function BudgetsPage({ legalEntityId }: { legalEntityId: string }) {
     outlets.find((outlet) => outlet.id === outletChoice) ?? outlets[0];
   const outletId = activeOutlet?.id;
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  const outletFieldId = React.useId();
 
   const reportQuery = useBudgetVsActual({
     legalEntityId,
@@ -95,13 +96,13 @@ export function BudgetsPage({ legalEntityId }: { legalEntityId: string }) {
             className="tabular"
           />
         </FormField>
-        <FormField label={t("accounting.ap.budgets.outlet")}>
+        <FormField id={outletFieldId} label={t("accounting.ap.budgets.outlet")}>
           <Select
             value={activeOutlet?.id ?? "none"}
             disabled={outlets.length === 0}
             onValueChange={setOutletChoice}
           >
-            <SelectTrigger className="h-control-sm">
+            <SelectTrigger id={outletFieldId} className="h-control-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

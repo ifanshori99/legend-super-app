@@ -1,9 +1,9 @@
-// Export result of a final recap. This is the mock-mode artefact metadata, not
-// the official file: the real API writes the Coretax XML into object storage and
-// returns a short-lived signed URL. "Unduh CSV" serialises the recap lines
-// already on screen (values exactly as stored) so finance can eyeball the recap
-// now; no amount is recomputed and the XML itself is never synthesised here.
-import { Download } from "lucide-react";
+// Export result of a final recap. The official Coretax XML is the server's
+// artifact: the API writes it into object storage and returns a short-lived
+// signed URL, which "Unduh berkas Coretax" downloads as-is. "Unduh CSV" is a
+// secondary check copy that serialises the stored recap lines (values exactly
+// as returned); no amount is recomputed and the XML is never built here.
+import { Download, FileDown } from "lucide-react";
 import {
   taxReportExportSchema,
   type TaxReport,
@@ -133,9 +133,21 @@ export function ExportArtifactDialog({
           >
             {t("common.close")}
           </Button>
-          <Button type="button" onClick={download}>
+          <Button type="button" variant="outline" onClick={download}>
             <Download aria-hidden="true" />
             {t("accounting.tax.exportDialog.confirm")}
+          </Button>
+          {/* The server's signed URL (Content-Disposition: attachment); the
+              `download` name only applies to same-origin URLs. */}
+          <Button asChild>
+            <a
+              href={artifact.downloadUrl}
+              download={artifact.fileName}
+              rel="noopener noreferrer"
+            >
+              <FileDown aria-hidden="true" />
+              {t("accounting.tax.exportDialog.downloadXml")}
+            </a>
           </Button>
         </DialogFooter>
       </DialogContent>

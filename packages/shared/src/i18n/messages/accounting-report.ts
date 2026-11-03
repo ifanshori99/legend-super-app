@@ -14,11 +14,23 @@ export const accountingReportMessages = {
     outletAll: "Semua outlet",
     outletHint:
       "Laba rugi per outlet memakai baris jurnal yang ditandai outlet tersebut (ACC-03).",
-    closedNoteTitle: "Angka dari periode tertutup",
-    closedNote:
-      "Rentang ini mencakup periode yang sudah ditutup: {periods}. Angka periode tertutup diambil dari snapshot saat tutup buku, bukan dari jurnal yang masih berubah.",
-    closedAsOfNote:
-      "Tanggal ini berada di periode yang sudah ditutup: {periods}. Angka diambil dari snapshot saat tutup buku.",
+  },
+  basis: {
+    official: "Resmi",
+    estimate: "Estimasi",
+    label: "Status angka",
+    officialTitle: "Angka resmi dari periode tertutup",
+    officialNote:
+      "Seluruh angka berasal dari periode yang sudah ditutup ({periods}) dan sama dengan snapshot saat tutup buku. Angka tidak berubah kecuali periode dibuka ulang dengan persetujuan.",
+    estimateTitle: "Angka sementara (estimasi)",
+    estimateNote:
+      "Periode {open} masih terbuka, jadi angka dapat berubah sampai periode ditutup.",
+    estimateMixedNote:
+      "Rentang ini mencakup periode terbuka ({open}) sehingga seluruh laporan berlabel estimasi. Periode yang sudah ditutup di rentang ini: {closed}.",
+    estimateUnknownNote:
+      "Status periode untuk rentang ini belum diketahui, jadi angka diperlakukan sebagai estimasi.",
+    multiEntityNote:
+      "Laporan multi-entitas resmi hanya bila periode setiap badan usaha sudah ditutup.",
   },
   type: {
     balanceSheet: "Neraca",
@@ -61,6 +73,11 @@ export const accountingReportMessages = {
     totalEquity: "Total ekuitas",
     equationNote:
       "Neraca seimbang bila total aset sama dengan total liabilitas ditambah ekuitas; API menolak laporan yang tidak seimbang.",
+    balanced: "Seimbang",
+    balancedHint: "Total aset sama dengan total liabilitas ditambah ekuitas.",
+    unbalanced: "Tidak seimbang",
+    unbalancedHint:
+      "Total aset berbeda dari total liabilitas ditambah ekuitas. Jangan pakai laporan ini; hubungi tim keuangan.",
   },
   cf: {
     activity: {
@@ -262,6 +279,11 @@ export const accountingReportMessages = {
       rejectSubmit: "Tolak permintaan",
       rejected: "Permintaan buka ulang ditolak.",
       failed: "Permintaan tidak dapat diproses.",
+      approverIsRequester:
+        "Anda yang mengajukan permintaan ini, jadi tidak dapat menyetujuinya sendiri. Minta penyetuju lain (AUTH-06).",
+      outOfOrder: "Buka ulang periode setelahnya terlebih dahulu.",
+      alreadyOpen: "Periode ini sudah terbuka.",
+      alreadyDecided: "Permintaan ini sudah diputuskan. Muat ulang daftar.",
       empty: "—",
       decisionNote: "Catatan keputusan: {note}",
     },

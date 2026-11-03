@@ -87,6 +87,7 @@ function ShareholderForm({
   shareholder: Shareholder | null;
 }) {
   const t = useT();
+  const typeFieldId = React.useId();
   const toast = useToast();
   const create = useCreateShareholder();
   const update = useUpdateShareholder();
@@ -206,6 +207,7 @@ function ShareholderForm({
             />
           </FormField>
           <FormField
+            id={typeFieldId}
             label={t("accounting.share.shareholders.form.type")}
             required
           >
@@ -213,7 +215,7 @@ function ShareholderForm({
               value={values.type}
               onValueChange={(type) => patch({ type: type as ShareholderType })}
             >
-              <SelectTrigger>
+              <SelectTrigger id={typeFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

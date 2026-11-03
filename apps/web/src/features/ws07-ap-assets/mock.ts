@@ -12,8 +12,13 @@
 // bare package import or a relative `.ts` path (no `@/` alias).
 import {
   AccountingError,
+  assertPostingAllowed,
   budgetSchema,
   buildAgingReport,
+  accountMapFor,
+  buildJournalLinesFromRule,
+  defaultPostingRules,
+  resolvePostingRule,
   cafeLegendAccountingFixtures,
   createFixedAsset,
   depreciationForPeriod,
@@ -43,6 +48,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock, type MockHandler } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
+import { postMockSystemJournal } from "../ws07-accounting/mock.ts";
 
 const fixtures = cafeLegendAccountingFixtures;
 const tenantId = fixtures.tenantId;
@@ -102,6 +108,25 @@ function assertEntity(legalEntityId: string): void {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * ACC-02: a run, disposal or revaluation posts a journal, so it is refused in a
+ * month the fixtures mark closed, like the API. A month with no period row is
+ * treated as open (the fixtures list Sep–Nov 2026 only).
+ */
+function assertOpenMonth(businessDate: string): void {
+  const period = fixtures.fiscalPeriods.find(
+    (row) => row.period === businessDate.slice(0, 7),
+  );
+  if (period) assertPostingAllowed(period, businessDate);
+}
+
+/** "2026-11" → "2026-11-30" (calendar month end, UTC-safe). */
+function lastDayOfPeriod(period: string): string {
+  const [year, month] = period.split("-").map(Number);
+  const day = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return `${period}-${String(day).padStart(2, "0")}`;
 }
 
 function findAsset(fixedAssetId: string): FixedAsset {
@@ -240,6 +265,9 @@ register(disposeFixedAsset, ({ params, body }) => {
   const asset = findAsset(params.fixedAssetId);
   // The contract refuses a second disposal and supplies the gain/loss rule.
   disposalResultIdr(asset, body.proceedsIdr);
+  if (body.disposedOn < asset.acquiredOn)
+    throw invalid("Tanggal pelepasan tidak boleh sebelum tanggal perolehan.");
+  assertOpenMonth(body.disposedOn);
   const next = fixedAssetSchema.parse({
     ...asset,
     status: "disposed",
@@ -264,6 +292,7 @@ register(revalueFixedAsset, ({ params, body }) => {
   const asset = findAsset(params.fixedAssetId);
   if (asset.status === "disposed")
     throw new AccountingError("ASSET_ALREADY_DISPOSED");
+  assertOpenMonth(body.revaluedOn);
   if (
     body.newCarryingAmountIdr < asset.residualValueIdr ||
     body.newCarryingAmountIdr > asset.costIdr
@@ -321,6 +350,7 @@ register(runDepreciation, ({ body }) => {
       run.legalEntityId === body.legalEntityId && run.period === body.period,
   );
   if (existing) return { data: existing };
+  assertOpenMonth(`${body.period}-01`);
   const lines: { fixedAssetId: string; amountIdr: number }[] = [];
   for (const asset of current.assets) {
     if (asset.legalEntityId !== body.legalEntityId) continue;
@@ -329,14 +359,35 @@ register(runDepreciation, ({ body }) => {
     if (amountIdr > 0) lines.push({ fixedAssetId: asset.id, amountIdr });
   }
   const amountIdr = lines.reduce((sum, line) => sum + line.amountIdr, 0);
+  const runId = newIdempotencyKey();
+  // Book the run's journal in the journals mock so its link opens a real
+  // entry (same posting rule as the fixture October run).
+  const journal =
+    amountIdr > 0
+      ? postMockSystemJournal({
+          entryDate: lastDayOfPeriod(body.period),
+          sourceType: "depreciation",
+          sourceId: runId,
+          description: `Penyusutan ${body.period}`,
+          outletId: null,
+          lines: buildJournalLinesFromRule(
+            resolvePostingRule(defaultPostingRules, {
+              sourceType: "depreciation",
+            }),
+            { amountIdr },
+            accountMapFor(fixtures.accountMappings, body.legalEntityId),
+            { outletId: null },
+          ),
+        })
+      : null;
   const run = depreciationRunSchema.parse({
-    id: newIdempotencyKey(),
+    id: runId,
     tenantId,
     legalEntityId: body.legalEntityId,
     period: body.period,
     amountIdr,
     lines,
-    journalEntryId: amountIdr > 0 ? newIdempotencyKey() : null,
+    journalEntryId: journal?.id ?? null,
     postedBy: fixtures.users.finance,
     postedAt: nowIso(),
   });

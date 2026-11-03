@@ -24,10 +24,29 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL to a web server running VITE_API_MOCK.",
 );
 
+/**
+ * The fixtures' "today" (cafeLegendAccountingFixtures.asOf = "2026-11-05"),
+ * after the seeded draft v3 was requested (09.00 WIB). The shareholders page
+ * resolves the version in force and the suggested effective date from the
+ * browser's today, so the clock is pinned instead of trusting the wall clock.
+ * setFixedTime only fixes Date; timers and animations still run.
+ */
+const FIXTURE_NOW = new Date("2026-11-05T10:00:00.000+07:00");
+
+type MockControl = {
+  __legendMock: {
+    failNext: (
+      id: string,
+      error: { status: number; code: string; message?: string },
+    ) => void;
+  };
+};
+
 const SHAREHOLDERS_PATH = "/kelola/akuntansi/bagi-hasil";
 const DISTRIBUTIONS_PATH = "/kelola/akuntansi/bagi-hasil/distribusi";
 
 async function open(page: Page, path: string, heading: string) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(`${base}${path}?mock=normal`);
   // Hydration settles after load; a fill before React attaches would be wiped
   // by the first client render.
@@ -127,12 +146,36 @@ test.describe("profit share back office", () => {
       .getByRole("button", { name: "Kirim untuk persetujuan" })
       .click();
 
-    // 3. Persetujuan: a different person than the requester approves.
+    // 3. Persetujuan: a different person than the requester approves. The
+    // rule is shown, but the server enforces it (AUTH-06): a self-approval is
+    // refused with APPROVER_IS_REQUESTER and the screen surfaces the refusal.
     await expect(
       wizard.getByRole("heading", {
         name: "Persetujuan Owner atau Direksi",
       }),
     ).toBeVisible();
+    await expect(
+      wizard.getByText(/Penyetuju harus orang yang berbeda dari pemohon/),
+    ).toBeVisible();
+    await page.evaluate(() => {
+      (window as unknown as MockControl).__legendMock.failNext(
+        "POST /api/accounting/distributions/:distributionRunId/decision",
+        {
+          status: 403,
+          code: "APPROVER_IS_REQUESTER",
+          message: "Penyetuju tidak boleh sama dengan pemohon.",
+        },
+      );
+    });
+    await wizard.getByRole("button", { name: "Setujui distribusi" }).click();
+    await expect(
+      wizard.getByRole("alert").filter({
+        hasText: "Penyetuju tidak boleh sama dengan pemohon.",
+      }),
+    ).toBeVisible();
+    await expect(
+      wizard.getByRole("button", { name: "Setujui distribusi" }),
+    ).toBeEnabled();
     await wizard.getByRole("button", { name: "Setujui distribusi" }).click();
 
     // 4. Pembayaran: the approved run is locked, payments are per line.
@@ -149,6 +192,8 @@ test.describe("profit share back office", () => {
     await wizard.getByLabel("Referensi pembayaran").fill("TRF/E2E-SH04");
     await wizard.getByRole("button", { name: "Simpan pembayaran" }).click();
     await expect(wizard.getByText("Sudah dibayar").first()).toBeVisible();
+    // No edit path exists on a locked run: only payments and the adjustment.
+    await expect(wizard.getByRole("button", { name: /^Ubah/ })).toHaveCount(0);
 
     // SH-04: the correction is an adjustment distribution, with a reason and
     // a reversing journal — never an edit of the approved run.
@@ -180,6 +225,7 @@ test.describe("profit share back office", () => {
   test("both screens have empty and error states with a way forward", async ({
     page,
   }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.goto(`${base}${SHAREHOLDERS_PATH}?mock=empty`);
     await expect(page.getByText("Belum ada entitas bagi hasil")).toBeVisible();
 
@@ -198,6 +244,7 @@ for (const [name, path, heading] of [
   for (const width of [390, 1440]) {
     for (const theme of ["light", "dark"]) {
       test(`legend-ogx3 visual ${name} ${width} ${theme}`, async ({ page }) => {
+        await page.clock.setFixedTime(FIXTURE_NOW);
         await page.setViewportSize({ width, height: 900 });
         await page.addInitScript(
           (value) => localStorage.setItem("legend-theme", value),
@@ -220,6 +267,7 @@ for (const [name, path, heading] of [
 
 for (const scenario of ["empty", "error"]) {
   test(`legend-ogx3 visual ${scenario}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.setViewportSize({ width: 390, height: 900 });
     await page.goto(`${base}${SHAREHOLDERS_PATH}?mock=${scenario}`, {
       waitUntil: "networkidle",

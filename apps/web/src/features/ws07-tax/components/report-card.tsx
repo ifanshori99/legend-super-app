@@ -29,6 +29,7 @@ export function ReportCard({
   type,
   period,
   report,
+  canManage,
   actionError,
   exporting,
   onGenerate,
@@ -38,6 +39,8 @@ export function ReportCard({
   type: TaxReportType;
   period: string;
   report: TaxReport | undefined;
+  /** Holds accounting.tax_report.manage; the API enforces it regardless. */
+  canManage: boolean;
   actionError: string | null;
   exporting: boolean;
   onGenerate: () => void;
@@ -80,7 +83,7 @@ export function ReportCard({
               </p>
             )}
 
-            {report && (
+            {report && canManage && (
               <div className="flex flex-wrap items-center gap-2">
                 {report.status === "draft" && (
                   <Button type="button" onClick={onFinalize}>
@@ -106,6 +109,12 @@ export function ReportCard({
               </div>
             )}
 
+            {!canManage && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("accounting.tax.actions.manageOnly")}
+              </p>
+            )}
+
             {actionError && (
               <p
                 role="alert"
@@ -127,10 +136,12 @@ export function ReportCard({
               title={t("accounting.tax.report.emptyTitle", { type: typeLabel })}
               description={t("accounting.tax.report.emptyHint")}
               action={
-                <Button type="button" onClick={onGenerate}>
-                  <Plus aria-hidden="true" />
-                  {t("accounting.tax.actions.generate")}
-                </Button>
+                canManage ? (
+                  <Button type="button" onClick={onGenerate}>
+                    <Plus aria-hidden="true" />
+                    {t("accounting.tax.actions.generate")}
+                  </Button>
+                ) : undefined
               }
             />
           )}

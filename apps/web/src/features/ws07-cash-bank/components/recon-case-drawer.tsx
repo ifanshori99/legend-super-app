@@ -237,14 +237,20 @@ function CaseDetail({
                 {t("accounting.cash.recon.drawer.noPeople")}
               </p>
             ) : (
-              <FormField
-                label={t("accounting.cash.recon.drawer.reassign")}
-                hint={t("accounting.cash.recon.drawer.reassignHint")}
-                required
-              >
-                <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="grid gap-2">
+                <FormField
+                  // FormField's Slot would put the id on a wrapper; the Select
+                  // root renders no DOM, so the trigger carries the same id.
+                  id="recon-case-reassign"
+                  label={t("accounting.cash.recon.drawer.reassign")}
+                  hint={t("accounting.cash.recon.drawer.reassignHint")}
+                  required
+                >
                   <Select value={effectiveOwner} onValueChange={setOwnerId}>
-                    <SelectTrigger className="h-control-sm">
+                    <SelectTrigger
+                      id="recon-case-reassign"
+                      className="h-control-sm"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -255,29 +261,30 @@ function CaseDetail({
                       ))}
                     </SelectContent>
                   </Select>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    loading={action.isPending}
-                    disabled={
-                      effectiveOwner === "" || effectiveOwner === row.ownerId
-                    }
-                    onClick={() =>
-                      run(
-                        {
-                          type: "reassign",
-                          ownerId:
-                            effectiveOwner as ReconciliationCase["ownerId"],
-                        },
-                        "accounting.cash.recon.drawer.reassignDone",
-                      )
-                    }
-                  >
-                    {t("accounting.cash.recon.drawer.reassignSubmit")}
-                  </Button>
-                </div>
-              </FormField>
+                </FormField>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="justify-self-start"
+                  loading={action.isPending}
+                  disabled={
+                    effectiveOwner === "" || effectiveOwner === row.ownerId
+                  }
+                  onClick={() =>
+                    run(
+                      {
+                        type: "reassign",
+                        ownerId:
+                          effectiveOwner as ReconciliationCase["ownerId"],
+                      },
+                      "accounting.cash.recon.drawer.reassignDone",
+                    )
+                  }
+                >
+                  {t("accounting.cash.recon.drawer.reassignSubmit")}
+                </Button>
+              </div>
             ))}
 
           {actions.includes("resolve") && (

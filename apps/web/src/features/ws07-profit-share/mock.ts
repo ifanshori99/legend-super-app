@@ -65,6 +65,7 @@ import {
   type ShareAllocationVersion,
   type Shareholder,
 } from "@starter/shared/accounting";
+import { AccessError } from "@starter/shared/access";
 import { idr, type UserId } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type { AnyEndpoint } from "@starter/shared/api";
@@ -113,7 +114,7 @@ const state = createMockStore<ProfitShareMockState>(() => ({
 
 /**
  * Registers a handler and maps the contract's own errors the way the API does:
- * `AccountingError` carries `code` and `status`, but the mock runtime only
+ * `AccountingError`/`AccessError` carry `code` and `status`, but the mock runtime only
  * knows `ApiError`/`CoreError`, so a refusal would surface as INTERNAL_ERROR.
  */
 function register<E extends AnyEndpoint>(
@@ -124,7 +125,9 @@ function register<E extends AnyEndpoint>(
     try {
       return handler(context);
     } catch (error) {
-      if (error instanceof AccountingError)
+      // AUTH-06: the transitions throw AccessError("APPROVER_IS_REQUESTER")
+      // for a self-approval; it must reach the screen as 403, not INTERNAL_ERROR.
+      if (error instanceof AccountingError || error instanceof AccessError)
         throw new ApiError(error.status, error.code, error.message);
       throw error;
     }

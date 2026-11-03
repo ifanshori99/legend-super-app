@@ -20,15 +20,27 @@ test.skip(
   "Set LEGEND_MOCK_WEB_URL to a web server running VITE_API_MOCK.",
 );
 
-/** The mock fixtures live in November 2026; pin the workspace window. */
-const PERIOD_FROM = "2026-11-01";
-const PERIOD_TO = "2026-11-30";
+/**
+ * The Cafe Legend banking fixtures (@starter/shared/accounting fixtures.ts)
+ * live in November 2026: the last cash collection and the unmatched
+ * "SETORAN TUNAI BDG-02" line are on 3 November, and the mock's 30 October
+ * cash is past the two-day deposit policy on that day. Every screen defaults
+ * to "today" / "this month" (deposits list, ACC-05 alerts, match window), so
+ * the browser clock is pinned to midday of that business date (WIB) and the
+ * spec passes on any wall-clock month. setFixedTime only fixes Date; timers
+ * keep running.
+ */
+const FIXTURE_DATE = "2026-11-03";
+const FIXTURE_NOW = new Date(`${FIXTURE_DATE}T12:00:00.000+07:00`);
+const PERIOD_FROM = `${FIXTURE_DATE.slice(0, 7)}-01`;
+const PERIOD_TO = `${FIXTURE_DATE.slice(0, 7)}-30`;
 
 /**
- * Opens the cash & bank screen and pins the match workspace to the fixture
- * month, so a machine whose calendar moved on still sees the sample rows.
+ * Opens the cash & bank screen at the fixture instant and pins the match
+ * workspace to the fixture month.
  */
 async function openCashBank(page: Page) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto("/kelola/akuntansi/kas-bank?mock=normal");
   await page.waitForLoadState("networkidle");
   // v3 (legend-vvth): the management topbar owns the page h1.
@@ -173,9 +185,9 @@ test.describe("cash & bank", () => {
       dialog.getByRole("heading", { name: "Catat setoran kas" }),
     ).toBeVisible();
     await dialog.getByLabel("Nominal setoran").fill("250000");
-    await dialog.getByLabel("Kas mulai tanggal").fill("2026-11-03");
-    await dialog.getByLabel("Kas sampai tanggal").fill("2026-11-03");
-    await dialog.getByLabel("Waktu setor").fill("2026-11-03T10:30");
+    await dialog.getByLabel("Kas mulai tanggal").fill(FIXTURE_DATE);
+    await dialog.getByLabel("Kas sampai tanggal").fill(FIXTURE_DATE);
+    await dialog.getByLabel("Waktu setor").fill(`${FIXTURE_DATE}T10:30`);
     await dialog.getByLabel("Nomor bukti setor").fill("SLIP-E2E-1");
     await dialog.getByRole("button", { name: "Simpan setoran" }).click();
 
@@ -253,6 +265,7 @@ for (const width of [390, 1440]) {
 for (const scenario of ["empty", "error"]) {
   test(`legend-53q visual ${scenario}`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 });
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.goto(`/kelola/akuntansi/kas-bank?mock=${scenario}`, {
       waitUntil: "networkidle",
     });

@@ -50,6 +50,30 @@ import { PeriodSnapshotSheet } from "./period-snapshot-sheet";
 import { ReasonDialog } from "./reason-dialog";
 import { PeriodStatusBadge, ReopenStatusBadge } from "./status-badges";
 
+/**
+ * Server refusals of a reopen decision, in catalog words. The different-
+ * approver rule (AUTH-06) is enforced by the API (403 APPROVER_IS_REQUESTER);
+ * the screen only states the rule and surfaces the refusal.
+ */
+function reopenDecisionError(
+  error: unknown,
+  t: ReturnType<typeof useT>,
+): string | undefined {
+  if (!(error instanceof ApiError)) return undefined;
+  switch (error.code) {
+    case "APPROVER_IS_REQUESTER":
+      return t("accounting.report.periods.reopen.approverIsRequester");
+    case "PERIOD_REOPEN_OUT_OF_ORDER":
+      return t("accounting.report.periods.reopen.outOfOrder");
+    case "PERIOD_ALREADY_OPEN":
+      return t("accounting.report.periods.reopen.alreadyOpen");
+    case "INVALID_TRANSITION":
+      return t("accounting.report.periods.reopen.alreadyDecided");
+    default:
+      return error.message;
+  }
+}
+
 export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
   const t = useT();
   const toast = useToast();
@@ -196,7 +220,7 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
     } catch (error) {
       toast({
         title: t("accounting.report.periods.reopen.failed"),
-        description: error instanceof ApiError ? error.message : undefined,
+        description: reopenDecisionError(error, t),
         tone: "danger",
       });
       setApproving(null);
@@ -215,9 +239,8 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
       setRejecting(null);
     } catch (error) {
       setRejectError(
-        error instanceof ApiError
-          ? error.message
-          : t("accounting.report.periods.reopen.failed"),
+        reopenDecisionError(error, t) ??
+          t("accounting.report.periods.reopen.failed"),
       );
     }
   };

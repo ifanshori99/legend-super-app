@@ -512,6 +512,11 @@ register(matchStatementLine, ({ params, body }) => {
     amountIdr: documentAmount(ref, account),
   }));
   assertManualMatch(line, documents);
+  // Amount check first (contract order), then: a document proves one bank movement only: the UI hides refs used by other
+  // lines of the visible period, but the server is the one that refuses.
+  const taken = occupiedKeys(account.id, line.id);
+  if (body.refs.some((ref) => taken.has(candidateKey(ref))))
+    throw conflict("Dokumen ini sudah dicocokkan dengan mutasi lain.");
   const next = bankStatementLineSchema.parse({
     ...line,
     matchStatus: "manually_matched",

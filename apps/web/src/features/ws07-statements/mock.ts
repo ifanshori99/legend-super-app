@@ -14,10 +14,13 @@
 // loaded in Node by tests/ws07-statements.test.mjs, so every import here is a
 // bare package import or a relative `.ts` path (no `@/` alias).
 //
-// Identity in mock mode: the requester is the fixture's finance user and the
-// approver the owner, because the mock has no session. A real API takes the
-// actor from the session and refuses an approval by the requester (AUTH-06);
-// the requests card says so.
+// Identity in mock mode: the mock has no session, so by default the requester
+// (and closer) is the fixture's finance user and the decider the owner. To
+// exercise the different-approver rule, set
+//   localStorage["legend-mock-accounting-actor"] = "finance" | "owner"
+// and every write is made as that one user: approving or rejecting your own
+// request is then refused with 403 APPROVER_IS_REQUESTER by the contract's
+// `decidePeriodReopen`, exactly as the API refuses it (AUTH-06).
 import {
   AccountingError,
   addDays,
@@ -78,6 +81,22 @@ const tenantId = fixtures.tenantId;
 const entityId = fixtures.legalEntity.id;
 const finance = fixtures.users.finance as UserId;
 const owner = fixtures.users.owner as UserId;
+
+export const MOCK_ACTOR_STORAGE_KEY = "legend-mock-accounting-actor";
+
+/** The single acting user when the override is set (see the header comment). */
+function actorOverride(): UserId | null {
+  try {
+    const value = globalThis.localStorage?.getItem(MOCK_ACTOR_STORAGE_KEY);
+    if (value === "finance") return finance;
+    if (value === "owner") return owner;
+  } catch {
+    // Storage blocked (private mode, Node tests): default identities.
+  }
+  return null;
+}
+const requester = (): UserId => actorOverride() ?? finance;
+const decider = (): UserId => actorOverride() ?? owner;
 
 /** The cumulative statements start before the fixture's first entry (2026-09). */
 const LEDGER_START = "1970-01-01";
@@ -508,7 +527,7 @@ register(closeFiscalPeriod, ({ params, body }) => {
     period,
     entityPeriods: current.periods,
     today: fixtures.asOf,
-    actorId: finance,
+    actorId: requester(),
     now: nowIso(),
   });
   current.snapshots.set(closed.id, snapshotFor(closed));
@@ -545,7 +564,7 @@ register(requestPeriodReopen, ({ params, body }) => {
     period: period.period,
     reason: body.reason.trim(),
     status: "pending",
-    requestedBy: finance,
+    requestedBy: requester(),
     requestedAt: nowIso(),
     decidedBy: null,
     decidedAt: null,
@@ -579,14 +598,15 @@ register(approvePeriodReopen, ({ params, body }) => {
   const request = current.requests[index]!;
   const period = findPeriod(request.fiscalPeriodId);
   const decidedAt = nowIso();
-  // ACC-02 + AUTH-06: the contract refuses a different requester, a stale
-  // request and an out-of-order reopen.
+  const actorId = decider();
+  // ACC-02 + AUTH-06: the contract refuses an approval by the requester
+  // (APPROVER_IS_REQUESTER), a stale request and an out-of-order reopen.
   const decision = decidePeriodReopen({
     request,
     period,
     entityPeriods: current.periods,
     decision: "approve",
-    actorId: owner,
+    actorId,
     now: decidedAt,
   });
   if (decision.requestStatus !== "approved" || decision.period === null)
@@ -598,7 +618,7 @@ register(approvePeriodReopen, ({ params, body }) => {
   const nextRequest = periodReopenRequestSchema.parse({
     ...request,
     status: "approved",
-    decidedBy: owner,
+    decidedBy: actorId,
     decidedAt,
     decisionNote: body.note,
   });
@@ -617,18 +637,19 @@ register(rejectPeriodReopen, ({ params, body }) => {
   const request = current.requests[index]!;
   const period = findPeriod(request.fiscalPeriodId);
   const decidedAt = nowIso();
+  const actorId = decider();
   decidePeriodReopen({
     request,
     period,
     entityPeriods: current.periods,
     decision: "reject",
-    actorId: owner,
+    actorId,
     now: decidedAt,
   });
   const nextRequest = periodReopenRequestSchema.parse({
     ...request,
     status: "rejected",
-    decidedBy: owner,
+    decidedBy: actorId,
     decidedAt,
     decisionNote: body.reason,
   });

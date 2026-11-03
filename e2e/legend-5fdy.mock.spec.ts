@@ -12,6 +12,13 @@ import { captureScreenshot } from "./screenshots.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 
+// The screen opens on the latest period with a recap, else the current
+// business month (Asia/Jakarta). Pin the browser clock inside the fixtures'
+// month so the spec never depends on the wall clock: one hour after the seeded
+// November PBJT draft (cafeLegendAccountingFixtures.taxReports, generatedAt
+// 2026-11-05T09:00Z). setFixedTime only fixes Date; timers keep running.
+const FIXTURE_NOW = new Date("2026-11-05T17:00:00.000+07:00");
+
 // The scenario retries a failing query a few times before the error state.
 test.describe.configure({ timeout: 60_000 });
 
@@ -21,6 +28,7 @@ test.skip(
 );
 
 async function open(page: Page, path: string) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(`${base}${path}`);
   // Hydration settles after load; a click before React attaches would be lost.
   await page.waitForLoadState("networkidle");
@@ -110,8 +118,8 @@ test.describe("tax recap and Coretax export", () => {
     });
     await expect(page.getByText("Difinalkan", { exact: true })).toBeVisible();
 
-    // final → exported: the artifact dialog shows the Coretax file metadata
-    // and the CSV download serialises the recap lines already on screen.
+    // final → exported: the artifact dialog shows the Coretax file metadata,
+    // downloads the server's artifact as-is, and offers a CSV check copy.
     await page.getByRole("button", { name: "Ekspor Coretax" }).click();
     const artifact = page.getByRole("dialog");
     await expect(
@@ -123,6 +131,11 @@ test.describe("tax recap and Coretax export", () => {
     await expect(
       artifact.getByText("Coretax XML", { exact: true }),
     ).toBeVisible();
+
+    const xmlPromise = page.waitForEvent("download");
+    await artifact.getByRole("link", { name: "Unduh berkas Coretax" }).click();
+    const xml = await xmlPromise;
+    expect(xml.suggestedFilename()).toBe("coretax-pbjt-2026-10.xml");
 
     const downloadPromise = page.waitForEvent("download");
     await artifact.getByRole("button", { name: "Unduh CSV" }).click();
@@ -184,6 +197,7 @@ for (const width of [390, 1440]) {
   for (const theme of ["light", "dark"]) {
     test(`F19-Pajak visual ${width} ${theme}`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
+      await page.clock.setFixedTime(FIXTURE_NOW);
       await page.addInitScript(
         (value) => localStorage.setItem("legend-theme", value),
         theme,
@@ -202,6 +216,7 @@ for (const width of [390, 1440]) {
 for (const scenario of ["empty", "error"]) {
   test(`F19-Pajak visual ${scenario}`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 });
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.goto(`${base}/kelola/akuntansi/pajak?mock=${scenario}`, {
       waitUntil: "networkidle",
     });

@@ -16,6 +16,7 @@ export function ProfitAndLossView({
   params,
   onDrillDown,
   onResetRange,
+  basis,
 }: StatementViewProps) {
   const query = statementQueryFor("profitAndLoss", legalEntityId, params);
   const statement = useProfitAndLossStatement(query);
@@ -30,6 +31,7 @@ export function ProfitAndLossView({
       empty={empty}
       onRetry={() => void statement.refetch()}
       onReset={onResetRange}
+      basis={basis}
     >
       <StatementRowsTable
         rows={rows}

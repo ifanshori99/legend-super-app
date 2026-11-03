@@ -34,7 +34,7 @@ type Section = {
   readonly to: string;
 };
 
-const SECTIONS: readonly Section[] = [
+const SECTIONS = [
   // Buku Besar (legend-mzg).
   {
     key: "coa",
@@ -125,7 +125,7 @@ const SECTIONS: readonly Section[] = [
     labelKey: "accounting.tabs.distributions",
     to: "/kelola/akuntansi/bagi-hasil/distribusi",
   },
-];
+] as const satisfies readonly Section[];
 
 export type AccountingSection = (typeof SECTIONS)[number]["key"];
 
@@ -186,7 +186,7 @@ export function AccountingTabs({ active }: { active: AccountingSection }) {
   const group = groupOfSection(active);
   const sections = sectionsOfGroup(group);
   return (
-    <div className="grid min-w-0 gap-2">
+    <div className="grid w-full min-w-0 gap-2 sm:w-auto">
       {/* Tier 1: area groups. A group link opens its first section. */}
       <nav
         aria-label={t("accounting.title")}
@@ -240,10 +240,11 @@ export function AccountingPage({
     // h1 and no extra gutter here. Detail screens render their own h2, and the
     // section screens own their intro, so the area shows only the navigation.
     <div className="grid min-w-0 gap-5">
-      <div className="flex min-w-0 items-start justify-between gap-3">
+      {/* 390px: the sample-data badge sits above the strips so both tiers keep the full width. */}
+      <div className="flex min-w-0 flex-col-reverse items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
         <AccountingTabs active={active} />
         {API_MOCK && (
-          <Badge tone="neutral" className="mt-1 shrink-0">
+          <Badge tone="neutral" className="shrink-0 sm:mt-1">
             {t("common.sampleData")}
           </Badge>
         )}

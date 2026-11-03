@@ -831,10 +831,10 @@ describe("display helpers", () => {
       cash.openCases(cases).map((row) => row.status),
       ["open", "in_progress"],
     );
-    assert.equal(cash.totalOpenDifference(cases), -10_000);
+    assert.equal(cash.totalOpenDifference(cases), 20_000);
     assert.equal(
       cash.totalOpenDifference(fixtures.reconciliationCases),
-      -15_000,
+      15_000,
     );
     assert.equal(
       cash.pendingMatchCount({ unmatchedCount: 2, inCaseCount: 1 }),

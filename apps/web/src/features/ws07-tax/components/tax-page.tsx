@@ -19,7 +19,11 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import type { EntityRef } from "@/features/ws07-accounting/components/entity-picker";
 import { useLegalEntities } from "@/features/ws07-accounting/hooks";
-import { useExportTaxReport, useTaxReports } from "../hooks";
+import {
+  useCanManageTaxReports,
+  useExportTaxReport,
+  useTaxReports,
+} from "../hooks";
 import {
   defaultTaxPeriod,
   formatTaxPeriod,
@@ -92,6 +96,7 @@ export function TaxPage({ legalEntity }: { legalEntity: EntityRef }) {
     entitiesQuery.data?.find((row) => row.id === legalEntity.id)?.isPkp ??
     false;
 
+  const canManage = useCanManageTaxReports();
   const reportsQuery = useTaxReports(legalEntity.id);
   const exportMutation = useExportTaxReport(legalEntity.id);
 
@@ -232,6 +237,7 @@ export function TaxPage({ legalEntity }: { legalEntity: EntityRef }) {
           type={type}
           period={period}
           report={report}
+          canManage={canManage}
           actionError={actionError}
           exporting={exportMutation.isPending}
           onGenerate={() => {

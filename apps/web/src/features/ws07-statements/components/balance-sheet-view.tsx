@@ -1,11 +1,14 @@
 // Balance sheet at an as-of date. Asset, liability and equity sections keep
 // their section totals; the current-period earnings row and the three totals
-// come from the payload.
+// come from the payload. The balance check compares the three server totals.
+import { CircleCheck, TriangleAlert } from "lucide-react";
 import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
 import {
   balanceSheetRows,
   drillDownQueryFor,
   hasAccountRows,
+  isBalanceSheetBalanced,
   statementQueryFor,
   type StatementViewProps,
 } from "../lib";
@@ -18,12 +21,16 @@ export function BalanceSheetView({
   params,
   onDrillDown,
   onResetRange,
+  basis,
 }: StatementViewProps) {
   const t = useT();
   const query = statementQueryFor("balanceSheet", legalEntityId, params);
   const statement = useBalanceSheetStatement(query);
   const rows = statement.data ? balanceSheetRows(statement.data) : [];
   const empty = statement.data !== undefined && !hasAccountRows(rows);
+  const balanced = statement.data
+    ? isBalanceSheetBalanced(statement.data)
+    : null;
 
   return (
     <StatementFrame
@@ -33,6 +40,7 @@ export function BalanceSheetView({
       empty={empty}
       onRetry={() => void statement.refetch()}
       onReset={onResetRange}
+      basis={basis}
     >
       <div>
         <StatementRowsTable
@@ -51,6 +59,32 @@ export function BalanceSheetView({
             })
           }
         />
+        {balanced !== null && (
+          <div
+            role="status"
+            className="flex flex-wrap items-center gap-2 border-t border-border px-card py-3 text-sm leading-5"
+          >
+            <Badge tone={balanced ? "success" : "danger"}>
+              {balanced ? (
+                <CircleCheck aria-hidden="true" />
+              ) : (
+                <TriangleAlert aria-hidden="true" />
+              )}
+              {t(
+                balanced
+                  ? "accounting.report.bs.balanced"
+                  : "accounting.report.bs.unbalanced",
+              )}
+            </Badge>
+            <span className="text-muted-foreground">
+              {t(
+                balanced
+                  ? "accounting.report.bs.balancedHint"
+                  : "accounting.report.bs.unbalancedHint",
+              )}
+            </span>
+          </div>
+        )}
         <p className="border-t border-border px-card py-3 text-sm leading-5 text-muted-foreground">
           {t("accounting.report.bs.equationNote")}
         </p>

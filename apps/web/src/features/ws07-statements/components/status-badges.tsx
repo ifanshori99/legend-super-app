@@ -4,6 +4,7 @@ import {
   Ban,
   CircleCheck,
   Clock,
+  Hourglass,
   Lock,
   LockOpen,
   XCircle,
@@ -15,7 +16,11 @@ import type {
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
-import { PERIOD_STATUS_KEYS, REOPEN_STATUS_KEYS } from "../lib";
+import {
+  PERIOD_STATUS_KEYS,
+  REOPEN_STATUS_KEYS,
+  type StatementBasisKind,
+} from "../lib";
 
 type Tone = "neutral" | "success" | "warning" | "danger" | "info";
 
@@ -56,6 +61,28 @@ export function ReopenStatusBadge({
     <Badge tone={tone}>
       <Icon aria-hidden="true" />
       {t(REOPEN_STATUS_KEYS[status])}
+    </Badge>
+  );
+}
+
+/**
+ * Official (closed periods, frozen at close) vs estimate (any open month).
+ * PRD §3 "Angka resmi hanya diambil dari periode yang sudah ditutup; angka
+ * berjalan diberi label estimasi".
+ */
+export function StatementBasisBadge({ basis }: { basis: StatementBasisKind }) {
+  const t = useT();
+  const official = basis === "official";
+  const Icon = official ? Lock : Hourglass;
+  return (
+    <Badge tone={official ? "success" : "warning"} data-basis={basis}>
+      <Icon aria-hidden="true" />
+      <span className="sr-only">{t("accounting.report.basis.label")}: </span>
+      {t(
+        official
+          ? "accounting.report.basis.official"
+          : "accounting.report.basis.estimate",
+      )}
     </Badge>
   );
 }

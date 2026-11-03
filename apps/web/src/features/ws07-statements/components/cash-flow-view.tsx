@@ -141,6 +141,7 @@ export function CashFlowView({
   legalEntityId,
   params,
   onResetRange,
+  basis,
 }: StatementViewProps) {
   const query = statementQueryFor("cashFlow", legalEntityId, params);
   const statement = useCashFlowStatement(query);
@@ -154,6 +155,7 @@ export function CashFlowView({
       empty={empty}
       onRetry={() => void statement.refetch()}
       onReset={onResetRange}
+      basis={basis}
     >
       <CashFlowTable rows={rows} />
     </StatementFrame>

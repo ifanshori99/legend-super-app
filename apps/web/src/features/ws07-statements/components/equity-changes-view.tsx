@@ -29,6 +29,7 @@ export function EquityChangesView({
   params,
   onDrillDown,
   onResetRange,
+  basis,
 }: StatementViewProps) {
   const t = useT();
   const query = statementQueryFor("equityChanges", legalEntityId, params);
@@ -60,6 +61,7 @@ export function EquityChangesView({
       empty={empty}
       onRetry={() => void statement.refetch()}
       onReset={onResetRange}
+      basis={basis}
     >
       <>
         {/* Phones: one card per equity component with the five amounts. */}

@@ -532,15 +532,22 @@ export function distributedNetIdr(
 // ---- Input parsing --------------------------------------------------------
 
 /**
- * A basis-point field: digits only ("1000", "10.000" too). Returns null for a
+ * Whole digits, optionally grouped by "." in threes ("10.000"). A dot anywhere
+ * else is refused instead of stripped, so a percentage typed into a bp field
+ * ("33.3" would silently become 333 bp) is an error, never a different share.
+ */
+const GROUPED_INTEGER = /^(?:\d+|\d{1,3}(?:\.\d{3})+)$/;
+
+/**
+ * A basis-point field: an integer ("1000", "10.000" too). Returns null for a
  * blank or invalid value; 0 is a valid parse but not a valid allocation, so
  * the editor reports it as a contract rule instead of silently dropping it.
  */
 export function parseShareBpInput(value: string): number | null {
-  const digits = value.replace(/[.\s]/g, "");
-  if (digits === "") return null;
-  if (!/^\d+$/.test(digits)) return null;
-  const bp = Number(digits);
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  if (!GROUPED_INTEGER.test(trimmed)) return null;
+  const bp = Number(trimmed.replace(/\./g, ""));
   return Number.isSafeInteger(bp) && bp <= SHARE_TOTAL_BP ? bp : null;
 }
 
@@ -549,10 +556,9 @@ export function parseAdjustmentIdrInput(value: string): number | null {
   const trimmed = value.trim();
   if (trimmed === "") return null;
   const negative = trimmed.startsWith("-") || trimmed.startsWith("−");
-  const digits = (negative ? trimmed.slice(1) : trimmed).replace(/[.\s]/g, "");
-  if (digits === "") return null;
-  if (!/^\d+$/.test(digits)) return null;
-  const amount = Number(digits);
+  const unsigned = (negative ? trimmed.slice(1) : trimmed).trim();
+  if (!GROUPED_INTEGER.test(unsigned)) return null;
+  const amount = Number(unsigned.replace(/\./g, ""));
   if (!Number.isSafeInteger(amount) || amount === 0) return null;
   return negative ? -amount : amount;
 }

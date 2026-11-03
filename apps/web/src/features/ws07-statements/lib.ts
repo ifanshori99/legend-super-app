@@ -209,6 +209,11 @@ export type StatementViewProps = {
   params: StatementParams;
   onDrillDown: (target: StatementDrillTarget) => void;
   onResetRange: () => void;
+  /**
+   * Official/estimate label of the selected entity's figures (null while the
+   * fiscal periods load). The multi-entity view derives its own per entity.
+   */
+  basis: StatementBasisKind | null;
 };
 
 // ---- Row shaping (only places server values) -------------------------------
@@ -524,12 +529,9 @@ export function hasMultiEntityAccountRows(
   return rows.some((row) => row.kind === "account");
 }
 
-// ---- Closed-period note ----------------------------------------------------
+// ---- Closed periods in a range ---------------------------------------------
 
-/**
- * The range a balance sheet as-of date falls in, used for the "figures come
- * from the close snapshot" note. Only the month of `asOf` matters.
- */
+/** Closed fiscal periods that overlap a date range, oldest first. */
 export function closedPeriodsInRange(
   periods: readonly FiscalPeriod[],
   from: string,
@@ -542,6 +544,122 @@ export function closedPeriodsInRange(
       return bounds.start <= to && bounds.end >= from;
     })
     .sort((a, b) => a.period.localeCompare(b.period));
+}
+
+// ---- Official vs estimate (PRD §3.19 Tutup Periode, §3 dashboard rule) -----
+
+/**
+ * Month keys ("2026-10") a date range touches, inclusive. Capped so a typo'd
+ * year cannot loop for ever; a capped range is treated as an estimate.
+ */
+const MAX_BASIS_MONTHS = 240;
+
+export function monthsInRange(from: string, to: string): string[] | null {
+  let year = Number(from.slice(0, 4));
+  let month = Number(from.slice(5, 7));
+  const endYear = Number(to.slice(0, 4));
+  const endMonth = Number(to.slice(5, 7));
+  if (![year, month, endYear, endMonth].every(Number.isInteger)) return null;
+  const months: string[] = [];
+  while (year < endYear || (year === endYear && month <= endMonth)) {
+    if (months.length >= MAX_BASIS_MONTHS) return null;
+    months.push(`${year}-${String(month).padStart(2, "0")}`);
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+  return months;
+}
+
+export type StatementBasisKind = "official" | "estimate";
+
+export type StatementBasis = {
+  basis: StatementBasisKind;
+  /** Closed months the figures cover (official numbers, frozen at close). */
+  closed: string[];
+  /** Months still open, or with no fiscal period yet: their figures can change. */
+  open: string[];
+};
+
+/**
+ * Figures are official only when every month they depend on is a closed
+ * fiscal period ("Angka resmi hanya diambil dari periode yang sudah ditutup;
+ * angka berjalan diberi label estimasi"). A range that spans an open month is
+ * an estimate as a whole. `cumulative` statements (balance sheet, cash flow
+ * opening cash, equity opening balances) also depend on every earlier month.
+ * The status comes from the server's fiscal-period rows; nothing is guessed.
+ */
+export function statementBasis(
+  periods: readonly Pick<FiscalPeriod, "period" | "status">[],
+  from: string,
+  to: string,
+  options: { cumulative?: boolean } = {},
+): StatementBasis {
+  const status = new Map(periods.map((row) => [row.period, row.status]));
+  const months = monthsInRange(from, to);
+  if (months === null || months.length === 0)
+    return { basis: "estimate", closed: [], open: [] };
+  const closed = months.filter((month) => status.get(month) === "closed");
+  const open = months.filter((month) => status.get(month) !== "closed");
+  if (options.cumulative) {
+    const first = months[0]!;
+    for (const row of periods)
+      if (row.period < first && row.status !== "closed") open.push(row.period);
+    open.sort();
+  }
+  return { basis: open.length === 0 ? "official" : "estimate", closed, open };
+}
+
+/** Multi-entity: official only when every entity's figures are official. */
+export function combineStatementBases(
+  bases: readonly StatementBasis[],
+): StatementBasis {
+  const closed = new Set<string>();
+  const open = new Set<string>();
+  for (const basis of bases) {
+    basis.closed.forEach((month) => closed.add(month));
+    basis.open.forEach((month) => open.add(month));
+  }
+  open.forEach((month) => closed.delete(month));
+  const official =
+    bases.length > 0 && bases.every((basis) => basis.basis === "official");
+  return {
+    basis: official ? "official" : "estimate",
+    closed: [...closed].sort(),
+    open: [...open].sort(),
+  };
+}
+
+/** The date bounds a statement type's basis depends on. */
+export function basisRangeFor(
+  type: StatementType,
+  params: StatementParams,
+): { from: string; to: string; cumulative: boolean } {
+  if (type === "balanceSheet")
+    return { from: params.to, to: params.to, cumulative: true };
+  return {
+    from: params.from,
+    to: params.to,
+    cumulative: type === "cashFlow" || type === "equityChanges",
+  };
+}
+
+/**
+ * Balance check of a balance sheet, from the three server totals. Compared
+ * in bigint so the check itself cannot lose precision.
+ */
+export function isBalanceSheetBalanced(
+  bs: Pick<
+    BalanceSheet,
+    "totalAssetsIdr" | "totalLiabilitiesIdr" | "totalEquityIdr"
+  >,
+): boolean {
+  return (
+    BigInt(bs.totalAssetsIdr) ===
+    BigInt(bs.totalLiabilitiesIdr) + BigInt(bs.totalEquityIdr)
+  );
 }
 
 // ---- Period close (ACC-02) -------------------------------------------------

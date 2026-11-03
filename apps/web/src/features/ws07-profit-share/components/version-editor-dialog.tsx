@@ -98,7 +98,11 @@ function VersionEditorForm({
   const toast = useToast();
   const create = useCreateShareVersion(profitEntityId);
   const update = useUpdateShareVersion(profitEntityId);
-  const [effectiveFrom, setEffectiveFrom] = React.useState(suggestedDate);
+  // Editing a draft keeps its own date; only a new version takes the suggestion.
+  const [effectiveFrom, setEffectiveFrom] = React.useState(
+    version?.effectiveFrom ?? suggestedDate,
+  );
+  const addFieldId = React.useId();
   const [rows, setRows] = React.useState<Row[]>(() =>
     initialRows(version ?? baseVersion),
   );
@@ -291,6 +295,7 @@ function VersionEditorForm({
 
         <div className="grid gap-2 rounded-lg border-(length:--border-w) border-border bg-surface-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <FormField
+            id={addFieldId}
             label={t("accounting.share.editor.addShareholder")}
             hint={
               candidates.length === 0
@@ -303,7 +308,7 @@ function VersionEditorForm({
               onValueChange={setAddId}
               disabled={candidates.length === 0}
             >
-              <SelectTrigger>
+              <SelectTrigger id={addFieldId}>
                 <SelectValue
                   placeholder={t("accounting.share.editor.addPlaceholder")}
                 />

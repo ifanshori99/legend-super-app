@@ -84,6 +84,8 @@ export const accountingTaxMessages = {
     finalize: "Finalkan",
     export: "Ekspor Coretax",
     exportAgain: "Ekspor ulang",
+    manageOnly:
+      "Membuat, memfinalkan, dan mengekspor rekap memerlukan izin kelola laporan pajak.",
   },
   generateDialog: {
     title: "Buat rekap {type}",
@@ -104,16 +106,17 @@ export const accountingTaxMessages = {
   exportDialog: {
     title: "Berkas Coretax siap",
     description:
-      "Ekspor {type} periode {period} selesai. Berkas resmi dibuat oleh API saat backend tersedia.",
+      "Ekspor {type} periode {period} selesai. Unduh berkas Coretax untuk diunggah ke DJP.",
     fileName: "Nama berkas",
     format: "Format",
     formatCoretaxXml: "Coretax XML",
     fileKey: "Kunci penyimpanan",
     rowCount: "Jumlah baris",
     rowCountValue: "{count} baris",
-    expiresAt: "Tautan berlaku sampai {time}",
+    expiresAt: "Tautan unduh berlaku sampai",
     downloadNote:
-      "Tombol unduh menuliskan baris rekap yang tampil ke CSV untuk pemeriksaan. Berkas Coretax resmi tetap XML dari API.",
+      "Berkas Coretax XML dibuat oleh server dari rekap final. CSV hanya salinan baris rekap untuk pemeriksaan, bukan berkas pelaporan.",
+    downloadXml: "Unduh berkas Coretax",
     confirm: "Unduh CSV",
   },
   toasts: {

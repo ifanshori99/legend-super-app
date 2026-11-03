@@ -4,10 +4,11 @@
 //
 // The controls follow each statement's own query schema: the balance sheet is
 // as-of, the P&L takes an optional outlet, cash flow and equity are entity
-// ranges, the multi-entity report has no entity filter. The closed-period note
-// says when the figures come from a close snapshot.
+// ranges, the multi-entity report has no entity filter. Every statement is
+// labelled official (all months it depends on are closed fiscal periods) or
+// estimate (any open month), from the server's fiscal-period rows.
 import * as React from "react";
-import { Lock } from "lucide-react";
+import { Hourglass, Lock } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 import { FormField } from "@/components/ui/form-field";
@@ -23,10 +24,11 @@ import {
 import {
   STATEMENT_TYPES,
   STATEMENT_TYPE_KEYS,
+  basisRangeFor,
   businessDateToday,
-  closedPeriodsInRange,
   formatPeriod,
   monthRange,
+  statementBasis,
   type StatementDrillTarget,
   type StatementParams,
   type StatementType,
@@ -47,6 +49,7 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
   const [type, setType] = React.useState<StatementType>("profitAndLoss");
   const [range, setRange] = React.useState(() => monthRange(today));
   const [outletId, setOutletId] = React.useState(ALL_OUTLETS);
+  const outletFieldId = React.useId();
   const [drillTarget, setDrillTarget] =
     React.useState<StatementDrillTarget | null>(null);
   const periodsQuery = useFiscalPeriods(legalEntityId);
@@ -60,14 +63,32 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
       : {}),
   };
 
-  // Only the month of the as-of date matters for a balance sheet.
-  const closedPeriods = periodsQuery.data
-    ? closedPeriodsInRange(
-        periodsQuery.data,
-        type === "balanceSheet" ? range.to : range.from,
-        range.to,
-      )
-    : [];
+  // Official only when every month the figures depend on is closed; an open
+  // month anywhere in the range (or a failed period read) means estimate.
+  const basisRange = basisRangeFor(type, params);
+  const basis = periodsQuery.isPending
+    ? null
+    : statementBasis(periodsQuery.data ?? [], basisRange.from, basisRange.to, {
+        cumulative: basisRange.cumulative,
+      });
+  const periodList = (months: readonly string[]) =>
+    months.map((month) => formatPeriod(month)).join(", ");
+  const basisNote = !basis
+    ? null
+    : basis.basis === "official"
+      ? t("accounting.report.basis.officialNote", {
+          periods: periodList(basis.closed),
+        })
+      : basis.open.length === 0
+        ? t("accounting.report.basis.estimateUnknownNote")
+        : basis.closed.length > 0
+          ? t("accounting.report.basis.estimateMixedNote", {
+              open: periodList(basis.open),
+              closed: periodList(basis.closed),
+            })
+          : t("accounting.report.basis.estimateNote", {
+              open: periodList(basis.open),
+            });
 
   const resetRange = () => {
     setRange(monthRange(today));
@@ -79,6 +100,7 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
     params,
     onDrillDown: setDrillTarget,
     onResetRange: resetRange,
+    basis: basis?.basis ?? null,
   };
 
   return (
@@ -154,11 +176,16 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
 
             {type === "profitAndLoss" && (
               <FormField
+                id={outletFieldId}
                 label={t("accounting.report.screen.outlet")}
                 hint={t("accounting.report.screen.outletHint")}
               >
                 <Select value={outletId} onValueChange={setOutletId}>
-                  <SelectTrigger className="h-control-sm">
+                  <SelectTrigger
+                    id={outletFieldId}
+                    aria-describedby={`${outletFieldId}-hint`}
+                    className="h-control-sm"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -176,31 +203,36 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
             )}
           </div>
 
-          {closedPeriods.length > 0 && (
+          {basis && basisNote && type !== "multiEntity" && (
             <div
               role="note"
-              className="flex items-start gap-2 rounded-container border-(length:--border-w) border-info bg-info-subtle p-3"
+              data-basis={basis.basis}
+              className={
+                basis.basis === "official"
+                  ? "flex items-start gap-2 rounded-container border-(length:--border-w) border-border bg-surface-2 p-3"
+                  : "flex items-start gap-2 rounded-container border-(length:--border-w) border-warning bg-warning-subtle p-3"
+              }
             >
-              <Lock
-                className="mt-0.5 size-icon shrink-0 text-info"
-                aria-hidden="true"
-              />
+              {basis.basis === "official" ? (
+                <Lock
+                  className="mt-0.5 size-icon shrink-0 text-success"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Hourglass
+                  className="mt-0.5 size-icon shrink-0 text-warning"
+                  aria-hidden="true"
+                />
+              )}
               <div className="grid gap-0.5 text-sm leading-5">
                 <p className="font-semibold">
-                  {t("accounting.report.screen.closedNoteTitle")}
-                </p>
-                <p className="text-muted-foreground">
                   {t(
-                    type === "balanceSheet"
-                      ? "accounting.report.screen.closedAsOfNote"
-                      : "accounting.report.screen.closedNote",
-                    {
-                      periods: closedPeriods
-                        .map((period) => formatPeriod(period.period))
-                        .join(", "),
-                    },
+                    basis.basis === "official"
+                      ? "accounting.report.basis.officialTitle"
+                      : "accounting.report.basis.estimateTitle",
                   )}
                 </p>
+                <p className="text-muted-foreground">{basisNote}</p>
               </div>
             </div>
           )}

@@ -422,6 +422,7 @@ function CalculateStep({
   const periodsQuery = useFiscalPeriods(legalEntityId);
   const create = useCreateDistributionRun(profitEntity.id);
   const [periodId, setPeriodId] = React.useState<string>("");
+  const periodFieldId = React.useId();
   const [error, setError] = React.useState<string | null>(null);
 
   const periods = periodsQuery.data ?? [];
@@ -478,6 +479,7 @@ function CalculateStep({
       ) : (
         <>
           <FormField
+            id={periodFieldId}
             label={t("accounting.share.wizard.calc.period")}
             hint={t("accounting.share.wizard.calc.periodHint")}
             required
@@ -489,7 +491,7 @@ function CalculateStep({
                 setError(null);
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger id={periodFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1044,6 +1046,7 @@ function StatementStep({
   const t = useT();
   const paidLines = run.lines.filter((line) => line.paymentStatus === "paid");
   const [lineId, setLineId] = React.useState<string>("");
+  const lineFieldId = React.useId();
   const selected =
     paidLines.find((line) => line.id === lineId) ?? paidLines[0] ?? null;
   const statementQuery = useDistributionStatement(
@@ -1074,6 +1077,7 @@ function StatementStep({
       ) : (
         <>
           <FormField
+            id={lineFieldId}
             label={t("accounting.share.wizard.statement.pick")}
             required
           >
@@ -1081,7 +1085,7 @@ function StatementStep({
               value={selected?.id ?? ""}
               onValueChange={(value) => setLineId(value)}
             >
-              <SelectTrigger>
+              <SelectTrigger id={lineFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

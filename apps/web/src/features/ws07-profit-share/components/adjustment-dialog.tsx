@@ -82,6 +82,7 @@ function AdjustmentForm({
   const periodsQuery = useFiscalPeriods(legalEntityId);
   const create = useCreateAdjustmentDistribution(target.profitEntityId);
   const [periodId, setPeriodId] = React.useState("");
+  const periodFieldId = React.useId();
   const [amount, setAmount] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [errors, setErrors] = React.useState<
@@ -169,6 +170,7 @@ function AdjustmentForm({
           <Skeleton className="h-control w-full" />
         ) : (
           <FormField
+            id={periodFieldId}
             label={t("accounting.share.wizard.adjustPeriod")}
             error={errors.fiscalPeriodId}
             required
@@ -177,7 +179,7 @@ function AdjustmentForm({
               value={selected?.id ?? ""}
               onValueChange={(value) => setPeriodId(value)}
             >
-              <SelectTrigger>
+              <SelectTrigger id={periodFieldId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

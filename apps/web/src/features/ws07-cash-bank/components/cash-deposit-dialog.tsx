@@ -154,13 +154,14 @@ function CashDepositForm({
               setServerError(
                 error instanceof ApiError
                   ? error.message
-                  : t("accounting.cash.deposits.form.invalidAmount"),
+                  : t("accounting.cash.deposits.form.failed"),
               );
             },
           });
         }}
       >
         <FormField
+          id="cash-deposit-outlet"
           label={t("accounting.cash.deposits.form.outlet")}
           hint={
             outlets.length === 0
@@ -170,7 +171,10 @@ function CashDepositForm({
           required
         >
           <Select value={effectiveOutlet} onValueChange={setOutletId}>
-            <SelectTrigger disabled={outlets.length === 0}>
+            <SelectTrigger
+              id="cash-deposit-outlet"
+              disabled={outlets.length === 0}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -183,11 +187,12 @@ function CashDepositForm({
           </Select>
         </FormField>
         <FormField
+          id="cash-deposit-bankaccount"
           label={t("accounting.cash.deposits.form.bankAccount")}
           required
         >
           <Select value={bankAccountId} onValueChange={setBankAccountId}>
-            <SelectTrigger>
+            <SelectTrigger id="cash-deposit-bankaccount">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

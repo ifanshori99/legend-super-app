@@ -21,7 +21,11 @@ import {
   type AgingFiltersQuery,
   type BudgetQuery,
 } from "./queries";
-import { accountsQuery, outletsQuery } from "../ws07-accounting/queries";
+import {
+  accountingKeys,
+  accountsQuery,
+  outletsQuery,
+} from "../ws07-accounting/queries";
 
 // ---- Queries --------------------------------------------------------------
 
@@ -69,6 +73,16 @@ function useInvalidateApAssets() {
   return () => queryClient.invalidateQueries({ queryKey: apAssetsKeys.all });
 }
 
+/** A depreciation run or a disposal posts a journal: refresh the ledger too. */
+function useInvalidateApAssetsAndJournals() {
+  const queryClient = useQueryClient();
+  return () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: apAssetsKeys.all }),
+      queryClient.invalidateQueries({ queryKey: accountingKeys.journals() }),
+    ]);
+}
+
 export type CreateFixedAssetBody = Omit<
   EndpointInput<typeof createFixedAssetEndpoint>["body"],
   "idempotencyKey"
@@ -95,7 +109,7 @@ export function useCreateFixedAsset() {
 }
 
 export function useDisposeFixedAsset() {
-  const invalidate = useInvalidateApAssets();
+  const invalidate = useInvalidateApAssetsAndJournals();
   return useMutation({
     mutationFn: ({
       fixedAssetId,
@@ -123,7 +137,7 @@ export function useRevalueFixedAsset() {
 }
 
 export function useRunDepreciation() {
-  const invalidate = useInvalidateApAssets();
+  const invalidate = useInvalidateApAssetsAndJournals();
   return useMutation({
     mutationFn: (body: RunDepreciationBody) => api.runDepreciation(body),
     onSuccess: () => invalidate(),

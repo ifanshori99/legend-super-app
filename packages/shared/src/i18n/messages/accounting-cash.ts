@@ -310,6 +310,7 @@ export const accountingCashMessages = {
       invalidAmount: "Nominal harus lebih dari nol.",
       invalidRange: "Tanggal akhir tidak boleh sebelum tanggal mulai.",
       noOutlets: "Belum ada outlet yang bisa dipilih.",
+      failed: "Setoran gagal disimpan. Coba lagi.",
     },
     alerts: {
       label: "Peringatan kas belum disetor",
