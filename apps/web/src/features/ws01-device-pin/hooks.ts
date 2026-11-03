@@ -12,7 +12,8 @@ export function useVerifyStaffPin() {
   // gcTime 0: a settled verify (its variables are the PIN) leaves the cache
   // at once; usePinSession also resets it on settle.
   return useMutation({
-    mutationFn: (pin: string) => verifyStaffPinCall(pin),
+    mutationFn: (input: { userId: string; pin: string }) =>
+      verifyStaffPinCall(input.userId, input.pin),
     gcTime: 0,
   });
 }

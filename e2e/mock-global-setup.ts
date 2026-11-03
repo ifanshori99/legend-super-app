@@ -83,6 +83,17 @@ const WARM_ROUTES: readonly string[] = [
   `/member/fasilitas/${TICKET_ID}`,
   "/wifi",
   `/bayar/${PAYMENT_LINK}`, // customer payment link
+  // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews, campaigns,
+  // delivery ops, the guest booking flow and the staff reservation desk. Detail
+  // routes are opened from their list by the specs, so they stay out here.
+  "/kelola/pelanggan",
+  "/kelola/pelanggan/segmen",
+  "/kelola/ulasan",
+  "/kelola/kampanye",
+  "/kelola/kampanye/otomasi",
+  "/kelola/delivery",
+  "/reservasi",
+  "/pos/reservasi",
 ];
 
 /** Give up on one route after this; a cold compile has been seen at 35 s. */

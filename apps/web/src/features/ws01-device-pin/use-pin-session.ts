@@ -12,9 +12,19 @@ export type UsePinSessionOptions = {
   onVerified: (result: StaffPinSwitch) => void;
   /** Return an error text to refuse a correct PIN (wrong person, same approver). */
   accept?: (result: StaffPinSwitch) => string | null;
+  /**
+   * The staff member whose PIN is being verified. Per-staff PIN verify
+   * (legend-dxb) needs an explicit person; null fails closed with a prompt to
+   * pick one, so a device never guesses whose PIN it just checked.
+   */
+  userId: string | null;
 };
 
-export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
+export function usePinSession({
+  onVerified,
+  accept,
+  userId,
+}: UsePinSessionOptions) {
   const t = useT();
   const lock = usePinLock();
   const verify = useVerifyStaffPin();
@@ -32,44 +42,53 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
   const submit = useCallback(
     (pin: string) => {
       setError(null);
-      verify.mutate(pin, {
-        // Forget the PIN as soon as the answer is in: the mutation keeps its
-        // variables until reset (no PIN in the query client, ever).
-        onSettled: () => verify.reset(),
-        onSuccess: ({ data }) => {
-          const refusal = accept?.(data) ?? null;
-          if (refusal) {
-            fail(refusal);
-            return;
-          }
-          lock.recordSuccess();
-          // Drop anything typed while the right PIN was being checked.
-          setClearSignal((n) => n + 1);
-          onVerified(data);
+      // Fail closed: a PIN belongs to a named staff member, so a device that
+      // has not picked one cannot verify anything.
+      if (userId === null) {
+        fail(t("devicePin.error.pickStaff"));
+        return;
+      }
+      verify.mutate(
+        { userId, pin },
+        {
+          // Forget the PIN as soon as the answer is in: the mutation keeps its
+          // variables until reset (no PIN in the query client, ever).
+          onSettled: () => verify.reset(),
+          onSuccess: ({ data }) => {
+            const refusal = accept?.(data) ?? null;
+            if (refusal) {
+              fail(refusal);
+              return;
+            }
+            lock.recordSuccess();
+            // Drop anything typed while the right PIN was being checked.
+            setClearSignal((n) => n + 1);
+            onVerified(data);
+          },
+          onError: (cause) => {
+            if (cause instanceof ApiError && cause.code === "PIN_LOCKED") {
+              lock.recordServerLocked();
+              fail(t("devicePin.lockout.title"));
+            } else if (
+              cause instanceof ApiError &&
+              cause.code === "PIN_INVALID"
+            ) {
+              lock.recordInvalid();
+              fail(t("devicePin.error.invalid"));
+            } else if (
+              !(cause instanceof ApiError) ||
+              cause.status === 0 ||
+              cause.status >= 502
+            ) {
+              fail(t("devicePin.error.network"));
+            } else {
+              fail(t("devicePin.error.generic"));
+            }
+          },
         },
-        onError: (cause) => {
-          if (cause instanceof ApiError && cause.code === "PIN_LOCKED") {
-            lock.recordServerLocked();
-            fail(t("devicePin.lockout.title"));
-          } else if (
-            cause instanceof ApiError &&
-            cause.code === "PIN_INVALID"
-          ) {
-            lock.recordInvalid();
-            fail(t("devicePin.error.invalid"));
-          } else if (
-            !(cause instanceof ApiError) ||
-            cause.status === 0 ||
-            cause.status >= 502
-          ) {
-            fail(t("devicePin.error.network"));
-          } else {
-            fail(t("devicePin.error.generic"));
-          }
-        },
-      });
+      );
     },
-    [verify, accept, fail, lock, onVerified, t],
+    [verify, accept, fail, lock, onVerified, userId, t],
   );
 
   const clear = useCallback(() => setClearSignal((n) => n + 1), []);

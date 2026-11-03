@@ -43,6 +43,7 @@ import {
   useCreateApprovalRequest,
 } from "../hooks.ts";
 import { usePinSession } from "../use-pin-session.ts";
+import { useRoster } from "../storage.ts";
 import { useClockMs } from "../use-clock.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
 import { PinPad } from "./pin-pad.tsx";
@@ -123,6 +124,9 @@ function ModalBody({
   const [requestId, setRequestId] = useState<string | null>(null);
   const [sendError, setSendError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // Per-staff PIN verify (legend-dxb): the approver names themself first.
+  const roster = useRoster();
+  const [approverId, setApproverId] = useState<string | null>(null);
 
   const values = { valueText, reasonCode, reason };
   // A field's error goes away once that field is edited (not on the next PIN).
@@ -160,6 +164,7 @@ function ModalBody({
   );
   const session = usePinSession({
     accept,
+    userId: approverId,
     onVerified: (result) =>
       finish({
         method: "supervisor_pin",
@@ -315,6 +320,34 @@ function ModalBody({
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.pinHint")}
           </p>
+          {/* Per-staff PIN verify (legend-dxb): the approver is a named person. */}
+          <FormField
+            label={t("devicePin.override.approverLabel")}
+            hint={
+              roster.length === 0
+                ? t("devicePin.override.approverEmpty")
+                : t("devicePin.override.approverHint")
+            }
+            required
+          >
+            <Select
+              value={approverId ?? ""}
+              onValueChange={(value) => setApproverId(value || null)}
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={t("devicePin.override.approverPlaceholder")}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {roster.map((entry) => (
+                  <SelectItem key={entry.userId} value={entry.userId}>
+                    {entry.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
           {session.lock.locked && (
             <LockoutNotice remainingMs={session.lock.remainingMs} />
           )}
@@ -322,6 +355,7 @@ function ModalBody({
             {...guardedPad}
             shakeSignal={guardedPad.shakeSignal + attempt}
             clearSignal={guardedPad.clearSignal + attempt}
+            active={approverId !== null}
             label={t("devicePin.override.pinTitle")}
           />
         </div>

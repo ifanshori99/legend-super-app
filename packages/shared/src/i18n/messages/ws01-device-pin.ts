@@ -30,6 +30,8 @@ export const devicePinMessages = {
     network:
       "Tidak dapat menghubungi server. Periksa koneksi perangkat, lalu coba lagi.",
     generic: "PIN belum dapat diperiksa. Coba lagi sebentar lagi.",
+    pickStaff:
+      "Pilih nama staf dulu. PIN diverifikasi untuk orang yang namanya dipilih.",
     offlineHint:
       "Saat offline, ganti pengguna menunggu koneksi edge node outlet kembali.",
   },
@@ -104,6 +106,11 @@ export const devicePinMessages = {
     pinTitle: "PIN penyetuju",
     pinHint:
       "Supervisor memasukkan PIN pribadinya di perangkat ini. Penyetuju tidak boleh sama dengan peminta.",
+    approverLabel: "Penyetuju",
+    approverHint: "Pilih nama supervisor, lalu masukkan PIN pribadinya.",
+    approverPlaceholder: "Pilih nama penyetuju",
+    approverEmpty:
+      "Belum ada staf di perangkat ini. Minta supervisor masuk lewat Ganti pengguna.",
     phoneHint:
       "Permintaan dikirim ke ponsel supervisor. Perangkat ini menunggu keputusan.",
     submitPin: "Setujui dengan PIN",

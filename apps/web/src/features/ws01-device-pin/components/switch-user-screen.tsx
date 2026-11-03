@@ -64,7 +64,14 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
     },
     [t, toast],
   );
-  const session = usePinSession({ onVerified, accept });
+  // A picked roster entry names whose PIN is being verified (per-staff verify,
+  // legend-dxb). "Other"/nothing has no person yet, so the pad fails closed and
+  // asks for a name first.
+  const session = usePinSession({
+    onVerified,
+    accept,
+    userId: picked !== null && picked !== "other" ? picked.userId : null,
+  });
 
   return (
     <div className="mx-auto grid w-full max-w-3xl gap-6 p-4 sm:p-6">
