@@ -1418,3 +1418,33 @@ export function transitionProductionOrder(
     );
   return next;
 }
+
+// ---- Tenant inventory settings (PRD §16 "Pemotongan Otomatis", legend-gjmk) --
+
+/**
+ * PRD §16 "Pemotongan Otomatis": a sale deducts recipe ingredients either
+ * `real_time` or `close_of_day` ("pada tutup hari sesuai pengaturan").
+ */
+export const recipeDeductionModeSchema = z.enum(["real_time", "close_of_day"]);
+export type RecipeDeductionMode = z.infer<typeof recipeDeductionModeSchema>;
+
+/**
+ * Expiry warning window in days ("peringatan menjelang kedaluwarsa", PRD §16
+ * "Batch & Kedaluwarsa"); the `warnDays` argument of `batchExpiryStatus`.
+ * PRD gives no number: bounded 1..365, default 7 (decision, see legend-gjmk).
+ */
+export const expiryWarningDaysSchema = z.number().int().min(1).max(365);
+export const DEFAULT_EXPIRY_WARNING_DAYS = 7;
+export const DEFAULT_RECIPE_DEDUCTION_MODE: RecipeDeductionMode = "real_time";
+
+/**
+ * One row per tenant. A tenant that never saved settings reads the defaults
+ * (`updatedAt` null); the first save creates the row.
+ */
+export const inventorySettingsSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  recipeDeductionMode: recipeDeductionModeSchema,
+  expiryWarningDays: expiryWarningDaysSchema,
+  updatedAt: isoDateTimeSchema.nullable(),
+});
+export type InventorySettings = z.infer<typeof inventorySettingsSchema>;

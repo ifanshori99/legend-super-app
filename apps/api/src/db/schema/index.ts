@@ -35,3 +35,11 @@ export * from "./crm-promo";
 export * from "./reservation";
 export * from "./facility";
 export * from "./hris";
+// WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
+export * from "./accounting-ap-fa";
+// WS-06 inventory setup writes (legend-gjmk).
+export * from "./inventory-setup";
+// WS-03 menu import + printable menu (legend-dmi).
+export * from "./menu-import";
+// WS-06 production, waste, alerts (legend-ugo).
+export * from "./inventory-ops";

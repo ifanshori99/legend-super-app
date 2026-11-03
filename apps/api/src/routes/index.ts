@@ -4,6 +4,9 @@ import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
+import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
+import { createInventorySetupRouter } from "./inventory-setup.routes";
+import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
@@ -13,6 +16,7 @@ import { platformRouter } from "./platform.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
 import { createMenuRouter } from "./menu.routes";
+import { createMenuImportRouter } from "./menu-import.routes";
 import { floorRouter, outletFloorRouter, tablesRouter } from "./floor.routes";
 import { qrRouter } from "./qr.routes";
 import { publicSiteRouter } from "./public-site.routes";
@@ -57,8 +61,15 @@ apiRouter.use("/approvals", approvalRouter);
 // yet (WS-00 storage bead owns that), so the image upload answers 503 until
 // the bootstrap injects one; every other menu route is live.
 apiRouter.use("/menu", createMenuRouter());
+// Menu CSV/XLSX import + printable menu (WS-03, legend-dmi). Storage/PDF
+// renderer are deployment-injected; print answers 503 until they exist.
+apiRouter.use("/menu", createMenuImportRouter({}));
 // Inventory & warehouse (WS-06, bead legend-98t).
 apiRouter.use("/inventory", inventoryRouter);
+// Inventory setup writes + settings (WS-06, legend-gjmk).
+apiRouter.use("/inventory", createInventorySetupRouter());
+// Production, waste, transfers, expiry/par alerts, suggestions (WS-06, legend-ugo).
+apiRouter.use("/inventory", createInventoryOpsRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);
@@ -78,6 +89,8 @@ apiRouter.use("/public/site", publicSiteRouter);
 apiRouter.use("/tax", taxRouter);
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
+// AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).
+apiRouter.use("/accounting", createAccountingApFaRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);

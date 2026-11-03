@@ -41,6 +41,9 @@ import {
   createRelayScheduler,
   createWakeListener,
 } from "./worker/relay";
+import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
+import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 
 // This module belongs to the deployment, never to the incoming request.
 const modulePath = process.env.WORKER_CONFIG_MODULE;
@@ -192,6 +195,24 @@ const relay = createRelayRuntime({
       await retryPendingRefunds(context, new Date());
     } catch {
       console.error("Reservation refund retry sweep failed");
+    }
+    // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per
+    // legal entity (idempotent per entity+period and asset+period). Fail closed.
+    try {
+      await runDueDepreciation(context, new Date());
+    } catch {
+      console.error("Depreciation job sweep failed");
+    }
+    // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
+    try {
+      await runInventoryParAlertJob(context);
+    } catch {
+      console.error("Inventory par alert sweep failed");
+    }
+    try {
+      await runInventoryExpiryJob(context);
+    } catch {
+      console.error("Inventory expiry sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
