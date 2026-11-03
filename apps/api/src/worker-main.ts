@@ -25,6 +25,7 @@ import {
 } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -155,6 +156,15 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL
+    // lapsed so the unit frees up. Same fail-closed rule as above.
+    try {
+      await withTenant(db, context, (tx) =>
+        releaseExpiredSlotHolds(tx, context),
+      );
+    } catch {
+      console.error("Facility hold expiry sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.

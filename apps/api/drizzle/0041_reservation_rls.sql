@@ -25,13 +25,13 @@ ALTER TABLE "reservation_tables"
 -- A hold's outlet must be the reservation's outlet (the composite FK only ties
 -- tenant + id). Enforced for inserts and outlet changes.
 CREATE OR REPLACE FUNCTION app.reservation_tables_same_outlet() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM reservations r
+    SELECT 1 FROM public.reservations r
     WHERE r.tenant_id = NEW.tenant_id AND r.id = NEW.reservation_id AND r.outlet_id = NEW.outlet_id
   ) OR NOT EXISTS (
-    SELECT 1 FROM tables t
+    SELECT 1 FROM public.tables t
     WHERE t.tenant_id = NEW.tenant_id AND t.id = NEW.table_id AND t.outlet_id = NEW.outlet_id
   ) THEN
     RAISE EXCEPTION 'reservation_tables outlet must match the reservation and the table'
@@ -47,7 +47,7 @@ CREATE TRIGGER "reservation_tables_same_outlet_trg"
 -- RSV-03: the policy snapshot is frozen at booking time. Any update that
 -- changes it is refused at the database, not only in the service.
 CREATE OR REPLACE FUNCTION app.reservations_snapshot_frozen() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   IF NEW.policy_snapshot IS DISTINCT FROM OLD.policy_snapshot THEN
     RAISE EXCEPTION 'reservations.policy_snapshot is immutable' USING ERRCODE = '23514';

@@ -1,5 +1,5 @@
 -- Facility access (bead legend-nm4f; FAC-02, FAC-06). Requires the btree_gist
--- extension, which the migration creates before this file. CHECK constraints
+-- extension, created by 0041_reservation_rls.sql (earlier in the journal). CHECK constraints
 -- live in the drizzle schema (facility.ts); this file holds what drizzle
 -- cannot express.
 

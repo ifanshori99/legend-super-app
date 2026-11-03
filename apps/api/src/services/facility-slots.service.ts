@@ -65,6 +65,7 @@ import {
   OPERATE_PERMISSION,
   outletTimeZone,
   PG_EXCLUSION_VIOLATION,
+  PG_UNIQUE_VIOLATION,
   pgErrorCode,
   toTicket,
   zonedInstant,
@@ -398,6 +399,24 @@ export async function holdFacilitySlot(
 
   await lockFacilitySlots(tx, tenantId, facility.id);
 
+  // FAC-02: the exclusion predicate cannot see hold_expires_at, so a lapsed
+  // pending_payment hold keeps blocking its unit until it is cancelled. Release
+  // this facility's lapsed holds here (under the facility lock) so the slot
+  // frees up even when the worker sweep has not run yet.
+  const lapsed = await tx
+    .select({ id: accessTickets.id })
+    .from(accessTickets)
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        eq(accessTickets.facilityId, facility.id),
+        eq(accessTickets.status, "pending_payment"),
+        lt(accessTickets.holdExpiresAt, now),
+      ),
+    );
+  for (const { id } of lapsed)
+    await cancelFacilitySlotHold(tx, context, id, null, now);
+
   const fingerprint = holdFingerprint(input);
   const [existing] = await tx
     .select()
@@ -447,7 +466,11 @@ export async function holdFacilitySlot(
         eq(facilityUnits.areaId, area.id),
       ),
     )
-    .orderBy(asc(facilityUnits.sortOrder), asc(facilityUnits.code));
+    .orderBy(asc(facilityUnits.sortOrder), asc(facilityUnits.code))
+    // FAC-06: a concurrent maintenance/unclean flag (FOR UPDATE in
+    // updateFacilityUnit) waits for this hold to commit, or this read waits
+    // for the flag, so a hold never lands on a unit flagged in parallel.
+    .for("share");
   if (input.unitId && !candidates.some((unit) => unit.id === input.unitId))
     throw new HttpError(404, "NOT_FOUND", "Bilik tidak ditemukan di area ini.");
 
@@ -576,6 +599,14 @@ export async function holdFacilitySlot(
   } catch (error) {
     if (pgErrorCode(error) === PG_EXCLUSION_VIOLATION)
       throw new FacilityError("SLOT_UNAVAILABLE");
+    // Same (customer, key) raced on another facility's lock: same answer as
+    // the replay check above.
+    if (pgErrorCode(error) === PG_UNIQUE_VIOLATION)
+      throw new HttpError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempotensi ini sudah dipakai untuk permintaan lain.",
+      );
     throw error;
   }
 

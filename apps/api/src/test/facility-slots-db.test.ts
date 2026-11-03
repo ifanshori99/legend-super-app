@@ -486,6 +486,37 @@ describe("FAC-02 no overlapping slot on one unit, cleaning buffer included", () 
     await expect(hold(f, { unitId })).resolves.toBeDefined();
   });
 
+  it("[FAC-02] a new hold releases this facility's lapsed holds itself, without waiting for the sweeper", async () => {
+    const f = await seedFacility({ units: 1 });
+    const unitId = f.unitIds[0];
+    const first = await hold(f, {
+      unitId,
+      timing: { kind: "slot", startsAt: at(60) },
+    });
+    const context = outletScope(f.outletId);
+    const later = new Date(NOW.getTime() + 11 * 60_000);
+    const second = await withTenant(db, context, (tx) =>
+      holdFacilitySlot(
+        tx,
+        context,
+        holdInput(f, { unitId, timing: { kind: "slot", startsAt: at(60) } }),
+        later,
+      ),
+    );
+    expect(second.ticket.unitId).toBe(unitId);
+    expect(second.ticket.id).not.toBe(first.ticket.id);
+    const { rows } = await asOwner(f.tenant, (client) =>
+      client.query(
+        "SELECT status FROM access_tickets WHERE unit_id = $1 ORDER BY created_at",
+        [unitId],
+      ),
+    );
+    expect(rows.map((r: { status: string }) => r.status)).toEqual([
+      "cancelled",
+      "pending_payment",
+    ]);
+  });
+
   it("[FAC-02] the idempotency key is bound to its request: same request replays, a different one is refused", async () => {
     const f = await seedFacility({ units: 2 });
     const input = holdInput(f, { unitId: f.unitIds[0] });
