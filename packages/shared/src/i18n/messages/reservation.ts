@@ -36,6 +36,9 @@ export const reservationMessages = {
     label: "DP",
     none: "Tanpa DP",
     pending: "DP belum dibayar",
+    // Pending with no payment intent yet: the guest has not paid through the
+    // DP link, so the desk must not imply an existing payment (RSV-02).
+    awaitingPayment: "Menunggu pembayaran DP",
     paid: "DP lunas",
     failed: "DP gagal",
     expired: "DP kedaluwarsa",
@@ -190,6 +193,9 @@ export const reservationMessages = {
     refund: "Dikembalikan",
     forfeited: "Hangus",
     nothingPaid: "Belum ada DP yang dibayar.",
+    // The DP was paid and already returned by WS-05: closing reports no
+    // further refund, and the copy says why instead of "nothing paid".
+    depositAlreadyRefunded: "DP sudah dikembalikan sebelumnya.",
     error: "Reservasi gagal dibatalkan. Coba lagi.",
   },
   noShow: {

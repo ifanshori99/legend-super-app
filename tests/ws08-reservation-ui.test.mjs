@@ -16,6 +16,7 @@ import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 import {
   businessDateOf,
   conflictingReservations,
+  depositLabelKey,
   groupByBusinessDate,
   reservationActions,
   reservationSlots,
@@ -23,8 +24,17 @@ import {
   tablesHeldAt,
   waitlistActions,
 } from "../apps/web/src/features/ws08-reservation/lib.ts";
-import "../apps/web/src/features/ws08-reservation/mock.ts";
+import {
+  awaitingDepositReservation,
+  awaitingDepositReservationId,
+  refundedDepositReservation,
+  refundedDepositReservationId,
+} from "../apps/web/src/features/ws08-reservation/mock.ts";
 import { reservationMessages } from "../packages/shared/src/i18n/messages/reservation.ts";
+import {
+  createTranslator,
+  isMessageKey,
+} from "../packages/shared/src/i18n/index.ts";
 
 const fixtures = reservation.cafeLegendReservationFixtures;
 const ids = reservation.reservationFixtureIds;
@@ -184,6 +194,73 @@ describe("RSV-02 the DP is a deposit, allocated when the guest sits", () => {
   });
 });
 
+describe("RSV-02 the DP link: a refunded DP stays valid, a pending DP has no intent", () => {
+  test("RSV-02 a confirmed reservation whose DP was refunded can still be seated", () => {
+    // The rule lives in @starter/shared/reservation (depositIsSettled): a
+    // later WS-05 refund keeps the settled DP, so the desk must offer seat.
+    assert.equal(refundedDepositReservation.status, "confirmed");
+    assert.ok(refundedDepositReservation.tableIds.length > 0);
+    assert.equal(refundedDepositReservation.depositStatus, "refunded");
+    assert.equal(reservationActions(refundedDepositReservation).seat, true);
+
+    // A pending DP still cannot be seated: the guest has not paid through the
+    // DP link, so no intent exists yet (depositPaymentId stays null).
+    assert.equal(awaitingDepositReservation.status, "pending_deposit");
+    assert.equal(awaitingDepositReservation.depositPaymentId, null);
+    assert.equal(awaitingDepositReservation.depositStatus, "pending");
+    assert.equal(reservationActions(awaitingDepositReservation).seat, false);
+  });
+
+  test("RSV-02 the DP labels resolve: refunded and awaiting payment", () => {
+    const t = createTranslator();
+    assert.equal(
+      depositLabelKey(refundedDepositReservation),
+      "reservation.deposit.refunded",
+    );
+    assert.equal(
+      t(depositLabelKey(refundedDepositReservation)),
+      "DP dikembalikan",
+    );
+    assert.equal(
+      depositLabelKey(awaitingDepositReservation),
+      "reservation.deposit.awaitingPayment",
+    );
+    assert.ok(isMessageKey("reservation.deposit.awaitingPayment"));
+    assert.equal(
+      t(depositLabelKey(awaitingDepositReservation)),
+      "Menunggu pembayaran DP",
+    );
+    assert.equal(
+      reservationMessages.deposit.awaitingPayment,
+      "Menunggu pembayaran DP",
+    );
+    assert.equal(reservationMessages.deposit.refunded, "DP dikembalikan");
+  });
+
+  test("RSV-02 the mock serves both DP shapes and seats the refunded one", async () => {
+    const day = await get(`/api/outlets/${outlet.id}/reservations`, {
+      date: "2026-11-05",
+      limit: 100,
+    });
+    assert.deepEqual(
+      day.data.map((row) => row.id),
+      [awaitingDepositReservationId, refundedDepositReservationId],
+    );
+    assert.equal(day.data[0].depositPaymentId, null);
+    assert.equal(day.data[1].depositStatus, "refunded");
+
+    const seated = await send(
+      "POST",
+      `/api/outlets/${outlet.id}/reservations/${refundedDepositReservationId}/seat`,
+      { tableIds: [...refundedDepositReservation.tableIds] },
+    );
+    assert.equal(seated.data.reservation.status, "seated");
+    // The refunded DP stays on the row; seating does not rewrite it.
+    assert.equal(seated.data.reservation.depositStatus, "refunded");
+    assert.ok(seated.data.tableSessionId);
+  });
+});
+
 describe("RSV-03 closing follows the frozen policy snapshot", () => {
   test("RSV-03 a paid DP is split by the snapshot in force at booking", async () => {
     const closed = await send(
@@ -235,6 +312,24 @@ describe("RSV-03 closing follows the frozen policy snapshot", () => {
     assert.equal(closed.data.depositOutcome.resolution, "no_refund");
     assert.equal(closed.data.depositOutcome.refundIdr, 0);
     assert.equal(closed.data.depositOutcome.forfeitedIdr, 100_000);
+  });
+
+  test("RSV-03 an already refunded DP is not refunded a second time", async () => {
+    const closed = await send(
+      "POST",
+      `/api/outlets/${outlet.id}/reservations/${refundedDepositReservationId}/cancel`,
+      { reason: "Tamu membatalkan." },
+    );
+    assert.equal(closed.data.reservation.status, "cancelled");
+    // WS-05 returned the DP in full; the snapshot has nothing left to move.
+    assert.equal(closed.data.depositOutcome.resolution, "nothing_paid");
+    assert.equal(closed.data.depositOutcome.refundIdr, 0);
+    assert.equal(closed.data.depositOutcome.forfeitedIdr, 0);
+    // The close result says the DP was already returned, not "nothing paid".
+    assert.equal(
+      reservationMessages.cancel.depositAlreadyRefunded,
+      "DP sudah dikembalikan sebelumnya.",
+    );
   });
 
   test("RSV-03 a seated reservation can no longer be cancelled", async () => {

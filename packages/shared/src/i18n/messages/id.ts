@@ -60,6 +60,10 @@ import { facilityReportMessages } from "./facility-report.ts";
 import { opsEquipmentMessages } from "./ops-equipment.ts";
 import { opsFoodSafetyMessages } from "./ops-food-safety.ts";
 import { opsChecklistMessages } from "./ops-checklist.ts";
+import { crm360Messages } from "./ws08-crm-360.ts";
+import { crmCampaignsMessages } from "./ws08-crm-campaigns.ts";
+import { deliveryOpsMessages } from "./ws08-delivery.ts";
+import { reservationBookingMessages } from "./ws08-reservation-customer.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -84,6 +88,14 @@ export const id = {
   posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews (legend-i026),
+  // campaigns/automations (legend-hbad), delivery channels (legend-e8oa) and
+  // the guest booking flow (legend-xm4y). One module per bead so they never
+  // edited the same lines.
+  crm360: crm360Messages,
+  crmCampaigns: crmCampaignsMessages,
+  deliveryOps: deliveryOpsMessages,
+  reservationBooking: reservationBookingMessages,
   // Public brand website (PRD §3.24): home, online menu, reservation/member
   // entry, SEO copy. One file so the website bead never edits this catalog body.
   website: websiteMessages,

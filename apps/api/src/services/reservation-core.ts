@@ -6,13 +6,14 @@ import type { AccessTarget, PermissionCode } from "@starter/shared/access";
 import {
   createUlid,
   idr,
+  type Idr,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
   RESERVATION_RANGE_BOUNDS,
   ReservationError,
-  depositIsSettled,
+  depositHoldsFunds,
   reservationEvents,
   reservationPolicySnapshotSchema,
   reservationSchema,
@@ -21,7 +22,11 @@ import {
   type ReservationEventName,
   type ReservationTableSlot,
 } from "@starter/shared/reservation";
-import { domainEventOutbox, paymentIntents } from "../db/schema/index.ts";
+import {
+  domainEventOutbox,
+  paymentIntents,
+  paymentRefunds,
+} from "../db/schema/index.ts";
 import {
   reservationIdempotency,
   reservationTables,
@@ -405,6 +410,54 @@ export async function loadDepositStatuses(
 type IntentStatus = (typeof paymentIntents.$inferSelect)["status"];
 
 /**
+ * RSV-02/RSV-03 money guard: how much of a reservation's DP its WS-05 intent
+ * still holds. Zero unless the intent is `paid` or `partially_refunded`
+ * (`depositHoldsFunds`); otherwise the DP (capped at the intent amount) minus
+ * every refund WS-05 has reserved against the intent (any status but `failed`,
+ * the same sum WS-05's refund cap uses), never below zero. Seating credits
+ * exactly this, and a close or late-DP refund splits exactly this, so a DP
+ * that was partly returned is never credited or refunded in full again.
+ */
+export async function loadHeldDeposit(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+  depositIdr: number,
+): Promise<{ status: IntentStatus | null; heldIdr: Idr }> {
+  const [intent] = await tx
+    .select({
+      status: paymentIntents.status,
+      amountIdr: paymentIntents.amountIdr,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  if (!intent) return { status: null, heldIdr: idr(0) };
+  if (!depositHoldsFunds(intent.status))
+    return { status: intent.status, heldIdr: idr(0) };
+  const [reserved] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+    })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, context.tenant.tenantId),
+        eq(paymentRefunds.paymentIntentId, intentId),
+        sql`${paymentRefunds.status} <> 'failed'`,
+        isNull(paymentRefunds.unallocatedFundId),
+      ),
+    );
+  const base = BigInt(Math.min(depositIdr, Number(intent.amountIdr)));
+  const held = base - BigInt(reserved?.total ?? "0");
+  return { status: intent.status, heldIdr: idr(Number(held > 0n ? held : 0n)) };
+}
+
+/**
  * The contract's `depositStatus` for a row (RSV-02), total over valid rows:
  * - no DP: null;
  * - a recorded intent: its WS-05 status (`intentStatus`). If that lookup came
@@ -655,7 +708,9 @@ export async function loadDepositState(
             ),
           )
           .orderBy(asc(paymentIntents.paidAt), asc(paymentIntents.id));
-  const settled = intents.find((intent) => depositIsSettled(intent.status));
+  // Only an intent that still holds the money confirms the DP: one already
+  // refunded in full by WS-05 is not a deposit, whatever it once was (RSV-02).
+  const settled = intents.find((intent) => depositHoldsFunds(intent.status));
   let payableUntil =
     row.depositLinkExpiresAt ??
     new Date(row.createdAt.getTime() + paymentWindowMinutes(row) * 60_000);

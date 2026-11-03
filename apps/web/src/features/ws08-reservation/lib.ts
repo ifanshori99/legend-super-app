@@ -11,6 +11,7 @@ import {
   RESERVATION_ERROR_CODES,
   canTransitionReservation,
   canTransitionWaitlist,
+  depositIsSettled,
   reservationEndsAt,
   reservationTableSlotsOverlap,
 } from "@starter/shared/reservation";
@@ -282,7 +283,9 @@ export type ReservationActions = {
 
 /**
  * Buttons the detail sheet offers. Transitions come from the contract state
- * machine; seating additionally needs the required DP settled (RSV-02).
+ * machine; seating additionally needs the required DP settled (RSV-02). The
+ * settled rule is `depositIsSettled` from the contract, never a local copy:
+ * a later WS-05 refund (`refunded`) keeps the DP valid.
  */
 export function reservationActions(
   reservation: Reservation,
@@ -291,8 +294,7 @@ export function reservationActions(
   const open = status === "pending_deposit" || status === "confirmed";
   const depositSettled =
     reservation.policy.depositRequirement !== "required" ||
-    reservation.depositStatus === "paid" ||
-    reservation.depositStatus === "partially_refunded";
+    depositIsSettled(reservation.depositStatus);
   return {
     assign: open,
     seat:
@@ -368,10 +370,22 @@ export function waitlistStatusKey(status: WaitlistStatus): MessageKey {
   return `reservation.waitlist.status.${status}` as MessageKey;
 }
 
-/** DP badge text: "Tanpa DP" when the snapshot requires none (RSV-02). */
+/**
+ * DP badge text (RSV-02). "Tanpa DP" when no DP applies. A pending DP with no
+ * intent yet means the guest has not opened the DP bill link: the staff copy
+ * says "Menunggu pembayaran DP" instead of implying a payment that exists.
+ */
 export function depositLabelKey(reservation: Reservation): MessageKey {
-  if (reservation.policy.depositRequirement === "none")
+  if (
+    reservation.depositIdr === 0 ||
+    reservation.policy.depositRequirement === "none"
+  )
     return "reservation.deposit.none";
+  if (
+    reservation.depositStatus === "pending" &&
+    reservation.depositPaymentId === null
+  )
+    return "reservation.deposit.awaitingPayment";
   return depositStatusKey(reservation.depositStatus);
 }
 

@@ -17,10 +17,11 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
-import type {
-  Reservation,
-  ReservationPreOrder,
-  ReservationTableSlot,
+import {
+  depositIsSettled,
+  type Reservation,
+  type ReservationPreOrder,
+  type ReservationTableSlot,
 } from "@starter/shared/reservation";
 import {
   businessDateOf,
@@ -91,9 +92,9 @@ function DetailBody({
   const end = new Date(
     Date.parse(reservation.reservedFor) + reservation.durationMinutes * 60_000,
   ).toISOString();
-  const depositSettled =
-    reservation.depositStatus === "paid" ||
-    reservation.depositStatus === "partially_refunded";
+  // The contract rule, not a local copy (RSV-02): a later WS-05 refund keeps
+  // the DP settled, so a refunded-DP guest can still be seated.
+  const depositSettled = depositIsSettled(reservation.depositStatus);
   const seatError = seat.error ? t(reservationErrorKey(seat.error)) : null;
 
   const seatNow = () => {
@@ -116,10 +117,7 @@ function DetailBody({
         <DialogTitle>{reservation.guestName}</DialogTitle>
         <DialogDescription className="flex flex-wrap items-center gap-1">
           <ReservationStatusBadge status={reservation.status} />
-          <DepositBadge
-            status={reservation.depositStatus}
-            hasDeposit={reservation.depositIdr > 0}
-          />
+          <DepositBadge reservation={reservation} />
           <Badge tone="neutral">
             {t(reservationSourceKey(reservation.source))}
           </Badge>

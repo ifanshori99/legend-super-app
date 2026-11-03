@@ -33,6 +33,7 @@ import {
 } from "../services/reservation-booking.ts";
 import {
   cancelReservation,
+  confirmReservationDeposit,
   getReservation,
   listReservations,
   markReservationNoShow,
@@ -614,6 +615,181 @@ describe("RSV-02 the paid DP is a deposit allocated on arrival", () => {
       key(),
     );
     expect(seated.reservation.status).toBe("seated");
+  });
+});
+
+describe("RSV-02 RSV-03 a DP WS-05 refunded is never treated as held", () => {
+  /** WS-05 returned `amount` of the DP (a completed refund row + its status). */
+  async function refundByWs05(intentId: string, amount: number, full: boolean) {
+    await asOwner(seededTenantId, async (client) => {
+      await client.query(
+        `INSERT INTO payment_refunds
+           (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by, approved_by, decided_at)
+         VALUES ($1, $2, $3, $4, 'Pengembalian WS-05', 'completed', 'finance-test', 'finance-approver', now())`,
+        [seededTenantId, seededOutletA, intentId, amount],
+      );
+      await client.query(
+        "UPDATE payment_intents SET status = $2 WHERE id = $1",
+        [intentId, full ? "refunded" : "partially_refunded"],
+      );
+    });
+  }
+
+  async function allocations(reservationId: string) {
+    const { rows } = await asOwner(seededTenantId, (client) =>
+      client.query<{ amount_idr: string }>(
+        "SELECT amount_idr::text FROM reservation_deposit_allocations WHERE reservation_id = $1",
+        [reservationId],
+      ),
+    );
+    return rows.map((row) => row.amount_idr);
+  }
+
+  async function bookWithDp(date: string) {
+    await setPolicy({
+      version: "dp-refunded",
+      requirement: "required",
+      amount: 100_000,
+      freeHours: 24,
+      lateBp: 0,
+    });
+    const f = await floor(1);
+    const created = await createReservation(
+      tenantScope(),
+      outletA,
+      bookingInput(f.zoneId, date),
+      key(),
+    );
+    return { created, tableIds: f.tableIds };
+  }
+
+  const seat = (id: string, tableIds: string[]) =>
+    seatReservation(
+      tenantScope(),
+      staff.userId,
+      outletA,
+      id,
+      seatReservationInputSchema.parse({ tableIds }),
+      key(),
+    );
+
+  it("RSV-02 a DP refunded in full before it was recorded never confirms the booking", async () => {
+    const { created, tableIds } = await bookWithDp("2027-03-20");
+    const intentId = await payDeposit(created);
+    await refundByWs05(intentId, 100_000, true);
+    // Seating reconciles the DP first: a refunded intent is not a deposit, so
+    // the booking stays pending_deposit and seating is refused.
+    await expect(seat(created.reservation.id, tableIds)).rejects.toMatchObject({
+      code: "RESERVATION_DEPOSIT_UNPAID",
+    });
+    const [row] = await asOwner(seededTenantId, (client) =>
+      client
+        .query<{ status: string; deposit_payment_id: string | null }>(
+          "SELECT status, deposit_payment_id FROM reservations WHERE id = $1",
+          [created.reservation.id],
+        )
+        .then((result) => result.rows),
+    );
+    expect(row).toEqual({
+      status: "pending_deposit",
+      deposit_payment_id: null,
+    });
+    expect(await allocations(created.reservation.id)).toEqual([]);
+    await setPolicy({ version: "base-1" });
+  });
+
+  it("RSV-02 a DP refunded in full after confirmation seats the guest with no bill credit", async () => {
+    const { created, tableIds } = await bookWithDp("2027-03-21");
+    const intentId = await payDeposit(created);
+    // The payment.paid consumer records it as the DP first.
+    const confirmed = await confirmReservationDeposit(
+      tenantScope(),
+      outletA,
+      created.reservation.id,
+    );
+    expect(confirmed.status).toBe("confirmed");
+    await refundByWs05(intentId, 100_000, true);
+    const seated = await seat(created.reservation.id, tableIds);
+    expect(seated.reservation).toMatchObject({
+      status: "seated",
+      depositStatus: "refunded",
+    });
+    expect(await allocations(created.reservation.id)).toEqual([]);
+    await setPolicy({ version: "base-1" });
+  });
+
+  it("RSV-02 a partly refunded DP credits only what WS-05 still holds", async () => {
+    const { created, tableIds } = await bookWithDp("2027-03-22");
+    const intentId = await payDeposit(created);
+    await refundByWs05(intentId, 40_000, false);
+    const seated = await seat(created.reservation.id, tableIds);
+    expect(seated.reservation.depositStatus).toBe("partially_refunded");
+    expect(await allocations(created.reservation.id)).toEqual(["60000"]);
+    await setPolicy({ version: "base-1" });
+  });
+
+  it("RSV-03 cancelling a partly refunded DP refunds only the remainder", async () => {
+    const { created } = await bookWithDp("2027-03-23");
+    const intentId = await payDeposit(created);
+    await refundByWs05(intentId, 40_000, false);
+    // Well before the free window closes: the snapshot refunds what is held.
+    const closed = await cancelReservation(
+      tenantScope(),
+      staff.userId,
+      outletA,
+      created.reservation.id,
+      cancelReservationInputSchema.parse({ reason: "Ganti jadwal" }),
+      key(),
+      new Date(dayAt("2027-03-20", "12:00")),
+    );
+    expect(closed.depositOutcome).toMatchObject({
+      refundIdr: 60_000,
+      forfeitedIdr: 0,
+    });
+    const { rows } = await asOwner(seededTenantId, (client) =>
+      client.query<{ amount_idr: string; status: string }>(
+        "SELECT amount_idr::text, status FROM payment_refunds WHERE payment_intent_id = $1 ORDER BY created_at",
+        [intentId],
+      ),
+    );
+    expect(rows).toEqual([
+      { amount_idr: "40000", status: "completed" },
+      { amount_idr: "60000", status: "pending" },
+    ]);
+    await setPolicy({ version: "base-1" });
+  });
+
+  it("RSV-03 cancelling a DP refunded in full moves no money", async () => {
+    const { created } = await bookWithDp("2027-03-24");
+    const intentId = await payDeposit(created);
+    await confirmReservationDeposit(
+      tenantScope(),
+      outletA,
+      created.reservation.id,
+    );
+    await refundByWs05(intentId, 100_000, true);
+    const closed = await cancelReservation(
+      tenantScope(),
+      staff.userId,
+      outletA,
+      created.reservation.id,
+      cancelReservationInputSchema.parse({ reason: "Ganti jadwal" }),
+      key(),
+      new Date(dayAt("2027-03-20", "12:00")),
+    );
+    expect(closed.depositOutcome).toMatchObject({
+      resolution: "nothing_paid",
+      refundIdr: 0,
+      forfeitedIdr: 0,
+    });
+    const { rows } = await asOwner(seededTenantId, (client) =>
+      client.query(
+        "SELECT 1 FROM payment_refunds WHERE payment_intent_id = $1",
+        [intentId],
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    await setPolicy({ version: "base-1" });
   });
 });
 

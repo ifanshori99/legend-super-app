@@ -25,6 +25,7 @@ import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
 import { CodeField } from "./code-field";
 import { PriceBreakdown } from "./price-breakdown";
+import { SignInNudge } from "./sign-in-nudge";
 
 const VOUCHER = /^[A-Z0-9]{3,6}(-[A-Z0-9]{4,6}){1,3}$/;
 
@@ -389,23 +390,10 @@ export function CheckoutPage() {
           </p>
         )}
       </div>
-      {!session && (
-        <Card>
-          <CardContent className="grid gap-3">
-            <p className="font-semibold">{t("qrCart.checkout.loginTitle")}</p>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("qrCart.checkout.loginHint")}
-            </p>
-            <Button asChild variant="outline" className="w-fit">
-              {/* legend-yoo9: resume this checkout after /masuk; `redirect` is
-                  the alias the sign-in screen accepts for a linking page. */}
-              <Link to="/masuk" search={{ redirect: `/t/${qrToken}/checkout` }}>
-                {t("qrCart.checkout.signIn")}
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      {/* PRD §3 F10 "Login Opsional": guests order without an account; this
+          only invites sign-in and never gates the actions above. legend-yoo9:
+          `/masuk?redirect=` resumes this checkout after sign-in. */}
+      {!session && <SignInNudge returnTo={`/t/${qrToken}/checkout`} />}
       {payTarget && (
         <PayDialog
           open

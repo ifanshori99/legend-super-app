@@ -29,9 +29,14 @@ test("legend-d6g5 /reservation keeps one filled button: Daftar member is outline
   page,
 }) => {
   await page.goto("/reservation", { waitUntil: "networkidle" });
+  // legend-xm4y made the live booking flow the primary action; the WhatsApp
+  // form stays as the outline fallback, so the page still has one filled button.
+  await expect(
+    page.getByRole("link", { name: "Reservasi meja", exact: true }),
+  ).toHaveAttribute("data-variant", "default");
   await expect(
     page.getByRole("link", { name: "Kirim lewat WhatsApp" }),
-  ).toHaveAttribute("data-variant", "default");
+  ).toHaveAttribute("data-variant", "outline");
   await expect(
     page.getByRole("link", { name: "Daftar member" }),
   ).toHaveAttribute("data-variant", "outline");

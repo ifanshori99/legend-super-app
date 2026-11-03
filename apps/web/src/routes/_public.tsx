@@ -27,7 +27,13 @@ export const Route = createFileRoute("/_public")({
   component: Layout,
 });
 
-const WEBSITE_PATHS = new Set(["/", "/menu", "/reservation"]);
+const WEBSITE_PATHS = new Set([
+  "/",
+  "/menu",
+  "/reservation",
+  // The guest booking form behind the reservation entry page (legend-xm4y).
+  "/reservasi",
+]);
 
 function Layout() {
   const { gate } = Route.useRouteContext();

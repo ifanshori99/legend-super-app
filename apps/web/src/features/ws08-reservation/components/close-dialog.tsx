@@ -107,7 +107,13 @@ export function CloseReservationDialog({
               {t("reservation.cancel.outcomeTitle")}
             </p>
             {result.depositOutcome.resolution === "nothing_paid" ? (
-              <p>{t("reservation.cancel.nothingPaid")}</p>
+              <p>
+                {t(
+                  result.reservation.depositStatus === "refunded"
+                    ? "reservation.cancel.depositAlreadyRefunded"
+                    : "reservation.cancel.nothingPaid",
+                )}
+              </p>
             ) : (
               <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
                 <dt className="text-muted-foreground">

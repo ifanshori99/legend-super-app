@@ -2,10 +2,11 @@
 // site's reservation request form and the member sign-in/sign-up doors.
 //
 // The booking flow with table availability and the DP handoff belongs to
-// legend-xm4y (/reservasi). This page collects a request and hands it to the
-// venue's WhatsApp with every field prefilled, so it invents no policy and
-// works before the reservation API exists.
+// legend-xm4y (/reservasi) and is this page's primary action; the form below
+// stays as the WhatsApp fallback, with every field prefilled, so the page
+// invents no policy and still works when the reservation API is unavailable.
 import { useState, type FormEvent, type MouseEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -206,8 +207,11 @@ export function ReservationPage({
                   />
                 </FormField>
                 <div className="grid gap-2 pt-1">
+                  <Button asChild size="lg">
+                    <Link to="/reservasi">{t("website.common.reserve")}</Link>
+                  </Button>
                   {whatsappUrl ? (
-                    <Button asChild size="lg">
+                    <Button asChild variant="outline" size="lg">
                       <a
                         href={whatsappUrl}
                         target="_blank"
@@ -218,7 +222,7 @@ export function ReservationPage({
                       </a>
                     </Button>
                   ) : (
-                    <Button size="lg" disabled>
+                    <Button variant="outline" size="lg" disabled>
                       {t("website.reservation.submit")}
                     </Button>
                   )}

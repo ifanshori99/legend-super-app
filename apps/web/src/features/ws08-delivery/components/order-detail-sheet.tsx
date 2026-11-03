@@ -1,0 +1,468 @@
+// One incoming platform order in full (PRD v1.7 §3.23 "Injeksi Pesanan" and
+// §4 Alur G): the platform lines with their menu mapping, the money the
+// platform reported, the internal order it was injected into, and every
+// fulfilment step the contract machine allows from the current status.
+import * as React from "react";
+import { CircleAlert } from "lucide-react";
+import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/feedback-state";
+import { FormField } from "@/components/ui/form-field";
+import { Money } from "@/components/ui/money";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/toast";
+import type {
+  DeliveryChannelOrder,
+  DeliveryOrderStatus,
+} from "@starter/shared/delivery";
+import type { MessageKey } from "@starter/shared/i18n";
+import { useDeliveryOrder, useUpdateOrderStatus } from "../hooks";
+import {
+  businessDateOf,
+  deliveryErrorKey,
+  formatBusinessDate,
+  formatClock,
+  modifiersSummary,
+  orderActions,
+  orderCanEnterKitchen,
+  orderHasPriceMismatch,
+  orderHasUnmatchedLine,
+  orderNetIdr,
+  platformKey,
+  type DeliveryOrderAction,
+} from "../lib";
+import { MappingBadge, OrderStatusPill, SourceBadge } from "./delivery-badges";
+
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid min-w-0 gap-0.5">
+      <dt className="type-eyebrow text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-sm font-medium">{children}</dd>
+    </div>
+  );
+}
+
+function OrderSkeleton() {
+  const t = useT();
+  return (
+    <div aria-busy="true" className="grid gap-3">
+      <span className="sr-only" role="status">
+        {t("common.loading")}
+      </span>
+      <Skeleton className="h-6 w-48" />
+      <Skeleton className="h-24 w-full rounded-container" />
+      <Skeleton className="h-40 w-full rounded-container" />
+    </div>
+  );
+}
+
+function LineList({ order }: { order: DeliveryChannelOrder }) {
+  const t = useT();
+  return (
+    <ul className="grid gap-2">
+      {order.lines.map((line) => (
+        <li
+          key={line.lineNo}
+          className="grid gap-1 rounded-container border-(length:--border-w) bg-card p-3"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">{line.externalItemName}</p>
+              <p className="text-sm text-muted-foreground tabular">
+                {t("deliveryOps.detail.lineQty")} {line.quantity}
+                {" · "}
+                <Money amount={line.unitPriceIdr} size="sm" />
+              </p>
+            </div>
+            <Money amount={line.lineTotalIdr} size="sm" />
+          </div>
+          {line.modifiers.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {t("deliveryOps.detail.modifiers", {
+                modifiers: modifiersSummary(line.modifiers),
+              })}
+            </p>
+          )}
+          {line.note && (
+            <p className="text-sm text-muted-foreground">
+              {t("deliveryOps.detail.lineNote", { note: line.note })}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <MappingBadge status={line.mapping} />
+            {line.channelPriceIdr !== null &&
+              line.channelPriceIdr !== line.unitPriceIdr && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  {t("deliveryOps.detail.channelPrice")}
+                  <Money amount={line.channelPriceIdr} size="sm" />
+                </span>
+              )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function OrderDetailBody({
+  outletId,
+  timeZone,
+  deliveryOrderId,
+  canHandle,
+  online,
+}: {
+  outletId: string;
+  timeZone: string;
+  deliveryOrderId: string;
+  canHandle: boolean;
+  online: boolean;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const orderQuery = useDeliveryOrder(outletId, deliveryOrderId);
+  const update = useUpdateOrderStatus();
+  const [pending, setPending] = React.useState<DeliveryOrderAction | null>(
+    null,
+  );
+  const [reason, setReason] = React.useState("");
+  const [showError, setShowError] = React.useState(false);
+
+  if (orderQuery.isPending) return <OrderSkeleton />;
+  if (orderQuery.isError || !orderQuery.data)
+    return (
+      <ErrorState
+        title={t("deliveryOps.detail.errorTitle")}
+        description={t("deliveryOps.pesanan.errorHint")}
+        onRetry={() => void orderQuery.refetch()}
+      />
+    );
+
+  const order = orderQuery.data;
+  const actions = orderActions(order.status);
+  const injectable = orderCanEnterKitchen(order);
+  const priceMismatch = orderHasPriceMismatch(order);
+  const unmatched = orderHasUnmatchedLine(order);
+  const reasonMissing = reason.trim() === "";
+  const reasonError =
+    showError && reasonMissing
+      ? t("deliveryOps.detail.reasonRequired")
+      : undefined;
+  const mutationError = update.error ? t(deliveryErrorKey(update.error)) : null;
+  const disabled = !canHandle || !online || update.isPending;
+
+  const moments: { labelKey: MessageKey; instant: string }[] = [
+    { labelKey: "deliveryOps.detail.received", instant: order.receivedAt },
+  ];
+  if (order.acceptedAt)
+    moments.push({
+      labelKey: "deliveryOps.detail.accepted",
+      instant: order.acceptedAt,
+    });
+  if (order.readyAt)
+    moments.push({
+      labelKey: "deliveryOps.detail.ready",
+      instant: order.readyAt,
+    });
+  if (order.pickedUpAt)
+    moments.push({
+      labelKey: "deliveryOps.detail.pickedUp",
+      instant: order.pickedUpAt,
+    });
+  if (order.deliveredAt)
+    moments.push({
+      labelKey: "deliveryOps.detail.delivered",
+      instant: order.deliveredAt,
+    });
+  if (order.closedAt)
+    moments.push({
+      labelKey: "deliveryOps.detail.closed",
+      instant: order.closedAt,
+    });
+
+  const submit = (to: DeliveryOrderStatus) => {
+    const closing = to === "cancelled" || to === "rejected";
+    if (closing && reasonMissing) {
+      setShowError(true);
+      return;
+    }
+    update.mutate(
+      {
+        outletId,
+        deliveryOrderId: order.id,
+        body: { status: to, ...(closing ? { reason: reason.trim() } : {}) },
+      },
+      {
+        onSuccess: () => {
+          toast({
+            title: t("deliveryOps.pesanan.updated"),
+            tone: "success",
+          });
+          setPending(null);
+          setReason("");
+          setShowError(false);
+        },
+      },
+    );
+  };
+
+  return (
+    <>
+      <SheetHeader>
+        <SheetTitle>
+          {t("deliveryOps.detail.title", { id: order.externalOrderId })}
+        </SheetTitle>
+        <SheetDescription className="flex flex-wrap items-center gap-1">
+          <OrderStatusPill status={order.status} />
+          <SourceBadge source={order.source} />
+          <Badge tone="neutral">{t(platformKey(order.platform))}</Badge>
+        </SheetDescription>
+      </SheetHeader>
+
+      <div className="grid min-w-0 gap-4">
+        <dl className="grid grid-cols-2 gap-3 rounded-container border-(length:--border-w) bg-card p-card">
+          {moments.map((moment) => (
+            <Fact key={moment.labelKey} label={t(moment.labelKey)}>
+              <span className="tabular">
+                {formatClock(moment.instant, timeZone)}
+              </span>
+              <span className="block text-xs font-normal text-muted-foreground tabular">
+                {formatBusinessDate(businessDateOf(moment.instant, timeZone))}
+              </span>
+            </Fact>
+          ))}
+          <Fact label={t("deliveryOps.detail.internalOrder")}>
+            {order.number ? (
+              <span className="font-mono">{order.number}</span>
+            ) : (
+              <span className="text-sm font-normal text-muted-foreground">
+                {t("deliveryOps.detail.internalOrderNone")}
+              </span>
+            )}
+          </Fact>
+          <Fact label={t("deliveryOps.detail.settlement")}>
+            {order.settledNetIdr !== null ? (
+              <Money amount={order.settledNetIdr} size="sm" />
+            ) : (
+              <span className="text-sm font-normal text-muted-foreground">
+                {t("deliveryOps.detail.settlementNone")}
+              </span>
+            )}
+          </Fact>
+          {order.closeReason && (
+            <Fact label={t("deliveryOps.detail.closeReason")}>
+              {order.closeReason}
+            </Fact>
+          )}
+        </dl>
+
+        {order.customerNote && (
+          <div className="grid gap-1 rounded-container bg-surface-2 p-card">
+            <p className="type-eyebrow text-muted-foreground">
+              {t("deliveryOps.detail.customerNote")}
+            </p>
+            <p className="text-sm">{order.customerNote}</p>
+          </div>
+        )}
+
+        <section className="grid gap-2">
+          <h3 className="type-heading">{t("deliveryOps.detail.lines")}</h3>
+          <LineList order={order} />
+        </section>
+
+        <dl className="grid gap-1.5 rounded-container bg-surface-2 p-card text-sm">
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {t("deliveryOps.detail.gross")}
+            </dt>
+            <dd>
+              <Money amount={order.grossIdr} size="sm" />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt className="text-muted-foreground">
+              {t("deliveryOps.detail.commission")}
+            </dt>
+            <dd>
+              <Money amount={order.commissionIdr} size="sm" />
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t pt-1.5 font-semibold">
+            <dt>{t("deliveryOps.detail.net")}</dt>
+            <dd>
+              <Money amount={orderNetIdr(order)} size="sm" />
+            </dd>
+          </div>
+        </dl>
+
+        <section className="grid gap-2">
+          {priceMismatch && (
+            <p className="flex items-start gap-1.5 rounded-container bg-warning-subtle p-3 text-sm font-medium text-warning">
+              <CircleAlert
+                className="mt-0.5 size-4 shrink-0"
+                aria-hidden="true"
+              />
+              {t("deliveryOps.detail.priceMismatchHint")}
+            </p>
+          )}
+          {unmatched && (
+            <p className="flex items-start gap-1.5 rounded-container bg-danger-subtle p-3 text-sm font-medium text-danger">
+              <CircleAlert
+                className="mt-0.5 size-4 shrink-0"
+                aria-hidden="true"
+              />
+              {t("deliveryOps.detail.notInjectable")}
+            </p>
+          )}
+
+          {!canHandle && (
+            <p className="text-sm text-muted-foreground">
+              {t("deliveryOps.pesanan.handleOnly")}
+            </p>
+          )}
+
+          {pending !== null && (
+            <div className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-card">
+              <FormField
+                label={t("deliveryOps.detail.reasonLabel")}
+                hint={t("deliveryOps.detail.closeHint")}
+                error={reasonError}
+                required
+              >
+                <Textarea
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder={t("deliveryOps.detail.reasonPlaceholder")}
+                  rows={3}
+                  maxLength={300}
+                />
+              </FormField>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setPending(null);
+                    setReason("");
+                    setShowError(false);
+                  }}
+                >
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  loading={update.isPending}
+                  disabled={!canHandle || !online}
+                  onClick={() => submit(pending.to)}
+                >
+                  {t(
+                    pending.to === "rejected"
+                      ? "deliveryOps.detail.confirmReject"
+                      : "deliveryOps.detail.confirmCancel",
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {mutationError && (
+            <p role="alert" className="text-sm font-medium text-danger">
+              {mutationError}
+            </p>
+          )}
+
+          {actions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("deliveryOps.detail.noAction")}
+            </p>
+          ) : (
+            <div className="grid gap-2">
+              {actions.map((action) =>
+                action.needsReason ? (
+                  <Button
+                    key={action.to}
+                    type="button"
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={() => {
+                      setPending(action);
+                      setReason("");
+                      setShowError(false);
+                    }}
+                  >
+                    {t(action.labelKey)}
+                  </Button>
+                ) : (
+                  <Button
+                    key={action.to}
+                    type="button"
+                    variant={action.to === "accepted" ? "default" : "outline"}
+                    loading={
+                      update.isPending &&
+                      update.variables?.body.status === action.to
+                    }
+                    disabled={
+                      disabled || (action.to === "accepted" && !injectable)
+                    }
+                    onClick={() => submit(action.to)}
+                  >
+                    {t(action.labelKey)}
+                  </Button>
+                ),
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+    </>
+  );
+}
+
+export function OrderDetailSheet({
+  open,
+  onOpenChange,
+  outletId,
+  timeZone,
+  deliveryOrderId,
+  canHandle,
+  online,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  outletId: string;
+  timeZone: string;
+  deliveryOrderId: string | null;
+  canHandle: boolean;
+  online: boolean;
+}) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-[min(34rem,calc(100%-1.5rem))]">
+        {deliveryOrderId !== null && (
+          <OrderDetailBody
+            outletId={outletId}
+            timeZone={timeZone}
+            deliveryOrderId={deliveryOrderId}
+            canHandle={canHandle}
+            online={online}
+          />
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
