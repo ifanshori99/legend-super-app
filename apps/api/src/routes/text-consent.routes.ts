@@ -72,12 +72,18 @@ consentRouter.get("/", ...base, viewCustomers, async (req, res) => {
   res.json(await listConsents(getScopedTenantContext(req), query));
 });
 
-consentRouter.post("/", ...base, recordConsentPermission, jsonBody, async (req, res) => {
-  const input = recordConsentInputSchema.parse(req.body);
-  const consent = await recordConsent(
-    getScopedTenantContext(req),
-    input,
-    getAuth(req).user.id,
-  );
-  res.status(201).json({ data: consent });
-});
+consentRouter.post(
+  "/",
+  ...base,
+  recordConsentPermission,
+  jsonBody,
+  async (req, res) => {
+    const input = recordConsentInputSchema.parse(req.body);
+    const consent = await recordConsent(
+      getScopedTenantContext(req),
+      input,
+      getAuth(req).user.id,
+    );
+    res.status(201).json({ data: consent });
+  },
+);
