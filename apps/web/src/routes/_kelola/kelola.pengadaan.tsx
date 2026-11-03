@@ -1,22 +1,21 @@
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { PurchasingPage } from "@/features/ws06-purchasing/components/purchasing-page";
-import { evaluateGuard } from "@/lib/areas/guard";
+import { PurchasingFrame } from "@/features/ws06-purchasing/components/purchasing-shell";
+import { purchasingGuard } from "@/features/ws06-purchasing/guard";
 
 export const Route = createFileRoute("/_kelola/kelola/pengadaan")({
-  beforeLoad: ({ context }) => {
-    const gate = evaluateGuard(
-      {
-        kind: "permission",
-        surface: "dashboard",
-        anyOf: [
-          "purchasing.request.create",
-          "purchasing.order.create",
-          "purchasing.order.approve",
-        ],
-      },
-      context.access,
-    );
-    if (gate.status !== "allowed") throw notFound();
-  },
-  component: PurchasingPage,
+  beforeLoad: purchasingGuard([
+    "purchasing.request.create",
+    "purchasing.order.create",
+    "purchasing.order.approve",
+  ]),
+  component: PurchasingDocumentsScreen,
 });
+
+function PurchasingDocumentsScreen() {
+  return (
+    <PurchasingFrame active="documents">
+      <PurchasingPage />
+    </PurchasingFrame>
+  );
+}
