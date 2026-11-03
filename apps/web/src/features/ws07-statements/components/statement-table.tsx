@@ -13,10 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  REPORT_GROUP_KEYS,
-  type StatementRowView,
-} from "../lib";
+import { REPORT_GROUP_KEYS, type StatementRowView } from "../lib";
 
 type AccountRow = Extract<StatementRowView, { kind: "account" }>;
 
@@ -32,7 +29,9 @@ export function StatementRowsTable({
     <Table className="min-w-0">
       <TableHeader>
         <TableRow>
-          <TableHead>{t("accounting.report.statement.accountColumn")}</TableHead>
+          <TableHead>
+            {t("accounting.report.statement.accountColumn")}
+          </TableHead>
           <TableHead numeric>
             {t("accounting.report.statement.amountColumn")}
           </TableHead>
@@ -77,10 +76,13 @@ export function StatementRowsTable({
                           type="button"
                           variant="ghost"
                           size="icon-sm"
-                          aria-label={t("accounting.report.statement.drillDown", {
-                            code: row.code,
-                            name: row.name,
-                          })}
+                          aria-label={t(
+                            "accounting.report.statement.drillDown",
+                            {
+                              code: row.code,
+                              name: row.name,
+                            },
+                          )}
                           onClick={() => onDrillDown(row)}
                         >
                           <ListTree aria-hidden="true" />
@@ -102,7 +104,10 @@ export function StatementRowsTable({
                     })}
                   </TableCell>
                   <TableCell numeric>
-                    <Money amount={row.totalIdr} className="text-sm font-semibold" />
+                    <Money
+                      amount={row.totalIdr}
+                      className="text-sm font-semibold"
+                    />
                   </TableCell>
                 </TableRow>
               );

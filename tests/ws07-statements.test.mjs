@@ -26,18 +26,15 @@ const october = fixtures.fiscalPeriods.find((row) => row.period === "2026-10");
 const september = fixtures.fiscalPeriods.find(
   (row) => row.period === "2026-09",
 );
-const november = fixtures.fiscalPeriods.find(
-  (row) => row.period === "2026-11",
-);
+const november = fixtures.fiscalPeriods.find((row) => row.period === "2026-11");
 const range = { from: "2026-11-01", to: "2026-11-30" };
-const entityPath = `/api/accounting/legal-entities/${entity}`;
-const periodPath = (period) =>
-  `/api/accounting/fiscal-periods/${period.id}`;
+const periodPath = (period) => `/api/accounting/fiscal-periods/${period.id}`;
 /** Deterministic valid ULID for idempotency keys (26 Crockford chars). */
 const ulid = (n) => `01JBQ9A2B3C4D5E6F7G8H9${String(n).padStart(6, "0")}`;
 
 function accountingError(code) {
-  return (error) => error instanceof accounting.AccountingError && error.code === code;
+  return (error) =>
+    error instanceof accounting.AccountingError && error.code === code;
 }
 
 async function get(path, query) {
@@ -340,7 +337,11 @@ describe("ACC-03 drill-down", () => {
     });
     assert.ok(page.data.length > 0);
     for (const line of page.data)
-      assert.equal(line.accountId, undefined, "the contract row has no accountId");
+      assert.equal(
+        line.accountId,
+        undefined,
+        "the contract row has no accountId",
+      );
     // Revenue is credit-normal: the lines' net credit equals the row amount.
     const net = page.data.reduce(
       (total, line) => total + line.debitIdr - line.creditIdr,
@@ -349,7 +350,8 @@ describe("ACC-03 drill-down", () => {
     assert.equal(net, -revenue.amountIdr);
     // Every line links back to a posted journal.
     const journalIds = new Set(fixtures.journals.map((entry) => entry.id));
-    for (const line of page.data) assert.ok(journalIds.has(line.journalEntryId));
+    for (const line of page.data)
+      assert.ok(journalIds.has(line.journalEntryId));
   });
 });
 
@@ -375,11 +377,14 @@ describe("statement query mapping", () => {
       { from: range.from, to: range.to },
     );
     // The P&L grows an outlet field only when one is chosen.
-    assert.deepEqual(statements.statementQueryFor("profitAndLoss", entity, range), {
-      legalEntityId: entity,
-      from: range.from,
-      to: range.to,
-    });
+    assert.deepEqual(
+      statements.statementQueryFor("profitAndLoss", entity, range),
+      {
+        legalEntityId: entity,
+        from: range.from,
+        to: range.to,
+      },
+    );
     assert.deepEqual(
       statements.statementQueryFor("profitAndLoss", entity, {
         ...range,
@@ -525,11 +530,13 @@ describe("period helpers", () => {
       [],
     );
     assert.deepEqual(
-      statements.closedPeriodsInRange(
-        fixtures.fiscalPeriods,
-        "2026-10-01",
-        "2026-10-31",
-      ).map((period) => period.period),
+      statements
+        .closedPeriodsInRange(
+          fixtures.fiscalPeriods,
+          "2026-10-01",
+          "2026-10-31",
+        )
+        .map((period) => period.period),
       ["2026-10"],
     );
   });
@@ -543,8 +550,7 @@ describe("period helpers", () => {
       null,
     );
     assert.equal(
-      statements.nextPeriodToClose(fixtures.fiscalPeriods, "2026-12-02")
-        .period,
+      statements.nextPeriodToClose(fixtures.fiscalPeriods, "2026-12-02").period,
       "2026-11",
     );
     assert.equal(
@@ -552,12 +558,18 @@ describe("period helpers", () => {
       "2026-10",
     );
     // Only the latest closed period can be reopened (no stale snapshot).
-    assert.equal(statements.isReopenable(october, fixtures.fiscalPeriods), true);
+    assert.equal(
+      statements.isReopenable(october, fixtures.fiscalPeriods),
+      true,
+    );
     assert.equal(
       statements.isReopenable(september, fixtures.fiscalPeriods),
       false,
     );
-    assert.equal(statements.isReopenable(november, fixtures.fiscalPeriods), false);
+    assert.equal(
+      statements.isReopenable(november, fixtures.fiscalPeriods),
+      false,
+    );
   });
 
   test("manual journals of the period become the checklist blockers", () => {

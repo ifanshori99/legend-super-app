@@ -15,10 +15,7 @@ import type {
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
-import {
-  PERIOD_STATUS_KEYS,
-  REOPEN_STATUS_KEYS,
-} from "../lib";
+import { PERIOD_STATUS_KEYS, REOPEN_STATUS_KEYS } from "../lib";
 
 type Tone = "neutral" | "success" | "warning" | "danger" | "info";
 

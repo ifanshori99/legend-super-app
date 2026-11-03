@@ -18,6 +18,7 @@
 import {
   AccountingError,
   decidePeriodClose,
+  multiEntityProfitAndLossSchema,
   periodBounds,
   type BalanceSheet,
   type CashFlowStatement,
@@ -25,19 +26,16 @@ import {
   type FiscalPeriod,
   type FiscalPeriodStatus,
   type ManualJournal,
-  type MultiEntityProfitAndLoss,
   type PeriodReopenRequestStatus,
   type ProfitAndLoss,
   type ReportGroup,
 } from "@starter/shared/accounting";
+import { z } from "@starter/shared/core";
 import type { IsoDateTime, OutletId, UserId } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 import {
-  JOURNAL_SOURCE_KEYS,
-  REPORT_GROUP_KEYS,
   compareAccountCodes,
   formatBusinessDate,
-  formatDateTime,
   formatPeriod,
 } from "../ws07-accounting/lib.ts";
 
@@ -50,6 +48,14 @@ export {
   formatPeriod,
   monthRange,
 } from "../ws07-accounting/lib.ts";
+
+/** Calendar bounds of a fiscal period key ("2026-11" → 1st..last day). */
+export { periodBounds } from "@starter/shared/accounting";
+
+/** The multi-entity payload has no hand-written type; infer it from its schema. */
+export type MultiEntityProfitAndLoss = z.output<
+  typeof multiEntityProfitAndLossSchema
+>;
 
 // ---- Statement types and queries -------------------------------------------
 
@@ -139,9 +145,7 @@ export function statementQueryFor(
         legalEntityId,
         from: params.from,
         to: params.to,
-        ...(params.outletId
-          ? { outletId: params.outletId as OutletId }
-          : {}),
+        ...(params.outletId ? { outletId: params.outletId as OutletId } : {}),
       };
     case "cashFlow":
     case "equityChanges":
@@ -187,9 +191,7 @@ export function drillDownQueryFor(
       accountId,
       from: params.from,
       to: params.to,
-      ...(params.outletId
-        ? { outletId: params.outletId as OutletId }
-        : {}),
+      ...(params.outletId ? { outletId: params.outletId as OutletId } : {}),
     };
   return { legalEntityId, accountId, from: params.from, to: params.to };
 }
@@ -323,7 +325,8 @@ export function hasAccountRows(rows: readonly StatementRowView[]): boolean {
 
 // ---- Cash flow -------------------------------------------------------------
 
-export type CashFlowActivity = CashFlowStatement["sections"][number]["activity"];
+export type CashFlowActivity =
+  CashFlowStatement["sections"][number]["activity"];
 
 export const CASH_FLOW_ACTIVITY_KEYS: Record<CashFlowActivity, MessageKey> = {
   operating: "accounting.report.cf.activity.operating",
@@ -659,7 +662,9 @@ export function isReopenable(
   period: FiscalPeriod,
   periods: readonly FiscalPeriod[],
 ): boolean {
-  return period.status === "closed" && latestClosedPeriod(periods)?.id === period.id;
+  return (
+    period.status === "closed" && latestClosedPeriod(periods)?.id === period.id
+  );
 }
 
 export const MIN_REOPEN_REASON_LENGTH = 10;
@@ -684,15 +689,13 @@ export const PERIOD_STATUS_KEYS: Record<FiscalPeriodStatus, MessageKey> = {
   closed: "accounting.report.periods.statusClosed",
 };
 
-export const REOPEN_STATUS_KEYS: Record<
-  PeriodReopenRequestStatus,
-  MessageKey
-> = {
-  pending: "accounting.report.periods.reopen.status.pending",
-  approved: "accounting.report.periods.reopen.status.approved",
-  rejected: "accounting.report.periods.reopen.status.rejected",
-  cancelled: "accounting.report.periods.reopen.status.cancelled",
-};
+export const REOPEN_STATUS_KEYS: Record<PeriodReopenRequestStatus, MessageKey> =
+  {
+    pending: "accounting.report.periods.reopen.status.pending",
+    approved: "accounting.report.periods.reopen.status.approved",
+    rejected: "accounting.report.periods.reopen.status.rejected",
+    cancelled: "accounting.report.periods.reopen.status.cancelled",
+  };
 
 /** A user id has no name endpoint yet; the first segment is enough to trace. */
 export function shortUserId(userId: string | null): string {

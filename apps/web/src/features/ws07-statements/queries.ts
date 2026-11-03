@@ -118,8 +118,7 @@ export function periodSnapshotQuery(
 ) {
   return queryOptions({
     queryKey: statementKeys.snapshot(fiscalPeriodId ?? "none"),
-    queryFn: ({ signal }) =>
-      fetchPeriodSnapshot(fiscalPeriodId ?? "", signal),
+    queryFn: ({ signal }) => fetchPeriodSnapshot(fiscalPeriodId ?? "", signal),
     enabled: enabled && Boolean(fiscalPeriodId),
   });
 }

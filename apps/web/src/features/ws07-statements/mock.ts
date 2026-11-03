@@ -50,6 +50,7 @@ import {
   periodReopenRequestSchema,
   rejectPeriodReopen,
   requestPeriodReopen,
+  type AccountId,
   type CashFlowStatement,
   type DrillDownLine,
   type EquityChanges,
@@ -61,7 +62,7 @@ import {
 } from "@starter/shared/accounting";
 import { AccessError } from "@starter/shared/access";
 import type { AnyEndpoint } from "@starter/shared/api";
-import type { UserId } from "@starter/shared/core";
+import type { Idr, UserId } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
@@ -69,6 +70,9 @@ import { registerMock, type MockHandler } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 
 const fixtures = cafeLegendAccountingFixtures;
+
+/** Fixture/builder numbers are plain numbers; the schemas carry branded Idr. */
+const asIdr = (value: number): Idr => value as Idr;
 const accounts = fixtures.accounts;
 const tenantId = fixtures.tenantId;
 const entityId = fixtures.legalEntity.id;
@@ -131,9 +135,7 @@ function toIdr(value: bigint): number {
 }
 
 function findPeriod(fiscalPeriodId: string): FiscalPeriod {
-  const period = state
-    .get()
-    .periods.find((row) => row.id === fiscalPeriodId);
+  const period = state.get().periods.find((row) => row.id === fiscalPeriodId);
   if (!period) throw notFound("Periode fiskal tidak ditemukan.");
   return period;
 }
@@ -277,7 +279,10 @@ function buildCashFlow(
   );
   const cashAt = (date: string) =>
     fixtures.ledgerLines.reduce((total, line) => {
-      if (!cashAccountIds.has(line.accountId) || line.entryDate > date)
+      if (
+        !cashAccountIds.has(line.accountId as AccountId) ||
+        line.entryDate > date
+      )
         return total;
       return total + BigInt(line.debitIdr) - BigInt(line.creditIdr);
     }, 0n);
@@ -362,7 +367,12 @@ function buildEquityChanges(
     entityId,
     addDays(from, -1),
   );
-  const closing = buildTrialBalance(accounts, fixtures.ledgerLines, entityId, to);
+  const closing = buildTrialBalance(
+    accounts,
+    fixtures.ledgerLines,
+    entityId,
+    to,
+  );
   const openingByAccount = new Map(
     opening.rows.map((row) => [row.accountId, row]),
   );
@@ -386,11 +396,11 @@ function buildEquityChanges(
     rows.push({
       accountId: account.id,
       label: account.name,
-      openingIdr,
-      profitIdr: 0,
-      distributionsIdr: 0,
-      otherMovementsIdr: closingIdr - openingIdr,
-      closingIdr,
+      openingIdr: asIdr(openingIdr),
+      profitIdr: asIdr(0),
+      distributionsIdr: asIdr(0),
+      otherMovementsIdr: asIdr(closingIdr - openingIdr),
+      closingIdr: asIdr(closingIdr),
     });
   }
 
@@ -407,11 +417,11 @@ function buildEquityChanges(
   rows.push({
     accountId: null,
     label: "Laba periode berjalan",
-    openingIdr: runningEarnings,
-    profitIdr: periodProfit,
-    distributionsIdr: 0,
-    otherMovementsIdr: 0,
-    closingIdr: runningEarnings + periodProfit,
+    openingIdr: asIdr(runningEarnings),
+    profitIdr: asIdr(periodProfit),
+    distributionsIdr: asIdr(0),
+    otherMovementsIdr: asIdr(0),
+    closingIdr: asIdr(runningEarnings + periodProfit),
   });
 
   return equityChangesSchema.parse({ legalEntityId: entityId, from, to, rows });
@@ -580,7 +590,11 @@ register(approvePeriodReopen, ({ params, body }) => {
     now: decidedAt,
   });
   if (decision.requestStatus !== "approved" || decision.period === null)
-    throw new ApiError(409, "INVALID_TRANSITION", "Permintaan tidak disetujui.");
+    throw new ApiError(
+      409,
+      "INVALID_TRANSITION",
+      "Permintaan tidak disetujui.",
+    );
   const nextRequest = periodReopenRequestSchema.parse({
     ...request,
     status: "approved",

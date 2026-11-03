@@ -103,18 +103,14 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {type === "balanceSheet" ? (
-              <FormField
-                label={t("accounting.report.screen.asOf")}
-                required
-              >
+              <FormField label={t("accounting.report.screen.asOf")} required>
                 <Input
                   type="date"
                   value={range.to}
                   onChange={(event) => {
                     const value = event.target.value;
                     setRange((current) => ({
-                      from:
-                        value < current.from ? value : current.from,
+                      from: value < current.from ? value : current.from,
                       to: value,
                     }));
                   }}
@@ -146,8 +142,7 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
                     onChange={(event) => {
                       const value = event.target.value;
                       setRange((current) => ({
-                        from:
-                          value < current.from ? value : current.from,
+                        from: value < current.from ? value : current.from,
                         to: value,
                       }));
                     }}
@@ -186,7 +181,10 @@ export function StatementsPage({ legalEntityId }: { legalEntityId: string }) {
               role="note"
               className="flex items-start gap-2 rounded-container border-(length:--border-w) border-info bg-info-subtle p-3"
             >
-              <Lock className="mt-0.5 size-icon shrink-0 text-info" aria-hidden="true" />
+              <Lock
+                className="mt-0.5 size-icon shrink-0 text-info"
+                aria-hidden="true"
+              />
               <div className="grid gap-0.5 text-sm leading-5">
                 <p className="font-semibold">
                   {t("accounting.report.screen.closedNoteTitle")}

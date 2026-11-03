@@ -15,7 +15,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { JOURNAL_SOURCE_KEYS, LEDGER_START_DATE, formatBusinessDate, type StatementDrillTarget } from "../lib";
+import {
+  JOURNAL_SOURCE_KEYS,
+  LEDGER_START_DATE,
+  formatBusinessDate,
+  type StatementDrillTarget,
+} from "../lib";
 import { useOutlets, useStatementDrillDown } from "../hooks";
 
 export function DrillDownSheet({
@@ -148,7 +153,9 @@ export function DrillDownSheet({
                           {line.creditIdr > 0 && (
                             <span className="flex items-baseline gap-1">
                               <span className="type-eyebrow">
-                                {t("accounting.report.drillDown.columns.credit")}
+                                {t(
+                                  "accounting.report.drillDown.columns.credit",
+                                )}
                               </span>
                               <Money amount={line.creditIdr} size="sm" />
                             </span>

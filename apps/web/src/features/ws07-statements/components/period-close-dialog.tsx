@@ -323,7 +323,9 @@ export function PeriodCloseDialog({
             </Button>
             <Button
               type="button"
-              disabled={!readiness.ready || close.isPending || loading || failed}
+              disabled={
+                !readiness.ready || close.isPending || loading || failed
+              }
               loading={close.isPending}
               onClick={() => {
                 setServerError(null);
@@ -342,12 +344,8 @@ export function PeriodCloseDialog({
         title={t("accounting.report.periods.closeDialog.confirmTitle", {
           period: period ? formatPeriod(period.period) : "",
         })}
-        description={t(
-          "accounting.report.periods.closeDialog.confirmBody",
-        )}
-        confirmLabel={t(
-          "accounting.report.periods.closeDialog.confirmSubmit",
-        )}
+        description={t("accounting.report.periods.closeDialog.confirmBody")}
+        confirmLabel={t("accounting.report.periods.closeDialog.confirmSubmit")}
         pending={close.isPending}
         onConfirm={() => void submit()}
       />

@@ -28,7 +28,9 @@ function CashFlowTable({ rows }: { rows: readonly CashFlowRowView[] }) {
     <Table className="min-w-0">
       <TableHeader>
         <TableRow>
-          <TableHead>{t("accounting.report.statement.componentColumn")}</TableHead>
+          <TableHead>
+            {t("accounting.report.statement.componentColumn")}
+          </TableHead>
           <TableHead numeric>
             {t("accounting.report.statement.amountColumn")}
           </TableHead>
@@ -64,8 +66,14 @@ function CashFlowTable({ rows }: { rows: readonly CashFlowRowView[] }) {
               );
             case "empty":
               return (
-                <TableRow key={`empty-${index}`} className="hover:bg-transparent">
-                  <TableCell colSpan={2} className="text-sm text-muted-foreground">
+                <TableRow
+                  key={`empty-${index}`}
+                  className="hover:bg-transparent"
+                >
+                  <TableCell
+                    colSpan={2}
+                    className="text-sm text-muted-foreground"
+                  >
                     <span className="block pl-3">
                       {t("accounting.report.cf.emptyActivity")}
                     </span>
@@ -84,7 +92,10 @@ function CashFlowTable({ rows }: { rows: readonly CashFlowRowView[] }) {
                     })}
                   </TableCell>
                   <TableCell numeric>
-                    <Money amount={row.totalIdr} className="text-sm font-semibold" />
+                    <Money
+                      amount={row.totalIdr}
+                      className="text-sm font-semibold"
+                    />
                   </TableCell>
                 </TableRow>
               );
@@ -100,7 +111,9 @@ function CashFlowTable({ rows }: { rows: readonly CashFlowRowView[] }) {
                 >
                   <TableCell
                     className={
-                      row.emphasis === "strong" ? "font-semibold" : "font-medium"
+                      row.emphasis === "strong"
+                        ? "font-semibold"
+                        : "font-medium"
                     }
                   >
                     {t(row.labelKey)}

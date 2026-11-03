@@ -48,10 +48,7 @@ import {
 import { PeriodCloseDialog } from "./period-close-dialog";
 import { PeriodSnapshotSheet } from "./period-snapshot-sheet";
 import { ReasonDialog } from "./reason-dialog";
-import {
-  PeriodStatusBadge,
-  ReopenStatusBadge,
-} from "./status-badges";
+import { PeriodStatusBadge, ReopenStatusBadge } from "./status-badges";
 
 export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
   const t = useT();
@@ -67,10 +64,12 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
   const [snapshotPeriod, setSnapshotPeriod] =
     React.useState<FiscalPeriod | null>(null);
   const [requesting, setRequesting] = React.useState<FiscalPeriod | null>(null);
-  const [approving, setApproving] =
-    React.useState<PeriodReopenRequest | null>(null);
-  const [rejecting, setRejecting] =
-    React.useState<PeriodReopenRequest | null>(null);
+  const [approving, setApproving] = React.useState<PeriodReopenRequest | null>(
+    null,
+  );
+  const [rejecting, setRejecting] = React.useState<PeriodReopenRequest | null>(
+    null,
+  );
   const [requestError, setRequestError] = React.useState<string | null>(null);
   const [rejectError, setRejectError] = React.useState<string | null>(null);
 
@@ -225,7 +224,10 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
 
   return (
     <div className="grid min-w-0 gap-5">
-      <StatStrip label={t("accounting.report.periods.summaryLabel")} columns={3}>
+      <StatStrip
+        label={t("accounting.report.periods.summaryLabel")}
+        columns={3}
+      >
         <StatTile
           label={t("accounting.report.periods.statOpen")}
           value={stat(openPeriodCount(periods))}
@@ -363,18 +365,14 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
 
       <DataTableShell
         title={t("accounting.report.periods.reopen.requestsTitle")}
-        description={t(
-          "accounting.report.periods.reopen.requestsSubtitle",
-        )}
+        description={t("accounting.report.periods.reopen.requestsSubtitle")}
         state={requestState}
         onRetry={() => void requestsQuery.refetch()}
         loadingRows={3}
         rowCount={requests.length}
         empty={{
           title: t("accounting.report.periods.reopen.requestsEmptyTitle"),
-          description: t(
-            "accounting.report.periods.reopen.requestsEmptyHint",
-          ),
+          description: t("accounting.report.periods.reopen.requestsEmptyHint"),
           action:
             latestClosed && requestState === "empty" ? (
               <Button
@@ -585,13 +583,10 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
           count: MIN_REOPEN_REASON_LENGTH,
         })}
         submitLabel={t("accounting.report.periods.reopen.requestSubmit")}
-        requiredMessage={t(
-          "accounting.report.periods.reopen.reasonRequired",
-        )}
-        tooShortMessage={t(
-          "accounting.report.periods.reopen.reasonTooShort",
-          { count: MIN_REOPEN_REASON_LENGTH },
-        )}
+        requiredMessage={t("accounting.report.periods.reopen.reasonRequired")}
+        tooShortMessage={t("accounting.report.periods.reopen.reasonTooShort", {
+          count: MIN_REOPEN_REASON_LENGTH,
+        })}
         minLength={MIN_REOPEN_REASON_LENGTH}
         pending={requestReopen.isPending}
         error={requestError ?? undefined}
@@ -625,13 +620,10 @@ export function PeriodsPage({ legalEntityId }: { legalEntityId: string }) {
         label={t("accounting.report.periods.reopen.rejectReason")}
         hint={t("accounting.report.periods.reopen.rejectReasonHint")}
         submitLabel={t("accounting.report.periods.reopen.rejectSubmit")}
-        requiredMessage={t(
-          "accounting.report.periods.reopen.reasonRequired",
-        )}
-        tooShortMessage={t(
-          "accounting.report.periods.reopen.reasonTooShort",
-          { count: 1 },
-        )}
+        requiredMessage={t("accounting.report.periods.reopen.reasonRequired")}
+        tooShortMessage={t("accounting.report.periods.reopen.reasonTooShort", {
+          count: 1,
+        })}
         minLength={1}
         pending={rejectReopen.isPending}
         error={rejectError ?? undefined}

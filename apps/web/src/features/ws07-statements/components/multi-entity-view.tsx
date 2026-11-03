@@ -46,8 +46,7 @@ export function MultiEntityView({
   const entitiesQuery = useLegalEntities();
   const report = statement.data;
   const rows = report ? multiEntityRows(report) : [];
-  const empty =
-    report !== undefined && !hasMultiEntityAccountRows(rows);
+  const empty = report !== undefined && !hasMultiEntityAccountRows(rows);
   const entityCount = report?.entities.length ?? 0;
   const entityName = (legalEntityId: string) =>
     entitiesQuery.data?.find((entity) => entity.id === legalEntityId)?.name ??
@@ -85,9 +84,7 @@ export function MultiEntityView({
       onReset={onResetRange}
     >
       <div>
-        <Table
-          className={entityCount > 1 ? "min-w-[48rem]" : "min-w-0"}
-        >
+        <Table className={entityCount > 1 ? "min-w-[48rem]" : "min-w-0"}>
           <TableHeader>
             <TableRow>
               <TableHead className="sticky left-0 z-10 bg-card">
@@ -152,9 +149,7 @@ export function MultiEntityView({
                                 "accounting.report.statement.drillDown",
                                 { code: row.code, name: row.name },
                               )}
-                              onClick={() =>
-                                drill(row, entityIndex, amountIdr)
-                              }
+                              onClick={() => drill(row, entityIndex, amountIdr)}
                             >
                               <ListTree aria-hidden="true" />
                             </Button>
@@ -204,7 +199,10 @@ export function MultiEntityView({
                     {row.combinedIdr === undefined ? (
                       dash()
                     ) : (
-                      <Money amount={row.combinedIdr} className="font-semibold" />
+                      <Money
+                        amount={row.combinedIdr}
+                        className="font-semibold"
+                      />
                     )}
                   </TableCell>
                 </TableRow>

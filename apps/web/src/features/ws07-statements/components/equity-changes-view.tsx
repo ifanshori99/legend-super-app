@@ -34,7 +34,8 @@ export function EquityChangesView({
   const query = statementQueryFor("equityChanges", legalEntityId, params);
   const statement = useEquityChangesStatement(query);
   const rows = statement.data?.rows ?? [];
-  const empty = statement.data !== undefined && isEmptyEquityChanges(statement.data);
+  const empty =
+    statement.data !== undefined && isEmptyEquityChanges(statement.data);
 
   const drill = (row: (typeof rows)[number]) => {
     if (row.accountId === null) return;

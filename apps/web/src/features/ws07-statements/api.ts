@@ -84,7 +84,11 @@ export async function fetchCashFlow(
   query: Query<typeof getCashFlowEndpoint>,
   signal?: AbortSignal,
 ) {
-  const response = await callEndpoint(getCashFlowEndpoint, { query }, { signal });
+  const response = await callEndpoint(
+    getCashFlowEndpoint,
+    { query },
+    { signal },
+  );
   return response.data;
 }
 

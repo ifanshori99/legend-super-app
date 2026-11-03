@@ -50,10 +50,7 @@ export function PeriodSnapshotSheet({
 }) {
   const t = useT();
   const bounds = period ? periodBounds(period.period) : null;
-  const snapshot = usePeriodSnapshot(
-    period?.id,
-    open && period !== null,
-  );
+  const snapshot = usePeriodSnapshot(period?.id, open && period !== null);
   const trial = useTrialBalance(
     legalEntityId,
     bounds?.end,
@@ -73,10 +70,7 @@ export function PeriodSnapshotSheet({
   const failed = snapshot.isError || trial.isError || pnl.isError;
 
   return (
-    <Sheet
-      open={open && period !== null}
-      onOpenChange={onOpenChange}
-    >
+    <Sheet open={open && period !== null} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
         className="w-full gap-0 p-0 sm:w-[min(40rem,calc(100%-3rem))]"
@@ -125,7 +119,12 @@ export function PeriodSnapshotSheet({
                   label={t(
                     "accounting.report.periods.snapshotDialog.totalDebit",
                   )}
-                  value={<Money amount={trial.data?.totalDebitIdr ?? 0} size="stat" />}
+                  value={
+                    <Money
+                      amount={trial.data?.totalDebitIdr ?? 0}
+                      size="stat"
+                    />
+                  }
                   context={t("accounting.report.periods.closeDialog.totals", {
                     date: formatBusinessDate(bounds.end),
                   })}
@@ -135,7 +134,10 @@ export function PeriodSnapshotSheet({
                     "accounting.report.periods.snapshotDialog.totalCredit",
                   )}
                   value={
-                    <Money amount={trial.data?.totalCreditIdr ?? 0} size="stat" />
+                    <Money
+                      amount={trial.data?.totalCreditIdr ?? 0}
+                      size="stat"
+                    />
                   }
                 />
                 <StatTile
