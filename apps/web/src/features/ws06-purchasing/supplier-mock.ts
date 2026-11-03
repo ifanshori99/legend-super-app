@@ -1,15 +1,16 @@
 // Fixture-backed supplier endpoints (bead legend-xjb; PRD v1.7 §3 F18
-// "Supplier"). Loaded lazily from ./supplier-api.ts in mock mode: the eager
-// handler glob only picks up `features/<name>/mock.ts`, and this feature's
-// pre-existing handlers stay in `features/ws06-purchasing/mock.ts`.
+// "Supplier"). `lib/mock/transport.ts` loads this file eagerly through its
+// `features/*/*-mock.ts` glob.
 //
-// `listSuppliers` and `listSupplierCatalog` are registered there, so they are
-// NOT registered here (the registry throws on a duplicate). Their handlers read
-// the shared fixtures directly, which is why a supplier or catalog row created
-// below does not appear in those lists in mock mode — a mock-only gap reported
-// by the bead.
+// One store owns every supplier row: the list and catalog handlers below read
+// the same store the create handlers write, so a created supplier or price is
+// listed afterwards. `listSuppliers` and `listSupplierCatalog` are exported
+// rather than registered here because `features/ws06-purchasing/mock.ts`
+// registers those two endpoints (the registry allows one owner per endpoint);
+// it must register these handlers instead of reading the static fixtures.
 import { ApiError } from "@/lib/api/errors";
-import { registerMock } from "@/lib/mock/registry";
+import { paginateFixture } from "@/lib/mock/paginate";
+import { registerMock, type MockHandler } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import {
   cafeLegendPurchasingFixtures as fixtures,
@@ -19,6 +20,8 @@ import {
   getSupplier,
   getSupplierPerformance,
   getSupplierPriceHistory,
+  listSupplierCatalog,
+  listSuppliers,
   supplierCatalogItemSchema,
   supplierContactSchema,
   supplierDetailSchema,
@@ -93,6 +96,35 @@ function emptyPerformance(
 }
 
 // ---- Reads ---------------------------------------------------------------
+
+/** Store-backed supplier list; newest created supplier first. */
+export const listSuppliersMock: MockHandler<typeof listSuppliers> = ({
+  query,
+  scenario,
+}) =>
+  paginateFixture(
+    store
+      .get()
+      .suppliers.filter(
+        (supplier) =>
+          query.isActive === undefined ||
+          String(supplier.isActive) === query.isActive,
+      ),
+    query,
+    (supplier) => supplier.id,
+    scenario,
+  );
+
+/** Store-backed catalog rows of one supplier, including created prices. */
+export const listSupplierCatalogMock: MockHandler<
+  typeof listSupplierCatalog
+> = ({ params, query, scenario }) =>
+  paginateFixture(
+    store.get().catalog.filter((row) => row.supplierId === params.supplierId),
+    query,
+    (row) => row.id,
+    scenario,
+  );
 
 registerMock(getSupplier, ({ params, scenario }) => {
   if (scenario === "empty") return missing();

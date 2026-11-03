@@ -1,9 +1,8 @@
 // Query keys and options for the supplier screens (docs/frontend.md "Query
 // options and keys"). Keys are `[endpoint.id, input]`, so an invalidation by
 // endpoint id refreshes every page of that endpoint. The query functions go
-// through ./supplier-api.ts, which registers the feature's mock handlers before
-// the first request in mock mode (the eager handler glob does not see
-// `supplier-mock.ts`).
+// through ./supplier-api.ts; in mock mode `supplier-mock.ts` serves them (loaded
+// by the `features/*/*-mock.ts` glob in lib/mock/transport.ts).
 import { queryOptions } from "@tanstack/react-query";
 import type { BusinessDate } from "@starter/shared/core";
 import {

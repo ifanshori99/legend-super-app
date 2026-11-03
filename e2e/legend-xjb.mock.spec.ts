@@ -18,8 +18,15 @@ test.use({ baseURL });
 const SUPPLIER_ID = "00000000-0000-4000-8000-000000008101";
 const LIST_PATH = "/kelola/pengadaan/supplier";
 const DETAIL_PATH = `${LIST_PATH}/${SUPPLIER_ID}`;
+/**
+ * The performance fixtures cover November 2026 and the detail screen asks for
+ * the running month, so the browser clock is pinned inside that month and the
+ * spec passes in any wall-clock month (pattern: legend-nv3y, legend-rx0h).
+ */
+const FIXTURE_NOW = new Date("2026-11-15T12:00:00.000+07:00");
 
 async function open(page: Page, path: string) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
   await page.goto(path, { waitUntil: "networkidle" });
   // v3: the management topbar owns the area h1; the body shows sections as h2.
   await expect(
@@ -119,7 +126,9 @@ test("F18 detail shows profile, contacts, terms, catalog, price history and perf
   await expect(performance).toContainText("0%");
 });
 
-test("F18 creates a supplier from the list dialog", async ({ page }) => {
+test("F18 creates a supplier from the list dialog and lists it", async ({
+  page,
+}) => {
   await open(page, LIST_PATH);
   const dialog = page.getByRole("dialog");
   await retry(async () => {
@@ -135,10 +144,16 @@ test("F18 creates a supplier from the list dialog", async ({ page }) => {
   await dialog.getByRole("button", { name: "Simpan supplier" }).click();
 
   await expect(page.getByText("Supplier ditambahkan").first()).toBeVisible();
-  // Mock-only gap: listSuppliers is owned by features/ws06-purchasing/mock.ts
-  // and reads the fixtures, so the new supplier is not in the table until the
-  // real API arrives. The dialog success is the contract evidence here.
   await expect(dialog).toHaveCount(0);
+  // The create invalidates listSuppliers; the list and the create share one
+  // mock store (supplier-mock.ts), so the new supplier is a row afterwards.
+  const created = page
+    .getByRole("row")
+    .filter({ hasText: "CV Uji Coba" })
+    .first();
+  await expect(created).toBeVisible();
+  await expect(created).toContainText("10 hari");
+  await expect(created).toContainText("Aktif");
 });
 
 test("F18 adds a contact and a catalog price from the detail", async ({
@@ -181,9 +196,6 @@ test("F18 adds a contact and a catalog price from the detail", async ({
   await expect(
     page.getByRole("region", { name: "Katalog harga" }).getByText(/190\.000/),
   ).toBeVisible();
-  // Mock-only gap (reported): listSupplierCatalog is owned by
-  // features/ws06-purchasing/mock.ts and stays fixture-backed, so a reload
-  // drops the created row again; only the real API persists it.
 });
 
 test("F18 empty and error states are reachable in mock mode", async ({
