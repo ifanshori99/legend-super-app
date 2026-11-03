@@ -30,6 +30,13 @@ import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
+import { approvalsMessages } from "./ws01-approvals.ts";
+import { devicePinMessages } from "./ws01-device-pin.ts";
+import { platformOpsMessages } from "./ws01-platform-ops.ts";
+import { platformTenantsMessages } from "./ws01-platform-tenants.ts";
+import { tenantSettingsMessages } from "./ws01-tenant-settings.ts";
+import { supportAccessMessages } from "./ws01-support-access.ts";
+import { deviceRegistryMessages } from "./ws02-devices.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
 import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
@@ -72,6 +79,14 @@ export const id = {
   ...ws01AuthMessages,
   // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
   access: accessMessages,
+  // Platform squad (legend-mxl/6ew/335/tno/y6s/q2c), one file each.
+  approvals: approvalsMessages,
+  devicePin: devicePinMessages,
+  supportAccess: supportAccessMessages,
+  platformTenants: platformTenantsMessages,
+  platformOps: platformOpsMessages,
+  deviceRegistry: deviceRegistryMessages,
+  tenantSettings: tenantSettingsMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
