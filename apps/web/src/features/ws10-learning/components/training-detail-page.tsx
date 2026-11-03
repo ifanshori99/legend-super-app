@@ -21,7 +21,6 @@ import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBand } from "@/components/ui/status-band";
 import { useToast } from "@/components/ui/toast";
-import { formatNumber } from "@starter/shared/i18n";
 import type { TrainingCompletion } from "@starter/shared/hris";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import {

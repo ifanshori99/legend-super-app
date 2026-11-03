@@ -98,7 +98,7 @@ test("F32 SOP acknowledgement flips the read confirmation for the version", asyn
   });
 
   await expect(dialog.getByText("2 konfirmasi")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Tutup" }).first().click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(row).toContainText("Sudah dikonfirmasi");
 });
@@ -227,7 +227,8 @@ test("F32 announcement mark-read adds the reader to the receipt table", async ({
   await expect(reader).toBeVisible();
   await expect(reader).toContainText(/\d{2} \w{3} \d{4}/);
 
-  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Tutup" }).first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(row).toContainText("3 dibaca");
 });
 

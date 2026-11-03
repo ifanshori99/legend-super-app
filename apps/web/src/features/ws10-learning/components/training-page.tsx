@@ -5,7 +5,7 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
-import { Badge, StatusPill } from "@/components/ui/badge";
+import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DataTableShell,

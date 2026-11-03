@@ -3,8 +3,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint } from "@starter/shared/api";
 import {
-  acknowledgeSopDocument,
-  completeTraining,
   listAnnouncements,
   listSopDocuments,
   listTrainings,
