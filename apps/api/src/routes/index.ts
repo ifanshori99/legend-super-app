@@ -42,6 +42,10 @@ import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
+import { edgeRouter } from "./edge.routes.ts";
+import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { posOrderRouter } from "./pos-order.routes.ts";
+import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -98,6 +102,10 @@ apiRouter.use("/notifications", createNotificationRouter());
 // WS-03 floor: zones/tables editor, live board, signed table QR and the staff
 // table-session lifecycle; /qr is the public guest scan (legend-irw).
 apiRouter.use("/floor", floorRouter);
+// WS-04 POS order service (legend-kk7): contract paths
+// /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
+// /outlets router so POS requests do not run its middleware too.
+apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);
@@ -132,3 +140,11 @@ apiRouter.use("/hris", hrisRouter);
 // each applies its middleware per route so unmatched paths pass through.
 apiRouter.use("/operations", operationsRouter);
 apiRouter.use("/operations", operationsEquipmentRouter);
+// WS-02 edge mode (legend-2pi): /edge is served only by an edge node and
+// /edge-nodes (registry) only by the cloud; app.ts edgeRouteGuard enforces
+// the split before any router runs.
+apiRouter.use("/edge", edgeRouter);
+apiRouter.use("/edge-nodes", edgeNodesRouter);
+// Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
+// only, deny-all until server.ts installs the registry verifier.
+apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);

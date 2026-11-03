@@ -268,7 +268,7 @@ export async function registerEdgeLink(
 ): Promise<EdgeLinkHandle> {
   if (env.EDGE_MODE)
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
-  const version = process.env.EDGE_NODE_VERSION ?? "dev";
+  const version = env.EDGE_NODE_VERSION;
   const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {
     version,
     authenticate: authenticateEdgeCredential,

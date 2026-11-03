@@ -75,7 +75,7 @@ async function assertBeforeSettlement(
 export async function applyPosDiscount(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: ApplyInput,
   now = new Date(),
@@ -287,7 +287,7 @@ export async function applyPosDiscount(
 export async function removePosDiscount(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   discountId: string,
   input: { idempotencyKey: string },

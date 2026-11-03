@@ -33,6 +33,8 @@ import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/i
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
+import { edgeRouteGuard } from "./edge/mode.ts";
+import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -42,6 +44,12 @@ setAuditWriter(coreAuditWriter);
 setQrOrderPromoPort(orderPromoPort);
 setQrOrderDepositCreditLookup(depositCreditForSession);
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
+// WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
+// reservation deposit credit is shared through the QR port above. Receipt
+// numbering (legend-93a), cashier shift (legend-6c0), EDC (legend-m0k) and
+// points tenders keep their fail-closed defaults (pos-order-ports.ts) until
+// those beads land.
+setPosOrderPromoPort(orderPromoPort);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 
@@ -64,8 +72,11 @@ export function createApp({
   logger = defaultLogger,
   whatsappWebhookSecrets,
   publicRateLimit: publicRateLimitOptions,
+  edgeMode = env.EDGE_MODE,
 }: {
   logger?: Logger;
+  /** Test seam; production reads EDGE_MODE (legend-2pi route split). */
+  edgeMode?: boolean;
   /** Test seam; production reads KIRIM_WEBHOOK_SECRET. */
   whatsappWebhookSecrets?: readonly string[];
   /** Test seam; production reads PUBLIC_RATE_LIMIT_* (see config/env.ts). */
@@ -149,6 +160,12 @@ export function createApp({
     req.headers[CLIENT_IP_HEADER] = req.ip ?? req.socket.remoteAddress ?? "";
     next();
   });
+
+  // EDGE_MODE route split (legend-2pi, edge/mode.ts): deny by default. On an
+  // edge node only the operational API prefixes are served; on the cloud the
+  // edge-only /api/edge prefix answers 404. Before Better Auth's catch-all and
+  // every /api router so no handler runs for a refused path.
+  app.use(edgeRouteGuard({ edgeMode }));
 
   // Tenant resolution shared by the public login path below and /api (TEN-02):
   // a registered, verified domain of an active tenant or a signed device

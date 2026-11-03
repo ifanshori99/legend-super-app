@@ -10,9 +10,9 @@
 -- triggers are the database backstop.
 
 -- 1. Widen the §6 `orders.channel` check from the QR-only value to every
---    channel of the contract (ORDER_CHANNELS). LEAD: if you instead change the
---    check in schema/qr-order.ts (`orders_channel_check`) and db:generate emits
---    this DROP/ADD itself, delete these two statements.
+--    channel of the contract (ORDER_CHANNELS). Kept here (migration 0060), not
+--    in schema/qr-order.ts: the drizzle snapshot still records ('qr'), so a
+--    future edit of that check must carry this full list.
 ALTER TABLE "orders" DROP CONSTRAINT "orders_channel_check";
 --> statement-breakpoint
 ALTER TABLE "orders" ADD CONSTRAINT "orders_channel_check"

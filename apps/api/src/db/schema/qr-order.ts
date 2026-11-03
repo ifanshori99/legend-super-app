@@ -257,6 +257,9 @@ export const orders = pgTable(
       table.status,
       table.placedAt,
     ),
+    // Widened to every ORDER_CHANNELS value by the custom migration
+    // 0060_posbe_rls (POS, legend-kk7); drizzle's snapshot keeps ('qr'). Edit
+    // this check only together with that full list.
     check("orders_channel_check", sql`${table.channel} IN ('qr')`),
     check(
       "orders_service_type_check",

@@ -20,6 +20,7 @@ import {
   CoreError,
   idr,
   z,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -97,7 +98,7 @@ async function correct<T>(
   context: ScopedTenantContext,
   caller: PosCaller,
   input: {
-    outletId: string;
+    outletId: OutletId;
     orderId: string;
     key: string;
     operation: string;
@@ -164,7 +165,7 @@ async function correctionsOf(
 export async function voidPosOrderCorrection(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: VoidCorrectionInput,
   now = new Date(),
@@ -330,7 +331,7 @@ function refundSplit(
 export async function refundPosOrder(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: RefundInput,
   now = new Date(),

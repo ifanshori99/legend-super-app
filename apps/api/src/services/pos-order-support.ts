@@ -126,7 +126,7 @@ export function sha256(value: string): string {
 export async function loadOutlet(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
 ): Promise<OutletRow> {
   assertOutletInScope(context.outletScope, outletId);
   const [row] = await tx
@@ -189,7 +189,7 @@ export async function zoneOfSession(
 export async function lockPosOrder(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<Locked> {
   assertOutletInScope(context.outletScope, outletId);
@@ -220,7 +220,7 @@ export async function lockPosOrder(
 export async function readPosOrder(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<Locked> {
   assertOutletInScope(context.outletScope, outletId);
@@ -407,7 +407,7 @@ export async function posIdempotent<T>(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
-    outletId: string;
+    outletId: OutletId;
     actorId: string;
     key: string;
     operation: string;
@@ -636,7 +636,7 @@ export async function consumeApproval(
   input: {
     action: "void" | "discount" | "refund";
     purpose: ApprovalPurpose;
-    outletId: string;
+    outletId: OutletId;
     orderId: string;
     objectType: "order" | "order_item";
     objectId: string;
@@ -827,7 +827,7 @@ export async function repriceOrder(
   for (const row of discounts) {
     let amount = row.amountIdr;
     if (row.kind === "percent" && row.percentBp !== null) {
-      amount = Math.floor((subtotal * row.percentBp) / 10_000);
+      amount = idr(Math.floor((subtotal * row.percentBp) / 10_000));
       if (amount <= 0) throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
       if (amount !== row.amountIdr)
         await tx

@@ -23,6 +23,7 @@ import {
   idr,
   uuidSchema,
   z,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
@@ -78,7 +79,7 @@ const paidPayloadSchema = z.looseObject({
 export async function addPosTender(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: AddTenderInput,
   now = new Date(),

@@ -219,7 +219,7 @@ export async function revokeEdgeNode(
 
 export async function listEdgeNodes(
   context: ScopedTenantContext,
-  filter: { outletId?: string } = {},
+  filter: { outletId?: OutletId } = {},
 ): Promise<EdgeNodeAdminView[]> {
   assertTrustedScopedContext(context);
   if (filter.outletId)

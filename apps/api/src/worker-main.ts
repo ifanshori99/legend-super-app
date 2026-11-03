@@ -29,6 +29,9 @@ import { deliverNotificationAttempt } from "./services/notification-delivery.ts"
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
@@ -154,6 +157,14 @@ const runtime = createWorkerRuntime({
           // (idempotent, replay safe), then the deployment consumer runs.
           if (event.name === "payment.paid")
             await handlePaymentPaid(context, event);
+          // ORD-02 (legend-x4qy/kk7): a verified payment fires its QR order
+          // (in this consumption transaction) or settles its POS bill; an
+          // expired/failed QR payment re-offers a code or voids the order.
+          // Each consumer re-reads its locked rows, so a replay is a no-op.
+          await deliverOrderPaymentEvent(context, event, tx);
+          // AUTH-06 (legend-obh5): a phone-approved POS override settles from
+          // the approval chain re-read under its row lock.
+          await handleApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx);
         }
       },
@@ -251,6 +262,14 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Prep label expiry sweep failed");
+    }
+    // ORD-02 (legend-x4qy): void unpaid pay-first QR orders whose payment
+    // window closed when no expiry event arrives (abandoned guests). Each
+    // order is decided under its own row lock; a rerun voids nothing twice.
+    try {
+      await sweepUnpaidQrOrders(context, new Date());
+    } catch {
+      console.error("Unpaid QR order sweep failed");
     }
     // ORD-07 (legend-7qg): escalate waiter calls / bill requests left open
     // past SERVICE_REQUEST_OVERDUE_SECONDS, once each. The relay ticks every

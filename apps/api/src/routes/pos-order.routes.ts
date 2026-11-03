@@ -20,7 +20,7 @@
 //   supplies a verified one: a client-claimed device is never trusted.
 
 import { Router, type Request, type Response } from "express";
-import { CoreError, userIdSchema } from "@starter/shared/core";
+import { CoreError, userIdSchema, type OutletId } from "@starter/shared/core";
 import {
   addPosTender,
   applyPosDiscount,
@@ -93,7 +93,7 @@ function caller(req: Request): PosCaller {
 async function sendOrder(
   req: Request,
   res: Response,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   data: unknown,
   status = 200,

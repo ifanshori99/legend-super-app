@@ -5,6 +5,7 @@ import {
   deploymentEnvShape,
   deploymentPolicyCheck,
 } from "@starter/shared/env";
+import { parseEdgeRuntimeConfig } from "../edge/config.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -165,6 +166,39 @@ const schema = z
       .string()
       .min(32, "Use at least 32 random characters.")
       .optional(),
+    // Edge node settings (legend-2pi, edge/config.ts). Required only with
+    // EDGE_MODE=true; the cloud ignores them. EDGE_NODE_CREDENTIAL is the
+    // secret shown once at registration: never logged, never committed.
+    EDGE_CLOUD_URL: z.string().optional(),
+    EDGE_NODE_CREDENTIAL: z.string().optional(),
+    EDGE_NODE_ROLE: z.enum(["primary", "standby"]).default("primary"),
+    EDGE_NODE_VERSION: z
+      .string()
+      .min(1)
+      .max(255)
+      .regex(/^[\w.+-]+$/)
+      .default("dev"),
+  })
+  .superRefine((values, ctx) => {
+    // Same rule the edge runtime boots with (wss:// link URL, well-formed
+    // credential), so a misconfigured edge node refuses to start here.
+    const edge = parseEdgeRuntimeConfig({
+      DEPLOYMENT_MODE: values.DEPLOYMENT_MODE,
+      EDGE_MODE: String(values.EDGE_MODE),
+      EDGE_CLOUD_URL: values.EDGE_CLOUD_URL,
+      EDGE_NODE_CREDENTIAL: values.EDGE_NODE_CREDENTIAL,
+      EDGE_NODE_ROLE: values.EDGE_NODE_ROLE,
+      EDGE_NODE_VERSION: values.EDGE_NODE_VERSION,
+    });
+    if (!edge.ok)
+      for (const problem of edge.problems) {
+        const [path, ...message] = problem.split(": ");
+        ctx.addIssue({
+          code: "custom",
+          path: [path ?? "EDGE_MODE"],
+          message: message.join(": "),
+        });
+      }
   })
   .refine(
     (values) =>

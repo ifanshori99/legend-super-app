@@ -414,6 +414,20 @@
       "when": 1793746297797,
       "tag": "0058_invbe_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1793746591154,
+      "tag": "0059_open_agent_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1793746600076,
+      "tag": "0060_posbe_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -9,10 +9,32 @@ import {
   attachNotificationRealtime,
   listenNotificationWakeups,
 } from "./services/notification-realtime.ts";
+import {
+  attachQrOrderRealtime,
+  listenQrCartWakeups,
+  resolveGuestTenantFromHost,
+} from "./services/qr-order-realtime.ts";
+import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
+import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
+import { verifyEdgeNodeCredential } from "./services/edge-node.service.ts";
+import { setEdgeCredentialVerifier } from "./services/staff-pin-sync.ts";
+import {
+  EdgeBootError,
+  registerEdgeLink,
+  startEdgeRuntime,
+  type EdgeLinkHandle,
+  type EdgeRuntimeHandle,
+} from "./edge/runtime.ts";
 
 const app = createApp();
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
 setReservationDepositPort(createPaymentReservationDepositPort());
+// Staff device PIN (legend-obh5): a device names an outlet only through the
+// WS-02 registry (fails closed while the registry table is absent).
+setDeviceOutletResolver(createDeviceOutletResolver());
+// Staff PIN down-sync (legend-obh5): edge credentials are verified against the
+// cloud edge_nodes registry (legend-2pi); anything else is denied.
+setEdgeCredentialVerifier(verifyEdgeNodeCredential);
 
 const server = app.listen(env.PORT, env.HOST, async (error) => {
   if (error) {
@@ -48,6 +70,39 @@ const stopWakeups = listenNotificationWakeups(pool, realtime.dispatch).catch(
   },
 );
 
+// WS-03 QR shared cart / order realtime (legend-x4qy): guests of the request
+// host's tenant, re-verified on every dispatch; wakeups carry ids only.
+const qrRealtime = attachQrOrderRealtime(server, {
+  trustedOrigins: env.trustedOrigins,
+  resolveTenant: resolveGuestTenantFromHost,
+});
+const stopQrWakeups = listenQrCartWakeups(pool, qrRealtime.dispatch).catch(
+  (error: unknown) => {
+    logger.error({ err: error }, "QR order wakeup listener unavailable");
+    return async () => {};
+  },
+);
+
+// WS-02 edge mode (legend-2pi). The cloud accepts edge links on
+// /api/edge-link; an edge node runs its boot guards and opens the link to the
+// cloud. A misconfigured or unprovisioned edge node refuses to keep running.
+let edgeRuntime: EdgeRuntimeHandle | null = null;
+let edgeLink: EdgeLinkHandle | null = null;
+const edgeReady = (async () => {
+  try {
+    if (env.EDGE_MODE) edgeRuntime = await startEdgeRuntime();
+    else edgeLink = await registerEdgeLink(server);
+  } catch (error) {
+    if (error instanceof EdgeBootError) {
+      // The message names settings and tables only, never their values.
+      logger.fatal({ errName: error.name }, error.message);
+      logger.flush();
+      process.exit(1);
+    }
+    throw error;
+  }
+})();
+
 // Graceful shutdown. `pnpm dev` (tsx watch) restarts on every file change;
 // closing the server and the pool here frees the port and the PostgreSQL
 // connections immediately, so reloads never hit EADDRINUSE or leak sessions.
@@ -65,6 +120,13 @@ async function shutdown(signal: string) {
   await (
     await stopWakeups
   )();
+  await qrRealtime.close();
+  await (
+    await stopQrWakeups
+  )();
+  await edgeReady.catch(() => {});
+  await edgeRuntime?.stop();
+  await edgeLink?.close();
   server.closeIdleConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await pool.end().catch(() => {});

@@ -141,7 +141,7 @@ export async function mutatePosOrder<T>(
   context: ScopedTenantContext,
   caller: PosCaller,
   input: {
-    outletId: string;
+    outletId: OutletId;
     orderId: string;
     key: string;
     operation: string;
@@ -200,7 +200,7 @@ function orderNumberFor(
 export async function freshDetail(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<PosOrderDetail> {
   return orderDetail(
@@ -215,7 +215,7 @@ export async function freshDetail(
 /** GET /api/outlets/:outletId/pos/orders — newest first, keyset on the ULID. */
 export async function listPosOrders(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   query: ListQuery,
 ): Promise<CursorPage<PosOrderSummary>> {
   return withTenant(db, context, async (tx) => {
@@ -304,7 +304,7 @@ export async function listPosOrders(
 
 export async function getPosOrder(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<{ detail: PosOrderDetail; version: number }> {
   return withTenant(db, context, async (tx) => {
@@ -319,7 +319,7 @@ export async function getPosOrder(
 /** The current order version, for the `ETag` header after a write. */
 export async function posOrderVersion(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<number> {
   return withTenant(db, context, async (tx) => {
@@ -337,7 +337,7 @@ export async function posOrderVersion(
  */
 export async function listPosOrderEvents(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   query: EventsQuery,
 ): Promise<CursorPage<PosOrderEvent>> {
@@ -400,7 +400,7 @@ export async function listPosOrderEvents(
  */
 export async function getPosApprovalPolicy(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   now = new Date(),
 ): Promise<PosApprovalPolicy> {
   return withTenant(db, context, async (tx) => {
@@ -430,7 +430,7 @@ export async function getPosApprovalPolicy(
 export async function discountThresholdBp(
   tx: Tx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
 ): Promise<number> {
   const rows = await tx
     .select()
@@ -444,7 +444,7 @@ export async function discountThresholdBp(
 /** GET .../actions — what the payment panel may offer now. */
 export async function getPosOrderActions(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
 ): Promise<{
   allowed: PosOrderAction[];
@@ -488,7 +488,7 @@ export async function getPosOrderActions(
 export async function createPosOrder(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   input: CreateInput,
   now = new Date(),
 ): Promise<PosOrderDetail> {
@@ -674,7 +674,7 @@ export async function createPosOrder(
           .values({
             id: orderId,
             tenantId,
-            outletId: outlet.id,
+            outletId,
             number: orderNumberFor(input.channel, businessDate, orderId),
             channel: input.channel,
             serviceType: input.serviceType,
@@ -898,7 +898,7 @@ async function fireLines(
 export async function submitPosOrder(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: SubmitInput,
   now = new Date(),
@@ -1000,7 +1000,7 @@ export async function submitPosOrder(
 export async function firePosOrderItems(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: FireInput,
   now = new Date(),
@@ -1048,7 +1048,7 @@ export async function firePosOrderItems(
 export async function completePosOrder(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: CompleteInput,
   now = new Date(),
@@ -1273,7 +1273,7 @@ async function voidLines(
 export async function voidPosOrder(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   input: VoidInput,
   now = new Date(),
@@ -1436,7 +1436,7 @@ export async function voidPosOrder(
 export async function voidPosOrderItem(
   context: ScopedTenantContext,
   caller: PosCaller,
-  outletId: string,
+  outletId: OutletId,
   orderId: string,
   itemId: string,
   input: VoidItemInput,
