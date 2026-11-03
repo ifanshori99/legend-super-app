@@ -93,6 +93,18 @@ export const serviceRequestCreatedPayloadSchema = z.strictObject({
   reason: serviceRequestReasonSchema.nullable(),
 });
 
+export const serviceRequestOverduePayloadSchema = z.strictObject({
+  serviceRequestId: serviceRequestIdSchema,
+  sessionId: tableSessionIdSchema,
+  tableId: tableIdSchema,
+  zoneId: floorZoneIdSchema,
+  type: serviceRequestTypeSchema,
+  status: z.string(),
+  assignedTo: z.string().nullable(),
+  ageSeconds: z.number().int().nonnegative(),
+  thresholdSeconds: z.number().int().positive(),
+});
+
 /** Events owned and emitted by this contract (WS-03 catalog line). */
 export const qrOrderEventNames = [
   "table_session.opened",
@@ -101,6 +113,7 @@ export const qrOrderEventNames = [
   "order.placed",
   "item.failed",
   "service_request.created",
+  "service_request.overdue",
 ] as const;
 export type QrOrderEventName = (typeof qrOrderEventNames)[number];
 /** Kept for compatibility: identical to qrOrderEventNames. */
@@ -116,6 +129,7 @@ export const qrOrderEventPayloads: Record<
   "order.placed": orderPlacedPayloadSchema,
   "item.failed": itemFailedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
+  "service_request.overdue": serviceRequestOverduePayloadSchema,
 };
 
 /**

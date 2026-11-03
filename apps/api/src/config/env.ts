@@ -156,7 +156,35 @@ const schema = z
     // Shared secret Caddy sends with its on-demand TLS ask (X-Tls-Ask-Token).
     // Unset in local development; set it wherever a public proxy calls the ask.
     TLS_ASK_TOKEN: z.string().min(16).max(200).optional(),
+    // Root secret of the staff device pin pepper (services/device-pin-pepper.ts).
+    // It is deliberately NOT derived from BETTER_AUTH_SECRET: rotating the auth
+    // secret must not invalidate every stored pin. Production must set it;
+    // development and tests use a fixed, non-secret fallback. Rotating this
+    // value invalidates every stored pin, so staff must set a new one.
+    STAFF_PIN_PEPPER: z
+      .string()
+      .min(32, "Use at least 32 random characters.")
+      .optional(),
   })
+  .refine(
+    (values) =>
+      values.NODE_ENV !== "production" || Boolean(values.STAFF_PIN_PEPPER),
+    {
+      path: ["STAFF_PIN_PEPPER"],
+      message:
+        "Set STAFF_PIN_PEPPER in production so a BETTER_AUTH_SECRET rotation does not wipe staff pins.",
+    },
+  )
+  .refine(
+    (values) =>
+      values.STAFF_PIN_PEPPER === undefined ||
+      values.STAFF_PIN_PEPPER !== values.BETTER_AUTH_SECRET,
+    {
+      path: ["STAFF_PIN_PEPPER"],
+      message:
+        "STAFF_PIN_PEPPER must be its own secret, not BETTER_AUTH_SECRET.",
+    },
+  )
   .refine(
     (values) =>
       values.DEPLOYMENT_MODE === "development" ||
