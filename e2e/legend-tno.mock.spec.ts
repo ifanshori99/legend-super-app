@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot } from "./screenshots";
+import { captureScreenshot } from "./screenshot-width.ts";
 
 // Panel Platform tenant screens (bead legend-tno; PRD v1.7 §3 F1 "Layar
 // Platform", §3 F4, §4 Alur R; TEN-06) against the FE mock runtime. Mock port

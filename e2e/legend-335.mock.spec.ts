@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { captureScreenshot } from "./screenshots.ts";
+import { captureScreenshot } from "./screenshot-width.ts";
 
 // Support access (bead legend-335; PRD v1.7 §3 F4 "Support Access", TEN-04)
 // against the FE mock runtime: the Super Admin requests, lists and ends a

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { captureScreenshot } from "./screenshots.ts";
+import { captureScreenshot } from "./screenshot-width.ts";
 
 // Platform panel: packages and module flags, quotas and cost caps, health and
 // the cross-tenant audit list (bead legend-y6s; PRD v1.7 §3 F4 "Feature Flag &

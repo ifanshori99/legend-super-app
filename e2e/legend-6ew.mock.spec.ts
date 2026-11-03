@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { captureScreenshot } from "./screenshots.ts";
+import { captureScreenshot } from "./screenshot-width.ts";
 
 // Device PIN pad, switch user and supervisor override (bead legend-6ew; PRD
 // v1.7 §3 F6 "PIN Perangkat", §3.6 "Override Supervisor", AUTH-06) against the
