@@ -1,8 +1,7 @@
 // Staff reservation reads and lifecycle (PRD v1.7 §3.22; Alur H; RSV-02 seating
 // with the paid DP allocated to the bill, RSV-03 cancellation / no-show decided
 // by the policy snapshot; bead legend-t8bz). Routes: routes/reservation.routes.ts.
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, eq, gt, lt, notInArray, or } from "drizzle-orm";
+import { and, asc, eq, gt, lt, or } from "drizzle-orm";
 import {
   assertOutletInScope,
   decodeCursor,
@@ -12,7 +11,6 @@ import {
   type TenantId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { qrOrderEvents } from "@starter/shared/qr-order";
 import {
   ReservationError,
   assertReservationTransition,
@@ -34,24 +32,16 @@ import {
   type Reservation,
 } from "@starter/shared/reservation";
 import { db } from "../db/index.ts";
-import {
-  floorZones,
-  outlets,
-  sessionParticipants,
-  tableSessions,
-  tables,
-} from "../db/schema/index.ts";
+import { outlets } from "../db/schema/index.ts";
 import {
   reservationDepositAllocations,
   reservations,
 } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { sealSecret } from "../lib/secrets.ts";
 import {
   MANAGE_PERMISSION,
   VIEW_PERMISSION,
-  appendEnvelope,
   appendReservationEvent,
   assertPermission,
   auditReservation,
@@ -71,14 +61,14 @@ import {
   type Tx,
 } from "./reservation-core.ts";
 import { assertAssignableTables } from "./reservation-booking.ts";
-import { reservationDepositPort } from "./reservation-ports.ts";
 import {
   addDays,
   localDate,
   requestFingerprint,
   zonedInstant,
 } from "./reservation-plan.ts";
-import { lockTableLiveState } from "./table-session.service.ts";
+import { requestDepositRefund } from "./reservation-refunds.ts";
+import { openStaffSeatedSession } from "./table-session.service.ts";
 
 type Page<T> = {
   data: T[];
@@ -274,9 +264,6 @@ export async function confirmReservationDeposit(
 
 // ---------------------------------------------------------------- seat (RSV-02)
 
-const sha256 = (value: string) =>
-  createHash("sha256").update(value, "utf8").digest("hex");
-
 /**
  * RSV-02: the host seats the party. The required DP must be settled (a
  * tentative table assignment is fine before that, seating is not); the paid DP
@@ -347,102 +334,17 @@ export async function seatReservation(
         await assertAssignableTables(tx, context, outletId, tableIds);
         await replaceHolds(tx, context, row, tableIds);
       }
-      const primaryId = tableIds[0]!;
-      await lockTableLiveState(tx, context.tenant.tenantId, primaryId);
-      const [table] = await tx
-        .select()
-        .from(tables)
-        .where(
-          and(
-            eq(tables.tenantId, context.tenant.tenantId),
-            eq(tables.id, primaryId),
-          ),
-        );
-      if (!table)
-        throw new HttpError(404, "NOT_FOUND", "Meja tidak ditemukan.");
-      if (table.status === "dirty" || table.status === "inactive")
-        throw new HttpError(409, "CONFLICT", "Meja belum siap dipakai.");
-      const [busy] = await tx
-        .select({ id: tableSessions.id })
-        .from(tableSessions)
-        .where(
-          and(
-            eq(tableSessions.tenantId, context.tenant.tenantId),
-            eq(tableSessions.tableId, primaryId),
-            notInArray(tableSessions.status, ["closed", "voided"]),
-          ),
-        );
-      if (busy)
-        throw new HttpError(409, "CONFLICT", "Meja masih dipakai tamu lain.");
-      const [zone] = await tx
-        .select()
-        .from(floorZones)
-        .where(
-          and(
-            eq(floorZones.tenantId, context.tenant.tenantId),
-            eq(floorZones.id, table.zoneId),
-          ),
-        );
-      if (!zone) throw new HttpError(404, "NOT_FOUND", "Zona tidak ditemukan.");
-
-      // Open the table session on the primary table (staff-seated: the host is
-      // the confirming waiter, so open-bill needs no further confirmation).
-      const sessionId = randomUUID();
-      const token = randomBytes(32).toString("base64url");
-      const sessionPax = Math.min(row.pax, 30);
-      await tx.insert(tableSessions).values({
-        id: sessionId,
-        tenantId: context.tenant.tenantId,
+      // The session opens on the primary (first) table; every table is locked
+      // in ascending id order and checked inside the table-session service.
+      const opened = await openStaffSeatedSession(tx, context, {
         outletId,
-        tableId: primaryId,
-        pax: sessionPax,
-        paymentMode: zone.paymentMode,
-        status: "open",
-        sessionTokenHash: sha256(token),
-        sessionTokenSealed: sealSecret(
-          token,
-          `table-session:${context.tenant.tenantId}:${sessionId}`,
-        ),
+        tableIds,
+        pax: row.pax,
         confirmedBy: actorUserId,
         reservationId: row.id,
-        openedAt: now,
-        lastActivityAt: now,
-      });
-      const participantId = randomUUID();
-      await tx.insert(sessionParticipants).values({
-        id: participantId,
-        tenantId: context.tenant.tenantId,
-        outletId,
-        tableSessionId: sessionId,
-        deviceHash: `reservation:${row.id}`,
-        joinedAt: now,
-        lastSeenAt: now,
-      });
-      await tx
-        .update(tables)
-        .set({ status: "occupied", updatedAt: now })
-        .where(
-          and(
-            eq(tables.tenantId, context.tenant.tenantId),
-            eq(tables.id, primaryId),
-          ),
-        );
-      await appendEnvelope(tx, context, qrOrderEvents["table_session.opened"], {
-        aggregateId: sessionId,
-        outletId,
-        actorUserId,
         now,
-        idempotencyKey: `table_session.opened:${sessionId}`,
-        payload: {
-          sessionId,
-          tableId: primaryId,
-          zoneId: zone.id,
-          pax: sessionPax,
-          paymentMode: zone.paymentMode,
-          openedBy: "staff",
-          participantId,
-        },
       });
+      const sessionId = opened.sessionId;
 
       // RSV-02: the paid DP becomes prepaid credit on the session's bill.
       if (depositPaid > 0 && row.depositPaymentId !== null)
@@ -572,6 +474,7 @@ async function closeReservation(
         status: kind,
         closedAt: now,
         closeReason,
+        closedBy: actorUserId,
         depositRefundIdr: idr(outcome.refundIdr),
         depositForfeitedIdr: idr(outcome.forfeitedIdr),
         refundStatus: outcome.refundIdr > 0 ? "pending" : "not_required",
@@ -642,45 +545,15 @@ async function closeReservation(
     };
   });
   if (done.refund)
-    await requestRefund(context, outletId, reservationId, kind, done.refund);
-  return done.result;
-}
-
-/**
- * The refund itself is a WS-05 action. It runs after the decision committed;
- * if the port is missing or fails, `refund_status` stays `pending` for a
- * retry job (fail closed: the decision is never lost, money is not guessed).
- */
-async function requestRefund(
-  context: ScopedTenantContext,
-  outletId: OutletId,
-  reservationId: string,
-  kind: string,
-  refund: { intentId: string; refundIdr: number },
-): Promise<void> {
-  try {
-    await reservationDepositPort().requestRefund({
+    await requestDepositRefund(
       context,
-      paymentIntentId: refund.intentId,
-      refundIdr: refund.refundIdr,
-      reason: `reservation.${kind}`,
-      idempotencyKey: `reservation-refund:${reservationId}`,
-    });
-  } catch {
-    return;
-  }
-  await withTenant(db, context, async (tx) => {
-    await tx
-      .update(reservations)
-      .set({ refundStatus: "requested" })
-      .where(
-        and(
-          eq(reservations.tenantId, context.tenant.tenantId),
-          eq(reservations.outletId, outletId),
-          eq(reservations.id, reservationId),
-        ),
-      );
-  });
+      outletId,
+      reservationId,
+      done.refund,
+      kind,
+      actorUserId,
+    );
+  return done.result;
 }
 
 export function cancelReservation(
