@@ -294,7 +294,8 @@ export function transitionAttendanceCorrection(
 
 /**
  * The business date an attendance log belongs to, for rosters and payroll
- * cut-off. The caller passes the outlet time zone (core `businessDateOf`); this
- * helper only names the rule so every screen agrees on it.
+ * cut-off. The caller passes the outlet time zone (core `localDateOf`: the
+ * roster is a wall-clock schedule, so no Q39 business-day cutoff applies);
+ * this helper only names the rule so every screen agrees on it.
  */
 export const attendanceBusinessDateSchema = businessDateSchema;

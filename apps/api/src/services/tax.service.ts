@@ -33,6 +33,7 @@ import type { PermissionCode, AccessTarget } from "@starter/shared/access";
 import {
   assertTrustedScopedContext,
   businessDateOf,
+  DEFAULT_BUSINESS_DAY_CLOCK,
   createUlid,
   decodeCursor,
   encodeCursor,
@@ -84,6 +85,7 @@ import {
   taxSettings,
   taxSnapshots,
 } from "../db/schema";
+import { outletBusinessDayClock } from "./outlet-clock";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
@@ -267,9 +269,11 @@ async function businessToday(
   outletId: string | null,
   now: Date,
 ): Promise<BusinessDate> {
-  if (outletId === null) return businessDateOf(now);
+  // A tenant-wide version has no single outlet: the default clock (Jakarta,
+  // 04:00) bounds it; an outlet version uses that outlet's clock (owner Q39).
+  if (outletId === null) return businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK);
   const outlet = await requireOutlet(tx, context, outletId);
-  return businessDateOf(now, outlet.timezone);
+  return businessDateOf(now, outletBusinessDayClock(outlet));
 }
 
 async function nextAggregateSequence(

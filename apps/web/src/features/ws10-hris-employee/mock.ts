@@ -30,7 +30,7 @@ import {
   type AttendanceCorrection,
   type AttendanceLog,
 } from "@starter/shared/hris";
-import { businessDateOf, createUlid } from "@starter/shared/core";
+import { localDateOf, createUlid } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
@@ -236,7 +236,7 @@ registerMock(listAttendanceLogs, ({ query, scenario }) => {
     .filter(
       (log) =>
         query.businessDate === undefined ||
-        businessDateOf(log.occurredAt, outlet.timeZone) === query.businessDate,
+        localDateOf(log.occurredAt, outlet.timeZone) === query.businessDate,
     );
   return paginateFixture(rows, query, (log) => log.id, scenario);
 });
@@ -320,7 +320,7 @@ registerMock(clockAttendance, ({ body }) => {
         (assignment) =>
           assignment.employeeId === me.id &&
           assignment.status === "published" &&
-          assignment.businessDate === businessDateOf(now, outlet.timeZone),
+          assignment.businessDate === localDateOf(now, outlet.timeZone),
       )?.id ?? null,
   });
   store.set({
