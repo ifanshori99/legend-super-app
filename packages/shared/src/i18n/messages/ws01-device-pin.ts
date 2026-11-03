@@ -25,6 +25,9 @@ export const devicePinMessages = {
 
   error: {
     invalid: "PIN salah. Periksa angkanya lalu coba lagi.",
+    pickStaff:
+      "Pilih dulu nama staf atau supervisor yang memasukkan PIN, lalu ulangi.",
+    approver: "Supervisor yang memasukkan PIN",
     mismatch:
       "PIN ini bukan milik {name}. Pilih nama yang benar atau coba lagi.",
     network:

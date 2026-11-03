@@ -3,18 +3,25 @@
 // window on PIN_LOCKED, a network hint when the edge node is unreachable.
 import { useCallback, useState } from "react";
 import type { StaffPinSwitch } from "@starter/shared/identity";
+import { userIdSchema } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import { useVerifyStaffPin } from "./hooks.ts";
 import { usePinLock } from "./use-pin-lock.ts";
 
 export type UsePinSessionOptions = {
+  /** The staff member whose PIN is being typed: the API counts misses per staff. */
+  userId: string | null;
   onVerified: (result: StaffPinSwitch) => void;
   /** Return an error text to refuse a correct PIN (wrong person, same approver). */
   accept?: (result: StaffPinSwitch) => string | null;
 };
 
-export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
+export function usePinSession({
+  userId,
+  onVerified,
+  accept,
+}: UsePinSessionOptions) {
   const t = useT();
   const lock = usePinLock();
   const verify = useVerifyStaffPin();
@@ -32,42 +39,52 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
   const submit = useCallback(
     (pin: string) => {
       setError(null);
-      verify.mutate(pin, {
-        // Forget the PIN as soon as the answer is in: the mutation keeps its
-        // variables until reset (no PIN in the query client, ever).
-        onSettled: () => verify.reset(),
-        onSuccess: ({ data }) => {
-          const refusal = accept?.(data) ?? null;
-          if (refusal) {
-            fail(refusal);
-            return;
-          }
-          lock.recordSuccess();
-          // Drop anything typed while the right PIN was being checked.
-          setClearSignal((n) => n + 1);
-          onVerified(data);
+      // Fail closed: without a valid picked staff the API cannot count the
+      // attempt (AUTH-06 per-staff lockout), so the PIN is not sent at all.
+      const pickedUserId = userIdSchema.safeParse(userId);
+      if (!pickedUserId.success) {
+        fail(t("devicePin.error.pickStaff"));
+        return;
+      }
+      verify.mutate(
+        { userId: pickedUserId.data, pin },
+        {
+          // Forget the PIN as soon as the answer is in: the mutation keeps its
+          // variables until reset (no PIN in the query client, ever).
+          onSettled: () => verify.reset(),
+          onSuccess: ({ data }) => {
+            const refusal = accept?.(data) ?? null;
+            if (refusal) {
+              fail(refusal);
+              return;
+            }
+            lock.recordSuccess();
+            // Drop anything typed while the right PIN was being checked.
+            setClearSignal((n) => n + 1);
+            onVerified(data);
+          },
+          onError: (cause) => {
+            if (cause instanceof ApiError && cause.code === "PIN_LOCKED") {
+              lock.recordServerLocked();
+              fail(t("devicePin.lockout.title"));
+            } else if (
+              cause instanceof ApiError &&
+              cause.code === "PIN_INVALID"
+            ) {
+              lock.recordInvalid();
+              fail(t("devicePin.error.invalid"));
+            } else if (
+              !(cause instanceof ApiError) ||
+              cause.status === 0 ||
+              cause.status >= 502
+            ) {
+              fail(t("devicePin.error.network"));
+            } else {
+              fail(t("devicePin.error.generic"));
+            }
+          },
         },
-        onError: (cause) => {
-          if (cause instanceof ApiError && cause.code === "PIN_LOCKED") {
-            lock.recordServerLocked();
-            fail(t("devicePin.lockout.title"));
-          } else if (
-            cause instanceof ApiError &&
-            cause.code === "PIN_INVALID"
-          ) {
-            lock.recordInvalid();
-            fail(t("devicePin.error.invalid"));
-          } else if (
-            !(cause instanceof ApiError) ||
-            cause.status === 0 ||
-            cause.status >= 502
-          ) {
-            fail(t("devicePin.error.network"));
-          } else {
-            fail(t("devicePin.error.generic"));
-          }
-        },
-      });
+      );
     },
     [verify, accept, fail, lock, onVerified, t],
   );
