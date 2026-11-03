@@ -571,53 +571,64 @@ describe("Entitlement rule and Wi-Fi policy PUT semantics (legend-8dpm)", () => 
 describe("Facility config authorization (legend-8dpm)", () => {
   it("[TEN-03][legend-8dpm] a caller without facility permissions gets 403 on config reads and writes", async () => {
     const { client } = await signedIn("Facility Config Nobody");
-    for (const request of [
-      client.get("/api/facility/facilities"),
-      client.get(`/api/facility/incidents?facilityId=${facilityId}`),
-      client.post("/api/facility/products").set(originHeader).send({
-        facilityId,
-        name: "Tanpa Izin",
-        type: "single",
-        priceIdr: 1000,
-        sessions: 1,
-      }),
-      client
-        .post("/api/facility/addons")
-        .set(originHeader)
-        .send({ facilityId, name: "Tanpa Izin", priceIdr: 1000 }),
-      client
-        .put(`/api/facility/entitlement-rules/${randomUUID()}`)
-        .set(originHeader)
-        .send({
+    // Build each request lazily: supertest closes its ephemeral server between
+    // sequential awaits, so a pre-built batch of Test objects would reuse a
+    // closed server (app null).
+    const requests = [
+      () => client.get("/api/facility/facilities"),
+      () => client.get(`/api/facility/incidents?facilityId=${facilityId}`),
+      () =>
+        client.post("/api/facility/products").set(originHeader).send({
           facilityId,
-          type: "min_spend",
-          condition: { minSpendIdr: 1000 },
+          name: "Tanpa Izin",
+          type: "single",
+          priceIdr: 1000,
           sessions: 1,
-          validity: { kind: "operating_day" },
-          isEnabled: true,
         }),
-      client.post("/api/facility/subscription-plans").set(originHeader).send({
-        facilityId,
-        name: "Tanpa Izin",
-        priceIdr: 1000,
-        quotaPerPeriod: 1,
-        interval: "month",
-      }),
-      client.put(`/api/wifi/policies/${randomUUID()}`).set(originHeader).send({
-        zoneId,
-        freeMinutes: 120,
-        peakFreeMinutes: 60,
-        spendPerExtraHourIdr: 30000,
-        extraMinutes: 60,
-        maxDevices: 2,
-        peakSchedule: [],
-        baseSpeedKbps: 2048,
-        fullSpeedKbps: 10240,
-        minSpendPerHourIdr: null,
-        tierBonusMinutes: {},
-      }),
-    ])
-      expect((await request).status).toBe(403);
+      () =>
+        client
+          .post("/api/facility/addons")
+          .set(originHeader)
+          .send({ facilityId, name: "Tanpa Izin", priceIdr: 1000 }),
+      () =>
+        client
+          .put(`/api/facility/entitlement-rules/${randomUUID()}`)
+          .set(originHeader)
+          .send({
+            facilityId,
+            type: "min_spend",
+            condition: { minSpendIdr: 1000 },
+            sessions: 1,
+            validity: { kind: "operating_day" },
+            isEnabled: true,
+          }),
+      () =>
+        client.post("/api/facility/subscription-plans").set(originHeader).send({
+          facilityId,
+          name: "Tanpa Izin",
+          priceIdr: 1000,
+          quotaPerPeriod: 1,
+          interval: "month",
+        }),
+      () =>
+        client
+          .put(`/api/wifi/policies/${randomUUID()}`)
+          .set(originHeader)
+          .send({
+            zoneId,
+            freeMinutes: 120,
+            peakFreeMinutes: 60,
+            spendPerExtraHourIdr: 30000,
+            extraMinutes: 60,
+            maxDevices: 2,
+            peakSchedule: [],
+            baseSpeedKbps: 2048,
+            fullSpeedKbps: 10240,
+            minSpendPerHourIdr: null,
+            tierBonusMinutes: {},
+          }),
+    ];
+    for (const request of requests) expect((await request()).status).toBe(403);
   });
 
   it("[TEN-03][legend-8dpm] an outlet-scoped caller cannot write another outlet's facility (404)", async () => {

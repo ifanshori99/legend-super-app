@@ -248,13 +248,13 @@ facilityRouter.post("/units", manage, jsonBody, async (req, res) => {
 
 facilityRouter.get("/incidents", operate, async (req, res) => {
   const query = listFacilityIncidentsEndpoint.query.parse(req.query);
-  res.json({
-    data: await incidents.listFacilityIncidents(
+  res.json(
+    await incidents.listFacilityIncidents(
       getScopedTenantContext(req),
       getAuth(req).user.id,
       query,
     ),
-  });
+  );
 });
 
 // ------------------------------------------------------ config: facility list
@@ -263,13 +263,13 @@ facilityRouter.get("/incidents", operate, async (req, res) => {
 // it without `facility.booth.operate` (bead legend-er32).
 facilityRouter.get("/facilities", manage, async (req, res) => {
   const query = listFacilitiesEndpoint.query.parse(req.query);
-  res.json({
-    data: await config.listFacilities(
+  res.json(
+    await config.listFacilities(
       getScopedTenantContext(req),
       getAuth(req).user.id,
       query,
     ),
-  });
+  );
 });
 
 // ------------------------------------------------------------ config: products
