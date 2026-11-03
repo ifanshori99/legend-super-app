@@ -1,8 +1,9 @@
 // The shell of an area, chosen by its definition (lib/areas/definitions.ts):
 // Hangat → CustomerShell, Kontras Tinggi → OperationsShell, Padat →
 // ManagementShell. Route layouts render <AreaFrame> around their <Outlet />.
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useParams } from "@tanstack/react-router";
+import type { BusinessDayCutoff } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
@@ -20,7 +21,11 @@ import { AREAS, type AreaKey } from "@/lib/areas/definitions";
 import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
-import { resolveMockTenantContext } from "@/lib/mock/tenant-context";
+import {
+  resolveMockTenantContext,
+  savedOutletCutoff,
+} from "@/lib/mock/tenant-context";
+import { ORG_OUTLET_STORE_EVENT } from "@/features/ws01-org/outlet-store";
 import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
@@ -41,10 +46,39 @@ type AreaFrameProps = {
  * the shell. Mock mode reads the Cafe Legend fixtures; outside mock mode there
  * is no config source yet, so the provider fails closed (catalog brand, no
  * outlet → the shell keeps its neutral copy).
+ *
+ * legend-5kop: the saved business-day cutoff lives in sessionStorage, which
+ * the SSR server does not have. The first render (server HTML and the hydration
+ * pass) therefore uses the fixture config; a client effect then reads the saved
+ * rows and replaces the cutoff, so the two renders that React compares are
+ * identical and no hydration mismatch is possible. The effect also re-reads on
+ * navigation and on ORG_OUTLET_STORE_EVENT (a save in this tab), so
+ * `useOutletClock()` anywhere follows what the outlet settings screen
+ * persisted. `?tenant=none` still resolves to null in both passes.
  */
 export function AreaFrame(props: AreaFrameProps) {
-  const { searchStr } = useLocation();
-  const config = resolveMockTenantContext(searchStr);
+  const { pathname, searchStr } = useLocation();
+  // Server-safe base: fixture outlet, or null (mock off / ?tenant=none).
+  const baseConfig = resolveMockTenantContext(searchStr);
+  const outletId = baseConfig?.outlet?.id ?? null;
+
+  const [savedCutoff, setSavedCutoff] = useState<BusinessDayCutoff | null>(
+    null,
+  );
+  useEffect(() => {
+    const read = () =>
+      setSavedCutoff(outletId === null ? null : savedOutletCutoff(outletId));
+    read();
+    window.addEventListener(ORG_OUTLET_STORE_EVENT, read);
+    return () => window.removeEventListener(ORG_OUTLET_STORE_EVENT, read);
+    // A navigation re-reads the store: the settings screen saves without
+    // leaving its route, and another area's shell mounts fresh.
+  }, [outletId, pathname]);
+
+  const config = useMemo(
+    () => resolveMockTenantContext(searchStr, savedCutoff),
+    [searchStr, savedCutoff],
+  );
   return (
     <TenantProvider config={config}>
       <AreaFrameBody {...props} />
