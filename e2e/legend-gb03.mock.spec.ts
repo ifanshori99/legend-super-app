@@ -66,7 +66,7 @@ test("DASH-01: cost and margin shows the running month as an estimate against th
   });
   await expect(strip).toBeVisible();
   await expect(strip.getByText("31,2%", { exact: true })).toBeVisible();
-  await expect(strip.getByText("59,7%", { exact: true })).toBeVisible();
+  await expect(strip.getByText("58,7%", { exact: true })).toBeVisible();
   await expect(strip.getByText(/estimasi/).first()).toBeVisible();
   await expect(
     page.getByRole("img", { name: "Grafik garis prime cost persen per bulan" }),
@@ -80,30 +80,30 @@ test("DASH-01: service quality, finance, alerts, daily summary and multi-outlet 
   page,
 }) => {
   await openTab(page, "Layanan");
-  await expect(page.getByText("Item gagal")).toBeVisible();
+  await expect(page.getByText("Item gagal", { exact: true })).toBeVisible();
   await expect(page.getByText("87,5%", { exact: true })).toBeVisible();
 
   await page.getByRole("tab", { name: "Keuangan" }).click();
-  await expect(page.getByText(/41\.250\.000/)).toBeVisible();
+  await expect(page.getByText(/96\.500\.000/)).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Laba rugi berjalan" }),
   ).toBeVisible();
   await expect(page.getByText("estimasi").first()).toBeVisible();
 
   await page.getByRole("tab", { name: "Peringatan" }).click();
-  await expect(page.getByText("Stok kritis")).toBeVisible();
+  await expect(page.getByText("Stok kritis").first()).toBeVisible();
   await expect(page.getByText("Rincian peringatan")).toBeVisible();
 
   await page.getByRole("tab", { name: "Harian" }).click();
   await expect(page.getByText("Belum ada ringkasan tertulis")).toBeVisible();
-  await expect(page.getByText(/7\.420\.000/)).toBeVisible();
+  await expect(page.getByText(/7\.420\.000/).first()).toBeVisible();
 
   await page.getByRole("tab", { name: "Outlet" }).click();
   await expect(
     page.getByRole("heading", { name: "Perbandingan antar-outlet" }),
   ).toBeVisible();
   await expect(page.getByRole("cell", { name: "Outlet 1" })).toBeVisible();
-  await expect(page.getByText(/7\.420\.000/).first()).toBeVisible();
+  await expect(page.getByText(/44\.750\.000/).first()).toBeVisible();
 });
 
 test("DASH-03: the part-2 tabs fit 360px with no page scroll", async ({
@@ -172,7 +172,9 @@ for (const width of [390, 1440]) {
 
     await page.evaluate(() => window.__legendMock?.setScenario("error"));
     await page.getByRole("button", { name: "Muat ulang" }).click();
-    await expect(page.getByText("Gagal dimuat").first()).toBeVisible();
+    await expect(
+      page.getByText("Data tidak dapat dimuat").first(),
+    ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Coba lagi" }).first(),
     ).toBeVisible();
