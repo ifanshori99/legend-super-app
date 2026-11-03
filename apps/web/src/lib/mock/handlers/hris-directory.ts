@@ -261,11 +261,16 @@ registerMock(listEmployeeDocuments, ({ params, query, scenario }) => {
 });
 
 registerMock(listShiftAssignments, ({ query, scenario }) => {
+  // HR-01 self-scope: naming another employee answers nothing, never that
+  // employee's rows. The outlet-wide read (no employeeId) is the roster screen,
+  // which the API guards with `hr.schedule.manage`.
+  const requestedShiftEmployee = query.employeeId;
   const rows = cafeLegendHrisFixtures.shiftAssignments
     .filter(
       (assignment) =>
-        query.employeeId === undefined ||
-        assignment.employeeId === query.employeeId,
+        requestedShiftEmployee === undefined ||
+        (requestedShiftEmployee === MOCK_ME.id &&
+          assignment.employeeId === MOCK_ME.id),
     )
     .filter(
       (assignment) =>
@@ -291,10 +296,15 @@ registerMock(listShiftAssignments, ({ query, scenario }) => {
 });
 
 registerMock(listAttendanceLogs, ({ query, scenario }) => {
+  // HR-01 self-scope, like the API: naming another employee answers nothing,
+  // never that employee's rows. The outlet-wide call (no employeeId) is the
+  // supervisor review.
+  const requestedLogEmployee = query.employeeId;
   const rows = hrisMockLogs()
     .filter(
       (log) =>
-        query.employeeId === undefined || log.employeeId === query.employeeId,
+        requestedLogEmployee === undefined ||
+        (requestedLogEmployee === MOCK_ME.id && log.employeeId === MOCK_ME.id),
     )
     .filter(
       (log) =>
