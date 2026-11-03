@@ -4,7 +4,12 @@
 // and is paid at the end. Menu prices exclude tax and service charge, so the
 // breakdown shows both before the total (owner rule, ORD-03).
 import { useRef, useState } from "react";
-import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useRouteContext,
+} from "@tanstack/react-router";
 import { Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { GuestPaymentTarget } from "@starter/shared/qr-order";
@@ -25,6 +30,7 @@ import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
 import { CodeField } from "./code-field";
 import { PriceBreakdown } from "./price-breakdown";
+import { SignInNudge } from "./sign-in-nudge";
 
 const VOUCHER = /^[A-Z0-9]{3,6}(-[A-Z0-9]{4,6}){1,3}$/;
 
@@ -50,6 +56,9 @@ export function CheckoutPage() {
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
+  // The current checkout URL (path + search), handed to `/masuk` as the
+  // return path. `signInPath` validates it, so this is never hand-built.
+  const { href } = useLocation();
   const { session } = useRouteContext({ strict: false }) as {
     session?: unknown;
   };
@@ -389,19 +398,9 @@ export function CheckoutPage() {
           </p>
         )}
       </div>
-      {!session && (
-        <Card>
-          <CardContent className="grid gap-3">
-            <p className="font-semibold">{t("qrCart.checkout.loginTitle")}</p>
-            <p className="text-sm leading-5 text-muted-foreground">
-              {t("qrCart.checkout.loginHint")}
-            </p>
-            <Button asChild variant="outline" className="w-fit">
-              <Link to="/sign-in">{t("qrCart.checkout.signIn")}</Link>
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      {/* PRD §3 F10 "Login Opsional": guests order without an account; this
+          only invites sign-in and never gates the actions above. */}
+      {!session && <SignInNudge returnTo={href} />}
       {payTarget && (
         <PayDialog
           open

@@ -92,6 +92,16 @@ export const qrCartMessages = {
     loginHint:
       "Masuk atau daftar agar poin, favorit, dan pesan ulang tersimpan. Anda tetap bisa memesan sebagai tamu.",
     signIn: "Masuk",
+    // Bead legend-0rsv: the optional sign-in nudge lists exactly the three
+    // PRD §3 F10 "Login Opsional" benefits and keeps the guest path explicit.
+    signInNudge: {
+      points: "Poin dari setiap pembelian masuk ke akun Anda.",
+      favorites: "Favorit tersimpan untuk kunjungan berikutnya.",
+      reorder: "Pesan ulang pesanan sebelumnya dengan sekali ketuk.",
+      guestNote: "Tetap bisa memesan sebagai tamu.",
+      action: "Masuk atau daftar",
+      dismiss: "Tutup ajakan masuk",
+    },
     payFirstSubmit: "Bayar {total}",
     openBillSubmit: "Kirim pesanan ke dapur",
     placing: "Memproses pesanan…",
