@@ -1937,88 +1937,103 @@ export async function voidUnpaidQrOrder(
   input: { reason: string; actorUserId: string | null },
   now = new Date(),
 ): Promise<QrOrder> {
+  return withTenant(db, context, (tx) =>
+    voidUnpaidQrOrderTx(tx, context, orderId, input, now),
+  );
+}
+
+/**
+ * `voidUnpaidQrOrder` inside the caller's transaction (legend-x4qy: the
+ * payment.expired / payment.failed consumer voids in the outbox consumption
+ * transaction, so the void commits with the consumed offset).
+ */
+export async function voidUnpaidQrOrderTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  input: { reason: string; actorUserId: string | null },
+  now: Date,
+): Promise<QrOrder> {
   const reason = input.reason.trim().slice(0, 100);
   if (reason.length === 0)
     throw new CoreError("VALIDATION_ERROR", "Alasan pembatalan wajib diisi.");
-  return withTenant(db, context, async (tx) => {
-    const tenantId = context.tenant.tenantId;
-    const [order] = await tx
-      .select()
-      .from(orders)
-      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
-      .for("update");
-    if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
-    assertOutletInScope(context.outletScope, order.outletId);
-    if (order.status === "voided") {
-      const items = await orderItemsOf(tx, context, [order.id]);
-      return orderDto(order, items.get(order.id) ?? []);
-    }
-    if (order.status !== "awaiting_payment")
-      throw new CoreError(
-        "CONFLICT",
-        "Hanya pesanan yang belum dibayar yang dapat dibatalkan di sini.",
-      );
-    const voidedItems = await tx
-      .update(orderItems)
-      .set({
-        status: "voided",
-        voidReason: reason,
-        voidedBy: input.actorUserId,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(orderItems.tenantId, tenantId),
-          eq(orderItems.orderId, order.id),
-          ne(orderItems.status, "voided"),
-        ),
-      )
-      .returning();
-    for (const item of voidedItems)
-      await releaseMenuItemDailyLimit(tx, context, {
-        outletId: order.outletId,
-        menuItemId: item.menuItemId,
-        businessDate: item.reservedBusinessDate,
-        quantity: item.quantity,
-        now,
-      });
-    const [voided] = await tx
-      .update(orders)
-      .set({
-        status: "voided",
-        voidedAt: now,
-        voidReason: reason,
-        updatedAt: now,
-      })
-      .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)))
-      .returning();
-    if (!voided) throw new Error("Order void returned no row");
-    await qrOrderPromoPort().release(tx, context, {
-      orderId: order.id,
-      reason,
-      actorUserId: input.actorUserId,
-      at: now,
-    });
-    await auditOrder(
-      tx,
-      context,
-      {
-        action: "order.voided",
-        order,
-        actorUserId: input.actorUserId,
-        before: { id: order.id, status: order.status },
-        after: {
-          id: order.id,
-          status: "voided",
-          itemCount: voidedItems.length,
-        },
-        reason,
-      },
-      now,
-    );
+  const tenantId = context.tenant.tenantId;
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .for("update");
+  if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
+  assertOutletInScope(context.outletScope, order.outletId);
+  if (order.status === "voided") {
     const items = await orderItemsOf(tx, context, [order.id]);
-    return orderDto(voided, items.get(order.id) ?? []);
+    return orderDto(order, items.get(order.id) ?? []);
+  }
+  if (order.status !== "awaiting_payment")
+    throw new CoreError(
+      "CONFLICT",
+      "Hanya pesanan yang belum dibayar yang dapat dibatalkan di sini.",
+    );
+  const voidedItems = await tx
+    .update(orderItems)
+    .set({
+      status: "voided",
+      voidReason: reason,
+      voidedBy: input.actorUserId,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(orderItems.tenantId, tenantId),
+        eq(orderItems.orderId, order.id),
+        ne(orderItems.status, "voided"),
+      ),
+    )
+    .returning();
+  for (const item of voidedItems)
+    await releaseMenuItemDailyLimit(tx, context, {
+      outletId: order.outletId,
+      menuItemId: item.menuItemId,
+      businessDate: item.reservedBusinessDate,
+      quantity: item.quantity,
+      now,
+    });
+  const [voided] = await tx
+    .update(orders)
+    .set({
+      status: "voided",
+      voidedAt: now,
+      voidReason: reason,
+      updatedAt: now,
+    })
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, order.id)))
+    .returning();
+  if (!voided) throw new Error("Order void returned no row");
+  await qrOrderPromoPort().release(tx, context, {
+    orderId: order.id,
+    reason,
+    actorUserId: input.actorUserId,
+    at: now,
   });
+  await auditOrder(
+    tx,
+    context,
+    {
+      action: "order.voided",
+      order,
+      actorUserId: input.actorUserId,
+      before: { id: order.id, status: order.status },
+      after: {
+        id: order.id,
+        status: "voided",
+        itemCount: voidedItems.length,
+      },
+      reason,
+    },
+    now,
+  );
+  const items = await orderItemsOf(tx, context, [order.id]);
+  return orderDto(voided, items.get(order.id) ?? []);
 }
 
 // ---- Shared with qr-order-payment.ts ------------------------------------------------------------
