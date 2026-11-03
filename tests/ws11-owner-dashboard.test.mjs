@@ -296,18 +296,70 @@ describe("owner dashboard part 2 (legend-gb03)", () => {
     }
   });
 
-  test("DASH-02: the multi-outlet total equals the management KPI run of the same key", async () => {
+  test("DASH-02: the multi-outlet total adds up the owner board's channel split of the same day", async () => {
     const tile = insights.insightTile(
       layout,
       insights.INSIGHT_TILE.multiOutlet,
     );
-    const response = await post(
-      "/api/reports/run",
-      insights.insightTileRunInput(tile, layout),
+    const input = insights.insightTileRunInput(tile, layout);
+    assert.deepEqual(input.groupBy, ["channel"]);
+    assert.match(board.ownerBoardTilePath(tile, layout), /groupBy=channel/);
+    const response = await post("/api/reports/run", input);
+    const total = (code) => insights.summedCell(response.data, code);
+    // Same day as the real-time tiles: Rp7.420.000, 96 transactions, 148 pax.
+    assert.equal(
+      board.idrOf(total("net_sales")),
+      board.idrOf(board.metricCell(runs["sales.target"], "net_sales")),
     );
     assert.equal(
-      board.idrOf(board.metricCell(response.data, "net_sales")),
-      44_750_000,
+      board.countOf(total("transaction_count")),
+      board.countOf(
+        board.metricCell(runs["sales.transactions"], "transaction_count"),
+      ),
     );
+    assert.equal(
+      board.countOf(total("pax")),
+      board.countOf(board.metricCell(runs["traffic.pax"], "pax")),
+    );
+  });
+
+  test("DASH-02: closed months tie to the books and the running month to the board day", async () => {
+    const [, september, october, running] = insights.monthPeriods(
+      layout.businessDate,
+      insights.TREND_MONTHS,
+    );
+    const statement = async (month) =>
+      (
+        await post(
+          "/api/reports/run",
+          insights.insightRunInput(layout, "finance.income_statement", month),
+        )
+      ).data;
+    const profitShare = (
+      await import("../packages/shared/src/accounting/index.ts")
+    ).cafeLegendAccountingFixtures.profitShare.runs;
+    const sep = await statement(september);
+    const oct = await statement(october);
+    const now = await statement(running);
+    assert.equal(
+      board.idrOf(board.metricCell(sep, "net_profit")),
+      Number(profitShare.september.periodNetProfitIdr),
+    );
+    assert.equal(
+      board.idrOf(board.metricCell(oct, "net_profit")),
+      Number(profitShare.october.periodNetProfitIdr),
+    );
+    assert.equal(board.idrOf(board.metricCell(oct, "net_sales")), 412_800_000);
+    assert.equal(
+      board.idrOf(board.metricCell(now, "net_sales")),
+      board.idrOf(board.metricCell(runs["sales.target"], "net_sales")),
+    );
+    // Net profit never exceeds what is left after food and labor cost.
+    for (const month of [sep, oct]) {
+      const sales = board.idrOf(board.metricCell(month, "net_sales"));
+      const gross = board.idrOf(board.metricCell(month, "gross_profit"));
+      const net = board.idrOf(board.metricCell(month, "net_profit"));
+      assert.ok(net < gross && gross < sales);
+    }
   });
 });

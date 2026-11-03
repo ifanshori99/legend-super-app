@@ -17,7 +17,7 @@ import {
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/errors";
-import type { AuditEventView } from "../contract";
+import type { AuditEventView } from "@starter/shared/audit";
 import { useAuditEvents, useRefreshAudit } from "../hooks";
 import { EMPTY_FILTERS, activeFilterCount, type AuditFilters } from "../lib";
 import { AuditDetail } from "./audit-detail";
@@ -51,6 +51,14 @@ export function AuditPage({
 }) {
   const t = useT();
   const [filters, setFilters] = useState<AuditFilters>(EMPTY_FILTERS);
+  // Bumped only when the page (not the form) clears the filters, so the form
+  // remounts with an empty draft; applying from the form keeps it mounted and
+  // keyboard focus stays on the submit button.
+  const [formKey, setFormKey] = useState(0);
+  const clearFilters = () => {
+    setFilters(EMPTY_FILTERS);
+    setFormKey((key) => key + 1);
+  };
   const [selected, setSelected] = useState<AuditEventView | null>(null);
   const query = useAuditEvents(filters);
   const refresh = useRefreshAudit();
@@ -89,11 +97,7 @@ export function AuditPage({
         title={t("auditSettings.audit.noResults.title")}
         description={t("auditSettings.audit.noResults.hint")}
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setFilters(EMPTY_FILTERS)}
-          >
+          <Button variant="outline" size="sm" onClick={clearFilters}>
             {t("auditSettings.audit.filters.reset")}
           </Button>
         }
@@ -108,8 +112,20 @@ export function AuditPage({
   else
     body = (
       <>
-        <AuditList rows={rows} onOpen={setSelected} />
+        <AuditList
+          rows={rows}
+          selectedId={selected?.event.id ?? null}
+          onOpen={setSelected}
+        />
         <div className="grid justify-items-center gap-2 border-t border-border px-4 py-4">
+          {query.isError && !query.isFetchNextPageError && (
+            // A background refresh failed: keep the rows, say they may be stale.
+            <p role="alert" className="text-sm font-medium text-danger">
+              {offline
+                ? t("auditSettings.audit.offline.hint")
+                : t("auditSettings.audit.error.hint")}
+            </p>
+          )}
           {query.isFetchNextPageError && (
             <p role="alert" className="text-sm font-medium text-danger">
               {t("auditSettings.audit.error.hint")}
@@ -160,8 +176,7 @@ export function AuditPage({
       </div>
 
       <AuditFilterBar
-        // A new key per applied filter set keeps the draft in sync after "Atur ulang".
-        key={JSON.stringify(filters)}
+        key={formKey}
         applied={filters}
         outlets={outlets}
         onApply={setFilters}
@@ -171,7 +186,7 @@ export function AuditPage({
         <CardShellBody>{body}</CardShellBody>
         <CardShellFooter className="flex-wrap justify-between">
           <span>{t("auditSettings.audit.maskedNote")}</span>
-          <span className="tabular">
+          <span className="tabular" aria-live="polite">
             {rows.length > 0 &&
               t("auditSettings.audit.count", { count: rows.length })}{" "}
             {t("auditSettings.audit.timeZoneNote")}

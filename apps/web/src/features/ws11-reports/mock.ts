@@ -16,6 +16,7 @@
 //
 // Loaded in Node by tests/ws11-reports.test.mjs: bare package imports and
 // relative `.ts` paths only, no `@/` alias.
+import { roleTemplate } from "@starter/shared/access";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import {
   cafeLegendManagementLayoutFixture,
@@ -28,7 +29,8 @@ import {
   ownerDashboardBoardRuns,
   reportByCode,
   reportCatalog,
-  reportExportContainsPersonalData,
+  reportErrorHttpStatus,
+  reportExportGate,
   reportExportReadyFixture,
   reportExportPendingApprovalFixture,
   reportExportSchema,
@@ -517,6 +519,11 @@ const exportStore = createMockStore<{
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/** Permissions of the mock session's user (the owner, ws01-auth mock). */
+const MOCK_CALLER_PERMISSIONS: ReadonlySet<string> = new Set(
+  roleTemplate("owner").permissions,
+);
+
 function materialize(draft: ExportDraft, nowMs: number): ReportExport {
   const age = nowMs - draft.createdMs;
   const base = {
@@ -594,11 +601,24 @@ registerMock(createReportExportEndpoint, ({ body, scenario }) => {
       "REPORT_NOT_FOUND",
       "Laporan tidak ditemukan di katalog.",
     );
-  if (!report.exportFormats.includes(body.format))
+  // DASH-04: the same gate the service runs. The mock session is the owner
+  // (ws01-auth mock), so the caller holds the owner template's permissions;
+  // a new job has no approval yet. Personal data is derived from the report
+  // and the split here, never from anything the client sends.
+  const gate = reportExportGate({
+    report,
+    query: body.query,
+    format: body.format,
+    permissions: MOCK_CALLER_PERMISSIONS,
+    approval: "none",
+  });
+  if (gate.action === "reject")
     throw new ApiError(
-      400,
-      "EXPORT_FORMAT_NOT_SUPPORTED",
-      "Format ekspor ini tidak tersedia.",
+      reportErrorHttpStatus[gate.code],
+      gate.code,
+      gate.code === "EXPORT_FORMAT_NOT_SUPPORTED"
+        ? "Format ekspor ini tidak tersedia."
+        : "Role Anda tidak memiliki izin untuk ekspor ini.",
     );
   // An idempotent retry returns the job it already created.
   const known = body.idempotencyKey
@@ -619,10 +639,7 @@ registerMock(createReportExportEndpoint, ({ body, scenario }) => {
       format: body.format,
       query: body.query,
     },
-    personal: reportExportContainsPersonalData({
-      report,
-      query: body.query,
-    }),
+    personal: gate.action === "request_approval",
   };
   state.entries.unshift({ draft });
   if (body.idempotencyKey) state.keys.set(body.idempotencyKey, draft.id);

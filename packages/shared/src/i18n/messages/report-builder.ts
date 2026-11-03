@@ -14,6 +14,7 @@ export const reportBuilderMessages = {
     title: "Tidak ada koneksi",
     hint: "Pratinjau, penyimpanan, dan jadwal membutuhkan internet. Sambungkan kembali lalu coba lagi.",
   },
+  stepLabel: "Langkah {step}:",
   steps: {
     metric: {
       title: "Metrik",
@@ -185,6 +186,11 @@ export const reportBuilderMessages = {
       "Angka berjalan sampai periode dan buku ditutup; angka resmi diambil setelah penutupan.",
     generatedAt: "Dihitung {time}",
     rowCount: "{count} baris",
+    announceReady: "Pratinjau diperbarui, {count} baris.",
+    announceEmpty: "Pratinjau diperbarui, tidak ada data.",
+    announceInvalid: "Pilihan belum lengkap untuk dihitung.",
+    announceError: "Gagal memuat pratinjau.",
+    announceOffline: "Pratinjau tertunda karena koneksi terputus.",
     chartMetric: "Metrik pada grafik",
     chartLabel: "Grafik batang {metric}",
     chartTruncated:
@@ -204,6 +210,8 @@ export const reportBuilderMessages = {
     updated: "Perubahan {name} tersimpan.",
     invalidHint: "Lengkapi pilihan agar laporan bisa disimpan.",
     offlineHint: "Menyimpan butuh koneksi internet.",
+    scheduledPersonal:
+      "Laporan ini punya jadwal email aktif, jadi tidak bisa diubah menjadi laporan per orang (data pribadi). Jeda jadwalnya dulu, atau simpan sebagai laporan baru.",
   },
   saved: {
     title: "Laporan tersimpan",
@@ -253,6 +261,8 @@ export const reportBuilderMessages = {
     active: "Aktif",
     pausedLabel: "Dijeda",
     toggleLabel: "Aktifkan jadwal",
+    resumeBlocked:
+      "Tidak bisa diaktifkan: laporan ini sekarang berisi data pribadi dan butuh approval.",
     paused: "Jadwal dijeda.",
     resumed: "Jadwal diaktifkan lagi.",
     updateFailed: "Jadwal gagal diperbarui",

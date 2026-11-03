@@ -13,8 +13,13 @@ import type {
   ReportBuilderQuery,
   SavedReport,
 } from "@starter/shared/dashboard";
+import { reportErrorCodeOf } from "../builder";
 import { reportErrorText } from "../format";
-import { useCreateSavedReport, useUpdateSavedReport } from "../hooks";
+import {
+  useAttemptKey,
+  useCreateSavedReport,
+  useUpdateSavedReport,
+} from "../hooks";
 import { StepCard } from "./step-card";
 
 export function SavePanel({
@@ -34,6 +39,7 @@ export function SavePanel({
   const toast = useToast();
   const create = useCreateSavedReport();
   const update = useUpdateSavedReport();
+  const attemptKey = useAttemptKey();
   const [name, setName] = useState(loaded?.name ?? "");
   const [description, setDescription] = useState(loaded?.description ?? "");
   const [nameError, setNameError] = useState<string | undefined>();
@@ -61,7 +67,14 @@ export function SavePanel({
     setNameError(undefined);
     setFailure(null);
     const text = description.trim();
-    const onError = (error: unknown) => setFailure(reportErrorText(t, error));
+    // DASH-04: the server refuses turning a mailed report into personal data.
+    const onError = (error: unknown) =>
+      setFailure(
+        mode === "update" &&
+          reportErrorCodeOf(error) === "EXPORT_PII_APPROVAL_REQUIRED"
+          ? t("reportBuilder.save.scheduledPersonal")
+          : reportErrorText(t, error),
+      );
     const onSuccess = (report: SavedReport) => {
       toast({
         title: t(
@@ -86,15 +99,17 @@ export function SavePanel({
         },
         { onSuccess, onError },
       );
-    else
+    else {
+      const input = {
+        name: trimmed,
+        ...(text === "" ? {} : { description: text }),
+        query,
+      };
       create.mutate(
-        {
-          name: trimmed,
-          ...(text === "" ? {} : { description: text }),
-          query,
-        },
+        { input, idempotencyKey: attemptKey(input) },
         { onSuccess, onError },
       );
+    }
   };
 
   return (

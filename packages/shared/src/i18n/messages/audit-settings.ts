@@ -15,7 +15,6 @@ export const auditSettingsMessages = {
     maskedNote:
       "Data sensitif disamarkan sebelum disimpan; nilai aslinya tidak pernah tampil di sini.",
     listLabel: "Daftar catatan audit",
-    openDetail: "Lihat detail catatan {action}",
     loadMore: "Muat lebih banyak",
     loadingMore: "Memuat…",
     endOfList: "Semua catatan sudah tampil.",
@@ -95,6 +94,7 @@ export const auditSettingsMessages = {
       retention: "Disimpan sampai",
       eventId: "ID catatan",
       changes: "Perubahan",
+      field: "Data",
       before: "Sebelum",
       after: "Sesudah",
       noChanges: "Tidak ada perubahan nilai yang dicatat.",

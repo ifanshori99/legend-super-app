@@ -72,7 +72,7 @@ test("DASH-01: cost and margin shows the running month as an estimate against th
     page.getByRole("img", { name: "Grafik garis prime cost persen per bulan" }),
   ).toBeVisible();
   await expect(page.getByRole("cell", { name: /^Okt/ })).toBeVisible();
-  // The report viewer route does not exist yet: no link to a 404.
+  // Cost and finance reports have no viewer route yet: no link to a 404.
   await expect(page.locator('a[href^="/reports"]')).toHaveCount(0);
 });
 
@@ -103,7 +103,8 @@ test("DASH-01: service quality, finance, alerts, daily summary and multi-outlet 
     page.getByRole("heading", { name: "Perbandingan antar-outlet" }),
   ).toBeVisible();
   await expect(page.getByRole("cell", { name: "Outlet 1" })).toBeVisible();
-  await expect(page.getByText(/44\.750\.000/).first()).toBeVisible();
+  // Same day as the real-time channel table: its four channels add up here.
+  await expect(page.getByText(/7\.420\.000/).first()).toBeVisible();
 });
 
 test("DASH-03: the part-2 tabs fit 360px with no page scroll", async ({

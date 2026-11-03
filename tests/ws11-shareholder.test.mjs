@@ -6,6 +6,12 @@ import { afterEach, describe, test } from "node:test";
 import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import { roleTemplate } from "../packages/shared/src/access/roles.ts";
 import * as board from "../apps/web/src/features/ws11-shareholder/board.ts";
+// The browser glob registers feature mocks in folder order, so the owner
+// insights and the report viewer own their runs before the shareholder mock;
+// load them the same way so DASH-02 is checked across screens.
+import "../apps/web/src/features/ws11-owner-dashboard/mock.ts";
+import "../apps/web/src/features/ws11-reports/mock.ts";
+import { cafeLegendAccountingFixtures } from "../packages/shared/src/accounting/index.ts";
 import { shareholderLayoutFixture as layout } from "../apps/web/src/features/ws11-shareholder/mock.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
@@ -81,6 +87,15 @@ describe("shareholder dashboard · SH-02 own data only", () => {
       assert.equal(row.shareholderId, mine.shareholderId);
     }
     assert.ok(!board.isMyProfitShareEmpty(mine));
+    const others = cafeLegendAccountingFixtures.profitShare.shareholders.filter(
+      (row) => row.id !== mine.shareholderId,
+    );
+    assert.ok(others.length > 0);
+    const json = JSON.stringify(mine);
+    for (const other of others) {
+      assert.ok(!json.includes(other.id), other.id);
+      assert.ok(!json.includes(other.name), other.name);
+    }
   });
 
   test("SH-02: documents are published for shareholders only", async () => {
@@ -157,5 +172,67 @@ describe("shareholder dashboard · DASH-02 / DASH-03 states", () => {
       query: { limit: 20 },
     });
     assert.equal(docs.data.length, 0);
+  });
+});
+
+describe("shareholder dashboard · DASH-02 one key, one number across screens", () => {
+  const closed = () => board.closedPeriodOf(layout);
+  const cell = async (reportCode, metricCode, period = closed()) =>
+    board.metricCell(
+      (await post(board.runInput(layout, reportCode, period))).data,
+      metricCode,
+    );
+
+  test("DASH-02: closed-month guests and spend per guest equal the report viewer's sales.per_pax", async () => {
+    const pax = await cell("traffic.pax", "pax");
+    const perPax = await cell("traffic.pax", "avg_spend_per_pax");
+    assert.deepEqual(pax, await cell("sales.per_pax", "pax"));
+    assert.deepEqual(perPax, await cell("sales.per_pax", "avg_spend_per_pax"));
+    assert.deepEqual(pax, { unit: "count", value: 8_222 });
+    assert.deepEqual(perPax, { unit: "idr", valueIdr: 50_207 });
+  });
+
+  test("DASH-02: closed-month net sales tie across sales.daily, sales.per_pax and the income statement", async () => {
+    const net = await cell("sales.daily", "net_sales");
+    assert.deepEqual(net, { unit: "idr", valueIdr: 412_800_000 });
+    assert.deepEqual(await cell("sales.per_pax", "net_sales"), net);
+    assert.deepEqual(await cell("finance.income_statement", "net_sales"), net);
+    const gross = await cell("sales.daily", "gross_sales");
+    const discount = await cell("sales.daily", "discount_amount");
+    const refund = await cell("sales.daily", "refund_amount");
+    assert.equal(
+      gross.valueIdr - discount.valueIdr - refund.valueIdr,
+      net.valueIdr,
+    );
+  });
+
+  test("DASH-02: closed-month gross profit and net profit agree with the owner income statement and the profit-share run", async () => {
+    const statementGross = await cell(
+      "finance.income_statement",
+      "gross_profit",
+    );
+    assert.deepEqual(
+      await cell("finance.gross_margin", "gross_profit"),
+      statementGross,
+    );
+    assert.deepEqual(statementGross, { unit: "idr", valueIdr: 273_686_400 });
+    const octoberNet = Number(
+      cafeLegendAccountingFixtures.profitShare.runs.october.periodNetProfitIdr,
+    );
+    for (const code of ["finance.income_statement", "finance.ebitda"])
+      assert.deepEqual(await cell(code, "net_profit"), {
+        unit: "idr",
+        valueIdr: octoberNet,
+      });
+  });
+
+  test("DASH-02: the running estimate's net profit is the profit-share estimate's basis", async () => {
+    const running = board.runningPeriodOf(layout);
+    const estimate =
+      cafeLegendAccountingFixtures.profitShare.myProfitShare.estimates[0];
+    assert.deepEqual(
+      await cell(board.RUNNING_ESTIMATE_REPORT, "net_profit", running),
+      { unit: "idr", valueIdr: Number(estimate.estimatedNetProfitIdr) },
+    );
   });
 });

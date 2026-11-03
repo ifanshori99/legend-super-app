@@ -3,13 +3,11 @@
 // no `@/` alias, so tests load it in Node.
 import {
   AUDIT_REDACTED,
+  auditActionSchema,
   isSensitiveAuditKey,
   type AuditActorType,
-} from "@starter/shared/audit";
-import {
-  auditActionFilterSchema,
   type AuditEventListQuery,
-} from "./contract.ts";
+} from "@starter/shared/audit";
 
 /** Tenant default until the outlet context carries the zone (see format.ts of the management home). */
 export const DEFAULT_TIME_ZONE = "Asia/Jakarta";
@@ -64,7 +62,7 @@ export type FilterIssue = "invalidAction" | "invalidRange";
 export function filterIssues(filters: AuditFilters): FilterIssue[] {
   const issues: FilterIssue[] = [];
   const action = filters.action.trim();
-  if (action !== "" && !auditActionFilterSchema.safeParse(action).success)
+  if (action !== "" && !auditActionSchema.safeParse(action).success)
     issues.push("invalidAction");
   if (filters.from !== "" && filters.to !== "" && filters.from > filters.to)
     issues.push("invalidRange");
@@ -145,10 +143,33 @@ export function ipTrace(ipHash: string | null): string | null {
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
+// Value shapes that are personal data or secrets whatever the field is called:
+// e-mail, Indonesian mobile number, long digit runs (NIK 16, bank account,
+// card number), JWT / bearer credentials and long opaque tokens (letters and
+// digits mixed, so long snake_case codes stay readable).
+const SENSITIVE_VALUE_PATTERNS = [
+  /[^\s@]+@[^\s@]+\.[^\s@]+/,
+  /(?:\+?62|\b0)8\d{7,12}\b/,
+  /\d{10,}/,
+  /\beyJ[\w-]+\.[\w-]+/,
+  /\bbearer\s+\S+/i,
+  /^(?=.*\d)(?=.*[A-Za-z])[A-Za-z0-9_-]{32,}$/,
+] as const;
+
+/** True if a string looks like PII or a secret regardless of its key. */
+export function looksSensitiveValue(value: string): boolean {
+  // Spaces and dashes are how people type phone and account numbers.
+  const compact = value.replace(/[\s-]/g, "");
+  return SENSITIVE_VALUE_PATTERNS.some(
+    (pattern) => pattern.test(value) || pattern.test(compact),
+  );
+}
+
 /**
  * Defence in depth on top of the contract: the schema already rejects a row
- * with an unmasked sensitive field, but the screen redacts again so a faulty
- * mock or a future contract change can never print one.
+ * with an unmasked sensitive field, but the screen redacts again (by key, any
+ * casing or nesting, and by value shape) so a faulty mock, a server bug or a
+ * free-text field can never print personal data.
  */
 export function redactForDisplay(value: unknown, key?: string): Json {
   if (key !== undefined && isSensitiveAuditKey(key)) return AUDIT_REDACTED;
@@ -162,12 +183,11 @@ export function redactForDisplay(value: unknown, key?: string): Json {
         redactForDisplay(entry, field),
       ]),
     );
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  )
-    return value;
+  if (typeof value === "string")
+    return value !== AUDIT_REDACTED && looksSensitiveValue(value)
+      ? AUDIT_REDACTED
+      : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
   return AUDIT_REDACTED;
 }
 

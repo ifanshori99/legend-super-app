@@ -24,11 +24,11 @@ const maskedValueSchema = z
     message: "Sensitive fields must be masked with maskAuditChanges",
   });
 // Dotted lowercase names like events: `role.updated`; object types are one word.
-const actionSchema = z
+export const auditActionSchema = z
   .string()
   .max(150)
   .regex(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
-const objectTypeSchema = z
+export const auditObjectTypeSchema = z
   .string()
   .max(150)
   .regex(/^[a-z][a-z0-9_]*$/);
@@ -41,8 +41,8 @@ export const auditEventSchema = z
     actorType: auditActorTypeSchema,
     actorId: uuidSchema.nullable(),
     deviceId: uuidSchema.nullable(),
-    action: actionSchema,
-    objectType: objectTypeSchema,
+    action: auditActionSchema,
+    objectType: auditObjectTypeSchema,
     // Targets may be UUID or operational ULID; service validates the target type.
     objectId: z.union([uuidSchema, ulidIdSchema<"AuditTargetId">()]).nullable(),
     reason: z.string().max(1000).nullable(),

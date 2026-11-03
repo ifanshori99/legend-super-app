@@ -67,24 +67,25 @@ function useMetricLabel() {
   };
 }
 
-function SourceLink({
-  tile,
-  permissions,
-}: {
-  tile: DashboardTile;
-  permissions: readonly string[];
-}) {
+/**
+ * Drill-down link, or null. StatTile draws its chevron whenever `source` is
+ * set, so the caller passes nothing (not an element rendering nothing) when
+ * the caller may not open the report: no dead accent chevrons.
+ */
+function useSourceLink(permissions: readonly string[]) {
   const routeAvailable = useRouteAvailable();
-  const path = permittedReportPath(tile, permissions);
-  if (path === null || !routeAvailable(path)) return null;
-  return (
-    <a
-      href={path}
-      className="font-semibold text-primary underline-offset-4 hover:underline"
-    >
-      {tile.title}
-    </a>
-  );
+  return (tile: DashboardTile): ReactNode => {
+    const path = permittedReportPath(tile, permissions);
+    if (path === null || !routeAvailable(path)) return undefined;
+    return (
+      <a
+        href={path}
+        className="font-semibold text-primary underline-offset-4 hover:underline"
+      >
+        {tile.title}
+      </a>
+    );
+  };
 }
 
 function MetricTile({
@@ -98,6 +99,7 @@ function MetricTile({
 }) {
   const t = useT();
   const labelOf = useMetricLabel();
+  const sourceOf = useSourceLink(permissions);
   const period = tilePeriod(board.layout, cell.tile);
   const run = board.run(reportOf(cell.tile), period);
   const label = labelOf(cell.metricCode, run);
@@ -133,7 +135,7 @@ function MetricTile({
             ? periodText
             : `${periodText} · ${t("shareholderHome.badge.estimate")}`
       }
-      source={<SourceLink tile={cell.tile} permissions={permissions} />}
+      source={sourceOf(cell.tile)}
     />
   );
 }
@@ -185,8 +187,10 @@ function KpiGroup({
     <section className="grid gap-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <h4 className="text-sm font-semibold">{title}</h4>
-        <span className="text-xs text-muted-foreground">
-          {formatPeriod(period)}
+        <span className="text-xs text-muted-foreground tabular">
+          {run.result !== null && !isOfficial(run.result)
+            ? `${formatPeriod(period)} · ${t("shareholderHome.badge.estimate")}`
+            : formatPeriod(period)}
         </span>
       </div>
       {run.status === "loading" ? (
@@ -288,11 +292,15 @@ export function BusinessSection({
 }) {
   const t = useT();
   const { layout } = board;
-  const resultCells = cellsOf(layout, STRIP_RESULT_KEYS);
-  const cashCells = cellsOf(layout, STRIP_CASH_KEYS);
+  // One StatStrip for the closed period (DESIGN.md §12 dashboard: one strip):
+  // results first, then cash and guests.
+  const stripCells = cellsOf(layout, [
+    ...STRIP_RESULT_KEYS,
+    ...STRIP_CASH_KEYS,
+  ]);
   const closed = closedPeriodOf(layout);
 
-  const runs = [...resultCells, ...cashCells].map((cell) =>
+  const runs = stripCells.map((cell) =>
     board.run(reportOf(cell.tile), tilePeriod(layout, cell.tile)),
   );
   const allEmpty =
@@ -308,9 +316,9 @@ export function BusinessSection({
     <div className="grid min-w-0 gap-4">
       <div className="flex flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="type-title">
+          <h2 className="type-title">
             {t("shareholderHome.business.closedTitle")}
-          </h3>
+          </h2>
           {loaded && !allEmpty && <FinalityBadge official={official} />}
         </div>
         <p className="text-sm text-muted-foreground tabular">
@@ -337,14 +345,8 @@ export function BusinessSection({
       ) : (
         <>
           <Strip
-            label={t("shareholderHome.business.resultStripLabel")}
-            cells={resultCells}
-            board={board}
-            permissions={permissions}
-          />
-          <Strip
-            label={t("shareholderHome.business.cashStripLabel")}
-            cells={cashCells}
+            label={t("shareholderHome.business.stripLabel")}
+            cells={stripCells}
             board={board}
             permissions={permissions}
           />

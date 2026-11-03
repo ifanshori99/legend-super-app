@@ -12,7 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import type { AuditEventView } from "../contract";
+import type { AuditEventView } from "@starter/shared/audit";
 import { actionLabel, objectTypeLabel } from "../labels";
 import {
   diffRows,
@@ -165,7 +165,7 @@ function DetailBody({ view }: { view: AuditEventView }) {
               <thead className="bg-surface-2 text-muted-foreground">
                 <tr>
                   <th scope="col" className="px-3 py-2 font-medium">
-                    {t("auditSettings.audit.detail.changes")}
+                    {t("auditSettings.audit.detail.field")}
                   </th>
                   <th scope="col" className="px-3 py-2 font-medium">
                     {t("auditSettings.audit.detail.before")}

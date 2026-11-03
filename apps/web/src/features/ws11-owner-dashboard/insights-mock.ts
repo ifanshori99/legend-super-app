@@ -86,34 +86,54 @@ const pct = (value: number): Cell => ({
 const idr = (valueIdr: number): Cell => ({ unit: "idr", valueIdr });
 const count = (value: number): Cell => ({ unit: "count", value });
 
-/** Month figures, oldest first; the last is the running month (an estimate). */
-const MONTH_FIGURES = [
+/**
+ * Month figures, oldest first; the last is the running month (an estimate).
+ * Closed months tie to the books: net profit is the profit-share base of the
+ * legal entity (Cafe Legend is its only outlet), and October's sales and
+ * discounts are the report viewer's closed month (`sales.daily`,
+ * `sales.discount`); the shareholder board copies October's COGS
+ * (Rp139.113.600) from here (SH-01, DASH-02). The running month is 1 November
+ * only, so its sales and discounts are the owner board's day (Rp7.420.000).
+ */
+type MonthFigure = {
+  netSales: number;
+  food: number;
+  labor: number;
+  waste: number;
+  promo: number;
+  discount: number;
+  net: number;
+};
+
+const profitShareRuns = cafeLegendAccountingFixtures.profitShare.runs;
+
+const MONTH_FIGURES: readonly MonthFigure[] = [
   {
-    netSales: 241_600_000,
+    netSales: 448_200_000,
     food: 33.4,
-    labor: 28.9,
-    waste: 3_380_000,
-    promo: 6_040_000,
-    net: 31_400_000,
+    labor: 27.3,
+    waste: 5_920_000,
+    promo: 10_640_000,
+    discount: 22_860_000,
+    net: 158_400_000,
   },
   {
-    netSales: 236_900_000,
+    netSales: 476_000_000,
     food: 32.8,
-    labor: 28.1,
-    waste: 3_080_000,
-    promo: 5_450_000,
-    net: 33_700_000,
+    labor: 26,
+    waste: 5_710_000,
+    promo: 10_950_000,
+    discount: 24_280_000,
+    net: Number(profitShareRuns.september.periodNetProfitIdr),
   },
   {
-    // October is the shareholder's closed month: same books (SH-01, DASH-02).
     netSales: 412_800_000,
     food: 33.7,
-    labor: 27.6,
+    labor: 24.5,
     waste: 4_180_000,
     promo: 9_810_000,
-    net: Number(
-      cafeLegendAccountingFixtures.profitShare.runs.october.periodNetProfitIdr,
-    ),
+    discount: 21_140_701,
+    net: Number(profitShareRuns.october.periodNetProfitIdr),
   },
   {
     netSales: 7_420_000,
@@ -121,11 +141,12 @@ const MONTH_FIGURES = [
     labor: 27.5,
     waste: 118_000,
     promo: 185_000,
+    discount: 380_000,
     net: 1_025_000,
   },
-] as const;
+];
 
-function monthRuns(period: Period, figure: (typeof MONTH_FIGURES)[number]) {
+function monthRuns(period: Period, figure: MonthFigure) {
   const cogs = Math.round((figure.netSales * figure.food) / 100);
   const payroll = Math.round((figure.netSales * figure.labor) / 100);
   const gross = figure.netSales - cogs;
@@ -150,7 +171,7 @@ function monthRuns(period: Period, figure: (typeof MONTH_FIGURES)[number]) {
     }),
     run("crm.promo_cost", period, {
       promo_cost: idr(figure.promo),
-      discount_amount: idr(figure.promo),
+      discount_amount: idr(figure.discount),
     }),
     run("finance.income_statement", period, {
       net_sales: idr(figure.netSales),
@@ -179,12 +200,14 @@ function dayRuns(period: Period) {
       cash_balance: idr(8_250_000),
       bank_balance: idr(96_500_000),
     }),
-    run("finance.supplier_due", period, { supplier_due: idr(6_480_000) }),
+    // Same supplier dues as the purchasing KPI of the management home.
+    run("finance.supplier_due", period, { supplier_due: idr(12_400_000) }),
     run("finance.pending_settlement", period, {
       pending_settlement: idr(2_915_000),
     }),
     run("operations.alerts", period, {
-      void_rate_pct: pct(2.1),
+      // The report viewer's sales.void of the same day: 95.000 / 7.420.000.
+      void_rate_pct: pct((95_000 / 7_420_000) * 100),
       cash_variance: idr(25_000),
     }),
     run("inventory.critical_stock", period, {
@@ -201,30 +224,16 @@ const monitoring: Period = {
   closed: layout.monitoringPeriod.status === "closed",
 };
 
-/**
- * Unsplit total of the running period. The mock registry keys runs by report,
- * split and period (not outlet), so this must carry the same figures as the
- * management KPI run for that key (DASH-02).
- */
-const runningPeriod = periods[periods.length - 1] as Period;
-const multiOutletRun = run("sales.per_channel", runningPeriod, {
-  net_sales: idr(44_750_000),
-  transaction_count: count(168),
-  pax: count(182),
-});
-
 export const ownerInsightRuns: Readonly<Record<string, ReportResult>> =
   Object.freeze(
     Object.fromEntries(
       [
         ...periods.flatMap((period, index) =>
-          monthRuns(
-            period,
-            MONTH_FIGURES[index] as (typeof MONTH_FIGURES)[number],
-          ),
+          monthRuns(period, MONTH_FIGURES[index] as MonthFigure),
         ),
+        // The multi-outlet tab reads the owner board's per-channel split of
+        // the running month (registered with the part-1 runs), not a run here.
         ...dayRuns(monitoring),
-        multiOutletRun,
       ].map((result, index) => [`${result.reportCode}#${index}`, result]),
     ),
   );

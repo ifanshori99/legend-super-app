@@ -63,8 +63,8 @@ test("F36: the management home composes the GM home from the layout and its repo
   await expect(
     page.getByText("Penjualan bersih", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(/44\.750\.000/)).toBeVisible();
-  await expect(page.getByText(/182/).first()).toBeVisible();
+  await expect(page.getByText(/7\.420\.000/)).toBeVisible();
+  await expect(page.getByText(/148/).first()).toBeVisible();
 
   // The GM work queue and the shared approval box.
   await expect(
@@ -76,19 +76,19 @@ test("F36: the management home composes the GM home from the layout and its repo
     page.getByRole("heading", { name: "Kotak approval", exact: true }),
   ).toHaveCount(0);
 
-  // DASH-01: the strip names the report that produced the numbers. The report
-  // screens do not exist yet (legend-tp3x), so it is plain text, never a link
-  // that lands on a 404; it becomes a link once the route is generated.
+  // DASH-01: the strip names the report that produced the numbers. The sales
+  // report screens exist now (legend-j815), so the name is a drill-down link
+  // to the same report, day and outlet — never a link that lands on a 404.
   const region = page.getByRole("region", { name: "Angka kunci peran GM" });
   await expect(
     region.locator("..").getByText("Penjualan per kanal"),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /Penjualan per kanal/ }),
-  ).toHaveCount(0);
-  await expect(
-    page.locator('a[href^="/reports"], a[href^="/audit"]'),
-  ).toHaveCount(0);
+  const drill = page.getByRole("link", { name: /Penjualan per kanal/ });
+  await expect(drill).toHaveCount(1);
+  await expect(drill).toHaveAttribute(
+    "href",
+    /^\/reports\/sales\/per-channel\?.*startDate=2026-11-01/,
+  );
 });
 
 test("F36: switching the role tab swaps the targets, the numbers and the queue", async ({
@@ -108,7 +108,7 @@ test("F36: switching the role tab swaps the targets, the numbers and the queue",
     page.getByRole("heading", { name: "Approval keuangan" }),
   ).toBeVisible();
   // The GM's figures are gone from this role's home.
-  await expect(page.getByText(/44\.750\.000/)).toHaveCount(0);
+  await expect(page.getByText(/7\.420\.000/)).toHaveCount(0);
 
   // A role whose queue is not an approval queue gets the shared inbox section.
   await page.getByRole("tab", { name: "Manajer outlet" }).click();

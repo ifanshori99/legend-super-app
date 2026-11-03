@@ -13,9 +13,11 @@ export type TrendPoint = {
   text: string;
 };
 
-const WIDTH = 480;
-const HEIGHT = 168;
-const PAD = { left: 16, right: 16, top: 26, bottom: 28 };
+// A small viewBox capped at max-w-lg keeps the 12px labels between ~11px (390
+// wide) and ~17px (desktop); the side padding keeps the end labels unclipped.
+const WIDTH = 360;
+const HEIGHT = 150;
+const PAD = { left: 28, right: 28, top: 26, bottom: 28 };
 
 export function TrendChart({
   points,
@@ -58,7 +60,7 @@ export function TrendChart({
       role="img"
       aria-label={ariaLabel}
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-      className={cn("h-auto w-full", className)}
+      className={cn("h-auto w-full max-w-lg", className)}
     >
       {gridRows.slice(0, 2).map((gridY) => (
         <line

@@ -237,9 +237,6 @@ export function PreviewPanel({
   } else if (state.status === "loading") {
     body = (
       <div aria-busy="true" className="grid gap-2">
-        <span className="sr-only" role="status">
-          {t("reportBuilder.preview.loading")}
-        </span>
         <Skeleton className="h-28 w-full" />
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-10 w-full" />
@@ -304,12 +301,33 @@ export function PreviewPanel({
     );
   }
 
+  // One short sentence is announced per state change; the table itself is
+  // not a live region, or a screen reader would re-read every row. The
+  // sentences differ from the visible titles so text lookups stay unique.
+  const announcement =
+    state.status === "loading"
+      ? t("reportBuilder.preview.loading")
+      : state.status === "invalid"
+        ? t("reportBuilder.preview.announceInvalid")
+        : state.status === "error"
+          ? isOfflineError(state.error)
+            ? t("reportBuilder.preview.announceOffline")
+            : t("reportBuilder.preview.announceError")
+          : state.result.rows.length === 0
+            ? t("reportBuilder.preview.announceEmpty")
+            : t("reportBuilder.preview.announceReady", {
+                count: state.result.rows.length,
+              });
+
   return (
     <StepCard
       title={t("reportBuilder.preview.title")}
       hint={t("reportBuilder.preview.hint")}
     >
-      <div aria-live="polite">{body}</div>
+      <p role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </p>
+      {body}
     </StepCard>
   );
 }

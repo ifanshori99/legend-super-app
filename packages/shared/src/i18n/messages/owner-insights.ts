@@ -22,7 +22,7 @@ export const ownerInsightsMessages = {
     waste: "Waste",
     promo: "Biaya promo",
     vsPercent: "{month} {value}% {change}",
-    vsAmount: "vs {month} {change}",
+    vsAmount: "{month} sebulan penuh {amount}",
     points: "({value} poin)",
     trendEyebrow: "{count} bulan terakhir",
     trendTitle: "Tren prime cost",

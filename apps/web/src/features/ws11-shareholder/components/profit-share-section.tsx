@@ -32,14 +32,11 @@ function Estimates({ data }: { data: MyProfitShare }) {
   const t = useT();
   if (data.estimates.length === 0) return null;
   return (
-    <section
-      className="grid gap-2"
-      aria-label={t("shareholderHome.profitShare.estimateTitle")}
-    >
+    <section className="grid gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="type-title">
+        <h2 className="type-title">
           {t("shareholderHome.profitShare.estimateTitle")}
-        </h3>
+        </h2>
         <FinalityBadge official={false} />
       </div>
       <p className="max-w-3xl text-xs leading-5 text-muted-foreground">
@@ -110,6 +107,42 @@ function Holdings({ data }: { data: MyProfitShare }) {
   );
 }
 
+function PaymentStatus({
+  row,
+}: {
+  row: MyProfitShare["distributionHistory"][number];
+}) {
+  const t = useT();
+  return (
+    <>
+      {row.paymentStatus === "paid" ? (
+        <Badge tone="success">
+          <CircleCheck aria-hidden="true" />
+          {t("shareholderHome.profitShare.paid")}
+        </Badge>
+      ) : (
+        <Badge tone="warning">
+          <Clock aria-hidden="true" />
+          {t("shareholderHome.profitShare.pending")}
+        </Badge>
+      )}
+      {row.paidAt !== null && (
+        <span className="mt-1 block text-xs text-muted-foreground">
+          {t("shareholderHome.profitShare.paidOn", {
+            date: formatInstantDate(row.paidAt),
+          })}
+        </span>
+      )}
+      {row.statementFileKey !== null && (
+        <span className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+          <FileText className="size-3.5" aria-hidden="true" />
+          {t("shareholderHome.profitShare.statementReady")}
+        </span>
+      )}
+    </>
+  );
+}
+
 function History({ data }: { data: MyProfitShare }) {
   const t = useT();
   const rows = sortedDistributions(data);
@@ -123,6 +156,8 @@ function History({ data }: { data: MyProfitShare }) {
         description: t("shareholderHome.profitShare.noHistoryHint"),
       }}
       rowCount={rows.length}
+      // Statements exist only for closed, approved periods (SH-01).
+      actions={rows.length > 0 ? <FinalityBadge official /> : undefined}
     >
       <Table>
         <TableHeader>
@@ -140,15 +175,17 @@ function History({ data }: { data: MyProfitShare }) {
             <TableHead numeric>
               {t("shareholderHome.profitShare.net")}
             </TableHead>
-            <TableHead>{t("shareholderHome.profitShare.status")}</TableHead>
+            <TableHead className="hidden md:table-cell">
+              {t("shareholderHome.profitShare.status")}
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
             <TableRow key={row.distributionLineId}>
-              <TableCell className="font-medium">
+              <TableCell className="font-medium whitespace-nowrap">
                 {formatPeriodKey(row.period)}
-                <span className="block text-xs font-normal text-muted-foreground">
+                <span className="block text-xs font-normal whitespace-normal text-muted-foreground">
                   {row.profitEntityName}
                 </span>
                 {row.runType === "adjustment" && (
@@ -172,38 +209,19 @@ function History({ data }: { data: MyProfitShare }) {
                   size="sm"
                   className="font-semibold"
                 />
-                <span className="block text-xs font-normal text-muted-foreground md:hidden">
+                {/* Phones: gross, tax and status stack under the amount. */}
+                <span className="block text-xs font-normal whitespace-normal text-muted-foreground md:hidden">
                   {t("shareholderHome.profitShare.grossTax", {
                     gross: `Rp ${new Intl.NumberFormat("id-ID").format(row.grossIdr)}`,
                     tax: `Rp ${new Intl.NumberFormat("id-ID").format(row.taxWithheldIdr)}`,
                   })}
                 </span>
+                <span className="mt-1.5 flex flex-col items-end whitespace-normal md:hidden">
+                  <PaymentStatus row={row} />
+                </span>
               </TableCell>
-              <TableCell>
-                {row.paymentStatus === "paid" ? (
-                  <Badge tone="success">
-                    <CircleCheck aria-hidden="true" />
-                    {t("shareholderHome.profitShare.paid")}
-                  </Badge>
-                ) : (
-                  <Badge tone="warning">
-                    <Clock aria-hidden="true" />
-                    {t("shareholderHome.profitShare.pending")}
-                  </Badge>
-                )}
-                {row.paidAt !== null && (
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    {t("shareholderHome.profitShare.paidOn", {
-                      date: formatInstantDate(row.paidAt),
-                    })}
-                  </span>
-                )}
-                {row.statementFileKey !== null && (
-                  <span className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                    <FileText className="size-3.5" aria-hidden="true" />
-                    {t("shareholderHome.profitShare.statementReady")}
-                  </span>
-                )}
+              <TableCell className="hidden md:table-cell">
+                <PaymentStatus row={row} />
               </TableCell>
             </TableRow>
           ))}

@@ -10,7 +10,7 @@ import { metricCell } from "../board";
 import { cellFinality } from "../insights";
 import type { BoardReport } from "../hooks";
 import { StatMetricValue } from "./metric-display";
-import { TileSource } from "./tile-source";
+import { TileSource, useHasTileSource } from "./tile-source";
 
 export function InsightTile({
   tile,
@@ -33,6 +33,7 @@ export function InsightTile({
   flagEstimate?: boolean;
 }): ReactNode {
   const t = useT();
+  const hasSource = useHasTileSource(tile);
   if (state.status === "loading")
     return (
       <StatTile
@@ -71,7 +72,7 @@ export function InsightTile({
         )
       }
       context={[period, estimate, context].filter(Boolean).join(" · ")}
-      source={<TileSource tile={tile} />}
+      source={hasSource ? <TileSource tile={tile} /> : undefined}
     />
   );
 }

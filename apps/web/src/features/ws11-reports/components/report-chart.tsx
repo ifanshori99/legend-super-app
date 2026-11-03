@@ -60,14 +60,16 @@ export function ReportChart({ result }: { result: ReportResult }) {
           {data.map((datum, index) => (
             <li
               key={`${datum.label}-${index}`}
-              className="grid grid-cols-[minmax(4.5rem,8rem)_minmax(0,1fr)_auto] items-center gap-3 text-sm"
+              // Phone width: label and value on one line, the bar full width
+              // below, so the track never collapses to a sliver.
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 text-sm sm:grid-cols-[minmax(4.5rem,8rem)_minmax(0,1fr)_auto] sm:gap-y-3"
             >
               <span className="truncate">
                 {valueLabel(datum.dimension, datum.label)}
               </span>
               <span
                 aria-hidden="true"
-                className="h-3 rounded-full bg-surface-2"
+                className="col-span-2 row-start-2 h-3 rounded-full bg-surface-2 sm:col-span-1 sm:row-start-auto"
               >
                 <span
                   className="block h-full rounded-full bg-chart-accent"

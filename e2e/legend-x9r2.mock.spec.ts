@@ -42,7 +42,8 @@ async function openBuilder(page: Page) {
   await page.goto("/reports/builder", { waitUntil: "networkidle" });
   await waitForHydration(page);
   await expect(
-    page.getByRole("heading", { name: "Metrik", exact: true }),
+    // The step number is read out ("Langkah 1: Metrik").
+    page.getByRole("heading", { name: "Langkah 1: Metrik", exact: true }),
   ).toBeVisible();
 }
 
@@ -145,6 +146,10 @@ test("DASH-04: a report split by person is not mailed; the approval requirement 
   await expect(dialog.getByRole("button", { name: "Buat jadwal" })).toHaveCount(
     0,
   );
+  // The saved row says why before the dialog opens.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(row.getByText("Data pribadi", { exact: true })).toBeVisible();
 });
 
 for (const width of [390, 1440]) {
@@ -205,6 +210,8 @@ for (const width of [390, 1440]) {
     await expect(
       page.getByRole("button", { name: "Coba lagi" }).first(),
     ).toBeVisible();
+    // The preview sits below the steps on a phone: show the failure itself.
+    await page.getByText("Pratinjau gagal dimuat").scrollIntoViewIfNeeded();
     await captureScreenshot(page, `legend-x9r2/builder-${width}-error.png`);
 
     await page.evaluate(() => window.__legendMock?.setScenario("normal"));

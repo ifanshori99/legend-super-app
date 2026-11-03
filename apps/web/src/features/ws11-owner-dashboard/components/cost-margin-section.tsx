@@ -18,6 +18,7 @@ import {
   CardShellFooter,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { formatRupiah } from "@starter/shared/i18n";
 import type { DashboardTile } from "@starter/shared/dashboard";
 import { formatPercent, idrOf, metricCell, percentOf } from "../board";
 import { useOwnerBoardContext } from "../board-context";
@@ -31,7 +32,6 @@ import {
   monthPeriods,
   monthShort,
   pointChange,
-  relativeChange,
   TREND_MONTHS,
 } from "../insights";
 import { BoardEmpty, BoardError, TileSkeleton } from "./board-widget";
@@ -124,17 +124,14 @@ export function CostMarginSection() {
           : t("ownerInsights.cost.points", { value: formatSigned(change) }),
     });
   };
-  const idrContext = (
-    code: string,
-    now: typeof runs.foodNow,
-    prev: typeof runs.foodPrev,
-  ) => {
+  // Amounts of a running month (to date) and a whole closed month are not
+  // comparable as a change, so the closed month's amount is shown as is.
+  const idrContext = (code: string, prev: typeof runs.foodPrev) => {
     const before = idrOf(metricCell(prev.result, code));
     if (before === null) return undefined;
-    const change = relativeChange(idrOf(metricCell(now.result, code)), before);
     return t("ownerInsights.cost.vsAmount", {
       month: prevName,
-      change: change === null ? "" : `${formatSigned(change)}%`,
+      amount: formatRupiah(before),
     });
   };
 
@@ -210,7 +207,7 @@ export function CostMarginSection() {
             label={t("ownerInsights.cost.waste")}
             period={nowLabel}
             flagEstimate
-            context={idrContext("waste_cost", runs.wasteNow, runs.wastePrev)}
+            context={idrContext("waste_cost", runs.wastePrev)}
           />
         )}
         {tiles.promo && (
@@ -221,7 +218,7 @@ export function CostMarginSection() {
             label={t("ownerInsights.cost.promo")}
             period={nowLabel}
             flagEstimate
-            context={idrContext("promo_cost", runs.promoNow, runs.promoPrev)}
+            context={idrContext("promo_cost", runs.promoPrev)}
           />
         )}
       </StatStrip>

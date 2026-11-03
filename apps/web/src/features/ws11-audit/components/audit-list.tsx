@@ -1,19 +1,24 @@
 // The audit rows: one tappable row per event (who / what / when / where). Rows
-// are buttons so the detail opens by keyboard; wide screens lay the four facts
-// side by side, phones stack them.
+// are buttons so the detail opens by keyboard; their accessible name is the
+// row's own text (when, who, what, where), not just the action. Wide screens
+// lay the four facts side by side, phones stack them. The row whose detail is
+// open is selected: primary tint + 2px start rule (DESIGN.md Q29).
+import { cn } from "cn";
 import { ChevronRight, Monitor, ShieldAlert, Store } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
-import type { AuditEventView } from "../contract";
+import type { AuditEventView } from "@starter/shared/audit";
 import { actionLabel, objectTypeLabel } from "../labels";
 import { formatWhen } from "../lib";
 import { ActorBadge } from "./actor-badge";
 
 export function AuditList({
   rows,
+  selectedId = null,
   onOpen,
 }: {
   rows: readonly AuditEventView[];
+  selectedId?: string | null;
   onOpen: (view: AuditEventView) => void;
 }) {
   const t = useT();
@@ -37,13 +42,19 @@ export function AuditList({
         {rows.map((view) => {
           const { event } = view;
           const action = actionLabel(t, event.action);
+          const selected = event.id === selectedId;
           return (
             <li key={event.id}>
               <button
                 type="button"
                 onClick={() => onOpen(view)}
-                aria-label={t("auditSettings.audit.openDetail", { action })}
-                className="grid w-full min-w-0 gap-1.5 px-4 py-3 text-left transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring lg:grid-cols-[10rem_minmax(0,1.1fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_1rem] lg:items-center lg:gap-4"
+                aria-haspopup="dialog"
+                aria-current={selected ? "true" : undefined}
+                className={cn(
+                  "grid w-full min-w-0 gap-1.5 px-4 py-3 text-left transition-colors duration-(--duration-fast) hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring lg:grid-cols-[10rem_minmax(0,1.1fr)_minmax(0,1.4fr)_minmax(0,1.1fr)_1rem] lg:items-center lg:gap-4",
+                  selected &&
+                    "bg-primary-tint shadow-[inset_2px_0_0_var(--primary)] hover:bg-primary-tint",
+                )}
               >
                 <span className="text-sm text-muted-foreground tabular">
                   {formatWhen(event.createdAt, view.outletTimeZone)}

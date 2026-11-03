@@ -7,6 +7,9 @@ import { afterEach, describe, test } from "node:test";
 import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import * as builder from "../apps/web/src/features/ws11-report-builder/builder.ts";
 import "../apps/web/src/features/ws11-report-builder/mock.ts";
+// Read-only: the viewer's runs are the reference figures (DASH-02).
+import { buildSalesRuns } from "../apps/web/src/features/ws11-reports/mock.ts";
+import { buildPreviewResult } from "../apps/web/src/features/ws11-report-builder/mock-preview.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 
@@ -18,6 +21,13 @@ afterEach(() => {
 const post = (path, body) => dispatchMock({ method: "POST", path, body });
 const get = (path, query = {}) => dispatchMock({ method: "GET", path, query });
 const patch = (path, body) => dispatchMock({ method: "PATCH", path, body });
+const postKeyed = (path, body, key) =>
+  dispatchMock({
+    method: "POST",
+    path,
+    body,
+    headers: { "Idempotency-Key": key },
+  });
 const failure = (promise) =>
   promise.then(
     () => assert.fail("expected the call to fail"),
@@ -206,6 +216,98 @@ describe("builder mock · DASH-02", () => {
   });
 });
 
+describe("builder mock · same figures as the viewer · DASH-02", () => {
+  test("DASH-02: the open business day previews the owner board's net sales, guests and transactions", () => {
+    const { rows } = buildPreviewResult({
+      metricCodes: ["net_sales", "pax", "transaction_count"],
+      period: { startDate: "2026-11-01", endDate: "2026-11-01" },
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
+    assert.deepEqual(
+      rows[0].values.map((cell) => cell.value),
+      [
+        { unit: "idr", valueIdr: 7_420_000 },
+        { unit: "count", value: 148 },
+        { unit: "count", value: 96 },
+      ],
+    );
+  });
+
+  test("DASH-02: every viewer run with one split previews the same cells in the builder", () => {
+    let compared = 0;
+    for (const run of buildSalesRuns()) {
+      // The viewer labels the outlet split by name, the builder by id.
+      if (run.groupBy.includes("outlet")) continue;
+      const parsed = dashboard.reportBuilderQuerySchema.safeParse({
+        metricCodes: run.definitions.map((definition) => definition.code),
+        period: {
+          startDate: run.period.startDate,
+          endDate: run.period.endDate,
+        },
+        outletIds: run.outletFilter.outletIds,
+        groupBy: run.groupBy,
+        filters: [],
+        bucket: "total",
+        limit: 1000,
+      });
+      if (!parsed.success) continue;
+      const preview = buildPreviewResult(parsed.data);
+      assert.deepEqual(
+        preview.rows.map((row) => ({
+          dimensions: row.dimensions,
+          values: row.values.map((cell) => cell.value),
+        })),
+        run.rows.map((row) => ({
+          dimensions: row.dimensions,
+          values: row.values.map((cell) => cell.value),
+        })),
+        `${run.reportCode} ${run.groupBy.join(",")} ${run.period.startDate}..${run.period.endDate}`,
+      );
+      compared += 1;
+    }
+    assert.ok(compared >= 10, `compared only ${compared} runs`);
+  });
+
+  test("DASH-02: a metric the mock model has no source for is no data, never an invented number", () => {
+    const code = dashboard.reportMetricDefinitions.find(
+      (metric) => metric.code === "food_cost_pct",
+    )?.code;
+    if (code === undefined) return;
+    const { rows } = buildPreviewResult({
+      metricCodes: [code],
+      period: { startDate: "2026-10-01", endDate: "2026-10-31" },
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
+    for (const row of rows) assert.equal(row.values[0].value, null);
+  });
+
+  test("DASH-02: a filter keeps the share of its values, so parts add up to the total", () => {
+    const base = {
+      metricCodes: ["net_sales"],
+      period: { startDate: "2026-10-01", endDate: "2026-10-31" },
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    };
+    const byChannel = buildPreviewResult({ ...base, groupBy: ["channel"] });
+    const filtered = buildPreviewResult({
+      ...base,
+      groupBy: [],
+      filters: [{ key: "channel", values: ["qr", "pos"] }],
+    });
+    const sum = byChannel.rows
+      .filter((row) => ["qr", "pos"].includes(row.dimensions[0].value))
+      .reduce((total, row) => total + row.values[0].value.valueIdr, 0);
+    assert.equal(filtered.rows[0].values[0].value.valueIdr, sum);
+  });
+});
+
 describe("saved reports and schedules · F36", () => {
   test("F36: a saved report is created, listed, updated and archived", async () => {
     const created = await post("/api/reports/saved", {
@@ -277,5 +379,93 @@ describe("saved reports and schedules · F36", () => {
     );
     assert.equal(error.code, "EXPORT_PII_APPROVAL_REQUIRED");
     assert.equal(error.status, 403);
+  });
+});
+
+describe("DASH-04 on every path that mails a report", () => {
+  const schedule = {
+    frequency: "daily",
+    timeOfDay: "07:00",
+    format: "csv",
+    recipients: ["owner@cafelegend.id"],
+  };
+  const personalQuery = {
+    ...dashboard.reportBuilderQueryFixture,
+    metricCodes: ["net_sales", "transaction_count"],
+    groupBy: ["employee"],
+    filters: [],
+    sort: undefined,
+  };
+
+  test("DASH-04: a report with an enabled schedule cannot be changed into a person split", async () => {
+    const error = await failure(
+      patch(`/api/reports/saved/${dashboard.savedReportIdFixture}`, {
+        query: personalQuery,
+      }),
+    );
+    assert.equal(error.code, "EXPORT_PII_APPROVAL_REQUIRED");
+    assert.equal(error.status, 403);
+  });
+
+  test("DASH-04: a paused schedule of a report that became personal cannot be re-enabled", async () => {
+    const id = dashboard.reportScheduleIdFixture;
+    const fixture = dashboard.reportScheduleFixture;
+    const settings = {
+      frequency: fixture.frequency,
+      timeOfDay: fixture.timeOfDay,
+      dayOfWeek: fixture.dayOfWeek,
+      dayOfMonth: fixture.dayOfMonth,
+      format: fixture.format,
+      recipients: [...fixture.recipients],
+    };
+    await patch(`/api/reports/schedules/${id}`, {
+      ...settings,
+      isEnabled: false,
+    });
+    await patch(`/api/reports/saved/${dashboard.savedReportIdFixture}`, {
+      query: personalQuery,
+    });
+    const error = await failure(
+      patch(`/api/reports/schedules/${id}`, { ...settings, isEnabled: true }),
+    );
+    assert.equal(error.code, "EXPORT_PII_APPROVAL_REQUIRED");
+  });
+
+  test("DASH-04: the gate reads the stored query; a filter by person is refused too", async () => {
+    const saved = await post("/api/reports/saved", {
+      name: "Omzet Rani",
+      query: {
+        ...personalQuery,
+        groupBy: [],
+        filters: [{ key: "employee", values: ["Rani"] }],
+      },
+    });
+    const error = await failure(
+      post("/api/reports/schedules", {
+        savedReportId: saved.data.id,
+        ...schedule,
+      }),
+    );
+    assert.equal(error.code, "EXPORT_PII_APPROVAL_REQUIRED");
+  });
+});
+
+describe("idempotent creates", () => {
+  const KEY = "0b8f2b8e-6f1d-4c3a-9d2e-1f0a9b8c7d6e";
+
+  test("a repeated save with the same Idempotency-Key makes one report", async () => {
+    const body = {
+      name: "Omzet per jam",
+      query: dashboard.reportBuilderQueryFixture,
+    };
+    const first = await postKeyed("/api/reports/saved", body, KEY);
+    const again = await postKeyed("/api/reports/saved", body, KEY);
+    assert.equal(again.data.id, first.data.id);
+    const list = await get("/api/reports/saved", { limit: 25 });
+    assert.equal(list.data.length, 2);
+    const reused = await failure(
+      postKeyed("/api/reports/saved", { ...body, name: "Lain" }, KEY),
+    );
+    assert.equal(reused.code, "IDEMPOTENCY_KEY_REUSED");
   });
 });

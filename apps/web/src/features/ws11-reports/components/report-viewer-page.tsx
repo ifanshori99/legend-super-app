@@ -283,7 +283,7 @@ export function ReportViewerPage({ reportCode }: { reportCode: string }) {
             <Button
               type="button"
               size="sm"
-              disabled={!canExport || !selection}
+              disabled={!canExport || !selection || empty}
               title={canExport ? undefined : t("reportViewer.exportDenied")}
               onClick={() => setExportOpen(true)}
             >

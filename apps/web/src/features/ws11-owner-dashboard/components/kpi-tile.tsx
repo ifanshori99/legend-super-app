@@ -10,7 +10,7 @@ import type { DashboardTile, ReportResult } from "@starter/shared/dashboard";
 import { metricCell, tileReportCode } from "../board";
 import { useOwnerBoardContext } from "../board-context";
 import { StatMetricValue } from "./metric-display";
-import { TileSource } from "./tile-source";
+import { TileSource, useHasTileSource } from "./tile-source";
 
 function MissingValue() {
   return (
@@ -38,6 +38,7 @@ export function KpiTile({
   valueSuffix?: string;
 }): ReactNode {
   const t = useT();
+  const hasSource = useHasTileSource(tile);
   const board = useOwnerBoardContext();
   const state = board.report(tileReportCode(tile));
   const period = t("ownerDashboard.todayShort");
@@ -72,7 +73,7 @@ export function KpiTile({
         )
       }
       context={[period, contextText].filter(Boolean).join(" · ")}
-      source={<TileSource tile={tile} />}
+      source={hasSource ? <TileSource tile={tile} /> : undefined}
     />
   );
 }

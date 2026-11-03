@@ -43,7 +43,7 @@ import {
   type ScheduleDraft,
 } from "../builder";
 import { reportErrorText } from "../format";
-import { useCreateSchedule } from "../hooks";
+import { useAttemptKey, useCreateSchedule } from "../hooks";
 
 const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 
@@ -77,6 +77,7 @@ export function ScheduleDialog({
   const t = useT();
   const toast = useToast();
   const create = useCreateSchedule();
+  const attemptKey = useAttemptKey();
   const [draft, setDraft] = useState<ScheduleDraft>(emptyScheduleDraft);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState<string | null>(null);
@@ -113,16 +114,19 @@ export function ScheduleDialog({
     }
     setErrors({});
     setServerError(null);
-    create.mutate(parsed.data, {
-      onSuccess: () => {
-        toast({
-          title: t("reportBuilder.schedule.created", { name: report.name }),
-          tone: "success",
-        });
-        close(false);
+    create.mutate(
+      { input: parsed.data, idempotencyKey: attemptKey(parsed.data) },
+      {
+        onSuccess: () => {
+          toast({
+            title: t("reportBuilder.schedule.created", { name: report.name }),
+            tone: "success",
+          });
+          close(false);
+        },
+        onError: (error) => setServerError(reportErrorText(t, error)),
       },
-      onError: (error) => setServerError(reportErrorText(t, error)),
-    });
+    );
   };
 
   const serverCode = create.error ? reportErrorCodeOf(create.error) : null;

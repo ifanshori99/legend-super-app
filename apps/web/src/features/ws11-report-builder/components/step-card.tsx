@@ -1,6 +1,7 @@
 // One panel of the builder: the DESIGN.md v3 double shell with a numbered
 // heading, so the steps read top to bottom (metric, split, filter, period).
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
+import { useT } from "@/components/i18n";
 import { cn } from "cn";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 
@@ -20,13 +21,18 @@ export function StepCard({
   className?: string;
   children: ReactNode;
 }) {
+  const t = useT();
+  const headingId = useId();
   return (
     <CardShell className={className}>
       <CardShellBody>
-        <section className="grid gap-4 p-card">
+        <section aria-labelledby={headingId} className="grid gap-4 p-card">
           <header className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="type-heading flex items-center gap-2">
+              <h2
+                id={headingId}
+                className="type-heading flex items-center gap-2"
+              >
                 {step !== undefined && (
                   <span
                     aria-hidden="true"
@@ -35,7 +41,14 @@ export function StepCard({
                     {step}
                   </span>
                 )}
-                <span className="min-w-0">{title}</span>
+                <span className="min-w-0">
+                  {step !== undefined && (
+                    <span className="sr-only">
+                      {t("reportBuilder.stepLabel", { step })}{" "}
+                    </span>
+                  )}
+                  {title}
+                </span>
               </h2>
               {hint && (
                 <p

@@ -10,6 +10,7 @@ import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import * as lib from "../apps/web/src/features/ws11-reports/lib.ts";
 // Side effect: the owner screen registers its runs first, so a clash with the
 // sales runs would throw here (DASH-02).
+import "../apps/web/src/features/ws11-management-home/mock.ts";
 import "../apps/web/src/features/ws11-owner-dashboard/mock.ts";
 import "../apps/web/src/features/ws11-reports/mock.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";

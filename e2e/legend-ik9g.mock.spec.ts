@@ -67,13 +67,19 @@ test("SH-01: closed period figures are official and the running period is labell
 
   await expect(page.getByText("Oktober 2026").first()).toBeVisible();
   await expect(page.getByText("Resmi", { exact: true })).toBeVisible();
-  const strip = page.getByRole("region", { name: "Laba rugi periode tutup" });
+  // One strip for the closed period (DESIGN.md §12).
+  const strip = page.getByRole("region", { name: "Ringkasan periode tutup" });
+  await expect(page.locator('[data-slot="stat-strip"]')).toHaveCount(1);
   await expect(strip.getByText("Omzet", { exact: true })).toBeVisible();
   await expect(strip.getByText(/412\.800\.000/)).toBeVisible();
   await expect(strip.getByText("Laba bersih", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("region", { name: "Kas dan pengunjung periode tutup" }),
-  ).toBeVisible();
+  // DASH-02: the strip's guests and gross profit equal the source reports'
+  // (report viewer sales.per_pax and the owner income statement, October).
+  await expect(strip.getByText("8.222", { exact: true })).toBeVisible();
+  await expect(strip.getByText(/50\.207/)).toBeVisible();
+  await expect(strip.getByText(/273\.686\.400/)).toBeVisible();
+  await expect(page.getByText(/8\.222/)).toHaveCount(2);
+  await expect(page.getByText(/7\.920|52\.121/)).toHaveCount(0);
   await expect(page.getByText("KPI year-to-date")).toBeVisible();
 
   // The running period sits in its own card with the estimate badge, and its
@@ -86,8 +92,12 @@ test("SH-01: closed period figures are official and the running period is labell
   await expect(page.getByText(/Estimasi sampai pembukuan/)).toBeVisible();
   await expect(strip.getByText(/268\.000\.000/)).toHaveCount(0);
 
-  // No shareholder permission opens a source report: no dead /reports links.
+  // No shareholder permission opens a source report: no dead /reports links,
+  // and no orphan source chevrons without a link.
   await expect(page.locator('a[href^="/reports"]')).toHaveCount(0);
+  await expect(
+    strip.locator('[data-slot="stat-tile"] svg.lucide-chevron-right'),
+  ).toHaveCount(0);
 });
 
 test("SH-02: the profit share tab shows only the shareholder's own history, estimate labelled", async ({
@@ -110,21 +120,28 @@ test("SH-02: the profit share tab shows only the shareholder's own history, esti
   ).toBeVisible();
   await expect(page.getByRole("cell", { name: "25%" }).first()).toBeVisible();
 
+  const history = page.getByRole("region", { name: "Riwayat bagi hasil" });
   await expect(
     page.getByRole("heading", { name: "Riwayat bagi hasil" }),
   ).toBeVisible();
+  // Distributed statements come from closed periods: official (SH-01).
+  await expect(history.getByText("Resmi", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("cell", { name: /Oktober 2026/ }).first(),
   ).toBeVisible();
   await expect(page.getByText(/33\.412\.500/).first()).toBeVisible();
   await expect(page.getByText("Penyesuaian").first()).toBeVisible();
-  await expect(page.getByText("Belum dibayar").first()).toBeVisible();
+  await expect(
+    page.getByText("Belum dibayar").filter({ visible: true }).first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Riwayat perubahan porsi" }),
   ).toBeVisible();
 
-  // Own data only: nobody else's name appears.
-  await expect(page.getByText(/Rina|Budi|Andi/)).toHaveCount(0);
+  // Own data only: no other holder of the fixture appears (SH-02).
+  await expect(
+    page.getByText(/Raka Pratama|Angkasa Modal|Nur Aisyah/),
+  ).toHaveCount(0);
 });
 
 test("SH-02: documents lists only what is published for shareholders", async ({

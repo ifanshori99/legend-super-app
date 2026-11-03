@@ -50,12 +50,16 @@ export async function fetchSavedReports(
   return items;
 }
 
+/** One Idempotency-Key per save attempt, so a double submit makes one row. */
 export async function createSavedReport(
   input: CreateSavedReportInput,
+  idempotencyKey: string,
 ): Promise<SavedReport> {
-  const response = await callEndpoint(createSavedReportEndpoint, {
-    body: input,
-  });
+  const response = await callEndpoint(
+    createSavedReportEndpoint,
+    { body: input },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
   return response.data;
 }
 
@@ -89,10 +93,13 @@ export async function fetchReportSchedules(
 
 export async function createReportSchedule(
   input: CreateReportScheduleInput,
+  idempotencyKey: string,
 ): Promise<ReportSchedule> {
-  const response = await callEndpoint(createReportScheduleEndpoint, {
-    body: input,
-  });
+  const response = await callEndpoint(
+    createReportScheduleEndpoint,
+    { body: input },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
   return response.data;
 }
 

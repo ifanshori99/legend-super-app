@@ -42,8 +42,7 @@ export const shareholderHomeMessages = {
     closedPeriod: "Periode {period}",
     notOfficial:
       "Pembukuan periode ini belum seluruhnya ditutup, jadi angkanya masih estimasi.",
-    resultStripLabel: "Laba rugi periode tutup",
-    cashStripLabel: "Kas dan pengunjung periode tutup",
+    stripLabel: "Ringkasan periode tutup",
     kpiTitle: "KPI",
     kpiMonth: "KPI bulanan",
     kpiYtd: "KPI year-to-date",

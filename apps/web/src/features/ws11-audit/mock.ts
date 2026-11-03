@@ -10,11 +10,15 @@
 //
 // Loaded in Node by tests/ws11-audit.test.mjs: bare package imports and relative
 // `.ts` paths only, no `@/` alias.
-import { auditEventSchema, maskAuditChanges } from "@starter/shared/audit";
+import {
+  auditEventSchema,
+  listAuditEventsEndpoint,
+  maskAuditChanges,
+  type AuditEventView,
+} from "@starter/shared/audit";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
-import { listAuditEventsEndpoint, type AuditEventView } from "./contract.ts";
 import { DEFAULT_TIME_ZONE } from "./lib.ts";
 
 const [bandung, bandung2] = cafeLegendFixtures.outlets;
@@ -66,6 +70,8 @@ type Template = {
   device: keyof typeof DEVICES | null;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
+  /** Fields whose raw value may be shown; default: every key of the row. */
+  safe?: readonly string[];
   reason?: string;
   sensitive?: boolean;
   ip?: boolean;
@@ -136,9 +142,34 @@ const TEMPLATES: readonly Template[] = [
     objectType: "user",
     outlet: null,
     device: "laptop",
-    // Personal fields go through the contract masker, never straight to a row.
-    before: { roleCode: "cashier", phone: "081234567890" },
-    after: { roleCode: "outlet_manager", phone: "081234567890" },
+    // Personal fields go through the contract masker, never straight to a row:
+    // only `roleCode` is on the safe list, everything else arrives redacted.
+    before: {
+      roleCode: "cashier",
+      phone: "081234567890",
+      Email: "budi.santoso@gmail.com",
+      NIK: "3273012304900001",
+      bank_account: "1234567890",
+      salaryIdr: 4_500_000,
+      profile: {
+        homeAddress: "Jl. Dago No. 12, Bandung",
+        emergencyContacts: [{ name: "Sari", mobile: "+62 812-3456-7890" }],
+      },
+    },
+    after: {
+      roleCode: "outlet_manager",
+      phone: "081234567890",
+      Email: "budi.santoso@gmail.com",
+      NIK: "3273012304900001",
+      bank_account: "1234567890",
+      salaryIdr: 6_000_000,
+      apiToken: "sk_live_9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+      profile: {
+        homeAddress: "Jl. Dago No. 12, Bandung",
+        emergencyContacts: [{ name: "Sari", mobile: "+62 812-3456-7890" }],
+      },
+    },
+    safe: ["roleCode"],
     ip: true,
   },
   {
@@ -245,7 +276,12 @@ function buildEvent(template: Template, index: number): AuditEventView {
         ? bandung
         : bandung2;
   const device = template.device === null ? null : DEVICES[template.device];
-  const safe = [...safeKeys(template.before), ...safeKeys(template.after)];
+  // The contract's deny list wins over this list (a `phone` key is redacted
+  // even if listed), so the business-only demo rows can name all their keys.
+  const safe = template.safe ?? [
+    ...safeKeys(template.before),
+    ...safeKeys(template.after),
+  ];
   const event = auditEventSchema.parse({
     id: eventId(index),
     tenantId: TENANT_ID,

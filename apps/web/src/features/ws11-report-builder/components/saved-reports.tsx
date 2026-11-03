@@ -21,7 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import type { ReportSchedule, SavedReport } from "@starter/shared/dashboard";
-import { isOfflineError } from "../builder";
+import { isOfflineError, queryHasPersonalData } from "../builder";
 import { dimensionLabel, formatDateTime, reportErrorText } from "../format";
 import {
   useReportSchedules,
@@ -57,7 +57,14 @@ function scheduleSummary(
   });
 }
 
-function ScheduleRow({ schedule }: { schedule: ReportSchedule }) {
+function ScheduleRow({
+  schedule,
+  personal,
+}: {
+  schedule: ReportSchedule;
+  /** DASH-04: a person-split report is never mailed, so it cannot resume. */
+  personal: boolean;
+}) {
   const t = useT();
   const toast = useToast();
   const update = useUpdateSchedule();
@@ -94,6 +101,8 @@ function ScheduleRow({ schedule }: { schedule: ReportSchedule }) {
       },
     );
   const switchId = `schedule-${schedule.id}`;
+  const blockedId = `${switchId}-blocked`;
+  const blocked = personal && !schedule.isEnabled;
   return (
     <li className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-control bg-surface-2 px-3 py-2">
       <div className="grid min-w-0 gap-0.5">
@@ -105,6 +114,11 @@ function ScheduleRow({ schedule }: { schedule: ReportSchedule }) {
               })
             : t("reportBuilder.schedule.pausedLabel")}
         </p>
+        {blocked && (
+          <p id={blockedId} className="text-xs leading-5 text-warning">
+            {t("reportBuilder.schedule.resumeBlocked")}
+          </p>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <Label htmlFor={switchId} className="text-sm">
@@ -115,9 +129,10 @@ function ScheduleRow({ schedule }: { schedule: ReportSchedule }) {
         <Switch
           id={switchId}
           checked={schedule.isEnabled}
-          disabled={update.isPending}
+          disabled={update.isPending || blocked}
           onCheckedChange={toggle}
           aria-label={t("reportBuilder.schedule.toggleLabel")}
+          aria-describedby={blocked ? blockedId : undefined}
         />
       </div>
     </li>
@@ -141,6 +156,7 @@ function SavedRow({
   const toast = useToast();
   const update = useUpdateSavedReport();
   const archived = report.status === "archived";
+  const personal = queryHasPersonalData(report.query);
   const summary = [
     t("reportBuilder.saved.metricCount", {
       count: report.query.metricCodes.length,
@@ -185,8 +201,13 @@ function SavedRow({
                 {t("reportBuilder.saved.archivedBadge")}
               </Badge>
             )}
+            {personal && (
+              <Badge tone="warning">
+                {t("reportBuilder.dimension.personal")}
+              </Badge>
+            )}
             {isLoaded && (
-              <Badge tone="brand">{t("reportBuilder.saved.openBadge")}</Badge>
+              <Badge tone="neutral">{t("reportBuilder.saved.openBadge")}</Badge>
             )}
           </p>
           {report.description && (
@@ -238,7 +259,11 @@ function SavedRow({
           className="grid gap-2"
         >
           {schedules.map((schedule) => (
-            <ScheduleRow key={schedule.id} schedule={schedule} />
+            <ScheduleRow
+              key={schedule.id}
+              schedule={schedule}
+              personal={personal}
+            />
           ))}
         </ul>
       )}

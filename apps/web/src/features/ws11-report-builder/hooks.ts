@@ -1,5 +1,5 @@
 // Data access of the report builder.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReportBuilderQuery } from "@starter/shared/dashboard";
 import {
@@ -8,6 +8,7 @@ import {
   updateReportSchedule,
   updateSavedReport,
 } from "./api";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import {
   builderOutletsQuery,
   previewQuery,
@@ -54,10 +55,30 @@ export function useBuilderOutlets() {
   return useQuery(builderOutletsQuery(useHydrated()));
 }
 
+/**
+ * One Idempotency-Key per attempt: a retry of the same request reuses it (the
+ * server replays the first result), a changed request gets a new one.
+ */
+export function useAttemptKey(): (request: unknown) => string {
+  const last = useRef<{ print: string; key: string } | null>(null);
+  return (request) => {
+    const print = JSON.stringify(request);
+    if (last.current?.print !== print)
+      last.current = { print, key: newIdempotencyKey() };
+    return last.current.key;
+  };
+}
+
 export function useCreateSavedReport() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: createSavedReport,
+    mutationFn: ({
+      input,
+      idempotencyKey,
+    }: {
+      input: Parameters<typeof createSavedReport>[0];
+      idempotencyKey: string;
+    }) => createSavedReport(input, idempotencyKey),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: reportBuilderKeys.saved() }),
   });
@@ -81,7 +102,13 @@ export function useUpdateSavedReport() {
 export function useCreateSchedule() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: createReportSchedule,
+    mutationFn: ({
+      input,
+      idempotencyKey,
+    }: {
+      input: Parameters<typeof createReportSchedule>[0];
+      idempotencyKey: string;
+    }) => createReportSchedule(input, idempotencyKey),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: reportBuilderKeys.schedules() }),
   });

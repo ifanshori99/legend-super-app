@@ -10,8 +10,8 @@ import type {
   ReportResult,
   ReportRunInput,
 } from "@starter/shared/dashboard";
-import type { MetricFinality } from "@starter/shared/metrics";
-import { tileReportCode } from "./board.ts";
+import type { MetricFinality, MetricValue } from "@starter/shared/metrics";
+import { OWNER_BOARD_GROUP_BY, tileReportCode } from "./board.ts";
 
 /** Sections added by part 2. */
 export const OWNER_INSIGHT_SECTIONS = [
@@ -151,14 +151,28 @@ export function insightRunInput(
   };
 }
 
-/** The run a part-2 tile shows: its report over its own period. */
+/**
+ * Split a part-2 tile reads its report with. The multi-outlet tile reads
+ * `sales.per_channel` with the board's channel split and adds the rows up, so
+ * its total is the same run the real-time channel table and its drill-down
+ * show (DASH-02); every other part-2 tile reads one unsplit total row.
+ */
+export function insightTileGroupBy(tile: DashboardTile): readonly string[] {
+  const code = tileReportCode(tile);
+  if (code === null || tile.section !== "multi_outlet") return [];
+  return OWNER_BOARD_GROUP_BY[code] ?? [];
+}
+
+/** The run a part-2 tile shows: its report over its own period and split. */
 export function insightTileRunInput(
   tile: DashboardTile,
   layout: DashboardLayout,
 ): ReportRunInput | null {
   const code = tileReportCode(tile);
   if (code === null) return null;
-  return insightRunInput(layout, code, insightTilePeriod(tile, layout));
+  return insightRunInput(layout, code, insightTilePeriod(tile, layout), {
+    groupBy: insightTileGroupBy(tile),
+  });
 }
 
 /** Months of the cost and margin trend, oldest first (running month last). */
@@ -179,6 +193,33 @@ export function cellFinality(
     for (const cell of row.values)
       if (cell.metricCode === metricCode) return cell.finality;
   return "estimate";
+}
+
+/**
+ * Total of an additive rupiah or count metric over every row of a run (a split
+ * run adds up to its total). Null when no row carries the metric.
+ */
+export function summedCell(
+  result: ReportResult | null | undefined,
+  metricCode: string,
+): MetricValue | null {
+  if (!result) return null;
+  let unit: "idr" | "count" | null = null;
+  let total = 0;
+  for (const row of result.rows)
+    for (const cell of row.values) {
+      if (cell.metricCode !== metricCode || cell.value === null) continue;
+      if (cell.value.unit === "idr") {
+        unit = "idr";
+        total += cell.value.valueIdr;
+      } else if (cell.value.unit === "count") {
+        unit = "count";
+        total += cell.value.value;
+      }
+    }
+  if (unit === "idr") return { unit, valueIdr: total } as MetricValue;
+  if (unit === "count") return { unit, value: total } as MetricValue;
+  return null;
 }
 
 /** True when every number the run carries is an official (final) figure. */

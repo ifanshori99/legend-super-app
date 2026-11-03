@@ -1,12 +1,14 @@
 // Settings hub (PRD v1.7 §3 "Pengaturan"; bead legend-max2): one place that
 // links every tenant, brand and outlet configuration screen. Cards appear only
-// for screens that exist in this build (useRouteAvailable), grouped by the
-// scope the setting applies to.
-import { Link } from "@tanstack/react-router";
+// for screens that exist in this build (useRouteAvailable) and that this
+// visitor may open (their page guard's permission), grouped by the scope the
+// setting applies to.
+import { Link, useRouteContext } from "@tanstack/react-router";
 import { ChevronRight, Settings } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback-state";
+import type { AreaAccess } from "@/lib/areas/access";
 import { useRouteAvailable } from "@/lib/use-route-available";
 import { HUB_ITEMS, groupAvailable, type HubScope } from "../hub";
 
@@ -28,7 +30,15 @@ const GROUP_KEYS = {
 export function SettingsHubPage() {
   const t = useT();
   const available = useRouteAvailable();
-  const groups = groupAvailable(HUB_ITEMS, available);
+  const { access } = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  // Fail closed: no access context means no permission-gated cards.
+  const groups = groupAvailable(
+    HUB_ITEMS,
+    available,
+    access?.permissions ?? [],
+  );
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-6">

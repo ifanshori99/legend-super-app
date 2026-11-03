@@ -70,29 +70,41 @@ const idr = (valueIdr: number) => ({ unit: "idr", valueIdr }) as MetricValue;
 const accounting = cafeLegendAccountingFixtures.profitShare;
 const octoberNetProfit = Number(accounting.runs.october.periodNetProfitIdr);
 
-/** Figures per period; one table feeds every report of that period (DASH-02). */
+/**
+ * Figures per period; one table feeds every report of that period (DASH-02).
+ * October is the same closed month the report viewer (features/ws11-reports
+ * mock: day model scaled to net sales Rp412.800.000) and the owner insights
+ * (finance.income_statement: COGS 33,7%, net profit from the October
+ * profit-share run) already serve, so sales, guests and gross profit are
+ * copied from those owners rather than invented: a tile and its source report
+ * must show the same number for the same key.
+ */
 const closedMonth: Record<string, MetricValue> = {
+  // Report viewer, sales.daily / sales.per_pax, 2026-10-01..2026-10-31.
   net_sales: idr(412_800_000),
-  gross_sales: idr(436_500_000),
-  discount_amount: idr(14_200_000),
-  refund_amount: idr(9_500_000),
-  transaction_count: { unit: "count", value: 5_386 } as MetricValue,
-  cogs: idr(139_100_000),
-  gross_profit: idr(273_700_000),
-  gross_margin_pct: { unit: "percent", value: "66.3100" } as MetricValue,
+  gross_sales: idr(440_616_712),
+  discount_amount: idr(21_140_701),
+  refund_amount: idr(6_676_011),
+  transaction_count: { unit: "count", value: 5_341 } as MetricValue,
+  pax: { unit: "count", value: 8_222 } as MetricValue,
+  // round(412.800.000 / 8.222), the viewer's per-pax formula.
+  avg_spend_per_pax: idr(50_207),
+  // Owner insights, finance.income_statement October: COGS = 33,7% of sales.
+  cogs: idr(139_113_600),
+  gross_profit: idr(273_686_400),
+  gross_margin_pct: { unit: "percent", value: "66.3000" } as MetricValue,
   ebitda: idr(octoberNetProfit + 21_000_000),
   net_profit: idr(octoberNetProfit),
   cash_balance: idr(34_600_000),
   bank_balance: idr(512_300_000),
-  pax: { unit: "count", value: 7_920 } as MetricValue,
-  avg_spend_per_pax: idr(52_121),
 };
+// Year to date (Jan..Oct, closed months only): only the income statement runs
+// over it, so it carries only income-statement figures (net - COGS = gross).
 const yearToDate: Record<string, MetricValue> = {
-  ...closedMonth,
   net_sales: idr(3_642_000_000),
-  net_profit: idr(1_226_000_000),
+  cogs: idr(1_231_000_000),
   gross_profit: idr(2_411_000_000),
-  ebitda: idr(1_391_000_000),
+  net_profit: idr(1_226_000_000),
 };
 // Same estimated net profit as the accounting estimate (Rp 120.000.000).
 const runningFigures: Record<string, MetricValue> = {

@@ -110,6 +110,9 @@ function ExportJobSummary({ job }: { job: ReportExport }) {
   return (
     <div
       data-testid="export-job"
+      // Announces queued -> generating -> ready while the dialog stays open.
+      role="status"
+      aria-live="polite"
       className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-card"
     >
       <div className="flex flex-wrap items-center gap-2">

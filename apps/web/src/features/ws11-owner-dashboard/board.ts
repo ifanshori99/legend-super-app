@@ -141,8 +141,8 @@ export function ownerBoardRunInputs(layout: DashboardLayout): ReportRunInput[] {
 
 /**
  * DASH-01 drill-down: the source report with the tile's own period (the
- * dashboard day, or the running month for "this_month" tiles) and outlets.
- * The multi-outlet tile reads the report unsplit, so it carries no channel split.
+ * dashboard day, or the running month for "this_month" tiles), outlets and
+ * split (the multi-outlet tile adds up the same channel split it links to).
  */
 export function ownerBoardTilePath(
   tile: DashboardTile,
@@ -150,7 +150,7 @@ export function ownerBoardTilePath(
 ): string | null {
   const reportCode = tileReportCode(tile);
   const groupBy =
-    reportCode === null || tile.section === "multi_outlet"
+    reportCode === null
       ? null
       : (OWNER_BOARD_GROUP_BY[reportCode]?.[0] ?? null);
   const monthly = tile.kind === "metric" && tile.period === "this_month";
