@@ -1,0 +1,114 @@
+name: legend
+x-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE}
+    logging: *bounded-logging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    command:
+      [
+        "postgres",
+        "-c",
+        "shared_buffers=128MB",
+        "-c",
+        "effective_cache_size=384MB",
+        "-c",
+        "work_mem=4MB",
+        "-c",
+        "maintenance_work_mem=64MB",
+        "-c",
+        "max_connections=50",
+        "-c",
+        "wal_level=replica",
+        "-c",
+        "archive_mode=on",
+        "-c",
+        "archive_timeout=60s",
+        "-c",
+        "archive_command=pgbackrest --stanza=legend archive-push %p",
+      ]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_spool:/var/spool/pgbackrest
+      - ${PGBACKREST_CONFIG:?Set PGBACKREST_CONFIG}:/etc/pgbackrest/pgbackrest.conf:ro
+      - ../backup/backup.sh:/usr/local/bin/legend-backup:ro
+      - ../backup/restore-drill.sh:/usr/local/bin/legend-restore-drill:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 768m
+  migrate:
+    image: ${MIGRATOR_IMAGE:?Set MIGRATOR_IMAGE}
+    profiles: ["migration"]
+    env_file: ["${MIGRATOR_ENV_FILE:?Set MIGRATOR_ENV_FILE}"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+  api:
+    image: ${API_IMAGE:?Set API_IMAGE}
+    logging: *bounded-logging
+    restart: unless-stopped
+    env_file: ["${API_ENV_FILE:?Set API_ENV_FILE}"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 512m
+  web:
+    image: ${WEB_IMAGE:?Set WEB_IMAGE}
+    logging: *bounded-logging
+    restart: unless-stopped
+    env_file: ["${WEB_ENV_FILE:?Set WEB_ENV_FILE}"]
+    environment:
+      API_INTERNAL_URL: http://api:4000
+    depends_on:
+      api: { condition: service_healthy }
+    networks:
+      default:
+        ipv4_address: 172.29.17.10
+    mem_limit: 512m
+  worker:
+    image: ${WORKER_IMAGE:?Set WORKER_IMAGE}
+    logging: *bounded-logging
+    restart: unless-stopped
+    env_file: ["${WORKER_ENV_FILE:?Set WORKER_ENV_FILE}"]
+    environment:
+      WORKER_TRANSPORT_MODULE: /opt/legend/worker-transport.mjs
+    volumes:
+      - ${WORKER_TRANSPORT_PATH:?Set WORKER_TRANSPORT_PATH}:/opt/legend/worker-transport.mjs:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 384m
+  caddy:
+    image: caddy:2-alpine
+    logging: *bounded-logging
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      TLS_ASK_TOKEN: ${TLS_ASK_TOKEN:?Set TLS_ASK_TOKEN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, web]
+    mem_limit: 128m
+volumes:
+  postgres_data:
+  postgres_spool:
+  caddy_data:
+  caddy_config:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.29.17.0/24
