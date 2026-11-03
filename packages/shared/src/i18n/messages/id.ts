@@ -5,6 +5,11 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { auditSettingsMessages } from "./audit-settings.ts";
+import { ownerInsightsMessages } from "./owner-insights.ts";
+import { reportBuilderMessages } from "./report-builder.ts";
+import { reportViewerMessages } from "./report-viewer.ts";
+import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
@@ -28,6 +33,11 @@ export const id = {
   login: loginMessages,
   // Owner dashboard (PRD §3 F34), part 1 (legend-k8fk).
   ownerDashboard: ownerDashboardMessages,
+  auditSettings: auditSettingsMessages,
+  ownerInsights: ownerInsightsMessages,
+  reportBuilder: reportBuilderMessages,
+  reportViewer: reportViewerMessages,
+  shareholderHome: shareholderHomeMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).

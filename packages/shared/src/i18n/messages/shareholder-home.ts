@@ -1,0 +1,114 @@
+// Text catalog namespace `shareholderHome` (bead legend-ik9g; PRD v1.7 §3 F35
+// "Dashboard Shareholder", §4 Alur O, SH-01, SH-02). Kept in its own module so
+// parallel WS-11 beads never edit the same lines of id.ts.
+export const shareholderHomeMessages = {
+  title: "Dashboard Shareholder",
+  updatedAt: "Diperbarui {date}, {time} WIB",
+  refresh: "Muat ulang",
+  loadFailed: "Gagal dimuat",
+  noData: "Belum ada data",
+  offlineTitle: "Anda sedang offline",
+  offlineHint:
+    "Data tidak dapat dimuat tanpa koneksi. Sambungkan internet lalu coba lagi.",
+  tabsLabel: "Bagian dashboard shareholder",
+  tabs: {
+    business: "Kondisi bisnis",
+    businessShort: "Bisnis",
+    profitShare: "Bagi hasil saya",
+    profitShareShort: "Bagi hasil",
+    documents: "Dokumen",
+  },
+  badge: {
+    official: "Resmi",
+    estimate: "Estimasi",
+  },
+  metrics: {
+    net_sales: "Omzet",
+    gross_profit: "Laba kotor",
+    ebitda: "EBITDA",
+    net_profit: "Laba bersih",
+    cash_balance: "Saldo kas",
+    bank_balance: "Saldo bank",
+    pax: "Pengunjung",
+    avg_spend_per_pax: "Belanja per tamu",
+  },
+  units: {
+    minutes: "mnt",
+  },
+  business: {
+    closedTitle: "Periode tutup buku",
+    closedHint:
+      "Angka resmi hanya diambil dari periode yang sudah ditutup. Angka periode berjalan selalu berlabel estimasi.",
+    closedPeriod: "Periode {period}",
+    notOfficial:
+      "Pembukuan periode ini belum seluruhnya ditutup, jadi angkanya masih estimasi.",
+    stripLabel: "Ringkasan periode tutup",
+    kpiTitle: "KPI",
+    kpiMonth: "KPI bulanan",
+    kpiYtd: "KPI year-to-date",
+    runningTitle: "Periode berjalan",
+    runningPeriod: "Periode {period}",
+    runningHint:
+      "Estimasi sampai pembukuan periode ini ditutup. Angkanya bisa berubah dan bukan angka resmi.",
+    emptyTitle: "Belum ada data periode tutup",
+    emptyHint:
+      "Angka kondisi bisnis muncul setelah periode pertama ditutup oleh keuangan.",
+  },
+  profitShare: {
+    holdingsTitle: "Porsi saya",
+    holdingsHint: "Porsi bagi hasil yang berlaku saat ini per entitas.",
+    entity: "Entitas",
+    share: "Porsi",
+    version: "Versi",
+    effectiveFrom: "Berlaku sejak",
+    approvedAt: "Disetujui",
+    versionValue: "Versi {version}",
+    estimateTitle: "Estimasi bagi hasil berjalan",
+    estimateHint:
+      "Bukan angka resmi. Bagi hasil resmi baru ada setelah periode ditutup dan distribusinya disetujui.",
+    estimateBasis: "Dari estimasi laba bersih {profit} × porsi {share}",
+    estimateAsOf: "Per {date}",
+    estimateOf: "{entity} · {period}",
+    historyTitle: "Riwayat bagi hasil",
+    historyHint: "Pernyataan bagi hasil milik Anda, dari yang terbaru.",
+    period: "Periode",
+    kind: "Jenis",
+    gross: "Kotor",
+    tax: "Pajak",
+    net: "Diterima",
+    status: "Status",
+    grossTax: "Kotor {gross} · pajak {tax}",
+    regular: "Reguler",
+    adjustment: "Penyesuaian",
+    paid: "Dibayar",
+    paidOn: "Dibayar {date}",
+    pending: "Belum dibayar",
+    statementReady: "Pernyataan tersedia",
+    shareHistoryTitle: "Riwayat perubahan porsi",
+    shareHistoryHint: "Setiap perubahan porsi yang sudah disetujui.",
+    emptyTitle: "Belum ada data bagi hasil",
+    emptyHint:
+      "Porsi, estimasi, dan pernyataan bagi hasil Anda muncul di sini setelah dicatat oleh admin.",
+    noHistory: "Belum ada distribusi",
+    noHistoryHint:
+      "Pernyataan muncul setelah distribusi periode pertama dibayarkan.",
+    noShareHistory: "Belum ada riwayat perubahan porsi",
+    unknownEntity: "Entitas bagi hasil",
+  },
+  documents: {
+    title: "Dokumen shareholder",
+    hint: "Laporan bulanan dan dokumen lain yang sudah diterbitkan untuk shareholder.",
+    published: "Terbit {date}",
+    loadMore: "Muat dokumen berikutnya",
+    downloadNote:
+      "Berkas belum bisa diunduh dari layar ini. Hubungi admin bila Anda membutuhkan salinannya.",
+    emptyTitle: "Belum ada dokumen",
+    emptyHint:
+      "Dokumen muncul di sini setelah manajemen menerbitkannya untuk shareholder.",
+    kinds: {
+      monthly_report: "Laporan bulanan",
+      general_meeting_minutes: "Notulen rapat umum",
+      other: "Dokumen lain",
+    },
+  },
+} as const;
