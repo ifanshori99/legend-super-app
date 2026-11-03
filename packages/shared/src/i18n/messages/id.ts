@@ -53,6 +53,12 @@ import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { rosterMessages } from "./ws10-roster.ts";
+import { facilityStaffMessages } from "./facility-staff.ts";
+import { facilityAdminMessages } from "./facility-admin.ts";
+import { facilityReportMessages } from "./facility-report.ts";
+import { opsEquipmentMessages } from "./ops-equipment.ts";
+import { opsFoodSafetyMessages } from "./ops-food-safety.ts";
+import { opsChecklistMessages } from "./ops-checklist.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -136,6 +142,14 @@ export const id = {
   payrollRun: payrollRunMessages,
   payslip: payslipMessages,
   learning: learningMessages,
+  // WS-09/WS-14 ops squad (2026-11-03): one catalog file per bead so the six
+  // parallel beads never edit the same lines.
+  facilityStaff: facilityStaffMessages,
+  facilityAdmin: facilityAdminMessages,
+  facilityReport: facilityReportMessages,
+  opsEquipment: opsEquipmentMessages,
+  opsFoodSafety: opsFoodSafetyMessages,
+  opsChecklist: opsChecklistMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
