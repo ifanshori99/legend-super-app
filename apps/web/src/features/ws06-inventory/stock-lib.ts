@@ -96,7 +96,12 @@ export function formatDateTime(
   }).format(new Date(value));
 }
 
-/** The outlet's business date (D-CORE-6, owner Q39 cutoff), "2026-11-01". */
+/**
+ * The outlet's business date (D-CORE-6, owner Q39 cutoff), "2026-11-01".
+ * Screens pass `useOutletClock()` (`timeZone`, `cutoff`); the default is the
+ * documented `DEFAULT_BUSINESS_DAY_CLOCK` fallback for callers without an
+ * outlet (mocks, tests), never the device clock.
+ */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = INVENTORY_TIME_ZONE,

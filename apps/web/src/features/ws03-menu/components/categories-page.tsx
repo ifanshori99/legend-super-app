@@ -41,6 +41,7 @@ import {
   useUpdateCategory,
 } from "../hooks";
 import { reorderIds } from "../lib";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 import { ReorderButtons } from "./reorder-buttons";
 
@@ -91,6 +92,7 @@ function CategoryActions({
 export function CategoriesPage() {
   const t = useT();
   const toast = useToast();
+  const { canManageItems } = useMenuWrites();
   const categoriesQuery = useCategories({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const createCategory = useCreateCategory();
@@ -125,7 +127,7 @@ export function CategoriesPage() {
       .toLocaleLowerCase("id-ID")
       .includes(search.trim().toLocaleLowerCase("id-ID")),
   );
-  const reorderEnabled = search.trim() === "";
+  const reorderEnabled = canManageItems && search.trim() === "";
 
   function openNew() {
     setName("");
@@ -237,10 +239,12 @@ export function CategoriesPage() {
           label: t("menu.categories.searchPlaceholder"),
         }}
         actions={
-          <Button type="button" onClick={openNew}>
-            <Plus aria-hidden="true" />
-            {t("menu.categories.add")}
-          </Button>
+          canManageItems ? (
+            <Button type="button" onClick={openNew}>
+              <Plus aria-hidden="true" />
+              {t("menu.categories.add")}
+            </Button>
+          ) : undefined
         }
         onRetry={() => {
           void categoriesQuery.refetch();
@@ -249,18 +253,20 @@ export function CategoriesPage() {
         empty={{
           title: t("menu.categories.emptyTitle"),
           description: t("menu.categories.emptyHint"),
-          action: (
+          action: canManageItems ? (
             <Button type="button" variant="outline" onClick={openNew}>
               {t("menu.categories.add")}
             </Button>
-          ),
+          ) : undefined,
         }}
         noResults={filtered.length === 0 && categories.length > 0}
         rowCount={filtered.length}
       >
-        <p className="border-b px-card py-2 text-sm leading-5 text-muted-foreground">
-          {t("menu.categories.reorderHint")}
-        </p>
+        {canManageItems && (
+          <p className="border-b px-card py-2 text-sm leading-5 text-muted-foreground">
+            {t("menu.categories.reorderHint")}
+          </p>
+        )}
         <div className="hidden md:block">
           <Table>
             <TableHeader>
@@ -277,9 +283,11 @@ export function CategoriesPage() {
                 <TableHead numeric>
                   {t("menu.categories.columns.items")}
                 </TableHead>
-                <TableHead numeric>
-                  {t("menu.categories.columns.actions")}
-                </TableHead>
+                {canManageItems && (
+                  <TableHead numeric>
+                    {t("menu.categories.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -328,14 +336,16 @@ export function CategoriesPage() {
                       count: itemCounts.get(category.id) ?? 0,
                     })}
                   </TableCell>
-                  <TableCell numeric>
-                    <CategoryActions
-                      category={category}
-                      pending={reorder.isPending}
-                      onEdit={() => openEdit(category)}
-                      onDelete={() => setDeleting(category)}
-                    />
-                  </TableCell>
+                  {canManageItems && (
+                    <TableCell numeric>
+                      <CategoryActions
+                        category={category}
+                        pending={reorder.isPending}
+                        onEdit={() => openEdit(category)}
+                        onDelete={() => setDeleting(category)}
+                      />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -361,37 +371,39 @@ export function CategoriesPage() {
                   </span>
                 </div>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                {reorderEnabled ? (
-                  <ReorderButtons
-                    index={index}
-                    count={filtered.length}
-                    labelUp={t("menu.categories.moveUp", {
-                      name: category.name,
-                    })}
-                    labelDown={t("menu.categories.moveDown", {
-                      name: category.name,
-                    })}
-                    disabled={reorder.isPending}
-                    onMove={(direction) => move(category, direction)}
+              {canManageItems && (
+                <div className="flex items-center justify-between gap-2">
+                  {reorderEnabled ? (
+                    <ReorderButtons
+                      index={index}
+                      count={filtered.length}
+                      labelUp={t("menu.categories.moveUp", {
+                        name: category.name,
+                      })}
+                      labelDown={t("menu.categories.moveDown", {
+                        name: category.name,
+                      })}
+                      disabled={reorder.isPending}
+                      onMove={(direction) => move(category, direction)}
+                    />
+                  ) : (
+                    <span />
+                  )}
+                  <CategoryActions
+                    category={category}
+                    pending={reorder.isPending}
+                    onEdit={() => openEdit(category)}
+                    onDelete={() => setDeleting(category)}
                   />
-                ) : (
-                  <span />
-                )}
-                <CategoryActions
-                  category={category}
-                  pending={reorder.isPending}
-                  onEdit={() => openEdit(category)}
-                  onDelete={() => setDeleting(category)}
-                />
-              </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
       </DataTableShell>
 
       <Dialog
-        open={editor !== null}
+        open={canManageItems && editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -458,7 +470,7 @@ export function CategoriesPage() {
       </Dialog>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.categories.deleteTitle", {
           name: deleting?.name ?? "",

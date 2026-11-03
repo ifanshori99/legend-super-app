@@ -202,6 +202,17 @@ function postEntry(input: {
   return entry;
 }
 
+/**
+ * System journal for other accounting mocks (depreciation run, legend-m4zn):
+ * posts into this store so the journal link of a new run opens a real entry,
+ * the way the API books the run's journal in the same transaction.
+ */
+export function postMockSystemJournal(
+  input: Omit<Parameters<typeof postEntry>[0], "postedBy" | "reversalOf">,
+): JournalEntry {
+  return postEntry({ ...input, postedBy: null, reversalOf: null });
+}
+
 function reversedByOf(entryId: string): string | null {
   return (
     state.get().journals.find((entry) => entry.reversalOf === entryId)?.id ??

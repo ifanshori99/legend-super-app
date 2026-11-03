@@ -21,7 +21,7 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   CoreError,
@@ -30,6 +30,7 @@ import {
   toIsoDateTime,
   z,
   type Idr,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -69,6 +70,7 @@ import {
   outlets,
   domainEventOutbox,
 } from "../db/schema";
+import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
 import { openSecret, sealSecret } from "../lib/secrets";
 import { recordAudit } from "./core-audit";
@@ -834,6 +836,144 @@ export async function openOrJoinTableSession(
   });
 }
 
+export type OpenStaffSeatedSessionInput = {
+  outletId: OutletId;
+  /** The party's tables; the first is primary and carries the session. */
+  tableIds: string[];
+  pax: number;
+  /** The host who seats the party; doubles as the open-bill confirmer. */
+  confirmedBy: string;
+  reservationId: string;
+  now: Date;
+};
+
+export type OpenStaffSeatedSessionResult = {
+  sessionId: string;
+  participantId: string;
+  zoneId: string;
+  paymentMode: "pay_first" | "open_bill";
+};
+
+/**
+ * Staff-seated open (reservation seating, RSV-02). Same session, credential,
+ * seal and `table_session.opened` event as a guest scan, so a later guest QR
+ * scan of the table joins this session instead of opening a second one.
+ *
+ * Multi-table parties: every table's live-state lock is taken in ascending id
+ * order (deadlock-safe), each must be seatable (zone active, not dirty or
+ * inactive, no live session; a session past its 12-hour window is expired
+ * first, failing closed on an unsettled bill) before anything is written. The
+ * session binds to the primary table; secondary tables are marked occupied and
+ * are released when that session closes (see `closeTableSession`).
+ */
+export async function openStaffSeatedSession(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: OpenStaffSeatedSessionInput,
+): Promise<OpenStaffSeatedSessionResult> {
+  const { now } = input;
+  const tenantId = context.tenant.tenantId;
+  const primaryId = input.tableIds[0];
+  if (!primaryId) throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
+  const ordered = [...new Set(input.tableIds)].sort();
+  for (const id of ordered) await lockTableLiveState(tx, tenantId, id);
+
+  const seatable = new Map<
+    string,
+    { table: typeof tables.$inferSelect; zone: typeof floorZones.$inferSelect }
+  >();
+  for (const id of ordered) {
+    const [table] = await tx
+      .select()
+      .from(tables)
+      .where(and(eq(tables.tenantId, tenantId), eq(tables.id, id)));
+    if (!table) throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
+    assertOutletInScope(context.outletScope, table.outletId);
+    if (table.outletId !== input.outletId)
+      throw new CoreError("NOT_FOUND", "Meja tidak ditemukan.");
+    const [zone] = await tx
+      .select()
+      .from(floorZones)
+      .where(
+        and(eq(floorZones.tenantId, tenantId), eq(floorZones.id, table.zoneId)),
+      );
+    if (!zone) throw new CoreError("NOT_FOUND", "Zona tidak ditemukan.");
+    if (zone.status === "inactive")
+      throw new CoreError("CONFLICT", "Zona meja sedang tidak aktif.");
+    if (table.status === "dirty" || table.status === "inactive")
+      throw new CoreError("CONFLICT", "Meja belum siap dipakai.");
+    const active = await activeSessionForTable(tx, tenantId, table.id);
+    if (active) {
+      if (!tokenExpired(active, now))
+        throw new CoreError("CONFLICT", "Meja masih dipakai tamu lain.");
+      await expireSession(tx, context, active, now);
+    }
+    seatable.set(id, { table, zone });
+  }
+
+  const primary = seatable.get(primaryId)!;
+  const sessionId = randomUUID();
+  const credential = newSessionCredential();
+  const paymentMode = primary.zone.paymentMode;
+  const pax = Math.min(input.pax, 30);
+  await tx.insert(tableSessions).values({
+    id: sessionId,
+    tenantId,
+    outletId: input.outletId,
+    tableId: primaryId,
+    pax,
+    paymentMode,
+    status: "open",
+    sessionTokenHash: credential.hash,
+    sessionTokenSealed: sealSecret(
+      credential.token,
+      sessionSealAad(tenantId, sessionId),
+    ),
+    // A pay-first session is opened by the guest, never confirmed by staff.
+    confirmedBy: paymentMode === "open_bill" ? input.confirmedBy : null,
+    reservationId: input.reservationId,
+    openedAt: now,
+    lastActivityAt: now,
+  });
+  const [participant] = await tx
+    .insert(sessionParticipants)
+    .values({
+      tenantId,
+      outletId: input.outletId,
+      tableSessionId: sessionId,
+      deviceHash: `reservation:${input.reservationId}`,
+      joinedAt: now,
+      lastSeenAt: now,
+    })
+    .returning();
+  if (!participant) throw new Error("Participant insert returned no row");
+  await tx
+    .update(tables)
+    .set({ status: "occupied", updatedAt: now })
+    .where(and(eq(tables.tenantId, tenantId), inArray(tables.id, ordered)));
+  await appendSessionEvent(tx, context, "table_session.opened", {
+    sessionId,
+    outletId: input.outletId,
+    payload: {
+      sessionId,
+      tableId: primaryId,
+      zoneId: primary.zone.id,
+      pax,
+      paymentMode,
+      openedBy: "staff",
+      participantId: participant.id,
+    },
+    actor: { type: "user", id: input.confirmedBy },
+    now,
+  });
+  return {
+    sessionId,
+    participantId: participant.id,
+    zoneId: primary.zone.id,
+    paymentMode,
+  };
+}
+
 /**
  * Resolves the guest credential for the session routes that land next
  * (cart/quote/order). ORD-04: a closed, voided or expired session is refused
@@ -980,7 +1120,27 @@ export async function closeTableSession(
 ): Promise<TableSession> {
   return withTenant(db, context, async (tx) => {
     const located = await loadSession(tx, context.tenant.tenantId, sessionId);
-    await lockTableLiveState(tx, context.tenant.tenantId, located.tableId);
+    // A reservation-seated party may hold secondary tables (marked occupied by
+    // `openStaffSeatedSession`); they are freed with the session. Lock every
+    // table in ascending id order, the same order seating uses.
+    const secondaryIds = located.reservationId
+      ? (
+          await tx
+            .select({ tableId: reservationTables.tableId })
+            .from(reservationTables)
+            .where(
+              and(
+                eq(reservationTables.tenantId, context.tenant.tenantId),
+                eq(reservationTables.reservationId, located.reservationId),
+                isNull(reservationTables.releasedAt),
+              ),
+            )
+        )
+          .map((hold) => hold.tableId)
+          .filter((id) => id !== located.tableId)
+      : [];
+    for (const id of [...new Set([located.tableId, ...secondaryIds])].sort())
+      await lockTableLiveState(tx, context.tenant.tenantId, id);
     const row = await loadSession(tx, context.tenant.tenantId, sessionId, {
       forUpdate: true,
     });
@@ -1040,6 +1200,20 @@ export async function closeTableSession(
           eq(tables.id, row.tableId),
         ),
       );
+    if (secondaryIds.length > 0)
+      await tx
+        .update(tables)
+        .set({
+          status: input.tableCleaned ? "available" : "dirty",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(tables.tenantId, context.tenant.tenantId),
+            inArray(tables.id, secondaryIds),
+            eq(tables.status, "occupied"),
+          ),
+        );
     await appendSessionEvent(tx, context, "table_session.closed", {
       sessionId: row.id,
       outletId: row.outletId,

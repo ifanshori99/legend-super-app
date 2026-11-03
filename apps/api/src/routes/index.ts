@@ -10,6 +10,13 @@ import { inventoryRouter } from "./inventory.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
+import {
+  orgIntegrationsRouter,
+  platformUsageRouter,
+} from "./platform-integrations.routes";
+import { orgThemesRouter } from "./org-themes.routes";
+import { opsOutboxRouter } from "./ops-outbox.routes";
+import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
@@ -25,6 +32,9 @@ import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingRouter } from "./accounting.routes";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
+import { reservationRouter } from "./reservation.routes";
+import { facilityRouter } from "./facility.routes";
+import { hrisRouter } from "./hris.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -42,8 +52,15 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/notes", notesRouter);
 apiRouter.use("/admin", adminRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
+apiRouter.use("/platform", platformUsageRouter);
 apiRouter.use("/platform", platformRouter);
+apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
+apiRouter.use("/org", orgThemesRouter);
+apiRouter.use("/org/text-overrides", textOverridesRouter);
+apiRouter.use("/consents", consentRouter);
+// Operator outbox replay (legend-m119).
+apiRouter.use("/ops", opsOutboxRouter);
 // Whitelabel brand context for SSR (TEN-08), resolved from the request host.
 apiRouter.use("/tenant", platformBrandRouter);
 // Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.
@@ -86,3 +103,9 @@ apiRouter.use("/accounting", accountingRouter);
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
 apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);
+// WS-08 reservations (legend-t8bz): full paths inside the router.
+apiRouter.use(reservationRouter);
+// WS-09 facility slots (legend-nm4f).
+apiRouter.use("/facility", facilityRouter);
+// WS-10 HRIS (legend-qe1z).
+apiRouter.use("/hris", hrisRouter);

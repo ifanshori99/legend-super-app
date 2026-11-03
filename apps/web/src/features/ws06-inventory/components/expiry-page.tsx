@@ -33,6 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useOutletClock } from "@/lib/tenant-context";
 import {
   useInventoryItems,
   useStockBatches,
@@ -59,6 +60,9 @@ type ExpiryFilter = "all" | "expired" | "expiring" | "no_expiry";
 
 export function ExpiryPage() {
   const t = useT();
+  // Expiry "days left" is relative to the outlet's business date (D-CORE-7);
+  // with no outlet the hook returns the documented Jakarta 04:00 default.
+  const { clock } = useOutletClock();
   const [search, setSearch] = React.useState("");
   const [locationId, setLocationId] = React.useState(ALL);
   const [status, setStatus] = React.useState<ExpiryFilter>("all");
@@ -85,7 +89,7 @@ export function ExpiryPage() {
     () => unitsQuery.data?.data ?? [],
     [unitsQuery.data],
   );
-  const today = businessDateToday();
+  const today = businessDateToday(new Date(), clock.timeZone, clock.cutoff);
 
   const rows = React.useMemo(
     () => expiryRows({ batches, items, locations, uoms }, today),

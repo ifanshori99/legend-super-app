@@ -11,7 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, ilike, lt, or } from "drizzle-orm";
-import { PlatformError } from "@starter/shared/platform";
+import { PlatformError, platformEvents } from "@starter/shared/platform";
 import type {
   CreateTenantInput,
   SetTenantPackageInput,
@@ -26,17 +26,25 @@ import {
   platformPackageSchema,
   tenantSchema,
 } from "@starter/shared/platform";
-import { decodeCursor, encodeCursor } from "@starter/shared/core";
+import {
+  createUlid,
+  decodeCursor,
+  encodeCursor,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { TenantStatus } from "@starter/shared/platform";
-import { db } from "../db";
-import { platformPackages, tenants } from "../db/schema";
-import { withTenant } from "../db/tenant";
-import { HttpError } from "../lib/http-error";
-import { seedTenantRoleTemplates } from "./access.service";
+import { db } from "../db/index.ts";
+import { platformPackages, tenants } from "../db/schema/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { seedTenantRoleTemplates } from "./access.service.ts";
+import { recordAudit } from "./audit-writer.ts";
+import { appendOutbox } from "./core-outbox.ts";
+import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
 
 type TenantRow = typeof tenants.$inferSelect;
 type PackageRow = typeof platformPackages.$inferSelect;
@@ -145,32 +153,48 @@ export async function getTenantOrThrow(tenantId: string): Promise<Tenant> {
   return toTenant(row);
 }
 
+/** Consumers receive platform events through the cloud sync stream. */
+const EVENT_DESTINATION = "cloud-sync";
+
 /**
- * TEN-06: a tenant is created from panel input, active from the start, together
- * with its 17 tenant-level role templates (PRD §3.7, bead legend-4f9). The
- * first-admin appointment (createTenantInput.firstAdmin) belongs to the
- * identity/RBAC beads: it needs the `users`/user_identities tables and a role
- * assignment, neither of which exists yet. The requested admin is validated
- * with the rest of the body and deliberately not turned into a stub row.
+ * Tenant-wide context for a platform action on `tenantId`. The id is chosen by
+ * the platform action (a new tenant, or a route parameter behind the platform
+ * permission), never resolved from a client tenant parameter (TEN-02). Audit
+ * rows land in that tenant's audit_logs under RLS, where its admin sees them
+ * (TEN-04: Super Admin actions are visible to the tenant).
+ */
+function platformTenantScope(tenantId: string): ScopedTenantContext {
+  return establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+}
+
+/**
+ * TEN-06 / flow R steps 2-3: a tenant is created from panel input, active from
+ * the start, with its 17 tenant-level role templates (PRD §3.7, legend-4f9)
+ * and its first admin (legend-2ign): an identity account (reused or invited,
+ * see platform-admin-provision.service.ts) holding the tenant_admin template
+ * at tenant scope. The tenant, templates, account, assignment, audit rows and
+ * the `tenant.created` outbox event (which names the admin, so the
+ * notification side can send the invitation) commit together or not at all.
+ * Nothing secret is created or returned: the admin signs in with the WhatsApp
+ * reverse OTP or an email magic link.
  *
- * The insert runs inside a tenant transaction because `roles` is a tenant
- * table with RLS; minting the context for the id before the row exists is
- * safe (TEN-02: the platform action chose it, never a client parameter), and
- * the tenant and its templates commit together or not at all.
+ * Minting the context for the id before the row exists is safe (TEN-02: the
+ * platform action chose it, never a client parameter).
  */
 export async function createTenant(
   input: CreateTenantInput,
   actorUserId: string,
+  now = new Date(),
 ): Promise<Tenant> {
   const pkg = await assignablePackage(input.plan);
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
   if (outside.length > 0) throw new PlatformError("MODULE_NOT_IN_PACKAGE");
 
   const tenantId = randomUUID();
-  const context = establishScopedTenantContext(
-    establishTenantContext({ tenantId, brandId: null, source: "session" }),
-    { kind: "tenant" },
-  );
+  const context = platformTenantScope(tenantId);
   return withTenant(db, context, async (tx) => {
     const [row] = await tx
       .insert(tenants)
@@ -193,6 +217,69 @@ export async function createTenant(
         "That tenant slug is already taken.",
       );
     await seedTenantRoleTemplates(tx, row.id);
+    const admin = await provisionFirstTenantAdmin(
+      tx,
+      context,
+      input.firstAdmin,
+      { actorUserId, now },
+    );
+
+    const definition = platformEvents["tenant.created"];
+    const event = definition.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId: null,
+      name: definition.name,
+      version: definition.version,
+      aggregateType: definition.entry.aggregateType,
+      aggregateId: tenantId,
+      sequence: 1,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: actorUserId },
+      deviceId: null,
+      idempotencyKey: `${definition.name}:${tenantId}:1`,
+      payloadSchemaRef: definition.payloadSchemaRef,
+      payload: {
+        slug: row.slug,
+        plan: row.plan,
+        modules: [...input.featureFlags.modules],
+        firstAdminUserId: admin.userId,
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination: EVENT_DESTINATION,
+      direction: null,
+      peerId: null,
+    });
+
+    // No name, number or email in the snapshot: the masker would redact them
+    // anyway, and the admin is identified by account id (PRD §6 B audit_logs).
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "tenant.created",
+        objectType: "tenant",
+        objectId: tenantId,
+        reason: null,
+        before: null,
+        after: {
+          slug: row.slug,
+          plan: row.plan,
+          deploymentMode: row.deploymentMode,
+          modules: [...input.featureFlags.modules],
+          firstAdminUserId: admin.userId,
+          adminProvisioning: admin.account,
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
     return toTenant(row);
   });
 }
@@ -201,8 +288,10 @@ export async function createTenant(
 export async function setTenantStatus(
   tenantId: string,
   input: SetTenantStatusInput,
+  actorUserId: string,
 ): Promise<Tenant> {
-  return db.transaction(async (tx) => {
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
       .from(tenants)
@@ -218,6 +307,23 @@ export async function setTenantStatus(
       .set({ status: input.status })
       .where(eq(tenants.id, tenantId))
       .returning();
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "tenant.status_changed",
+        objectType: "tenant",
+        objectId: tenantId,
+        reason: input.reason,
+        before: { status: current.status },
+        after: { status: row.status },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
     return toTenant(row);
   });
 }
@@ -226,21 +332,56 @@ export async function setTenantStatus(
 export async function setTenantPackage(
   tenantId: string,
   input: SetTenantPackageInput,
+  actorUserId: string,
 ): Promise<Tenant> {
   const pkg = await assignablePackage(input.plan);
   const outside = modulesOutsidePackage(input.featureFlags.modules, pkg);
   if (outside.length > 0) throw new PlatformError("MODULE_NOT_IN_PACKAGE");
-  const [row] = await db
-    .update(tenants)
-    .set({
-      plan: input.plan,
-      featureFlags: input.featureFlags,
-      limits: input.limits,
-    })
-    .where(eq(tenants.id, tenantId))
-    .returning();
-  if (!row) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
-  return toTenant(row);
+  const context = platformTenantScope(tenantId);
+  return withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1)
+      .for("update");
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Tenant not found.");
+    const [row] = await tx
+      .update(tenants)
+      .set({
+        plan: input.plan,
+        featureFlags: input.featureFlags,
+        limits: input.limits,
+      })
+      .where(eq(tenants.id, tenantId))
+      .returning();
+    await recordAudit(
+      {
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: "tenant.package_changed",
+        objectType: "tenant",
+        objectId: tenantId,
+        reason: input.reason,
+        before: {
+          plan: current.plan,
+          modules: [...current.featureFlags.modules],
+          limits: { ...current.limits },
+        },
+        after: {
+          plan: row.plan,
+          modules: [...row.featureFlags.modules],
+          limits: { ...row.limits },
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toTenant(row);
+  });
 }
 
 /**

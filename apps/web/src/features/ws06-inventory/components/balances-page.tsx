@@ -32,6 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useOutletClock } from "@/lib/tenant-context";
 import {
   useInventoryItems,
   useParLevels,
@@ -61,6 +62,9 @@ const ALL = "all";
 
 export function BalancesPage() {
   const t = useT();
+  // Business dates follow the outlet clock (D-CORE-7), never the device clock;
+  // with no outlet the hook returns the documented Jakarta 04:00 default.
+  const { clock } = useOutletClock();
   const [search, setSearch] = React.useState("");
   const [locationId, setLocationId] = React.useState(ALL);
   const [page, setPage] = React.useState(1);
@@ -96,7 +100,7 @@ export function BalancesPage() {
     () => batchesQuery.data?.data ?? [],
     [batchesQuery.data],
   );
-  const today = businessDateToday();
+  const today = businessDateToday(new Date(), clock.timeZone, clock.cutoff);
 
   const rows = React.useMemo(
     () =>

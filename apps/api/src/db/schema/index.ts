@@ -38,3 +38,9 @@ export * from "./service-request";
 export * from "./device-pin";
 // WS-03 QR order carts/orders (legend-e2x).
 export * from "./qr-order";
+export * from "./reservation";
+export * from "./facility";
+export * from "./hris";
+// WS-01 text overrides + consents (legend-cv3).
+export * from "./text-overrides";
+export * from "./consents";

@@ -103,10 +103,10 @@ describe("notification persistence", () => {
           sql`INSERT INTO notification_outbox (tenant_id, id, outlet_id, source_event_id, event_type, payload) VALUES (${tenantId}::uuid, ${randomUUID()}::uuid, ${outlet}::uuid, ${event}::uuid, 'order.placed', '{}'::jsonb)`,
         );
         await tx.execute(
-          sql`INSERT INTO notifications (tenant_id, id, outlet_id, user_id, category, title, body, source_event_id, dedupe_key) VALUES (${tenantId}::uuid, ${notificationId}::uuid, ${outlet}::uuid, ${user}::uuid, 'order_ready', 'Ready', '', ${event}::uuid, 'same-key')`,
+          sql`INSERT INTO notifications (tenant_id, id, outlet_id, user_id, category, title, body, source_event_id, dedupe_key) VALUES (${tenantId}::uuid, ${notificationId}::uuid, NULL, ${user}::uuid, 'order_ready', 'Ready', '', ${event}::uuid, 'same-key')`,
         );
         await tx.execute(
-          sql`INSERT INTO delivery_attempts (tenant_id, id, outlet_id, notification_id, channel, idempotency_key) VALUES (${tenantId}::uuid, ${randomUUID()}::uuid, ${outlet}::uuid, ${notificationId}::uuid, 'web_push', 'same-key')`,
+          sql`INSERT INTO delivery_attempts (tenant_id, id, outlet_id, notification_id, channel, idempotency_key) VALUES (${tenantId}::uuid, ${randomUUID()}::uuid, NULL, ${notificationId}::uuid, 'web_push', 'same-key')`,
         );
       });
     await insert(tenantA);

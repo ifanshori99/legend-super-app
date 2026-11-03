@@ -43,6 +43,7 @@ import {
   useUpdateAvailability,
 } from "../hooks";
 import { describeSchedule } from "../lib";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 import { AvailabilityBadge } from "./status-badge";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
@@ -99,6 +100,7 @@ function AvailabilityActions({
 export function AvailabilityPage() {
   const t = useT();
   const toast = useToast();
+  const { canToggleAvailability } = useMenuWrites();
   const availabilityQuery = useAvailability({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const stationsQuery = useStations({ limit: 100 });
@@ -251,9 +253,11 @@ export function AvailabilityPage() {
                   {t("menu.availability.columns.dailyLimit")}
                 </TableHead>
                 <TableHead>{t("menu.availability.columns.status")}</TableHead>
-                <TableHead numeric>
-                  {t("menu.availability.columns.actions")}
-                </TableHead>
+                {canToggleAvailability && (
+                  <TableHead numeric>
+                    {t("menu.availability.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -287,14 +291,16 @@ export function AvailabilityPage() {
                     <TableCell>
                       <AvailabilityBadge status={row.status} />
                     </TableCell>
-                    <TableCell numeric>
-                      <AvailabilityActions
-                        row={row}
-                        pending={toggleAvailability.isPending}
-                        onToggle={() => setToggleTarget(row)}
-                        onManage={() => setEditing(row)}
-                      />
-                    </TableCell>
+                    {canToggleAvailability && (
+                      <TableCell numeric>
+                        <AvailabilityActions
+                          row={row}
+                          pending={toggleAvailability.isPending}
+                          onToggle={() => setToggleTarget(row)}
+                          onManage={() => setEditing(row)}
+                        />
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -334,19 +340,21 @@ export function AvailabilityPage() {
                   </div>
                   <AvailabilityBadge status={row.status} />
                 </div>
-                <AvailabilityActions
-                  row={row}
-                  pending={toggleAvailability.isPending}
-                  onToggle={() => setToggleTarget(row)}
-                  onManage={() => setEditing(row)}
-                />
+                {canToggleAvailability && (
+                  <AvailabilityActions
+                    row={row}
+                    pending={toggleAvailability.isPending}
+                    onToggle={() => setToggleTarget(row)}
+                    onManage={() => setEditing(row)}
+                  />
+                )}
               </li>
             );
           })}
         </ul>
       </DataTableShell>
 
-      {editing && (
+      {canToggleAvailability && editing && (
         <AvailabilitySettings
           availability={editing}
           name={itemsById.get(editing.menuItemId)?.name ?? ""}
@@ -375,7 +383,7 @@ export function AvailabilityPage() {
       )}
 
       <ConfirmDialog
-        open={toggleTarget !== null}
+        open={canToggleAvailability && toggleTarget !== null}
         onOpenChange={(open) => !open && setToggleTarget(null)}
         title={
           toggleTarget?.status === "sold_out"

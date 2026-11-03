@@ -10,6 +10,7 @@ import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
 import {
+  DEFAULT_BUSINESS_DAY_CLOCK,
   cafeLegendFixtures,
   createUlid,
   decimal4Schema,
@@ -562,8 +563,17 @@ registerMock(listStockLedger, ({ query, scenario }) => {
           entry.inventoryItemId === query.inventoryItemId) &&
         (!query.movementType || entry.movementType === query.movementType) &&
         (!query.fromDate ||
-          businessDateOf(entry.occurredAt) >= query.fromDate) &&
-        (!query.toDate || businessDateOf(entry.occurredAt) <= query.toDate),
+          businessDateOf(
+            entry.occurredAt,
+            DEFAULT_BUSINESS_DAY_CLOCK.timeZone,
+            DEFAULT_BUSINESS_DAY_CLOCK.cutoff,
+          ) >= query.fromDate) &&
+        (!query.toDate ||
+          businessDateOf(
+            entry.occurredAt,
+            DEFAULT_BUSINESS_DAY_CLOCK.timeZone,
+            DEFAULT_BUSINESS_DAY_CLOCK.cutoff,
+          ) <= query.toDate),
     )
     .sort(
       (a, b) =>

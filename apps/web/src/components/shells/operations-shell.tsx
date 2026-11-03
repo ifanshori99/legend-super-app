@@ -4,6 +4,9 @@
 // Kitchen screens pass mode="dark" (PRD: mode gelap untuk dapur).
 // v3 (Metoric topbar): the status bar sits on the shell tone with a 21px
 // bold screen title; the work area keeps the page tone.
+// Outlet name, station and the clock zone come from the tenant context
+// (lib/tenant-context.tsx, bead legend-ri1p); the props only override it for
+// previews. No outlet configured keeps the neutral "Outlet belum dipilih".
 import { useSyncExternalStore, type ReactNode } from "react";
 import { cn } from "cn";
 import { Wifi, WifiOff } from "lucide-react";
@@ -11,6 +14,7 @@ import type { ColorMode } from "@starter/shared/theme";
 import { useT } from "@/components/i18n";
 import { ThemeScope } from "@/components/theme-scope";
 import { Badge } from "@/components/ui/badge";
+import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 
 function subscribeMinute(onChange: () => void) {
   const id = window.setInterval(onChange, 15_000);
@@ -64,19 +68,28 @@ export function OperationsShell({
 }: {
   /** Screen name, e.g. "POS Kasir" or "KDS · Bar kopi". */
   title: string;
-  outlet: string;
+  /** Override the configured outlet name (previews); default from context. */
+  outlet?: string;
+  /** Override the configured station name (previews); default from context. */
   station?: string;
   staffName?: string;
   /** Cloud connection; operations keep working via the edge node offline. */
   online: boolean;
-  /** Outlet IANA time zone, e.g. "Asia/Jakarta". */
-  timeZone: string;
+  /** Override the outlet IANA zone (previews); default from context. */
+  timeZone?: string;
   mode?: ColorMode;
   actions?: ReactNode;
   embedded?: boolean;
   children: ReactNode;
 }) {
   const t = useT();
+  const tenant = useTenantContext();
+  const outletClock = useOutletClock();
+  // No outlet configured (SSR/no-config) keeps the neutral copy; the clock
+  // falls back to the documented default clock until an outlet is known.
+  const outletName = outlet ?? tenant.outlet?.name ?? t("area.ops.outletUnset");
+  const stationName = station ?? tenant.station?.name;
+  const zone = timeZone ?? outletClock.timeZone;
   const Main = embedded ? "div" : "main";
   return (
     <ThemeScope
@@ -87,11 +100,15 @@ export function OperationsShell({
         embedded ? "h-full" : "h-dvh",
       )}
     >
-      <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 py-2">
+      <header
+        data-outlet-time-zone={zone}
+        data-business-day-cutoff={outletClock.businessDayCutoff}
+        className="flex min-h-16 shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 py-2"
+      >
         <div className="min-w-0">
           <p className="truncate type-title">{title}</p>
           <p className="truncate text-sm leading-5 text-muted-foreground">
-            {[outlet, station].filter(Boolean).join(" · ")}
+            {[outletName, stationName].filter(Boolean).join(" · ")}
           </p>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-3">
@@ -110,7 +127,7 @@ export function OperationsShell({
           {staffName && (
             <span className="text-sm font-semibold">{staffName}</span>
           )}
-          <LiveClock timeZone={timeZone} />
+          <LiveClock timeZone={zone} />
           {actions}
         </div>
       </header>

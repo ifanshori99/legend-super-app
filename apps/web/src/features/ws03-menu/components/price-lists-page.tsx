@@ -48,6 +48,7 @@ import {
   effectivePriceList,
   formatBusinessDate,
 } from "../lib";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 
 const CHANNELS = [
@@ -128,6 +129,7 @@ function PriceListActions({
 export function PriceListsPage() {
   const t = useT();
   const toast = useToast();
+  const { canManagePrices } = useMenuWrites();
   const priceListsQuery = usePriceLists({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const createPriceList = useCreatePriceList();
@@ -228,20 +230,22 @@ export function PriceListsPage() {
                 : "ready"
         }
         actions={
-          <Button type="button" onClick={openNew}>
-            <Plus aria-hidden="true" />
-            {t("menu.prices.add")}
-          </Button>
+          canManagePrices ? (
+            <Button type="button" onClick={openNew}>
+              <Plus aria-hidden="true" />
+              {t("menu.prices.add")}
+            </Button>
+          ) : undefined
         }
         onRetry={() => void priceListsQuery.refetch()}
         empty={{
           title: t("menu.prices.emptyTitle"),
           description: t("menu.prices.emptyHint"),
-          action: (
+          action: canManagePrices ? (
             <Button type="button" variant="outline" onClick={openNew}>
               {t("menu.prices.add")}
             </Button>
-          ),
+          ) : undefined,
         }}
         rowCount={lists.length}
       >
@@ -252,9 +256,11 @@ export function PriceListsPage() {
                 <TableHead>{t("menu.prices.columns.channel")}</TableHead>
                 <TableHead>{t("menu.prices.columns.effectiveFrom")}</TableHead>
                 <TableHead>{t("menu.prices.columns.state")}</TableHead>
-                <TableHead numeric>
-                  {t("menu.prices.columns.actions")}
-                </TableHead>
+                {canManagePrices && (
+                  <TableHead numeric>
+                    {t("menu.prices.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -283,15 +289,19 @@ export function PriceListsPage() {
                             : t("menu.prices.state.past")}
                       </Badge>
                     </TableCell>
-                    <TableCell numeric>
-                      <PriceListActions
-                        priceList={priceList}
-                        label={t(`menu.prices.channels.${priceList.channel}`)}
-                        onManage={() => setEditor({ mode: "grid", priceList })}
-                        onEditDate={() => openDate(priceList)}
-                        onDelete={() => setDeleting(priceList)}
-                      />
-                    </TableCell>
+                    {canManagePrices && (
+                      <TableCell numeric>
+                        <PriceListActions
+                          priceList={priceList}
+                          label={t(`menu.prices.channels.${priceList.channel}`)}
+                          onManage={() =>
+                            setEditor({ mode: "grid", priceList })
+                          }
+                          onEditDate={() => openDate(priceList)}
+                          onDelete={() => setDeleting(priceList)}
+                        />
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -329,14 +339,16 @@ export function PriceListsPage() {
                         : t("menu.prices.state.past")}
                   </Badge>
                 </div>
-                <PriceListActions
-                  priceList={priceList}
-                  label={t(`menu.prices.channels.${priceList.channel}`)}
-                  showLabel
-                  onManage={() => setEditor({ mode: "grid", priceList })}
-                  onEditDate={() => openDate(priceList)}
-                  onDelete={() => setDeleting(priceList)}
-                />
+                {canManagePrices && (
+                  <PriceListActions
+                    priceList={priceList}
+                    label={t(`menu.prices.channels.${priceList.channel}`)}
+                    showLabel
+                    onManage={() => setEditor({ mode: "grid", priceList })}
+                    onEditDate={() => openDate(priceList)}
+                    onDelete={() => setDeleting(priceList)}
+                  />
+                )}
               </li>
             );
           })}
@@ -344,7 +356,10 @@ export function PriceListsPage() {
       </DataTableShell>
 
       <Dialog
-        open={editor?.mode === "new" || editor?.mode === "edit-date"}
+        open={
+          canManagePrices &&
+          (editor?.mode === "new" || editor?.mode === "edit-date")
+        }
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -408,7 +423,7 @@ export function PriceListsPage() {
         </DialogContent>
       </Dialog>
 
-      {editor?.mode === "grid" && (
+      {canManagePrices && editor?.mode === "grid" && (
         <PriceGrid
           priceList={editor.priceList}
           items={items}
@@ -417,7 +432,7 @@ export function PriceListsPage() {
       )}
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManagePrices && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.prices.deleteTitle", {
           channel: deleting

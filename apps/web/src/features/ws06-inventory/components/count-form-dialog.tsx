@@ -31,6 +31,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { useOutletClock } from "@/lib/tenant-context";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import { useCreateStockCount } from "../opname-hooks";
 import { INVENTORY_OUTLET_ID } from "../outlet";
@@ -51,6 +52,9 @@ export function CountFormDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  // The session's business date follows the outlet clock (D-CORE-7); with no
+  // outlet the hook returns the documented Jakarta 04:00 default.
+  const { clock } = useOutletClock();
   const navigate = useNavigate();
   const toast = useToast();
   const locations = useStockLocations();
@@ -62,7 +66,7 @@ export function CountFormDialog({
   const [type, setType] = React.useState<StockCountType>("full");
   const [blind, setBlind] = React.useState(true);
   const [businessDate, setBusinessDate] = React.useState(() =>
-    businessDateToday(),
+    businessDateToday(new Date(), clock.timeZone, clock.cutoff),
   );
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(
     () => new Set(),

@@ -39,6 +39,7 @@ import {
   useStations,
   useUpdateStation,
 } from "../hooks";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 
 const STATION_TYPES = [
@@ -90,6 +91,9 @@ function StationActions({
 export function StationsPage() {
   const t = useT();
   const toast = useToast();
+  // Station writes authorize with menu.item.manage on the API; the catalog has
+  // no menu.station.manage (kds.station.manage is KDS configuration).
+  const { canManageItems } = useMenuWrites();
   const stationsQuery = useStations({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const createStation = useCreateStation();
@@ -200,10 +204,12 @@ export function StationsPage() {
                 : "ready"
         }
         actions={
-          <Button type="button" onClick={openNew}>
-            <Plus aria-hidden="true" />
-            {t("menu.stations.add")}
-          </Button>
+          canManageItems ? (
+            <Button type="button" onClick={openNew}>
+              <Plus aria-hidden="true" />
+              {t("menu.stations.add")}
+            </Button>
+          ) : undefined
         }
         onRetry={() => {
           void stationsQuery.refetch();
@@ -212,11 +218,11 @@ export function StationsPage() {
         empty={{
           title: t("menu.stations.emptyTitle"),
           description: t("menu.stations.emptyHint"),
-          action: (
+          action: canManageItems ? (
             <Button type="button" variant="outline" onClick={openNew}>
               {t("menu.stations.add")}
             </Button>
-          ),
+          ) : undefined,
         }}
         rowCount={stations.length}
       >
@@ -234,9 +240,11 @@ export function StationsPage() {
                 <TableHead numeric>
                   {t("menu.stations.columns.items")}
                 </TableHead>
-                <TableHead numeric>
-                  {t("menu.stations.columns.actions")}
-                </TableHead>
+                {canManageItems && (
+                  <TableHead numeric>
+                    {t("menu.stations.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -262,13 +270,15 @@ export function StationsPage() {
                       count: itemCounts.get(station.id) ?? 0,
                     })}
                   </TableCell>
-                  <TableCell numeric>
-                    <StationActions
-                      station={station}
-                      onEdit={() => openEdit(station)}
-                      onDelete={() => setDeleting(station)}
-                    />
-                  </TableCell>
+                  {canManageItems && (
+                    <TableCell numeric>
+                      <StationActions
+                        station={station}
+                        onEdit={() => openEdit(station)}
+                        onDelete={() => setDeleting(station)}
+                      />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -294,11 +304,13 @@ export function StationsPage() {
                     })}
                   </span>
                 </div>
-                <StationActions
-                  station={station}
-                  onEdit={() => openEdit(station)}
-                  onDelete={() => setDeleting(station)}
-                />
+                {canManageItems && (
+                  <StationActions
+                    station={station}
+                    onEdit={() => openEdit(station)}
+                    onDelete={() => setDeleting(station)}
+                  />
+                )}
               </div>
               {station.targetSeconds !== null && (
                 <span className="text-sm text-muted-foreground">
@@ -313,7 +325,7 @@ export function StationsPage() {
       </DataTableShell>
 
       <Dialog
-        open={editor !== null}
+        open={canManageItems && editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -386,7 +398,7 @@ export function StationsPage() {
       </Dialog>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.stations.deleteTitle", {
           name: deleting?.name ?? "",
