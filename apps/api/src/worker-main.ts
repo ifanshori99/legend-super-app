@@ -199,7 +199,6 @@ const relay = createRelayRuntime({
       await retryPendingRefunds(context, new Date());
     } catch {
       console.error("Reservation refund retry sweep failed");
-
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
