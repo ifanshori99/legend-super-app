@@ -100,6 +100,7 @@ import {
   type CartLineModifierSnapshot,
 } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
@@ -986,9 +987,14 @@ export async function getTableSessionView(
           ).quote;
           break;
         } catch (error) {
-          // An unconfigured tax setup must not hide the cart; the quote
-          // route reports the configuration error itself.
-          if (!(error instanceof TaxError) && !(error instanceof CoreError))
+          // An unconfigured tax setup or a promo code that stopped applying
+          // must not hide the cart; the quote/checkout routes report those
+          // errors themselves. Both are expected client-visible failures.
+          if (
+            !(error instanceof TaxError) &&
+            !(error instanceof CoreError) &&
+            !(error instanceof HttpError)
+          )
             throw error;
           quote = null;
         }

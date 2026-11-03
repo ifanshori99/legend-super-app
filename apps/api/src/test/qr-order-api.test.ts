@@ -32,6 +32,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { cartLines, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import type { OrderPromoPort } from "../services/order-promo-port.ts";
 import {
   setPaymentGateway,
@@ -581,6 +582,104 @@ describe("QR order cart, quote and checkout (legend-e2x)", () => {
       expect(redeemed).toEqual([placed.body.data.order.id]);
     } finally {
       setQrOrderPromoPort(null);
+    }
+  });
+
+  it("ORD-03 a promo code that stopped applying never hides the shared cart", async () => {
+    let codeExpired = false;
+    const expiring: OrderPromoPort = {
+      async quote(_tx, _ctx, input) {
+        if (input.voucherCode !== null && codeExpired)
+          throw new HttpError(
+            422,
+            "VOUCHER_INVALID",
+            "Kode voucher sudah tidak berlaku.",
+          );
+        const discount =
+          input.voucherCode === null
+            ? 0
+            : Math.floor(
+                input.lines.reduce((sum, line) => sum + line.lineTotalIdr, 0) /
+                  10,
+              );
+        return {
+          result: { evaluations: [], totalDiscountIdr: idr(discount) },
+          totalDiscountIdr: idr(discount),
+        };
+      },
+      async redeem(tx, ctx, input) {
+        return expiring.quote(tx, ctx, input);
+      },
+      async release() {
+        return { released: false, releasedDiscountIdr: idr(0) };
+      },
+    };
+    setQrOrderPromoPort(expiring);
+    try {
+      const guest = await seat((await newTable()).qrToken);
+      const added = await as(guest).add({
+        menuItemId: ids.roti,
+        quantity: 1,
+        expectedCartVersion: 0,
+      });
+      expect(added.status).toBe(201);
+      // The quote remembers the code on the shared cart (checkout reads it).
+      const quoted = await as(guest).quote({ promoCode: "HEMAT10" });
+      expect(quoted.status).toBe(200);
+      expect(quoted.body.data.discountIdr).toBe(1_800);
+
+      codeExpired = true;
+      // The view falls back to the cart without the code instead of failing.
+      const view = await as(guest).view();
+      expect(view.status).toBe(200);
+      expect(view.body.data.cart.lines).toHaveLength(1);
+      expect(view.body.data.quote).not.toBeNull();
+      expect(view.body.data.quote.discountIdr).toBe(0);
+    } finally {
+      setQrOrderPromoPort(null);
+    }
+  });
+
+  it("ORD-03 a price-inclusive tax rule is refused with a catalogued error (legend-49pw)", async () => {
+    const guest = await seat((await newTable()).qrToken);
+    const version = await fillStandardCart(guest);
+    // A published version of the same rule that marks menu prices inclusive:
+    // the QR quote adds service and tax on top, so it must fail closed.
+    const publishRuleVersion = (ruleVersion: number, inclusive: boolean) =>
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `INSERT INTO tax_rules
+             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+              price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+              published_at, published_by)
+           VALUES ($1, $2, NULL, 'PBJT-QRO', 'PBJT 10%', 'pbjt', 1000, NULL, '[]',
+                   '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+                   $3, true, true, $4, '2026-01-01', 'published', now(), $5)`,
+          [randomUUID(), tenant.tenantId, inclusive, ruleVersion, staff.userId],
+        ),
+      );
+    await publishRuleVersion(2, true);
+    try {
+      const quote = await as(guest).quote();
+      expect(quote.status).toBe(422);
+      expect(quote.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
+      expect(quote.body.error.message).toMatch(/termasuk pajak/i);
+
+      const placed = await as(guest).checkout({
+        expectedCartVersion: version,
+        idempotencyKey: randomUUID(),
+      });
+      expect(placed.status).toBe(422);
+      expect(placed.body.error.code).toBe("QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED");
+
+      // The cart still loads and is not silently re-priced: quote stays null.
+      const view = await as(guest).view();
+      expect(view.status).toBe(200);
+      expect(view.body.data.cart.lines).toHaveLength(2);
+      expect(view.body.data.quote).toBeNull();
+    } finally {
+      // Publish an exclusive version so the rest of the file prices normally.
+      await publishRuleVersion(3, false);
     }
   });
 

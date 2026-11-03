@@ -56,6 +56,25 @@ test("TEN-02 requires the restricted application login outside development", () 
     assert.equal(run({ DEPLOYMENT_MODE: mode }).status, 1);
 });
 
+test("production requires its own staff pin pepper secret (legend-dxb)", () => {
+  // Not derived from BETTER_AUTH_SECRET: rotating the auth secret must not
+  // invalidate every stored staff pin.
+  assert.equal(run({ NODE_ENV: "production" }).status, 1);
+  assert.equal(
+    run({ NODE_ENV: "production", STAFF_PIN_PEPPER: "short" }).status,
+    1,
+  );
+  assert.equal(
+    run({
+      NODE_ENV: "production",
+      STAFF_PIN_PEPPER: "p".repeat(32),
+    }).status,
+    0,
+  );
+  // Development and tests work without it (fixed non-secret fallback).
+  assert.equal(run({}).status, 0);
+});
+
 test("rejects real or unclassified imports outside production", () => {
   for (const mode of ["development", "staging"]) {
     for (const classification of ["real", "unknown"]) {

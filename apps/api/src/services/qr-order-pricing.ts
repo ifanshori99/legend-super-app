@@ -16,7 +16,6 @@
 
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import {
-  CoreError,
   idr,
   outletIdSchema,
   type OutletId,
@@ -25,7 +24,13 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { menuItemVisibleToGuests } from "@starter/shared/menu";
-import { orderQuoteSchema, type OrderQuote } from "@starter/shared/qr-order";
+import {
+  orderQuoteSchema,
+  qrOrderErrorMessages,
+  qrOrderErrorHttpStatus,
+  QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+  type OrderQuote,
+} from "@starter/shared/qr-order";
 import {
   calculateTax,
   resolveTaxSettings,
@@ -48,6 +53,7 @@ import {
   type floorZones,
 } from "../db/schema/index.ts";
 import type { CartLineModifierSnapshot } from "../db/schema/qr-order.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { guestMenuItemCondition, type Tx } from "./menu-internals.ts";
 import { readAvailabilityDecisions } from "./menu-availability.ts";
 import { readChannelPriceGrid } from "./menu-pricing.service.ts";
@@ -669,9 +675,12 @@ export function buildQuote(input: {
     },
   );
   if (tax.taxes.some((summary) => summary.priceIncludesTax))
-    throw new CoreError(
-      "CONFLICT",
-      "Aturan pajak harga-termasuk-pajak belum didukung untuk QR order; harga menu QR tidak termasuk pajak.",
+    // Fail closed and explicit (legend-49pw): QR prices exclude service and
+    // tax, so an inclusive rule would make this quote's total double-charge.
+    throw new HttpError(
+      qrOrderErrorHttpStatus.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+      QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+      qrOrderErrorMessages.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
     );
   const byLine = new Map(tax.lines.map((line) => [line.lineId, line]));
   const net = subtotal - tax.discountIdr;
