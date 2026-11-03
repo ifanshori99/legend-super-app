@@ -188,7 +188,22 @@ export async function markOutboxDead(
   });
 }
 
-/** A server-side permission check and immutable audit record are required to replay. */
+export type OutboxReplayErrorKind =
+  "invalid" | "not_found" | "denied" | "not_dead";
+
+/** Typed so the operator route can map a replay refusal to an HTTP status. */
+export class OutboxReplayError extends Error {
+  constructor(
+    readonly kind: OutboxReplayErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OutboxReplayError";
+  }
+}
+
+/** A server-side permission check and immutable audit record are required to replay.
+ * `onReplayed` runs in the same transaction, after the replay row is written. */
 export async function replayOutbox(
   database: Database,
   context: ScopedTenantContext,
@@ -197,6 +212,10 @@ export async function replayOutbox(
     actor: unknown;
     reason: string;
     authorize: (event: EventEnvelope) => Promise<boolean>;
+    onReplayed?: (
+      tx: Transaction,
+      replayed: { event: EventEnvelope; generation: number },
+    ) => Promise<void>;
   },
 ) {
   const actor = eventActorSchema.parse(input.actor);
@@ -205,22 +224,28 @@ export async function replayOutbox(
     !input.reason.trim() ||
     input.reason.length > 1000
   )
-    throw new Error("Replay requires an operator and reason");
+    throw new OutboxReplayError(
+      "invalid",
+      "Replay requires an operator and reason",
+    );
   return withTenant(database, context, async (tx) => {
     const result = await tx.execute(
       sql`SELECT * FROM domain_event_outbox WHERE id = ${ulidToUuid(input.outboxId)}::uuid FOR UPDATE`,
     );
     const row = result.rows[0];
-    if (!row) throw new Error("Outbox row not found");
+    if (!row) throw new OutboxReplayError("not_found", "Outbox row not found");
     const event = eventEnvelopeSchema.parse(row.event);
     if (event.outletId)
       assertOutletInScope(context.outletScope, event.outletId);
     else if (context.outletScope.kind !== "tenant")
       throw new Error("Tenant-wide event requires tenant scope");
     if (!(await input.authorize(event)))
-      throw new Error("Replay permission denied");
+      throw new OutboxReplayError("denied", "Replay permission denied");
     if (row.dispatch_state !== "dead")
-      throw new Error("Only dead-lettered events may be replayed");
+      throw new OutboxReplayError(
+        "not_dead",
+        "Only dead-lettered events may be replayed",
+      );
     const generation = Number(row.dispatch_generation) + 1;
     await tx.execute(
       sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_generation = ${generation}, dispatch_job_id = NULL, dead_lettered_at = NULL WHERE id = ${String(row.id)}::uuid`,
@@ -228,6 +253,7 @@ export async function replayOutbox(
     await tx.execute(
       sql`INSERT INTO domain_event_replays (tenant_id, outlet_id, outbox_id, generation, actor, reason) VALUES (${event.tenantId}::uuid, ${event.outletId}::uuid, ${String(row.id)}::uuid, ${generation}, ${JSON.stringify(actor)}::jsonb, ${input.reason.trim()})`,
     );
+    await input.onReplayed?.(tx, { event, generation });
     return generation;
   });
 }
