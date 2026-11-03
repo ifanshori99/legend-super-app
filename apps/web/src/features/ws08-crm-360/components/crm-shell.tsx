@@ -4,7 +4,10 @@
 // Radix tabs, because each section has its own URL (docs/frontend.md "Add a
 // page").
 import type { ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouteContext } from "@tanstack/react-router";
+import type { PermissionCode } from "@starter/shared/access";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { cn } from "cn";
 import {
   CircleSlash,
@@ -36,30 +39,51 @@ import {
 } from "../lib";
 import { useCrm360T } from "../t";
 
+// `anyOf` mirrors each route's beforeLoad guard, so a role that may open only
+// the review queue (review.respond) is not shown tabs that lead to notFound.
 const TABS = [
   {
     key: "customers",
     labelKey: "crm360.tabs.customers",
     to: "/kelola/pelanggan",
+    anyOf: ["crm.customer.view"],
   },
   {
     key: "segments",
     labelKey: "crm360.tabs.segments",
     to: "/kelola/pelanggan/segmen",
+    anyOf: ["crm.customer.view"],
   },
-  { key: "feedback", labelKey: "crm360.tabs.feedback", to: "/kelola/ulasan" },
-] as const;
+  {
+    key: "feedback",
+    labelKey: "crm360.tabs.feedback",
+    to: "/kelola/ulasan",
+    anyOf: ["review.respond", "crm.customer.view"],
+  },
+] as const satisfies readonly {
+  key: string;
+  labelKey: string;
+  to: string;
+  anyOf: readonly PermissionCode[];
+}[];
 
 export type CrmSection = (typeof TABS)[number]["key"];
 
 export function CrmTabs({ active }: { active: CrmSection }) {
   const t = useCrm360T();
+  const { access } = useRouteContext({ strict: false }) as {
+    access?: AreaAccess;
+  };
+  const tabs = TABS.filter(
+    (tab) => access !== undefined && holdsAny(access, tab.anyOf),
+  );
+  if (tabs.length < 2) return null;
   return (
     <nav
       aria-label={t("crm360.title")}
       className={cn(tabsListClass, "[scrollbar-width:none]")}
     >
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const current = tab.key === active;
         return (
           <Link

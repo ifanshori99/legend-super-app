@@ -334,7 +334,7 @@ export function CampaignDetailPage({ campaignId }: { campaignId: string }) {
             {segment && (
               <p className="text-sm text-muted-foreground tabular">
                 {t("crmCampaigns.detail.segmentSize", {
-                  count: segment.size,
+                  count: formatNumber(segment.size),
                 })}
               </p>
             )}
@@ -346,7 +346,7 @@ export function CampaignDetailPage({ campaignId }: { campaignId: string }) {
                 <p className="mt-1">
                   {results !== undefined && results.skippedNoConsent > 0
                     ? t("crmCampaigns.consent.skipped", {
-                        count: results.skippedNoConsent,
+                        count: formatNumber(results.skippedNoConsent),
                       })
                     : t("crmCampaigns.consent.skippedNone")}
                 </p>

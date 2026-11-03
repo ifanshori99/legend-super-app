@@ -89,8 +89,9 @@ export function FeedbackPage() {
     ...(kind === ALL ? {} : { kind: kind as FeedbackKind }),
   });
   // Customer names are resolved from the CRM directory; the feedback DTO
-  // carries only the profile id.
-  const customers = useCustomers({ limit: 100 });
+  // carries only the profile id. Names are customer PII: a reviewer without
+  // crm.customer.view never loads the directory and sees no name (F21).
+  const customers = useCustomers({ limit: 100 }, { enabled: canViewCustomer });
   const mutation = useUpdateFeedback();
 
   const rows = feedback.data?.data ?? [];
@@ -132,6 +133,12 @@ export function FeedbackPage() {
       : "ready";
 
   function customerCell(entry: Feedback) {
+    if (entry.customerProfileId !== null && !canViewCustomer)
+      return (
+        <span className="text-muted-foreground">
+          {t("crm360.feedback.customerHidden")}
+        </span>
+      );
     if (entry.customerProfileId === null)
       return (
         <span className="text-muted-foreground">
@@ -145,7 +152,6 @@ export function FeedbackPage() {
           {t("crm360.feedback.unknownCustomer")}
         </span>
       );
-    if (!canViewCustomer) return <span>{name}</span>;
     return (
       <Link
         to="/kelola/pelanggan/$customerProfileId"

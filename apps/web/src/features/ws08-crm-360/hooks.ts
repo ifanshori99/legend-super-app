@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AnyEndpoint } from "@starter/shared/api";
 import {
+  getCustomer360,
   listFeedback,
   listSegments,
   type Feedback,
@@ -41,8 +42,10 @@ function useInvalidateOnSuccess<TVariables, TResult>(
 
 // ---- Reads ----------------------------------------------------------------
 
-export const useCustomers = (query: Parameters<typeof api.fetchCustomers>[0]) =>
-  useQuery(customersQuery(query));
+export const useCustomers = (
+  query: Parameters<typeof api.fetchCustomers>[0],
+  options: { enabled?: boolean } = {},
+) => useQuery({ ...customersQuery(query), enabled: options.enabled ?? true });
 
 export const useCustomer360 = (customerProfileId: string) =>
   useQuery(customer360Query(customerProfileId));
@@ -86,6 +89,7 @@ export function useUpdateFeedback() {
         { feedbackId: variables.feedbackId },
         { action: variables.action },
       ),
-    [listFeedback],
+    // Customer 360 shows the customer's recent feedback too.
+    [listFeedback, getCustomer360],
   );
 }

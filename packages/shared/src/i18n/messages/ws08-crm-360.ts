@@ -275,11 +275,13 @@ export const crm360Messages = {
       sampleTier: "Tier {tier}",
     },
     consent: {
-      title: "Audiens kampanye (LOY-04)",
+      title: "Audiens kampanye",
       body: "Hanya pelanggan dengan persetujuan pemasaran aktif yang menerima kampanye. Ukuran segmen bukan jumlah audiens kampanye.",
     },
     save: "Simpan segmen",
     saving: "Menyimpan…",
+    saveLocked:
+      "Peran Anda dapat melihat pratinjau, tetapi menyimpan segmen memerlukan izin mengelola segmen.",
     createdToast: "Segmen {name} dibuat.",
     saveFailed: "Segmen gagal disimpan. Periksa isian lalu coba lagi.",
     errors: {
@@ -332,9 +334,10 @@ export const crm360Messages = {
     noComment: "Tanpa komentar",
     noAction: "Tidak ada aksi",
     unknownCustomer: "Pelanggan tidak dikenal",
+    customerHidden: "Pelanggan terdaftar (nama tersembunyi)",
     outletRef: "Outlet {ref}",
     locked:
-      "Peran Anda hanya dapat melihat antrean. Aksi memerlukan izin menanggapi ulasan (review.respond).",
+      "Peran Anda hanya dapat melihat antrean. Aksi memerlukan izin menanggapi ulasan.",
     action: {
       start_review: "Mulai tinjau",
       resolve: "Selesaikan",
@@ -354,10 +357,10 @@ export const crm360Messages = {
     offlineHint: "Koneksi terputus. Periksa jaringan outlet, lalu coba lagi.",
   },
   ai: {
-    title: "Dibantu AI",
-    badge: "AI-11",
+    title: "Ringkasan ulasan",
+    badge: "Hitungan otomatis",
     description:
-      "Ringkasan ulasan dihitung dari baris yang sedang dimuat, bukan keluaran model.",
+      "Dihitung dari baris yang sedang dimuat, bukan keluaran model AI.",
     computedFrom: "Dihitung dari {count} ulasan yang dimuat.",
     averageRating: "Rata-rata rating",
     averageContext: "{count} rating",
@@ -373,7 +376,7 @@ export const crm360Messages = {
     outletTitle: "Keluhan terbuka per outlet",
     noOpenComplaints: "Tidak ada keluhan terbuka.",
     limitNote:
-      "Tema pujian dan keluhan dari model AI-11 belum tersedia; panel ini tidak mengarang tema.",
+      "Ringkasan tema pujian dan keluhan oleh AI belum tersedia; panel ini tidak mengarang tema.",
     emptyTitle: "Belum ada ulasan untuk diringkas",
     emptyHint: "Ringkasan muncul setelah antrean berisi ulasan.",
   },

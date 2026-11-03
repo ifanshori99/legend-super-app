@@ -11,6 +11,7 @@
 // show; empty is unreachable (campaignAutomationSchema is a closed set of four).
 // Offline does not block the tab because nothing is fetched — the shell still
 // shows its offline notice.
+import { formatNumber } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -89,7 +90,7 @@ export function AutomationsPage() {
                   </dt>
                   <dd className="tabular font-semibold">
                     {t("crmCampaigns.automations.audienceValue", {
-                      count: setting.audienceEstimate,
+                      count: formatNumber(setting.audienceEstimate),
                     })}
                   </dd>
                 </div>

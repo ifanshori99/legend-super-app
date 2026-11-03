@@ -139,7 +139,9 @@ test("§3.21 Ulasan & Keluhan moves a complaint through the queue", async ({
   page,
 }) => {
   await open(page, "/kelola/ulasan", "Ulasan & keluhan");
-  await expect(page.getByRole("heading", { name: "Dibantu AI" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Ringkasan ulasan" }),
+  ).toBeVisible();
 
   const row = page.getByRole("row", {
     name: /Menunggu meja lebih dari 20 menit tanpa informasi/,
@@ -165,7 +167,9 @@ test("§3.21 Ulasan & Keluhan moves a complaint through the queue", async ({
 test("AI-11 summarizes only the loaded review queue", async ({ page }) => {
   await open(page, "/kelola/ulasan", "Ulasan & keluhan");
 
-  await expect(page.getByText("AI-11", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Hitungan otomatis", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("Dihitung dari 4 ulasan yang dimuat."),
   ).toBeVisible();
@@ -178,7 +182,7 @@ test("AI-11 summarizes only the loaded review queue", async ({ page }) => {
   await expect(page.getByText("Keluhan terbuka per outlet")).toBeVisible();
   await expect(
     page.getByText(
-      "Tema pujian dan keluhan dari model AI-11 belum tersedia; panel ini tidak mengarang tema.",
+      "Ringkasan tema pujian dan keluhan oleh AI belum tersedia; panel ini tidak mengarang tema.",
     ),
   ).toBeVisible();
 });
@@ -232,6 +236,8 @@ test("§3.21 Segmentasi visual 390 light", async ({ page }) => {
 test("§3.21 Ulasan & Keluhan visual 390 light", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await open(page, "/kelola/ulasan", "Ulasan & keluhan");
-  await expect(page.getByRole("heading", { name: "Dibantu AI" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Ringkasan ulasan" }),
+  ).toBeVisible();
   await captureScreenshot(page, "legend-i026/ulasan-390-light.png");
 });

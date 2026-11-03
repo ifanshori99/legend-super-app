@@ -29,6 +29,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { formatNumber } from "@starter/shared/i18n";
 import type { CampaignChannel } from "@starter/shared/crm";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useCreateCampaign, useSegmentPreview, useSegments } from "../hooks";
@@ -81,9 +82,9 @@ export function CampaignFormDialog({
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => ({ ...current, [field]: undefined }));
     setSaveFailed(false);
-    // Editing the copy keeps the "Draf" label; changing the channel or the
-    // audience invalidates the generated draft.
-    if (field === "channel" || field === "segmentId") setAiDraft(false);
+    // AI-12: once the copy came from the draft helper it stays labelled
+    // "Dibantu AI" for this form, whether the user edits it or changes the
+    // channel or audience: the generated text is still in the fields.
   }
 
   function fillWithDraft() {
@@ -195,7 +196,7 @@ export function CampaignFormDialog({
                   <SelectItem key={option.id} value={option.id}>
                     {t("crmCampaigns.create.segmentOption", {
                       name: option.name,
-                      count: option.size,
+                      count: formatNumber(option.size),
                     })}
                   </SelectItem>
                 ))}
@@ -238,12 +239,12 @@ export function CampaignFormDialog({
                 ? t("crmCampaigns.audience.loading")
                 : audienceState === "ready"
                   ? t("crmCampaigns.audience.value", {
-                      count: preview.data?.size ?? 0,
+                      count: formatNumber(preview.data?.size ?? 0),
                     })
                   : audienceState === "error"
                     ? segment
                       ? t("crmCampaigns.audience.value", {
-                          count: segment.size,
+                          count: formatNumber(segment.size),
                         })
                       : t("crmCampaigns.audience.failed")
                     : "—"}
@@ -251,7 +252,7 @@ export function CampaignFormDialog({
             {segment !== undefined && (
               <span className="text-muted-foreground tabular">
                 {t("crmCampaigns.audience.storedHint", {
-                  count: segment.size,
+                  count: formatNumber(segment.size),
                 })}
               </span>
             )}

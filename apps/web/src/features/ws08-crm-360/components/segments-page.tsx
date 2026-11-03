@@ -6,6 +6,7 @@
 // active marketing consent receive campaigns, so the previewed size is not the
 // campaign audience.
 import * as React from "react";
+import { useRouteContext } from "@tanstack/react-router";
 import { Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { formatNumber } from "@starter/shared/i18n";
 import type { LoyaltyTier, Segment } from "@starter/shared/crm";
@@ -39,6 +40,8 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { useOnline } from "@/lib/use-online";
+import type { AreaAccess } from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import {
   useCreateSegment,
   useMenuCatalog,
@@ -376,6 +379,12 @@ export function SegmentsPage() {
   const t = useCrm360T();
   const toast = useToast();
   const online = useOnline();
+  const { access } = useRouteContext({ strict: false }) as {
+    access: AreaAccess;
+  };
+  // The page opens with crm.customer.view; saving needs crm.segment.manage
+  // (the API re-checks). Preview stays available to every viewer.
+  const canManage = holdsAny(access, ["crm.segment.manage"]);
 
   const [name, setName] = React.useState("");
   const [match, setMatch] = React.useState(DEFAULT_SEGMENT_MATCH);
@@ -396,7 +405,13 @@ export function SegmentsPage() {
     () => definitionFromDrafts(match, drafts),
     [match, drafts],
   );
-  const preview = useSegmentPreview(definition);
+  // Count after typing settles (300 ms), not on every keystroke.
+  const [settledDefinition, setSettledDefinition] = React.useState(definition);
+  React.useEffect(() => {
+    const timer = setTimeout(() => setSettledDefinition(definition), 300);
+    return () => clearTimeout(timer);
+  }, [definition]);
+  const preview = useSegmentPreview(settledDefinition);
 
   const [cursors, setCursors] = React.useState<(string | undefined)[]>([
     undefined,
@@ -611,12 +626,17 @@ export function SegmentsPage() {
                 <Button
                   onClick={save}
                   loading={createSegment.isPending}
-                  disabled={!online}
+                  disabled={!online || !canManage}
                 >
                   {createSegment.isPending
                     ? t("crm360.segments.saving")
                     : t("crm360.segments.save")}
                 </Button>
+                {!canManage && (
+                  <span className="text-sm leading-5 text-muted-foreground">
+                    {t("crm360.segments.saveLocked")}
+                  </span>
+                )}
                 {!online && (
                   <span className="text-sm leading-5 text-warning">
                     {t("crm360.offline.saveBlocked")}
@@ -646,100 +666,109 @@ export function SegmentsPage() {
             </p>
           </header>
 
-          {definition === null ? (
-            <CardShell>
-              <CardShellBody>
-                <EmptyState
-                  title={t("crm360.segments.preview.incompleteTitle")}
-                  description={t("crm360.segments.preview.incompleteHint")}
-                />
-              </CardShellBody>
-            </CardShell>
-          ) : preview.isError ? (
-            <CardShell>
-              <CardShellBody>
-                <ReadProblem
-                  error={preview.error}
-                  title={t("crm360.segments.preview.errorTitle")}
-                  hint={t("crm360.segments.preview.errorHint")}
-                  offlineTitle={t("crm360.segments.preview.errorTitle")}
-                  offlineHint={t("crm360.segments.preview.errorHint")}
-                  onRetry={() => void preview.refetch()}
-                />
-              </CardShellBody>
-            </CardShell>
-          ) : preview.data === undefined ? (
-            <div className="grid gap-2" aria-busy="true">
-              <span className="sr-only">
-                {t("crm360.segments.preview.computing")}
-              </span>
-              <Skeleton className="h-24" />
-              <Skeleton className="h-16" />
-            </div>
-          ) : preview.data.size === 0 ? (
-            <CardShell>
-              <CardShellBody>
-                <EmptyState
-                  title={t("crm360.segments.preview.emptyTitle")}
-                  description={t("crm360.segments.preview.emptyHint")}
-                />
-              </CardShellBody>
-            </CardShell>
-          ) : (
-            <>
-              <StatStrip label={t("crm360.segments.preview.title")} columns={2}>
-                <StatTile
-                  label={t("crm360.segments.preview.size")}
-                  value={
-                    <NumberDisplay value={preview.data.size} size="stat" />
-                  }
-                  context={t("crm360.segments.preview.sizeContext")}
-                />
-                <StatTile
-                  label={t("crm360.segments.preview.sampleCount")}
-                  value={
-                    <NumberDisplay
-                      value={preview.data.sample.length}
-                      size="stat"
-                    />
-                  }
-                  context={t("crm360.segments.preview.sampleNote", {
-                    count: formatNumber(preview.data.sample.length),
-                  })}
-                />
-              </StatStrip>
-              <div className="grid gap-2">
-                <h4 className="type-title">
-                  {t("crm360.segments.preview.sampleTitle")}
-                </h4>
-                <ul className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
-                  {preview.data.sample.map((profile) => {
-                    const tierName =
-                      profile.tierId === null
-                        ? undefined
-                        : tierLookup.get(profile.tierId);
-                    return (
-                      <li
-                        key={profile.id}
-                        className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5"
-                      >
-                        <span className="min-w-0 truncate font-medium">
-                          {profile.name}
-                        </span>
-                        <span className="text-sm text-muted-foreground">
-                          {tierName === undefined
-                            ? t("crm360.customers.noTier")
-                            : t("crm360.segments.preview.sampleTier", {
-                                tier: tierName,
-                              })}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
+          <div
+            className="grid gap-3"
+            aria-live="polite"
+            aria-busy={definition !== null && preview.isFetching}
+          >
+            {definition === null ? (
+              <CardShell>
+                <CardShellBody>
+                  <EmptyState
+                    title={t("crm360.segments.preview.incompleteTitle")}
+                    description={t("crm360.segments.preview.incompleteHint")}
+                  />
+                </CardShellBody>
+              </CardShell>
+            ) : preview.isError ? (
+              <CardShell>
+                <CardShellBody>
+                  <ReadProblem
+                    error={preview.error}
+                    title={t("crm360.segments.preview.errorTitle")}
+                    hint={t("crm360.segments.preview.errorHint")}
+                    offlineTitle={t("crm360.segments.preview.errorTitle")}
+                    offlineHint={t("crm360.segments.preview.errorHint")}
+                    onRetry={() => void preview.refetch()}
+                  />
+                </CardShellBody>
+              </CardShell>
+            ) : preview.data === undefined ? (
+              <div className="grid gap-2" aria-busy="true">
+                <span className="sr-only">
+                  {t("crm360.segments.preview.computing")}
+                </span>
+                <Skeleton className="h-24" />
+                <Skeleton className="h-16" />
               </div>
-            </>
-          )}
+            ) : preview.data.size === 0 ? (
+              <CardShell>
+                <CardShellBody>
+                  <EmptyState
+                    title={t("crm360.segments.preview.emptyTitle")}
+                    description={t("crm360.segments.preview.emptyHint")}
+                  />
+                </CardShellBody>
+              </CardShell>
+            ) : (
+              <>
+                <StatStrip
+                  label={t("crm360.segments.preview.title")}
+                  columns={2}
+                >
+                  <StatTile
+                    label={t("crm360.segments.preview.size")}
+                    value={
+                      <NumberDisplay value={preview.data.size} size="stat" />
+                    }
+                    context={t("crm360.segments.preview.sizeContext")}
+                  />
+                  <StatTile
+                    label={t("crm360.segments.preview.sampleCount")}
+                    value={
+                      <NumberDisplay
+                        value={preview.data.sample.length}
+                        size="stat"
+                      />
+                    }
+                    context={t("crm360.segments.preview.sampleNote", {
+                      count: formatNumber(preview.data.sample.length),
+                    })}
+                  />
+                </StatStrip>
+                <div className="grid gap-2">
+                  <h4 className="type-title">
+                    {t("crm360.segments.preview.sampleTitle")}
+                  </h4>
+                  <ul className="divide-y divide-border overflow-hidden rounded-container border-(length:--border-w) bg-card shadow-hairline">
+                    {preview.data.sample.map((profile) => {
+                      const tierName =
+                        profile.tierId === null
+                          ? undefined
+                          : tierLookup.get(profile.tierId);
+                      return (
+                        <li
+                          key={profile.id}
+                          className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5"
+                        >
+                          <span className="min-w-0 truncate font-medium">
+                            {profile.name}
+                          </span>
+                          <span className="text-sm text-muted-foreground">
+                            {tierName === undefined
+                              ? t("crm360.customers.noTier")
+                              : t("crm360.segments.preview.sampleTier", {
+                                  tier: tierName,
+                                })}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              </>
+            )}
+          </div>
         </section>
       </div>
 

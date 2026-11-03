@@ -1,10 +1,11 @@
 // AI-11 "Ringkasan Ulasan" panel (PRD v1.7 §3.21 "Ulasan & Keluhan": review
-// summary; AI-11 table). The panel is titled "Dibantu AI" but shows only what
-// the loaded queue can prove: counts, the mean rating and open complaints per
+// summary; AI-11 table). Until the AI service exists the panel is a plain
+// "Ringkasan ulasan" (no AI label, RYUX: no fake AI) and shows only what the
+// loaded queue can prove: counts, the mean rating and open complaints per
 // outlet. Theme extraction needs the AI service, which the CRM contract does
 // not expose yet, so the footer says so instead of inventing themes.
 import * as React from "react";
-import { Sparkles } from "lucide-react";
+import { Calculator } from "lucide-react";
 import { formatNumber } from "@starter/shared/i18n";
 import type { Feedback, FeedbackStatus } from "@starter/shared/crm";
 import { Badge } from "@/components/ui/badge";
@@ -48,7 +49,7 @@ export function AiSummaryPanel({
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="type-title">{t("crm360.ai.title")}</h3>
           <Badge tone="info">
-            <Sparkles aria-hidden="true" />
+            <Calculator aria-hidden="true" />
             {t("crm360.ai.badge")}
           </Badge>
         </div>

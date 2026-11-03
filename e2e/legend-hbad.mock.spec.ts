@@ -121,7 +121,7 @@ test("AI-12 §3.21 Kampanye: create a campaign with a segment, a Dibantu AI draf
   // The audience block shows the live preview count and the segment's stored
   // size (128 in the fixtures), so both the preview and the segment agree.
   const audience = dialog.getByTestId("campaign-audience");
-  await expect(audience).toContainText(/\d+ penerima/);
+  await expect(audience).toContainText(/\d+ pelanggan/);
   await expect(audience).toContainText(
     "Ukuran segmen tersimpan: 128 pelanggan.",
   );
@@ -308,7 +308,7 @@ test("§3.21 Otomasi: the four triggers show channel, state, audience and last r
   await expect(
     page.getByText(/Kontrak API otomasi kampanye belum ada/),
   ).toBeVisible();
-  await expect(page.getByText(/LOY-04 berlaku sama/)).toBeVisible();
+  await expect(page.getByText(/Aturan yang sama berlaku/)).toBeVisible();
 
   const toggle = page.getByRole("switch", {
     name: "Aktifkan otomasi Pengingat poin kedaluwarsa",

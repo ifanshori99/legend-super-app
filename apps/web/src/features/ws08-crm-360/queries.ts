@@ -1,7 +1,11 @@
 // Query keys and options for the CRM back office. Keyed by the endpoint id
 // through `endpointQueryOptions`, so `invalidateQueries({ queryKey:
 // [endpoint.id] })` refreshes every screen that reads the same rows.
-import { queryOptions, skipToken } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  queryOptions,
+  skipToken,
+} from "@tanstack/react-query";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import {
   getCustomer360,
@@ -85,4 +89,7 @@ export const segmentPreviewQuery = (definition: SegmentDefinition | null) =>
         ? skipToken
         : ({ signal }) => fetchSegmentPreview({ definition }, signal),
     staleTime: 30_000,
+    // Keep the last count on screen while the next definition is counted, so
+    // each rule edit does not flash the skeleton.
+    placeholderData: keepPreviousData,
   });

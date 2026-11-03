@@ -125,7 +125,9 @@ export function CampaignListPage() {
         {resultsLoaded && (
           <p className="mt-1">
             {skippedTotal > 0
-              ? t("crmCampaigns.consent.skipped", { count: skippedTotal })
+              ? t("crmCampaigns.consent.skipped", {
+                  count: formatNumber(skippedTotal),
+                })
               : t("crmCampaigns.consent.skippedNone")}
           </p>
         )}

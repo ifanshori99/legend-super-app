@@ -128,16 +128,19 @@ export const crmCampaignsMessages = {
     },
   },
   audience: {
-    label: "Perkiraan audiens",
-    value: "{count} penerima",
-    liveHint: "Dihitung ulang dari definisi segmen saat ini.",
+    // The preview counts segment matches; consent is applied at send time
+    // (LOY-04), so this is an upper bound, never the final recipient count.
+    label: "Pelanggan cocok di segmen",
+    value: "{count} pelanggan",
+    liveHint:
+      "Dihitung ulang dari definisi segmen saat ini, sebelum penyaringan persetujuan pemasaran. Penerima akhir bisa lebih sedikit.",
     storedHint: "Ukuran segmen tersimpan: {count} pelanggan.",
     loading: "Menghitung audiens…",
     failed: "Perkiraan audiens gagal dihitung. Segmen tetap bisa dipakai.",
   },
   consent: {
-    title: "Persetujuan pemasaran (LOY-04)",
-    rule: "LOY-04: pelanggan tanpa persetujuan pemasaran aktif tidak pernah menerima kampanye promosi.",
+    title: "Persetujuan pemasaran",
+    rule: "Pelanggan tanpa persetujuan pemasaran aktif tidak pernah menerima kampanye promosi.",
     skipped:
       "{count} penerima dilewati karena tidak ada persetujuan pemasaran aktif atau keanggotaan tidak aktif.",
     skippedNone:
@@ -198,7 +201,7 @@ export const crmCampaignsMessages = {
     },
     status: {
       queued: "Dalam antrean",
-      sent: "Terkirim",
+      sent: "Terkirim, belum dikonfirmasi",
       delivered: "Tersampaikan",
       failed: "Gagal",
       skipped_no_consent: "Dilewati (tanpa persetujuan)",
@@ -210,10 +213,10 @@ export const crmCampaignsMessages = {
       failed:
         "Penyedia menolak pengiriman; alasan dicatat per penerima (misalnya nomor tidak aktif).",
       skipped_no_consent:
-        "Tidak dikirim: pelanggan tanpa persetujuan pemasaran aktif atau keanggotaan tidak aktif (LOY-04).",
+        "Tidak dikirim: pelanggan tanpa persetujuan pemasaran aktif atau keanggotaan tidak aktif.",
     },
     caption:
-      "Dihitung dari ringkasan hasil kampanye: terkirim = tersampaikan + gagal.",
+      "Dihitung dari ringkasan hasil kampanye. Total terkirim di atas = terkirim belum dikonfirmasi + tersampaikan + gagal.",
   },
   actionDialogs: {
     scheduleTitle: "Jadwalkan kampanye",
@@ -237,7 +240,7 @@ export const crmCampaignsMessages = {
     previewNotice:
       "Kontrak API otomasi kampanye belum ada. Kartu ini memakai data contoh lokal dan sakelar hanya tersimpan di peramban ini, tidak dikirim ke API.",
     consentNote:
-      "LOY-04 berlaku sama: pelanggan tanpa persetujuan pemasaran aktif tidak menerima pesan otomasi promosi.",
+      "Aturan yang sama berlaku: pelanggan tanpa persetujuan pemasaran aktif tidak menerima pesan otomasi promosi.",
     enabled: "Aktif",
     disabled: "Nonaktif",
     toggleLabel: "Aktifkan otomasi {name}",
