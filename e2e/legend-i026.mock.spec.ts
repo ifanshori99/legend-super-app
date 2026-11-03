@@ -165,7 +165,7 @@ test("§3.21 Ulasan & Keluhan moves a complaint through the queue", async ({
 test("AI-11 summarizes only the loaded review queue", async ({ page }) => {
   await open(page, "/kelola/ulasan", "Ulasan & keluhan");
 
-  await expect(page.getByText("AI-11")).toBeVisible();
+  await expect(page.getByText("AI-11", { exact: true })).toBeVisible();
   await expect(
     page.getByText("Dihitung dari 4 ulasan yang dimuat."),
   ).toBeVisible();
@@ -210,7 +210,9 @@ for (const [width, theme] of [
     );
     await open(page, "/kelola/pelanggan", "Pelanggan");
     // At 390 the directory renders as cards (no row role); assert the name.
-    await expect(page.getByText("Sari Wulandari").first()).toBeVisible();
+    await expect(
+      page.getByText("Sari Wulandari").filter({ visible: true }).first(),
+    ).toBeVisible();
     await captureScreenshot(
       page,
       `legend-i026/pelanggan-${width}-${theme}.png`,

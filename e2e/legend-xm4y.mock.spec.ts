@@ -115,13 +115,16 @@ test("§3.22 RSV-03 the private-room booking shows its own DP, minimum spend and
   await openBooking(page);
 
   await retry(async () => {
-    await page.getByLabel("Zona").click();
+    await page.getByRole("combobox", { name: "Zona" }).click();
     const option = page.getByRole("option", { name: "Private Room Nusantara" });
     await expect(option).toBeVisible({ timeout: 1000 });
     await option.click();
-    await expect(page.getByLabel("Zona")).toContainText("Private Room", {
-      timeout: 1000,
-    });
+    await expect(page.getByRole("combobox", { name: "Zona" })).toContainText(
+      "Private Room",
+      {
+        timeout: 1000,
+      },
+    );
   });
   await chooseFirstSlot(page);
   await fillGuest(page, "Rangga Pratama");

@@ -246,11 +246,13 @@ test("§3.23 rekonsiliasi visual 390 light", async ({ page }) => {
   await captureScreenshot(page, "legend-e8oa/rekonsiliasi-390-light.png");
 });
 
-test("§3.23 kanal kosong 390 empty", async ({ page }) => {
+test("§3.23 outlet kosong 390 empty", async ({ page }) => {
+  // The per-endpoint mock scenario is global: ?mock=empty also empties the
+  // outlet list, so the screen's own no-outlet state is the honest empty path.
   await page.setViewportSize({ width: 390, height: 900 });
   await open(page, "/kelola/delivery?tab=kanal&mock=empty", "Ojek online");
-  await expect(page.getByText("Belum ada kanal pengiriman")).toBeVisible();
-  await captureScreenshot(page, "legend-e8oa/kanal-390-empty.png");
+  await expect(page.getByText("Belum ada outlet")).toBeVisible();
+  await captureScreenshot(page, "legend-e8oa/outlet-390-empty.png");
 });
 
 test("§3.23 kanal error 390", async ({ page }) => {

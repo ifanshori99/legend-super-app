@@ -33,7 +33,7 @@ async function open(page: Page, path: string, title: string) {
 /** The management topbar owns the area h1; the section renders an h2. */
 async function section(page: Page) {
   await expect(
-    page.getByRole("heading", { level: 2, name: "Kampanye" }),
+    page.getByRole("heading", { level: 2, name: "Kampanye" }).first(),
   ).toBeVisible();
 }
 
@@ -165,9 +165,13 @@ test("AI-12 §3.21 Kampanye: create a campaign with a segment, a Dibantu AI draf
     page.getByText("Kampanye Promo Kopi Pagi dibuat.").first(),
   ).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByText("Promo Kopi Pagi").first()).toBeVisible();
+  await expect(
+    page.getByText("Promo Kopi Pagi").filter({ visible: true }).first(),
+  ).toBeVisible();
   // A campaign with a send time starts as scheduled.
-  await expect(page.getByText("Terjadwal").first()).toBeVisible();
+  await expect(
+    page.getByText("Terjadwal").filter({ visible: true }).first(),
+  ).toBeVisible();
 });
 
 test("LOY-04 §3.21 Kampanye: one StatStrip holds every result and the send-status table explains the skipped recipients", async ({
@@ -264,7 +268,7 @@ test("LOY-04 §3.21 Kampanye: only legal status transitions are offered, and con
   // (membership inactive or no marketing consent in the fixtures).
   const strip = page.getByRole("region", { name: "Hasil kampanye" });
   await expect(strip.getByText("87", { exact: true })).toBeVisible();
-  await expect(strip.getByText("84", { exact: true })).toBeVisible();
+  await expect(strip.getByText("84", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/3 penerima dilewati/)).toBeVisible();
 
   // A running campaign may complete.

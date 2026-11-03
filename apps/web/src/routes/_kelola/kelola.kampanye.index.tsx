@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CampaignListPage } from "@/features/ws08-crm-campaigns/components/campaign-list-page";
-import { CampaignsPage } from "@/features/ws08-crm-campaigns/components/campaign-shell";
 import { campaignGuard } from "@/features/ws08-crm-campaigns/guard";
 import { isMockScenarioRequest } from "@/features/ws08-crm-campaigns/lib";
 import { campaignsQuery } from "@/features/ws08-crm-campaigns/queries";
@@ -17,9 +16,7 @@ export const Route = createFileRoute("/_kelola/kelola/kampanye/")({
 });
 
 function CampaignListScreen() {
-  return (
-    <CampaignsPage active="campaigns">
-      <CampaignListPage />
-    </CampaignsPage>
-  );
+  // CampaignListPage renders the shared CampaignsPage frame itself; wrapping it
+  // here again would repeat the title, subtitle and tabs (review finding).
+  return <CampaignListPage />;
 }
