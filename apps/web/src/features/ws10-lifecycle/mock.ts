@@ -2,6 +2,11 @@
 // shared Cafe Legend checklist fixtures, so every screen works with
 // VITE_API_MOCK=true (docs/frontend.md "Mock mode").
 //
+// It also owns the read-only payroll lists the final-settlement estimate needs
+// (kasbon and reimbursement per employee); no other feature registers them
+// yet. A later kasbon/reimbursement screen should import these handlers'
+// fixtures or move the registration, never register a second time.
+//
 // The handler behaves like the API will: the caller's filters are applied
 // server-side, the page is cursor-paginated, and an unknown task is 404. The
 // only registered endpoint is `listChecklistTasks`; the task action has no
@@ -14,10 +19,16 @@ import {
   transitionChecklistTask,
   type ChecklistTask,
 } from "@starter/shared/hris";
+import {
+  cafeLegendPayrollFixtures,
+  listEmployeeLoans,
+  listReimbursements,
+} from "@starter/shared/hris/payroll";
 import { ApiError } from "@/lib/api/errors";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { clearanceBlockers } from "./lib.ts";
 import { registerLocalTaskAction } from "./local-action.ts";
 
 /** The mock's actor for a completed task: the HR admin of the fixtures. */
@@ -53,6 +64,24 @@ registerLocalTaskAction(({ taskId, action }) => {
   const current = tasks.find((task) => task.id === taskId);
   if (!current)
     throw new ApiError(404, "NOT_FOUND", "Tugas checklist tidak ditemukan.");
+  // Exit clearance gates the certificate: its task cannot be completed while
+  // another offboarding task of the same employee is still open or blocked.
+  if (
+    action === "complete" &&
+    current.kind === "offboarding" &&
+    current.category === "work_certificate" &&
+    clearanceBlockers(
+      tasks.filter(
+        (task) =>
+          task.employeeId === current.employeeId && task.kind === "offboarding",
+      ),
+    ).length > 0
+  )
+    throw new ApiError(
+      409,
+      "CONFLICT",
+      "Exit clearance belum selesai; surat keterangan belum bisa diterbitkan.",
+    );
   // The contract's state machine decides the next status; an illegal move
   // throws CONFLICT exactly as the API route will.
   const status = transitionChecklistTask(current.status, action);
@@ -66,4 +95,28 @@ registerLocalTaskAction(({ taskId, action }) => {
     tasks.map((task) => (task.id === taskId ? next : task)),
   );
   return next;
+});
+
+registerMock(listEmployeeLoans, ({ query, scenario }) => {
+  const rows = cafeLegendPayrollFixtures.employeeLoans
+    .filter(
+      (loan) =>
+        query.employeeId === undefined || loan.employeeId === query.employeeId,
+    )
+    .filter(
+      (loan) => query.status === undefined || loan.status === query.status,
+    );
+  return paginateFixture(rows, query, (loan) => loan.id, scenario);
+});
+
+registerMock(listReimbursements, ({ query, scenario }) => {
+  const rows = cafeLegendPayrollFixtures.reimbursements
+    .filter(
+      (claim) =>
+        query.employeeId === undefined || claim.employeeId === query.employeeId,
+    )
+    .filter(
+      (claim) => query.status === undefined || claim.status === query.status,
+    );
+  return paginateFixture(rows, query, (claim) => claim.id, scenario);
 });

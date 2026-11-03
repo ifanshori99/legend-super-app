@@ -44,11 +44,14 @@ export function RunDetailPage({
   access: AreaAccess;
 }) {
   const t = useT();
-  const run = useRun(runId);
-  const results = useRunResults(runId);
-  const files = useBankFiles(runId);
-  const [dialog, setDialog] = React.useState<RunDialog | null>(null);
   const permissions = payrollAccess(access);
+  const run = useRun(runId);
+  // Salary rows are PII (HR-03) and bank files need payroll.lock: a visitor
+  // without the permission never requests them (legend-t3f5 reads stop at the
+  // run row and its totals).
+  const results = useRunResults(runId, permissions.canViewSalaries);
+  const files = useBankFiles(runId, permissions.canLock);
+  const [dialog, setDialog] = React.useState<RunDialog | null>(null);
 
   if (run.isPending) return <DetailSkeleton />;
 
@@ -82,13 +85,15 @@ export function RunDetailPage({
   const data = run.data;
   const rows = results.data?.data ?? [];
   const fileRows = files.data?.data ?? [];
-  const resultsState: DataState = results.isPending
-    ? "loading"
-    : results.isError
-      ? "error"
-      : rows.length === 0
-        ? "empty"
-        : "ready";
+  const resultsState: DataState = !permissions.canViewSalaries
+    ? "empty"
+    : results.isPending
+      ? "loading"
+      : results.isError
+        ? "error"
+        : rows.length === 0
+          ? "empty"
+          : "ready";
   const totals = data.totals;
   const none = (
     <span className="text-muted-foreground">{t("payrollRun.common.none")}</span>
@@ -156,6 +161,7 @@ export function RunDetailPage({
         state={resultsState}
         onRetry={() => void results.refetch()}
         canSimulate={permissions.canRun}
+        restricted={!permissions.canViewSalaries}
         onSimulate={() => setDialog("simulate")}
       />
 
@@ -163,6 +169,7 @@ export function RunDetailPage({
         run={data}
         files={fileRows}
         canExport={permissions.canLock}
+        canViewSalaries={permissions.canViewSalaries}
       />
 
       <AuditTrail run={data} />

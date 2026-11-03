@@ -12,6 +12,12 @@ import {
   type AttendanceQrToken,
 } from "@starter/shared/hris";
 import {
+  CONVERGED_WIDTH_MS,
+  estimateOffset,
+  nextClockBounds,
+  type ClockBounds,
+} from "./clock.ts";
+import {
   fetchAttendanceDay,
   fetchAttendanceQr,
   fetchReviewEmployees,
@@ -32,22 +38,56 @@ export const attendanceQrKeys = {
   employees: () => [...attendanceQrKeys.all, "employees"] as const,
 };
 
+/** The live token and the estimated server-minus-device clock offset. */
+export type AttendanceQrReading = {
+  readonly qr: AttendanceQrToken;
+  readonly offsetMs: number;
+  /** True once the offset is known to within CONVERGED_WIDTH_MS. */
+  readonly converged: boolean;
+};
+
+/** Short poll while the clock offset is still uncertain (bounds staleness). */
+const UNCERTAIN_POLL_MS = 5_000;
+/** One display per tab: the bounds live as long as the page. */
+let clockBounds: ClockBounds | null = null;
+
+/** Milliseconds left on the token, measured on the server's clock. */
+export function qrRemainingMs(reading: AttendanceQrReading, deviceNow: number) {
+  return Date.parse(reading.qr.expiresAt) - (deviceNow + reading.offsetMs);
+}
+
 /**
- * The current outlet token. `refetchInterval` is a function of the previous
- * response, so the next poll lands just after `expiresAt` instead of drifting
- * away from the 30-second window (F25).
+ * The current outlet token. The next poll lands just after the token expires
+ * on the SERVER clock (skew-corrected, see clock.ts) instead of drifting away
+ * from the 30-second window (F25). While the device/server offset is still
+ * uncertain the poll is capped at 5 s, so a skewed display never shows a
+ * rotated token for long. Polling pauses in a hidden tab; the focus refetch
+ * picks up a fresh token when the screen is visible again.
  */
 export function attendanceQrQuery() {
   return queryOptions({
     queryKey: attendanceQrKeys.token(),
-    queryFn: ({ signal }) => fetchAttendanceQr(signal),
+    queryFn: async ({ signal }): Promise<AttendanceQrReading> => {
+      const { qr, sentAt, receivedAt } = await fetchAttendanceQr(signal);
+      clockBounds = nextClockBounds(clockBounds, qr, sentAt, receivedAt);
+      return {
+        qr,
+        offsetMs: estimateOffset(clockBounds),
+        converged: clockBounds.hi - clockBounds.lo <= CONVERGED_WIDTH_MS,
+      };
+    },
     staleTime: 0,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchInterval: (query) => {
-      const data: AttendanceQrToken | undefined = query.state.data;
+      const data = query.state.data;
       if (!data) return ATTENDANCE_QR_ROTATION_SECONDS * 1_000;
-      const remaining = Date.parse(data.expiresAt) - Date.now();
-      return Math.max(1_000, remaining + 500);
+      const untilExpiry = Math.max(
+        1_000,
+        qrRemainingMs(data, Date.now()) + 250,
+      );
+      return data.converged
+        ? untilExpiry
+        : Math.min(untilExpiry, UNCERTAIN_POLL_MS);
     },
   });
 }
@@ -62,7 +102,6 @@ export function attendanceDayQuery(businessDate: BusinessDate | null) {
         : ({ signal }) => fetchAttendanceDay(businessDate, signal),
     staleTime: 0,
     refetchInterval: 60_000,
-    refetchIntervalInBackground: true,
   });
 }
 

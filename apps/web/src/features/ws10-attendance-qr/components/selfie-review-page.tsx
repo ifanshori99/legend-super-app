@@ -43,6 +43,7 @@ import {
   ATTENDANCE_VALIDITY,
   validityRank,
 } from "../labels.ts";
+import { useCanReviewAttendance } from "../guard.ts";
 import { ATTENDANCE_TIME_ZONE } from "../outlet.ts";
 import {
   decideAttendanceSample,
@@ -55,8 +56,9 @@ import { ReviewDialog } from "./review-dialog.tsx";
 type ReviewRow = {
   log: AttendanceLog;
   employee: Employee | undefined;
+  /** This session's decision; never applied to a rejected (terminal) log. */
   decision: AttendanceReviewDecision | undefined;
-  /** Validity after the local decision, else the system's validity. */
+  /** The server's validity: the local decision never overrides it. */
   validity: AttendanceValidity;
 };
 
@@ -68,12 +70,16 @@ function buildRows(
   const byId = new Map(employees.map((employee) => [employee.id, employee]));
   return logs
     .map((log) => {
-      const decision = decisions[log.id];
+      // Session storage is not a source of truth: the row always shows the
+      // server's validity, and a stored decision for a log the server has
+      // since rejected is ignored.
+      const decision =
+        log.validity === "rejected" ? undefined : decisions[log.id];
       return {
         log,
         employee: byId.get(log.employeeId),
         decision,
-        validity: decision?.validity ?? log.validity,
+        validity: log.validity,
       };
     })
     .sort(
@@ -91,6 +97,7 @@ export function SelfieReviewPage() {
   const logsQuery = useAttendanceDay(businessDate);
   const employeesQuery = useReviewEmployees();
   const decisions = useReviewDecisions(businessDate);
+  const canDecide = useCanReviewAttendance();
   const [search, setSearch] = React.useState("");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
@@ -160,7 +167,7 @@ export function SelfieReviewPage() {
   };
 
   const decide = (kind: AttendanceReviewKind) => {
-    if (!selected || businessDate === null) return;
+    if (!canDecide || !selected || businessDate === null) return;
     const decision = decideAttendanceSample({
       businessDate,
       log: selected.log,
@@ -355,6 +362,7 @@ export function SelfieReviewPage() {
         log={selected?.log ?? null}
         employeeName={employeeName(selected)}
         decision={selected?.decision}
+        canDecide={canDecide}
         onDecide={decide}
         onOpenChange={(open) => {
           if (!open) setSelectedId(null);

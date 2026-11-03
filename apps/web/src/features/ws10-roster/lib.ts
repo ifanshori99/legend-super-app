@@ -3,7 +3,11 @@
 // already exists in the contract is imported, never re-implemented:
 // `weekStartOf`, `addBusinessDays`, `evaluateShiftCompliance`,
 // `isRosterPublished`, `shiftTemplateCrossesMidnight`, `workedMinutes`.
-import { localDateOf } from "@starter/shared/core";
+import {
+  businessDateOf,
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+  type BusinessDayClock,
+} from "@starter/shared/core";
 import {
   addBusinessDays,
   evaluateShiftCompliance,
@@ -59,9 +63,22 @@ const PUBLISHED_AT_FORMAT = new Intl.DateTimeFormat("id-ID", {
   timeZone: ROSTER_TIME_ZONE,
 });
 
-/** The outlet's business date; the server derives published rows itself. */
-export function todayBusinessDate(): string {
-  return localDateOf(new Date().toISOString(), ROSTER_TIME_ZONE);
+/**
+ * Outlet business-day clock (owner Q39): the day starts at the cutoff (default
+ * 04:00), not at midnight. Until the outlet context supplies its own cutoff the
+ * roster uses the default, like the other management screens.
+ */
+export const ROSTER_BUSINESS_DAY_CLOCK: BusinessDayClock = {
+  timeZone: ROSTER_TIME_ZONE,
+  cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
+};
+
+/**
+ * The outlet's business date now: 01:30 after a late Monday close is still
+ * Monday. The server derives published rows itself.
+ */
+export function todayBusinessDate(now: Date = new Date()): string {
+  return businessDateOf(now, ROSTER_BUSINESS_DAY_CLOCK);
 }
 
 export function currentWeekStart(): string {
@@ -150,18 +167,30 @@ function instantFor(date: string, time: string): string {
  * "Roster Mingguan"). The contract has no assignment write endpoint, so this
  * row never leaves the browser until it is published; the shape is the
  * contract's, validated here so the grid and compliance math see real data.
+ *
+ * Wall-clock times map onto the business day, not the calendar day: a segment
+ * that starts before the cutoff (e.g. 02:00 with a 04:00 cutoff) happens on
+ * the next calendar date but still belongs to `businessDate`, and a segment
+ * whose end is at or before its start (22:00–06:00) ends on the calendar day
+ * after it starts. Without this a 02:00 start would land ~24 h early and the
+ * rest/overlap math would compare the wrong instants.
  */
 export function draftFromTemplate(
   template: ShiftTemplate,
   employeeId: string,
   businessDate: string,
+  clock: BusinessDayClock = ROSTER_BUSINESS_DAY_CLOCK,
 ): ShiftAssignment {
   const segments = template.segments.map((segment) => {
+    const startDate =
+      segment.startTime < clock.cutoff
+        ? addBusinessDays(businessDate, 1)
+        : businessDate;
     const crossesMidnight = segment.endTime <= segment.startTime;
     return {
-      startsAt: instantFor(businessDate, segment.startTime),
+      startsAt: instantFor(startDate, segment.startTime),
       endsAt: instantFor(
-        crossesMidnight ? addBusinessDays(businessDate, 1) : businessDate,
+        crossesMidnight ? addBusinessDays(startDate, 1) : startDate,
         segment.endTime,
       ),
     };
@@ -333,11 +362,17 @@ export function staffingSuggestions(input: {
   assignments: readonly ShiftAssignment[];
   employees: readonly Employee[];
   templates: readonly ShiftTemplate[];
+  /** Last week's rows, so a Monday suggestion respects Sunday's rest. */
+  previousAssignments?: readonly ShiftAssignment[];
 }): RosterSuggestion[] {
   const activeEmployees = input.employees.filter(
     (employee) => employee.status === "active",
   );
   const templates = input.templates.filter((template) => template.isActive);
+  const activeTemplateIds = new Set(templates.map((template) => template.id));
+  const templatesById = new Map<string, (typeof templates)[number]>(
+    templates.map((template) => [template.id, template]),
+  );
   const rows = input.assignments.filter(
     (assignment) => assignment.status !== "cancelled",
   );
@@ -368,7 +403,12 @@ export function staffingSuggestions(input: {
   const templateCounts = new Map<string, number>();
   const employeeTemplates = new Map<string, Map<string, number>>();
   for (const row of rows) {
-    if (row.shiftTemplateId === null) continue;
+    // Only active templates may be suggested: an inactive one is retired.
+    if (
+      row.shiftTemplateId === null ||
+      !activeTemplateIds.has(row.shiftTemplateId)
+    )
+      continue;
     templateCounts.set(
       row.shiftTemplateId,
       (templateCounts.get(row.shiftTemplateId) ?? 0) + 1,
@@ -397,6 +437,7 @@ export function staffingSuggestions(input: {
   };
   const overallTemplate = mostUsed(templateCounts) ?? templates[0]?.id ?? null;
 
+  const compliancePool = [...(input.previousAssignments ?? []), ...rows];
   const suggestions: RosterSuggestion[] = [];
   for (const day of days) {
     if (suggestions.length >= MAX_SUGGESTIONS) break;
@@ -411,7 +452,7 @@ export function staffingSuggestions(input: {
     }
     const missing = busiest - scheduled.size;
     if (missing <= 0) continue;
-    const candidates = activeEmployees
+    const ranked = activeEmployees
       .filter((employee) => !scheduled.has(employee.id))
       .sort((left, right) => {
         const leftSame =
@@ -424,11 +465,21 @@ export function staffingSuggestions(input: {
           (shiftsPerEmployee.get(right.id) ?? 0);
         if (byShifts !== 0) return byShifts;
         return left.employeeNo.localeCompare(right.employeeNo);
-      })
-      .slice(0, Math.min(missing, MAX_SUGGESTIONS_PER_DAY));
-    for (const employee of candidates) {
+      });
+    let picked = 0;
+    for (const employee of ranked) {
+      if (picked >= Math.min(missing, MAX_SUGGESTIONS_PER_DAY)) break;
+      if (suggestions.length >= MAX_SUGGESTIONS) break;
       const templateId =
         mostUsed(employeeTemplates.get(employee.id)) ?? overallTemplate;
+      const template =
+        templateId === null ? undefined : templatesById.get(templateId);
+      // A suggestion is never offered without a usable template, and never
+      // when accepting it would itself create a compliance warning (F26).
+      if (!template) continue;
+      if (createsComplianceIssue(template, employee.id, day, compliancePool))
+        continue;
+      picked += 1;
       suggestions.push({
         id: `${day}|${employee.id}|${templateId ?? "none"}`,
         businessDate: day,
@@ -440,4 +491,29 @@ export function staffingSuggestions(input: {
     }
   }
   return suggestions;
+}
+
+/**
+ * True when adding `template` for the employee on `day` raises any F26 issue
+ * that the employee's rows did not already have. Compared by issue identity,
+ * not by the new shift id, because the contract attributes a weekly/daily
+ * limit to the last shift of the period, which may be an existing one.
+ */
+function createsComplianceIssue(
+  template: ShiftTemplate,
+  employeeId: string,
+  day: string,
+  pool: readonly ShiftAssignment[],
+): boolean {
+  const candidate = draftFromTemplate(template, employeeId, day);
+  const own = pool.filter((row) => row.employeeId === employeeId);
+  const key = (issue: ShiftComplianceIssue) =>
+    `${issue.code}|${issue.assignmentId}|${issue.relatedAssignmentId ?? ""}`;
+  const before = new Set(
+    evaluateShiftCompliance(own, ROSTER_COMPLIANCE_POLICY).map(key),
+  );
+  return evaluateShiftCompliance(
+    [...own, candidate],
+    ROSTER_COMPLIANCE_POLICY,
+  ).some((issue) => !before.has(key(issue)));
 }

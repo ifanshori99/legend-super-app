@@ -75,6 +75,10 @@ export function useViewMyPayslip() {
       payslipId: string;
       body: ViewPayslipInput;
     }) => fetchMyPayslip(payslipId, body),
+    // The mutation keeps its variables (the PIN) and its data (the amounts) in
+    // the MutationCache; gcTime 0 drops both as soon as the screen resets or
+    // unmounts the observer, instead of the 5-minute default.
+    gcTime: 0,
     // viewedAt changed, so the history badge refreshes; the body is not cached.
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: payslipKeys.payslips() }),

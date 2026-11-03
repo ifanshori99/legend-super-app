@@ -198,7 +198,9 @@ registerMock(listReimbursementCategories, ({ query, scenario }) => {
 
 registerMock(viewMyPayslip, ({ params, body }) => {
   const state = payslipMockStore.get();
-  const fingerprint = fingerprintOf(body);
+  // The payslip id is part of the request: a reused key on another slip is a
+  // conflict, never a replay of the first slip's answer.
+  const fingerprint = `${params.payslipId}|${fingerprintOf(body)}`;
   const replay = state.pinReplays[body.idempotencyKey];
   if (replay) {
     if (replay.fingerprint !== fingerprint) throw idempotencyConflict();

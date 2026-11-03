@@ -119,6 +119,8 @@ export const rosterMessages = {
     copyPrevious: "Salin minggu lalu",
     copied: "{count} shift disalin sebagai draf.",
     copyEmpty: "Minggu sebelumnya belum punya shift untuk disalin.",
+    copyAlreadyDone:
+      "Semua shift minggu lalu sudah ada di minggu ini; tidak ada yang disalin.",
     publish: "Terbitkan",
   },
   publish: {

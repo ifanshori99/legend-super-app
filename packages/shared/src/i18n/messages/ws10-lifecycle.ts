@@ -1,5 +1,5 @@
 // WS-10 onboarding/offboarding checklists, exit clearance, final settlement and
-// work certificate (bead legend-u3x3; PRD v1.7 §3 F26, §4 Alur M). Own file so
+// work certificate (bead legend-u3x3; PRD v1.7 §3 F24 / D26, §4 Alur M). Own file so
 // parallel WS-10 beads never edit the same catalog lines.
 export const lifecycleMessages = {
   title: "Siklus Karyawan",
@@ -155,17 +155,37 @@ export const lifecycleMessages = {
   settlement: {
     title: "Ringkasan penyelesaian akhir",
     description:
-      "Bacaan sumber penggajian untuk hak akhir karyawan ini. Layar tidak menjumlahkan apa pun.",
-    preview: "Pratinjau lokal",
-    payslip: "Slip gaji terakhir (neto)",
-    payslipSource: "Sumber: fixture payroll · periode berakhir {period}",
+      "Estimasi hak akhir dari data payroll karyawan ini. Baris tidak dijumlahkan.",
+    estimate: "Estimasi",
+    thr: "THR pro rata",
+    thrSource: "Masa kerja {months} bulan penuh s.d. {date}",
+    thrMissing: {
+      noExitDate: "Tanggal keluar belum ditetapkan",
+      noWage: "Belum ada komponen upah THR tercatat",
+      noTable: "Tabel THR yang berlaku belum diterbitkan",
+    },
     loan: "Kasbon belum lunas",
-    loanSource: "Sumber: fixture pinjaman · {count} kasbon aktif",
-    reimbursement: "Reimbursement belum dibayar",
-    reimbursementSource: "Sumber: fixture reimbursement · {count} klaim",
-    noRecord: "Tidak ada data di fixture",
-    contractMissing:
-      "Kontrak perhitungan hak akhir belum ada: pesangon, sisa cuti, dan potongan belum dihitung di layar ini.",
+    loanSource: "{count} kasbon aktif, dipotong dari hak akhir",
+    loanNone: "Tidak ada kasbon aktif",
+    reimbursement: "Reimbursement disetujui, belum dibayar",
+    reimbursementSource:
+      "{count} klaim disetujui · {pending} menunggu keputusan",
+    reimbursementNone:
+      "Tidak ada klaim disetujui · {pending} menunggu keputusan",
+    restricted:
+      "Nominal hak akhir adalah data gaji dan hanya tampil untuk pemegang izin lihat payroll.",
+    errorTitle: "Data payroll gagal dimuat",
+    errorHint: "Periksa koneksi lalu coba lagi.",
+    estimateNote:
+      "Angka final mengikuti payroll run yang sudah dikunci. Pesangon dan sisa cuti belum punya kontrak perhitungan, jadi belum tampil di sini.",
+  },
+  clearance: {
+    cleared: "Exit clearance selesai. Surat keterangan kerja bisa dibuka.",
+    blocked:
+      "Exit clearance belum selesai: {count} tugas masih terbuka atau terblokir.",
+    noTasks: "Belum ada tugas exit clearance untuk karyawan ini.",
+    certificateTaskLocked:
+      "Selesaikan semua tugas exit clearance lain sebelum surat keterangan diterbitkan.",
   },
   certificate: {
     title: "Surat keterangan kerja",
@@ -179,7 +199,13 @@ export const lifecycleMessages = {
     previewNote:
       "Pratinjau lokal: belum ada endpoint surat keterangan kerja, jadi surat ini tidak dapat diterbitkan atau diunduh.",
     heading: "SURAT KETERANGAN KERJA",
-    number: "Nomor: {number}",
+    numberPending: "Nomor diterbitkan saat surat disahkan",
+    locked: {
+      notLeaving:
+        "Surat hanya untuk karyawan yang sudah resign atau diberhentikan dengan tanggal keluar.",
+      clearanceOpen:
+        "Surat terkunci sampai semua tugas exit clearance selesai.",
+    },
     body: "Yang bertanda tangan di bawah ini menerangkan bahwa {name} dengan NIP {nip} benar bekerja di perusahaan ini dengan rincian sebagai berikut.",
     closing: "Surat ini dibuat untuk dipergunakan sebagaimana mestinya.",
     fields: {

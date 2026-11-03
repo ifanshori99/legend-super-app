@@ -41,9 +41,16 @@ const TYPE_LABEL: Record<EmployeeDocumentType, MessageKey> = {
   other: "employeeMaster.profile.documents.types.other",
 };
 
-export function EmployeeDocuments({ employeeId }: { employeeId: string }) {
+export function EmployeeDocuments({
+  employeeId,
+  timeZone,
+}: {
+  employeeId: string;
+  /** The employee's home-outlet time zone: "today" for document expiry. */
+  timeZone: string;
+}) {
   const t = useT();
-  const today = businessDateToday();
+  const today = businessDateToday(undefined, timeZone);
   const documentsQuery = useDocuments(employeeId);
   const rows = documentsQuery.data?.data ?? [];
 

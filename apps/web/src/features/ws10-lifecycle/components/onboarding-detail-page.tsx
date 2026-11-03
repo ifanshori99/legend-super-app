@@ -4,7 +4,6 @@
 // with the actions the contract allows.
 import { useT } from "@/components/i18n";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
-import { NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
 import { ApiError } from "@/lib/api/errors";
@@ -20,6 +19,7 @@ import {
   templatesFor,
 } from "../lib.ts";
 import { ChecklistCard } from "./checklist-card.tsx";
+import { MetricValue, type MetricsState } from "./metric-value.tsx";
 import { EmployeeHeader } from "./employee-header.tsx";
 
 const TEMPLATES = templatesFor("onboarding");
@@ -65,6 +65,11 @@ export function OnboardingDetailPage({ employeeId }: { employeeId: string }) {
   if (!row) return null;
 
   const progress = checklistProgress(tasks.data?.data ?? []);
+  const metricsState: MetricsState = tasks.isPending
+    ? "loading"
+    : tasks.isError
+      ? "error"
+      : "ready";
   const template = templateForPosition(TEMPLATES, "onboarding", row.positionId);
 
   return (
@@ -79,22 +84,26 @@ export function OnboardingDetailPage({ employeeId }: { employeeId: string }) {
       <StatStrip label={t("lifecycle.metrics.checklistLabel")} columns={4}>
         <StatTile
           label={t("lifecycle.metrics.total")}
-          value={<NumberDisplay value={progress.total} size="stat" />}
-          context={t("lifecycle.metrics.percentContext", {
-            percent: progress.percent,
-          })}
+          value={<MetricValue state={metricsState} value={progress.total} />}
+          context={
+            metricsState === "ready"
+              ? t("lifecycle.metrics.percentContext", {
+                  percent: progress.percent,
+                })
+              : undefined
+          }
         />
         <StatTile
           label={t("lifecycle.metrics.done")}
-          value={<NumberDisplay value={progress.complete} size="stat" />}
+          value={<MetricValue state={metricsState} value={progress.complete} />}
         />
         <StatTile
           label={t("lifecycle.metrics.open")}
-          value={<NumberDisplay value={progress.open} size="stat" />}
+          value={<MetricValue state={metricsState} value={progress.open} />}
         />
         <StatTile
           label={t("lifecycle.metrics.blocked")}
-          value={<NumberDisplay value={progress.blocked} size="stat" />}
+          value={<MetricValue state={metricsState} value={progress.blocked} />}
         />
       </StatStrip>
       <ChecklistCard

@@ -22,7 +22,7 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import { readDrafts } from "./draft-store.ts";
+import { readDrafts, readPublication } from "./draft-store.ts";
 import { ROSTER_COMPLIANCE_POLICY } from "./fixtures.ts";
 
 const fixtureAssignments = cafeLegendHrisFixtures.shiftAssignments;
@@ -75,9 +75,18 @@ registerMock(publishRoster, ({ body }) => {
       assignment.businessDate <= weekEnd &&
       assignment.status !== "cancelled",
   );
-  // Drafts made on this device; deduplicated by id in case a row is in both.
+  // The week as last published on this device wins over the fixture (the mock
+  // never mutates the read model), so a second publish keeps the drafts the
+  // first one published instead of silently dropping them. Then the drafts
+  // made since; deduplicated by id in case a row is in both.
+  const previous = readPublication(outletId, weekStart);
+  const baseRows = previous
+    ? previous.assignments.filter(
+        (assignment) => assignment.status !== "cancelled",
+      )
+    : fixtureRows;
   const byId = new Map<string, ShiftAssignment>();
-  for (const row of fixtureRows) byId.set(row.id, row);
+  for (const row of baseRows) byId.set(row.id, row);
   for (const draft of readDrafts(outletId, weekStart))
     byId.set(draft.id, draft);
   const rows = sortRows([...byId.values()]);

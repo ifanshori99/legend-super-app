@@ -64,6 +64,11 @@ export function SopPage() {
   const acknowledge = useAcknowledgeSop();
   const acknowledgements = fixtureSopAcknowledgements();
   const [selected, setSelected] = React.useState<SopDocument | null>(null);
+  // Versions confirmed in this visit: without a list endpoint (real API) the
+  // read model cannot reflect the write, so the button must still go away.
+  const [confirmedHere, setConfirmedHere] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const employeeId = profileQuery.data?.employee.id;
   const positionsById = React.useMemo(
@@ -88,6 +93,47 @@ export function SopPage() {
     const position = positionsById.get(document.positionId);
     return position?.name ?? t("learning.sop.scopeAllPositions");
   };
+
+  // The version in force per document family: only it can be confirmed (an
+  // older version is history; F29 asks for the version that applies).
+  const latestById = React.useMemo(() => {
+    const map = new Map<string, SopDocument>();
+    for (const group of groups) {
+      const latest = latestSopVersion(group);
+      for (const version of group.versions) map.set(version.id, latest);
+    }
+    return map;
+  }, [groups]);
+
+  function open(document: SopDocument) {
+    acknowledge.reset();
+    setSelected(document);
+  }
+
+  /** Status pill for one version; unknown when the API cannot say. */
+  const statusPill = (document: SopDocument) =>
+    !document.requiresAcknowledgement ? (
+      <StatusPill status="info">
+        {t("learning.sop.status.notRequired")}
+      </StatusPill>
+    ) : acknowledgements === null || employeeId === undefined ? (
+      <span className="text-sm text-muted-foreground">
+        {t("learning.common.none")}
+      </span>
+    ) : hasAcknowledged(
+        acknowledgements,
+        document.id,
+        document.version,
+        employeeId,
+      ) ? (
+      <StatusPill status="success">
+        {t("learning.sop.status.confirmed")}
+      </StatusPill>
+    ) : (
+      <StatusPill status="warning">
+        {t("learning.sop.status.pending")}
+      </StatusPill>
+    );
 
   const pendingCount =
     acknowledgements === null || employeeId === undefined
@@ -120,6 +166,7 @@ export function SopPage() {
       {
         onSuccess: (acknowledgement) => {
           recordSopAcknowledgement(acknowledgement);
+          setConfirmedHere((current) => new Set(current).add(document.id));
           toast({
             title: t("learning.sop.acknowledgedToast"),
             tone: "success",
@@ -129,6 +176,8 @@ export function SopPage() {
     );
   }
 
+  const selectedLatest =
+    selected === null ? null : (latestById.get(selected.id) ?? null);
   const selectedAckCount =
     selected === null
       ? null
@@ -196,12 +245,6 @@ export function SopPage() {
                 latest.id,
                 latest.version,
               );
-              const acknowledged = hasAcknowledged(
-                acknowledgements,
-                latest.id,
-                latest.version,
-                employeeId,
-              );
               return (
                 <TableRow key={group.key}>
                   <TableCell>
@@ -221,7 +264,10 @@ export function SopPage() {
                           }
                           size="sm"
                           className="h-7 px-2"
-                          onClick={() => setSelected(version)}
+                          aria-current={
+                            version.id === latest.id ? "true" : undefined
+                          }
+                          onClick={() => open(version)}
                         >
                           {t("learning.sop.versionChip", {
                             version: version.version,
@@ -245,26 +291,12 @@ export function SopPage() {
                       ? t("learning.common.none")
                       : t("learning.sop.acknowledgementCount", { count })}
                   </TableCell>
-                  <TableCell>
-                    {!latest.requiresAcknowledgement ? (
-                      <StatusPill status="info">
-                        {t("learning.sop.status.notRequired")}
-                      </StatusPill>
-                    ) : acknowledged ? (
-                      <StatusPill status="success">
-                        {t("learning.sop.status.confirmed")}
-                      </StatusPill>
-                    ) : (
-                      <StatusPill status="warning">
-                        {t("learning.sop.status.pending")}
-                      </StatusPill>
-                    )}
-                  </TableCell>
+                  <TableCell>{statusPill(latest)}</TableCell>
                   <TableCell>
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setSelected(latest)}
+                      onClick={() => open(latest)}
                     >
                       {t("learning.sop.open")}
                     </Button>
@@ -334,28 +366,21 @@ export function SopPage() {
                         count: selectedAckCount,
                       })}
                 </Badge>
-                {!selected.requiresAcknowledgement ? (
-                  <StatusPill status="info">
-                    {t("learning.sop.status.notRequired")}
-                  </StatusPill>
-                ) : hasAcknowledged(
-                    acknowledgements,
-                    selected.id,
-                    selected.version,
-                    employeeId,
-                  ) ? (
-                  <StatusPill status="success">
-                    {t("learning.sop.status.confirmed")}
-                  </StatusPill>
-                ) : (
-                  <StatusPill status="warning">
-                    {t("learning.sop.status.pending")}
-                  </StatusPill>
-                )}
+                {statusPill(selected)}
               </div>
+
+              {selectedLatest !== null && selectedLatest.id !== selected.id && (
+                <p className="rounded-container bg-surface-2 p-3 text-sm leading-5">
+                  {t("learning.sop.superseded", {
+                    version: selectedLatest.version,
+                  })}
+                </p>
+              )}
 
               {selected.requiresAcknowledgement &&
                 employeeId !== undefined &&
+                selectedLatest?.id === selected.id &&
+                !confirmedHere.has(selected.id) &&
                 !hasAcknowledged(
                   acknowledgements,
                   selected.id,

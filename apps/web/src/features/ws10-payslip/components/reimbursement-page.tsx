@@ -50,6 +50,8 @@ import {
 import {
   isBusinessDate,
   parseAmountInput,
+  RECEIPT_PHOTO_TYPES,
+  receiptPhotoIssue,
   reimbursementStatusKey,
   reimbursementStatusTone,
   todayBusinessDate,
@@ -154,13 +156,21 @@ export function ReimbursementPage() {
     // Clear the input so choosing the same file again still fires a change.
     event.target.value = "";
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    // UX check only (JPEG/PNG/WebP, storage `receipt` limit of 10 MiB): the
+    // upload endpoint re-validates the bytes. SVG/GIF/HEIC are refused here.
+    const issue = receiptPhotoIssue(file);
+    if (issue !== null) {
       setErrors((current) => ({
         ...current,
-        photo: "payslip.reimbursement.errors.photoType",
+        photo:
+          issue === "type"
+            ? "payslip.reimbursement.errors.photoType"
+            : "payslip.reimbursement.errors.photoTooLarge",
       }));
       return;
     }
+    // A replaced, never-submitted preview frees its memory.
+    if (photo !== null) URL.revokeObjectURL(photo.url);
     // Mock: the object URL is both the preview and the upload reference, and it
     // stays valid for this page session so the created claim can show its own
     // photo back. A real build uploads to the private bucket first and receives
@@ -418,7 +428,11 @@ export function ReimbursementPage() {
                 error={errors.photo ? t(errors.photo) : undefined}
                 required={selectedCategory?.receiptRequired ?? false}
               >
-                <Input type="file" accept="image/*" onChange={handlePhoto} />
+                <Input
+                  type="file"
+                  accept={RECEIPT_PHOTO_TYPES.join(",")}
+                  onChange={handlePhoto}
+                />
               </FormField>
 
               {photo !== null && (

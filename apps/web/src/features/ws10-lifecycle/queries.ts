@@ -14,6 +14,13 @@ import {
   type OrgUnit,
   type Position,
 } from "@starter/shared/hris";
+import {
+  listEmployeeLoans,
+  listEmployeePayComponents,
+  listPayComponents,
+  listReimbursements,
+  listStatutoryTables,
+} from "@starter/shared/hris/payroll";
 import { endpointQueryKey, endpointQueryOptions } from "@/lib/api/endpoint";
 import {
   fetchEmployee,
@@ -87,5 +94,42 @@ export function checklistTasksQuery(
   return endpointQueryOptions(listChecklistTasks, {
     params: { employeeId },
     query: { kind, limit },
+  });
+}
+
+// ---- Final settlement reads (payroll contract, HR-03 salary data) ---------
+//
+// Every read below is salary data: the screen only enables them for a viewer
+// holding payroll.view, and the API re-checks the permission.
+
+/** The employee's pay components (amounts per period, salary data). */
+export function employeePayComponentsQuery(employeeId: string) {
+  return endpointQueryOptions(listEmployeePayComponents, {
+    params: { employeeId },
+    query: { limit: 100 },
+  });
+}
+
+/** The tenant's pay component catalog (which components count toward THR). */
+export function payComponentsQuery() {
+  return endpointQueryOptions(listPayComponents, { query: { limit: 100 } });
+}
+
+/** The versioned THR tables; the contract resolves the one in force. */
+export function thrTablesQuery() {
+  return endpointQueryOptions(listStatutoryTables, {
+    query: { type: "thr", limit: 100 },
+  });
+}
+
+export function employeeLoansQuery(employeeId: string) {
+  return endpointQueryOptions(listEmployeeLoans, {
+    query: { employeeId, limit: 100 },
+  });
+}
+
+export function employeeReimbursementsQuery(employeeId: string) {
+  return endpointQueryOptions(listReimbursements, {
+    query: { employeeId, limit: 100 },
   });
 }

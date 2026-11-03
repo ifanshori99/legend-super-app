@@ -2,7 +2,13 @@
 // shared StatusPill tones: draft = info, published = success, archived =
 // neutral; the effective state reads as a separate badge because "terbit" and
 // "berlaku sekarang" are different facts (PAYR-02).
-import { Archive, CalendarClock, CircleCheck, FilePenLine } from "lucide-react";
+import {
+  Archive,
+  CalendarClock,
+  CircleCheck,
+  FilePenLine,
+  TriangleAlert,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import type { StatutoryTableVersion } from "@starter/shared/hris/payroll";
@@ -10,6 +16,7 @@ import {
   STATUTORY_STATUS_KEYS,
   effectiveVersion,
   formatBusinessDate,
+  hasPublishedOnDate,
 } from "../lib";
 
 export function StatutoryStatusPill({
@@ -59,6 +66,22 @@ export function StatutoryEffectiveBadge({
         {t("payrollConfig.statutory.scheduled", {
           date: formatBusinessDate(version.effectiveFrom),
         })}
+      </Badge>
+    );
+  // Two published versions on one date: payroll refuses the table, so neither
+  // is "superseded" — say so (the compliance banner lists the conflict).
+  if (
+    hasPublishedOnDate(
+      versions,
+      version.type,
+      version.effectiveFrom,
+      version.id,
+    )
+  )
+    return (
+      <Badge tone="danger">
+        <TriangleAlert aria-hidden="true" />
+        {t("payrollConfig.statutory.ambiguous")}
       </Badge>
     );
   const inForce = effectiveVersion(versions, version.type, today);

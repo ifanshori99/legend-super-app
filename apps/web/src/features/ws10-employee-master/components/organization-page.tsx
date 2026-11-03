@@ -203,7 +203,10 @@ export function OrganizationStructurePage() {
               description={t("employeeMaster.organization.emptyHint")}
             />
           ) : (
-            <ul className="grid gap-3">
+            <ul
+              className="grid gap-3"
+              aria-label={t("employeeMaster.organization.chartLabel")}
+            >
               {tree.map((node) => (
                 <UnitBranch key={node.unit.id} node={node} depth={0} />
               ))}
@@ -385,7 +388,12 @@ function UnitBranch({ node, depth }: { node: OrgNode; depth: number }) {
             </div>
           </div>
           {positions.length > 0 && (
-            <ul className="flex flex-wrap gap-1.5">
+            <ul
+              className="flex flex-wrap gap-1.5"
+              aria-label={t("employeeMaster.organization.unitPositionsLabel", {
+                unit: node.unit.name,
+              })}
+            >
               {positions.map((position) => (
                 <li key={position.id}>
                   <Badge tone="neutral">{position.name}</Badge>
@@ -397,7 +405,12 @@ function UnitBranch({ node, depth }: { node: OrgNode; depth: number }) {
       </div>
 
       {node.children.length > 0 && (
-        <ul className="mt-3 ml-4 grid gap-3 border-l border-border pl-4">
+        <ul
+          className="mt-3 ml-4 grid gap-3 border-l border-border pl-4"
+          aria-label={t("employeeMaster.organization.subUnitsLabel", {
+            unit: node.unit.name,
+          })}
+        >
           {node.children.map((child) => (
             <UnitBranch key={child.unit.id} node={child} depth={depth + 1} />
           ))}

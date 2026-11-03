@@ -46,6 +46,7 @@ import {
   CONTRACT_ALERT_DAYS,
   businessDateToday,
   directoryMetrics,
+  employeeTimeZone,
   filterEmployees,
   listPage,
   outletName,
@@ -114,10 +115,16 @@ export function EmployeeDirectoryPage({
     [outletsQuery.data],
   );
 
-  const today = businessDateToday();
+  // Each contract's "today" is its employee's home-outlet business date.
   const metrics = React.useMemo(
-    () => directoryMetrics(employees, contracts, today),
-    [employees, contracts, today],
+    () =>
+      directoryMetrics(employees, contracts, (contract) =>
+        businessDateToday(
+          undefined,
+          employeeTimeZone(employees, outlets, contract.employeeId),
+        ),
+      ),
+    [employees, contracts, outlets],
   );
 
   const filtered = React.useMemo(

@@ -187,7 +187,8 @@ export function RunStatusHeader({
                   key: "mark_paid",
                   label: "payrollRun.action.markPaid",
                   icon: Wallet,
-                  allowed: access.canLock,
+                  // A pending reversal blocks payment (contract reducer).
+                  allowed: access.canLock && !pendingReversal,
                   permission: "payrollRun.perm.lock",
                 }
               : null;
@@ -252,16 +253,24 @@ export function RunStatusHeader({
                 <Button
                   type="button"
                   disabled={!primary.allowed}
+                  aria-describedby={
+                    primary.allowed ? undefined : "payroll-run-action-gate"
+                  }
                   onClick={() => onAction(primary.key)}
                 >
                   <PrimaryIcon aria-hidden="true" />
                   {t(primary.label)}
                 </Button>
                 {!primary.allowed && (
-                  <span className="text-xs leading-4 text-muted-foreground">
-                    {t("payrollRun.action.needsPermission", {
-                      permission: t(primary.permission),
-                    })}
+                  <span
+                    id="payroll-run-action-gate"
+                    className="text-xs leading-4 text-muted-foreground"
+                  >
+                    {access.canLock && primary.key === "mark_paid"
+                      ? t("payrollRun.detail.pendingReversalTitle")
+                      : t("payrollRun.action.needsPermission", {
+                          permission: t(primary.permission),
+                        })}
                   </span>
                 )}
               </span>

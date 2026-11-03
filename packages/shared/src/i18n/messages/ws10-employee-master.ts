@@ -100,7 +100,10 @@ export const employeeMasterMessages = {
         emergencyContactName: "Kontak darurat",
         emergencyContactPhone: "Telepon darurat",
       },
-      emptyValue: "Belum diisi",
+      // Null = not recorded, or hidden for this role (HR-03): one honest word for both.
+      emptyValue: "Tidak tersedia",
+      restricted:
+        "Peran Anda tidak termasuk HR atau payroll, jadi NIK, NPWP, BPJS, rekening, dan kontak darurat tidak ditampilkan (HR-03).",
       lockedBadge: "Akses terbatas",
       lockedTitle: "Profil karyawan terkunci",
       lockedHint:
@@ -211,6 +214,8 @@ export const employeeMasterMessages = {
     chartHint:
       "Garis menghubungkan unit ke sub-unit. Angka pada unit adalah karyawan yang ditempatkan langsung di sana.",
     chartLabel: "Bagan unit organisasi",
+    unitPositionsLabel: "Jabatan di {unit}",
+    subUnitsLabel: "Sub-unit {unit}",
     directHeadcount: "{count} karyawan",
     positionCount: "{count} jabatan",
     emptyTitle: "Belum ada unit organisasi",

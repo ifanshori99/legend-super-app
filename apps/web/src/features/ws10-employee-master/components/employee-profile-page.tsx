@@ -22,6 +22,7 @@ import {
   usePositions,
 } from "../hooks";
 import {
+  HRIS_TIME_ZONE,
   employeeName,
   formatBusinessDate,
   orgUnitName,
@@ -48,9 +49,12 @@ export function EmployeeProfilePage({
   employeeId,
   tab,
   locked,
+  canEditPii,
 }: {
   employeeId: string;
   tab: ProfileTab;
+  /** HR-03: `hr.employee.manage` opens the write-only edit flow. */
+  canEditPii: boolean;
   /**
    * HR-03: the profile guard refuses employee data without
    * `hr.employee.view`; the screen shows the locked state instead of a 404 so
@@ -59,7 +63,9 @@ export function EmployeeProfilePage({
   locked: boolean;
 }) {
   if (locked) return <LockedProfile />;
-  return <ProfileBody employeeId={employeeId} tab={tab} />;
+  return (
+    <ProfileBody employeeId={employeeId} tab={tab} canEditPii={canEditPii} />
+  );
 }
 
 function LockedProfile() {
@@ -87,9 +93,11 @@ function LockedProfile() {
 function ProfileBody({
   employeeId,
   tab,
+  canEditPii,
 }: {
   employeeId: string;
   tab: ProfileTab;
+  canEditPii: boolean;
 }) {
   const t = useT();
   const employeeQuery = useEmployee(employeeId);
@@ -160,6 +168,11 @@ function ProfileBody({
   if (!employee) return <ProfileSkeleton />;
 
   const manager = employeeName(employees, employee.managerId);
+  // Contract reminders and document expiry count days in the employee's
+  // home-outlet time zone (D-CORE-6), not the browser's.
+  const timeZone =
+    outlets.find((outlet) => outlet.id === employee.homeOutletId)?.timeZone ??
+    HRIS_TIME_ZONE;
 
   return (
     <div className="grid min-w-0 gap-5">
@@ -263,7 +276,7 @@ function ProfileBody({
           </CardShellBody>
         </CardShell>
 
-        <EmployeePiiPanel employee={employee} />
+        <EmployeePiiPanel employee={employee} canEdit={canEditPii} />
       </div>
 
       <nav aria-label={t("employeeMaster.profile.tabsLabel")}>
@@ -287,9 +300,9 @@ function ProfileBody({
       </nav>
 
       {tab === "kontrak" ? (
-        <EmployeeContracts employeeId={employeeId} />
+        <EmployeeContracts employeeId={employeeId} timeZone={timeZone} />
       ) : (
-        <EmployeeDocuments employeeId={employeeId} />
+        <EmployeeDocuments employeeId={employeeId} timeZone={timeZone} />
       )}
     </div>
   );

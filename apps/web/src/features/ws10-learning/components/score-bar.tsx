@@ -1,7 +1,10 @@
 // A 0–100 bar. The bar is decoration only: the number and the accessible label
-// carry the value, so colour is never the only signal. `showValue={false}` is
-// for a secondary comparison bar whose own number would compete with the cell's
-// main figure (an indicator's achievement next to its actual value).
+// carry the value, so colour is never the only signal. Assistive tech hears the
+// label once (the visible number is hidden from it to avoid "93, Skor 93 dari
+// 100"); an unknown value is announced as the fallback, never as 0.
+// `showValue={false}` is for a secondary comparison bar whose own number would
+// compete with the cell's main figure (an indicator's achievement next to its
+// actual value).
 import { cn } from "cn";
 
 export function ScoreBar({
@@ -14,7 +17,7 @@ export function ScoreBar({
   value: number | null;
   /** Accessible description of the number, e.g. "Skor 95 dari 100". */
   label: string;
-  /** Shown instead of a number when the value is unknown. */
+  /** Shown (and announced) instead of a number when the value is unknown. */
   fallback: string;
   showValue?: boolean;
   className?: string;
@@ -32,11 +35,11 @@ export function ScoreBar({
         />
       </div>
       {showValue && (
-        <span className="tabular text-sm font-semibold">
+        <span aria-hidden="true" className="tabular text-sm font-semibold">
           {value === null ? fallback : value}
         </span>
       )}
-      <span className="sr-only">{label}</span>
+      <span className="sr-only">{value === null ? fallback : label}</span>
     </div>
   );
 }

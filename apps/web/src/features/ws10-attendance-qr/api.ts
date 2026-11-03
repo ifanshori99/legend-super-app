@@ -20,15 +20,23 @@ import { ATTENDANCE_OUTLET_ID } from "./outlet.ts";
 export const REVIEW_LOG_LIMIT = 100;
 export const REVIEW_EMPLOYEE_LIMIT = 100;
 
+/** The token plus the device-clock times around the call (skew estimate). */
+export type AttendanceQrResponse = {
+  qr: AttendanceQrToken;
+  sentAt: number;
+  receivedAt: number;
+};
+
 export async function fetchAttendanceQr(
   signal?: AbortSignal,
-): Promise<AttendanceQrToken> {
+): Promise<AttendanceQrResponse> {
+  const sentAt = Date.now();
   const response = await callEndpoint(
     getAttendanceQr,
     { query: { outletId: ATTENDANCE_OUTLET_ID } },
     { signal },
   );
-  return response.data;
+  return { qr: response.data, sentAt, receivedAt: Date.now() };
 }
 
 export async function fetchAttendanceDay(

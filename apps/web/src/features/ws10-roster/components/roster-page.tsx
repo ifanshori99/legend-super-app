@@ -78,6 +78,12 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
   const previousWeekQ = useRosterWeek(addBusinessDays(weekStart, -7));
   const holidaysQ = useRosterHolidays(weekStart);
   const local = useLocalRosterWeek(ROSTER_OUTLET_ID, weekStart);
+  // Last week as this device sees it: a week published or drafted locally
+  // must count for copy-previous-week and for Sunday→Monday rest.
+  const previousLocal = useLocalRosterWeek(
+    ROSTER_OUTLET_ID,
+    addBusinessDays(weekStart, -7),
+  );
   const publish = usePublishRoster();
 
   const [positionFilter, setPositionFilter] = React.useState<string>(ALL);
@@ -107,8 +113,13 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     [holidaysQ.data],
   );
   const previousRows = React.useMemo(
-    () => previousWeekQ.data?.data ?? [],
-    [previousWeekQ.data],
+    () =>
+      mergeWeekRows({
+        base: previousWeekQ.data?.data ?? [],
+        publication: previousLocal.publication,
+        drafts: previousLocal.drafts,
+      }),
+    [previousWeekQ.data, previousLocal.publication, previousLocal.drafts],
   );
 
   const rows = React.useMemo(
@@ -133,10 +144,17 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     () => new Map(employees.map((employee) => [employee.id, employee])),
     [employees],
   );
+  // Only active templates can become a shift: a drop carries arbitrary
+  // dataTransfer text, so an inactive or unknown id is ignored here.
   const templatesById = React.useMemo<
     Map<string, (typeof ROSTER_TEMPLATES)[number]>
   >(
-    () => new Map(ROSTER_TEMPLATES.map((template) => [template.id, template])),
+    () =>
+      new Map(
+        ROSTER_TEMPLATES.filter((template) => template.isActive).map(
+          (template) => [template.id, template],
+        ),
+      ),
     [],
   );
 
@@ -183,8 +201,9 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
         assignments: rows,
         employees,
         templates: ROSTER_TEMPLATES,
+        previousAssignments: previousRows,
       }),
-    [weekStart, rows, employees],
+    [weekStart, rows, employees, previousRows],
   );
 
   const loading =
@@ -240,15 +259,18 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     });
   };
 
+  // Idempotent: a row already in this week (same employee, day, template) is
+  // never copied twice, so a second click adds nothing.
   const copyPrevious = () => {
-    const existing = new Set(
-      [...rows, ...local.drafts].map((row) => rowKey(row)),
-    );
-    const fresh = copyWeekDrafts(previousRows).filter(
-      (row) => !existing.has(rowKey(row)),
-    );
-    if (fresh.length === 0) {
+    const copies = copyWeekDrafts(previousRows);
+    if (copies.length === 0) {
       toast({ title: t("roster.actions.copyEmpty") });
+      return;
+    }
+    const existing = new Set(rows.map((row) => rowKey(row)));
+    const fresh = copies.filter((row) => !existing.has(rowKey(row)));
+    if (fresh.length === 0) {
+      toast({ title: t("roster.actions.copyAlreadyDone") });
       return;
     }
     local.addDrafts(fresh);

@@ -16,6 +16,8 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import {
   hrisMockPiiStore,
+  mockHrisViewer,
+  redactEmployeePii,
   setHrisMockPii,
 } from "@/lib/mock/handlers/hris-directory";
 import { registerMock } from "@/lib/mock/registry";
@@ -43,6 +45,20 @@ type Replay = { fingerprint: string; result: EmployeePii };
 const replays = createMockStore<Record<string, Replay>>(() => ({}));
 
 registerMock(updateEmployeePii, ({ params, body }) => {
+  // HR-03: only HR with `hr.employee.manage` writes personal data. The owner
+  // template holds the permission but its viewer kind sees none of these
+  // classes, so it is refused like any other role (fail closed).
+  const viewer = mockHrisViewer();
+  if (
+    viewer === null ||
+    viewer.kind !== "hr" ||
+    !viewer.permissions.includes("hr.employee.manage")
+  )
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "Peran Anda tidak boleh mengubah data pribadi karyawan.",
+    );
   const { idempotencyKey, ...values } = body;
   const fingerprint = JSON.stringify(values);
   const previous = replays.get()[idempotencyKey];
@@ -53,7 +69,9 @@ registerMock(updateEmployeePii, ({ params, body }) => {
         "IDEMPOTENCY_KEY_REUSED",
         "Kunci idempotensi sudah dipakai dengan isi yang berbeda.",
       );
-    return { data: previous.result };
+    return {
+      data: redactEmployeePii(viewer, params.employeeId, previous.result),
+    };
   }
 
   const current = hrisMockPiiStore.get()[params.employeeId];
@@ -73,5 +91,5 @@ registerMock(updateEmployeePii, ({ params, body }) => {
 
   const result = setHrisMockPii(params.employeeId, patch);
   replays.set({ ...replays.get(), [idempotencyKey]: { fingerprint, result } });
-  return { data: result };
+  return { data: redactEmployeePii(viewer, params.employeeId, result) };
 });

@@ -3,8 +3,10 @@
 //
 // There is no certificate endpoint and no certificate record in the contracts,
 // so this is a local preview built from the employee row: name, NIP, position,
-// outlet, join/end dates, manager and company, with a number derived from the
-// employee id. It prints through the browser dialog; the sheet keeps the light
+// outlet, join/end dates, manager and company — nothing more (no salary, no
+// identity number, no reason for leaving). The number is issued by the API, so
+// the preview prints none. It opens only once the employee has left and the
+// exit clearance is complete (PRD §3 D26). It prints through the browser dialog; the sheet keeps the light
 // palette on paper and hides the shell (DESIGN.md §8, the same rule the purchase
 // order print page follows).
 import * as React from "react";
@@ -62,8 +64,8 @@ function CertificateSheet({ certificate }: { certificate: CertificateInput }) {
         <h3 className="type-title tracking-wide">
           {t("lifecycle.certificate.heading")}
         </h3>
-        <p className="text-sm text-muted-foreground tabular">
-          {t("lifecycle.certificate.number", { number: certificate.number })}
+        <p className="text-sm text-muted-foreground">
+          {t("lifecycle.certificate.numberPending")}
         </p>
       </header>
       <p className="text-(length:--density-text) leading-6">
@@ -132,11 +134,15 @@ function CertificateSheet({ certificate }: { certificate: CertificateInput }) {
 
 export function CertificateCard({
   certificate,
+  lock,
 }: {
   certificate: CertificateInput;
+  /** Why the certificate cannot be issued yet; null when it can. */
+  lock: "notLeaving" | "clearanceOpen" | null;
 }) {
   const t = useT();
   const [open, setOpen] = React.useState(false);
+  const lockId = React.useId();
   return (
     <Card>
       <CardHeader>
@@ -151,6 +157,8 @@ export function CertificateCard({
               type="button"
               variant="outline"
               size="sm"
+              disabled={lock !== null}
+              aria-describedby={lock === null ? undefined : lockId}
               onClick={() => setOpen(true)}
             >
               {t("lifecycle.certificate.open")}
@@ -158,10 +166,12 @@ export function CertificateCard({
           </div>
         </CardAction>
       </CardHeader>
-      <p className="text-sm leading-5 text-muted-foreground tabular">
-        {t("lifecycle.certificate.number", { number: certificate.number })}
-      </p>
-      <Dialog open={open} onOpenChange={setOpen}>
+      {lock === null ? null : (
+        <p id={lockId} className="text-sm leading-5 text-muted-foreground">
+          {t(`lifecycle.certificate.locked.${lock}`)}
+        </p>
+      )}
+      <Dialog open={open && lock === null} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-2xl">
           <style>{PRINT_STYLE}</style>
           <DialogHeader>

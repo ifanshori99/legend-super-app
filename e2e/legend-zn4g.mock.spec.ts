@@ -240,3 +240,44 @@ test("PAYR-04 service charge evidence 1440 light", async ({ page }) => {
   await expect(page.getByText("Alokasi cocok dengan pool")).toBeVisible();
   await captureScreenshot(page, "legend-zn4g/service-charge-1440-light.png");
 });
+
+async function signInAs(page: Page, role: string) {
+  await page
+    .context()
+    .addCookies([{ name: "legend-mock-role", value: role, url: base! }]);
+}
+
+test("PAYR-01 legend-t3f5 finance reads the run without payroll.run; run actions stay disabled", async ({
+  page,
+}) => {
+  // Finance holds payroll.view/approve/lock but not payroll.run: it may open
+  // the list and the run (decision legend-t3f5), every payroll.run action stays
+  // disabled, and its per-employee rows still load because it holds
+  // payroll.view.
+  await signInAs(page, "finance");
+  await open(page, "/kelola/payroll/run?mock=normal");
+  await expect(
+    page.getByRole("heading", { name: "Daftar payroll run" }),
+  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  await page.getByRole("link", { name: /26 Okt 2026/ }).click();
+  await expect(statusBand(page)).toContainText("Sudah disimulasikan", {
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await expect(
+    page.getByRole("button", { name: "Setujui HR", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Simulasi ulang" }),
+  ).toBeDisabled();
+});
+
+test("PAYR-01 a role without payroll permissions cannot open the run", async ({
+  page,
+}) => {
+  await signInAs(page, "cashier");
+  await open(page, `/kelola/payroll/run/${NOVEMBER_RUN_ID}?mock=normal`);
+  await expect(statusBand(page)).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Review per karyawan" }),
+  ).toHaveCount(0);
+});

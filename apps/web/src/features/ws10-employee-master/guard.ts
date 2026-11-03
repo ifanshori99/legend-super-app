@@ -25,6 +25,14 @@ export function employeeMasterGuard(anyOf: readonly PermissionCode[]) {
   };
 }
 
+/** HR-03: writing personal data (the API re-checks the viewer kind too). */
+export const EMPLOYEE_PII_EDIT_PERMISSIONS = ["hr.employee.manage"] as const;
+
+/** True when the visitor may open the PII edit flow (presentation only). */
+export function canEditEmployeePii(access: AreaAccess): boolean {
+  return holdsAny(access, EMPLOYEE_PII_EDIT_PERMISSIONS);
+}
+
 /** True when the visitor may read the employee master (presentation only). */
 export function canViewEmployees(access: AreaAccess): boolean {
   return holdsAny(access, EMPLOYEE_MASTER_PERMISSIONS);

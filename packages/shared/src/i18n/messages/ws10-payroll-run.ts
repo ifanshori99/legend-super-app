@@ -120,9 +120,6 @@ export const payrollRunMessages = {
     noPolicy:
       "Belum ada kebijakan payroll yang bisa dipakai. Atur kebijakan payroll lebih dulu, lalu buat run.",
     runType: "Jenis run",
-    idempotencyKey: "Kunci idempotensi",
-    idempotencyHint:
-      "Dibuat sekali untuk percobaan ini; klik ganda tidak membuat dua run.",
     dateInvalid: "Tanggal acuan tidak valid.",
     submit: "Buat run",
     created: "Payroll run dibuat.",
@@ -162,6 +159,9 @@ export const payrollRunMessages = {
     emptyTitle: "Belum ada hasil simulasi",
     emptyHint:
       "Jalankan simulasi untuk melihat perhitungan tiap karyawan. Simulasi tidak membuat slip atau jurnal.",
+    restrictedTitle: "Rincian gaji per karyawan terkunci",
+    restrictedHint:
+      "Butuh izin payroll.view untuk melihat gaji tiap karyawan. Ringkasan run di atas tetap bisa dipakai untuk persetujuan.",
     columnEmployee: "Karyawan",
     columnPosition: "Jabatan",
     columnGross: "Bruto",
@@ -256,6 +256,8 @@ export const payrollRunMessages = {
     bankCreate: "Buat berkas transfer",
     bankCreated: "Berkas transfer dibuat.",
     bankLockedHint: "Berkas transfer tersedia setelah payroll dikunci.",
+    taxLockedHint:
+      "Dokumen pajak tersedia setelah payroll disetujui dua tingkat dan dikunci.",
     bankExpected: "Neto transfer run: {total}",
     bankMatches: "Berkas cocok dengan run",
     bankMismatch: "Berkas belum cocok",
@@ -299,6 +301,7 @@ export const payrollRunMessages = {
     emptyTitle: "Belum ada slip gaji",
     emptyHint:
       "Slip dibuat saat payroll dikunci. Jalankan simulasi dan persetujuan lebih dulu.",
+    restricted: "Butuh izin payroll.view untuk melihat slip gaji karyawan.",
   },
   audit: {
     title: "Jejak audit",
@@ -342,6 +345,9 @@ export const payrollRunMessages = {
     idempotency: "Kunci idempotensi sudah dipakai untuk permintaan lain.",
     conflict: "Permintaan bentrok dengan data yang ada.",
     validation: "Data yang dikirim tidak valid.",
+    forbidden: "Anda tidak punya izin untuk tindakan payroll ini.",
+    taxPeriodNotLocked:
+      "Dokumen pajak hanya untuk masa pajak yang payroll-nya sudah dikunci.",
   },
   pool: {
     title: "Bagi hasil service charge",
@@ -390,6 +396,8 @@ export const payrollRunMessages = {
     allocationsDescription:
       "Poin jabatan, hari hadir, dan porsi rupiah; totalnya harus sama dengan pool.",
     allocationsEmptyTitle: "Belum ada alokasi",
+    allocationsRestricted:
+      "Butuh izin payroll.view atau payroll.approve untuk melihat alokasi per karyawan.",
     allocationsEmptyHint:
       "Hitung pembagian untuk melihat alokasi per karyawan. Total selalu sama dengan pool.",
     reconciles: "Alokasi cocok dengan pool",

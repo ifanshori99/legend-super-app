@@ -205,6 +205,69 @@ test("HR-05 F26 copy previous week turns last week's published shifts into draft
   ).toBeVisible();
 });
 
+test("HR-05 F26 copy previous week is idempotent: a second copy adds nothing", async ({
+  page,
+}) => {
+  await openRoster(page, `/kelola/roster?week=${NEXT_WEEK}&mock=normal`);
+  const copy = page.getByRole("button", { name: "Salin minggu lalu" });
+  await expect(copy).toBeEnabled();
+  await copy.click();
+  await expect(
+    page.getByText(/\d+ shift disalin sebagai draf\./).first(),
+  ).toBeVisible();
+  const budiDrafts = employeeRow(page, "Budi Santoso").getByText("Draf", {
+    exact: true,
+  });
+  const before = await budiDrafts.count();
+
+  await copy.click();
+  await expect(
+    page
+      .getByText(
+        "Semua shift minggu lalu sudah ada di minggu ini; tidak ada yang disalin.",
+      )
+      .first(),
+  ).toBeVisible();
+  await expect(budiDrafts).toHaveCount(before);
+});
+
+test("HR-05 F26 publishing needs confirmation: cancelling the dialog keeps the week as draft", async ({
+  page,
+}) => {
+  await openRoster(page);
+  const status = page.getByTestId("roster-week-status");
+  await expect(status).toHaveText("Draf");
+
+  await page.getByRole("button", { name: "Terbitkan", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Batal" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(status).toHaveText("Draf");
+});
+
+test("HR-05 F26 a shift can be added with the keyboard only", async ({
+  page,
+}) => {
+  await openRoster(page);
+  const agus = employeeRow(page, "Agus Setiawan");
+  await expect(agus).toBeVisible();
+  const drafts = agus.getByText("Draf", { exact: true });
+  const before = await drafts.count();
+
+  await agus
+    .getByRole("button", {
+      name: "Tambah shift untuk Agus Setiawan pada Min, 1 Nov",
+    })
+    .focus();
+  await page.keyboard.press("Enter");
+  const pagi = page.getByRole("menuitem", { name: /Tambah Pagi/ });
+  await expect(pagi).toBeVisible();
+  await pagi.focus();
+  await page.keyboard.press("Enter");
+  await expect(drafts).toHaveCount(before + 1);
+});
+
 test("HR-05 F26 the roster shows loading, empty, error and offline states", async ({
   page,
 }) => {

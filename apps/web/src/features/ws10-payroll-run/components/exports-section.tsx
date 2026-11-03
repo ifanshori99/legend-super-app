@@ -228,10 +228,12 @@ function BankCard({
                 </div>
                 <div className="flex items-center gap-3">
                   <Money amount={file.totalIdr} />
-                  <DownloadLink
-                    href={file.fileUrl}
-                    label={t("payrollRun.exports.download")}
-                  />
+                  {canExport && (
+                    <DownloadLink
+                      href={file.fileUrl}
+                      label={t("payrollRun.exports.download")}
+                    />
+                  )}
                 </div>
               </li>
             ))}
@@ -243,13 +245,16 @@ function BankCard({
 }
 
 function TaxCard({ run, canExport }: { run: PayrollRun; canExport: boolean }) {
+  // Personal data (NPWP/NIK, income): only from a twice-approved, locked run.
+  const exportable = run.status === "locked" || run.status === "paid";
   const t = useT();
   const toast = useToast();
   const createExport = useCreateTaxExport();
   const [kind, setKind] = React.useState<
     "monthly_withholding" | "annual_statement"
   >("monthly_withholding");
-  const [period, setPeriod] = React.useState(run.periodEnd.slice(0, 7));
+  // The pay date decides the tax period (run.ts statutoryVersionsForRun).
+  const [period, setPeriod] = React.useState(run.payDate.slice(0, 7));
   const [created, setCreated] = React.useState<PayrollTaxExport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const pattern =
@@ -295,6 +300,10 @@ function TaxCard({ run, canExport }: { run: PayrollRun; canExport: boolean }) {
           <p className="text-sm leading-5 text-muted-foreground">
             {t("payrollRun.exports.needLock")}
           </p>
+        ) : !exportable ? (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("payrollRun.exports.taxLockedHint")}
+          </p>
         ) : (
           <div className="flex flex-wrap items-end gap-2">
             <FormField
@@ -311,7 +320,7 @@ function TaxCard({ run, canExport }: { run: PayrollRun; canExport: boolean }) {
                   setPeriod(
                     next === "annual_statement"
                       ? period.slice(0, 4)
-                      : run.periodEnd.slice(0, 7),
+                      : run.payDate.slice(0, 7),
                   );
                 }}
               >
@@ -394,10 +403,12 @@ function TaxCard({ run, canExport }: { run: PayrollRun; canExport: boolean }) {
 function PayslipCard({
   payslips,
   state,
+  restricted,
   onRetry,
 }: {
   payslips: readonly Payslip[];
   state: DataState;
+  restricted: boolean;
   onRetry: () => void;
 }) {
   const t = useT();
@@ -410,7 +421,9 @@ function PayslipCard({
       rowCount={payslips.length}
       empty={{
         title: t("payrollRun.payslips.emptyTitle"),
-        description: t("payrollRun.payslips.emptyHint"),
+        description: restricted
+          ? t("payrollRun.payslips.restricted")
+          : t("payrollRun.payslips.emptyHint"),
       }}
     >
       <Table>
@@ -489,21 +502,25 @@ export function ExportsSection({
   run,
   files,
   canExport,
+  canViewSalaries,
 }: {
   run: PayrollRun;
   files: readonly BankTransferFile[];
   canExport: boolean;
+  canViewSalaries: boolean;
 }) {
   const t = useT();
-  const payslips = useRunPayslips(run.id);
+  const payslips = useRunPayslips(run.id, canViewSalaries);
   const payslipRows = payslips.data?.data ?? [];
-  const payslipState: DataState = payslips.isPending
-    ? "loading"
-    : payslips.isError
-      ? "error"
-      : payslipRows.length === 0
-        ? "empty"
-        : "ready";
+  const payslipState: DataState = !canViewSalaries
+    ? "empty"
+    : payslips.isPending
+      ? "loading"
+      : payslips.isError
+        ? "error"
+        : payslipRows.length === 0
+          ? "empty"
+          : "ready";
 
   return (
     <section aria-labelledby="payroll-exports-title" className="grid gap-4">
@@ -522,6 +539,7 @@ export function ExportsSection({
       <PayslipCard
         payslips={payslipRows}
         state={payslipState}
+        restricted={!canViewSalaries}
         onRetry={() => void payslips.refetch()}
       />
     </section>

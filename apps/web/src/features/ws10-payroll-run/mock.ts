@@ -13,13 +13,30 @@
 // every other role acts as the fixture HR approver. The Playwright spec uses
 // that to prove the second approval fails for the first approver.
 //
+// Authorization is enforced here, server-like, not only in the UI: every
+// handler checks the role template's permissions per the contract's route
+// table (endpoints.ts header; decision legend-t3f5 for reads) and answers 403
+// FORBIDDEN otherwise. The final approver must differ from the HR approver
+// (contract reducer) AND from the run's requester (PRD §3 Matriks Approval;
+// checked here because the reducer does not know the requester rule). During
+// SSR there is no cookie to read: only the run/pool reads a route loader
+// prefetches are served there (the page guard already checked the visitor);
+// everything else fails closed.
+//
 // Demo simplifications, stated so nobody mistakes them for business rules:
 // - salary amounts of a run created in the mock are the fixture simulation with
 //   the run's period labels (the API recalculates from attendance);
 // - service-charge attendance is 22 days per participant (the API aggregates
 //   attendance logs);
 // - a pay date is the policy's raw date (the API applies the working-day rule).
+import type { PermissionCode } from "@starter/shared/access";
 import { ApiError } from "@/lib/api/errors";
+import {
+  accessForMockRole,
+  MOCK_ROLE_COOKIE,
+  parseMockRole,
+} from "@/lib/areas/access";
+import { holdsAny } from "@/lib/areas/guard";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
@@ -73,6 +90,15 @@ import {
   type ServiceChargePool,
 } from "@starter/shared/hris/payroll";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
+import {
+  PAYROLL_APPROVE_PERMISSION,
+  PAYROLL_CANCEL_PERMISSION,
+  PAYROLL_LOCK_PERMISSION,
+  PAYROLL_RUN_PERMISSION,
+  PAYROLL_RUN_READ_PERMISSIONS,
+  PAYROLL_SALARY_PERMISSIONS,
+  SERVICE_CHARGE_PERMISSIONS,
+} from "./guard";
 
 const fixtures = cafeLegendPayrollFixtures;
 const hris = cafeLegendHrisFixtures;
@@ -238,17 +264,53 @@ function onceAction<T>(
   return once(key, { runId, action }, create);
 }
 
+/** The raw `legend-mock-role` cookie, or undefined on the server. */
+function mockRoleCookie(): string | undefined {
+  const row = document.cookie
+    .split("; ")
+    .find((cookie) => cookie.startsWith(`${MOCK_ROLE_COOKIE}=`));
+  return row?.slice(MOCK_ROLE_COOKIE.length + 1);
+}
+
 /** `legend-mock-role` → the fixture payroll actor (see the file header). */
 function currentActor() {
   if (typeof document === "undefined") return userIds.hrApprover;
-  const row = document.cookie
-    .split("; ")
-    .find((cookie) => cookie.startsWith("legend-mock-role="));
-  const role = row?.slice("legend-mock-role=".length) ?? "all";
+  const role = parseMockRole(mockRoleCookie());
   return role === "finance" || role === "owner"
     ? userIds.financeApprover
     : userIds.hrApprover;
 }
+
+/**
+ * 403 unless the caller's role holds one of `anyOf` (fail closed). On the
+ * server only an `ssrRead` (a loader prefetch behind the page guard) passes.
+ */
+function requirePermission(
+  anyOf: readonly PermissionCode[],
+  options: { ssrRead?: boolean } = {},
+): void {
+  if (typeof document === "undefined") {
+    if (options.ssrRead) return;
+  } else if (
+    holdsAny(accessForMockRole(parseMockRole(mockRoleCookie())), anyOf)
+  ) {
+    return;
+  }
+  throw new ApiError(
+    403,
+    "FORBIDDEN",
+    "Anda tidak punya izin untuk tindakan payroll ini.",
+  );
+}
+
+const READ_RUNS = PAYROLL_RUN_READ_PERMISSIONS;
+const RUN = [PAYROLL_RUN_PERMISSION] as const;
+const APPROVE = [PAYROLL_APPROVE_PERMISSION] as const;
+const LOCK = [PAYROLL_LOCK_PERMISSION] as const;
+const CANCEL = [PAYROLL_CANCEL_PERMISSION] as const;
+const SALARY = PAYROLL_SALARY_PERMISSIONS;
+/** Per-employee allocations: salary readers plus the pool approver. */
+const ALLOCATIONS = [...PAYROLL_SALARY_PERMISSIONS, PAYROLL_APPROVE_PERMISSION];
 
 function requireRun(runId: string): PayrollRun {
   return (
@@ -312,6 +374,7 @@ function simulateResults(run: PayrollRun): PayrollRunEmployeeResult[] {
 // ---- Payroll runs --------------------------------------------------------
 
 registerMock(listPayrollRuns, ({ query, scenario }) => {
+  requirePermission(READ_RUNS, { ssrRead: true });
   const rows = [...state().runs]
     .filter((run) => query.status === undefined || run.status === query.status)
     .filter(
@@ -323,11 +386,13 @@ registerMock(listPayrollRuns, ({ query, scenario }) => {
   return paginateFixture(rows, query, (run) => run.id, scenario);
 });
 
-registerMock(getPayrollRun, ({ params }) => ({
-  data: requireRun(params.payrollRunId),
-}));
+registerMock(getPayrollRun, ({ params }) => {
+  requirePermission(READ_RUNS, { ssrRead: true });
+  return { data: requireRun(params.payrollRunId) };
+});
 
 registerMock(createPayrollRun, ({ body }) => {
+  requirePermission(RUN);
   const policy = fixtures.payrollPolicies.find(
     (row) => row.id === body.payrollPolicyId,
   );
@@ -339,16 +404,22 @@ registerMock(createPayrollRun, ({ body }) => {
       "VALIDATION_ERROR",
       "Payroll THR harus menyebut jadwal THR.",
     );
-  const duplicate = state().runs.find(
-    (run) =>
-      run.payrollPolicyId === policy.id &&
-      run.periodStart === period.periodStart &&
-      run.runType === body.runType,
-  );
-  if (duplicate)
-    throw new ApiError(409, "CONFLICT", "Periode ini sudah punya payroll run.");
-  const run = once(body.idempotencyKey, body, () =>
-    payrollRunSchema.parse({
+  // A replay of the same key returns the stored run before the duplicate
+  // check, so a retry after a lost response is not refused as a conflict.
+  const run = once(body.idempotencyKey, body, () => {
+    const duplicate = state().runs.find(
+      (row) =>
+        row.payrollPolicyId === policy.id &&
+        row.periodStart === period.periodStart &&
+        row.runType === body.runType,
+    );
+    if (duplicate)
+      throw new ApiError(
+        409,
+        "CONFLICT",
+        "Periode ini sudah punya payroll run.",
+      );
+    return payrollRunSchema.parse({
       id: newUuid(),
       tenantId: tenant.id,
       legalEntityId: policy.legalEntityId,
@@ -373,17 +444,19 @@ registerMock(createPayrollRun, ({ body }) => {
       createdBy: currentActor(),
       createdAt: now(),
       updatedAt: now(),
-    }),
-  );
-  store.set({
-    ...state(),
-    runs: [...state().runs, run],
-    resultsByRun: { ...state().resultsByRun, [run.id]: [] },
+    });
   });
+  if (!state().runs.some((row) => row.id === run.id))
+    store.set({
+      ...state(),
+      runs: [...state().runs, run],
+      resultsByRun: { ...state().resultsByRun, [run.id]: [] },
+    });
   return { data: run };
 });
 
 registerMock(simulatePayrollRun, ({ params, body }) => {
+  requirePermission(RUN);
   const run = requireRun(params.payrollRunId);
   const next = onceAction(body.idempotencyKey, run.id, "simulate", () => {
     const rows = simulateResults(run);
@@ -403,6 +476,7 @@ registerMock(simulatePayrollRun, ({ params, body }) => {
 });
 
 registerMock(listPayrollRunEmployeeResults, ({ params, query, scenario }) => {
+  requirePermission(SALARY);
   const run = requireRun(params.payrollRunId);
   const rows = (state().resultsByRun[run.id] ?? []).filter(
     (row) => query.outletId === undefined || row.outletId === query.outletId,
@@ -411,11 +485,11 @@ registerMock(listPayrollRunEmployeeResults, ({ params, query, scenario }) => {
 });
 
 registerMock(returnPayrollRunToDraft, ({ params, body }) => {
+  requirePermission(RUN);
   const run = requireRun(params.payrollRunId);
-  const next = onceAction(
+  const next = once(
     body.idempotencyKey,
-    run.id,
-    "return_to_draft",
+    { runId: run.id, action: "return_to_draft", reason: body.reason },
     () => {
       const drafted = applyRun(run, {
         action: "return_to_draft",
@@ -432,6 +506,7 @@ registerMock(returnPayrollRunToDraft, ({ params, body }) => {
 });
 
 registerMock(approvePayrollRunHr, ({ params, body }) => {
+  requirePermission(RUN);
   const run = requireRun(params.payrollRunId);
   const next = onceAction(body.idempotencyKey, run.id, "approve_hr", () =>
     applyRun(run, {
@@ -444,18 +519,25 @@ registerMock(approvePayrollRunHr, ({ params, body }) => {
 });
 
 registerMock(approvePayrollRunFinal, ({ params, body }) => {
+  requirePermission(APPROVE);
   const run = requireRun(params.payrollRunId);
-  const next = onceAction(body.idempotencyKey, run.id, "approve_final", () =>
-    applyRun(run, {
-      action: "approve_final",
-      actorId: currentActor(),
-      at: now(),
-    }),
-  );
+  const next = onceAction(body.idempotencyKey, run.id, "approve_final", () => {
+    const actorId = currentActor();
+    // PRD §3 Matriks Approval: the final approver is neither the HR approver
+    // (the reducer checks that) nor the person who requested the run.
+    if (actorId === run.createdBy)
+      throw new ApiError(
+        409,
+        "PAYROLL_APPROVER_NOT_DISTINCT",
+        "Penyetuju final harus berbeda dari pembuat payroll run.",
+      );
+    return applyRun(run, { action: "approve_final", actorId, at: now() });
+  });
   return { data: next };
 });
 
 registerMock(lockPayrollRun, ({ params, body }) => {
+  requirePermission(LOCK);
   const run = requireRun(params.payrollRunId);
   const next = onceAction(body.idempotencyKey, run.id, "lock", () => {
     const locked = applyRun(run, {
@@ -495,6 +577,7 @@ registerMock(lockPayrollRun, ({ params, body }) => {
 });
 
 registerMock(markPayrollRunPaid, ({ params, body }) => {
+  requirePermission(LOCK);
   const run = requireRun(params.payrollRunId);
   if (body.bankTransferFileId !== null) {
     const file = state().bankFiles.find(
@@ -522,6 +605,7 @@ registerMock(markPayrollRunPaid, ({ params, body }) => {
 });
 
 registerMock(requestPayrollRunReversal, ({ params, body }) => {
+  requirePermission(RUN);
   const run = requireRun(params.payrollRunId);
   const next = once(
     body.idempotencyKey,
@@ -538,6 +622,7 @@ registerMock(requestPayrollRunReversal, ({ params, body }) => {
 });
 
 registerMock(decidePayrollRunReversal, ({ params, body }) => {
+  requirePermission(CANCEL);
   const run = requireRun(params.payrollRunId);
   const next = onceAction(
     body.idempotencyKey,
@@ -568,6 +653,7 @@ registerMock(decidePayrollRunReversal, ({ params, body }) => {
 });
 
 registerMock(listPayrollRunPayslips, ({ params, query, scenario }) => {
+  requirePermission(SALARY);
   const run = requireRun(params.payrollRunId);
   const rows = state().payslips.filter((slip) => slip.payrollRunId === run.id);
   return paginateFixture(rows, query, (slip) => slip.id, scenario);
@@ -601,6 +687,9 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 registerMock(createBankTransferFile, async ({ params, body }) => {
+  // Bank account numbers and net pay per person: payroll.lock only (contract
+  // route table), and only for a run approved twice and locked.
+  requirePermission(LOCK);
   const run = requireRun(params.payrollRunId);
   if (run.status !== "locked" && run.status !== "paid")
     invalid("Berkas transfer dibuat setelah payroll dikunci.");
@@ -646,12 +735,29 @@ registerMock(createBankTransferFile, async ({ params, body }) => {
 });
 
 registerMock(listBankTransferFiles, ({ params, query, scenario }) => {
+  requirePermission(LOCK);
   const run = requireRun(params.payrollRunId);
   const rows = state().bankFiles.filter((file) => file.payrollRunId === run.id);
   return paginateFixture(rows, query, (file) => file.id, scenario);
 });
 
 registerMock(createPayrollTaxExport, ({ body }) => {
+  // Tax documents carry NPWP/NIK and income per person: payroll.lock, and only
+  // for a tax period a locked (twice-approved) run of that legal entity pays —
+  // the same approval gate as the bank file. A reversed run does not count.
+  requirePermission(LOCK);
+  const covered = state().runs.some(
+    (run) =>
+      run.legalEntityId === body.legalEntityId &&
+      (run.status === "locked" || run.status === "paid") &&
+      run.payDate.startsWith(body.taxPeriod),
+  );
+  if (!covered)
+    throw new ApiError(
+      409,
+      "PAYROLL_TAX_PERIOD_NOT_LOCKED",
+      "Dokumen pajak dibuat dari payroll run yang sudah dikunci.",
+    );
   const file = once(body.idempotencyKey, body, () =>
     payrollTaxExportSchema.parse({
       id: newUuid(),
@@ -673,6 +779,7 @@ registerMock(createPayrollTaxExport, ({ body }) => {
 // ---- Service-charge pools ----------------------------------------------
 
 registerMock(listServiceChargePools, ({ query, scenario }) => {
+  requirePermission(SERVICE_CHARGE_PERMISSIONS, { ssrRead: true });
   const rows = state()
     .pools.filter(
       (pool) =>
@@ -686,6 +793,7 @@ registerMock(listServiceChargePools, ({ query, scenario }) => {
 });
 
 registerMock(createServiceChargePool, ({ body }) => {
+  requirePermission(RUN);
   const pool = once(body.idempotencyKey, body, () =>
     serviceChargePoolSchema.parse({
       id: newUuid(),
@@ -708,6 +816,7 @@ registerMock(createServiceChargePool, ({ body }) => {
 });
 
 registerMock(calculateServiceChargePool, ({ params, body }) => {
+  requirePermission(RUN);
   const pool = requirePool(params.poolId);
   const next = once(
     body.idempotencyKey,
@@ -772,6 +881,7 @@ registerMock(calculateServiceChargePool, ({ params, body }) => {
 });
 
 registerMock(approveServiceChargePool, ({ params, body }) => {
+  requirePermission(APPROVE);
   const pool = requirePool(params.poolId);
   const next = once(
     body.idempotencyKey,
@@ -798,6 +908,7 @@ registerMock(approveServiceChargePool, ({ params, body }) => {
 });
 
 registerMock(listServiceChargeAllocations, ({ params, query, scenario }) => {
+  requirePermission(ALLOCATIONS);
   requirePool(params.poolId);
   const rows = state().allocations.filter(
     (row) => row.poolId === params.poolId,

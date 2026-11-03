@@ -69,7 +69,9 @@ export const payslipMessages = {
     invalid: "PIN salah. Periksa lagi lalu coba lagi.",
     invalidWithAttempts: "PIN salah. Sisa {count} percobaan.",
     locked:
-      "PIN terkunci karena terlalu banyak percobaan. Hubungi HR untuk membuka kembali.",
+      "PIN terkunci sementara karena terlalu banyak percobaan. Coba lagi nanti atau hubungi HR.",
+    expired:
+      "Slip dikunci lagi demi keamanan. Masukkan PIN untuk membukanya kembali.",
     demoPin: "Mode mock: PIN demo 123456.",
     errorTitle: "Slip gagal dibuka",
     errorHint: "Periksa PIN lalu coba lagi.",
@@ -181,7 +183,8 @@ export const payslipMessages = {
     noteLabel: "Keterangan",
     notePlaceholder: "Contoh: transport antar bahan ke outlet kedua",
     photoLabel: "Foto bukti",
-    photoHint: "Foto struk atau bukti pengeluaran (JPG atau PNG).",
+    photoHint:
+      "Foto struk atau bukti pengeluaran (JPG, PNG, atau WebP, maks. 10 MB).",
     payoutLabel: "Cara pembayaran",
     payout: {
       payroll: "Lewat payroll",
@@ -201,7 +204,8 @@ export const payslipMessages = {
       noteRequired: "Isi keterangan klaim.",
       noteTooLong: "Keterangan maksimal 500 karakter.",
       photoRequired: "Kategori ini wajib menyertakan foto bukti.",
-      photoType: "Pilih berkas gambar (JPG atau PNG).",
+      photoType: "Pilih foto JPG, PNG, atau WebP.",
+      photoTooLarge: "Ukuran foto maksimal 10 MB.",
       submit: "Klaim gagal dikirim.",
       submitLimit: "Klaim ditolak karena melebihi batas kategori.",
       submitHint: "Periksa isian lalu coba lagi.",

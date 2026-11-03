@@ -17,7 +17,12 @@ import { ApiError } from "@/lib/api/errors";
 import { runLocalTaskAction } from "./local-action.ts";
 import {
   checklistTasksQuery,
+  employeeLoansQuery,
+  employeePayComponentsQuery,
   employeeQuery,
+  employeeReimbursementsQuery,
+  payComponentsQuery,
+  thrTablesQuery,
   employeesQuery,
   orgUnitsQuery,
   positionsQuery,
@@ -92,6 +97,39 @@ export function useChecklistTasksForEmployees(
     isError: queries.some((query) => query.isError),
     refetch: () => {
       for (const query of queries) void query.refetch();
+    },
+  };
+}
+
+/**
+ * The payroll reads behind the final-settlement estimate. `enabled` is the
+ * caller's payroll.view check: a viewer without it never requests salary data
+ * (HR-03), and the API refuses it anyway.
+ */
+export function useSettlementSources(employeeId: string, enabled: boolean) {
+  const on = enabled && employeeId !== "";
+  const rows = useQuery({
+    ...employeePayComponentsQuery(employeeId),
+    enabled: on,
+  });
+  const components = useQuery({ ...payComponentsQuery(), enabled: on });
+  const tables = useQuery({ ...thrTablesQuery(), enabled: on });
+  const loans = useQuery({ ...employeeLoansQuery(employeeId), enabled: on });
+  const claims = useQuery({
+    ...employeeReimbursementsQuery(employeeId),
+    enabled: on,
+  });
+  const all = [rows, components, tables, loans, claims];
+  return {
+    rows: rows.data?.data ?? [],
+    components: components.data?.data ?? [],
+    tables: tables.data?.data ?? [],
+    loans: loans.data?.data ?? [],
+    claims: claims.data?.data ?? [],
+    isPending: all.some((query) => query.isPending),
+    isError: all.some((query) => query.isError),
+    refetch: () => {
+      for (const query of all) if (query.isError) void query.refetch();
     },
   };
 }

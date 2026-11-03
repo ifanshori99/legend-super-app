@@ -31,7 +31,11 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import { formatNumber } from "@starter/shared/i18n";
-import type { Announcement, AnnouncementReceipt } from "@starter/shared/hris";
+import {
+  isAnnouncementReceiptComplete,
+  type Announcement,
+  type AnnouncementReceipt,
+} from "@starter/shared/hris";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import {
   useAnnouncements,
@@ -82,14 +86,43 @@ export function AnnouncementsPage() {
       ? []
       : receipts.filter((receipt) => receipt.announcementId === announcementId);
 
-  const hasRead = (announcementId: string): boolean =>
-    receipts !== null &&
-    employeeId !== undefined &&
-    receipts.some(
-      (receipt) =>
-        receipt.announcementId === announcementId &&
-        receipt.employeeId.toLowerCase() === employeeId.toLowerCase(),
+  // Announcements finished in this visit: without a receipts list (real API)
+  // the read model cannot reflect the write, so the button must still go away.
+  const [doneHere, setDoneHere] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const myReceipt = (announcementId: string): AnnouncementReceipt | null =>
+    receipts === null || employeeId === undefined
+      ? null
+      : (receipts.find(
+          (receipt) =>
+            receipt.announcementId === announcementId &&
+            receipt.employeeId.toLowerCase() === employeeId.toLowerCase(),
+        ) ?? null);
+
+  /** Read, and confirmed when the announcement asks for a receipt (F29). */
+  const isDone = (announcement: Announcement): boolean =>
+    doneHere.has(announcement.id) ||
+    (myReceipt(announcement.id) !== null &&
+      isAnnouncementReceiptComplete(announcement, myReceipt(announcement.id)));
+
+  /** Readers and confirmers, each employee counted once. */
+  const receiptCounts = (announcementId: string) => {
+    const rows = receiptsFor(announcementId);
+    const readers = new Set(rows.map((row) => row.employeeId.toLowerCase()));
+    const confirmers = new Set(
+      rows
+        .filter((row) => row.acknowledgedAt !== null)
+        .map((row) => row.employeeId.toLowerCase()),
     );
+    return { read: readers.size, acknowledged: confirmers.size };
+  };
+
+  function open(announcement: Announcement) {
+    markRead.reset();
+    setSelected(announcement);
+  }
 
   const audienceName = (announcement: Announcement) =>
     announcement.audience.kind === "all"
@@ -132,6 +165,7 @@ export function AnnouncementsPage() {
       {
         onSuccess: (receipt) => {
           recordAnnouncementReceipt(receipt);
+          setDoneHere((current) => new Set(current).add(announcement.id));
           toast({
             title: t("learning.announcements.readToast"),
             tone: "success",
@@ -166,7 +200,13 @@ export function AnnouncementsPage() {
             <span className="tabular">
               {receipts === null
                 ? t("learning.common.none")
-                : formatNumber(receipts.length)}
+                : formatNumber(
+                    announcements.reduce(
+                      (sum, announcement) =>
+                        sum + receiptCounts(announcement.id).read,
+                      0,
+                    ),
+                  )}
             </span>
           }
         />
@@ -219,14 +259,18 @@ export function AnnouncementsPage() {
           </TableHeader>
           <TableBody>
             {visible.map((announcement) => {
-              const rows = receiptsFor(announcement.id);
+              const counts = receiptCounts(announcement.id);
               return (
                 <TableRow key={announcement.id}>
                   <TableCell>
                     <p className="font-medium">{announcement.title}</p>
-                    {hasRead(announcement.id) && (
+                    {isDone(announcement) && (
                       <StatusPill status="success" className="mt-1">
-                        {t("learning.announcements.alreadyRead")}
+                        {t(
+                          announcement.requiresReceipt
+                            ? "learning.announcements.alreadyAcknowledged"
+                            : "learning.announcements.alreadyRead",
+                        )}
                       </StatusPill>
                     )}
                   </TableCell>
@@ -235,11 +279,26 @@ export function AnnouncementsPage() {
                     {formatDateTime(announcement.publishedAt)}
                   </TableCell>
                   <TableCell>
-                    <Badge tone="neutral">
-                      {t("learning.announcements.receiptsCount", {
-                        count: rows.length,
-                      })}
-                    </Badge>
+                    {receipts === null ? (
+                      <span className="text-sm text-muted-foreground">
+                        {t("learning.common.none")}
+                      </span>
+                    ) : (
+                      <span className="flex flex-wrap gap-1">
+                        <Badge tone="neutral">
+                          {t("learning.announcements.receiptsCount", {
+                            count: counts.read,
+                          })}
+                        </Badge>
+                        {announcement.requiresReceipt && (
+                          <Badge tone="neutral">
+                            {t("learning.announcements.acknowledgedCount", {
+                              count: counts.acknowledged,
+                            })}
+                          </Badge>
+                        )}
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <Badge
@@ -258,7 +317,7 @@ export function AnnouncementsPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setSelected(announcement)}
+                      onClick={() => open(announcement)}
                     >
                       {t("learning.announcements.open")}
                     </Button>
@@ -331,9 +390,13 @@ export function AnnouncementsPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {hasRead(selected.id) ? (
+                {isDone(selected) ? (
                   <StatusPill status="success">
-                    {t("learning.announcements.alreadyRead")}
+                    {t(
+                      selected.requiresReceipt
+                        ? "learning.announcements.alreadyAcknowledged"
+                        : "learning.announcements.alreadyRead",
+                    )}
                   </StatusPill>
                 ) : (
                   <Button
@@ -341,9 +404,11 @@ export function AnnouncementsPage() {
                     loading={markRead.isPending}
                   >
                     {t(
-                      selected.requiresReceipt
-                        ? "learning.announcements.markReadAndAcknowledge"
-                        : "learning.announcements.markRead",
+                      !selected.requiresReceipt
+                        ? "learning.announcements.markRead"
+                        : myReceipt(selected.id) !== null
+                          ? "learning.announcements.acknowledge"
+                          : "learning.announcements.markReadAndAcknowledge",
                     )}
                   </Button>
                 )}

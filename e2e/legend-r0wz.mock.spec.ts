@@ -77,6 +77,19 @@ test("F32 SOP acknowledgement flips the read confirmation for the version", asyn
   await expect(row.getByRole("button", { name: "v1" })).toBeVisible();
   await expect(row.getByRole("button", { name: "v2" })).toBeVisible();
 
+  // F29: a superseded version is history; it cannot be confirmed.
+  await retry(async () => {
+    await row.getByRole("button", { name: "v1" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible({ timeout: 1000 });
+  });
+  const oldVersion = page.getByRole("dialog");
+  await expect(oldVersion.getByText(/sudah digantikan v2/)).toBeVisible();
+  await expect(
+    oldVersion.getByRole("button", { name: "Konfirmasi sudah dibaca" }),
+  ).toHaveCount(0);
+  await oldVersion.getByRole("button", { name: "Tutup" }).first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
   await retry(async () => {
     await row.getByRole("button", { name: "Buka dokumen" }).click();
     await expect(page.getByRole("dialog")).toBeVisible({ timeout: 1000 });
@@ -202,6 +215,7 @@ test("F32 announcement mark-read adds the reader to the receipt table", async ({
   const row = page.getByRole("row", { name: /Pembaruan SOP Bar versi 2/ });
   await expect(row).toBeVisible();
   await expect(row).toContainText("2 dibaca");
+  await expect(row).toContainText("1 dikonfirmasi");
 
   await retry(async () => {
     await row.getByRole("button", { name: "Buka pengumuman" }).click();
@@ -218,7 +232,7 @@ test("F32 announcement mark-read adds the reader to the receipt table", async ({
 
   await retry(async () => {
     await dialog.getByRole("button", { name: "Baca dan konfirmasi" }).click();
-    await expect(dialog.getByText("Sudah dibaca")).toBeVisible({
+    await expect(dialog.getByText("Sudah dikonfirmasi")).toBeVisible({
       timeout: 1000,
     });
   });
@@ -230,6 +244,7 @@ test("F32 announcement mark-read adds the reader to the receipt table", async ({
   await dialog.getByRole("button", { name: "Tutup" }).first().click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(row).toContainText("3 dibaca");
+  await expect(row).toContainText("2 dikonfirmasi");
 });
 
 test("F32 training modules show an empty state when none are published", async ({

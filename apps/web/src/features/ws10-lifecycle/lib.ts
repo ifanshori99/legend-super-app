@@ -1,13 +1,18 @@
 // Pure helpers of the WS-10 lifecycle screens (bead legend-u3x3; PRD v1.7 §3
 // Kelompok D 26 "Onboarding"/"Offboarding", §4 Alur M): the derived checklist
 // views, the template that applies to a position, and the fixture-only
-// previews of the final settlement and the work certificate. No React, no
-// fetching.
+// final-settlement estimate (payroll contract math only) and the work
+// certificate preview. No React, no fetching.
 //
 // The contract owns the task lifecycle: `transitionChecklistTask` decides which
 // action is legal and `isChecklistComplete` decides when a checklist closes, so
 // this file never re-implements either rule.
-import { cafeLegendFixtures } from "@starter/shared/core";
+import {
+  cafeLegendFixtures,
+  idr,
+  type BusinessDate,
+  type Idr,
+} from "@starter/shared/core";
 import {
   cafeLegendHrisFixtures,
   checklistCategorySchema,
@@ -22,7 +27,17 @@ import {
   type Employee,
   type EmployeeStatus,
 } from "@starter/shared/hris";
-import { cafeLegendPayrollFixtures } from "@starter/shared/hris/payroll";
+import {
+  PayrollError,
+  computeThr,
+  resolveStatutoryTable,
+  type EmployeeLoan,
+  type EmployeePayComponent,
+  type PayComponent,
+  type Reimbursement,
+  type StatutoryTableVersion,
+  type StatutoryTableVersionOf,
+} from "@starter/shared/hris/payroll";
 import type { MessageKey } from "@starter/shared/i18n";
 
 /** The back office lists the whole directory; screens filter in memory. */
@@ -275,86 +290,167 @@ export function offboardingCandidates(
   );
 }
 
-// ---- Final settlement (fixture-only preview) ------------------------------
-
-export type SettlementPreview = {
-  lastPayslip: {
-    netIdr: number;
-    payDate: string;
-    periodEnd: string;
-  } | null;
-  /** Sum of the instalments still owed on approved/disbursed kasbon. */
-  loanOutstandingIdr: number | null;
-  loanCount: number;
-  /** Claims submitted or approved but not paid out yet. */
-  reimbursementOutstandingIdr: number | null;
-  reimbursementCount: number;
-};
+// ---- Exit clearance ----------------------------------------------------------
 
 /**
- * What the payroll fixtures already know about one employee's exit.
- *
- * There is no final-settlement endpoint (PRD §3 D26 "perhitungan hak akhir"
- * has no contract yet), so this is a read-only preview of the source rows:
- * the last payslip's net, the outstanding kasbon and the unpaid reimbursement.
- * It deliberately adds no total and no formula — the entitlement (pesangon,
- * sisa cuti, potongan) is the API's calculation, not the screen's.
+ * The tasks that still hold up an exit: every offboarding task that is not
+ * done or waived, except the work certificate's own task — the certificate is
+ * what clearance unlocks, so it cannot also be what blocks it.
  */
-export function finalSettlementPreview(employeeId: string): SettlementPreview {
-  const payslips = cafeLegendPayrollFixtures.payslips
-    .filter((payslip) => payslip.employeeId === employeeId)
-    .sort((left, right) => right.payDate.localeCompare(left.payDate));
-  const latest = payslips[0] ?? null;
+export function clearanceBlockers(
+  tasks: readonly ChecklistTask[],
+): ChecklistTask[] {
+  return tasks.filter(
+    (task) =>
+      task.category !== "work_certificate" && !isChecklistComplete([task]),
+  );
+}
 
-  const loans = cafeLegendPayrollFixtures.employeeLoans.filter(
+export type ExitClearance = {
+  /** Clearance tasks (all but the certificate task) still open or blocked. */
+  blockers: ChecklistTask[];
+  /** True when there is at least one clearance task and none blocks. */
+  cleared: boolean;
+};
+
+export function exitClearance(tasks: readonly ChecklistTask[]): ExitClearance {
+  const blockers = clearanceBlockers(tasks);
+  const clearanceTasks = tasks.filter(
+    (task) => task.category !== "work_certificate",
+  );
+  return {
+    blockers,
+    cleared: clearanceTasks.length > 0 && blockers.length === 0,
+  };
+}
+
+/**
+ * Why the certificate cannot be issued yet, or null when it can: the employee
+ * must have left (resigned/terminated with an exit date) and the exit
+ * clearance must be complete (PRD §3 D26 "exit clearance ... dan surat
+ * keterangan kerja").
+ */
+export function certificateLock(
+  employee: Employee,
+  clearance: ExitClearance,
+): "notLeaving" | "clearanceOpen" | null {
+  if (
+    (employee.status !== "resigned" && employee.status !== "terminated") ||
+    employee.endDate === null
+  )
+    return "notLeaving";
+  if (!clearance.cleared) return "clearanceOpen";
+  return null;
+}
+
+// ---- Final settlement (estimate from the payroll contract) ---------------
+
+/**
+ * The THR wage on one date: the sum of the employee's pay components in force
+ * that day whose component counts toward the THR wage (`thrBase`, payroll
+ * contract components.ts). Null when no such component is recorded.
+ */
+export function thrWageOn(
+  rows: readonly EmployeePayComponent[],
+  components: readonly PayComponent[],
+  onDate: BusinessDate,
+): Idr | null {
+  const thrBase = new Set(
+    components.filter((component) => component.thrBase).map((c) => c.id),
+  );
+  const inForce = rows.filter(
+    (row) =>
+      thrBase.has(row.componentId) &&
+      row.effectiveFrom <= onDate &&
+      (row.effectiveTo === null || row.effectiveTo >= onDate),
+  );
+  if (inForce.length === 0) return null;
+  return idr(inForce.reduce((sum, row) => sum + row.amountIdr, 0));
+}
+
+export type ThrEstimate =
+  | { kind: "ok"; tenureMonths: number; amountIdr: Idr; wageIdr: Idr }
+  | { kind: "noExitDate" }
+  | { kind: "noWage" }
+  | { kind: "noTable" };
+
+/** The published THR table in force on a date; null when none applies. */
+function thrTableOn(
+  tables: readonly StatutoryTableVersion[],
+  onDate: BusinessDate,
+): StatutoryTableVersionOf<"thr"> | null {
+  try {
+    return resolveStatutoryTable(tables, "thr", onDate);
+  } catch (error) {
+    if (error instanceof PayrollError) return null;
+    throw error;
+  }
+}
+
+/**
+ * THR pro rata up to the exit date, computed only by the payroll contract:
+ * `resolveStatutoryTable` picks the published THR table in force on the exit
+ * date and `computeThr` counts tenure by exact date (31 Jan → 28 Feb = 0
+ * months). It is an estimate: the payroll run that pays it is the source of
+ * truth once locked.
+ */
+export function thrEstimate(input: {
+  employee: Employee;
+  tables: readonly StatutoryTableVersion[];
+  rows: readonly EmployeePayComponent[];
+  components: readonly PayComponent[];
+}): ThrEstimate {
+  const { employee } = input;
+  if (employee.endDate === null) return { kind: "noExitDate" };
+  const wage = thrWageOn(input.rows, input.components, employee.endDate);
+  if (wage === null) return { kind: "noWage" };
+  const table = thrTableOn(input.tables, employee.endDate);
+  if (table === null) return { kind: "noTable" };
+  const result = computeThr(table.parameters, {
+    joinDate: employee.joinDate,
+    asOfDate: employee.endDate,
+    thrWageIdr: wage,
+  });
+  return { kind: "ok", ...result, wageIdr: wage };
+}
+
+/** Kasbon still owed by the employee (approved or disbursed, balance > 0). */
+export function outstandingLoans(loans: readonly EmployeeLoan[]): {
+  count: number;
+  amountIdr: Idr;
+} {
+  const open = loans.filter(
     (loan) =>
-      loan.employeeId === employeeId &&
       (loan.status === "approved" || loan.status === "disbursed") &&
       loan.outstandingIdr > 0,
   );
-  const loanOutstandingIdr = loans.reduce(
-    (sum, loan) => sum + loan.outstandingIdr,
-    0,
-  );
-
-  const claims = cafeLegendPayrollFixtures.reimbursements.filter(
-    (claim) =>
-      claim.employeeId === employeeId &&
-      (claim.status === "submitted" || claim.status === "approved"),
-  );
-  const reimbursementOutstandingIdr = claims.reduce(
-    (sum, claim) => sum + (claim.approvedAmountIdr ?? claim.amountIdr),
-    0,
-  );
-
   return {
-    lastPayslip:
-      latest === null
-        ? null
-        : {
-            netIdr: latest.netIdr,
-            payDate: latest.payDate,
-            periodEnd: latest.periodEnd,
-          },
-    loanOutstandingIdr: loans.length === 0 ? null : loanOutstandingIdr,
-    loanCount: loans.length,
-    reimbursementOutstandingIdr:
-      claims.length === 0 ? null : reimbursementOutstandingIdr,
-    reimbursementCount: claims.length,
+    count: open.length,
+    amountIdr: idr(open.reduce((sum, loan) => sum + loan.outstandingIdr, 0)),
+  };
+}
+
+/** Approved reimbursements not paid out yet (owed to the employee). */
+export function unpaidReimbursements(claims: readonly Reimbursement[]): {
+  count: number;
+  amountIdr: Idr;
+  /** Claims still waiting for a decision: not money owed yet. */
+  pendingCount: number;
+} {
+  const approved = claims.filter((claim) => claim.status === "approved");
+  return {
+    count: approved.length,
+    amountIdr: idr(
+      approved.reduce(
+        (sum, claim) => sum + (claim.approvedAmountIdr ?? claim.amountIdr),
+        0,
+      ),
+    ),
+    pendingCount: claims.filter((claim) => claim.status === "submitted").length,
   };
 }
 
 // ---- Work certificate (local preview) -------------------------------------
-
-/**
- * Certificate number of the local preview. The API will issue the real number
- * (there is no certificate endpoint yet); deriving it from the employee id
- * keeps the preview stable across renders without inventing a registry.
- */
-export function certificateNumber(employeeId: string): string {
-  const digits = employeeId.replace(/\D/g, "");
-  return `SK-${digits.slice(-4)}`;
-}
 
 export type CertificateInput = {
   employee: Employee;
@@ -362,7 +458,6 @@ export type CertificateInput = {
   outletName: string;
   managerName: string | null;
   company: string;
-  number: string;
 };
 
 /** The values the certificate sheet prints, from the employee row. */
@@ -381,7 +476,6 @@ export function certificateFor(
     outletName: outletName(employee.homeOutletId),
     managerName: manager?.fullName ?? null,
     company: cafeLegendFixtures.legalEntityName,
-    number: certificateNumber(employee.id),
   };
 }
 

@@ -6,10 +6,22 @@
 // query cache, so navigating away and back asks for the PIN again (no
 // persisted PIN, no cached amounts). Wrong attempts and the lock are the API's
 // codes (PAYSLIP_PIN_INVALID / PAYSLIP_PIN_LOCKED); the mock burns three tries
-// before it locks.
-import { useState, type FormEvent } from "react";
+// before it locks. The mutation is reset after every attempt (gcTime 0), so
+// neither the PIN nor the amounts linger in the MutationCache, and an opened
+// slip locks itself again after PAYSLIP_UNLOCK_TTL_MS.
+//
+// HR-01: the id in the URL is only a lookup key. A malformed id never reaches
+// the API, and a well-formed id that is not the caller's answers NOT_FOUND,
+// shown as "not found", never as a PIN problem.
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
-import { ChevronLeft, Download, Printer, ShieldCheck } from "lucide-react";
+import {
+  ChevronLeft,
+  Download,
+  FileX,
+  Printer,
+  ShieldCheck,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +34,8 @@ import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import type { Payslip, PayslipLine } from "@starter/shared/hris/payroll";
+import { payslipIdSchema } from "@starter/shared/hris/payroll";
+import { SectionEmpty } from "@/features/ws10-hris-employee/components/section-states";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
@@ -30,13 +44,14 @@ import { useViewMyPayslip } from "../hooks.ts";
 import {
   PAYSLIP_PIN_LENGTH,
   PAYSLIP_PIN_MAX_ATTEMPTS,
+  PAYSLIP_UNLOCK_TTL_MS,
   paymentMethodKey,
   pinErrorKind,
   quantityUnitKey,
 } from "../state.ts";
 import { PageHeader } from "./page-header.tsx";
 
-type PinErrorKind = "invalid" | "locked" | "other";
+type PinErrorKind = "invalid" | "locked" | "notFound" | "other";
 
 function SummaryRow({ label, amount }: { label: string; amount: number }) {
   return (
@@ -241,7 +256,21 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
   const [payslip, setPayslip] = useState<Payslip | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [locked, setLocked] = useState(false);
-  const [errorKind, setErrorKind] = useState<PinErrorKind | null>(null);
+  const [errorKind, setErrorKind] = useState<PinErrorKind | null>(() =>
+    payslipIdSchema.safeParse(payslipId).success ? null : "notFound",
+  );
+  const [expired, setExpired] = useState(false);
+
+  // An opened slip locks again after the TTL: the amounts leave the DOM and
+  // the employee re-enters the PIN.
+  useEffect(() => {
+    if (payslip === null) return;
+    const timer = window.setTimeout(() => {
+      setPayslip(null);
+      setExpired(true);
+    }, PAYSLIP_UNLOCK_TTL_MS);
+    return () => window.clearTimeout(timer);
+  }, [payslip]);
 
   const submitting = view.isPending;
   const errorText =
@@ -263,7 +292,9 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (pin.length !== PAYSLIP_PIN_LENGTH || locked || submitting) return;
+    if (errorKind === "notFound") return;
     setErrorKind(null);
+    setExpired(false);
     try {
       const opened = await view.mutateAsync({
         payslipId,
@@ -276,6 +307,10 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
       const code = error instanceof ApiError ? error.code : undefined;
       const kind = pinErrorKind(code);
       setPin("");
+      if (kind === "notFound") {
+        setErrorKind("notFound");
+        return;
+      }
       if (kind === "locked") {
         setLocked(true);
         setErrorKind("locked");
@@ -287,6 +322,9 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
         return;
       }
       setErrorKind("other");
+    } finally {
+      // Drop the PIN (variables) and the body (data) from the MutationCache.
+      view.reset();
     }
   }
 
@@ -295,7 +333,9 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
         start: formatBusinessDate(payslip.periodStart),
         end: formatBusinessDate(payslip.periodEnd),
       })
-    : t("payslip.pin.subtitle");
+    : errorKind === "notFound"
+      ? t("payslip.history.subtitle")
+      : t("payslip.pin.subtitle");
 
   return (
     <div className="grid gap-4">
@@ -311,13 +351,25 @@ export function PayslipDetail({ payslipId }: { payslipId: string }) {
 
       {payslip !== null ? (
         <PayslipContent payslip={payslip} />
+      ) : errorKind === "notFound" ? (
+        <Card>
+          <SectionEmpty
+            icon={FileX}
+            title={t("payslip.detail.notFound")}
+            description={t("payslip.detail.notFoundHint")}
+          />
+        </Card>
       ) : (
         <Card>
           <CardHeader>
             <CardTitle className="font-brand type-title">
               {t("payslip.pin.title")}
             </CardTitle>
-            <CardDescription>{t("payslip.pin.subtitle")}</CardDescription>
+            {expired && (
+              <CardDescription role="status">
+                {t("payslip.pin.expired")}
+              </CardDescription>
+            )}
           </CardHeader>
           <form
             className="grid gap-3"

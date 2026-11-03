@@ -281,6 +281,7 @@ export function TrainingDetailPage({ trainingId }: { trainingId: string }) {
             {training.questions.map((question, index) => (
               <fieldset
                 key={question.id}
+                aria-describedby={`${question.id}-prompt`}
                 className="grid gap-2 rounded-container bg-surface-2 p-3"
               >
                 <legend className="px-1 text-sm leading-5 font-semibold">
@@ -289,7 +290,10 @@ export function TrainingDetailPage({ trainingId }: { trainingId: string }) {
                     total: training.questions.length,
                   })}
                 </legend>
-                <p className="text-sm leading-5 font-medium">
+                <p
+                  id={`${question.id}-prompt`}
+                  className="text-sm leading-5 font-medium"
+                >
                   {question.prompt}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -329,7 +333,11 @@ export function TrainingDetailPage({ trainingId }: { trainingId: string }) {
               })}
             </p>
             {showRequired && (
-              <p role="alert" className="text-sm text-danger">
+              <p
+                id="training-quiz-required"
+                role="alert"
+                className="text-sm text-danger"
+              >
                 {t("learning.training.answerRequired")}
               </p>
             )}
@@ -339,7 +347,13 @@ export function TrainingDetailPage({ trainingId }: { trainingId: string }) {
               </p>
             )}
             <div>
-              <Button onClick={submit} loading={complete.isPending}>
+              <Button
+                onClick={submit}
+                loading={complete.isPending}
+                aria-describedby={
+                  showRequired ? "training-quiz-required" : undefined
+                }
+              >
                 {t("learning.training.submit")}
               </Button>
             </div>

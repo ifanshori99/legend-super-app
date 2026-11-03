@@ -15,6 +15,8 @@ const CODE_KEYS: Record<string, MessageKey> = {
   CONFLICT: "payrollRun.error.conflict",
   VALIDATION_ERROR: "payrollRun.error.validation",
   NETWORK_ERROR: "payrollRun.error.offline",
+  FORBIDDEN: "payrollRun.error.forbidden",
+  PAYROLL_TAX_PERIOD_NOT_LOCKED: "payrollRun.error.taxPeriodNotLocked",
 };
 
 /** The refusal in the user's words; an unknown code keeps the API message. */

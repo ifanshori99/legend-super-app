@@ -67,10 +67,16 @@ test("F27 (legend-0z5k): the outlet QR rotates after its 30 second window", asyn
   await expect(page.getByText("Berlaku sampai", { exact: true })).toBeVisible();
   await expect(page.getByText("QR aktif")).toBeVisible();
 
-  // F27: the code is only valid for the 30-second slot it was minted in.
+  // F27: the code is only valid for the 30-second slot it was minted in. The
+  // expired code is never left on screen, so wait for the NEXT visible token.
   const firstToken = await token.innerText();
   await page.clock.runFor(31_000);
-  await expect(token).not.toHaveText(firstToken, { timeout: 10_000 });
+  await expect(async () => {
+    await page.clock.runFor(1_000);
+    await expect(token).toBeVisible({ timeout: 1_000 });
+    expect(await token.innerText()).not.toBe(firstToken);
+  }).toPass({ timeout: 10_000 });
+  await expect(page.getByText("QR aktif")).toBeVisible();
 
   await captureScreenshot(page, "legend-0z5k/qr-390-light.png");
 });
@@ -102,6 +108,13 @@ test("F25 (legend-0z5k): a supervisor reviews a flagged selfie sample and the de
 }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await setTheme(page, "light");
+  // The dialog screenshot must not catch the enter animation mid-fade.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  // Fixture selfies point at a reserved `.example` host: answer 404 so the
+  // signed-link fallback renders deterministically, without a DNS lookup.
+  await page.route("https://files.cafelegend.example/**", (route) =>
+    route.fulfill({ status: 404, body: "" }),
+  );
   await page.clock.setFixedTime(REVIEW_CLOCK);
   await page.goto(`${base}/kelola/absensi/selfie`);
 
@@ -128,9 +141,11 @@ test("F25 (legend-0z5k): a supervisor reviews a flagged selfie sample and the de
   ).toBeVisible();
   await expect(dialog.getByText("Selfie & GPS")).toBeVisible();
   await expect(dialog.getByText("420 m")).toBeVisible();
+  // An expired/unreachable signed link degrades to the private-storage note.
   await expect(
     dialog.getByText("Tersimpan di penyimpanan privat"),
   ).toBeVisible();
+  await expect(dialog.getByRole("img")).toHaveCount(0);
   await expect(
     dialog.getByText("Ditandai", { exact: true }).first(),
   ).toBeVisible();
@@ -139,16 +154,20 @@ test("F25 (legend-0z5k): a supervisor reviews a flagged selfie sample and the de
     "legend-0z5k/selfie-review-dialog-390-light.png",
   );
 
-  await dialog.getByRole("button", { name: "Sesuai" }).click();
+  await dialog.getByRole("button", { name: "Sesuai", exact: true }).click();
   await expect(
-    page.getByText("Sampel Putri Ramadhani disetujui."),
+    page.getByText("Sampel Putri Ramadhani dicatat sesuai di sesi ini."),
   ).toBeVisible();
-  await expect(row.getByText("Disetujui")).toBeVisible();
+  await expect(row.getByText("Sesuai (sesi ini)")).toBeVisible();
+  // The session decision never overrides the server's validity.
+  await expect(row.getByText("Ditandai", { exact: true })).toBeVisible();
 
   // Session persistence: reopening the sample shows the stored decision, and
   // the action is now "Tinjau ulang" (not a second, fresh decision).
   await row.getByRole("button", { name: "Tinjau ulang" }).click();
-  await expect(page.getByRole("dialog").getByText("Disetujui")).toBeVisible();
+  await expect(
+    page.getByRole("dialog").getByText("Sesuai (sesi ini)"),
+  ).toBeVisible();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Tutup" })

@@ -49,7 +49,12 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { dispatchMock } from "../../lib/mock/runtime.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
-import { addDays, businessDateToday, sortStatutoryVersions } from "./lib.ts";
+import {
+  addDays,
+  businessDateToday,
+  hasPublishedOnDate,
+  sortStatutoryVersions,
+} from "./lib.ts";
 
 const fixtures = cafeLegendPayrollFixtures;
 /** The finance user the fixture versions were published by (publishedBy). */
@@ -252,6 +257,18 @@ registerMock(publishStatutoryTable, ({ params, body }) =>
     if (!found) notFound("Versi tabel tarif");
     let published: StatutoryTableVersion;
     try {
+      // Two published versions of one table on the same date make payroll's
+      // resolver fail closed, so publishing refuses the second one.
+      if (
+        found.status === "draft" &&
+        hasPublishedOnDate(
+          state.statutoryTables,
+          found.type,
+          found.effectiveFrom,
+          found.id,
+        )
+      )
+        throw new PayrollError("PAYROLL_STATUTORY_TABLE_AMBIGUOUS");
       published = publishStatutoryVersion(found, {
         today: businessDateToday(),
         actorId: ACTOR_ID,

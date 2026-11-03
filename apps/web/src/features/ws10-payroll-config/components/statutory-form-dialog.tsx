@@ -55,6 +55,7 @@ import {
   formatMultiplierInput,
   formatRateInput,
   formatRupiahInput,
+  hasPublishedOnDate,
   maskRupiahTyping,
   parseMultiplierInput,
   parseRatePercent,
@@ -467,10 +468,13 @@ function RoundingField({
 }
 
 function BracketEditor({
+  group,
   rows,
   disabled,
   onChange,
 }: {
+  /** Names the bracket set in every row label (TER A/B/C share a screen). */
+  group: string;
   rows: BracketForm[];
   disabled: boolean;
   onChange: (rows: BracketForm[]) => void;
@@ -506,7 +510,8 @@ function BracketEditor({
             className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
           >
             <Input
-              aria-label={t("payrollConfig.statutory.form.bracketUpTo", {
+              aria-label={t("payrollConfig.statutory.form.bracketUpToRow", {
+                group,
                 index: index + 1,
               })}
               inputMode="numeric"
@@ -523,7 +528,8 @@ function BracketEditor({
               autoComplete="off"
             />
             <Input
-              aria-label={t("payrollConfig.statutory.form.bracketRate", {
+              aria-label={t("payrollConfig.statutory.form.bracketRateRow", {
+                group,
                 index: index + 1,
               })}
               inputMode="decimal"
@@ -538,7 +544,8 @@ function BracketEditor({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={t("payrollConfig.statutory.form.bracketRemove", {
+              aria-label={t("payrollConfig.statutory.form.bracketRemoveRow", {
+                group,
                 index: index + 1,
               })}
               onClick={() => remove(index)}
@@ -569,10 +576,13 @@ function BracketEditor({
 }
 
 function TierEditor({
+  group,
   rows,
   disabled,
   onChange,
 }: {
+  /** Names the day type in every row label (three tier sets per screen). */
+  group: string;
   rows: TierForm[];
   disabled: boolean;
   onChange: (rows: TierForm[]) => void;
@@ -608,9 +618,10 @@ function TierEditor({
             className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
           >
             <Input
-              aria-label={`${t("payrollConfig.statutory.form.tierTo")} ${
-                index + 1
-              }`}
+              aria-label={t("payrollConfig.statutory.form.tierToRow", {
+                group,
+                index: index + 1,
+              })}
               inputMode="numeric"
               value={row.toHour}
               placeholder={
@@ -623,9 +634,10 @@ function TierEditor({
               autoComplete="off"
             />
             <Input
-              aria-label={`${t("payrollConfig.statutory.form.multiplier")} ${
-                index + 1
-              }`}
+              aria-label={t("payrollConfig.statutory.form.multiplierRow", {
+                group,
+                index: index + 1,
+              })}
               inputMode="decimal"
               value={row.multiplier}
               onChange={(event) =>
@@ -638,7 +650,8 @@ function TierEditor({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label={t("payrollConfig.statutory.form.tierRemove", {
+              aria-label={t("payrollConfig.statutory.form.tierRemoveRow", {
+                group,
                 index: index + 1,
               })}
               onClick={() => remove(index)}
@@ -716,6 +729,7 @@ export function StatutoryFormDialog({
     Record<string, string | undefined>
   >({});
 
+  const parametersErrorId = React.useId();
   const pending = createDraft.isPending || updateDraft.isPending;
   const disabled = pending;
 
@@ -739,6 +753,14 @@ export function StatutoryFormDialog({
     const found: Record<string, string | undefined> = {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
       found.effectiveFrom = t("payrollConfig.form.date");
+    else if (effectiveFrom < today)
+      // A backdated draft could never be published (PAYROLL_STATUTORY_TABLE_
+      // BACKDATED); retroactive changes are corrections in an open run.
+      found.effectiveFrom = t("payrollConfig.statutory.form.effectiveFromPast");
+    else if (hasPublishedOnDate(versions, type, effectiveFrom, version?.id))
+      found.effectiveFrom = t(
+        "payrollConfig.statutory.form.effectiveFromTaken",
+      );
     if (legalBasis.trim() === "")
       found.legalBasis = t("payrollConfig.form.required");
     const draft = buildDraft(form);
@@ -839,6 +861,7 @@ export function StatutoryFormDialog({
             >
               <Input
                 type="date"
+                min={today}
                 value={effectiveFrom}
                 onChange={(event) => setEffectiveFrom(event.target.value)}
                 disabled={disabled}
@@ -859,7 +882,10 @@ export function StatutoryFormDialog({
             </FormField>
           </div>
 
-          <fieldset className="grid gap-3 rounded-container bg-surface-2 p-4">
+          <fieldset
+            className="grid gap-3 rounded-container bg-surface-2 p-4"
+            aria-describedby={errors.parameters ? parametersErrorId : undefined}
+          >
             <legend className="px-1 text-sm font-semibold">
               {t("payrollConfig.statutory.form.parameters")}
             </legend>
@@ -1036,6 +1062,9 @@ export function StatutoryFormDialog({
                       })}
                     </h3>
                     <BracketEditor
+                      group={t("payrollConfig.statutory.form.bracketsFor", {
+                        category,
+                      })}
                       rows={form.brackets[category]}
                       disabled={disabled}
                       onChange={(rows) =>
@@ -1057,6 +1086,7 @@ export function StatutoryFormDialog({
             {form.type === "pph21_annual" ? (
               <div className="grid gap-4">
                 <BracketEditor
+                  group={t(STATUTORY_TYPE_KEYS.pph21_annual)}
                   rows={form.brackets}
                   disabled={disabled}
                   onChange={(brackets) => patchForm({ brackets })}
@@ -1155,6 +1185,7 @@ export function StatutoryFormDialog({
                       {t(DAY_TYPE_KEYS[dayType])}
                     </h3>
                     <TierEditor
+                      group={t(DAY_TYPE_KEYS[dayType])}
                       rows={form.tiers[dayType]}
                       disabled={disabled}
                       onChange={(rows) =>
@@ -1213,6 +1244,7 @@ export function StatutoryFormDialog({
 
             {errors.parameters && (
               <p
+                id={parametersErrorId}
                 className="text-sm leading-5 font-medium text-danger"
                 role="alert"
               >

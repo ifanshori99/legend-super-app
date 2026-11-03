@@ -84,6 +84,50 @@ test("HR-01 a wrong PIN shows an error and keeps the amounts hidden", async ({
   await expect(page.getByText(/Rp/)).toHaveCount(0);
 });
 
+test("HR-01 three wrong PINs lock the gate and the amounts stay hidden", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji");
+  await openPayslipGate(page);
+  const pin = page.getByLabel("PIN 6 digit");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await pin.fill("000000");
+    await page.getByRole("button", { name: "Buka slip" }).click();
+    await expect(pin).toHaveValue("");
+  }
+  await expect(page.getByText("PIN terkunci sementara")).toBeVisible();
+  await expect(pin).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Buka slip" })).toBeDisabled();
+  await expect(page.getByText(/Rp/)).toHaveCount(0);
+});
+
+test("HR-01 another employee's payslip id in the URL is not found, even with the right PIN", async ({
+  page,
+}) => {
+  // Fixture payslip 5701 belongs to CL-1001; the signed-in employee is CL-1003.
+  await openEmployee(
+    page,
+    "/karyawan/slip-gaji/00000000-0000-4000-8000-000000005701",
+  );
+  await page.getByLabel("PIN 6 digit").fill(DEMO_PIN);
+  await page.getByRole("button", { name: "Buka slip" }).click();
+  await expect(page.getByText("Slip gaji tidak ditemukan")).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await expect(page.getByText("Gaji bersih")).toHaveCount(0);
+  await expect(page.getByText(/Rp/)).toHaveCount(0);
+});
+
+test("HR-01 a malformed payslip id shows not found without asking for the PIN", async ({
+  page,
+}) => {
+  await openEmployee(page, "/karyawan/slip-gaji/bukan-id");
+  await expect(page.getByText("Slip gaji tidak ditemukan")).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await expect(page.getByLabel("PIN 6 digit")).toHaveCount(0);
+});
+
 test("HR-01 the correct PIN reveals the payslip with gross, deductions and net", async ({
   page,
 }) => {
@@ -107,10 +151,17 @@ test("HR-01 a kasbon request creates a pending loan with its approval timeline",
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
   await expect(page.getByText("Belum ada kasbon")).toBeVisible();
 
-  await page.getByLabel("Jumlah (Rp)").fill("1000000");
+  // "1.5" is not a thousands group: refused, never read as Rp15.
+  await page.getByLabel("Jumlah (Rp)").fill("1.5");
+  await page.getByLabel("Alasan").fill("Biaya sekolah anak");
+  await page.getByRole("button", { name: "Kirim pengajuan" }).click();
+  await expect(
+    page.getByText("Jumlah harus angka rupiah bulat."),
+  ).toBeVisible();
+
+  await page.getByLabel("Jumlah (Rp)").fill("1.000.000");
   await page.getByRole("combobox").click();
   await page.getByRole("option", { name: "3 bulan" }).click();
-  await page.getByLabel("Alasan").fill("Biaya sekolah anak");
   await page.getByRole("button", { name: "Kirim pengajuan" }).click();
 
   await expect(page.getByText("Pengajuan kasbon terkirim")).toBeVisible({

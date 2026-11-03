@@ -28,6 +28,21 @@ export const CONTRACT_ALERT_DAYS = 30;
 
 export const HRIS_TIME_ZONE = "Asia/Jakarta";
 
+/**
+ * The business time zone of an employee: their home outlet's (D-CORE-6),
+ * falling back to the tenant default while outlets load or when unknown.
+ */
+export function employeeTimeZone(
+  employees: readonly Employee[],
+  outlets: readonly Outlet[],
+  employeeId: string,
+): string {
+  const outletId = employees.find((row) => row.id === employeeId)?.homeOutletId;
+  return (
+    outlets.find((outlet) => outlet.id === outletId)?.timeZone ?? HRIS_TIME_ZONE
+  );
+}
+
 /** A value the screen has no data for; never a fake 0 or an empty cell. */
 export const DASH = "—";
 
@@ -252,14 +267,16 @@ export function contractDaysLeft(
 export function directoryMetrics(
   employees: readonly Employee[],
   contracts: readonly EmploymentContract[],
-  today: string,
+  /** Today per contract: a fixed date, or the employee's outlet-tz date. */
+  today: string | ((contract: EmploymentContract) => string),
 ): DirectoryMetrics {
+  const todayFor = typeof today === "string" ? () => today : today;
   return {
     active: employees.filter((employee) => employee.status === "active").length,
     onboarding: employees.filter((employee) => employee.status === "onboarding")
       .length,
     contractsDue: contracts.filter((contract) =>
-      contractEndsWithin(contract, today),
+      contractEndsWithin(contract, todayFor(contract)),
     ).length,
     offboarding: employees.filter(
       (employee) =>

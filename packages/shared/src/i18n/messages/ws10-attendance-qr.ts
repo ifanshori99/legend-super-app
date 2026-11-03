@@ -17,6 +17,11 @@ export const attendanceQrMessages = {
     statusExpired: "Kedaluwarsa",
     secondsUnit: "detik",
     countdownExpired: "Menunggu kode baru",
+    secondsLeft: "{seconds} detik tersisa",
+    expiredPlate: "Memuat kode baru…",
+    expiredPlateHint:
+      "Kode sebelumnya sudah tidak berlaku. Tunggu kode baru sebelum memindai.",
+    refreshFailed: "Gagal memperbarui",
     progressLabel: "Sisa waktu kode QR",
     issuedLabel: "Terbit",
     expiresLabel: "Berlaku sampai",
@@ -29,7 +34,7 @@ export const attendanceQrMessages = {
       "Biarkan layar tetap menyala dan kode terlihat dari ponsel karyawan.",
     offlineTitle: "Koneksi terputus",
     offlineHint:
-      "Kode terakhir masih tampil, tetapi bisa sudah kedaluwarsa. Sambungkan layar ke jaringan.",
+      "Kode terakhir tampil sampai masa berlakunya habis. Sambungkan layar ke jaringan.",
     errorTitle: "QR absensi tidak dapat dimuat",
     errorHint: "Periksa koneksi layar lalu coba muat ulang.",
     loading: "Memuat QR absensi…",
@@ -76,11 +81,11 @@ export const attendanceQrMessages = {
     selfieMissing: "Tanpa selfie",
     selfiePrivate: "Tersimpan di penyimpanan privat",
     selfiePrivateHint:
-      "Pratinjau hanya tersedia lewat tautan bertanda tangan yang singkat.",
+      "Tautan pratinjau sudah kedaluwarsa. Muat ulang halaman untuk tautan baru.",
     selfieAlt: "Selfie absensi {name}",
     selfieNoneHint: "Log ini tidak menyertakan selfie.",
-    localAccepted: "Disetujui",
-    localFlagged: "Ditandai supervisor",
+    localAccepted: "Sesuai (sesi ini)",
+    localFlagged: "Ditandai (sesi ini)",
     localDecisionLabel: "Keputusan lokal sesi ini",
     decisionPending: "Menunggu keputusan",
     dialogTitle: "Review selfie {name}",
@@ -101,12 +106,14 @@ export const attendanceQrMessages = {
     decisionTitle: "Keputusan supervisor",
     acceptAction: "Sesuai",
     flagAction: "Tandai",
-    acceptedToast: "Sampel {name} disetujui.",
-    flaggedToast: "Sampel {name} ditandai.",
+    acceptedToast: "Sampel {name} dicatat sesuai di sesi ini.",
+    flaggedToast: "Sampel {name} ditandai di sesi ini.",
     rejectedNote:
       "Log yang ditolak bersifat final dan tidak dapat diubah lewat layar ini.",
     localNote:
-      "Keputusan memakai kunci idempotensi dan hanya tersimpan di sesi ini; endpoint kontraknya belum tersedia.",
+      "Keputusan ini hanya tersimpan di perangkat ini selama sesi dan belum dikirim ke server. Validitas sistem tidak berubah.",
+    noPermission:
+      "Anda dapat melihat sampel ini, tetapi tidak berwenang memberi keputusan.",
     decidedAt: "Diputuskan {time}",
     close: "Tutup",
   },

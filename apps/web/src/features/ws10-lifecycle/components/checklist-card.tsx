@@ -5,6 +5,7 @@
 // Actions go through `useChecklistTaskAction`: the contract's
 // `transitionChecklistTask` decides the next status, the mock runtime's store
 // persists it. No task-action endpoint exists yet, so the card says so.
+import * as React from "react";
 import { CircleAlert, Info } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -49,17 +50,28 @@ const ACTION_VARIANT: Record<
   waive: "ghost",
 };
 
+/** Why an action is not allowed yet (shown under the row), or null. */
+export type ActionLock = (
+  task: ChecklistTask,
+  action: ChecklistAction,
+) => string | null;
+
 function TaskRow({
   task,
   pending,
   onAction,
+  actionLock,
 }: {
   task: ChecklistTask;
   pending: boolean;
   onAction: (task: ChecklistTask, action: ChecklistAction) => void;
+  actionLock?: ActionLock;
 }) {
   const t = useT();
+  const reasonId = React.useId();
   const actions = availableActions(task.status);
+  const locks = actions.map((action) => actionLock?.(task, action) ?? null);
+  const reason = locks.find((lock) => lock !== null) ?? null;
   return (
     <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
       <div className="grid min-w-0 gap-1">
@@ -77,16 +89,23 @@ function TaskRow({
                   date: formatBusinessDate(task.dueAt.slice(0, 10)),
                 })}
         </p>
+        {reason === null ? null : (
+          <p id={reasonId} className="text-sm leading-5 text-muted-foreground">
+            {reason}
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         <TaskStatusBadge status={task.status} />
-        {actions.map((action) => (
+        {actions.map((action, index) => (
           <Button
             key={action}
             type="button"
             size="sm"
             variant={ACTION_VARIANT[action]}
             loading={pending}
+            disabled={locks[index] !== null}
+            aria-describedby={locks[index] === null ? undefined : reasonId}
             onClick={() => onAction(task, action)}
             aria-label={t(ACTION_ARIA[action], { title: task.title })}
           >
@@ -105,6 +124,7 @@ export function ChecklistCard({
   isPending,
   isError,
   onRetry,
+  actionLock,
 }: {
   title: string;
   tasks: readonly ChecklistTask[];
@@ -112,6 +132,7 @@ export function ChecklistCard({
   isPending: boolean;
   isError: boolean;
   onRetry: () => void;
+  actionLock?: ActionLock;
 }) {
   const t = useT();
   const toast = useToast();
@@ -182,6 +203,7 @@ export function ChecklistCard({
                       task={task}
                       pending={pendingTaskId === task.id}
                       onAction={run}
+                      actionLock={actionLock}
                     />
                   ))}
                 </ul>

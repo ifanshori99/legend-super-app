@@ -1,12 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { EmployeeProfilePage } from "@/features/ws10-employee-master/components/employee-profile-page";
-import { canViewEmployees } from "@/features/ws10-employee-master/guard";
+import {
+  canEditEmployeePii,
+  canViewEmployees,
+} from "@/features/ws10-employee-master/guard";
 import { isMockScenarioRequest } from "@/features/ws10-employee-master/lib";
 import {
-  contractsQuery,
-  documentsQuery,
-  employeePiiQuery,
   employeeQuery,
   employeesQuery,
   orgUnitsQuery,
@@ -22,6 +22,11 @@ import {
 // state and the loader requests nothing — never a 404 that hides the reason,
 // and never employee or PII data. `canViewEmployees` is the same permission
 // check the API applies (`hr.employee.view`).
+//
+// HR-03: PII-bearing reads (masked PII, contracts with the salary snapshot,
+// documents with signed URLs) are never prefetched on the server, so they are
+// never serialised into the SSR HTML/dehydrated cache; the browser fetches
+// them with the visitor's own session.
 export const Route = createFileRoute("/_kelola/kelola/karyawan/$employeeId")({
   validateSearch: z.object({
     tab: z.enum(["kontrak", "dokumen"]).catch("kontrak").default("kontrak"),
@@ -32,11 +37,6 @@ export const Route = createFileRoute("/_kelola/kelola/karyawan/$employeeId")({
     if (isMockScenarioRequest(location.searchStr)) return undefined;
     return Promise.all([
       context.queryClient.ensureQueryData(employeeQuery(params.employeeId)),
-      context.queryClient.ensureQueryData(employeePiiQuery(params.employeeId)),
-      context.queryClient.ensureQueryData(
-        contractsQuery({ employeeId: params.employeeId, limit: 100 }),
-      ),
-      context.queryClient.ensureQueryData(documentsQuery(params.employeeId)),
       // Manager names come from the directory payload.
       context.queryClient.ensureQueryData(employeesQuery()),
       context.queryClient.ensureQueryData(positionsQuery()),
@@ -56,6 +56,7 @@ function ProfileScreen() {
       employeeId={employeeId}
       tab={tab}
       locked={!canViewEmployees(access)}
+      canEditPii={canEditEmployeePii(access)}
     />
   );
 }

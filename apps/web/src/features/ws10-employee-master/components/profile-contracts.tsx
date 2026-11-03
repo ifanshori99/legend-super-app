@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { useContracts } from "../hooks";
 import {
+  DASH,
   LIST_LIMIT,
   businessDateToday,
   contractDaysLeft,
@@ -27,9 +28,16 @@ import {
 } from "../lib";
 import { ContractStatusPill, EmploymentTypeBadge } from "./employee-status";
 
-export function EmployeeContracts({ employeeId }: { employeeId: string }) {
+export function EmployeeContracts({
+  employeeId,
+  timeZone,
+}: {
+  employeeId: string;
+  /** The employee's home-outlet time zone: "today" for the reminder window. */
+  timeZone: string;
+}) {
   const t = useT();
-  const today = businessDateToday();
+  const today = businessDateToday(undefined, timeZone);
   const contractsQuery = useContracts({ employeeId, limit: LIST_LIMIT });
   const rows = contractsQuery.data?.data ?? [];
 
@@ -74,7 +82,14 @@ export function EmployeeContracts({ employeeId }: { employeeId: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <ReminderBadge contract={contract} today={today} />
               <span className="text-sm text-muted-foreground">
-                {contract.salarySnapshot?.masked ?? "—"}
+                <span className="sr-only">
+                  {t("employeeMaster.profile.contracts.columns.salary")}:{" "}
+                </span>
+                {contract.salarySnapshot?.masked ?? (
+                  <SalaryHidden
+                    label={t("employeeMaster.profile.pii.emptyValue")}
+                  />
+                )}
               </span>
             </div>
           </li>
@@ -124,7 +139,11 @@ export function EmployeeContracts({ employeeId }: { employeeId: string }) {
                   <ReminderBadge contract={contract} today={today} />
                 </TableCell>
                 <TableCell className="whitespace-nowrap tabular">
-                  {contract.salarySnapshot?.masked ?? "—"}
+                  {contract.salarySnapshot?.masked ?? (
+                    <SalaryHidden
+                      label={t("employeeMaster.profile.pii.emptyValue")}
+                    />
+                  )}
                 </TableCell>
                 <TableCell>
                   <ContractStatusPill status={contract.status} />
@@ -135,6 +154,16 @@ export function EmployeeContracts({ employeeId }: { employeeId: string }) {
         </Table>
       </div>
     </DataTableShell>
+  );
+}
+
+/** HR-03: null salary = not visible to this role, or not recorded. */
+function SalaryHidden({ label }: { label: string }) {
+  return (
+    <span className="text-muted-foreground">
+      <span aria-hidden="true">{DASH}</span>
+      <span className="sr-only">{label}</span>
+    </span>
   );
 }
 

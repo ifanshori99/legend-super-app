@@ -14,6 +14,8 @@ import type {
   ReimbursementStatus,
 } from "@starter/shared/hris/payroll";
 import type { MessageKey } from "@starter/shared/i18n";
+import { DEFAULT_TIME_ZONE, localDateOf } from "@starter/shared/core";
+import { storagePurposePolicy } from "@starter/shared/storage";
 
 export type StatusTone = "neutral" | "success" | "warning" | "danger" | "info";
 
@@ -26,6 +28,30 @@ export const PAYSLIP_PIN_LENGTH = 6;
  * own rate limit (PAYSLIP_PIN_LOCKED) and the screen then shows the locked text.
  */
 export const PAYSLIP_PIN_MAX_ATTEMPTS = 3;
+
+/**
+ * An opened payslip locks itself again after this long on screen (PRD silent;
+ * 5 minutes), so a phone left on a counter does not keep salary data open.
+ */
+export const PAYSLIP_UNLOCK_TTL_MS = 5 * 60_000;
+
+/** Receipt photo: the storage contract's private `receipt` purpose limit. */
+export const RECEIPT_PHOTO_MAX_BYTES = storagePurposePolicy.receipt.maxBytes;
+export const RECEIPT_PHOTO_TYPES: readonly string[] = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+];
+
+/** Why a chosen receipt file is refused, or null when it can be used. */
+export function receiptPhotoIssue(file: {
+  type: string;
+  size: number;
+}): "type" | "size" | null {
+  if (!RECEIPT_PHOTO_TYPES.includes(file.type)) return "type";
+  if (file.size <= 0 || file.size > RECEIPT_PHOTO_MAX_BYTES) return "size";
+  return null;
+}
 
 const LOAN_STATUS_KEYS: Record<EmployeeLoanStatus, MessageKey> = {
   pending: "payslip.status.loan.pending",
@@ -180,29 +206,39 @@ export function paymentMethodKey(method: PayslipPaymentMethod): MessageKey {
 /** Payroll error code of a failed payslip view, as the screen renders it. */
 export function pinErrorKind(
   code: string | undefined,
-): "invalid" | "locked" | null {
+): "invalid" | "locked" | "notFound" | null {
   if (code === "PAYSLIP_PIN_INVALID") return "invalid";
   if (code === "PAYSLIP_PIN_LOCKED") return "locked";
+  // HR-01: someone else's payslip id answers 404, never "wrong PIN".
+  if (code === "NOT_FOUND") return "notFound";
   return null;
 }
 
 /**
- * Whole rupiah from a typed amount. Dots and spaces are grouping, not decimals;
- * anything else (a fraction, a negative sign, letters) is rejected so the form
- * never sends a non-integer Idr.
+ * Whole rupiah from a typed amount: plain digits ("1500000") or id-ID
+ * thousands grouping with dots or spaces ("1.500.000", "1 500 000"). A dot
+ * that is not a 3-digit group ("1.5", "1.50") is ambiguous and rejected, as is
+ * anything else (a comma decimal, a sign, letters), so the form never sends a
+ * non-integer or silently rescaled Idr.
  */
 export function parseAmountInput(raw: string): number | null {
-  const digits = raw.replace(/[.\s]/g, "");
-  if (!/^\d+$/.test(digits)) return null;
+  const trimmed = raw.trim();
+  if (!/^(\d+|\d{1,3}([. ]\d{3})+)$/.test(trimmed)) return null;
+  const digits = trimmed.replace(/[. ]/g, "");
   const value = Number(digits);
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-const pad = (value: number) => String(value).padStart(2, "0");
-
-/** Today's calendar date on the device, YYYY-MM-DD (form default only). */
-export function todayBusinessDate(now: Date = new Date()): string {
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+/**
+ * Today's calendar date in the outlet time zone, YYYY-MM-DD (form default and
+ * date picker max). The employee profile carries no outlet zone on this
+ * screen yet, so the tenant default (Asia/Jakarta) applies, never the device.
+ */
+export function todayBusinessDate(
+  now: Date = new Date(),
+  timeZone: string = DEFAULT_TIME_ZONE,
+): string {
+  return localDateOf(now, timeZone);
 }
 
 /** `input[type=date]` already enforces this; kept for a parsed request body. */

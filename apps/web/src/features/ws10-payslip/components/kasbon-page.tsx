@@ -189,7 +189,11 @@ export function KasbonPage() {
   const [submitFailure, setSubmitFailure] = useState<MessageKey | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
-  const openLoan = query.loans.find((loan) => isOpenLoan(loan.status));
+  // policy.singleOpenLoan: a running loan blocks a second request. Until the
+  // list has loaded the form stays hidden, so it is never offered by mistake.
+  const openLoan = DEMO_LOAN_POLICY.singleOpenLoan
+    ? query.loans.find((loan) => isOpenLoan(loan.status))
+    : undefined;
 
   function validate(): { amountIdr: number; installmentCount: number } | null {
     const next: FieldErrors = {};
@@ -323,7 +327,7 @@ export function KasbonPage() {
         )}
       </section>
 
-      {submitted ? (
+      {query.isPending ? null : submitted ? (
         <SuccessCard
           title={t("payslip.kasbon.successTitle")}
           description={t("payslip.kasbon.successBody")}
@@ -367,7 +371,9 @@ export function KasbonPage() {
             <FormField
               label={t("payslip.kasbon.tenorLabel")}
               hint={t("payslip.kasbon.tenorHint", { count: TENOR_MAX })}
-              error={errors.tenor ? t(errors.tenor) : undefined}
+              error={
+                errors.tenor ? t(errors.tenor, { count: TENOR_MAX }) : undefined
+              }
               required
             >
               <Select value={tenor} onValueChange={setTenor}>

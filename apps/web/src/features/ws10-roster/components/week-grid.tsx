@@ -220,7 +220,10 @@ function DayCell({
     >
       <div className="grid gap-1">
         {assignments.length > 0 && (
-          <ul className="grid gap-1" aria-label={employee.fullName}>
+          <ul
+            className="grid gap-1"
+            aria-label={`${employee.fullName}, ${formatDayLabel(day)}`}
+          >
             {assignments.map((assignment) => (
               <ShiftChip
                 key={assignment.id}
@@ -348,7 +351,12 @@ export function WeekGrid({
               );
               return (
                 <TableRow key={employee.id}>
-                  <TableCell className="sticky left-0 z-10 min-w-44 bg-card align-top">
+                  {/* Row header: screen readers announce the employee for
+                      every day cell in this row. */}
+                  <TableCell
+                    role="rowheader"
+                    className="sticky left-0 z-10 min-w-44 bg-card align-top"
+                  >
                     <div className="grid gap-1 py-1">
                       <p className="font-semibold">{employee.fullName}</p>
                       <p className="text-sm text-muted-foreground">

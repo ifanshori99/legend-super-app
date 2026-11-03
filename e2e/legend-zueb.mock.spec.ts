@@ -135,6 +135,37 @@ test("HR-03 a role without hr.employee.view sees the locked profile, not PII", a
   ).toHaveCount(0);
 });
 
+test("HR-03 a manager role with hr.employee.view still gets no NIK, bank or salary", async ({
+  page,
+}) => {
+  // outlet_manager holds hr.employee.view (directory, profile) but its viewer
+  // kind is `supervisor`: HRIS_PII_VISIBILITY hides identity, tax, BPJS, bank,
+  // emergency contact and salary. The mock serves what the API would.
+  await page
+    .context()
+    .addCookies([
+      { name: "legend-mock-role", value: "outlet_manager", url: base! },
+    ]);
+  await openProfile(page, COLD_START_TIMEOUT_MS);
+
+  await expect(page.getByText("Data pribadi (HR-03)")).toBeVisible();
+  await expect(
+    page.getByText(/Peran Anda tidak termasuk HR atau payroll/),
+  ).toBeVisible();
+  await expect(page.getByText("****0001")).toHaveCount(0);
+  await expect(page.getByText("Sri W***")).toHaveCount(0);
+  // No hr.employee.manage: no write-only edit flow either.
+  await expect(
+    page.getByRole("button", { name: "Ubah data pribadi" }),
+  ).toHaveCount(0);
+  // The contract row renders, its salary snapshot does not.
+  await expect(
+    page.getByRole("heading", { name: "Kontrak kerja" }),
+  ).toBeVisible();
+  await expect(page.getByText("PKWTT").first()).toBeVisible();
+  await expect(page.getByText("****0000")).toHaveCount(0);
+});
+
 test("HR-03 organisation chart renders units, positions and headcount", async ({
   page,
 }) => {

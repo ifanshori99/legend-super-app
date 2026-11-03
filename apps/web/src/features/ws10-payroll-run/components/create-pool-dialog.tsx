@@ -100,7 +100,16 @@ export function CreatePoolDialog({
     "pkwt",
     "daily",
   ]);
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per attempt: a double submit or a retry after a lost response
+  // replays the same write. A new key is minted once the attempt ends (success
+  // or close), so the next run/pool is never refused as a reused key.
+  const [idempotencyKey, setIdempotencyKey] = React.useState(() =>
+    newIdempotencyKey(),
+  );
+  function setOpen(next: boolean) {
+    if (!next) setIdempotencyKey(newIdempotencyKey());
+    onOpenChange(next);
+  }
   const [error, setError] = React.useState<string | null>(null);
 
   function toggleType(type: EmploymentType, checked: boolean) {
@@ -155,8 +164,9 @@ export function CreatePoolDialog({
       },
       {
         onSuccess: () => {
+          setIdempotencyKey(newIdempotencyKey());
           toast({ title: t("payrollRun.pool.created"), tone: "success" });
-          onOpenChange(false);
+          setOpen(false);
         },
         onError: (cause) => setError(payrollErrorMessage(cause, t)),
       },
@@ -164,7 +174,7 @@ export function CreatePoolDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("payrollRun.pool.createTitle")}</DialogTitle>
@@ -268,7 +278,7 @@ export function CreatePoolDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => setOpen(false)}
             >
               {t("common.cancel")}
             </Button>

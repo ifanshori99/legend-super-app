@@ -60,6 +60,7 @@ export function EmployeeReviewTable({
   state,
   onRetry,
   canSimulate,
+  restricted = false,
   onSimulate,
 }: {
   run: PayrollRun;
@@ -67,6 +68,8 @@ export function EmployeeReviewTable({
   state: DataState;
   onRetry: () => void;
   canSimulate: boolean;
+  /** The visitor lacks payroll.view/payroll.run: no salary rows (HR-03). */
+  restricted?: boolean;
   onSimulate: () => void;
 }) {
   const t = useT();
@@ -94,10 +97,14 @@ export function EmployeeReviewTable({
         ) : undefined
       }
       empty={{
-        title: t("payrollRun.review.emptyTitle"),
-        description: t("payrollRun.review.emptyHint"),
+        title: restricted
+          ? t("payrollRun.review.restrictedTitle")
+          : t("payrollRun.review.emptyTitle"),
+        description: restricted
+          ? t("payrollRun.review.restrictedHint")
+          : t("payrollRun.review.emptyHint"),
         action:
-          canSimulate && run.status === "draft" ? (
+          !restricted && canSimulate && run.status === "draft" ? (
             <Button type="button" size="sm" onClick={onSimulate}>
               <Calculator aria-hidden="true" />
               {t("payrollRun.action.simulate")}

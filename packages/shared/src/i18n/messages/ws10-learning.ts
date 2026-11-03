@@ -74,6 +74,7 @@ export const learningMessages = {
     noPosition: "Tanpa posisi",
     scoreBar: "Skor {score} dari 100",
     achievementBar: "Pencapaian {percent} persen dari target",
+    achievementUnknown: "Tanpa target, pencapaian tidak dihitung",
   },
   // ---- SOP library -------------------------------------------------------
   sop: {
@@ -103,6 +104,8 @@ export const learningMessages = {
     acknowledgeHint:
       "Konfirmasi berlaku untuk versi yang sedang ditampilkan. Versi baru perlu dikonfirmasi ulang.",
     acknowledgedToast: "Konfirmasi SOP tersimpan.",
+    superseded:
+      "Versi ini sudah digantikan v{version}. Konfirmasi baca hanya untuk versi yang berlaku.",
     status: {
       confirmed: "Sudah dikonfirmasi",
       pending: "Belum dikonfirmasi",
@@ -203,6 +206,7 @@ export const learningMessages = {
     requirementRequired: "Wajib tanda terima",
     requirementOptional: "Tanpa tanda terima",
     receiptsCount: "{count} dibaca",
+    acknowledgedCount: "{count} dikonfirmasi",
     open: "Buka pengumuman",
     detailTitle: "Detail pengumuman",
     bodyLabel: "Isi pengumuman",
@@ -210,8 +214,10 @@ export const learningMessages = {
     expiresAt: "Berakhir {date}",
     markRead: "Tandai sudah dibaca",
     markReadAndAcknowledge: "Baca dan konfirmasi",
+    acknowledge: "Konfirmasi tanda terima",
     readToast: "Tanda terima tersimpan.",
     alreadyRead: "Sudah dibaca",
+    alreadyAcknowledged: "Sudah dikonfirmasi",
     receiptsTitle: "Tanda terima",
     receipts: {
       employee: "Karyawan",
@@ -225,7 +231,7 @@ export const learningMessages = {
     metric: {
       announcements: "Pengumuman",
       requiresReceipt: "Wajib tanda terima",
-      receipts: "Tanda terima",
+      receipts: "Total dibaca",
     },
     emptyTitle: "Belum ada pengumuman",
     emptyHint: "Pengumuman yang diterbitkan muncul di sini.",

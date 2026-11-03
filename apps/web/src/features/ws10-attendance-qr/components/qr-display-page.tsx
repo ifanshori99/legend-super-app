@@ -2,7 +2,7 @@
 // bead legend-0z5k). The screen is read from a distance: one large code, one
 // large countdown, calm surfaces. It polls itself; the manual button only
 // exists for a supervisor who wants the next code now.
-import { RefreshCw, WifiOff } from "lucide-react";
+import { RefreshCw, TimerOff, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import { useOnline } from "@/lib/use-online";
 import { formatOutletTime } from "../format.ts";
 import { useAttendanceQr, useNow } from "../hooks.ts";
 import { ATTENDANCE_OUTLET_NAME, ATTENDANCE_TIME_ZONE } from "../outlet.ts";
+import { qrRemainingMs } from "../queries.ts";
 
 const ROTATION_MS = ATTENDANCE_QR_ROTATION_SECONDS * 1_000;
 
@@ -32,18 +33,27 @@ export function QrDisplayPage() {
   const online = useOnline();
   const query = useAttendanceQr();
   const now = useNow(1_000);
-  const qr = query.data;
+  const reading = query.data;
+  const qr = reading?.qr;
+  // Every comparison with the token window uses the server clock (device
+  // clock + estimated offset), so a drifting outlet tablet stays honest.
   const remainingMs =
-    qr && now !== null ? Math.max(0, Date.parse(qr.expiresAt) - now) : null;
+    reading && now !== null ? Math.max(0, qrRemainingMs(reading, now)) : null;
   const secondsLeft =
     remainingMs === null ? null : Math.ceil(remainingMs / 1_000);
   const active =
-    qr && now !== null ? isAttendanceQrValid(qr, new Date(now)) : null;
+    reading && now !== null
+      ? isAttendanceQrValid(reading.qr, new Date(now + reading.offsetMs)) &&
+        remainingMs !== null &&
+        remainingMs > 0
+      : false;
   const progress =
     remainingMs === null ? 0 : Math.min(100, (remainingMs / ROTATION_MS) * 100);
 
   if (query.isPending) return <QrSkeleton />;
-  if (query.isError || !qr)
+  // A failed background poll keeps the last reading on screen; the expiry
+  // logic above hides it once its window closes.
+  if (!qr)
     return (
       <ErrorState
         title={
@@ -85,25 +95,38 @@ export function QrDisplayPage() {
                 : t("attendanceQr.display.statusExpired")}
             </StatusPill>
 
-            <QrCard qr={qr} />
-
-            <div className="grid max-w-full gap-1">
-              <p className="type-eyebrow text-muted-foreground">
-                {t("attendanceQr.display.tokenLabel")}
-              </p>
-              <p className="font-mono text-lg leading-7 font-bold tracking-[0.18em] break-all tabular sm:text-xl">
-                {qr.token}
-              </p>
-            </div>
+            {active ? (
+              <>
+                <QrCard qr={qr} />
+                <div className="grid max-w-full gap-1">
+                  <p className="type-eyebrow text-muted-foreground">
+                    {t("attendanceQr.display.tokenLabel")}
+                  </p>
+                  <p className="font-mono text-base leading-7 font-bold tracking-[0.08em] break-all tabular sm:text-xl sm:tracking-[0.18em]">
+                    {qr.token}
+                  </p>
+                </div>
+              </>
+            ) : (
+              // An expired code is never left on screen: a scan would only be
+              // rejected by the server (no token reuse).
+              <ExpiredPlate />
+            )}
           </CardShellBody>
           <CardShellFooter className="flex-wrap justify-between gap-2">
             <span className="min-w-0">
               {t("attendanceQr.display.screenHint")}
             </span>
-            {!online && (
+            {!online ? (
               <StatusPill status="warning" icon={WifiOff} className="text-xs">
                 {t("attendanceQr.display.offlineTitle")}
               </StatusPill>
+            ) : (
+              query.isError && (
+                <StatusPill status="warning" className="text-xs">
+                  {t("attendanceQr.display.refreshFailed")}
+                </StatusPill>
+              )
             )}
           </CardShellFooter>
         </CardShell>
@@ -132,6 +155,9 @@ export function QrDisplayPage() {
                 aria-valuemin={0}
                 aria-valuemax={ATTENDANCE_QR_ROTATION_SECONDS}
                 aria-valuenow={secondsLeft ?? 0}
+                aria-valuetext={t("attendanceQr.display.secondsLeft", {
+                  seconds: formatNumber(secondsLeft ?? 0),
+                })}
                 className="h-2 w-full overflow-hidden rounded-full bg-surface-3"
               >
                 <div
@@ -207,6 +233,19 @@ function QrCard({ qr }: { qr: AttendanceQrToken }) {
       className="max-w-full rounded-container border-(length:--border-w) border-border bg-card p-4 shadow-hairline"
       svgClassName="h-auto w-[min(72vw,20rem)] max-w-full sm:w-[21rem] lg:w-[24rem]"
     />
+  );
+}
+
+function ExpiredPlate() {
+  const t = useT();
+  return (
+    <div className="grid aspect-square w-[min(72vw,20rem)] max-w-full place-content-center justify-items-center gap-2 rounded-container border-(length:--border-w) border-dashed border-border bg-surface-2 p-4 text-center sm:w-[21rem] lg:w-[24rem]">
+      <TimerOff aria-hidden="true" className="size-8 text-muted-foreground" />
+      <p className="type-heading">{t("attendanceQr.display.expiredPlate")}</p>
+      <p className="text-sm leading-5 text-muted-foreground">
+        {t("attendanceQr.display.expiredPlateHint")}
+      </p>
+    </div>
   );
 }
 

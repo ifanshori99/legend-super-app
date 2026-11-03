@@ -29,7 +29,10 @@ import type {
 import {
   JKK_RISK_CLASSES,
   OVERTIME_DAY_TYPES,
+  PayrollError,
   TER_CATEGORIES,
+  addDays as addBusinessDays,
+  resolveStatutoryTable,
 } from "@starter/shared/hris/payroll";
 
 /** WIB business dates (the outlet/legal-entity time zone, D-CORE-6). */
@@ -71,17 +74,12 @@ export function formatDateTime(instant: string): string {
   }).format(new Date(instant));
 }
 
-function toUtc(date: string): number {
-  const [year, month, day] = date.split("-").map(Number);
-  return Date.UTC(year, month - 1, day);
-}
-
-/** Calendar-day arithmetic on a business date (effective periods). */
+/**
+ * Calendar-day arithmetic on a business date (effective periods). Delegates to
+ * the contract's `addDays` so the screens and payroll share one calendar.
+ */
 export function addDays(date: string, days: number): BusinessDate {
-  const shifted = new Date(toUtc(date) + days * 86_400_000)
-    .toISOString()
-    .slice(0, 10);
-  return businessDateSchema.parse(shifted);
+  return addBusinessDays(businessDateSchema.parse(date), days);
 }
 
 /** 1000 bp → "10%", 550 → "5,5%" (id-ID decimal comma, max 2 places). */
@@ -93,21 +91,29 @@ export function formatBasisPoints(basisPoints: number): string {
 
 /**
  * Percent input → basis points, or null when the text is not a rate.
- * Accepts "10", "10,5" and "10.5" (max two decimals, 0–100%).
+ * Accepts "10", "10,5" and "10.5" (max two decimals, 0–100%). Parsed as
+ * integers from the digits — never through a float — so "12,5" is exactly
+ * 1250 bp and "0,29" exactly 29 bp.
  */
 export function parseRatePercent(input: string): number | null {
   const text = input.trim().replace(",", ".");
-  if (!/^\d{1,3}(\.\d{1,2})?$/.test(text)) return null;
-  const percent = Number(text);
-  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null;
-  return Math.round(percent * 100);
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(text);
+  if (!match) return null;
+  const whole = Number(match[1]);
+  const hundredths = Number((match[2] ?? "").padEnd(2, "0"));
+  const basisPoints = whole * 100 + hundredths;
+  return basisPoints <= 10_000 ? basisPoints : null;
 }
 
-/** "1.500.000" / "1500000" → 1500000, or null when not whole rupiah. */
+/**
+ * "1.500.000" / "1500000" → 1500000, or null when not whole rupiah. Dots are
+ * only accepted as id-ID thousands grouping, so "1.5" or "1.50" is refused
+ * instead of silently read as 15 / 150.
+ */
 export function parseRupiahInput(input: string): number | null {
-  const text = input.replace(/[\s.]/g, "").replace(",", ".");
-  if (!/^\d{1,15}$/.test(text)) return null;
-  const amount = Number(text);
+  const text = input.replace(/\s/g, "");
+  if (!/^(\d{1,15}|\d{1,3}(\.\d{3}){1,4})$/.test(text)) return null;
+  const amount = Number(text.replace(/\./g, ""));
   return Number.isSafeInteger(amount) ? amount : null;
 }
 
@@ -119,10 +125,14 @@ export function formatRupiahInput(amount: number | null): string {
   );
 }
 
-/** 550 bp → "5,5" for a percent input (empty for a null). */
+/** 550 bp → "5,5" for a percent input (empty for a null); integer-exact. */
 export function formatRateInput(basisPoints: number | null): string {
   if (basisPoints === null) return "";
-  return String(basisPoints / 100).replace(".", ",");
+  const whole = Math.trunc(basisPoints / 100);
+  const fraction = String(basisPoints % 100)
+    .padStart(2, "0")
+    .replace(/0+$/, "");
+  return fraction === "" ? String(whole) : `${whole},${fraction}`;
 }
 
 /** Whole rupiah digit mask: keeps digits, drops grouping and separators. */
@@ -292,26 +302,28 @@ export function previousVersion(
   return index >= 0 ? chain[index + 1] : undefined;
 }
 
-/** The published version in force on a date (latest effectiveFrom ≤ date). */
+/**
+ * The published version in force on a date, resolved by the contract's
+ * `resolveStatutoryTable` — the same rule payroll uses. When payroll would
+ * fail closed (no version yet, or two published versions sharing the latest
+ * date: PAYROLL_STATUTORY_TABLE_AMBIGUOUS) this returns undefined, so the
+ * screen never shows a table "in force" that a run would refuse (PAYR-02).
+ */
 export function effectiveVersion<T extends StatutoryTableVersion>(
   versions: readonly T[],
   type: StatutoryTableType,
   onDate: string,
 ): T | undefined {
-  let best: T | undefined;
-  for (const version of versions) {
-    if (version.type !== type) continue;
-    if (version.status !== "published") continue;
-    if (version.effectiveFrom > onDate) continue;
-    if (
-      !best ||
-      version.effectiveFrom > best.effectiveFrom ||
-      (version.effectiveFrom === best.effectiveFrom &&
-        version.version > best.version)
-    )
-      best = version as T;
+  try {
+    return resolveStatutoryTable(
+      versions,
+      type,
+      businessDateSchema.parse(onDate),
+    ) as T;
+  } catch (error) {
+    if (error instanceof PayrollError) return undefined;
+    throw error;
   }
-  return best;
 }
 
 /** The published version of one type in force on a date, typed to its table. */
@@ -325,18 +337,43 @@ export function publishedVersionOf<T extends StatutoryTableType>(
 }
 
 /**
- * End of a version's period: the day before the next version's effective date
- * in the same chain; null when no later version exists.
+ * End of a published version's period: the day before the next *published*
+ * version's effective date in the same chain; null when none exists. Drafts
+ * and archived rows never apply, so they never end a period (a future draft
+ * is not applied early).
  */
 export function effectiveUntil(
   version: StatutoryTableVersion,
   versions: readonly StatutoryTableVersion[],
 ): BusinessDate | null {
-  const chain = versionsOfType(versions, version.type);
-  const later = chain
-    .filter((row) => row.effectiveFrom > version.effectiveFrom)
+  if (version.status !== "published") return null;
+  const later = versionsOfType(versions, version.type)
+    .filter(
+      (row) =>
+        row.status === "published" && row.effectiveFrom > version.effectiveFrom,
+    )
     .sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))[0];
   return later ? addDays(later.effectiveFrom, -1) : null;
+}
+
+/**
+ * Whether another published version of the same table already starts on this
+ * date. Publishing a second one would make the table ambiguous for payroll
+ * (PAYROLL_STATUTORY_TABLE_AMBIGUOUS), so the editor refuses it up front.
+ */
+export function hasPublishedOnDate(
+  versions: readonly StatutoryTableVersion[],
+  type: StatutoryTableType,
+  effectiveFrom: string,
+  excludeId?: StatutoryTableVersion["id"],
+): boolean {
+  return versions.some(
+    (row) =>
+      row.type === type &&
+      row.status === "published" &&
+      row.effectiveFrom === effectiveFrom &&
+      row.id !== excludeId,
+  );
 }
 
 export type StatutoryConflict = {
@@ -385,7 +422,9 @@ export function suggestStatutoryEffectiveFrom(
   type: StatutoryTableType,
   today: string,
 ): BusinessDate {
-  const chain = versionsOfType(versions, type);
+  const chain = versionsOfType(versions, type).filter(
+    (row) => row.status !== "archived",
+  );
   const latest = chain.reduce<string | undefined>(
     (best, row) =>
       best === undefined || row.effectiveFrom > best ? row.effectiveFrom : best,

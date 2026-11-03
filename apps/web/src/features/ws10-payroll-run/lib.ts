@@ -245,9 +245,13 @@ export function formatSharePercent(amount: Idr, total: Idr): string {
   return `${formatNumber(permille / 10, { fractionDigits: 1 })}%`;
 }
 
-/** Short display form of an actor id: the first eight hex characters. */
+/**
+ * Short display form of an id: the last eight hex characters (the leading
+ * ones of the sequential fixture/v7-style ids are all zeros or time bits, so
+ * every row would read the same).
+ */
 export function shortId(id: string): string {
-  return id.replaceAll("-", "").slice(0, 8).toUpperCase();
+  return id.replaceAll("-", "").slice(-8).toUpperCase();
 }
 
 /** "26 Sep – 25 Okt 2026" (one year, both ends named). */

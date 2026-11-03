@@ -1,9 +1,11 @@
 // Evidence dialog of the supervisor selfie sampling review (PRD v1.7 §3 F25;
-// bead legend-0z5k). The evidence is a private-bucket selfie: a data URL (the
-// mock/offline capture) renders as an image, a signed `photoUrl` for anything
-// else is shown as an attachment badge. A stored external URL is never loaded
-// here, both because the signed link may already be expired and because the
-// mock fixtures carry example hosts that must not be requested.
+// bead legend-0z5k). The evidence is a private-bucket selfie (PII
+// `attendancePhotoUrl`, readable with hr.attendance.manage — the page guard).
+// A data URL (mock/offline capture) or the signed, short-lived `https:` link
+// renders as an image; any other scheme is never loaded. The image is fetched
+// without a referrer, the URL is never logged or shown as text, and an expired
+// link falls back to the private-storage note.
+import * as React from "react";
 import { CircleCheck, Flag, ImageOff, Paperclip } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
@@ -35,18 +37,23 @@ export function ReviewDialog({
   log,
   employeeName,
   decision,
+  canDecide,
   onDecide,
   onOpenChange,
 }: {
   log: AttendanceLog | null;
   employeeName: string;
   decision: AttendanceReviewDecision | undefined;
+  /** hr.attendance.manage; without it the actions are not offered. */
+  canDecide: boolean;
   onDecide: (kind: AttendanceReviewKind) => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
   const open = log !== null;
-  const validity = decision?.validity ?? log?.validity ?? "valid";
+  // "Validitas sistem" is the server's value; the session decision is shown
+  // separately and never replaces it.
+  const validity = log?.validity ?? "valid";
   const validityLabel = ATTENDANCE_VALIDITY[validity];
   const terminal = log?.validity === "rejected";
 
@@ -69,7 +76,11 @@ export function ReviewDialog({
                 <h3 className="type-heading">
                   {t("attendanceQr.review.evidenceTitle")}
                 </h3>
-                <SelfieEvidence log={log} employeeName={employeeName} />
+                <SelfieEvidence
+                  key={log.id}
+                  log={log}
+                  employeeName={employeeName}
+                />
               </section>
 
               <section className="grid gap-2">
@@ -156,6 +167,10 @@ export function ReviewDialog({
                   <p className="rounded-container bg-danger-subtle p-3 text-sm leading-5 text-danger">
                     {t("attendanceQr.review.rejectedNote")}
                   </p>
+                ) : !canDecide ? (
+                  <p className="rounded-container bg-surface-2 p-3 text-sm leading-5 text-muted-foreground">
+                    {t("attendanceQr.review.noPermission")}
+                  </p>
                 ) : (
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <Button onClick={() => onDecide("accepted")}>
@@ -209,6 +224,7 @@ function SelfieEvidence({
   employeeName: string;
 }) {
   const t = useT();
+  const [failed, setFailed] = React.useState(false);
   if (log.photoUrl === null)
     return (
       <div className="grid gap-1.5 rounded-container border-(length:--border-w) bg-surface-2 p-card">
@@ -222,10 +238,13 @@ function SelfieEvidence({
       </div>
     );
 
-  if (log.photoUrl.startsWith("data:image/"))
+  if (!failed && isRenderablePhoto(log.photoUrl))
     return (
       <img
         src={log.photoUrl}
+        referrerPolicy="no-referrer"
+        decoding="async"
+        onError={() => setFailed(true)}
         alt={t("attendanceQr.review.selfieAlt", { name: employeeName })}
         className="max-h-80 w-full rounded-media border-(length:--border-w) bg-surface-3 object-contain"
       />
@@ -242,4 +261,14 @@ function SelfieEvidence({
       </p>
     </div>
   );
+}
+
+/** Only an inline image or a TLS signed link is ever handed to `<img>`. */
+function isRenderablePhoto(url: string): boolean {
+  if (url.startsWith("data:image/")) return true;
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
 }

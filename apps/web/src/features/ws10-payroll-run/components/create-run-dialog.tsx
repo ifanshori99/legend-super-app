@@ -85,7 +85,16 @@ export function CreateRunDialog({
   const [runType, setRunType] = React.useState<RunType>("regular");
   const [error, setError] = React.useState<string | null>(null);
   // One key per dialog attempt: a double submit creates one run, not two.
-  const [idempotencyKey] = React.useState(() => newIdempotencyKey());
+  // One key per attempt: a double submit or a retry after a lost response
+  // replays the same write. A new key is minted once the attempt ends (success
+  // or close), so the next run/pool is never refused as a reused key.
+  const [idempotencyKey, setIdempotencyKey] = React.useState(() =>
+    newIdempotencyKey(),
+  );
+  function setOpen(next: boolean) {
+    if (!next) setIdempotencyKey(newIdempotencyKey());
+    onOpenChange(next);
+  }
 
   const hasSource = entities.length > 0 && policyId !== "";
 
@@ -112,6 +121,7 @@ export function CreateRunDialog({
       },
       {
         onSuccess: (run) => {
+          setIdempotencyKey(newIdempotencyKey());
           toast({
             title: t("payrollRun.create.created"),
             tone: "success",
@@ -124,7 +134,7 @@ export function CreateRunDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("payrollRun.create.title")}</DialogTitle>
@@ -221,13 +231,6 @@ export function CreateRunDialog({
             </Select>
           </FormField>
 
-          <FormField
-            label={t("payrollRun.create.idempotencyKey")}
-            hint={t("payrollRun.create.idempotencyHint")}
-          >
-            <Input value={idempotencyKey} readOnly className="tabular" />
-          </FormField>
-
           {error && (
             <p
               role="alert"
@@ -241,7 +244,7 @@ export function CreateRunDialog({
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => setOpen(false)}
             >
               {t("common.cancel")}
             </Button>

@@ -84,7 +84,11 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
   // No selection yet means the newest pool, so the table always has a subject.
   const selected: ServiceChargePool | null =
     poolRows.find((pool) => pool.id === selectedId) ?? poolRows[0] ?? null;
-  const allocations = useAllocations(selected?.id);
+  // Per-employee shares are compensation (HR-03): salary readers and the pool
+  // approver see them; the mock answers 403 to anyone else.
+  const canSeeAllocations =
+    permissions.canViewSalaries || permissions.canApprove;
+  const allocations = useAllocations(selected?.id, canSeeAllocations);
 
   const employeeById = React.useMemo(
     () =>
@@ -119,8 +123,9 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
       : poolRows.length === 0
         ? "empty"
         : "ready";
-  const allocationsState: DataState =
-    allocations.isPending || employees.isPending || positions.isPending
+  const allocationsState: DataState = !canSeeAllocations
+    ? "empty"
+    : allocations.isPending || employees.isPending || positions.isPending
       ? "loading"
       : allocations.isError
         ? "error"
@@ -302,17 +307,41 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
         />
         <StatTile
           label={t("payrollRun.pool.stripAllocated")}
-          value={<Money amount={allocated} size="stat" />}
+          value={
+            canSeeAllocations && allocations.isSuccess ? (
+              <Money amount={allocated} size="stat" />
+            ) : (
+              <span className="text-muted-foreground">
+                {t("payrollRun.common.none")}
+              </span>
+            )
+          }
           context={t("payrollRun.pool.stripAllocatedContext")}
         />
         <StatTile
           label={t("payrollRun.pool.stripRecipients")}
-          value={<NumberDisplay value={allocationsRows.length} size="stat" />}
+          value={
+            canSeeAllocations && allocations.isSuccess ? (
+              <NumberDisplay value={allocationsRows.length} size="stat" />
+            ) : (
+              <span className="text-muted-foreground">
+                {t("payrollRun.common.none")}
+              </span>
+            )
+          }
           context={t("payrollRun.pool.stripRecipientsContext")}
         />
         <StatTile
           label={t("payrollRun.pool.stripRemaining")}
-          value={<Money amount={remaining} size="stat" />}
+          value={
+            canSeeAllocations && allocations.isSuccess ? (
+              <Money amount={remaining} size="stat" />
+            ) : (
+              <span className="text-muted-foreground">
+                {t("payrollRun.common.none")}
+              </span>
+            )
+          }
           context={t("payrollRun.pool.stripRemainingContext")}
         />
       </StatStrip>
@@ -373,9 +402,11 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
         }
         empty={{
           title: t("payrollRun.pool.allocationsEmptyTitle"),
-          description: t("payrollRun.pool.allocationsEmptyHint"),
+          description: canSeeAllocations
+            ? t("payrollRun.pool.allocationsEmptyHint")
+            : t("payrollRun.pool.allocationsRestricted"),
           action:
-            canCalculate && selected !== null ? (
+            canSeeAllocations && canCalculate && selected !== null ? (
               <Button
                 type="button"
                 size="sm"

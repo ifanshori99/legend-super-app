@@ -66,24 +66,27 @@ export function useRun(runId: string | undefined) {
   });
 }
 
-export function useRunResults(runId: string | undefined) {
+/** `allowed` = the caller holds the read permission (no request otherwise). */
+export function useRunResults(runId: string | undefined, allowed = true) {
   return useQuery({
     ...runResultsQuery(runId ?? ""),
-    enabled: Boolean(runId),
+    enabled: allowed && Boolean(runId),
   });
 }
 
-export function useRunPayslips(runId: string | undefined) {
+/** `allowed` = the caller holds the read permission (no request otherwise). */
+export function useRunPayslips(runId: string | undefined, allowed = true) {
   return useQuery({
     ...runPayslipsQuery(runId ?? ""),
-    enabled: Boolean(runId),
+    enabled: allowed && Boolean(runId),
   });
 }
 
-export function useBankFiles(runId: string | undefined) {
+/** `allowed` = the caller holds the read permission (no request otherwise). */
+export function useBankFiles(runId: string | undefined, allowed = true) {
   return useQuery({
     ...bankFilesQuery(runId ?? ""),
-    enabled: Boolean(runId),
+    enabled: allowed && Boolean(runId),
   });
 }
 
@@ -91,10 +94,10 @@ export function usePools(outletId: string) {
   return useQuery(poolsQuery(outletId));
 }
 
-export function useAllocations(poolId: string | undefined) {
+export function useAllocations(poolId: string | undefined, allowed = true) {
   return useQuery({
     ...allocationsQuery(poolId ?? ""),
-    enabled: Boolean(poolId),
+    enabled: allowed && Boolean(poolId),
   });
 }
 

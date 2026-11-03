@@ -429,7 +429,7 @@ export function KpiPage() {
                               label={t("learning.kpi.achievementBar", {
                                 percent: achievement ?? 0,
                               })}
-                              fallback={t("learning.common.none")}
+                              fallback={t("learning.kpi.achievementUnknown")}
                               showValue={false}
                               className="mt-1"
                             />

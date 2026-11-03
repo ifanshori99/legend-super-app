@@ -44,6 +44,20 @@ export function recordTrainingCompletion(row: TrainingCompletion): void {
   writtenCompletions.push(row);
 }
 
+/**
+ * Fixture rows overlaid with this session's writes, one row per id: a write
+ * that updates a fixture row (e.g. a receipt confirmed after an earlier read)
+ * replaces it instead of being counted twice.
+ */
+function overlay<T extends { id: string }>(
+  fixtureRows: readonly T[],
+  written: readonly T[],
+): T[] {
+  const byId = new Map(fixtureRows.map((row) => [row.id, row]));
+  for (const row of written) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
 export function fixtureKpiDefinitions(): readonly KpiDefinition[] | null {
   return API_MOCK ? cafeLegendHrisFixtures.kpiDefinitions : null;
 }
@@ -51,24 +65,24 @@ export function fixtureKpiDefinitions(): readonly KpiDefinition[] | null {
 export function fixtureSopAcknowledgements():
   readonly SopAcknowledgement[] | null {
   return API_MOCK
-    ? [
-        ...cafeLegendHrisFixtures.sopAcknowledgements,
-        ...writtenAcknowledgements,
-      ]
+    ? overlay(
+        cafeLegendHrisFixtures.sopAcknowledgements,
+        writtenAcknowledgements,
+      )
     : null;
 }
 
 export function fixtureAnnouncementReceipts():
   readonly AnnouncementReceipt[] | null {
   return API_MOCK
-    ? [...cafeLegendHrisFixtures.announcementReceipts, ...writtenReceipts]
+    ? overlay(cafeLegendHrisFixtures.announcementReceipts, writtenReceipts)
     : null;
 }
 
 export function fixtureTrainingCompletions():
   readonly TrainingCompletion[] | null {
   return API_MOCK
-    ? [...cafeLegendHrisFixtures.trainingCompletions, ...writtenCompletions]
+    ? overlay(cafeLegendHrisFixtures.trainingCompletions, writtenCompletions)
     : null;
 }
 

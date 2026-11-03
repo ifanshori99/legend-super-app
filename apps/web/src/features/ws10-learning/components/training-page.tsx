@@ -184,7 +184,11 @@ export function TrainingPage() {
                     })}
                   </TableCell>
                   <TableCell>
-                    {completion === null ? (
+                    {completions === null ? (
+                      <span className="text-sm text-muted-foreground">
+                        {t("learning.common.none")}
+                      </span>
+                    ) : completion === null ? (
                       <StatusPill status="info">
                         {t("learning.training.status.notStarted")}
                       </StatusPill>

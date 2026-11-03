@@ -111,7 +111,8 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
         <StatTile label={t("payrollConfig.thr.metrics.paid")} value={paid} />
         <StatTile
           label={t("payrollConfig.thr.metrics.fullTenure")}
-          value={thrRule?.parameters.fullTenureMonths ?? 0}
+          // No published THR rule: show a dash, never an invented 0.
+          value={thrRule?.parameters.fullTenureMonths ?? "—"}
         />
       </StatStrip>
 

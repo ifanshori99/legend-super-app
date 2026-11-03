@@ -161,13 +161,16 @@ export function PayComponentDialog({
     const onError = (error: unknown) =>
       setErrors({ form: payrollMutationError(error, t) });
 
+    // Disabled checkboxes never submit a stale "on": deductions and
+    // reimbursements are neither taxable nor part of any wage base.
+    const noBases = deduction || reimbursement;
     const flags = {
       name: name.trim(),
-      taxable: deduction ? false : taxable,
+      taxable: noBases ? false : taxable,
       taxScheme,
-      bpjsBase: deduction ? false : bpjsBase,
-      overtimeBase: deduction ? false : overtimeBase,
-      thrBase: deduction ? false : thrBase,
+      bpjsBase: noBases ? false : bpjsBase,
+      overtimeBase: noBases ? false : overtimeBase,
+      thrBase: noBases ? false : thrBase,
       displayOrder: Number(displayOrder),
     };
 
