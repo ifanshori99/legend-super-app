@@ -15,7 +15,6 @@ import {
   ReservationError,
   assertReservationTransition,
   cancellationDepositOutcome,
-  depositHoldsFunds,
   depositIsSettled,
   noShowDepositOutcome,
   reservationCloseResultSchema,
@@ -48,6 +47,7 @@ import {
   auditReservation,
   claimIdempotencyKey,
   loadDepositStatuses,
+  loadHeldDeposit,
   loadHolds,
   lockOutletHolds,
   lockReservation,
@@ -312,20 +312,21 @@ export async function seatReservation(
       // C11 (RSV-02): a required DP must be settled, whatever the status says.
       let depositPaid = idr(0);
       if (row.depositIdr > 0) {
-        const statuses = await loadDepositStatuses(
-          tx,
-          context,
-          row.depositPaymentId ? [row.depositPaymentId] : [],
-        );
-        const status = row.depositPaymentId
-          ? (statuses.get(row.depositPaymentId) ?? null)
-          : null;
-        if (!depositIsSettled(status))
+        const deposit = row.depositPaymentId
+          ? await loadHeldDeposit(
+              tx,
+              context,
+              row.depositPaymentId,
+              row.depositIdr,
+            )
+          : { status: null, heldIdr: idr(0) };
+        if (!depositIsSettled(deposit.status))
           throw new ReservationError("RESERVATION_DEPOSIT_UNPAID");
         // RSV-02: only funds the intent still holds become prepaid credit. A
-        // DP refunded by WS-05 keeps the reservation valid (the guest was
-        // seated on a paid DP) but must not credit the bill again (RSV-03).
-        if (depositHoldsFunds(status)) depositPaid = row.depositIdr;
+        // DP refunded by WS-05 keeps the reservation valid (it was paid when
+        // the reservation was confirmed) but credits only what is left: zero
+        // after a full refund, the remainder after a partial one (RSV-03).
+        depositPaid = deposit.heldIdr;
       }
       // The host may seat the party on other tables than the tentative ones.
       const held = (await loadHolds(tx, context, [row.id]))
@@ -452,13 +453,12 @@ async function closeReservation(
     const policy = reservationPolicySnapshotSchema.parse(row.policySnapshot);
     let paid = idr(0);
     if (row.depositIdr > 0 && row.depositPaymentId !== null) {
-      const statuses = await loadDepositStatuses(tx, context, [
-        row.depositPaymentId,
-      ]);
       // RSV-03: only money the intent still holds can be refunded/forfeited.
-      // A fully refunded DP is settled (RSV-02) but has nothing left to move.
-      if (depositHoldsFunds(statuses.get(row.depositPaymentId) ?? null))
-        paid = row.depositIdr;
+      // A fully refunded DP is settled (RSV-02) but has nothing left to move;
+      // a partly refunded one splits only its remainder.
+      paid = (
+        await loadHeldDeposit(tx, context, row.depositPaymentId, row.depositIdr)
+      ).heldIdr;
     }
     if (kind === "no_show" && now < row.reservedFor)
       throw new ReservationError(

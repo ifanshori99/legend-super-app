@@ -20,6 +20,7 @@ import {
   canTransitionReservation,
   canTransitionWaitlist,
   cancelReservation,
+  depositHoldsFunds,
   depositIsSettled,
   getReservation,
   listReservationPackages,
@@ -93,18 +94,17 @@ function requireOutlet(requested: string): void {
 }
 
 /**
- * The DP still held when the reservation closes (RSV-03). `depositIdr` is the
- * original DP, and `depositIsSettled("refunded")` says the guest paid it; but
- * once WS-05 returned it in full nothing is left to refund or forfeit, so a
- * close after that reports a zero outcome instead of refunding twice. The read
+ * The DP still held when the reservation closes (RSV-03): `depositHoldsFunds`,
+ * the contract's money rule. `depositIsSettled("refunded")` says the guest
+ * paid it once, but WS-05 returned it in full, so nothing is left to refund or
+ * forfeit and a close reports a zero outcome instead of refunding twice. The read
  * model carries no refunded amount, so a partial refund keeps the original
  * amount here; the API resolves the remainder from WS-05.
  */
 function depositAtClose(reservation: Reservation): Idr {
-  if (!depositIsSettled(reservation.depositStatus)) return idr(0);
-  return reservation.depositStatus === "refunded"
-    ? idr(0)
-    : reservation.depositIdr;
+  return depositHoldsFunds(reservation.depositStatus)
+    ? reservation.depositIdr
+    : idr(0);
 }
 
 // ---- Mock-only DP shapes (bead legend-mv3a) --------------------------------

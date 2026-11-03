@@ -27,13 +27,16 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import { depositHoldsFunds } from "@starter/shared/reservation";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
 import { reservations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
-import { auditReservation, lockReservation } from "./reservation-core.ts";
+import {
+  auditReservation,
+  loadHeldDeposit,
+  lockReservation,
+} from "./reservation-core.ts";
 import { confirmReservationDeposit } from "./reservation-lifecycle.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 
@@ -98,10 +101,17 @@ async function refundLateDeposit(
           eq(paymentIntents.paymentLinkId, locked.depositPaymentLinkId),
         ),
       );
-    // RSV-03: a DP refund is only owed while the intent still holds funds; a
-    // fully refunded intent was already returned and is not refunded again.
-    if (!intent || !depositHoldsFunds(intent.status)) return null;
-    const amount = idr(intent.amountIdr);
+    if (!intent) return null;
+    // RSV-03: a DP refund is only owed for what the intent still holds; a
+    // fully refunded intent was already returned and a partly refunded one is
+    // refunded only for its remainder, never twice.
+    const { heldIdr: amount } = await loadHeldDeposit(
+      tx,
+      context,
+      intent.id,
+      intent.amountIdr,
+    );
+    if (amount <= 0) return null;
     const [updated] = await tx
       .update(reservations)
       .set({
