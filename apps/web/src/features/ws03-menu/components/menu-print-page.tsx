@@ -1,7 +1,8 @@
 // Printable menu (bead legend-b6r; PRD v1.7 §3 F8, §8 "Menu Cetak Otomatis"):
-// active items only, grouped by category, priced from the outlet's dine-in
-// list, with a large-print scale. Photos are omitted on purpose (ink-saving;
-// the schema has no required photo for the sheet). "Cetak / Simpan PDF" opens
+// guest-visible items only (Q23: active with a photo), grouped by category,
+// priced from the outlet's dine-in list, with a small photo per item and a
+// large-print scale. Prices exclude tax and service charge (tenant default
+// `prices_include_tax = false`), and the sheet says so. "Cetak / Simpan PDF" opens
 // the browser's print dialog — there is no server PDF. Print CSS copies the
 // approach from features/ws06-purchasing/components/purchase-order-print-page.tsx.
 import * as React from "react";
@@ -10,6 +11,7 @@ import { cn } from "cn";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
+import { MediaPlate } from "@/components/ui/media-plate";
 import { Money } from "@/components/ui/money";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,16 +42,15 @@ function formatGeneratedAt(instant: Date): string {
   }).format(instant);
 }
 
-// Hide the management shell when printing. The light palette for the sheet is
-// selected only for print so a dark-mode preview remains legible on paper
-// (same rule as the purchase-order print sheet).
+// Hide the management shell when printing. In dark mode the print swaps to
+// dark ink on transparent paper (no accent-filled page background).
 const PRINT_STYLE = `@page { margin: 12mm; }
 @media print {
   body { background: transparent !important; }
   body * { visibility: hidden; }
   .menu-print-sheet, .menu-print-sheet * { visibility: visible; }
   .menu-print-sheet { position: absolute; inset: 0; width: 100%; max-width: none; margin: 0; padding: 0; }
-  .dark .menu-print-sheet { --foreground: var(--primary-foreground); --muted-foreground: var(--primary-foreground); --border: var(--primary-foreground); --background: var(--primary); color: var(--foreground); background: var(--background); }
+  .dark .menu-print-sheet { --foreground: var(--primary-foreground); --muted-foreground: var(--primary-foreground); --border: var(--primary-foreground); --background: transparent; --surface-3: transparent; color: var(--foreground); background: var(--background); }
   .menu-print-sheet .print-controls { display: none; }
 }`;
 
@@ -236,6 +237,9 @@ export function MenuPrintPage() {
                 })}
               </p>
             )}
+            <p className="text-sm text-muted-foreground">
+              {t("menuImport.print.taxNote")}
+            </p>
             <p className="text-sm text-muted-foreground tabular">
               {generatedLabel}
             </p>
@@ -252,8 +256,14 @@ export function MenuPrintPage() {
                 {section.rows.map(({ item, priceIdr }) => (
                   <li
                     key={item.id}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 py-2"
+                    className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-4 py-2"
                   >
+                    <MediaPlate
+                      src={item.mediaUrl}
+                      alt=""
+                      ratio="thumb"
+                      className={large ? "w-20" : "w-14"}
+                    />
                     <div className="min-w-0">
                       <p
                         className={cn(

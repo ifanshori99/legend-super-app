@@ -1,8 +1,8 @@
 // Menu bulk import screen (bead legend-b6r; PRD v1.7 §3 F8, §8 "Impor
 // Massal"). Template download, CSV preview with per-row validation, then an
-// explicit commit that creates drafts and appends their prices. XLSX is
-// accepted by the picker but cannot be parsed without a dependency, so the
-// screen says so and asks for a CSV instead of faking a preview.
+// explicit commit that creates drafts and appends their prices. CSV only:
+// XLSX parsing is deferred to bead legend-az32, so the picker offers .csv and
+// an .xlsx picked anyway gets a "save as CSV" message, never a fake preview.
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -250,6 +250,9 @@ function ImportPreview({
                 !online ||
                 committing ||
                 counts.valid === 0 ||
+                // A file-level problem (e.g. an unterminated quote) makes
+                // every row after it suspect: fix the file before importing.
+                analysis.fileIssues.length > 0 ||
                 !priceList ||
                 outcome !== null
               }
@@ -444,7 +447,8 @@ export function MenuImportPage() {
   }
 
   async function commit() {
-    if (!analysis || !priceList || committing) return;
+    if (!analysis || analysis.fileIssues.length > 0 || !priceList || committing)
+      return;
     setCommitting(true);
     setProgress({ done: 0, total: analysis.counts.valid });
     setOutcome(null);
@@ -454,8 +458,9 @@ export function MenuImportPage() {
         onProgress: (done, total) => setProgress({ done, total }),
       });
       setOutcome(result);
-      // Item list, availability and price grids all changed.
-      await refreshMenu();
+      // Item list, availability and price grids all changed. A failed
+      // refresh must not hide the outcome that is already on screen.
+      await refreshMenu().catch(() => undefined);
       void references.refetch();
     } finally {
       setCommitting(false);
@@ -518,7 +523,7 @@ export function MenuImportPage() {
             <input
               ref={inputRef}
               type="file"
-              accept=".csv,.xlsx"
+              accept=".csv,text/csv"
               className="sr-only"
               tabIndex={-1}
               aria-label={t("menuImport.import.uploadLabel")}

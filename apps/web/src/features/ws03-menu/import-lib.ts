@@ -7,7 +7,7 @@
 // adding one is out of scope (recorded as a follow-up): quoted fields, doubled
 // quotes, CRLF/LF, comma or semicolon delimiter, BOM, and `;`-separated
 // label/allergen lists inside one cell.
-import { importRowSchema } from "@starter/shared/menu";
+import { importRowSchema, menuItemVisibleToGuests } from "@starter/shared/menu";
 import type { MenuImportRow, PriceList } from "@starter/shared/menu";
 
 /** The nine template columns, in template order (`importRowSchema`). */
@@ -121,12 +121,12 @@ export type PriceParseResult =
  * error instead of a silent rounding.
  */
 export function parsePriceIdr(value: string): PriceParseResult {
-  const normalized = value
-    .trim()
-    .replace(/^rp\.?\s*/i, "")
-    .replace(/[.\s]/g, "");
-  if (!/^\d+$/.test(normalized)) return { ok: false, code: "invalidPrice" };
-  const amount = Number(normalized);
+  const stripped = value.trim().replace(/^rp\.?\s*/i, "");
+  // Dots are accepted only as thousands separators in groups of three, so a
+  // decimal like "12.5" is rejected instead of silently becoming 125.
+  if (!/^\d+$/.test(stripped) && !/^\d{1,3}(\.\d{3})+$/.test(stripped))
+    return { ok: false, code: "invalidPrice" };
+  const amount = Number(stripped.replace(/\./g, ""));
   if (!Number.isSafeInteger(amount))
     return { ok: false, code: "priceTooLarge" };
   return { ok: true, value: amount };
@@ -548,6 +548,8 @@ export type PrintableItem = {
   categoryId: string;
   sortOrder: number;
   isActive: boolean;
+  mediaId?: string | null;
+  mediaUrl?: string | null;
 };
 
 export type PrintableSection = {
@@ -558,8 +560,9 @@ export type PrintableSection = {
 
 /**
  * Active items grouped by category for the printable menu (PRD §8 "Menu Cetak
- * Otomatis"): display order, empty categories omitted. Drafts (Q23 imported
- * rows) never reach the sheet because `isActive` is false.
+ * Otomatis"): display order, empty categories omitted. The sheet is
+ * guest-facing, so it applies the Q23 guest rule (`menuItemVisibleToGuests`):
+ * drafts (imported rows) and legacy active rows without a photo never print.
  */
 export function printableSections(input: {
   items: readonly PrintableItem[];
@@ -579,7 +582,10 @@ export function printableSections(input: {
     )
     .flatMap((category) => {
       const rows = input.items
-        .filter((item) => item.isActive && item.categoryId === category.id)
+        .filter(
+          (item) =>
+            menuItemVisibleToGuests(item) && item.categoryId === category.id,
+        )
         .sort(
           (left, right) =>
             left.sortOrder - right.sortOrder ||

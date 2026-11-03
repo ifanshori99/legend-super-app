@@ -37,8 +37,13 @@ async function openImport(page: Page) {
     page.getByRole("heading", { name: "Impor massal menu" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Pilih file CSV/XLSX" }),
+    page.getByRole("button", { name: "Pilih file CSV" }),
   ).toBeVisible();
+  // XLSX is deferred (legend-az32): the picker offers CSV only.
+  await expect(page.locator('input[type="file"]')).toHaveAttribute(
+    "accept",
+    ".csv,text/csv",
+  );
 }
 
 async function uploadCsv(page: Page, name: string, content: string) {
@@ -97,15 +102,17 @@ test("F8 import template downloads the nine-column CSV and preview lists per-row
       "Kopi,Latte Uji Tipe,,c,25000,Kopi,drink,,",
       "Kopi,,Tanpa Nama,single,25000,Kopi,drink,,",
       "Tidak Ada,Teh Uji,,single,dua puluh,Kopi,drink,,",
+      // A decimal is never silently read as thousands dots (12.5 ≠ 125).
+      "Kopi,Latte Uji Desimal,,single,12.5,Kopi,drink,,",
     ),
   );
 
   const strip = page.getByRole("region", { name: "Ringkasan pratinjau" });
   await expect(strip).toBeVisible();
   await expect(strip.getByText("Total baris")).toBeVisible();
-  await expect(strip.getByText("4", { exact: true })).toBeVisible();
+  await expect(strip.getByText("5", { exact: true })).toBeVisible();
   await expect(strip.getByText("1", { exact: true })).toBeVisible();
-  await expect(strip.getByText("3", { exact: true })).toBeVisible();
+  await expect(strip.getByText("4", { exact: true })).toBeVisible();
 
   await expect(
     page.getByText("Tipe harus single atau combo (Item tunggal atau Paket)."),
@@ -118,7 +125,7 @@ test("F8 import template downloads the nine-column CSV and preview lists per-row
     page.getByText(
       "Harga harus bilangan bulat rupiah tanpa tanda baca, misalnya 25000.",
     ),
-  ).toBeVisible();
+  ).toHaveCount(2);
 
   // Only the one valid row is offered to the commit.
   await expect(
@@ -228,6 +235,16 @@ test("F8 printable menu renders categories, prices and large print", async ({
   ).toBeVisible();
   await expect(
     page.locator('.menu-print-sheet data[value="20000"]').first(),
+  ).toBeVisible();
+  // Owner note 12: menu prices exclude tax and service; the sheet says so.
+  await expect(
+    page
+      .locator("article[data-print-size]")
+      .getByText("Harga belum termasuk pajak dan service charge."),
+  ).toBeVisible();
+  // Q23: every printed item carries its photo.
+  await expect(
+    page.locator('article [data-slot="media-plate"] img').first(),
   ).toBeVisible();
 
   // The button opens the browser print dialog; no server PDF is involved.

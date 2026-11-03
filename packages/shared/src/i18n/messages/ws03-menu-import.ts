@@ -5,7 +5,7 @@
 export const menuImportMessages = {
   title: "Impor & cetak menu",
   subtitle:
-    "Impor massal CSV/XLSX dengan pratinjau validasi per baris, dan menu cetak siap PDF.",
+    "Impor massal CSV dengan pratinjau validasi per baris, dan menu cetak siap PDF.",
   import: {
     title: "Impor massal menu",
     description:
@@ -16,10 +16,10 @@ export const menuImportMessages = {
     templateHint:
       "Template berisi satu baris contoh. Kolom label dan alergen dipisahkan titik koma (;).",
     uploadLabel: "Berkas impor menu",
-    upload: "Pilih file CSV/XLSX",
+    upload: "Pilih file CSV",
     changeFile: "Ganti file",
     acceptHint:
-      "Format yang diterima: CSV atau XLSX. File XLSX harus disimpan sebagai CSV lebih dulu.",
+      "Format yang diterima: CSV. Impor XLSX langsung belum tersedia; simpan file Excel sebagai CSV lebih dulu.",
     selectedFile: "File terpilih: {name}",
     reading: "Membaca berkas…",
     fileErrorTitle: "Berkas belum bisa diproses",
@@ -90,7 +90,7 @@ export const menuImportMessages = {
   print: {
     title: "Menu cetak",
     description:
-      "Menu aktif per kategori dengan harga dine-in. Harga dan ketersediaan terbaru ikut saat Anda menekan Buat ulang.",
+      "Menu aktif berfoto per kategori dengan harga dine-in. Harga dan ketersediaan terbaru ikut saat Anda menekan Buat ulang.",
     sizeLabel: "Ukuran huruf",
     sizeNormal: "Normal",
     sizeLarge: "Besar",
@@ -106,6 +106,7 @@ export const menuImportMessages = {
     emptyHint:
       "Aktifkan item beserta fotonya di Daftar item, lalu tekan Buat ulang untuk menyiapkan menu cetak.",
     noPrice: "Harga belum diisi",
+    taxNote: "Harga belum termasuk pajak dan service charge.",
     loading: "Menyiapkan menu cetak…",
     offline:
       "Anda sedang offline. Menu yang sudah dimuat tetap bisa dicetak; Buat ulang butuh koneksi.",
