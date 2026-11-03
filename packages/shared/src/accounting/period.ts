@@ -88,6 +88,9 @@ type PeriodRow = Pick<
   "id" | "legalEntityId" | "period" | "status" | "version"
 >;
 
+/** A period row that also says who closed it (separation of duties). */
+type ClosedByRow = PeriodRow & Pick<FiscalPeriod, "closedBy">;
+
 /** ACC-02: the one check before inserting any journal entry. */
 export function assertPostingAllowed(
   period: Pick<FiscalPeriod, "period" | "status">,
@@ -203,11 +206,12 @@ export function assertReopenRequestable(
 }
 
 /**
- * Approve or reject a reopen request (ACC-02). Approval needs a different
- * person than the requester and reopens only the latest closed period of the
+ * Approve or reject a reopen request (ACC-02). Approval needs a person other
+ * than the requester (AUTH-06) and other than whoever closed the period
+ * (separation of duties), and reopens only the latest closed period of the
  * entity. Returns the request status and, on approval, the reopened period.
  */
-export function decidePeriodReopen<Row extends PeriodRow>(input: {
+export function decidePeriodReopen<Row extends ClosedByRow>(input: {
   request: Pick<
     PeriodReopenRequest,
     "status" | "requestedBy" | "reason" | "fiscalPeriodId"
@@ -243,6 +247,8 @@ export function decidePeriodReopen<Row extends PeriodRow>(input: {
     throw new AccountingError("REOPEN_REASON_REQUIRED");
   if (period.status !== "closed")
     throw new AccountingError("PERIOD_ALREADY_OPEN");
+  if (period.closedBy !== null && input.actorId === period.closedBy)
+    throw new AccountingError("APPROVER_IS_CLOSER");
   const laterClosed = input.entityPeriods.some(
     (row) =>
       row.legalEntityId === period.legalEntityId &&

@@ -63,6 +63,8 @@ function reopenDecisionError(
   switch (error.code) {
     case "APPROVER_IS_REQUESTER":
       return t("accounting.report.periods.reopen.approverIsRequester");
+    case "APPROVER_IS_CLOSER":
+      return t("accounting.report.periods.reopen.approverIsCloser");
     case "PERIOD_REOPEN_OUT_OF_ORDER":
       return t("accounting.report.periods.reopen.outOfOrder");
     case "PERIOD_ALREADY_OPEN":

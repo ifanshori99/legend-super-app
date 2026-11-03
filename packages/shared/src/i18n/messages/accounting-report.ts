@@ -248,7 +248,7 @@ export const accountingReportMessages = {
       requestFailed: "Permintaan buka ulang gagal dikirim.",
       requestsTitle: "Permintaan buka ulang",
       requestsSubtitle:
-        "Penyetuju harus orang yang berbeda dari pemohon (AUTH-06); API menolak persetujuan oleh pemohon.",
+        "Penyetuju harus orang yang berbeda dari pemohon (AUTH-06) dan dari penutup periode; API menolak persetujuan oleh keduanya.",
       requestsEmptyTitle: "Belum ada permintaan buka ulang",
       requestsEmptyHint:
         "Ajukan buka ulang untuk periode tertutup terakhir bila ada koreksi yang tertinggal.",
@@ -281,6 +281,8 @@ export const accountingReportMessages = {
       failed: "Permintaan tidak dapat diproses.",
       approverIsRequester:
         "Anda yang mengajukan permintaan ini, jadi tidak dapat menyetujuinya sendiri. Minta penyetuju lain (AUTH-06).",
+      approverIsCloser:
+        "Anda yang menutup periode ini, jadi tidak dapat menyetujui pembukaan ulangnya. Minta penyetuju lain.",
       outOfOrder: "Buka ulang periode setelahnya terlebih dahulu.",
       alreadyOpen: "Periode ini sudah terbuka.",
       alreadyDecided: "Permintaan ini sudah diputuskan. Muat ulang daftar.",
