@@ -98,6 +98,8 @@ test("DASH-02: the catalog lists the sales reports and links to them", async ({
   await expect(
     page.getByRole("heading", { name: "Katalog laporan" }),
   ).toBeVisible();
+  // The catalog pages 25 rows at a time; search narrows to the sales report.
+  await page.getByRole("searchbox", { name: "Cari laporan" }).fill("per jam");
   const link = page.getByRole("link", { name: /Penjualan per jam/ });
   await expect(link).toHaveAttribute("href", "/reports/sales/per-hour");
 });
@@ -148,7 +150,7 @@ test("DASH-02: empty, error and offline states are honest and recoverable", asyn
 
   await page.evaluate(() => window.__legendMock?.setScenario("error"));
   await page.getByRole("button", { name: "Muat ulang" }).click();
-  await expect(page.getByText("Gagal dimuat").first()).toBeVisible();
+  await expect(page.getByText("Data tidak dapat dimuat").first()).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Coba lagi" }).first(),
   ).toBeVisible();
@@ -156,7 +158,7 @@ test("DASH-02: empty, error and offline states are honest and recoverable", asyn
 
   await page.evaluate(() => window.__legendMock?.setScenario("offline"));
   await page.getByRole("button", { name: "Muat ulang" }).click();
-  await expect(page.getByText("Anda sedang offline")).toBeVisible();
+  await expect(page.getByText("Anda sedang offline").first()).toBeVisible();
   await captureScreenshot(page, "legend-j815/viewer-offline-1440.png");
 
   await page.evaluate(() => window.__legendMock?.setScenario("normal"));
@@ -213,6 +215,9 @@ for (const width of [390, 1440]) {
       await page.keyboard.press("Escape");
       await page.goto("/reports", { waitUntil: "networkidle" });
       await waitForHydration(page);
+      await page
+        .getByRole("searchbox", { name: "Cari laporan" })
+        .fill("per jam");
       await expect(
         page.getByRole("link", { name: /Penjualan per jam/ }),
       ).toBeVisible();

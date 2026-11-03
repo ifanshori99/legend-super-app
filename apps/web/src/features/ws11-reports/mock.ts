@@ -48,6 +48,13 @@ import { namedPresets, resolvePreset, type DateRange } from "./lib.ts";
 const outlet = cafeLegendFixtures.outlets[0];
 const BUSINESS_DATE = cafeLegendManagementLayoutFixture.businessDate;
 const MONTH_START = `${BUSINESS_DATE.slice(0, 7)}-01`;
+const CLOSED_MONTH_NET_SALES = 412_800_000;
+const LAST_MONTH = (() => {
+  const end = new Date(`${MONTH_START}T00:00:00Z`);
+  end.setUTCDate(0);
+  const last = end.toISOString().slice(0, 10);
+  return { start: `${last.slice(0, 8)}01`, end: last };
+})();
 
 // ---- Day model ---------------------------------------------------------------
 
@@ -105,6 +112,16 @@ function periodAtoms(range: DateRange): Atoms {
     const factor = WEEKDAY_FACTOR[weekday] ?? 1;
     for (const key of Object.keys(total) as AtomKey[])
       total[key] += Math.round(BASE_DAY[key] * factor);
+  }
+  // The last full month is the shareholder's closed month: its sales tie to the
+  // books (net sales Rp412.800.000, SH-01), so every figure scales together.
+  if (
+    range.startDate === LAST_MONTH.start &&
+    range.endDate === LAST_MONTH.end
+  ) {
+    const scale = CLOSED_MONTH_NET_SALES / total.net;
+    for (const key of Object.keys(total) as AtomKey[])
+      total[key] = Math.round(total[key] * scale);
   }
   return total;
 }

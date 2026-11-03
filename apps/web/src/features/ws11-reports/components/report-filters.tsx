@@ -92,7 +92,7 @@ export function ReportFilters({
         >
           <FormField label={t("reportViewer.filters.period")}>
             <Select value={preset} onValueChange={pickPreset}>
-              <SelectTrigger>
+              <SelectTrigger aria-label={t("reportViewer.filters.period")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -141,7 +141,7 @@ export function ReportFilters({
                 value={split ?? NO_SPLIT}
                 onValueChange={(next) => onChange({ groupBy: next })}
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label={t("reportViewer.filters.split")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -171,7 +171,7 @@ export function ReportFilters({
                   })
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label={t("reportViewer.filters.outlet")}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
