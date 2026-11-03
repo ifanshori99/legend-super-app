@@ -73,11 +73,13 @@ test("DASH-01: the owner dashboard shows today's sales against the target, trace
   await expect(progress).toHaveAttribute("aria-valuenow", "31");
 
   // DASH-01: the estimate label. The source-report path (same period and
-  // outlet scope as the run) is unit-tested in tests/ws11-owner-dashboard;
-  // the report viewer does not exist yet (legend-tp3x), so no tile links to a
-  // 404 until its route is generated.
+  // outlet scope as the run) is unit-tested in tests/ws11-owner-dashboard.
+  // Only report routes that exist light up (legend-j815 ships the sales
+  // family); a tile never links to a 404.
   await expect(page.getByText("Estimasi", { exact: true })).toBeVisible();
-  await expect(page.locator('a[href^="/reports"]')).toHaveCount(0);
+  await expect(
+    page.locator('a[href^="/reports"]:not([href^="/reports/sales"])'),
+  ).toHaveCount(0);
 
   // One StatStrip for the related KPIs (DESIGN.md v3 / Q30), not separate cards.
   const strip = page.getByRole("region", {

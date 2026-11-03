@@ -27,6 +27,7 @@ import {
   releasePromotions,
   type RedeemPromotionsInput,
 } from "../services/crm-promo-engine";
+import { recomputeAfterPartialRefund } from "../services/crm-promo-refund";
 
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
@@ -654,14 +655,33 @@ describe("Idempotent redeem and release on void", () => {
 });
 
 describe("§3.21 ROI Promo inputs", () => {
-  it("[§3.21] ROI counts kept orders only: cost, revenue after discount, net margin and ROI in basis points", async () => {
+  it("[§3.21] ROI counts kept orders only, and a partial refund removes the refunded goods from revenue", async () => {
     const item = randomUUID();
     const promotionId = await seedPromotion(item);
     await redeem(redeemInput([priced(item, 100_000)]));
-    await redeem(redeemInput([priced(item, 25_000, 2)]));
+    const partial = redeemInput([priced(item, 25_000, 2)]);
+    await redeem(partial);
     const voided = redeemInput([priced(item, 80_000)]);
     await redeem(voided);
     await release(voided.orderId);
+    // Owner Q41: refund one of the two portions; the promotion still applies.
+    const scoped = outletScope(outletA);
+    expect(
+      await withTenant(db, scoped, (tx) =>
+        recomputeAfterPartialRefund(tx, scoped, {
+          orderId: partial.orderId,
+          keptLines: [priced(item, 25_000)],
+          reason: "Refund sebagian: satu porsi batal",
+          actorUserId: null,
+          at: new Date(),
+        }),
+      ),
+    ).toMatchObject({
+      adjusted: true,
+      refundedSubtotalIdr: 25_000,
+      withdrawnDiscountIdr: 0,
+      refundDueIdr: 25_000,
+    });
     // A Marketing user with promo.manage over the tenant reads the report.
     const marketer = randomUUID();
     await owner.query(
@@ -681,9 +701,9 @@ describe("§3.21 ROI Promo inputs", () => {
         promotionId,
         transactions: 2,
         discountCostIdr: 15_000,
-        revenueIdr: 135_000,
-        netMarginIdr: 120_000,
-        roiBp: 80_000,
+        revenueIdr: 110_000,
+        netMarginIdr: 95_000,
+        roiBp: 63_333,
       });
     } finally {
       await owner.query("DELETE FROM role_assignments WHERE user_id = $1", [

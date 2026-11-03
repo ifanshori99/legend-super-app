@@ -2,16 +2,18 @@
 // (PRD §8 "Struktur Menu", "Routing Stasiun", "Konten Menu"), plus the
 // variant and modifier sections. Saves through the typed endpoints.
 import * as React from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, Navigate, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, CircleAlert } from "lucide-react";
 import { z } from "zod";
 import { useT } from "@/components/i18n";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardShell } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fieldErrors, FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MediaPlate } from "@/components/ui/media-plate";
 import {
   Select,
   SelectContent,
@@ -38,6 +40,7 @@ import {
   useStations,
   useUpdateItem,
 } from "../hooks";
+import { useMenuWrites } from "../access";
 import { ImageField, type MenuImageValue } from "./image-field";
 import { ModifierSection } from "./modifier-section";
 import { VariantSection } from "./variant-section";
@@ -133,10 +136,15 @@ function itemPatch(values: FormValues, item: MenuItemAdmin): ItemPatch {
 
 export function ItemEditorPage({ itemId }: { itemId: string }) {
   const t = useT();
+  const { canManageItems } = useMenuWrites();
   const isNew = itemId === "baru";
   const itemQuery = useItem(isNew ? undefined : itemId);
   const categoriesQuery = useCategories({ limit: 100 });
   const stationsQuery = useStations({ limit: 100 });
+
+  // `baru` is a create form; a view-only visitor opening it directly goes back
+  // to the list instead of seeing write controls that the API would refuse.
+  if (isNew && !canManageItems) return <Navigate to="/kelola/menu" replace />;
 
   // The detail query stays disabled while creating ("baru"), so its pending
   // flag must not hold the form on the skeleton.
@@ -211,6 +219,7 @@ function ItemEditor({
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
+  const { canManageItems } = useMenuWrites();
   const createItem = useCreateItem();
   const updateItem = useUpdateItem();
 
@@ -335,6 +344,17 @@ function ItemEditor({
   const allergenOptions = Array.from(
     new Set([...Object.keys(ALLERGEN_KEYS), ...values.allergens]),
   );
+
+  // A view-only visitor gets the same detail without any write control; the
+  // variant and modifier sections gate their own buttons the same way.
+  if (!canManageItems && item)
+    return (
+      <ReadOnlyItemDetail
+        item={item}
+        categories={categories}
+        stations={stations}
+      />
+    );
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
@@ -510,7 +530,9 @@ function ItemEditor({
                               id={id}
                               checked={values.labels.includes(label)}
                               onCheckedChange={() =>
-                                update({ labels: toggle(values.labels, label) })
+                                update({
+                                  labels: toggle(values.labels, label),
+                                })
                               }
                             />
                             <Label htmlFor={id} className="font-normal">
@@ -665,6 +687,203 @@ function ItemEditor({
           )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/** One label/value line in the view-only item detail. */
+function ReadOnlyRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-0.5">
+      <dt className="text-sm leading-5 text-muted-foreground">{label}</dt>
+      <dd className="text-sm leading-5">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * View-only item detail (bead legend-5a74): a visitor with menu.item.view but
+ * not menu.item.manage sees the content, photo and state, and no write control.
+ */
+function ReadOnlyItemDetail({
+  item,
+  categories,
+  stations,
+}: {
+  item: MenuItemAdmin;
+  categories: { id: string; name: string }[];
+  stations: { id: string; name: string }[];
+}) {
+  const t = useT();
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
+      <div className="flex items-center gap-2">
+        <Button asChild variant="ghost" size="icon-sm">
+          <Link to="/kelola/menu" aria-label={t("menu.list.title")}>
+            <ArrowLeft aria-hidden="true" />
+          </Link>
+        </Button>
+        <div className="min-w-0">
+          <h2 className="truncate type-title">{item.name}</h2>
+          <p className="text-sm leading-5 text-muted-foreground">
+            {categories.find((entry) => entry.id === item.categoryId)?.name ??
+              t("menu.list.noCategory")}
+          </p>
+        </div>
+      </div>
+
+      <Tabs defaultValue="content">
+        <TabsList>
+          <TabsTrigger value="content">
+            {t("menu.editor.sections.content")}
+          </TabsTrigger>
+          <TabsTrigger value="variants">
+            {t("menu.editor.sections.variants")}
+          </TabsTrigger>
+          <TabsTrigger value="modifiers">
+            {t("menu.editor.sections.modifiers")}
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="content">
+          <ReadOnlyItemContent
+            item={item}
+            categories={categories}
+            stations={stations}
+          />
+        </TabsContent>
+        <TabsContent value="variants">
+          <VariantSection itemId={item.id} />
+        </TabsContent>
+        <TabsContent value="modifiers">
+          <ModifierSection itemId={item.id} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+/**
+ * View-only content tab (bead legend-5a74): a visitor with menu.item.view but
+ * not menu.item.manage sees the content, photo and state, and no write control.
+ */
+function ReadOnlyItemContent({
+  item,
+  categories,
+  stations,
+}: {
+  item: MenuItemAdmin;
+  categories: { id: string; name: string }[];
+  stations: { id: string; name: string }[];
+}) {
+  const t = useT();
+  const category = categories.find((entry) => entry.id === item.categoryId);
+  const station = stations.find((entry) => entry.id === item.stationId);
+  const course = item.course as (typeof COURSES)[number] | null;
+  return (
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <CardShell>
+        <Card className="gap-4">
+          <dl className="grid gap-4">
+            <ReadOnlyRow label={t("menu.editor.fields.name")}>
+              <span className="font-medium">{item.name}</span>
+            </ReadOnlyRow>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <ReadOnlyRow label={t("menu.editor.fields.category")}>
+                {category?.name ?? t("menu.list.noCategory")}
+              </ReadOnlyRow>
+              <ReadOnlyRow label={t("menu.editor.fields.type")}>
+                {t(
+                  item.type === "combo"
+                    ? "menu.editor.type.combo"
+                    : "menu.editor.type.single",
+                )}
+              </ReadOnlyRow>
+            </div>
+            <ReadOnlyRow label={t("menu.editor.fields.description")}>
+              {item.description || "—"}
+            </ReadOnlyRow>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <ReadOnlyRow label={t("menu.editor.fields.station")}>
+                {station?.name ?? t("menu.list.noStation")}
+              </ReadOnlyRow>
+              <ReadOnlyRow label={t("menu.editor.fields.course")}>
+                {course && COURSES.includes(course)
+                  ? t(`menu.editor.course.${course}`)
+                  : (item.course ?? t("menu.editor.course.none"))}
+              </ReadOnlyRow>
+            </div>
+            <ReadOnlyRow label={t("menu.editor.fields.labels")}>
+              {item.labels.length === 0 ? (
+                <span className="text-muted-foreground">—</span>
+              ) : (
+                <span className="flex flex-wrap gap-1">
+                  {item.labels.map((label) => (
+                    <Badge key={label} tone="info">
+                      {label in LABEL_KEYS
+                        ? t(LABEL_KEYS[label as keyof typeof LABEL_KEYS])
+                        : label}
+                    </Badge>
+                  ))}
+                </span>
+              )}
+            </ReadOnlyRow>
+            <ReadOnlyRow label={t("menu.editor.fields.allergens")}>
+              {item.allergens.length === 0 ? (
+                <span className="text-muted-foreground">—</span>
+              ) : (
+                <span className="flex flex-wrap gap-1">
+                  {item.allergens.map((allergen) => (
+                    <Badge key={allergen} tone="neutral">
+                      {allergen in ALLERGEN_KEYS
+                        ? t(
+                            ALLERGEN_KEYS[
+                              allergen as keyof typeof ALLERGEN_KEYS
+                            ],
+                          )
+                        : allergen}
+                    </Badge>
+                  ))}
+                </span>
+              )}
+            </ReadOnlyRow>
+          </dl>
+        </Card>
+      </CardShell>
+
+      <CardShell className="self-start">
+        <Card className="gap-4">
+          <div className="grid gap-1.5">
+            <span className="text-sm font-semibold">
+              {t("menu.editor.fields.photo")}
+            </span>
+            <MediaPlate
+              src={item.mediaUrl}
+              alt={item.name}
+              ratio="thumb"
+              missing="required"
+              className="w-24"
+            />
+          </div>
+          <div className="grid gap-1.5 border-t pt-4">
+            <span className="text-sm font-semibold">
+              {t("menu.editor.fields.active")}
+            </span>
+            <Badge tone={item.isActive ? "success" : "neutral"}>
+              {t(
+                item.isActive
+                  ? "menu.list.status.available"
+                  : "menu.list.status.inactive",
+              )}
+            </Badge>
+          </div>
+        </Card>
+      </CardShell>
     </div>
   );
 }

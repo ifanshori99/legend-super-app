@@ -1,0 +1,231 @@
+// Facility schema, slot availability, queue and unit routes (PRD v1.7 §3 F22;
+// bead legend-nm4f; FAC-02, FAC-06). Paths, params, bodies and queries come
+// from the WS-09 contract (`@starter/shared/facility` defineEndpoint
+// objects), so the API and the web client cannot drift. Mount at
+// `/api/facility`.
+//
+// The tenant comes from the server-minted context, never the request
+// (TEN-02). The facility, area and unit records are outlet-owned and the
+// request names no outlet, so the gate is `requireMenuPermission` (reach to
+// the permission in tenant scope or the union of outlets) and every service
+// re-checks the permission on the concrete record's outlet inside the tenant
+// transaction (TEN-03); RLS hides other outlets.
+//
+// Ticket booking/credentials (legend-bzih), entitlements (legend-fjk5) and
+// cleaning tasks are other beads' routes.
+import { Router, type Request } from "express";
+import type { ScopedTenantContext } from "@starter/shared/core";
+import {
+  createFacilityArea as createFacilityAreaEndpoint,
+  createFacilityUnit as createFacilityUnitEndpoint,
+  getCurrentFacilityQueueEntry as getCurrentFacilityQueueEntryEndpoint,
+  getFacilityAvailability as getFacilityAvailabilityEndpoint,
+  getFacilityConfig as getFacilityConfigEndpoint,
+  getFacilityUnitBoard as getFacilityUnitBoardEndpoint,
+  joinFacilityQueue as joinFacilityQueueEndpoint,
+  leaveFacilityQueue as leaveFacilityQueueEndpoint,
+  updateFacility as updateFacilityEndpoint,
+  updateFacilityArea as updateFacilityAreaEndpoint,
+  updateFacilityUnit as updateFacilityUnitEndpoint,
+} from "@starter/shared/facility";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireMenuPermission,
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import * as config from "../services/facility-config.service.ts";
+import * as queue from "../services/facility-queue.service.ts";
+import * as slots from "../services/facility-slots.service.ts";
+import * as units from "../services/facility-units.service.ts";
+
+/**
+ * Port: the customer profile of the signed-in guest (WS-08 profile bead). The
+ * queue routes act for "the caller", so they need it; until the customer
+ * surface exists the default is fail-closed (403) and nothing is guessed.
+ */
+export type FacilityCustomerResolver = (
+  req: Request,
+  context: ScopedTenantContext,
+) => Promise<string | null>;
+
+let resolveCustomer: FacilityCustomerResolver = async () => null;
+
+/** Wiring point for the customer-profile bead; tests inject a double. */
+export function setFacilityCustomerResolver(
+  resolver: FacilityCustomerResolver | null,
+): void {
+  resolveCustomer = resolver ?? (async () => null);
+}
+
+async function customerOf(
+  req: Request,
+  context: ScopedTenantContext,
+): Promise<string> {
+  const id = await resolveCustomer(req, context);
+  if (!id)
+    throw new HttpError(
+      403,
+      "CUSTOMER_PROFILE_REQUIRED",
+      "Akun ini belum memiliki profil pelanggan.",
+    );
+  return id;
+}
+
+const operate = requireMenuPermission("facility.booth.operate");
+const manage = requireMenuPermission("facility.config.manage");
+
+export const facilityRouter = Router();
+facilityRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+
+// ------------------------------------------------------------ availability
+
+facilityRouter.get("/availability", operate, async (req, res) => {
+  const query = getFacilityAvailabilityEndpoint.query.parse(req.query);
+  res.json({
+    data: await slots.getFacilityAvailability(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  });
+});
+
+// ------------------------------------------------------------------ queue
+
+facilityRouter.post("/queue", operate, jsonBody, async (req, res) => {
+  const input = joinFacilityQueueEndpoint.body.parse(req.body);
+  const context = getScopedTenantContext(req);
+  const entry = await queue.joinFacilityQueue(
+    context,
+    getAuth(req).user.id,
+    await customerOf(req, context),
+    input,
+  );
+  res.status(201).json({ data: entry });
+});
+
+// Fixed path before /queue/:entryId.
+facilityRouter.get("/queue/current", operate, async (req, res) => {
+  const query = getCurrentFacilityQueueEntryEndpoint.query.parse(req.query);
+  const context = getScopedTenantContext(req);
+  res.json({
+    data: await queue.getCurrentFacilityQueueEntry(
+      context,
+      getAuth(req).user.id,
+      await customerOf(req, context),
+      query,
+    ),
+  });
+});
+
+facilityRouter.delete("/queue/:entryId", operate, async (req, res) => {
+  const { entryId } = leaveFacilityQueueEndpoint.params.parse(req.params);
+  const context = getScopedTenantContext(req);
+  await queue.leaveFacilityQueue(
+    context,
+    getAuth(req).user.id,
+    await customerOf(req, context),
+    entryId,
+  );
+  res.status(204).end();
+});
+
+// ------------------------------------------------------------- unit board
+
+facilityRouter.get("/units", operate, async (req, res) => {
+  const query = getFacilityUnitBoardEndpoint.query.parse(req.query);
+  res.json({
+    data: await units.getFacilityUnitBoard(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  });
+});
+
+facilityRouter.patch("/units/:unitId", operate, jsonBody, async (req, res) => {
+  const { unitId } = updateFacilityUnitEndpoint.params.parse(req.params);
+  const input = updateFacilityUnitEndpoint.body.parse(req.body);
+  res.json({
+    data: await units.updateFacilityUnit(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      unitId,
+      input,
+    ),
+  });
+});
+
+// ----------------------------------------------------------- configuration
+
+facilityRouter.get("/config", manage, async (req, res) => {
+  const query = getFacilityConfigEndpoint.query.parse(req.query);
+  res.json({
+    data: await config.getFacilityConfig(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  });
+});
+
+facilityRouter.put(
+  "/facilities/:facilityId",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { facilityId } = updateFacilityEndpoint.params.parse(req.params);
+    const input = updateFacilityEndpoint.body.parse(req.body);
+    res.json({
+      data: await config.updateFacility(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        facilityId,
+        input,
+      ),
+    });
+  },
+);
+
+facilityRouter.post("/areas", manage, jsonBody, async (req, res) => {
+  const input = createFacilityAreaEndpoint.body.parse(req.body);
+  const area = await config.createFacilityArea(
+    getScopedTenantContext(req),
+    getAuth(req).user.id,
+    input,
+  );
+  res
+    .status(201)
+    .location(`/api/facility/areas/${area.id}`)
+    .json({ data: area });
+});
+
+facilityRouter.patch("/areas/:areaId", manage, jsonBody, async (req, res) => {
+  const { areaId } = updateFacilityAreaEndpoint.params.parse(req.params);
+  const input = updateFacilityAreaEndpoint.body.parse(req.body);
+  res.json({
+    data: await config.updateFacilityArea(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      areaId,
+      input,
+    ),
+  });
+});
+
+facilityRouter.post("/units", manage, jsonBody, async (req, res) => {
+  const input = createFacilityUnitEndpoint.body.parse(req.body);
+  const unit = await config.createFacilityUnit(
+    getScopedTenantContext(req),
+    getAuth(req).user.id,
+    input,
+  );
+  res
+    .status(201)
+    .location(`/api/facility/units/${unit.id}`)
+    .json({ data: unit });
+});

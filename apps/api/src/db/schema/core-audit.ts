@@ -1,4 +1,5 @@
 import {
+  foreignKey,
   index,
   jsonb,
   pgTable,
@@ -8,6 +9,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import type { AuditEvent } from "@starter/shared/audit";
+import { outlets } from "./platform-org";
 
 export const auditLogs = pgTable(
   "audit_logs",
@@ -25,6 +27,13 @@ export const auditLogs = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    // legend-bd95: an audit row may only name an outlet of its own tenant.
+    // outlet_id is nullable, so MATCH SIMPLE keeps tenant-wide rows valid.
+    foreignKey({
+      name: "audit_logs_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
     index("audit_logs_retention_idx").on(table.tenantId, table.createdAt),
   ],
 );

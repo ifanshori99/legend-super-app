@@ -32,3 +32,9 @@ export * from "./payment-admin";
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
 export * from "./crm-promo";
+export * from "./reservation";
+export * from "./facility";
+export * from "./hris";
+// WS-01 text overrides + consents (legend-cv3).
+export * from "./text-overrides";
+export * from "./consents";

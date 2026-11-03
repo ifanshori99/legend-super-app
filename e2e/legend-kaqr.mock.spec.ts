@@ -5,12 +5,7 @@ import { expect, test } from "@playwright/test";
 // @starter/shared/facility fixtures through VITE_API_MOCK=true, the way the
 // bead was built (docs/frontend.md, "Typed endpoints and mock mode").
 //
-// How to run: `pnpm test:e2e:mock` (bead legend-n2sp) starts a VITE_API_MOCK
-// web server and names it in `LEGEND_MOCK_WEB_URL`. Before that runner is
-// merged, start one yourself and pass the same variable:
-//
-//   VITE_API_MOCK=true WEB_URL=http://localhost:3210 pnpm --filter @starter/web dev
-//   LEGEND_MOCK_WEB_URL=http://localhost:3210 pnpm exec playwright test e2e/legend-kaqr.mock.spec.ts
+// Run: pnpm test:e2e:mock e2e/legend-kaqr.mock.spec.ts — mock mode only, no API and no DB.
 //
 // With none of the variables set every test skips, so the production-build
 // runner stays green (the real API wiring is bead legend-x1yh).

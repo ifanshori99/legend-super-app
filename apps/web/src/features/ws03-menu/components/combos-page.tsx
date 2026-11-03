@@ -55,6 +55,7 @@ import {
   priceByItem,
   totalAllocationBp,
 } from "../lib";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 
 type Editor = { mode: "new" } | { mode: "edit"; combo: Combo };
@@ -103,6 +104,9 @@ function ComboActions({
 export function CombosPage() {
   const t = useT();
   const toast = useToast();
+  // The combo API routes authorize with menu.item.manage (no menu.combo.manage
+  // in the catalog), so content management is the matching gate.
+  const { canManageItems } = useMenuWrites();
   const combosQuery = useCombos({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const priceListsQuery = usePriceLists({ limit: 100 });
@@ -160,17 +164,19 @@ export function CombosPage() {
                 : "ready"
         }
         actions={
-          <Button
-            type="button"
-            onClick={() => {
-              setError(undefined);
-              setEditor({ mode: "new" });
-            }}
-            disabled={comboItems.length === 0}
-          >
-            <Plus aria-hidden="true" />
-            {t("menu.combos.add")}
-          </Button>
+          canManageItems ? (
+            <Button
+              type="button"
+              onClick={() => {
+                setError(undefined);
+                setEditor({ mode: "new" });
+              }}
+              disabled={comboItems.length === 0}
+            >
+              <Plus aria-hidden="true" />
+              {t("menu.combos.add")}
+            </Button>
+          ) : undefined
         }
         onRetry={() => {
           void combosQuery.refetch();
@@ -194,9 +200,11 @@ export function CombosPage() {
                   {t("menu.combos.columns.components")}
                 </TableHead>
                 <TableHead numeric>{t("menu.combos.columns.price")}</TableHead>
-                <TableHead numeric>
-                  {t("menu.combos.columns.actions")}
-                </TableHead>
+                {canManageItems && (
+                  <TableHead numeric>
+                    {t("menu.combos.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -235,16 +243,18 @@ export function CombosPage() {
                         <Money amount={price} size="sm" />
                       )}
                     </TableCell>
-                    <TableCell numeric>
-                      <ComboActions
-                        name={item?.name ?? ""}
-                        onEdit={() => {
-                          setError(undefined);
-                          setEditor({ mode: "edit", combo });
-                        }}
-                        onDelete={() => setDeleting(combo)}
-                      />
-                    </TableCell>
+                    {canManageItems && (
+                      <TableCell numeric>
+                        <ComboActions
+                          name={item?.name ?? ""}
+                          onEdit={() => {
+                            setError(undefined);
+                            setEditor({ mode: "edit", combo });
+                          }}
+                          onDelete={() => setDeleting(combo)}
+                        />
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -288,21 +298,23 @@ export function CombosPage() {
                     })}
                   </Badge>
                 </div>
-                <ComboActions
-                  name={item?.name ?? ""}
-                  onEdit={() => {
-                    setError(undefined);
-                    setEditor({ mode: "edit", combo });
-                  }}
-                  onDelete={() => setDeleting(combo)}
-                />
+                {canManageItems && (
+                  <ComboActions
+                    name={item?.name ?? ""}
+                    onEdit={() => {
+                      setError(undefined);
+                      setEditor({ mode: "edit", combo });
+                    }}
+                    onDelete={() => setDeleting(combo)}
+                  />
+                )}
               </li>
             );
           })}
         </ul>
       </DataTableShell>
 
-      {editor && (
+      {canManageItems && editor && (
         <ComboEditor
           editor={editor}
           items={items}
@@ -345,7 +357,7 @@ export function CombosPage() {
       )}
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.combos.deleteTitle", {
           name: itemsById.get(deleting?.comboItemId ?? "")?.name ?? "",

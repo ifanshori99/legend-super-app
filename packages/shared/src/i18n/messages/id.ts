@@ -5,8 +5,18 @@
 // Add keys here instead of writing UI text in components. Placeholders use
 // {name} and are filled by the translator.
 
+import { auditSettingsMessages } from "./audit-settings.ts";
+import { ownerInsightsMessages } from "./owner-insights.ts";
+import { reportBuilderMessages } from "./report-builder.ts";
+import { reportViewerMessages } from "./report-viewer.ts";
+import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
+import { accountingApMessages } from "./accounting-ap.ts";
+import { accountingCashMessages } from "./accounting-cash.ts";
+import { accountingReportMessages } from "./accounting-report.ts";
+import { accountingShareMessages } from "./accounting-share.ts";
+import { accountingTaxMessages } from "./accounting-tax.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
@@ -15,6 +25,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { promoMessages } from "./promo.ts";
 import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
@@ -28,6 +39,14 @@ import { supportAccessMessages } from "./ws01-support-access.ts";
 import { deviceRegistryMessages } from "./ws02-devices.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
+import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
+import { employeeMasterMessages } from "./ws10-employee-master.ts";
+import { learningMessages } from "./ws10-learning.ts";
+import { lifecycleMessages } from "./ws10-lifecycle.ts";
+import { payrollConfigMessages } from "./ws10-payroll-config.ts";
+import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payslipMessages } from "./ws10-payslip.ts";
+import { rosterMessages } from "./ws10-roster.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -35,6 +54,11 @@ export const id = {
   login: loginMessages,
   // Owner dashboard (PRD §3 F34), part 1 (legend-k8fk).
   ownerDashboard: ownerDashboardMessages,
+  auditSettings: auditSettingsMessages,
+  ownerInsights: ownerInsightsMessages,
+  reportBuilder: reportBuilderMessages,
+  reportViewer: reportViewerMessages,
+  shareholderHome: shareholderHomeMessages,
   // QR order journey (PRD §3 F10), one file per part so parallel beads never
   // edit the same lines: qrMenu + qrCart (legend-2m4/8sh), qrOrders
   // (legend-woz), qrRecovery (legend-tz1).
@@ -72,8 +96,31 @@ export const id = {
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
+  // Promo engine admin (PRD §3.21), own file (legend-oadp).
+  promo: promoMessages,
   // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
-  accounting: accountingMessages,
+  accounting: {
+    ...accountingMessages,
+    // WS-07 sibling screens, one catalog file per bead so the five parallel
+    // beads never edit the same object: cash & bank (legend-53q), tax
+    // (legend-5fdy), payables/assets/budgets (legend-m4zn), statements &
+    // period close (legend-rx0h), profit share (legend-ogx3).
+    cash: accountingCashMessages,
+    tax: accountingTaxMessages,
+    ap: accountingApMessages,
+    report: accountingReportMessages,
+    share: accountingShareMessages,
+  },
+  // WS-10 HRIS screens (PRD §3 F26-F32): one file per bead so the parallel
+  // squad never edits the same catalog lines.
+  employeeMaster: employeeMasterMessages,
+  attendanceQr: attendanceQrMessages,
+  roster: rosterMessages,
+  lifecycle: lifecycleMessages,
+  payrollConfig: payrollConfigMessages,
+  payrollRun: payrollRunMessages,
+  payslip: payslipMessages,
+  learning: learningMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
@@ -802,6 +849,7 @@ export const id = {
       accounting: "Akuntansi",
       crm: "CRM",
       loyalty: "Loyalty",
+      promo: "Promo",
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",

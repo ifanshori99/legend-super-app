@@ -20,8 +20,10 @@ import {
   evaluatePromotions as evaluatePromotionsEndpoint,
   getPromotionRoi as getPromotionRoiEndpoint,
   issueVoucher as issueVoucherEndpoint,
+  listPromotionOutlets as listPromotionOutletsEndpoint,
   listPromotions as listPromotionsEndpoint,
   listVouchers as listVouchersEndpoint,
+  setPromotionOutlet as setPromotionOutletEndpoint,
   updatePromoStackingPolicy as updatePromoStackingPolicyEndpoint,
   updatePromotion as updatePromotionEndpoint,
   validateVoucher as validateVoucherEndpoint,
@@ -36,6 +38,7 @@ import {
 } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import * as promo from "../services/crm-promo.service";
+import * as promoOutlets from "../services/crm-promo-outlets.service";
 
 const manage = requireTenantPermission("promo.manage");
 const outletOf = (req: Request) => String(req.query.outletId ?? "");
@@ -126,6 +129,42 @@ promotionsRouter.get("/:promotionId/roi", manage, async (req, res) => {
     ),
   });
 });
+
+// Per-outlet switch (legend-e5it): list = tenant-wide promo.manage; set =
+// promo.manage on the outlet in the path (TEN-03).
+promotionsRouter.get("/:promotionId/outlets", manage, async (req, res) => {
+  const { promotionId } = listPromotionOutletsEndpoint.params.parse(req.params);
+  res.json({
+    data: await promoOutlets.listPromotionOutlets(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      promotionId,
+    ),
+  });
+});
+
+promotionsRouter.put(
+  "/:promotionId/outlets/:outletId",
+  requireOutletPermission("promo.manage", (req) =>
+    String(req.params.outletId ?? ""),
+  ),
+  jsonBody,
+  async (req, res) => {
+    const { promotionId, outletId } = setPromotionOutletEndpoint.params.parse(
+      req.params,
+    );
+    const input = setPromotionOutletEndpoint.body.parse(req.body);
+    res.json({
+      data: await promoOutlets.setPromotionOutlet(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        promotionId,
+        outletId,
+        input,
+      ),
+    });
+  },
+);
 
 // --------------------------------------------------------------- vouchers
 
