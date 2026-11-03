@@ -1,0 +1,1044 @@
+// Shared plumbing of the POS order service (bead legend-kk7): row loading and
+// locking, optimistic concurrency, the request-bound idempotency ledger, the
+// §6 order_events log, the transactional outbox (POS contract events only),
+// audit, approval verification, repricing and the contract DTOs.
+//
+// Lock order (every POS mutation, same as the promo engine, docs/backend.md
+// "Promo engine lock order"): idempotency advisory lock -> table live-state
+// lock (orders on a table session) -> `orders` row FOR UPDATE -> `pos_orders`
+// row FOR UPDATE -> child rows. Two cashiers on one order therefore serialize
+// on the order row; the loser re-reads the committed state and fails the
+// stale-screen guard (expectedStatus) or the version guard (If-Match) with
+// PRECONDITION_FAILED (legend-63l6).
+
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { maskAuditChanges } from "@starter/shared/audit";
+import {
+  assertOutletInScope,
+  businessDateOf,
+  CoreError,
+  createUlid,
+  idr,
+  toIsoDateTime,
+  ulidToUuid,
+  uuidSchema,
+  uuidToUlid,
+  type OutletId,
+  type ScopedTenantContext,
+  type UserId,
+} from "@starter/shared/core";
+import {
+  PosError,
+  posEvents,
+  posOrderDetailSchema,
+  posOrderSummarySchema,
+  type PosEventName,
+  type PosOrderDetail,
+  type PosOrderStatus,
+  type PosOrderSummary,
+  type PosTender,
+} from "@starter/shared/pos";
+import {
+  domainEventOutbox,
+  floorZones,
+  menuItems,
+  outlets,
+  posOverrides,
+  tableSessions,
+  tables,
+} from "../db/schema/index.ts";
+import {
+  orderEvents,
+  posOrderApprovalUses,
+  posOrderDiscounts,
+  posOrderIdempotency,
+  posOrderItems,
+  posOrders,
+  posOrderTenders,
+} from "../db/schema/pos-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
+import type { Tx } from "./menu-internals.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
+import {
+  computePosBill,
+  lineSubtotalIdr,
+  loadPosTaxConfig,
+  posPriceChannel,
+  type PosBillLine,
+} from "./pos-order-pricing.ts";
+import { posReceiptPort } from "./pos-order-ports.ts";
+import { depositCreditFor } from "./qr-order-ports.ts";
+
+export type OrderRow = typeof orders.$inferSelect;
+export type OrderItemRow = typeof orderItems.$inferSelect;
+export type PosRow = typeof posOrders.$inferSelect;
+export type PosItemRow = typeof posOrderItems.$inferSelect;
+export type TenderRow = typeof posOrderTenders.$inferSelect;
+export type DiscountRow = typeof posOrderDiscounts.$inferSelect;
+export type OutletRow = typeof outlets.$inferSelect;
+export type ZoneRow = typeof floorZones.$inferSelect;
+export type Locked = { order: OrderRow; pos: PosRow };
+
+/** Who is acting: the verified session user and (once WS-02 lands) device. */
+export type PosCaller = {
+  readonly userId: UserId;
+  readonly deviceId: string | null;
+  /** `If-Match` order version (legend-63l6); null when the client sent none. */
+  readonly expectedVersion: number | null;
+};
+
+const EVENT_DESTINATION = "cloud-sync";
+const AUDIT_SAFE_FIELDS = [
+  "id",
+  "number",
+  "status",
+  "channel",
+  "serviceType",
+  "totalIdr",
+  "amountIdr",
+  "itemCount",
+  "itemIds",
+  "course",
+  "method",
+  "source",
+  "kind",
+  "percentBp",
+  "reason",
+  "approvedBy",
+  "approvalRequestId",
+  "receiptNumber",
+  "version",
+] as const;
+
+export function notFound(message = "Pesanan tidak ditemukan."): CoreError {
+  return new CoreError("NOT_FOUND", message);
+}
+
+export function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+// ---- Outlet, session, business date ---------------------------------------
+
+export async function loadOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<OutletRow> {
+  assertOutletInScope(context.outletScope, outletId);
+  const [row] = await tx
+    .select()
+    .from(outlets)
+    .where(
+      and(
+        eq(outlets.tenantId, context.tenant.tenantId),
+        eq(outlets.id, outletId),
+      ),
+    );
+  if (!row) throw notFound("Outlet tidak ditemukan.");
+  return row;
+}
+
+export function businessDateFor(outlet: OutletRow, now: Date): string {
+  return businessDateOf(now, outletBusinessDayClock(outlet));
+}
+
+/** The zone of a dine-in order's table session, for its service charge. */
+export async function zoneOfSession(
+  tx: Tx,
+  context: ScopedTenantContext,
+  tableSessionId: string,
+): Promise<ZoneRow | null> {
+  const tenantId = context.tenant.tenantId;
+  const [row] = await tx
+    .select({ zone: floorZones })
+    .from(tableSessions)
+    .innerJoin(
+      tables,
+      and(
+        eq(tables.tenantId, tableSessions.tenantId),
+        eq(tables.id, tableSessions.tableId),
+      ),
+    )
+    .innerJoin(
+      floorZones,
+      and(
+        eq(floorZones.tenantId, tables.tenantId),
+        eq(floorZones.id, tables.zoneId),
+      ),
+    )
+    .where(
+      and(
+        eq(tableSessions.tenantId, tenantId),
+        eq(tableSessions.id, tableSessionId),
+      ),
+    );
+  return row?.zone ?? null;
+}
+
+// ---- Loading and locking ----------------------------------------------------
+
+/**
+ * The order and its POS row, locked FOR UPDATE in the lock order above. An
+ * order of another outlet, another tenant (RLS) or another channel's API (no
+ * pos_orders row, e.g. a QR order) is 404, so the route is no oracle.
+ */
+export async function lockPosOrder(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  orderId: string,
+): Promise<Locked> {
+  assertOutletInScope(context.outletScope, outletId);
+  const tenantId = context.tenant.tenantId;
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.id, orderId),
+        eq(orders.outletId, outletId),
+      ),
+    )
+    .for("update");
+  if (!order) throw notFound();
+  const [pos] = await tx
+    .select()
+    .from(posOrders)
+    .where(
+      and(eq(posOrders.tenantId, tenantId), eq(posOrders.orderId, orderId)),
+    )
+    .for("update");
+  if (!pos) throw notFound();
+  return { order, pos };
+}
+
+export async function readPosOrder(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  orderId: string,
+): Promise<Locked> {
+  assertOutletInScope(context.outletScope, outletId);
+  const tenantId = context.tenant.tenantId;
+  const [row] = await tx
+    .select({ order: orders, pos: posOrders })
+    .from(orders)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, orders.tenantId),
+        eq(posOrders.orderId, orders.id),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.id, orderId),
+        eq(orders.outletId, outletId),
+      ),
+    );
+  if (!row) throw notFound();
+  return row;
+}
+
+export async function itemsOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<Array<{ item: OrderItemRow; pos: PosItemRow | null }>> {
+  const rows = await tx
+    .select({ item: orderItems, pos: posOrderItems })
+    .from(orderItems)
+    .leftJoin(
+      posOrderItems,
+      and(
+        eq(posOrderItems.tenantId, orderItems.tenantId),
+        eq(posOrderItems.itemId, orderItems.id),
+      ),
+    )
+    .where(
+      and(
+        eq(orderItems.tenantId, context.tenant.tenantId),
+        eq(orderItems.orderId, orderId),
+      ),
+    )
+    .orderBy(asc(orderItems.id));
+  return rows;
+}
+
+export async function tendersOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<TenderRow[]> {
+  return tx
+    .select()
+    .from(posOrderTenders)
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, context.tenant.tenantId),
+        eq(posOrderTenders.orderId, orderId),
+      ),
+    )
+    .orderBy(asc(posOrderTenders.requestedAt), asc(posOrderTenders.id));
+}
+
+export async function liveDiscountsOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<DiscountRow[]> {
+  return tx
+    .select()
+    .from(posOrderDiscounts)
+    .where(
+      and(
+        eq(posOrderDiscounts.tenantId, context.tenant.tenantId),
+        eq(posOrderDiscounts.orderId, orderId),
+        isNull(posOrderDiscounts.removedAt),
+      ),
+    )
+    .orderBy(asc(posOrderDiscounts.createdAt), asc(posOrderDiscounts.id));
+}
+
+export function capturedIdr(tenders: readonly TenderRow[]): number {
+  return tenders
+    .filter((tender) => tender.status === "captured")
+    .reduce((sum, tender) => sum + tender.amountIdr, 0);
+}
+
+/** What is still due: total − reservation deposit − captured tenders. */
+export function remainingIdr(
+  order: OrderRow,
+  tenders: readonly TenderRow[],
+): number {
+  return Math.max(
+    0,
+    order.totalIdr - order.depositAppliedIdr - capturedIdr(tenders),
+  );
+}
+
+// ---- Guards -----------------------------------------------------------------
+
+/** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */
+export function assertExpectedStatus(
+  order: OrderRow,
+  expected: PosOrderStatus,
+): void {
+  if (order.status !== expected)
+    throw new CoreError(
+      "PRECONDITION_FAILED",
+      "Pesanan sudah diubah di perangkat lain; muat ulang pesanan.",
+    );
+}
+
+/** Optimistic concurrency on the order version (legend-63l6). */
+export function assertExpectedVersion(
+  pos: PosRow,
+  expected: number | null,
+): void {
+  if (expected !== null && pos.version !== expected)
+    throw new CoreError(
+      "PRECONDITION_FAILED",
+      "Pesanan sudah diubah di perangkat lain; muat ulang pesanan.",
+    );
+}
+
+/** POS-04 service guard; the DB trigger is the backstop. */
+export function assertMutable(order: OrderRow): void {
+  if (order.status === "completed" || order.status === "voided")
+    throw new PosError("ORDER_FINAL_IMMUTABLE");
+}
+
+/** Bumps the version under the row lock (compare-and-set as a backstop). */
+export async function bumpPos(
+  tx: Tx,
+  context: ScopedTenantContext,
+  pos: PosRow,
+  now: Date,
+  patch: Partial<
+    Pick<
+      PosRow,
+      | "shiftId"
+      | "deviceId"
+      | "cashierId"
+      | "submittedAt"
+      | "completedAt"
+      | "voidReasonNote"
+      | "voidApprovedBy"
+      | "voidApprovalRequestId"
+    >
+  > = {},
+): Promise<PosRow> {
+  const [row] = await tx
+    .update(posOrders)
+    .set({ ...patch, version: pos.version + 1, updatedAt: now })
+    .where(
+      and(
+        eq(posOrders.tenantId, context.tenant.tenantId),
+        eq(posOrders.orderId, pos.orderId),
+        eq(posOrders.version, pos.version),
+      ),
+    )
+    .returning();
+  if (!row)
+    throw new CoreError(
+      "PRECONDITION_FAILED",
+      "Pesanan sudah diubah di perangkat lain; muat ulang pesanan.",
+    );
+  return row;
+}
+
+// ---- Idempotency --------------------------------------------------------------
+
+/**
+ * Runs `run` once per (outlet, key). The key is bound to the fingerprint of
+ * actor, operation, target and request: the same request replays the stored
+ * answer, any other request under the key is IDEMPOTENCY_KEY_REUSED. Requests
+ * with one key serialize on an advisory lock first. A failed `run` rolls the
+ * transaction back and stores nothing, so a retry recomputes.
+ */
+export async function posIdempotent<T>(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: string;
+    actorId: string;
+    key: string;
+    operation: string;
+    target: string;
+    request: unknown;
+  },
+  run: () => Promise<T>,
+): Promise<T> {
+  const tenantId = context.tenant.tenantId;
+  const fingerprint = sha256(
+    JSON.stringify({
+      actor: input.actorId.toLowerCase(),
+      operation: input.operation,
+      target: input.target,
+      request: input.request,
+    }),
+  );
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-order-idem:${tenantId}:${input.outletId}:${input.key}`}, 0))`,
+  );
+  const [existing] = await tx
+    .select()
+    .from(posOrderIdempotency)
+    .where(
+      and(
+        eq(posOrderIdempotency.tenantId, tenantId),
+        eq(posOrderIdempotency.outletId, input.outletId),
+        eq(posOrderIdempotency.key, input.key),
+      ),
+    );
+  if (existing) {
+    if (existing.fingerprint !== fingerprint)
+      throw new CoreError(
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempoten ini sudah dipakai untuk permintaan lain.",
+      );
+    return existing.response as T;
+  }
+  const response = await run();
+  await tx.insert(posOrderIdempotency).values({
+    tenantId,
+    outletId: input.outletId as OutletId,
+    key: input.key,
+    operation: input.operation,
+    fingerprint,
+    response,
+  });
+  return response;
+}
+
+// ---- order_events, outbox, audit -------------------------------------------
+
+/**
+ * §6 order_events: one append per state change. The order row is locked by
+ * the caller, so max(sequence) + 1 is gapless and race-free per order.
+ */
+export async function appendOrderEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: Pick<OrderRow, "id" | "outletId">;
+    type: string;
+    payload: Record<string, unknown>;
+    caller: Pick<PosCaller, "userId" | "deviceId"> | null;
+    now: Date;
+  },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const [row] = await tx
+    .select({ last: sql<number>`coalesce(max(${orderEvents.sequence}), 0)` })
+    .from(orderEvents)
+    .where(
+      and(
+        eq(orderEvents.tenantId, tenantId),
+        eq(orderEvents.orderId, input.order.id),
+      ),
+    );
+  await tx.insert(orderEvents).values({
+    id: createUlid(input.now.getTime()),
+    tenantId,
+    outletId: input.order.outletId,
+    orderId: input.order.id,
+    sequence: Number(row?.last ?? 0) + 1,
+    type: input.type,
+    payload: input.payload,
+    actorId: input.caller?.userId ?? null,
+    deviceId: input.caller?.deviceId ?? null,
+    occurredAt: input.now,
+  });
+}
+
+/**
+ * One POS contract event (pos/events.ts) on the transactional outbox, in the
+ * caller's transaction. The definition validates name, version and payload.
+ */
+export async function appendPosEvent(
+  tx: Tx,
+  context: ScopedTenantContext,
+  name: PosEventName,
+  input: {
+    order: Pick<OrderRow, "id" | "outletId">;
+    payload: Record<string, unknown>;
+    caller: Pick<PosCaller, "userId" | "deviceId"> | null;
+    now: Date;
+  },
+): Promise<void> {
+  const definition = posEvents[name];
+  const aggregateType = definition.entry.aggregateType;
+  const aggregateUuid = ulidToUuid(input.order.id);
+  const [row] = await tx
+    .select({
+      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, context.tenant.tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateType, aggregateType),
+        eq(domainEventOutbox.aggregateId, aggregateUuid),
+      ),
+    );
+  const sequence = Number(row?.last ?? 0) + 1;
+  const event = definition.envelopeSchema.parse({
+    id: createUlid(input.now.getTime()),
+    tenantId: context.tenant.tenantId,
+    outletId: input.order.outletId,
+    name: definition.name,
+    version: definition.version,
+    aggregateType,
+    aggregateId: input.order.id,
+    sequence,
+    occurredAt: toIsoDateTime(input.now),
+    actor:
+      input.caller === null
+        ? { type: "system" }
+        : { type: "user", id: input.caller.userId },
+    deviceId: input.caller?.deviceId ?? null,
+    idempotencyKey: `${definition.name}:${input.order.id}:${sequence}`.slice(
+      0,
+      100,
+    ),
+    payloadSchemaRef: definition.payloadSchemaRef,
+    payload: input.payload,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(input.now.getTime()),
+    event,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+}
+
+export async function auditPos(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    action: string;
+    order: Pick<OrderRow, "id" | "outletId">;
+    caller: Pick<PosCaller, "userId" | "deviceId"> | null;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+    reason?: string | null;
+    objectType?: string;
+    objectId?: string;
+  },
+  now: Date,
+): Promise<void> {
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: input.order.outletId,
+      actorType: input.caller === null ? "system" : "user",
+      actorId: input.caller?.userId ?? null,
+      deviceId: input.caller?.deviceId ?? null,
+      action: input.action,
+      objectType: input.objectType ?? "order",
+      objectId: input.objectId ?? input.order.id,
+      reason: input.reason ?? null,
+      maskedChanges: {
+        before:
+          input.before === null
+            ? null
+            : maskAuditChanges(input.before, AUDIT_SAFE_FIELDS),
+        after:
+          input.after === null
+            ? null
+            : maskAuditChanges(input.after, AUDIT_SAFE_FIELDS),
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: toIsoDateTime(now),
+    },
+    AUDIT_SAFE_FIELDS,
+  );
+}
+
+// ---- Approvals (POS-02, AUTH-06) ------------------------------------------------
+
+export type ApprovalPurpose =
+  "order_void" | "item_void" | "discount" | "correction_void" | "refund";
+
+const APPROVAL_ERROR = {
+  void: "VOID_APPROVAL_REQUIRED",
+  discount: "DISCOUNT_APPROVAL_REQUIRED",
+  refund: "REFUND_APPROVAL_REQUIRED",
+} as const;
+
+/**
+ * Verifies the supervisor approval a void / discount / refund names and
+ * consumes it (one approval, one action). `approvalRequestId` is either the
+ * `pos_overrides` row id (UUID form of its ULID; supervisor PIN) or the WS-01
+ * approval chain id of a phone approval. The override must be approved, on
+ * this outlet, for this action and object, requested by the caller, approved
+ * by `approvedBy` (never the requester, AUTH-06) and worth at least the value
+ * acted on. Anything else is the contract's *_APPROVAL_REQUIRED (fail closed).
+ */
+export async function consumeApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    action: "void" | "discount" | "refund";
+    purpose: ApprovalPurpose;
+    outletId: string;
+    orderId: string;
+    objectType: "order" | "order_item";
+    objectId: string;
+    requesterId: string;
+    approvedBy: string;
+    approvalRequestId: string;
+    minValueIdr: number;
+  },
+): Promise<void> {
+  const refuse = () => new PosError(APPROVAL_ERROR[input.action]);
+  const requestId = uuidSchema.safeParse(input.approvalRequestId);
+  if (!requestId.success) throw refuse();
+  if (input.approvedBy.toLowerCase() === input.requesterId.toLowerCase())
+    throw refuse();
+  let overrideIdFromRequest: string | null = null;
+  try {
+    overrideIdFromRequest = uuidToUlid(requestId.data);
+  } catch {
+    overrideIdFromRequest = null;
+  }
+  const tenantId = context.tenant.tenantId;
+  const candidates = await tx
+    .select()
+    .from(posOverrides)
+    .where(
+      and(
+        eq(posOverrides.tenantId, tenantId),
+        eq(posOverrides.outletId, input.outletId),
+        eq(posOverrides.status, "approved"),
+        eq(posOverrides.action, input.action),
+        eq(posOverrides.objectType, input.objectType),
+        sql`lower(${posOverrides.objectId}) = ${input.objectId.toLowerCase()}`,
+        sql`lower(${posOverrides.requestedBy}) = ${input.requesterId.toLowerCase()}`,
+      ),
+    )
+    .orderBy(desc(posOverrides.createdAt))
+    .for("update");
+  // 1. The named approval: phone chain id, or the override id itself.
+  // 2. Decision (contract gap: a PIN override has no approval request and its
+  //    ULID id rarely parses as an RFC UUID): the newest unused PIN override
+  //    for exactly this action, object, requester and approver, at most
+  //    PIN_APPROVAL_WINDOW_MS old. Single use is enforced below either way.
+  const used = new Set(
+    (
+      await tx
+        .select({ overrideId: posOrderApprovalUses.overrideId })
+        .from(posOrderApprovalUses)
+        .where(eq(posOrderApprovalUses.tenantId, tenantId))
+    ).map((row) => row.overrideId),
+  );
+  const fresh = Date.now() - PIN_APPROVAL_WINDOW_MS;
+  const override =
+    candidates.find(
+      (row) =>
+        row.approvalRequestId === requestId.data ||
+        (overrideIdFromRequest !== null && row.id === overrideIdFromRequest),
+    ) ??
+    candidates.find(
+      (row) =>
+        row.method === "supervisor_pin" &&
+        !used.has(row.id) &&
+        row.createdAt.getTime() >= fresh &&
+        row.approvedBy?.toLowerCase() === input.approvedBy.toLowerCase(),
+    );
+  if (
+    !override ||
+    override.approvedBy === null ||
+    override.approvedBy.toLowerCase() !== input.approvedBy.toLowerCase() ||
+    override.requestedBy.toLowerCase() !== input.requesterId.toLowerCase() ||
+    override.approvedBy.toLowerCase() === override.requestedBy.toLowerCase() ||
+    override.objectType !== input.objectType ||
+    override.objectId.toLowerCase() !== input.objectId.toLowerCase() ||
+    override.valueIdr < input.minValueIdr
+  )
+    throw refuse();
+  const consumed = await tx
+    .insert(posOrderApprovalUses)
+    .values({
+      tenantId,
+      outletId: input.outletId as OutletId,
+      overrideId: override.id,
+      orderId: input.orderId,
+      purpose: input.purpose,
+    })
+    .onConflictDoNothing()
+    .returning({ id: posOrderApprovalUses.id });
+  if (consumed.length === 0) throw refuse();
+}
+
+/** PRD silent: a supervisor PIN approval is used within 15 minutes. */
+const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
+
+// ---- Repricing ------------------------------------------------------------------
+
+async function categoriesOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  menuItemIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (menuItemIds.length === 0) return new Map();
+  const rows = await tx
+    .select({ id: menuItems.id, categoryId: menuItems.categoryId })
+    .from(menuItems)
+    .where(
+      and(
+        eq(menuItems.tenantId, context.tenant.tenantId),
+        inArray(menuItems.id, [...new Set(menuItemIds)]),
+      ),
+    );
+  return new Map(rows.map((row) => [row.id, row.categoryId]));
+}
+
+/**
+ * The reservation deposit (WS-08 `depositCreditForSession`, through the QR
+ * port so one wiring serves both bills) this order may use: the session's
+ * credit minus what its other live orders already applied, never above the
+ * order total (same rule as the QR checkout).
+ */
+async function depositFor(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<OrderRow, "id" | "tableSessionId">,
+  totalIdr: number,
+): Promise<number> {
+  if (order.tableSessionId === null || totalIdr <= 0) return 0;
+  const tenantId = context.tenant.tenantId;
+  const credit = await depositCreditFor(tx, tenantId, order.tableSessionId);
+  if (credit <= 0) return 0;
+  const [used] = await tx
+    .select({
+      used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
+    })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.tableSessionId, order.tableSessionId),
+        ne(orders.status, "voided"),
+        ne(orders.id, order.id),
+      ),
+    );
+  return Math.min(Math.max(0, credit - Number(used?.used ?? 0)), totalIdr);
+}
+
+/**
+ * Recomputes the order's money from its lines and live discount rows on the
+ * server (percent discounts follow the new subtotal; promo/voucher amounts are
+ * what the engine redeemed), then the deposit, and writes the order row. With
+ * `allLines` the voided lines count too: the frozen history of a voided order
+ * (contract posOrderDetailSchema).
+ */
+export async function repriceOrder(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: OrderRow;
+    outlet: OutletRow;
+    now: Date;
+    allLines?: boolean;
+    releaseDeposit?: boolean;
+  },
+): Promise<OrderRow> {
+  const { order } = input;
+  const items = (await itemsOf(tx, context, order.id)).map((row) => row.item);
+  const counted = input.allLines
+    ? items
+    : items.filter((item) => item.status !== "voided");
+  const categories = await categoriesOf(
+    tx,
+    context,
+    counted.map((item) => item.menuItemId),
+  );
+  const lines: PosBillLine[] = counted.map((item) => {
+    const categoryId = categories.get(item.menuItemId);
+    if (!categoryId) throw new Error("Order line without a menu category");
+    return {
+      lineId: item.id,
+      menuItemId: item.menuItemId,
+      categoryId,
+      quantity: item.quantity,
+      unitPriceIdr: item.unitPriceIdr,
+      modifiersTotalIdr: item.modifiersTotalIdr,
+    };
+  });
+  const subtotal = lines.reduce((sum, line) => sum + lineSubtotalIdr(line), 0);
+  const discounts = await liveDiscountsOf(tx, context, order.id);
+  let discountTotal = 0;
+  for (const row of discounts) {
+    let amount = row.amountIdr;
+    if (row.kind === "percent" && row.percentBp !== null) {
+      amount = Math.floor((subtotal * row.percentBp) / 10_000);
+      if (amount <= 0) throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
+      if (amount !== row.amountIdr)
+        await tx
+          .update(posOrderDiscounts)
+          .set({ amountIdr: idr(amount), updatedAt: input.now })
+          .where(
+            and(
+              eq(posOrderDiscounts.tenantId, context.tenant.tenantId),
+              eq(posOrderDiscounts.id, row.id),
+            ),
+          );
+    }
+    discountTotal += amount;
+  }
+  if (discountTotal > subtotal) throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
+  const zone =
+    order.tableSessionId !== null && order.serviceType === "dine_in"
+      ? await zoneOfSession(tx, context, order.tableSessionId)
+      : null;
+  const bill = computePosBill({
+    context,
+    outletId: order.outletId as OutletId,
+    businessDate: order.businessDate,
+    channel: posPriceChannel(
+      order.channel as Parameters<typeof posPriceChannel>[0],
+      order.serviceType as Parameters<typeof posPriceChannel>[1],
+    ),
+    zone,
+    lines,
+    orderDiscountIdr: discountTotal,
+    taxConfig: await loadPosTaxConfig(tx, context, order.outletId),
+  });
+  if (bill.discountIdr !== discountTotal)
+    throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
+  const deposit = input.releaseDeposit
+    ? 0
+    : await depositFor(tx, context, order, bill.totalIdr);
+  const [updated] = await tx
+    .update(orders)
+    .set({
+      subtotalIdr: bill.subtotalIdr,
+      discountIdr: bill.discountIdr,
+      serviceChargeIdr: bill.serviceChargeIdr,
+      taxIdr: bill.taxIdr,
+      roundingIdr: bill.roundingIdr,
+      totalIdr: bill.totalIdr,
+      depositAppliedIdr: idr(deposit),
+      taxResult: bill.tax,
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(orders.tenantId, context.tenant.tenantId),
+        eq(orders.id, order.id),
+      ),
+    )
+    .returning();
+  if (!updated) throw new Error("Order reprice returned no row");
+  return updated;
+}
+
+export { depositFor as posDepositFor };
+
+// ---- DTOs -----------------------------------------------------------------------
+
+function iso(value: Date | null): string | null {
+  return value === null ? null : value.toISOString();
+}
+
+export function tenderDto(row: TenderRow): PosTender {
+  return {
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    orderId: row.orderId,
+    method: row.method,
+    provider: row.provider,
+    paymentIntentId: row.paymentIntentId,
+    amountIdr: row.amountIdr,
+    receivedIdr: row.receivedIdr,
+    changeIdr: row.changeIdr,
+    reference: row.reference,
+    edcTransactionId: row.edcTransactionId,
+    pointsUsed: row.pointsUsed,
+    status: row.status,
+    requestedAt: row.requestedAt.toISOString(),
+    resolvedAt: iso(row.resolvedAt),
+    capturedBy: row.capturedBy,
+    approvedBy: row.approvedBy,
+  } as PosTender;
+}
+
+/** The cashier screen's order: lines, tenders, live discounts and receipt. */
+export async function orderDetail(
+  tx: Tx,
+  context: ScopedTenantContext,
+  locked: Locked,
+): Promise<PosOrderDetail> {
+  const { order, pos } = locked;
+  const [items, tenders, discounts, receipt] = await Promise.all([
+    itemsOf(tx, context, order.id),
+    tendersOf(tx, context, order.id),
+    liveDiscountsOf(tx, context, order.id),
+    posReceiptPort().findForOrder(tx, context, order.id),
+  ]);
+  return posOrderDetailSchema.parse({
+    id: order.id,
+    tenantId: order.tenantId,
+    outletId: order.outletId,
+    number: order.number,
+    channel: order.channel,
+    serviceType: order.serviceType,
+    tableSessionId: order.tableSessionId,
+    customerProfileId: order.customerProfileId,
+    externalRef: order.externalRef,
+    shiftId: pos.shiftId,
+    deviceId: pos.deviceId,
+    cashierId: pos.cashierId,
+    subtotalIdr: order.subtotalIdr,
+    discountIdr: order.discountIdr,
+    serviceChargeIdr: order.serviceChargeIdr,
+    taxIdr: order.taxIdr,
+    roundingIdr: order.roundingIdr,
+    totalIdr: order.totalIdr,
+    status: order.status,
+    createdBy: order.createdBy,
+    createdAt: order.createdAt.toISOString(),
+    submittedAt: iso(pos.submittedAt),
+    firedAt: iso(order.firedAt),
+    completedAt: iso(pos.completedAt),
+    voidedAt: iso(order.voidedAt),
+    voidReason: order.status === "voided" ? order.voidReason : null,
+    voidReasonNote: order.status === "voided" ? pos.voidReasonNote : null,
+    voidApprovedBy: order.status === "voided" ? pos.voidApprovedBy : null,
+    voidApprovalRequestId:
+      order.status === "voided" ? pos.voidApprovalRequestId : null,
+    items: items.map(({ item, pos: extra }) => {
+      const voided = item.status === "voided";
+      return {
+        id: item.id,
+        tenantId: item.tenantId,
+        orderId: item.orderId,
+        menuItemId: item.menuItemId,
+        variantId: item.variantId,
+        name: item.name,
+        quantity: item.quantity,
+        unitPriceIdr: item.unitPriceIdr,
+        modifiersTotalIdr: item.modifiersTotalIdr,
+        lineTotalIdr: item.lineTotalIdr,
+        modifiers: item.modifiers.map((modifier) => ({
+          modifierId: modifier.modifierId,
+          name: modifier.name,
+          priceIdr: modifier.priceIdr,
+        })),
+        note: item.note,
+        course: item.course,
+        fireStatus: item.fireStatus,
+        firedAt:
+          item.fireStatus === "fired"
+            ? (iso(extra?.firedAt ?? null) ?? item.updatedAt.toISOString())
+            : null,
+        status: item.status,
+        voidReason: voided ? item.voidReason : null,
+        voidReasonNote: voided ? (extra?.voidReasonNote ?? null) : null,
+        voidedBy: voided ? item.voidedBy : null,
+        voidApprovedBy: voided ? item.voidApprovedBy : null,
+        voidApprovalRequestId: voided
+          ? (extra?.voidApprovalRequestId ?? null)
+          : null,
+        costSnapshotIdr: item.costSnapshotIdr ?? 0,
+        createdAt: item.createdAt.toISOString(),
+      };
+    }),
+    tenders: tenders.map(tenderDto),
+    discounts: discounts.map((row) => ({
+      id: row.id,
+      tenantId: row.tenantId,
+      orderId: row.orderId,
+      source: row.source,
+      kind: row.kind,
+      percentBp: row.percentBp,
+      amountIdr: row.amountIdr,
+      reason: row.reason,
+      reasonNote: row.reasonNote,
+      appliedBy: row.appliedBy,
+      approvedBy: row.approvedBy,
+      approvalRequestId: row.approvalRequestId,
+      createdAt: row.createdAt.toISOString(),
+    })),
+    receipt,
+  });
+}
+
+export function summaryDto(
+  order: OrderRow,
+  pos: PosRow,
+  counts: { itemCount: number; heldItemCount: number },
+): PosOrderSummary {
+  return posOrderSummarySchema.parse({
+    id: order.id,
+    tenantId: order.tenantId,
+    outletId: order.outletId,
+    number: order.number,
+    channel: order.channel,
+    serviceType: order.serviceType,
+    tableSessionId: order.tableSessionId,
+    status: order.status,
+    shiftId: pos.shiftId,
+    totalIdr: order.totalIdr,
+    itemCount: counts.itemCount,
+    heldItemCount: counts.heldItemCount,
+    createdAt: order.createdAt.toISOString(),
+  });
+}
