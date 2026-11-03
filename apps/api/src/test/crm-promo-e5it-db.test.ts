@@ -818,4 +818,33 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
       refundDueIdr: 0,
     });
   });
+
+  it("[E5IT-12] the paid ceiling is cumulative across two partial refunds", async () => {
+    const item = randomUUID();
+    const second = randomUUID();
+    const third = randomUUID();
+    await seedPromotion(item, {
+      benefit: { kind: "nominal_off", amountIdr: 60_000 },
+    });
+    const input = redeemInput([
+      priced(item, 50_000),
+      priced(second, 30_000),
+      priced(third, 20_000),
+    ]);
+    expect((await redeem(input)).totalDiscountIdr).toBe(60_000); // paid 40k
+    expect(
+      await partialRefund(input.orderId, [
+        priced(item, 50_000),
+        priced(second, 30_000),
+      ]),
+    ).toMatchObject({ refundedSubtotalIdr: 20_000, refundDueIdr: 20_000 });
+    // 30.000 more goods, but only 20.000 of what the guest paid is left.
+    expect(
+      await partialRefund(input.orderId, [priced(item, 50_000)]),
+    ).toMatchObject({
+      refundedSubtotalIdr: 30_000,
+      refundDueIdr: 20_000,
+      totalDiscountIdr: 50_000,
+    });
+  });
 });

@@ -410,8 +410,14 @@ export async function loadStackingPolicy(
 // ---------------------------------------------------------- voucher codes
 
 export type ResolvedCode =
-  | { kind: "voucher"; voucher: VoucherRow; promotion: Promotion | null }
-  | { kind: "promo_code"; promotion: Promotion };
+  | {
+      kind: "voucher";
+      voucher: VoucherRow;
+      promotion: Promotion | null;
+      /** The linked promotion's `uses_total` (0 without a promotion). */
+      promotionUsesTotal: number;
+    }
+  | { kind: "promo_code"; promotion: Promotion; promotionUsesTotal: number };
 
 /**
  * A typed code is first a single-use voucher, else a multi-use promo code
@@ -439,6 +445,7 @@ export async function resolveCode(
     : await voucherQuery;
   if (voucher) {
     let promotion: Promotion | null = null;
+    let promotionUsesTotal = 0;
     if (voucher.promotionId !== null) {
       const [row] = await tx
         .select()
@@ -452,8 +459,9 @@ export async function resolveCode(
         .limit(1);
       if (!row) return null;
       promotion = toPromotion(row);
+      promotionUsesTotal = row.usesTotal;
     }
-    return { kind: "voucher", voucher, promotion };
+    return { kind: "voucher", voucher, promotion, promotionUsesTotal };
   }
   const [row] = await tx
     .select()
@@ -465,7 +473,13 @@ export async function resolveCode(
       ),
     )
     .limit(1);
-  return row ? { kind: "promo_code", promotion: toPromotion(row) } : null;
+  return row
+    ? {
+        kind: "promo_code",
+        promotion: toPromotion(row),
+        promotionUsesTotal: row.usesTotal,
+      }
+    : null;
 }
 
 // ------------------------------------------------------------- evaluation
@@ -664,6 +678,9 @@ async function prepare(
   let voucher: VoucherRow | null = null;
   let voucherEvaluationId: string | null = null;
   let codePromotion: Promotion | null = null;
+  // The code's own promotion row (null for a value voucher) and its counter,
+  // so a code promotion appended below still reports real usage in a quote.
+  let codePromotionUses: { id: string; usesTotal: number } | null = null;
   if (checkout.voucherCode !== null) {
     const resolved = await resolveCode(tx, context, checkout.voucherCode, lock);
     if (resolved === null) throw crmHttpError("VOUCHER_INVALID");
@@ -679,6 +696,11 @@ async function prepare(
     } else {
       codePromotion = resolved.promotion;
     }
+    if (resolved.promotion !== null)
+      codePromotionUses = {
+        id: resolved.promotion.id,
+        usesTotal: resolved.promotionUsesTotal,
+      };
     voucherEvaluationId = codePromotion.id;
   }
   // legend-e5it: a code for a promotion switched off at this outlet is refused.
@@ -736,6 +758,12 @@ async function prepare(
   const customerId = checkout.customer?.customerProfileId ?? null;
   const customerUses = new Map<string, number>();
   const realIds = rows.map((row) => row.id);
+  const usesById = new Map(rows.map((row) => [row.id, row.usesTotal]));
+  // A code promotion appended above is not in `rows`: count it too.
+  if (codePromotionUses !== null && !usesById.has(codePromotionUses.id)) {
+    realIds.push(codePromotionUses.id);
+    usesById.set(codePromotionUses.id, codePromotionUses.usesTotal);
+  }
   if (customerId !== null && realIds.length > 0) {
     const usageQuery = tx
       .select()
@@ -751,7 +779,6 @@ async function prepare(
     const usageRows = await usageQuery;
     for (const row of usageRows) customerUses.set(row.promotionId, row.uses);
   }
-  const usesById = new Map(rows.map((row) => [row.id, row.usesTotal]));
   const usage: PromoUsage[] = candidates.map((promotion) => ({
     promotionId: promotion.id,
     totalUses: usesById.get(promotion.id) ?? 0,
