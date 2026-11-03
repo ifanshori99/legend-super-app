@@ -4,11 +4,12 @@
 // guest can dismiss it for this browser session. It never disables or sits
 // between the guest and the order actions.
 import { useSyncExternalStore } from "react";
+import { Link } from "@tanstack/react-router";
 import { Check, Gift, X } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { signInPath } from "@/features/ws01-login/flow";
+import { safeReturnPath } from "@/features/ws01-login/flow";
 
 /** Session-scoped: survives a reload, gone when the tab closes. */
 export const SIGN_IN_NUDGE_DISMISSED_KEY = "legend-qr-signin-nudge-dismissed";
@@ -80,8 +81,9 @@ export function dismissSignInNudgeForSession() {
 
 /**
  * The three benefits the PRD names for signing in are listed as text, not
- * icons alone, and the sign-in URL is always built by `signInPath` so the
- * return path stays app-local (no open redirect).
+ * icons alone. The return path is checked with `safeReturnPath` here and again
+ * by `/masuk`'s `validateSearch`, so it stays app-local (no open redirect).
+ * `redirect` is the alias every linking page uses (legend-yoo9).
  */
 export function SignInNudge({ returnTo }: { returnTo: string }) {
   const t = useT();
@@ -132,9 +134,9 @@ export function SignInNudge({ returnTo }: { returnTo: string }) {
           {t("qrCart.checkout.signInNudge.guestNote")}
         </p>
         <Button asChild variant="outline" className="w-fit">
-          <a href={signInPath(returnTo)}>
+          <Link to="/masuk" search={{ redirect: safeReturnPath(returnTo) }}>
             {t("qrCart.checkout.signInNudge.action")}
-          </a>
+          </Link>
         </Button>
       </CardContent>
     </Card>

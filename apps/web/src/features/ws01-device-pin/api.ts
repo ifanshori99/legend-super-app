@@ -5,12 +5,12 @@ import {
   getApprovalRequest,
   verifyStaffPin,
   type CreateApprovalRequestInput,
+  type VerifyStaffPinInput,
 } from "@starter/shared/identity";
 import { callEndpoint } from "@/lib/api/endpoint";
 
-/** Per-staff PIN verify (legend-dxb): the device names the person being verified. */
-export const verifyStaffPinCall = (userId: string, pin: string) =>
-  callEndpoint(verifyStaffPin, { body: { userId, pin } });
+export const verifyStaffPinCall = (input: VerifyStaffPinInput) =>
+  callEndpoint(verifyStaffPin, { body: input });
 
 export const createApprovalRequestCall = (body: CreateApprovalRequestInput) =>
   callEndpoint(createApprovalRequest, { body });

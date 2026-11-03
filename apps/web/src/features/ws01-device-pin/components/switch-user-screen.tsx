@@ -64,13 +64,11 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
     },
     [t, toast],
   );
-  // A picked roster entry names whose PIN is being verified (per-staff verify,
-  // legend-dxb). "Other"/nothing has no person yet, so the pad fails closed and
-  // asks for a name first.
   const session = usePinSession({
+    // The per-staff lockout counts misses for the tile the guest picked.
+    userId: picked && picked !== "other" ? picked.userId : null,
     onVerified,
     accept,
-    userId: picked !== null && picked !== "other" ? picked.userId : null,
   });
 
   return (

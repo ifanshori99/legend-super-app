@@ -11,14 +11,20 @@
 import { Router } from "express";
 import { hostnameSchema } from "@starter/shared/platform";
 import { z } from "@starter/shared/core";
-import { tlsAskGuard } from "../middleware/tls-ask";
+import { tlsAskGuard, tlsAskRateLimit } from "../middleware/tls-ask";
 import { isVerifiedTenantHost } from "../services/org-resolve.service";
 
 const askQuery = z.strictObject({ domain: hostnameSchema });
 
 export const internalRouter = Router();
 
-internalRouter.get("/tls/ask", tlsAskGuard(), async (req, res) => {
-  const { domain } = askQuery.parse(req.query);
-  res.status((await isVerifiedTenantHost(domain)) ? 200 : 404).end();
-});
+// Token first, so unauthenticated calls never spend the lookup budget.
+internalRouter.get(
+  "/tls/ask",
+  tlsAskGuard(),
+  tlsAskRateLimit(),
+  async (req, res) => {
+    const { domain } = askQuery.parse(req.query);
+    res.status((await isVerifiedTenantHost(domain)) ? 200 : 404).end();
+  },
+);

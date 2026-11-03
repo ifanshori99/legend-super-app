@@ -34,3 +34,35 @@ export function tlsAskGuard(
     next();
   };
 }
+
+// The ask bridge is reachable only from Caddy's loopback listener, but every
+// unknown SNI still costs one registry lookup. Cap lookups per window so a
+// flood of random hostnames (e.g. direct-to-origin traffic that slipped past
+// the firewall) cannot turn certificate asks into database load. Over the cap
+// the answer is 429, which Caddy treats as "do not issue"; a legitimate domain
+// is simply asked again on its next handshake (legend-7bd review).
+export function tlsAskRateLimit({
+  limit = 60,
+  windowMs = 60_000,
+  now = Date.now,
+}: {
+  limit?: number;
+  windowMs?: number;
+  now?: () => number;
+} = {}): RequestHandler {
+  let windowStart = Number.NEGATIVE_INFINITY;
+  let count = 0;
+  return (_req, res, next) => {
+    const at = now();
+    if (at - windowStart >= windowMs) {
+      windowStart = at;
+      count = 0;
+    }
+    count += 1;
+    if (count > limit) {
+      res.status(429).end();
+      return;
+    }
+    next();
+  };
+}

@@ -42,8 +42,8 @@ import {
   useApprovalRequestPolling,
   useCreateApprovalRequest,
 } from "../hooks.ts";
-import { usePinSession } from "../use-pin-session.ts";
 import { useRoster } from "../storage.ts";
+import { usePinSession } from "../use-pin-session.ts";
 import { useClockMs } from "../use-clock.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
 import { PinPad } from "./pin-pad.tsx";
@@ -124,9 +124,6 @@ function ModalBody({
   const [requestId, setRequestId] = useState<string | null>(null);
   const [sendError, setSendError] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  // Per-staff PIN verify (legend-dxb): the approver names themself first.
-  const roster = useRoster();
-  const [approverId, setApproverId] = useState<string | null>(null);
 
   const values = { valueText, reasonCode, reason };
   // A field's error goes away once that field is edited (not on the next PIN).
@@ -139,6 +136,10 @@ function ModalBody({
     });
   }
   const create = useCreateApprovalRequest();
+  // The verify contract counts misses per staff (AUTH-06), so the supervisor
+  // whose PIN is being typed must be named. The roster is the mock/device list.
+  const roster = useRoster();
+  const [approverId, setApproverId] = useState<string | null>(null);
 
   function finish(
     result: Omit<OverrideResult, "reasonCode" | "reason" | "valueIdr">,
@@ -163,8 +164,8 @@ function ModalBody({
     [requesterId, t],
   );
   const session = usePinSession({
-    accept,
     userId: approverId,
+    accept,
     onVerified: (result) =>
       finish({
         method: "supervisor_pin",
@@ -317,26 +318,14 @@ function ModalBody({
 
       {method === "pin" ? (
         <div className="grid gap-3" data-attempt={attempt}>
-          <p className="text-sm text-muted-foreground">
-            {t("devicePin.override.pinHint")}
-          </p>
-          {/* Per-staff PIN verify (legend-dxb): the approver is a named person. */}
-          <FormField
-            label={t("devicePin.override.approverLabel")}
-            hint={
-              roster.length === 0
-                ? t("devicePin.override.approverEmpty")
-                : t("devicePin.override.approverHint")
-            }
-            required
-          >
+          <FormField label={t("devicePin.override.approverLabel")}>
             <Select
-              value={approverId ?? ""}
-              onValueChange={(value) => setApproverId(value || null)}
+              value={approverId ?? undefined}
+              onValueChange={(value) => setApproverId(value)}
             >
               <SelectTrigger>
                 <SelectValue
-                  placeholder={t("devicePin.override.approverPlaceholder")}
+                  placeholder={t("devicePin.override.approverLabel")}
                 />
               </SelectTrigger>
               <SelectContent>
@@ -348,6 +337,9 @@ function ModalBody({
               </SelectContent>
             </Select>
           </FormField>
+          <p className="text-sm text-muted-foreground">
+            {t("devicePin.override.pinHint")}
+          </p>
           {session.lock.locked && (
             <LockoutNotice remainingMs={session.lock.remainingMs} />
           )}
@@ -355,7 +347,6 @@ function ModalBody({
             {...guardedPad}
             shakeSignal={guardedPad.shakeSignal + attempt}
             clearSignal={guardedPad.clearSignal + attempt}
-            active={approverId !== null}
             label={t("devicePin.override.pinTitle")}
           />
         </div>

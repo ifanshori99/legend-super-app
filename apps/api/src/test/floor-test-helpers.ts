@@ -203,7 +203,7 @@ export async function seedTenantOutlets(
   const legalEntityId = randomUUID();
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', $4, $5, 'test')
+     VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', $4, $5, $6)
      ON CONFLICT (id) DO NOTHING`,
     [
       tenantId,
@@ -211,6 +211,7 @@ export async function seedTenantOutlets(
       `Seed ${suffix}`,
       JSON.stringify({ modules: ["qr_order"], integrationProviders: [] }),
       JSON.stringify(fixtures.tenant.limits),
+      fixtures.tenant.createdBy,
     ],
   );
   await owner.query(

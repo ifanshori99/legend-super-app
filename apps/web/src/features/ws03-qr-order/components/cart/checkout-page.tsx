@@ -4,12 +4,7 @@
 // and is paid at the end. Menu prices exclude tax and service charge, so the
 // breakdown shows both before the total (owner rule, ORD-03).
 import { useRef, useState } from "react";
-import {
-  Link,
-  useLocation,
-  useNavigate,
-  useRouteContext,
-} from "@tanstack/react-router";
+import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
 import { Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { GuestPaymentTarget } from "@starter/shared/qr-order";
@@ -56,9 +51,6 @@ export function CheckoutPage() {
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
-  // The current checkout URL (path + search), handed to `/masuk` as the
-  // return path. `signInPath` validates it, so this is never hand-built.
-  const { href } = useLocation();
   const { session } = useRouteContext({ strict: false }) as {
     session?: unknown;
   };
@@ -399,8 +391,9 @@ export function CheckoutPage() {
         )}
       </div>
       {/* PRD §3 F10 "Login Opsional": guests order without an account; this
-          only invites sign-in and never gates the actions above. */}
-      {!session && <SignInNudge returnTo={href} />}
+          only invites sign-in and never gates the actions above. legend-yoo9:
+          `/masuk?redirect=` resumes this checkout after sign-in. */}
+      {!session && <SignInNudge returnTo={`/t/${qrToken}/checkout`} />}
       {payTarget && (
         <PayDialog
           open

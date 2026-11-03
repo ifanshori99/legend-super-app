@@ -8,17 +8,24 @@
 // `?mock=empty` returns an empty last page (the viewer's honest empty state);
 // `?mock=slow|error|offline` are handled by the runtime.
 //
+// The log is a mutable store seeded from the deterministic events, so another
+// feature's mock can append the event its write would audit (legend-5kop:
+// `outlet.business_day_cutoff.updated` from the outlet settings PATCH). The
+// /audit screen lists this store; resetMocks() restores the seed.
+//
 // Loaded in Node by tests/ws11-audit.test.mjs: bare package imports and relative
 // `.ts` paths only, no `@/` alias.
 import {
   auditEventSchema,
   listAuditEventsEndpoint,
   maskAuditChanges,
+  type AuditActorType,
   type AuditEventView,
 } from "@starter/shared/audit";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
+import { createMockStore } from "../../lib/mock/store.ts";
 import { DEFAULT_TIME_ZONE } from "./lib.ts";
 
 const [bandung, bandung2] = cafeLegendFixtures.outlets;
@@ -319,6 +326,77 @@ export const mockAuditEvents: readonly AuditEventView[] = Array.from(
   (_, index) => buildEvent(TEMPLATES[index % TEMPLATES.length]!, index),
 );
 
+/** The mutable log the list endpoint reads; resetMocks() restores the seed. */
+const mockAuditLog = createMockStore<AuditEventView[]>(() => [
+  ...mockAuditEvents,
+]);
+
+export type MockAuditEventInput = {
+  /** Dotted lowercase action code, e.g. "outlet.business_day_cutoff.updated". */
+  action: string;
+  /** One lowercase word, e.g. "outlet". */
+  objectType: string;
+  /** UUID or ULID of the changed row. */
+  objectId: string | null;
+  outletId: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason?: string | null;
+  /** Defaults to the fixture owner: the mock has no session to read an actor from. */
+  actor?: { type: AuditActorType; id: string | null; name: string | null };
+};
+
+/**
+ * Appends one event to the log the /audit screen reads (newest first), for
+ * another feature's mock that performs an audited write. Field values go
+ * through the contract masker with only the keys present in `before`/`after`
+ * visible, so a new event cannot leak PII by accident.
+ */
+export function appendMockAuditEvent(
+  input: MockAuditEventInput,
+): AuditEventView {
+  const rows = mockAuditLog.get();
+  const actor = input.actor ?? ACTORS.owner;
+  const outlet =
+    input.outletId === null
+      ? null
+      : (cafeLegendFixtures.outlets.find((row) => row.id === input.outletId) ??
+        null);
+  const safe = [
+    ...Object.keys(input.before ?? {}),
+    ...Object.keys(input.after ?? {}),
+  ];
+  const view: AuditEventView = {
+    event: auditEventSchema.parse({
+      // The seed uses ids 0…69; the growing length keeps each append unique.
+      id: eventId(rows.length),
+      tenantId: TENANT_ID,
+      outletId: outlet?.id ?? input.outletId,
+      actorType: actor.type,
+      actorId: actor.id,
+      deviceId: null,
+      action: input.action,
+      objectType: input.objectType,
+      objectId: input.objectId,
+      reason: input.reason ?? null,
+      maskedChanges: {
+        before: maskAuditChanges(input.before, safe),
+        after: maskAuditChanges(input.after, safe),
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: new Date().toISOString(),
+    }),
+    actorName: actor.name,
+    outletName: outlet?.name ?? null,
+    outletTimeZone: outlet?.timeZone ?? null,
+    deviceName: null,
+  };
+  rows.unshift(view);
+  return view;
+}
+
 function businessDate(instant: string, timeZone: string | null): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: timeZone ?? DEFAULT_TIME_ZONE,
@@ -326,7 +404,7 @@ function businessDate(instant: string, timeZone: string | null): string {
 }
 
 registerMock(listAuditEventsEndpoint, ({ query, scenario }) => {
-  const rows = mockAuditEvents.filter(({ event, outletTimeZone }) => {
+  const rows = mockAuditLog.get().filter(({ event, outletTimeZone }) => {
     if (query.actorType && event.actorType !== query.actorType) return false;
     if (query.actorId && event.actorId !== query.actorId) return false;
     if (query.objectType && event.objectType !== query.objectType) return false;

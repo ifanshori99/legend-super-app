@@ -254,11 +254,14 @@ register(orgEndpoints.listLegalEntities, () => ({
   data: [cafeLegendPlatformFixtures.legalEntity],
 }));
 
-register(orgEndpoints.listOutlets, ({ query }) =>
+// legend-5kop: `?mock=empty` must reach the outlet settings screen's empty
+// state, so the scenario goes through to paginateFixture like every other list.
+register(orgEndpoints.listOutlets, ({ query, scenario }) =>
   paginateFixture(
     cafeLegendPlatformFixtures.outlets,
     { cursor: query.cursor, limit: query.limit },
     (outlet) => outlet.id,
+    scenario,
   ),
 );
 

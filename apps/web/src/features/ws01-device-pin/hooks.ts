@@ -1,6 +1,7 @@
 // Hooks for the device PIN pad and the override modal. Exported for the POS,
 // captain and KDS beads (see index.ts).
 import { useMutation, useQuery } from "@tanstack/react-query";
+import type { VerifyStaffPinInput } from "@starter/shared/identity";
 import {
   createApprovalRequestCall,
   getApprovalRequestCall,
@@ -12,8 +13,7 @@ export function useVerifyStaffPin() {
   // gcTime 0: a settled verify (its variables are the PIN) leaves the cache
   // at once; usePinSession also resets it on settle.
   return useMutation({
-    mutationFn: (input: { userId: string; pin: string }) =>
-      verifyStaffPinCall(input.userId, input.pin),
+    mutationFn: (input: VerifyStaffPinInput) => verifyStaffPinCall(input),
     gcTime: 0,
   });
 }

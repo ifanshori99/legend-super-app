@@ -25,13 +25,14 @@ export const devicePinMessages = {
 
   error: {
     invalid: "PIN salah. Periksa angkanya lalu coba lagi.",
+    pickStaff:
+      "Pilih dulu nama staf atau supervisor yang memasukkan PIN, lalu ulangi.",
+    approver: "Supervisor yang memasukkan PIN",
     mismatch:
       "PIN ini bukan milik {name}. Pilih nama yang benar atau coba lagi.",
     network:
       "Tidak dapat menghubungi server. Periksa koneksi perangkat, lalu coba lagi.",
     generic: "PIN belum dapat diperiksa. Coba lagi sebentar lagi.",
-    pickStaff:
-      "Pilih nama staf dulu. PIN diverifikasi untuk orang yang namanya dipilih.",
     offlineHint:
       "Saat offline, ganti pengguna menunggu koneksi edge node outlet kembali.",
   },
@@ -73,6 +74,7 @@ export const devicePinMessages = {
 
   override: {
     title: "Override supervisor",
+    approverLabel: "Supervisor yang memasukkan PIN",
     description:
       "Tindakan ini butuh persetujuan supervisor. Alasan, nilai, dan penyetuju dicatat di audit log.",
     actionLabel: "Tindakan",
@@ -106,11 +108,6 @@ export const devicePinMessages = {
     pinTitle: "PIN penyetuju",
     pinHint:
       "Supervisor memasukkan PIN pribadinya di perangkat ini. Penyetuju tidak boleh sama dengan peminta.",
-    approverLabel: "Penyetuju",
-    approverHint: "Pilih nama supervisor, lalu masukkan PIN pribadinya.",
-    approverPlaceholder: "Pilih nama penyetuju",
-    approverEmpty:
-      "Belum ada staf di perangkat ini. Minta supervisor masuk lewat Ganti pengguna.",
     phoneHint:
       "Permintaan dikirim ke ponsel supervisor. Perangkat ini menunggu keputusan.",
     submitPin: "Setujui dengan PIN",

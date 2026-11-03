@@ -18,8 +18,8 @@ which selects Node runtime behavior. Set them consistently for every service.
 
 The defaults are `development`, `false`, and `synthetic`. Explicitly set the
 appropriate values in each deployment; an edge node is a topology, not an
-exception to the environment's data policy. The edge runtime and its image are
-separate follow-up work and are not supplied by these settings alone.
+exception to the environment's data policy. The edge topology requires the same web image configured with `EDGE_MODE=true`;
+its offline provisioning and synchronization remain separate work.
 
 Use fictional synthetic menus, 30 employees, and transactions for load and
 payroll testing. Do not copy production databases, backups, customer or employee
@@ -45,8 +45,8 @@ and exits non-zero before the service accepts traffic.
 | ------- | --------------------------------------------------------------------------------------------- |
 | API     | `apps/api/src/config/env.ts`, imported by the server entry                                    |
 | Web     | `apps/web/server/plugins/deployment-env.ts` (built server) and `apps/web/src/server.ts` (dev) |
-| Worker  | Not built yet: its entrypoint must call `assertDeploymentEnv` first                           |
-| Edge    | Not built yet: its entrypoint must call `assertDeploymentEnv` first                           |
+| Worker  | `apps/api/src/worker-main.ts` validates the deployment settings before starting work          |
+| Edge    | The web runtime validates the same settings with `EDGE_MODE=true`                             |
 
 The web app needs two entry points because it has two servers. The built server
 (`node .output/server/index.mjs`, produced by Nitro) opens its port before it
@@ -110,7 +110,7 @@ BETTER_AUTH_URL=https://api.example.com
 WEB_URL=https://app.example.com
 COOKIE_DOMAIN=.example.com
 # Behind a load balancer or reverse proxy (hop count, or a subnet list; never true):
-TRUST_PROXY=1
+TRUST_PROXY=2
 # Optional: extra browser origins allowed to call the API with cookies.
 # TRUSTED_ORIGINS=https://admin.example.com
 # Optional direct connection when DATABASE_URL uses a pooler:
@@ -262,3 +262,81 @@ pnpm build
 The tenant-branch and color scanners are heuristics, not proofs: review indirect tenant-specific logic and dynamically constructed colors. The color scanner documents its starter exceptions in source. The isolation harness accepts an adapter for two authenticated tenants; its in-memory tests verify the harness only, not application isolation.
 
 Lighthouse for `/menu` and `/t/*` and real tenant isolation remain explicit placeholders until the routes and modules exist (legend-wwsa). The 80% business-logic coverage gate requires domain modules and a coverage provider (legend-dd0g). Dependency scanning blocks critical advisories; known high findings are reported but do not block while legend-ziit tracks remediation. The high-level audit command returns nonzero for those findings. Do not treat these placeholders as release evidence.
+
+## Single-VM deployment (legend-8br)
+
+The configuration in `deploy/single-vm/compose.yaml` is a starting point for one
+small Jakarta VM, with Cloudflare in front of Caddy and private PostgreSQL. It
+is not a production readiness certification: measure VM, storage, egress and
+backup costs together against the Rp1,000,000/month ceiling. Use separate VMs,
+volumes, credentials and synthetic data for staging; staging never receives a
+production backup. Choose image tags built and scanned by CI. The image workflow
+builds and scans locally in CI and never pushes or deploys.
+
+Build the API (`runner`), web (`runner`), worker, migrator, and edge targets
+using the Dockerfiles above; build the backup-enabled PostgreSQL image with
+`docker build -f deploy/backup/Dockerfile .`. Edge uses the same web image with
+`EDGE_MODE=true`. See `deploy/backup/README.md` for required private pgBackRest
+configuration, initialization, two independent encrypted object repositories,
+daily backups and isolated restore drills. Configure Biznet Gio S3-compatible
+storage as one repository and an independent off-site failure domain as the
+other. Monitor archive failures and disk use; the config alone does not prove
+RPO or RTO. Complete a real restore drill before launch.
+
+Copy `deploy/single-vm/compose.env.example` outside the repository and set its
+values and absolute paths. Create separate private env files for migrator, API,
+web and worker; give each process only the credentials it needs. The runtime
+example lists settings, not a complete production secret configuration. Provision
+restricted app and worker database roles after migration using
+`scripts/provision-app-role.mjs`; configure the worker's trusted transport and
+notification adapters before starting it. Set `WORKER_TRANSPORT_PATH` to the
+absolute path of the trusted transport module, which compose mounts read-only.
+These adapters are not supplied yet
+(legend-18qw), so event delivery must not be considered operational.
+
+Run `deploy/single-vm/deploy.sh --env-file /absolute/path/compose.env --dry-run`
+to validate without starting services. Without `--dry-run`, it starts PostgreSQL,
+runs the migration job once, then starts the services. Run only after setting up
+backup configuration, provisioning roles and checking the rollout plan. Image
+builds and this script do not purchase or provision infrastructure.
+
+### Deployment security checklist
+
+- Restrict origin ports 80 and 443 to current Cloudflare IP ranges; do not
+  publish PostgreSQL, API, web, or the local Caddy ask bridge. Docker-published
+  ports bypass `ufw`/INPUT rules, so enforce the allowlist in the cloud
+  provider's security group or in the `DOCKER-USER` iptables chain, and verify
+  from a non-Cloudflare address that 80/443 are refused.
+  Use Cloudflare Full (strict) and verify custom-domain issuance and renewal.
+- Set `TRUST_PROXY=2` for Cloudflare → Caddy → API and set
+  `PUBLIC_RATE_LIMIT_INTERNAL_IPS=172.29.17.10` for this compose network. Ensure
+  its subnet does not overlap another network and update both if it changes.
+- Set the same long, random `TLS_ASK_TOKEN` for Caddy and API. Keep all secret
+  files outside source control and readable only by the intended service.
+- Verify forwarding headers, tenant isolation, cache keys by hostname, backup
+  restore, alert delivery, and provider wiring in the target environment.
+  Never cache authenticated or tenant-specific pages as public responses.
+- `deploy/caddy/README.md` describes the local authenticated TLS ask bridge and
+  Cloudflare firewall requirements; update the firewall and proxy IP list as
+  Cloudflare's ranges change.
+
+Monitoring setup and its limits are documented in `deploy/monitoring/README.md`.
+The stack bounds Docker local log retention; arrange external uptime probes and
+alert delivery. Device heartbeat, queue and sync-lag alerting require additional
+production sources and provider adapters before they can be treated as covered.
+
+### First boot and backup schedule
+
+On a new VM, prepare the private pgBackRest configuration and transport module
+before starting application services. Start PostgreSQL and run the migration job
+separately using the same `--env-file` and Compose file as the deploy script.
+Then initialize and check the pgBackRest stanza as the container's `postgres`
+user, provision the restricted application and queue roles against the migrated
+database, and confirm a successful base backup to both repositories. The role
+provisioner exports functions; it is not a standalone CLI. Run it from a trusted
+operator environment with connectivity to the private database and dependencies
+installed, and never put the administrator credentials into application env
+files. Provisioning is a first-boot prerequisite; the deploy script does not
+perform it. See `deploy/backup/README.md` for the supplied systemd timer example
+and restore-drill procedure. Once those prerequisites and the transport adapter
+are ready, use the deploy script for subsequent releases.

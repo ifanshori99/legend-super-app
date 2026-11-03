@@ -31,6 +31,18 @@ const TABS = [
     labelKey: "menu.tabs.stations",
     to: "/kelola/menu/stasiun",
   },
+  // Bulk import and printable menu (squad invfe, bead legend-b6r). The labels
+  // sit in the squad's own `invfeNav` catalog module.
+  {
+    key: "import",
+    labelKey: "invfeNav.menu.import",
+    to: "/kelola/menu/impor",
+  },
+  {
+    key: "print",
+    labelKey: "invfeNav.menu.print",
+    to: "/kelola/menu/cetak",
+  },
 ] as const;
 
 export type MenuSection = (typeof TABS)[number]["key"];

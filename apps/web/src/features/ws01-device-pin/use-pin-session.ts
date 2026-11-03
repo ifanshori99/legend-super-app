@@ -3,27 +3,24 @@
 // window on PIN_LOCKED, a network hint when the edge node is unreachable.
 import { useCallback, useState } from "react";
 import type { StaffPinSwitch } from "@starter/shared/identity";
+import { userIdSchema } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { ApiError } from "@/lib/api/errors";
 import { useVerifyStaffPin } from "./hooks.ts";
 import { usePinLock } from "./use-pin-lock.ts";
 
 export type UsePinSessionOptions = {
+  /** The staff member whose PIN is being typed: the API counts misses per staff. */
+  userId: string | null;
   onVerified: (result: StaffPinSwitch) => void;
   /** Return an error text to refuse a correct PIN (wrong person, same approver). */
   accept?: (result: StaffPinSwitch) => string | null;
-  /**
-   * The staff member whose PIN is being verified. Per-staff PIN verify
-   * (legend-dxb) needs an explicit person; null fails closed with a prompt to
-   * pick one, so a device never guesses whose PIN it just checked.
-   */
-  userId: string | null;
 };
 
 export function usePinSession({
+  userId,
   onVerified,
   accept,
-  userId,
 }: UsePinSessionOptions) {
   const t = useT();
   const lock = usePinLock();
@@ -42,14 +39,15 @@ export function usePinSession({
   const submit = useCallback(
     (pin: string) => {
       setError(null);
-      // Fail closed: a PIN belongs to a named staff member, so a device that
-      // has not picked one cannot verify anything.
-      if (userId === null) {
+      // Fail closed: without a valid picked staff the API cannot count the
+      // attempt (AUTH-06 per-staff lockout), so the PIN is not sent at all.
+      const pickedUserId = userIdSchema.safeParse(userId);
+      if (!pickedUserId.success) {
         fail(t("devicePin.error.pickStaff"));
         return;
       }
       verify.mutate(
-        { userId, pin },
+        { userId: pickedUserId.data, pin },
         {
           // Forget the PIN as soon as the answer is in: the mutation keeps its
           // variables until reset (no PIN in the query client, ever).
@@ -88,7 +86,7 @@ export function usePinSession({
         },
       );
     },
-    [verify, accept, fail, lock, onVerified, userId, t],
+    [verify, accept, fail, lock, onVerified, t],
   );
 
   const clear = useCallback(() => setClearSignal((n) => n + 1), []);

@@ -75,12 +75,12 @@ test("F10 Login Opsional: guest checkout invites sign-in and still lets the gues
     page.getByText("Tetap bisa memesan sebagai tamu."),
   ).toBeVisible();
 
-  // The sign-in link hands the checkout URL back to `/masuk` and never uses
-  // the staff `/sign-in` route.
+  // The sign-in link hands the checkout URL back to `/masuk` (the `redirect`
+  // alias, legend-yoo9) and never uses the staff `/sign-in` route.
   const signIn = page.getByRole("link", { name: "Masuk atau daftar" });
   await expect(signIn).toHaveAttribute(
     "href",
-    /^\/masuk\?lanjut=%2Ft%2Fv1\.[^?]*%2Fcheckout/,
+    /^\/masuk\?redirect=%2Ft%2Fv1\.[^?&]*%2Fcheckout$/,
   );
 
   // F10: sign-in is optional, so the order button is usable as a guest.
