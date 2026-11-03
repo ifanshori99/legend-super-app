@@ -1,0 +1,719 @@
+// Daily-operations checklist, food-safety and prep HTTP API (PRD v1.7 §3
+// F41/F45, §6 L; OPS-01, OPS-02, OPS-03; TEN-01..03; bead legend-btha). Runs
+// the real Express app, Better Auth, the RBAC resolver and PostgreSQL against
+// the seeded Cafe Legend tenant. Needs `operationsRouter` mounted at
+// /api/operations.
+import { randomUUID } from "node:crypto";
+import { Pool, type PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  createChecklistRun,
+  createChecklistTemplate,
+  createPrepLabel,
+  createTemperatureLog,
+  getChecklistRun,
+  listChecklistTemplates,
+  listPrepLabels,
+  updateChecklistTemplate,
+} from "@starter/shared/operations";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { createApp } from "../app";
+import { agent, originHeader, signUp } from "./helpers";
+
+const app = createApp();
+const tenant = cafeLegendPlatformFixtures.tenant;
+const [outletA, outletB] = cafeLegendPlatformFixtures.outlets;
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 2,
+});
+
+const createdUsers: string[] = [];
+const createdTemplateIds: string[] = [];
+const createdRunIds: string[] = [];
+const createdPrepLabelIds: string[] = [];
+
+// Fixture rows the food-safety and prep endpoints read (equipment threshold,
+// inventory item, stock location and batch); inserted as the seeded tenant.
+const equipmentId = randomUUID();
+const uomId = randomUUID();
+const inventoryItemId = randomUUID();
+const locationId = randomUUID();
+const batchId = randomUUID();
+const uomCode = `BTH${randomUUID().slice(0, 4).toUpperCase()}`;
+
+type Session = { client: ReturnType<typeof agent>; userId: string };
+
+async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenant.id],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function signedIn(name: string): Promise<Session> {
+  const client = agent(app);
+  await signUp(client, name);
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  createdUsers.push(userId);
+  return { client, userId };
+}
+
+/** A tenant-scoped owner: holds every `ops.*` permission on both outlets. */
+async function ownerClient(): Promise<Session> {
+  const session = await signedIn("Operations Owner");
+  await owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+     SELECT $1, $2, id, 'tenant', now() - interval '1 day', $2 FROM roles
+     WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [tenant.id, session.userId],
+  );
+  return session;
+}
+
+/** An outlet-B-only operations role: the caller cannot reach outlet A. */
+async function outletClient(outletId: string): Promise<Session> {
+  const session = await signedIn("Operations Outlet B");
+  const roleId = randomUUID();
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, $3, false, $4, '["outlet"]')`,
+    [
+      roleId,
+      tenant.id,
+      `Operations API test ${roleId.slice(0, 8)}`,
+      JSON.stringify([
+        "ops.checklist.complete",
+        "ops.food_safety.log",
+        "ops.prep.manage",
+      ]),
+    ],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 day', $2)`,
+    [tenant.id, session.userId, roleId, outletId],
+  );
+  return session;
+}
+
+/** A fresh idempotency key: the tenant-wide key space is shared. */
+const key = () => `legend-btha-${randomUUID()}`;
+
+let staff: Session;
+let baseTemplateId = "";
+
+beforeAll(async () => {
+  await asTenant(async (client) => {
+    await client.query(
+      `INSERT INTO equipment (id, tenant_id, outlet_id, name, category, temperature_threshold)
+       VALUES ($1, $2, $3, 'Chiller legend-btha', 'chiller', $4)`,
+      [
+        equipmentId,
+        tenant.id,
+        outletA.id,
+        JSON.stringify({ minCelsius: "2.0000", maxCelsius: "8.0000" }),
+      ],
+    );
+    await client.query(
+      "INSERT INTO uoms (id, tenant_id, code, name) VALUES ($1, $2, $3, 'Kilogram')",
+      [uomId, tenant.id, uomCode],
+    );
+    await client.query(
+      `INSERT INTO inventory_items (id, tenant_id, name, category, type, base_uom_id)
+       VALUES ($1, $2, 'Susu segar legend-btha', 'Bahan Baku', 'raw_material', $3)`,
+      [inventoryItemId, tenant.id, uomId],
+    );
+    await client.query(
+      `INSERT INTO stock_locations (id, tenant_id, outlet_id, name, type)
+       VALUES ($1, $2, $3, 'Chiller legend-btha', 'chiller')`,
+      [locationId, tenant.id, outletA.id],
+    );
+    await client.query(
+      `INSERT INTO stock_batches (id, tenant_id, outlet_id, location_id, inventory_item_id, batch_code)
+       VALUES ($1, $2, $3, $4, $5, 'BTH-001')`,
+      [batchId, tenant.id, outletA.id, locationId, inventoryItemId],
+    );
+  });
+  staff = await ownerClient();
+  const response = await staff.client
+    .post("/api/operations/checklist-templates")
+    .set(originHeader)
+    .send({
+      ...templateInput({ name: "Checklist buka legend-btha" }),
+      idempotencyKey: key(),
+    });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  baseTemplateId = response.body.data.id as string;
+  createdTemplateIds.push(baseTemplateId);
+});
+
+afterAll(async () => {
+  await asTenant(async (client) => {
+    if (createdPrepLabelIds.length > 0)
+      await client.query("DELETE FROM prep_labels WHERE id = ANY($1)", [
+        createdPrepLabelIds,
+      ]);
+    await client.query("DELETE FROM temperature_logs WHERE equipment_id = $1", [
+      equipmentId,
+    ]);
+    if (createdRunIds.length > 0) {
+      await client.query(
+        `DELETE FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->'payload'->>'runId' = ANY($2)`,
+        [tenant.id, createdRunIds],
+      );
+      await client.query("DELETE FROM ops_checklist_runs WHERE id = ANY($1)", [
+        createdRunIds,
+      ]);
+    }
+    if (createdTemplateIds.length > 0)
+      await client.query(
+        "DELETE FROM ops_checklist_templates WHERE id = ANY($1)",
+        [createdTemplateIds],
+      );
+    await client.query(
+      "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND key LIKE 'legend-btha-%'",
+      [tenant.id],
+    );
+    await client.query("DELETE FROM equipment WHERE id = $1", [equipmentId]);
+    await client.query("DELETE FROM stock_batches WHERE id = $1", [batchId]);
+    await client.query("DELETE FROM stock_locations WHERE id = $1", [
+      locationId,
+    ]);
+    await client.query("DELETE FROM inventory_items WHERE id = $1", [
+      inventoryItemId,
+    ]);
+    await client.query("DELETE FROM uoms WHERE id = $1", [uomId]);
+  });
+  if (createdUsers.length > 0) {
+    await owner.query("DELETE FROM role_assignments WHERE user_id = ANY($1)", [
+      createdUsers,
+    ]);
+    await owner.query(
+      "DELETE FROM roles WHERE name LIKE 'Operations API test %' AND tenant_id = $1",
+      [tenant.id],
+    );
+    await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
+  }
+  await owner.end();
+});
+
+// --------------------------------------------------------------- HTTP helpers
+
+function templateInput(overrides: Record<string, unknown> = {}) {
+  return {
+    outletId: outletA.id,
+    name: "Checklist legend-btha",
+    type: "opening",
+    items: [
+      { label: "Suhu chiller", requiredEvidence: ["number"] },
+      { label: "Foto area bar", requiredEvidence: ["photo"] },
+      { label: "Tanda tangan supervisor", requiredEvidence: ["signature"] },
+    ],
+    schedule: {
+      shiftTemplateId: null,
+      stationId: null,
+      zoneId: null,
+      dueTime: "08:00",
+    },
+    roleId: null,
+    ...overrides,
+  };
+}
+
+/** Creates a template over HTTP and returns the contract object. */
+async function postTemplate(
+  session: Session,
+  overrides: Record<string, unknown> = {},
+) {
+  const response = await session.client
+    .post("/api/operations/checklist-templates")
+    .set(originHeader)
+    .send({ ...templateInput(overrides), idempotencyKey: key() });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  createChecklistTemplate.response.parse(response.body);
+  createdTemplateIds.push(response.body.data.id as string);
+  return response.body.data;
+}
+
+/** Creates a run over HTTP and returns the contract object. */
+async function postRun(
+  session: Session,
+  templateId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  const response = await session.client
+    .post("/api/operations/checklist-runs")
+    .set(originHeader)
+    .send({
+      outletId: outletA.id,
+      templateId,
+      shiftDate: "2030-01-15",
+      shiftTemplateId: null,
+      assignedTo: session.userId,
+      ...overrides,
+      idempotencyKey: key(),
+    });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  createChecklistRun.response.parse(response.body);
+  createdRunIds.push(response.body.data.id as string);
+  return response.body.data;
+}
+
+async function postTransition(session: Session, runId: string, action: string) {
+  return session.client
+    .post(`/api/operations/checklist-runs/${runId}/transition`)
+    .set(originHeader)
+    .send({ action, idempotencyKey: key() });
+}
+
+async function postResult(
+  session: Session,
+  runId: string,
+  itemId: string,
+  evidence: Record<string, unknown> = {},
+) {
+  return session.client
+    .post(`/api/operations/checklist-runs/${runId}/items/${itemId}/result`)
+    .set(originHeader)
+    .send({
+      status: "done",
+      numberValue: null,
+      note: null,
+      photoMediaIds: [],
+      signatureMediaId: null,
+      ...evidence,
+      idempotencyKey: key(),
+    });
+}
+
+/** One run's snapshot item id, by its label. */
+function itemIdOf(
+  run: { items: { id: string; label: string }[] },
+  label: string,
+) {
+  const item = run.items.find((entry) => entry.label === label);
+  if (!item) throw new Error(`No checklist item labelled ${label}`);
+  return item.id;
+}
+
+/** Starts a run, the state every answer requires. */
+async function startRun(session: Session, runId: string) {
+  const started = await postTransition(session, runId, "start");
+  expect(started.status, JSON.stringify(started.body)).toBe(200);
+  expect(started.body.data.status).toBe("in_progress");
+}
+
+type RunEvent = {
+  name: string;
+  destination: string;
+  payload: { runId: string; failedItemIds: string[] };
+};
+
+/** Outbox rows raised for one run (found through the payload, not the aggregate). */
+async function runEvents(runId: string): Promise<RunEvent[]> {
+  return asTenant(async (client) => {
+    const { rows } = await client.query<RunEvent>(
+      `SELECT event->>'name' AS name, destination, event->'payload' AS payload
+         FROM domain_event_outbox
+        WHERE tenant_id = $1 AND event->'payload'->>'runId' = $2`,
+      [tenant.id, runId],
+    );
+    return rows;
+  });
+}
+
+describe("Operations checklist templates (legend-btha)", () => {
+  it("[legend-btha][OPS-01] creates a template, bumps the version on an item edit, and refuses a stale expectedUpdatedAt with 412", async () => {
+    const created = await postTemplate(staff, {
+      name: "Checklist tutup legend-btha",
+      type: "closing",
+    });
+    expect(created.version).toBe(1);
+    // The server mints one id per item; the client sends none.
+    expect(created.items).toHaveLength(3);
+    expect(
+      new Set(created.items.map((item: { id: string }) => item.id)).size,
+    ).toBe(3);
+
+    const updated = await staff.client
+      .patch(`/api/operations/checklist-templates/${created.id}`)
+      .set(originHeader)
+      .send({
+        items: [
+          {
+            id: created.items[0].id,
+            label: "Suhu chiller (revisi)",
+            requiredEvidence: ["number"],
+          },
+        ],
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: key(),
+      });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    updateChecklistTemplate.response.parse(updated.body);
+    expect(updated.body.data.version).toBe(2);
+    // An item the client named keeps its id.
+    expect(updated.body.data.items[0].id).toBe(created.items[0].id);
+    expect(updated.body.data.updatedAt).not.toBe(created.updatedAt);
+
+    // A name-only edit leaves the version alone.
+    const renamed = await staff.client
+      .patch(`/api/operations/checklist-templates/${created.id}`)
+      .set(originHeader)
+      .send({
+        name: "Checklist tutup (nama baru)",
+        expectedUpdatedAt: updated.body.data.updatedAt,
+        idempotencyKey: key(),
+      });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+    expect(renamed.body.data.version).toBe(2);
+    expect(renamed.body.data.name).toBe("Checklist tutup (nama baru)");
+
+    // CORE PRECONDITION_FAILED: the first read is stale now.
+    const stale = await staff.client
+      .patch(`/api/operations/checklist-templates/${created.id}`)
+      .set(originHeader)
+      .send({
+        name: "Basi",
+        expectedUpdatedAt: created.updatedAt,
+        idempotencyKey: key(),
+      });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(412);
+    expect(stale.body.error.code).toBe("PRECONDITION_FAILED");
+  });
+
+  it("[legend-btha][D-CORE-5] replays a create with the same key and refuses a reused key with a different payload", async () => {
+    const payload = {
+      ...templateInput({ name: "Checklist replay legend-btha" }),
+      idempotencyKey: key(),
+    };
+    const first = await staff.client
+      .post("/api/operations/checklist-templates")
+      .set(originHeader)
+      .send(payload);
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    createdTemplateIds.push(first.body.data.id as string);
+    const again = await staff.client
+      .post("/api/operations/checklist-templates")
+      .set(originHeader)
+      .send(payload);
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    expect(again.body.data.id).toBe(first.body.data.id);
+    const reused = await staff.client
+      .post("/api/operations/checklist-templates")
+      .set(originHeader)
+      .send({ ...payload, name: "Payload lain" });
+    expect(reused.status).toBe(409);
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("[legend-btha][OPS-01] lists templates of one outlet, newest first, in the contract page shape", async () => {
+    const response = await staff.client.get(
+      `/api/operations/checklist-templates?outletId=${outletA.id}&limit=50`,
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    listChecklistTemplates.response.parse(response.body);
+    expect(response.body.data.map((row: { id: string }) => row.id)).toContain(
+      baseTemplateId,
+    );
+    expect(
+      (
+        await staff.client.get(
+          `/api/operations/checklist-templates?outletId=${outletA.id}&type=nope`,
+        )
+      ).status,
+    ).toBe(422);
+  });
+});
+
+describe("Operations checklist runs (legend-btha)", () => {
+  it("[legend-btha][OPS-01] derives dueAt in the outlet time zone and snapshots the template into the run", async () => {
+    const template = await postTemplate(staff, {
+      name: "Checklist snapshot legend-btha",
+    });
+    const run = await postRun(staff, template.id);
+    expect(run.templateVersion).toBe(1);
+    expect(run.items.map((item: { label: string }) => item.label)).toEqual([
+      "Suhu chiller",
+      "Foto area bar",
+      "Tanda tangan supervisor",
+    ]);
+    expect(run.status).toBe("pending");
+    expect(run.results).toEqual([]);
+    expect(run.completedAt).toBeNull();
+    expect(run.missedAt).toBeNull();
+    expect(run.alertedAt).toBeNull();
+    // The seeded outlet runs on Asia/Jakarta: 08:00 there is 01:00Z.
+    const zone = await asTenant(async (client) => {
+      const { rows } = await client.query<{ timezone: string }>(
+        "SELECT timezone FROM outlets WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, outletA.id],
+      );
+      return rows[0]?.timezone;
+    });
+    expect(zone).toBe("Asia/Jakarta");
+    expect(run.dueAt).toBe("2030-01-15T01:00:00.000Z");
+
+    // A later template edit never rewrites a run's snapshot.
+    const edited = await staff.client
+      .patch(`/api/operations/checklist-templates/${template.id}`)
+      .set(originHeader)
+      .send({
+        items: [{ label: "Hanya satu butir", requiredEvidence: [] }],
+        expectedUpdatedAt: template.updatedAt,
+        idempotencyKey: key(),
+      });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect(edited.body.data.version).toBe(2);
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.status, JSON.stringify(reread.body)).toBe(200);
+    getChecklistRun.response.parse(reread.body);
+    expect(reread.body.data.templateVersion).toBe(1);
+    expect(reread.body.data.items).toHaveLength(3);
+  });
+
+  it("[legend-btha][OPS-01] refuses an answer before the run starts and a finished answer without its required evidence", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    const numberItem = itemIdOf(run, "Suhu chiller");
+    // 409 CHECKLIST_TRANSITION_INVALID: the run is still pending.
+    const early = await postResult(staff, run.id, numberItem, {
+      numberValue: "4.5000",
+    });
+    expect(early.status).toBe(409);
+    expect(early.body.error.code).toBe("CHECKLIST_TRANSITION_INVALID");
+
+    await startRun(staff, run.id);
+    // The photo item is answered "done" without a photo -> 422 OPS-01.
+    const photoItem = itemIdOf(run, "Foto area bar");
+    const missing = await postResult(staff, run.id, photoItem);
+    expect(missing.status, JSON.stringify(missing.body)).toBe(422);
+    expect(missing.body.error.code).toBe("CHECKLIST_ITEM_INCOMPLETE");
+    // The run was not changed by the refused answer.
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.body.data.results).toEqual([]);
+  });
+
+  it("[legend-btha][OPS-01] completes a run once every item carries its evidence", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const number = await postResult(
+      staff,
+      run.id,
+      itemIdOf(run, "Suhu chiller"),
+      {
+        numberValue: "4.5000",
+      },
+    );
+    expect(number.status, JSON.stringify(number.body)).toBe(200);
+    const photo = await postResult(
+      staff,
+      run.id,
+      itemIdOf(run, "Foto area bar"),
+      {
+        photoMediaIds: [randomUUID()],
+      },
+    );
+    expect(photo.status, JSON.stringify(photo.body)).toBe(200);
+    const signature = await postResult(
+      staff,
+      run.id,
+      itemIdOf(run, "Tanda tangan supervisor"),
+      { signatureMediaId: randomUUID() },
+    );
+    expect(signature.status, JSON.stringify(signature.body)).toBe(200);
+
+    const completed = await postTransition(staff, run.id, "complete");
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    getChecklistRun.response.parse(completed.body);
+    expect(completed.body.data.status).toBe("completed");
+    expect(completed.body.data.completedAt).not.toBeNull();
+    expect(completed.body.data.results).toHaveLength(3);
+
+    // A finished run cannot be finished again (contract machine, 409).
+    const again = await postTransition(staff, run.id, "complete");
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe("CHECKLIST_TRANSITION_INVALID");
+  });
+
+  it("[legend-btha][OPS-01] a failed item fails the run and emits checklist.failed to the outbox", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    await postResult(staff, run.id, itemIdOf(run, "Suhu chiller"), {
+      numberValue: "11.0000",
+      status: "failed",
+      note: "Chiller terlalu hangat",
+    });
+    await postResult(staff, run.id, itemIdOf(run, "Foto area bar"), {
+      photoMediaIds: [randomUUID()],
+    });
+    await postResult(staff, run.id, itemIdOf(run, "Tanda tangan supervisor"), {
+      signatureMediaId: randomUUID(),
+    });
+
+    const failed = await postTransition(staff, run.id, "fail");
+    expect(failed.status, JSON.stringify(failed.body)).toBe(200);
+    expect(failed.body.data.status).toBe("failed");
+    expect(failed.body.data.completedAt).not.toBeNull();
+
+    const events = await runEvents(run.id);
+    const alert = events.find((event) => event.name === "checklist.failed");
+    expect(alert?.destination).toBe("cloud-sync");
+    expect(alert?.payload.runId).toBe(run.id);
+    expect(alert?.payload.failedItemIds).toEqual([
+      itemIdOf(run, "Suhu chiller"),
+    ]);
+  });
+
+  it("[legend-btha][OPS-01] a miss stamps missed_at/alerted_at and queues a notification, not a silent status write", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    const missed = await postTransition(staff, run.id, "miss");
+    expect(missed.status, JSON.stringify(missed.body)).toBe(200);
+    getChecklistRun.response.parse(missed.body);
+    expect(missed.body.data.status).toBe("missed");
+    expect(missed.body.data.missedAt).not.toBeNull();
+    expect(missed.body.data.alertedAt).not.toBeNull();
+
+    const events = await runEvents(run.id);
+    const alert = events.find((event) => event.name === "checklist.missed");
+    expect(alert?.destination).toBe("notification");
+  });
+});
+
+describe("Operations food-safety and prep (legend-btha)", () => {
+  it("[legend-btha][OPS-02] refuses an out-of-range temperature without a corrective action", async () => {
+    const path = "/api/operations/temperature-logs";
+    const refused = await staff.client.post(path).set(originHeader).send({
+      outletId: outletA.id,
+      equipmentId,
+      readingCelsius: "12.5",
+      correctiveAction: null,
+      idempotencyKey: key(),
+    });
+    // OPS-02: the reading itself is valid, only the missing action is refused;
+    // the contract error carries its documented 422.
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.error.code).toBe(
+      "TEMPERATURE_CORRECTIVE_ACTION_REQUIRED",
+    );
+
+    const saved = await staff.client.post(path).set(originHeader).send({
+      outletId: outletA.id,
+      equipmentId,
+      readingCelsius: "12.5",
+      correctiveAction: "Pindahkan stok ke chiller cadangan",
+      idempotencyKey: key(),
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(201);
+    createTemperatureLog.response.parse(saved.body);
+    expect(saved.body.data.inRange).toBe(false);
+    expect(saved.body.data.correctiveAction).toBe(
+      "Pindahkan stok ke chiller cadangan",
+    );
+    expect(saved.body.data.recordedBy).toBe(staff.userId);
+  });
+
+  it("[legend-btha][OPS-03] creates a prep label for a batch and lists it by outlet", async () => {
+    const created = await staff.client
+      .post("/api/operations/prep-labels")
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        inventoryItemId,
+        batchId,
+        producedAt: new Date(Date.now() - 60_000).toISOString(),
+        useBy: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        idempotencyKey: key(),
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    createPrepLabel.response.parse(created.body);
+    createdPrepLabelIds.push(created.body.data.id as string);
+    expect(created.body.data.producedBy).toBe(staff.userId);
+    expect(created.body.data.printedAt).toBeNull();
+
+    const listed = await staff.client.get(
+      `/api/operations/prep-labels?outletId=${outletA.id}&limit=50`,
+    );
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    listPrepLabels.response.parse(listed.body);
+    expect(
+      listed.body.data.some(
+        (label: { id: string }) => label.id === created.body.data.id,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("Operations outlet isolation (legend-btha)", () => {
+  it("[legend-btha][TEN-03] an outlet B caller cannot read or write outlet A checklists", async () => {
+    const outsider = await outletClient(outletB.id);
+    // Listing another outlet is out of the server-minted scope.
+    const listed = await outsider.client.get(
+      `/api/operations/checklist-templates?outletId=${outletA.id}`,
+    );
+    expect(listed.status, JSON.stringify(listed.body)).toBe(403);
+    // A foreign template id is a plain 404, never another outlet's row.
+    const read = await outsider.client.get(
+      `/api/operations/checklist-templates/${baseTemplateId}`,
+    );
+    expect(read.status).toBe(404);
+    // Writing into outlet A is denied on the concrete outlet.
+    const write = await outsider.client
+      .post("/api/operations/checklist-templates")
+      .set(originHeader)
+      .send({
+        ...templateInput({ name: "Lintas outlet" }),
+        idempotencyKey: key(),
+      });
+    expect(write.status, JSON.stringify(write.body)).toBe(403);
+    // The same caller really can read its own outlet.
+    const own = await outsider.client.get(
+      `/api/operations/checklist-templates?outletId=${outletB.id}`,
+    );
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.data).toEqual([]);
+  });
+
+  it("[legend-btha][TEN-01] an anonymous request is refused before any service runs", async () => {
+    const anonymous = agent(app);
+    expect(
+      (
+        await anonymous.get(
+          `/api/operations/checklist-runs?outletId=${outletA.id}`,
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await anonymous
+          .post("/api/operations/checklist-runs")
+          .set(originHeader)
+          .send({
+            outletId: outletA.id,
+            templateId: baseTemplateId,
+            shiftDate: "2030-01-15",
+            assignedTo: randomUUID(),
+            idempotencyKey: key(),
+          })
+      ).status,
+    ).toBe(401);
+  });
+});
