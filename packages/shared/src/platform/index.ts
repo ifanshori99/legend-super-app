@@ -13,6 +13,7 @@ export * from "./device-token.ts";
 export * from "./integrations.ts";
 export * from "./themes.ts";
 export * from "./support-access.ts";
+export * from "./text-consent.ts";
 export * from "./config.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";

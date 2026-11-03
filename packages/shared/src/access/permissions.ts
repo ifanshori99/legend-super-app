@@ -221,6 +221,7 @@ const entries = [
   ["mcp.client.manage", ["access_admin"]],
 
   // Daily operations (§3 Kelompok F, F45)
+  ["ops.outbox.replay", []],
   ["ops.checklist.complete", []],
   ["ops.food_safety.log", []],
   ["ops.prep.manage", []],

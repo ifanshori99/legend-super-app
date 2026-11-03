@@ -524,6 +524,7 @@ const accessBaseMessages = {
       prep: { manage: "Kelola persiapan" },
       equipment: { maintain: "Perawatan peralatan" },
       handover: { record: "Catat serah terima shift" },
+      outbox: { replay: "Putar ulang event outbox" },
     },
   },
 

@@ -4,13 +4,27 @@
 // visitor may open (their page guard's permission), grouped by the scope the
 // setting applies to.
 import { Link, useRouteContext } from "@tanstack/react-router";
-import { ChevronRight, Settings } from "lucide-react";
+import { ChevronRight, Settings, Store } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback-state";
 import type { AreaAccess } from "@/lib/areas/access";
 import { useRouteAvailable } from "@/lib/use-route-available";
-import { HUB_ITEMS, groupAvailable, type HubScope } from "../hub";
+import { HUB_ITEMS, groupAvailable, type HubItem, type HubScope } from "../hub";
+
+// Outlet settings (bead legend-1mi5) adds itself here instead of editing the
+// hub catalogue: this bead owns only this file. Same shape and visibility rules
+// as the entries in `hub.ts`; the card lights up once the route exists and the
+// visitor holds the permission the page guard checks.
+const OUTLET_SETTINGS_ITEM: HubItem = {
+  key: "outletSettings",
+  scope: "outlet",
+  to: "/kelola/pengaturan/outlet",
+  icon: Store,
+  nameKey: "auditSettings.hub.groups.outlet",
+  hintKey: "auditSettings.hub.groups.outletHint",
+  anyPermission: ["org.structure.manage"],
+};
 
 const GROUP_KEYS = {
   tenant: [
@@ -35,7 +49,7 @@ export function SettingsHubPage() {
   };
   // Fail closed: no access context means no permission-gated cards.
   const groups = groupAvailable(
-    HUB_ITEMS,
+    [...HUB_ITEMS, OUTLET_SETTINGS_ITEM],
     available,
     access?.permissions ?? [],
   );

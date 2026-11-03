@@ -31,6 +31,7 @@ import { createPaymentReservationDepositPort } from "./services/reservation-depo
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
 import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
+import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -171,6 +172,12 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // TEN-04: record lapsed support-access sessions exactly once.
+    try {
+      await expireDueSupportAccessGrants(context);
+    } catch {
+      console.error("Support access expiry sweep failed");
     }
     // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL
     // lapsed so the unit frees up. Same fail-closed rule as above.

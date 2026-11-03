@@ -403,6 +403,19 @@ describe("ACC-02 closed periods reject postings unless reopened with approval", 
         }),
       "APPROVER_IS_REQUESTER",
     );
+    // Separation of duties: whoever closed the period cannot approve its reopen.
+    throwsCode(
+      () =>
+        acc.decidePeriodReopen({
+          request,
+          period: { ...oct, closedBy: generalManager },
+          entityPeriods: fx.fiscalPeriods,
+          decision: "approve",
+          actorId: generalManager,
+          now: NOW,
+        }),
+      "APPROVER_IS_CLOSER",
+    );
     const result = acc.decidePeriodReopen({
       request,
       period: oct,

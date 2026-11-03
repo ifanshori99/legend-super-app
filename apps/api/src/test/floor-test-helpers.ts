@@ -163,7 +163,87 @@ export async function staffOfIsolatedTenant(
   return { client, userId, email };
 }
 
+/**
+ * audit_logs is append-only (trigger) and its outlet FK blocks outlet deletes
+ * (legend-bd95), so the owner suspends the trigger for this one purge.
+ */
+async function purgeAuditLogs(tenantId: string) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
+    );
+    await client.query("DELETE FROM audit_logs WHERE tenant_id = $1", [
+      tenantId,
+    ]);
+    await client.query(
+      "ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only",
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Registers a tenant row with one brand, entity and `outletCount` real
+ * outlets under the given tenant id, so outlet-owned rows (notifications,
+ * audit_logs) satisfy their (tenant_id, outlet_id) FK (legend-bd95).
+ */
+export async function seedTenantOutlets(
+  tenantId: string,
+  outletCount = 1,
+): Promise<string[]> {
+  const suffix = tenantId.slice(0, 8);
+  const brandId = randomUUID();
+  const legalEntityId = randomUUID();
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1, $2, $3, 'lengkap', 'active', 'shared', $4, $5, 'test')
+     ON CONFLICT (id) DO NOTHING`,
+    [
+      tenantId,
+      `seed-${suffix}`,
+      `Seed ${suffix}`,
+      JSON.stringify({ modules: ["qr_order"], integrationProviders: [] }),
+      JSON.stringify(fixtures.tenant.limits),
+    ],
+  );
+  await owner.query(
+    `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, $4)`,
+    [brandId, tenantId, `brand-${suffix}`, `Brand ${suffix}`],
+  );
+  await owner.query(
+    `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)`,
+    [legalEntityId, tenantId, `Entity ${suffix}`],
+  );
+  const ids: string[] = [];
+  for (let index = 0; index < outletCount; index += 1) {
+    const outletId = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, $6, 'Jl. Uji 1', 'Asia/Jakarta', $7, 'active')`,
+      [
+        outletId,
+        tenantId,
+        brandId,
+        legalEntityId,
+        `S${suffix}-${index}`.slice(0, 20).toUpperCase(),
+        `Outlet ${suffix} ${index}`,
+        JSON.stringify(fixtures.outlets[0].openingHours),
+      ],
+    );
+    ids.push(outletId);
+  }
+  return ids;
+}
+
 export async function dropIsolatedTenant(tenant: IsolatedTenant) {
+  await purgeAuditLogs(tenant.tenantId);
   await owner.query("DELETE FROM role_assignments WHERE tenant_id = $1", [
     tenant.tenantId,
   ]);

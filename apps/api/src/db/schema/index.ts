@@ -43,3 +43,6 @@ export * from "./inventory-setup";
 export * from "./menu-import";
 // WS-06 production, waste, alerts (legend-ugo).
 export * from "./inventory-ops";
+// WS-01 text overrides + consents (legend-cv3).
+export * from "./text-overrides";
+export * from "./consents";
