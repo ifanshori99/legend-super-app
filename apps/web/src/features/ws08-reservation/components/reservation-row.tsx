@@ -101,10 +101,7 @@ export function ReservationRow({
 
       <TableCell numeric className="align-top">
         <span className="flex flex-col items-end gap-1">
-          <DepositBadge
-            status={reservation.depositStatus}
-            hasDeposit={reservation.depositIdr > 0}
-          />
+          <DepositBadge reservation={reservation} />
           <Money
             amount={reservation.depositIdr}
             size="sm"

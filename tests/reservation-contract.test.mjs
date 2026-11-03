@@ -41,11 +41,11 @@ test("F19 Cafe Legend reservation fixtures parse and stay coherent (§6.G reserv
     );
   }
 
-  // §3.22: a pending deposit waits for its DP link; a confirmed private room
-  // carries the paid DP and its minimum spend.
+  // §3.22: a pending deposit waits for its DP link. The DP is a hosted bill
+  // link, so the intent (and `depositPaymentId`) appears only after the guest
+  // pays: the fixture's legacy id is allowed but not required.
   const pending = f.reservations[0];
   assert.equal(pending.status, "pending_deposit");
-  assert.ok(pending.depositPaymentId);
   assert.equal(pending.depositStatus, "pending");
   const confirmed = f.reservations[1];
   assert.equal(confirmed.status, "confirmed");
@@ -170,7 +170,8 @@ test("RSV-02 a paid DP is a deposit: confirmed needs it settled, seating allocat
   seatedUnpaid.depositStatus = "pending";
   assert.equal(rsv.reservationSchema.safeParse(seatedUnpaid).success, false);
 
-  // pending_deposit must carry the payment intent it waits for.
+  // pending_deposit always carries its DP status. The DP is a hosted bill
+  // link, so the payment intent (and its id) appears only after the guest pays.
   const noIntent = structuredClone(f.reservations[0]);
   noIntent.depositPaymentId = null;
   noIntent.depositStatus = null;
@@ -187,6 +188,60 @@ test("RSV-02 a paid DP is a deposit: confirmed needs it settled, seating allocat
     rsv.reservationEventFixtures.seated.payload.tableSessionId,
     seated.tableSessionId,
   );
+});
+
+test("RSV-02 a refunded DP stays settled, so the guest can still be seated", () => {
+  // machines.ts is the single source of truth the schema comment cites: a
+  // later WS-05 refund names an intent that was paid, so the DP stays valid.
+  assert.equal(rsv.depositIsSettled("refunded"), true);
+  assert.equal(rsv.depositIsSettled("partially_refunded"), true);
+  assert.equal(rsv.depositIsSettled("paid"), true);
+  assert.equal(rsv.depositIsSettled("pending"), false);
+  assert.equal(rsv.depositIsSettled("expired"), false);
+  assert.equal(rsv.depositIsSettled("failed"), false);
+  assert.equal(rsv.depositIsSettled(null), false);
+
+  // The schema keeps a confirmed reservation whose DP was refunded after it
+  // was paid, so staff can still seat the party and the visit can complete.
+  const confirmedRefunded = structuredClone(f.reservations[1]);
+  confirmedRefunded.depositStatus = "refunded";
+  assert.equal(
+    rsv.reservationSchema.safeParse(confirmedRefunded).success,
+    true,
+  );
+
+  const seatedRefunded = structuredClone(f.reservations[2]);
+  seatedRefunded.depositStatus = "refunded";
+  assert.equal(rsv.reservationSchema.safeParse(seatedRefunded).success, true);
+
+  const completedRefunded = structuredClone(seatedRefunded);
+  completedRefunded.status = "completed";
+  completedRefunded.completedAt = "2026-11-01T06:30:00.000Z";
+  assert.equal(
+    rsv.reservationSchema.safeParse(completedRefunded).success,
+    true,
+  );
+
+  // An unpaid DP is still not a deposit, whatever the reservation status says.
+  const confirmedUnpaid = structuredClone(confirmedRefunded);
+  confirmedUnpaid.depositStatus = "pending";
+  assert.equal(rsv.reservationSchema.safeParse(confirmedUnpaid).success, false);
+
+  // RSV-03: refund math uses the narrower rule. A fully refunded DP is settled
+  // for seating but no longer holds funds, so nothing is allocated or refunded
+  // a second time; a paid or partly refunded DP still does.
+  assert.equal(rsv.depositHoldsFunds("paid"), true);
+  assert.equal(rsv.depositHoldsFunds("partially_refunded"), true);
+  assert.equal(rsv.depositHoldsFunds("refunded"), false);
+  assert.equal(rsv.depositHoldsFunds("pending"), false);
+  assert.equal(rsv.depositHoldsFunds(null), false);
+
+  // The DP is a hosted bill link: a pending_deposit row carries the DP status
+  // but no intent id until the guest pays through the link.
+  const awaitingLink = structuredClone(f.reservations[0]);
+  awaitingLink.depositPaymentId = null;
+  assert.equal(awaitingLink.depositStatus, "pending");
+  assert.equal(rsv.reservationSchema.safeParse(awaitingLink).success, true);
 });
 
 test("RSV-03 cancellation and no-show follow the policy snapshot taken at booking", () => {

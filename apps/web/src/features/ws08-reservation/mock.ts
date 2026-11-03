@@ -32,6 +32,7 @@ import {
   reservationErrorMessages,
   reservationPreOrderSchema,
   reservationSchema,
+  reservationEndsAt,
   reservationTableSlotSchema,
   resolveWaitlistEntry,
   seatReservation,
@@ -44,7 +45,7 @@ import type {
   ReservationTableSlot,
   WaitlistEntry,
 } from "@starter/shared/reservation";
-import { cafeLegendFixtures, idr } from "@starter/shared/core";
+import { cafeLegendFixtures, idr, type Idr } from "@starter/shared/core";
 import { tableSessionIdSchema } from "@starter/shared/qr-order";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 import { ApiError } from "../../lib/api/errors.ts";
@@ -91,12 +92,93 @@ function requireOutlet(requested: string): void {
     throw new ApiError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
 }
 
+/**
+ * The DP still held when the reservation closes (RSV-03). `depositIdr` is the
+ * original DP, and `depositIsSettled("refunded")` says the guest paid it; but
+ * once WS-05 returned it in full nothing is left to refund or forfeit, so a
+ * close after that reports a zero outcome instead of refunding twice. The read
+ * model carries no refunded amount, so a partial refund keeps the original
+ * amount here; the API resolves the remainder from WS-05.
+ */
+function depositAtClose(reservation: Reservation): Idr {
+  if (!depositIsSettled(reservation.depositStatus)) return idr(0);
+  return reservation.depositStatus === "refunded"
+    ? idr(0)
+    : reservation.depositIdr;
+}
+
+// ---- Mock-only DP shapes (bead legend-mv3a) --------------------------------
+
+/**
+ * Two DP shapes the DP-link contract introduces, cloned from the fixtures
+ * inside this store (never edited in `@starter/shared`) so ids, policies and
+ * timestamps stay consistent:
+ * - a confirmed booking whose DP was refunded afterwards (WS-05): the DP
+ *   stays settled, so the host can still seat the guest (RSV-02);
+ * - a pending_deposit booking where the guest has not opened the DP link yet:
+ *   `depositPaymentId` is null because no intent exists until the guest pays.
+ * Both sit on 5 Nov 2026, a business day the fixtures leave empty, so no other
+ * desk test or e2e spec changes counts.
+ */
+export const refundedDepositReservationId =
+  "00000000-0000-4000-8000-000000005007";
+export const awaitingDepositReservationId =
+  "00000000-0000-4000-8000-000000005008";
+
+/** Clone of Rangga's confirmed private-room dinner, DP refunded later. */
+export const refundedDepositReservation: Reservation = reservationSchema.parse({
+  ...structuredClone(fixtures.reservations[1]),
+  id: refundedDepositReservationId,
+  customerProfileId: null,
+  guestName: "Laras Ayu Pramesti",
+  reservedFor: "2026-11-05T19:00:00+07:00",
+  // The payment was refunded by WS-05; the settled intent stays on the row.
+  depositStatus: "refunded",
+  note: null,
+  source: "staff",
+  updatedAt: "2026-10-31T02:15:00.000Z",
+});
+
+/** Clone of Dewi's pending booking before the guest opens the DP link. */
+export const awaitingDepositReservation: Reservation = reservationSchema.parse({
+  ...structuredClone(fixtures.reservations[0]),
+  id: awaitingDepositReservationId,
+  guestName: "Nadia Puspita",
+  reservedFor: "2026-11-05T18:00:00+07:00",
+  // No intent yet: the guest has not paid through the hosted DP page.
+  depositPaymentId: null,
+  depositStatus: "pending",
+  note: null,
+  createdAt: "2026-10-31T04:00:00.000Z",
+  updatedAt: "2026-10-31T04:00:00.000Z",
+});
+
+const refundedDepositSlot: ReservationTableSlot =
+  reservationTableSlotSchema.parse({
+    id: "00000000-0000-4000-8000-000000005107",
+    tenantId,
+    outletId,
+    reservationId: refundedDepositReservation.id,
+    tableId: refundedDepositReservation.tableIds[0],
+    startsAt: refundedDepositReservation.reservedFor,
+    endsAt: reservationEndsAt(
+      refundedDepositReservation.reservedFor,
+      refundedDepositReservation.durationMinutes,
+    ),
+    releasedAt: null,
+  });
+
 // ---- Stores ---------------------------------------------------------------
 
-const reservations = createMockStore(() =>
-  structuredClone(fixtures.reservations),
-);
-const slots = createMockStore(() => structuredClone(fixtures.tableSlots));
+const reservations = createMockStore(() => [
+  ...structuredClone(fixtures.reservations),
+  structuredClone(refundedDepositReservation),
+  structuredClone(awaitingDepositReservation),
+]);
+const slots = createMockStore(() => [
+  ...structuredClone(fixtures.tableSlots),
+  structuredClone(refundedDepositSlot),
+]);
 const waitlist = createMockStore(() => structuredClone(fixtures.waitlist));
 const packages = createMockStore(() => structuredClone(fixtures.packages));
 const preOrders = createMockStore(() => structuredClone(fixtures.preOrders));
@@ -254,9 +336,7 @@ registerMock(cancelReservation, ({ params, body }) => {
   // no-show. The screen only offers the button for open reservations.
   if (Date.parse(current.reservedFor) <= Date.parse(cancelledAt))
     fail("RESERVATION_TRANSITION_INVALID");
-  const paid = depositIsSettled(current.depositStatus)
-    ? current.depositIdr
-    : idr(0);
+  const paid = depositAtClose(current);
   // RSV-03: the outcome follows the policy snapshot, not today's policy.
   const depositOutcome = cancellationDepositOutcome(current.policy, {
     depositPaidIdr: paid,
@@ -279,9 +359,7 @@ registerMock(markReservationNoShow, ({ params, body }) => {
   const current = findReservation(params.reservationId);
   if (!canTransitionReservation(current.status, "no_show"))
     fail("RESERVATION_TRANSITION_INVALID");
-  const paid = depositIsSettled(current.depositStatus)
-    ? current.depositIdr
-    : idr(0);
+  const paid = depositAtClose(current);
   const depositOutcome = noShowDepositOutcome(current.policy, {
     depositPaidIdr: paid,
   });

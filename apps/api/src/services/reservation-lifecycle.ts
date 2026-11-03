@@ -15,6 +15,7 @@ import {
   ReservationError,
   assertReservationTransition,
   cancellationDepositOutcome,
+  depositHoldsFunds,
   depositIsSettled,
   noShowDepositOutcome,
   reservationCloseResultSchema,
@@ -321,7 +322,10 @@ export async function seatReservation(
           : null;
         if (!depositIsSettled(status))
           throw new ReservationError("RESERVATION_DEPOSIT_UNPAID");
-        depositPaid = row.depositIdr;
+        // RSV-02: only funds the intent still holds become prepaid credit. A
+        // DP refunded by WS-05 keeps the reservation valid (the guest was
+        // seated on a paid DP) but must not credit the bill again (RSV-03).
+        if (depositHoldsFunds(status)) depositPaid = row.depositIdr;
       }
       // The host may seat the party on other tables than the tentative ones.
       const held = (await loadHolds(tx, context, [row.id]))
@@ -451,7 +455,9 @@ async function closeReservation(
       const statuses = await loadDepositStatuses(tx, context, [
         row.depositPaymentId,
       ]);
-      if (depositIsSettled(statuses.get(row.depositPaymentId) ?? null))
+      // RSV-03: only money the intent still holds can be refunded/forfeited.
+      // A fully refunded DP is settled (RSV-02) but has nothing left to move.
+      if (depositHoldsFunds(statuses.get(row.depositPaymentId) ?? null))
         paid = row.depositIdr;
     }
     if (kind === "no_show" && now < row.reservedFor)

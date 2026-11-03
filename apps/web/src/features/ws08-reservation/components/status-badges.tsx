@@ -17,12 +17,13 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import type {
   PreOrderStatus,
+  Reservation,
   ReservationStatus,
   WaitlistStatus,
 } from "@starter/shared/reservation";
 import type { PaymentStatus } from "@starter/shared/payment";
 import {
-  depositStatusKey,
+  depositLabelKey,
   reservationStatusKey,
   waitlistStatusKey,
 } from "../lib";
@@ -71,23 +72,25 @@ const DEPOSIT_STYLE: Record<
   partially_refunded: { tone: "info", icon: RotateCcw },
 };
 
-/** DP state of one reservation; a snapshot without DP shows "Tanpa DP". */
+/**
+ * DP state of one reservation; a snapshot without DP shows "Tanpa DP", and a
+ * pending DP with no intent yet shows "Menunggu pembayaran DP" (RSV-02).
+ */
 export function DepositBadge({
-  status,
-  hasDeposit,
+  reservation,
   className,
 }: {
-  status: PaymentStatus | null;
-  hasDeposit: boolean;
+  reservation: Reservation;
   className?: string;
 }) {
   const t = useT();
-  const key = hasDeposit ? (status ?? "none") : "none";
+  const key =
+    reservation.depositIdr > 0 ? (reservation.depositStatus ?? "none") : "none";
   const { tone, icon: Icon } = DEPOSIT_STYLE[key];
   return (
     <Badge tone={tone} className={className}>
       <Icon aria-hidden="true" />
-      {hasDeposit ? t(depositStatusKey(status)) : t("reservation.deposit.none")}
+      {t(depositLabelKey(reservation))}
     </Badge>
   );
 }

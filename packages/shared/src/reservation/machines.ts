@@ -220,8 +220,32 @@ export function noShowDepositOutcome(
   );
 }
 
-/** RSV-02: the DP is a deposit only once the payment intent is settled. */
+/**
+ * RSV-02: the DP is a deposit once its payment intent is settled. This is the
+ * single source of truth for the rule `reservationSchema` applies to a
+ * confirmed, seated or completed reservation.
+ *
+ * A later WS-05 refund does not undo the payment that settled the DP:
+ * `partially_refunded` and `refunded` still name an intent that was paid, so
+ * the guest may be seated and the reservation may complete. Cancellation
+ * outcomes still start from the DP that was actually paid (RSV-03).
+ */
 export function depositIsSettled(status: PaymentStatus | null): boolean {
+  return (
+    status === "paid" ||
+    status === "partially_refunded" ||
+    status === "refunded"
+  );
+}
+
+/**
+ * RSV-03 money guard: whether the DP intent still holds paid funds that a
+ * cancellation or no-show may refund or forfeit. A fully `refunded` intent is
+ * settled for RSV-02 (the guest was seated on a DP that was paid) but has
+ * nothing left to move, so refund math must use this narrower rule and never
+ * `depositIsSettled`.
+ */
+export function depositHoldsFunds(status: PaymentStatus | null): boolean {
   return status === "paid" || status === "partially_refunded";
 }
 

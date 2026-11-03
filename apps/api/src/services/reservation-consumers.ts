@@ -27,7 +27,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import { depositIsSettled } from "@starter/shared/reservation";
+import { depositHoldsFunds } from "@starter/shared/reservation";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
@@ -98,7 +98,9 @@ async function refundLateDeposit(
           eq(paymentIntents.paymentLinkId, locked.depositPaymentLinkId),
         ),
       );
-    if (!intent || !depositIsSettled(intent.status)) return null;
+    // RSV-03: a DP refund is only owed while the intent still holds funds; a
+    // fully refunded intent was already returned and is not refunded again.
+    if (!intent || !depositHoldsFunds(intent.status)) return null;
     const amount = idr(intent.amountIdr);
     const [updated] = await tx
       .update(reservations)
