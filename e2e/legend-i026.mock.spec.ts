@@ -126,7 +126,9 @@ test("§3.21 Segmentasi (LOY-04) previews and saves a segment", async ({
   // The input round-trip proves hydration; clicking once avoids a second
   // submit (which would create a duplicate segment row).
   await page.getByRole("button", { name: "Simpan segmen" }).click();
-  await expect(page.getByText("Segmen Win-back uji dibuat.")).toBeVisible({
+  await expect(
+    page.getByText("Segmen Win-back uji dibuat.", { exact: true }),
+  ).toBeVisible({
     timeout: 5000,
   });
 
