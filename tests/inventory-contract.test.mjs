@@ -1263,7 +1263,8 @@ test("par level writes validate the range and reject tenant fields (PRD §16 Par
     }).success,
     false,
   );
-  const { idempotencyKey: _omitted, ...withoutKey } = par;
+  const withoutKey = { ...par };
+  delete withoutKey.idempotencyKey;
   assert.equal(
     inventory.createParLevelInputSchema.safeParse(withoutKey).success,
     false,
