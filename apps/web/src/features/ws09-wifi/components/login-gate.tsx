@@ -17,7 +17,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type { WifiPolicy } from "@starter/shared/facility";
-import { signInPath } from "@/features/ws01-login/flow";
 import { tableMenuToken } from "../state.ts";
 import { WifiFacts } from "./wifi-facts";
 
@@ -46,8 +45,9 @@ export function WifiLoginGate({
       </CardHeader>
       <WifiFacts policy={policy} />
       <Button asChild>
-        {/* `redirect` is the alias /masuk accepts for an external entry point. */}
-        <Link href={signInPath(location.href, "redirect")}>
+        {/* `redirect` is the alias /masuk accepts for an external entry point;
+            a typed search keeps the current portal path with its query. */}
+        <Link to="/masuk" search={{ redirect: location.href }}>
           {t("wifi.loginAction")}
         </Link>
       </Button>
