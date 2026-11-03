@@ -20,13 +20,6 @@ test.use({ baseURL });
 /** A01, pay-first, no minimum spend — the same fixture legend-woz uses. */
 const payFirstTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`;
 
-/** P1, open bill with two splits (one paid) — the legend-woz claim fixture. */
-const privateRoom = `v1.${"E".repeat(40)}.${"F".repeat(43)}`;
-
-/** The mock accepts any joined session for a point claim; this cookie makes it
- *  ask a guest to sign in instead (`legend-mock-guest=1`, ws03 mock.ts). */
-const GUEST_COOKIE = "legend-mock-guest";
-
 /**
  * The first hit on a cold Vite dev server paints the server HTML before React
  * hydrates; a click in that window is lost. React attests a hydrated node with
