@@ -20,6 +20,7 @@ import { qrCartMessages } from "./qr-cart.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
+import { promoMessages } from "./promo.ts";
 import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
@@ -67,6 +68,8 @@ export const id = {
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
+  // Promo engine admin (PRD §3.21), own file (legend-oadp).
+  promo: promoMessages,
   // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
   accounting: accountingMessages,
   common: {
@@ -797,6 +800,7 @@ export const id = {
       accounting: "Akuntansi",
       crm: "CRM",
       loyalty: "Loyalty",
+      promo: "Promo",
       settings: "Pengaturan",
       floor: "Denah & Meja",
       notifications: "Notifikasi",

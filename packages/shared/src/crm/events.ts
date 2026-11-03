@@ -46,6 +46,9 @@ export const crmEventNames = [
   "promo_application.redeemed",
   "promo_application.released",
   "voucher.issued",
+  // Per-outlet switch and partial-refund withdrawal (bead legend-e5it).
+  "promotion_outlet.changed",
+  "promo_application.adjusted",
 ] as const;
 export type CrmEventName = (typeof crmEventNames)[number];
 
@@ -184,6 +187,50 @@ export const voucherIssuedPayloadSchema = z.strictObject({
 });
 export type VoucherIssuedPayload = z.infer<typeof voucherIssuedPayloadSchema>;
 
+/**
+ * A promotion was switched on or off at one outlet (contract PromotionOutlet,
+ * bead legend-e5it). Edge nodes replicate the switch next to the rule. The
+ * aggregate is the (promotion, outlet) pair — its id is
+ * `promotionOutletAggregateId` — because every event of one aggregate must
+ * carry the same outlet (outbox rule), unlike tenant-wide `promotion.*`.
+ */
+export const promotionOutletChangedPayloadSchema = z.strictObject({
+  promotionId: uuidSchema,
+  outletId: uuidSchema,
+  enabled: z.boolean(),
+});
+export type PromotionOutletChangedPayload = z.infer<
+  typeof promotionOutletChangedPayloadSchema
+>;
+
+/**
+ * A partial refund dropped the bill below a promotion's condition, so that
+ * promotion was withdrawn and its quota, budget, voucher and facility reward
+ * given back (owner decision Q41, bead legend-e5it). The refund is reduced by
+ * `withdrawnDiscountIdr`; WS-09 revokes the listed facility rewards.
+ */
+export const promoApplicationAdjustedPayloadSchema = z.strictObject({
+  orderId: ulidIdSchema<"OrderId">(),
+  outletId: uuidSchema,
+  reason: z.string().min(1).max(300),
+  refundedSubtotalIdr: nonnegativeIdr,
+  withdrawnDiscountIdr: nonnegativeIdr,
+  /** The order's promo discount after the withdrawal. */
+  totalDiscountIdr: nonnegativeIdr,
+  withdrawn: z.array(
+    z.strictObject({
+      promotionId: uuidSchema,
+      voucherId: uuidSchema.nullable(),
+      discountIdr: nonnegativeIdr,
+    }),
+  ),
+  voucherIds: z.array(uuidSchema),
+  facilityRewardIds: z.array(uuidSchema),
+});
+export type PromoApplicationAdjustedPayload = z.infer<
+  typeof promoApplicationAdjustedPayloadSchema
+>;
+
 const payloadSchemas: Record<
   CrmEventName,
   z.ZodType<Record<string, unknown>>
@@ -197,6 +244,8 @@ const payloadSchemas: Record<
   "promo_application.redeemed": promoApplicationRedeemedPayloadSchema,
   "promo_application.released": promoApplicationReleasedPayloadSchema,
   "voucher.issued": voucherIssuedPayloadSchema,
+  "promotion_outlet.changed": promotionOutletChangedPayloadSchema,
+  "promo_application.adjusted": promoApplicationAdjustedPayloadSchema,
 };
 
 /**
