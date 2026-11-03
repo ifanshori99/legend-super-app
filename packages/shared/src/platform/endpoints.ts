@@ -19,6 +19,7 @@ import {
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/index.ts";
 import { COLOR_TOKENS } from "../theme/types.ts";
+import { DERIVED_TOKENS } from "../theme/contrast.ts";
 import {
   configBundleSchema,
   configImportSchema,
@@ -76,7 +77,11 @@ import {
 } from "./themes.ts";
 
 const tenantParams = z.strictObject({ tenantId: tenantIdSchema });
-const colorToken = z.enum(COLOR_TOKENS);
+// Contrast failures may name derived tokens (e.g. primary-hover) too.
+const themeToken = z.enum([
+  ...COLOR_TOKENS,
+  ...(Object.keys(DERIVED_TOKENS) as [keyof typeof DERIVED_TOKENS]),
+]);
 
 /** Usage dashboard row: quotas + cost caps, computed server-side. */
 export const tenantUsageViewSchema = z.strictObject({
@@ -108,8 +113,8 @@ export const themeCheckResultSchema = z.strictObject({
   failures: z.array(
     z.strictObject({
       mode: z.enum(["light", "dark"]),
-      fg: colorToken,
-      bg: colorToken,
+      fg: themeToken,
+      bg: themeToken,
       ratio: z.number().positive(),
       min: z.number().positive(),
       use: z.string(),

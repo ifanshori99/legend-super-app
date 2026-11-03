@@ -1,0 +1,81 @@
+// Text overrides (PRD v1.7 §3 F4 "Teks & Kamus Istilah") and versioned consents
+// (PRD §2 privacy, LOY-04).
+// - `textOverridesRouter`: mount at /api/org/text-overrides.
+// - `consentRouter`: mount at /api/consents.
+// The tenant comes from the server-minted context (TEN-02).
+
+import { Router } from "express";
+import {
+  listConsentsQuerySchema,
+  listTextOverridesQuerySchema,
+  recordConsentInputSchema,
+} from "@starter/shared/platform";
+import { textOverrideInputSchema } from "@starter/shared/text";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
+import {
+  getScopedTenantContext,
+  requireTenantPermission,
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
+import { listConsents, recordConsent } from "../services/consent.service.ts";
+import {
+  listTextOverrides,
+  putTextOverride,
+} from "../services/text-override.service.ts";
+
+const base = [
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireBackOfficeSurface(),
+];
+
+// ------------------------------------------------------------ text overrides
+
+export const textOverridesRouter = Router();
+const manageSettings = requireTenantPermission("org.settings.manage");
+
+textOverridesRouter.get("/", ...base, manageSettings, async (req, res) => {
+  const query = listTextOverridesQuerySchema.parse(req.query);
+  res.json(await listTextOverrides(getScopedTenantContext(req), query));
+});
+
+textOverridesRouter.put(
+  "/",
+  ...base,
+  manageSettings,
+  jsonBody,
+  async (req, res) => {
+    const input = textOverrideInputSchema.parse(req.body);
+    res.json({
+      data: await putTextOverride(
+        getScopedTenantContext(req),
+        input,
+        getAuth(req).user.id,
+      ),
+    });
+  },
+);
+
+// ------------------------------------------------------------------ consents
+
+export const consentRouter = Router();
+const viewCustomers = requireTenantPermission("crm.customer.view");
+
+consentRouter.get("/", ...base, viewCustomers, async (req, res) => {
+  const query = listConsentsQuerySchema.parse(req.query);
+  res.json(await listConsents(getScopedTenantContext(req), query));
+});
+
+consentRouter.post("/", ...base, viewCustomers, jsonBody, async (req, res) => {
+  const input = recordConsentInputSchema.parse(req.body);
+  const consent = await recordConsent(
+    getScopedTenantContext(req),
+    input,
+    getAuth(req).user.id,
+  );
+  res.status(201).json({ data: consent });
+});
