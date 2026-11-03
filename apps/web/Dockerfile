@@ -46,3 +46,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD \
   node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/icon.svg').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", ".output/server/index.mjs"]
+
+# Edge uses the same web output as cloud; only the deployment mode changes.
+FROM runner AS edge
+ENV EDGE_MODE=true
+
+# Keep the cloud web image as the default build target.
+FROM runner AS default
