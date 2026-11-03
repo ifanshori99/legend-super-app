@@ -183,7 +183,7 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
     modal.getByText("Tulis alasan, minimal 3 karakter."),
   ).toBeVisible();
 
-  await modal.getByRole("combobox").click();
+  await modal.getByRole("combobox", { name: "Kode alasan" }).click();
   await page.getByRole("option", { name: "Pelanggan membatalkan" }).click();
   await modal
     .getByLabel("Catatan alasan")
@@ -194,6 +194,13 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
     modal.getByText("Tulis alasan, minimal 3 karakter."),
   ).toHaveCount(0);
   await shot(page, "override-pin-1440-light");
+
+  // The verify contract counts misses per staff (AUTH-06), so the supervisor
+  // whose PIN is typed is picked first; their own PIN is still refused below.
+  await modal
+    .getByRole("combobox", { name: "Supervisor yang memasukkan PIN" })
+    .click();
+  await page.getByRole("option", { name: "Yusuf Hidayat" }).click();
 
   await typePinOutsideFields(page, "246810");
   await expect(
@@ -215,7 +222,7 @@ for (const outcome of ["approved", "rejected", "expired"] as const) {
     await switchTo(page, "Nina Marlina", "246810");
     await page.getByRole("button", { name: "Ajukan override" }).click();
     const modal = page.getByTestId("override-modal");
-    await modal.getByRole("combobox").click();
+    await modal.getByRole("combobox", { name: "Kode alasan" }).click();
     await page.getByRole("option", { name: "Stok habis" }).click();
     await modal.getByLabel("Catatan alasan").fill("Bahan habis di dapur");
     await modal.getByRole("radio", { name: "Persetujuan dari ponsel" }).click();
@@ -267,8 +274,10 @@ test("AUTH-06 · kitchen shell switch-user page, empty roster and offline hint",
 
   await page.goto(`${MOCK_URL}/kds/ganti-pengguna?mock=offline`, NAV);
   await typePin(page, "246810");
+  // No staff is named and the roster is empty: the PIN is not sent at all
+  // (per-staff attempts need a user), so the pad says to pick a name first.
   await expect(
-    page.getByText("Tidak dapat menghubungi server", { exact: false }),
+    page.getByText("Pilih dulu nama staf atau supervisor", { exact: false }),
   ).toBeVisible();
   await shot(page, "offline-390-light");
 });

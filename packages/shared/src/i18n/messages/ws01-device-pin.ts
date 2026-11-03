@@ -74,6 +74,7 @@ export const devicePinMessages = {
 
   override: {
     title: "Override supervisor",
+    approverLabel: "Supervisor yang memasukkan PIN",
     description:
       "Tindakan ini butuh persetujuan supervisor. Alasan, nilai, dan penyetuju dicatat di audit log.",
     actionLabel: "Tindakan",
