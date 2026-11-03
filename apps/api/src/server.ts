@@ -3,12 +3,16 @@ import { createApp } from "./app";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
+import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
+import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import {
   attachNotificationRealtime,
   listenNotificationWakeups,
 } from "./services/notification-realtime.ts";
 
 const app = createApp();
+// RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
+setReservationDepositPort(createPaymentReservationDepositPort());
 
 const server = app.listen(env.PORT, env.HOST, async (error) => {
   if (error) {

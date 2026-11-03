@@ -50,9 +50,6 @@ const safeInt = (value: number) => Number.isSafeInteger(value);
 const sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 /** HMAC-SHA-256 hex digest produced by `hashGuestContact`. */
 const contactDigestSchema = sha256HexSchema;
-const httpsUrlSchema = z.url().refine((value) => value.startsWith("https://"), {
-  message: "Expected an https URL",
-});
 /**
  * WhatsApp number as digits in international form without `+` (AUTH-02 uses the
  * same shape: `628…`). Accepted only on the way in; the API stores its hash.
@@ -191,9 +188,18 @@ export const reservationSchema = z
     zoneId: floorZoneIdSchema.nullable(),
     tableIds: z.array(tableIdSchema),
     depositIdr: nonnegativeIdr,
-    /** `payment_intents.id` of the DP (WS-05); null when no DP applies. */
+    /**
+     * `payment_intents.id` of the settled DP (WS-05). The guest pays through a
+     * bill link and creates the intent on the hosted page, so this stays null
+     * until an intent on the DP link is paid, and when no DP applies.
+     */
     depositPaymentId: uuidSchema.nullable(),
-    /** Derived from the DP payment intent, never written by this domain. */
+    /**
+     * Derived from WS-05, never written by this domain: the settled intent's
+     * status once `depositPaymentId` is set; while the DP is still awaited it
+     * is `pending` (or `expired` once the link's window passed); null when no
+     * DP applies or nothing was paid before the reservation closed.
+     */
     depositStatus: paymentStatusSchema.nullable(),
     policy: reservationPolicySnapshotSchema,
     status: reservationStatusSchema,
@@ -217,14 +223,16 @@ export const reservationSchema = z
         path: ["tableIds"],
         message: "A table can be assigned once",
       });
+    // A settled DP always reports its status; an awaited DP has a status but
+    // no intent yet (the guest has not paid through the link).
     if (
-      (reservation.depositPaymentId === null) !==
-      (reservation.depositStatus === null)
+      reservation.depositPaymentId !== null &&
+      reservation.depositStatus === null
     )
       ctx.addIssue({
         code: "custom",
         path: ["depositStatus"],
-        message: "A DP payment id and its status always appear together",
+        message: "A DP payment id always comes with its status",
       });
     if (
       reservation.depositIdr === 0 &&
@@ -266,26 +274,28 @@ export const reservationSchema = z
         message: "An optional DP is either zero or the snapshot's DP amount",
       });
     // RSV-02: a reservation waiting for its DP is the only state with an
-    // unpaid DP, and it must carry the DP amount and its payment link.
+    // unpaid DP, and it must carry the DP amount and the DP's status.
     if (
       reservation.status === "pending_deposit" &&
-      (reservation.depositIdr === 0 || reservation.depositPaymentId === null)
+      (reservation.depositIdr === 0 || reservation.depositStatus === null)
     )
       ctx.addIssue({
         code: "custom",
         path: ["status"],
-        message:
-          "pending_deposit needs a DP amount and payment intent (RSV-02)",
+        message: "pending_deposit needs a DP amount and its status (RSV-02)",
       });
     // A required DP must be settled before the reservation is confirmed, and
     // stays settled once the guest is seated (same rule as `depositIsSettled`).
+    // A later WS-05 refund of that settled DP (`refunded`) keeps it valid: it
+    // was paid when the reservation moved on.
     if (
       (reservation.status === "confirmed" ||
         reservation.status === "seated" ||
         reservation.status === "completed") &&
       reservation.policy.depositRequirement === "required" &&
       reservation.depositStatus !== "paid" &&
-      reservation.depositStatus !== "partially_refunded"
+      reservation.depositStatus !== "partially_refunded" &&
+      reservation.depositStatus !== "refunded"
     )
       ctx.addIssue({
         code: "custom",
@@ -324,13 +334,23 @@ export const reservationSchema = z
   });
 export type Reservation = z.infer<typeof reservationSchema>;
 
-/** The DP payment link returned to the guest once, when the reservation is created. */
+/**
+ * The DP payment link returned to the guest when the reservation is created
+ * (and on an idempotent replay). The DP is a WS-05 bill link: the guest opens
+ * the hosted payment page and picks a method there, which creates the intent.
+ */
 export const reservationDepositLinkSchema = z.strictObject({
-  /** `payment_intents.id` (WS-05) that the payment gateway is asked to collect. */
-  paymentIntentId: uuidSchema,
+  /** `payment_links.id` (WS-05) of the DP bill. */
+  paymentLinkId: uuidSchema,
   amountIdr: positiveIdr,
-  /** Hosted payment page; https only. */
-  paymentUrl: httpsUrlSchema,
+  /**
+   * App-local path of the hosted payment page (`/bayar/<token>`), served by
+   * the same web app as the booking page; the token is the guest credential.
+   */
+  paymentPath: z
+    .string()
+    .max(300)
+    .regex(/^\/bayar\/[A-Za-z0-9._-]+$/, "Expected the hosted payment path"),
   expiresAt: isoDateTimeSchema,
 });
 export type ReservationDepositLink = z.infer<
