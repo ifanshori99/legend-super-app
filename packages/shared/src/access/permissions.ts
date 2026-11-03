@@ -154,6 +154,7 @@ const entries = [
   // Loyalty, CRM, promo, reservations, delivery, website (§3 Kelompok C, F17–F21)
   ["loyalty.program.manage", []],
   ["crm.customer.view", ["customer_pii"]],
+  ["crm.consent.record", []],
   ["crm.segment.manage", ["customer_pii"]],
   ["promo.manage", []],
   ["campaign.manage", ["customer_pii"]],

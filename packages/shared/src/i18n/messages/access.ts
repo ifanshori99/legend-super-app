@@ -448,6 +448,7 @@ const accessBaseMessages = {
     loyalty: { program: { manage: "Kelola program loyalitas" } },
     crm: {
       customer: { view: "Lihat profil pelanggan" },
+      consent: { record: "Catat persetujuan pelanggan" },
       segment: { manage: "Kelola segmen pelanggan" },
     },
     promo: { manage: "Kelola promo" },

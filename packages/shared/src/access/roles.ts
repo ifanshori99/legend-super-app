@@ -144,6 +144,7 @@ const templates: readonly RoleTemplate[] = [
       "wfc.policy.manage",
       "delivery.channel.manage",
       "website.content.manage",
+      "crm.consent.record",
       "ai.governance.manage",
       "mcp.client.manage",
       "ai.ask",
@@ -252,6 +253,7 @@ const templates: readonly RoleTemplate[] = [
       "accounting.expense.request",
       "reservation.view",
       "reservation.manage",
+      "crm.consent.record",
       "delivery.order.handle",
       "review.respond",
       "facility.booth.operate",
@@ -332,6 +334,8 @@ const templates: readonly RoleTemplate[] = [
       "pos.refund.request",
       "shift.cash.operate",
       "wifi.voucher.issue",
+      // Records a customer consent at the counter (LOY-04); source cashier only.
+      "crm.consent.record",
     ],
     optionalPermissions: [],
     mfaRequired: false,
@@ -502,6 +506,7 @@ const templates: readonly RoleTemplate[] = [
     permissions: [
       "loyalty.program.manage",
       "crm.customer.view",
+      "crm.consent.record",
       "crm.segment.manage",
       "promo.manage",
       "campaign.manage",
