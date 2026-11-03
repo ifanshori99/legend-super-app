@@ -145,6 +145,7 @@ import { Route as KelolaKelolaPayrollPengaturanRouteImport } from './routes/_kel
 import { Route as KelolaKelolaPayrollServiceChargeRouteImport } from './routes/_kelola/kelola.payroll.service-charge'
 import { Route as KelolaKelolaPelatihanIndexRouteImport } from './routes/_kelola/kelola.pelatihan.index'
 import { Route as KelolaKelolaPelatihanTrainingIdRouteImport } from './routes/_kelola/kelola.pelatihan.$trainingId'
+import { Route as KelolaKelolaPengaturanOutletRouteImport } from './routes/_kelola/kelola.pengaturan_.outlet'
 import { Route as KelolaKelolaPengumumanIndexRouteImport } from './routes/_kelola/kelola.pengumuman.index'
 import { Route as KelolaKelolaPromoIndexRouteImport } from './routes/_kelola/kelola.promo.index'
 import { Route as KelolaKelolaPromoPromotionIdRouteImport } from './routes/_kelola/kelola.promo.$promotionId'
@@ -905,6 +906,12 @@ const KelolaKelolaPelatihanTrainingIdRoute =
     path: '/kelola/pelatihan/$trainingId',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengaturanOutletRoute =
+  KelolaKelolaPengaturanOutletRouteImport.update({
+    id: '/kelola/pengaturan_/outlet',
+    path: '/kelola/pengaturan/outlet',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaPengumumanIndexRoute =
   KelolaKelolaPengumumanIndexRouteImport.update({
     id: '/kelola/pengumuman/',
@@ -1237,6 +1244,7 @@ export interface FileRoutesByFullPath {
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1399,6 +1407,7 @@ export interface FileRoutesByTo {
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1576,6 +1585,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/_kelola/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/_kelola/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/_kelola/kelola/pengaturan_/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/_kelola/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/_kelola/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1743,6 +1753,7 @@ export interface FileRouteTypes {
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pengaturan/outlet'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -1905,6 +1916,7 @@ export interface FileRouteTypes {
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pengaturan/outlet'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -2081,6 +2093,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/payroll/pengaturan'
     | '/_kelola/kelola/payroll/service-charge'
     | '/_kelola/kelola/pelatihan/$trainingId'
+    | '/_kelola/kelola/pengaturan_/outlet'
     | '/_kelola/kelola/promo/$promotionId'
     | '/_kelola/kelola/promo/roi'
     | '/_kelola/kelola/promo/tumpang-tindih'
@@ -3109,6 +3122,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPelatihanTrainingIdRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan_/outlet': {
+      id: '/_kelola/kelola/pengaturan_/outlet'
+      path: '/kelola/pengaturan/outlet'
+      fullPath: '/kelola/pengaturan/outlet'
+      preLoaderRoute: typeof KelolaKelolaPengaturanOutletRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/pengumuman/': {
       id: '/_kelola/kelola/pengumuman/'
       path: '/kelola/pengumuman'
@@ -3568,6 +3588,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPayrollPengaturanRoute: typeof KelolaKelolaPayrollPengaturanRoute
   KelolaKelolaPayrollServiceChargeRoute: typeof KelolaKelolaPayrollServiceChargeRoute
   KelolaKelolaPelatihanTrainingIdRoute: typeof KelolaKelolaPelatihanTrainingIdRoute
+  KelolaKelolaPengaturanOutletRoute: typeof KelolaKelolaPengaturanOutletRoute
   KelolaKelolaPromoPromotionIdRoute: typeof KelolaKelolaPromoPromotionIdRoute
   KelolaKelolaPromoRoiRoute: typeof KelolaKelolaPromoRoiRoute
   KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
@@ -3678,6 +3699,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPayrollPengaturanRoute: KelolaKelolaPayrollPengaturanRoute,
   KelolaKelolaPayrollServiceChargeRoute: KelolaKelolaPayrollServiceChargeRoute,
   KelolaKelolaPelatihanTrainingIdRoute: KelolaKelolaPelatihanTrainingIdRoute,
+  KelolaKelolaPengaturanOutletRoute: KelolaKelolaPengaturanOutletRoute,
   KelolaKelolaPromoPromotionIdRoute: KelolaKelolaPromoPromotionIdRoute,
   KelolaKelolaPromoRoiRoute: KelolaKelolaPromoRoiRoute,
   KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,

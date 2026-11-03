@@ -4,10 +4,10 @@
 // them. The anti-phishing warning sits next to the methods, because the code
 // it protects is shown right above it.
 //
-// A signed-in visitor continues to the page they came from (`?lanjut=`), or to
-// their profile home. A staff session that still needs its second factor goes
-// to the dashboard, whose guard shows the AUTH-05 screen (bead legend-9bh owns
-// the MFA screens).
+// A signed-in visitor continues to the page they came from (`?lanjut=` or the
+// `?redirect=` alias captive portals use), or to their profile home. A staff
+// session that still needs its second factor goes to the dashboard, whose
+// guard shows the AUTH-05 screen (bead legend-9bh owns the MFA screens).
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Globe, Mail, ShieldAlert } from "lucide-react";
@@ -15,7 +15,7 @@ import type { Session } from "@starter/shared/identity";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { postLoginPath } from "../flow";
+import { postLoginPath, safeReturnPath } from "../flow";
 import { Notice } from "./shared";
 import { SignedIn } from "./signed-in";
 import { WhatsAppLogin } from "./whatsapp-login";
@@ -28,15 +28,21 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
     session: Session;
     mfaRequired: boolean;
   } | null>(null);
+  // The route already validated the search; re-check here so no future caller
+  // can feed an open redirect into navigate() or the success link.
+  const safeReturnTo = safeReturnPath(returnTo);
 
-  const target = result ? (returnTo ?? postLoginPath(result.session)) : null;
+  const target = result
+    ? (safeReturnTo ?? postLoginPath(result.session))
+    : null;
 
-  // Arriving from a page means the guest wanted that page back.
+  // Arriving from a page means the guest wanted that page back. `href` keeps
+  // the query intact (e.g. `/wifi?zone=…&table=…`), which `to` would read as
+  // part of the path.
   useEffect(() => {
-    if (!result || !returnTo) return;
-    // A runtime path cannot be checked against the generated route union.
-    void navigate({ to: returnTo as "/", replace: true });
-  }, [result, returnTo, navigate]);
+    if (!result || !safeReturnTo) return;
+    void navigate({ href: safeReturnTo, replace: true });
+  }, [result, safeReturnTo, navigate]);
 
   return (
     <div className="mx-auto grid w-full max-w-md gap-5">
@@ -67,7 +73,7 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
                 hint: t("login.whatsapp.hint"),
                 action: t("login.whatsapp.action"),
               }}
-              returnTo={returnTo}
+              returnTo={safeReturnTo}
               onSignedIn={setResult}
             />
 
@@ -80,13 +86,13 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
             </div>
             <div className="grid gap-2">
               <Button asChild variant="outline" size="lg">
-                <Link to="/masuk/email" search={{ lanjut: returnTo }}>
+                <Link to="/masuk/email" search={{ lanjut: safeReturnTo }}>
                   <Mail aria-hidden="true" />
                   {t("login.email.action")}
                 </Link>
               </Button>
               <Button asChild variant="outline" size="lg">
-                <Link to="/masuk/google" search={{ lanjut: returnTo }}>
+                <Link to="/masuk/google" search={{ lanjut: safeReturnTo }}>
                   <Globe aria-hidden="true" />
                   {t("login.google.action")}
                 </Link>
