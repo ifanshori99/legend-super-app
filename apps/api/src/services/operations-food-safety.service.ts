@@ -43,12 +43,12 @@ import {
   decimal4Schema,
   decodeCursor,
   encodeCursor,
-  temperatureThresholdSchema,
   userIdSchema,
   uuidSchema,
   z,
   type CursorPage,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   createPrepLabel as createPrepLabelEndpoint,
@@ -66,6 +66,7 @@ import {
   printPrepLabel as printPrepLabelEndpoint,
   postPrepListTransition as postPrepListTransitionEndpoint,
   temperatureLogSchema,
+  temperatureThresholdSchema,
   transitionPrepList as transitionPrepListMachine,
   type PrepLabel,
   type PrepList,
@@ -680,7 +681,7 @@ export async function sweepExpiredPrepLabels(
  */
 async function loadPrepListLines(
   tx: OperationsTx,
-  tenantId: string,
+  tenantId: TenantId,
   prepListIds: readonly string[],
 ): Promise<Map<string, PrepListLine[]>> {
   const lines = new Map<string, PrepListLine[]>();

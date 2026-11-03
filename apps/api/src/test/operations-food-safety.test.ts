@@ -341,16 +341,8 @@ afterAll(async () => {
   await byIds("equipment", createdEquipmentIds);
   await byIds("inventory_items", createdItemIds);
   await byIds("uoms", createdUomIds);
-  await owner.query("DELETE FROM role_assignments WHERE user_id = ANY($1)", [
-    createdUsers,
-  ]);
-  if (createdRoles.length > 0)
-    await owner.query(
-      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
-      [tenantId, createdRoles],
-    );
-  if (createdUsers.length > 0)
-    await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
+  // The other tenant's temperature log was recorded by a user of this tenant,
+  // so its rows must go before the user row (FK temperature_logs.recorded_by).
   await asOwner(otherTenant, async (client) => {
     await client.query("DELETE FROM temperature_logs WHERE tenant_id = $1", [
       otherTenant,
@@ -369,6 +361,16 @@ afterAll(async () => {
     ]);
   });
   await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
+  await owner.query("DELETE FROM role_assignments WHERE user_id = ANY($1)", [
+    createdUsers,
+  ]);
+  if (createdRoles.length > 0)
+    await owner.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, createdRoles],
+    );
+  if (createdUsers.length > 0)
+    await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await owner.end();
 });
 
@@ -958,7 +960,7 @@ describe("legend-sdet TEN isolation for the new tables", () => {
 
     const otherContext = tenantScope(otherTenant);
     const visible = await listTemperatureLogs(otherContext, {
-      outletId: otherOutlet,
+      outletId: outletIdSchema.parse(otherOutlet),
       limit: 25,
     });
     expect(visible.data.map((log) => log.id)).toEqual([otherLogId]);
