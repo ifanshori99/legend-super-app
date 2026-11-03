@@ -64,13 +64,15 @@ textOverridesRouter.put(
 
 export const consentRouter = Router();
 const viewCustomers = requireTenantPermission("crm.customer.view");
+// legend-ovi8: recording consent is a write, not a customer-view read.
+const recordConsentPermission = requireTenantPermission("crm.consent.record");
 
 consentRouter.get("/", ...base, viewCustomers, async (req, res) => {
   const query = listConsentsQuerySchema.parse(req.query);
   res.json(await listConsents(getScopedTenantContext(req), query));
 });
 
-consentRouter.post("/", ...base, viewCustomers, jsonBody, async (req, res) => {
+consentRouter.post("/", ...base, recordConsentPermission, jsonBody, async (req, res) => {
   const input = recordConsentInputSchema.parse(req.body);
   const consent = await recordConsent(
     getScopedTenantContext(req),

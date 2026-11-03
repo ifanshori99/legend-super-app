@@ -32,6 +32,7 @@ import {
 import { db } from "../db/index.ts";
 import { consents } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isStaffConsentSourceAllowed } from "@starter/shared/crm";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 
@@ -131,6 +132,14 @@ export async function recordConsent(
   actorUserId: string,
 ): Promise<ConsentRecord> {
   assertTenantWide(context);
+  // legend-ovi8 / LOY-04: this back-office path is staff-only; member_pwa and
+  // website consents come from the customer's own session, never from staff.
+  if (!isStaffConsentSourceAllowed(input.source))
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Staff can only record consent from the cashier or an import.",
+    );
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     await tx.execute(
