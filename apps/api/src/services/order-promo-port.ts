@@ -9,12 +9,11 @@ import type {
   PromoLine,
   PromotionApplicationResult,
 } from "@starter/shared/crm";
-import type { Idr } from "@starter/shared/core";
-import type { ScopedTenantContext } from "@starter/shared/core/server";
-import type { Tx } from "../db/index.ts";
+import type { Idr, OutletId, ScopedTenantContext } from "@starter/shared/core";
+import type { Tx } from "./permission-resolver";
 
 export type OrderPromoInput = {
-  readonly outletId: string;
+  readonly outletId: OutletId;
   readonly channel: PromoChannel;
   /** Server-priced lines only. */
   readonly lines: readonly PromoLine[];
