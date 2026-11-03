@@ -71,6 +71,8 @@ test("production requires its own staff pin pepper secret (legend-dxb)", () => {
     }).status,
     0,
   );
+  // Reusing the auth secret as the pepper is refused in every mode.
+  assert.equal(run({ STAFF_PIN_PEPPER: "x".repeat(32) }).status, 1);
   // Development and tests work without it (fixed non-secret fallback).
   assert.equal(run({}).status, 0);
 });

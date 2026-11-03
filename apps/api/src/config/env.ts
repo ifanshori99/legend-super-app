@@ -177,6 +177,16 @@ const schema = z
   )
   .refine(
     (values) =>
+      values.STAFF_PIN_PEPPER === undefined ||
+      values.STAFF_PIN_PEPPER !== values.BETTER_AUTH_SECRET,
+    {
+      path: ["STAFF_PIN_PEPPER"],
+      message:
+        "STAFF_PIN_PEPPER must be its own secret, not BETTER_AUTH_SECRET.",
+    },
+  )
+  .refine(
+    (values) =>
       values.DEPLOYMENT_MODE === "development" ||
       Boolean(values.APP_DATABASE_URL),
     {
