@@ -1,0 +1,359 @@
+// Edge node registry and the cloud <-> edge link tables (bead legend-2pi;
+// PRD v1.7 §3 F5 "Server Lokal", "Sinkronisasi", §6 A `edge_nodes`, §6 J
+// `sync_cursors`). The same tables exist in the cloud database and in the
+// edge node's local PostgreSQL (same image, same migrations).
+//
+// Every table is tenant + outlet owned: the migration must call
+// `app.enforce_tenant_rls(...)` and then `app.enforce_outlet_rls(...)` for
+// each (edge-node.custom.sql). Unique constraints all lead with tenant_id and
+// every reference to an edge node is a composite (tenant_id, outlet_id, id)
+// foreign key, so a row can never point at another tenant's or outlet's node.
+//
+// - edge_nodes: one row per registered mini PC. Only a SHA-256 digest of the
+//   high-entropy link credential is stored (edge/credential.ts); revocation
+//   is a status change with timestamp, never a delete.
+// - sync_cursors: per node and direction, the link sequence counters. The
+//   sender side uses next_out_seq / acked_out_seq, the receiver side
+//   received_in_seq. A cursor only advances in the transaction that durably
+//   applied (receiver) or acknowledged (sender) the events (EDG-02 contract).
+// - edge_outbound_queue: the durable offline queue. A row is an event waiting
+//   for the peer's acknowledgement, numbered by a gap-free link_seq. Event
+//   contents are immutable; only status/acked_at change (trigger).
+// - edge_inbound_events: what this side received, for idempotent apply by
+//   event id and per-aggregate ordering. Append-only.
+// - edge_sync_conflicts: events the conflict rules refused to apply (cloud
+//   wins master data; transaction events are never overwritten). The full
+//   envelope is kept, so a refused event is never lost. Append-only.
+import { sql } from "drizzle-orm";
+import {
+  bigint,
+  check,
+  foreignKey,
+  index,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
+import type { EventEnvelope, SyncDirection } from "@starter/shared/events";
+import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
+import { outlets, tenants } from "./platform-org.ts";
+
+export type EdgeNodeRole = "primary" | "standby";
+export type EdgeNodeStatus = "active" | "revoked";
+/** PRD §3 F5 "Pembagian Sumber Kebenaran"; shared `conflictResolution`. */
+export type EdgeEventKind = "master_data" | "transaction_event";
+export type EdgeConflictResolution = "cloud_wins" | "append_only";
+
+const directionCheck = (column: unknown) =>
+  sql`${column} IN ('edge_to_cloud', 'cloud_to_edge')`;
+const kindCheck = (column: unknown) =>
+  sql`${column} IN ('master_data', 'transaction_event')`;
+
+export const edgeNodes = pgTable(
+  "edge_nodes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    role: varchar("role", { length: 20 }).$type<EdgeNodeRole>().notNull(),
+    status: varchar("status", { length: 20 })
+      .$type<EdgeNodeStatus>()
+      .notNull()
+      .default("active"),
+    label: varchar("label", { length: 255 }).notNull(),
+    /** Image version the node last reported (heartbeat). */
+    version: varchar("version", { length: 255 }).notNull().default("unknown"),
+    /** SHA-256 hex of the tenant/outlet/node-bound credential. Never the token. */
+    credentialHash: varchar("credential_hash", { length: 64 }).notNull(),
+    credentialIssuedAt: timestamp("credential_issued_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+    lastSyncCursor: varchar("last_sync_cursor", { length: 1024 }),
+    /** Better Auth user id; null for the edge's own provisioning row. */
+    registeredBy: text("registered_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedBy: text("revoked_by"),
+    revokeReason: varchar("revoke_reason", { length: 500 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("edge_nodes_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("edge_nodes_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    // PRD §3 F5 / R10: one primary and one standby per outlet at a time.
+    uniqueIndex("edge_nodes_active_role_key")
+      .on(table.tenantId, table.outletId, table.role)
+      .where(sql`${table.status} = 'active'`),
+    foreignKey({
+      name: "edge_nodes_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    check(
+      "edge_nodes_role_check",
+      sql`${table.role} IN ('primary', 'standby')`,
+    ),
+    check(
+      "edge_nodes_status_check",
+      sql`(${table.status} = 'active' AND ${table.revokedAt} IS NULL) OR (${table.status} = 'revoked' AND ${table.revokedAt} IS NOT NULL)`,
+    ),
+    check(
+      "edge_nodes_credential_hash_check",
+      sql`${table.credentialHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const syncCursors = pgTable(
+  "sync_cursors",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    /** Sender: last link_seq handed out for this direction (gap-free). */
+    nextOutSeq: bigint("next_out_seq", { mode: "number" }).notNull().default(0),
+    /** Sender: highest cumulative acknowledgement from the peer. */
+    ackedOutSeq: bigint("acked_out_seq", { mode: "number" })
+      .notNull()
+      .default(0),
+    /** Receiver: highest contiguous link_seq durably applied. */
+    receivedInSeq: bigint("received_in_seq", { mode: "number" })
+      .notNull()
+      .default(0),
+    /** PRD §6 J `sync_cursors.last_event_id` (ULID in uuid). */
+    lastEventId: ulidInUuid("last_event_id"),
+    lastAckedAt: timestamp("last_acked_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.tenantId, table.edgeNodeId, table.direction],
+    }),
+    foreignKey({
+      name: "sync_cursors_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check("sync_cursors_direction_check", directionCheck(table.direction)),
+    check(
+      "sync_cursors_seq_check",
+      sql`${table.ackedOutSeq} >= 0 AND ${table.ackedOutSeq} <= ${table.nextOutSeq} AND ${table.receivedInSeq} >= 0`,
+    ),
+  ],
+);
+
+export const edgeOutboundQueue = pgTable(
+  "edge_outbound_queue",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    linkSeq: bigint("link_seq", { mode: "number" }).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    aggregateType: varchar("aggregate_type", { length: 255 }).notNull(),
+    /** UUID or ULID as the envelope carries it. */
+    aggregateId: varchar("aggregate_id", { length: 36 }).notNull(),
+    aggregateSequence: bigint("aggregate_sequence", {
+      mode: "number",
+    }).notNull(),
+    kind: varchar("kind", { length: 20 }).$type<EdgeEventKind>().notNull(),
+    event: jsonb("event").$type<EventEnvelope>().notNull(),
+    status: varchar("status", { length: 20 })
+      .$type<"pending" | "acked">()
+      .notNull()
+      .default("pending"),
+    enqueuedAt: timestamp("enqueued_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    ackedAt: timestamp("acked_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.tenantId,
+        table.edgeNodeId,
+        table.direction,
+        table.linkSeq,
+      ],
+    }),
+    unique("edge_outbound_queue_event_key").on(
+      table.tenantId,
+      table.edgeNodeId,
+      table.direction,
+      table.eventId,
+    ),
+    unique("edge_outbound_queue_aggregate_sequence_key").on(
+      table.tenantId,
+      table.edgeNodeId,
+      table.direction,
+      table.aggregateType,
+      table.aggregateId,
+      table.aggregateSequence,
+    ),
+    index("edge_outbound_queue_pending_idx").on(
+      table.tenantId,
+      table.edgeNodeId,
+      table.direction,
+      table.status,
+      table.linkSeq,
+    ),
+    foreignKey({
+      name: "edge_outbound_queue_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check(
+      "edge_outbound_queue_direction_check",
+      directionCheck(table.direction),
+    ),
+    check("edge_outbound_queue_kind_check", kindCheck(table.kind)),
+    // PRD §3 F5: master data flows cloud -> edge only (cloud wins).
+    check(
+      "edge_outbound_queue_master_direction_check",
+      sql`${table.kind} <> 'master_data' OR ${table.direction} = 'cloud_to_edge'`,
+    ),
+    check(
+      "edge_outbound_queue_seq_check",
+      sql`${table.linkSeq} >= 1 AND ${table.aggregateSequence} >= 1`,
+    ),
+    check(
+      "edge_outbound_queue_status_check",
+      sql`(${table.status} = 'pending' AND ${table.ackedAt} IS NULL) OR (${table.status} = 'acked' AND ${table.ackedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const edgeInboundEvents = pgTable(
+  "edge_inbound_events",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    linkSeq: bigint("link_seq", { mode: "number" }).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 255 }).notNull(),
+    aggregateId: varchar("aggregate_id", { length: 36 }).notNull(),
+    aggregateSequence: bigint("aggregate_sequence", {
+      mode: "number",
+    }).notNull(),
+    kind: varchar("kind", { length: 20 }).$type<EdgeEventKind>().notNull(),
+    outcome: varchar("outcome", { length: 20 })
+      .$type<"applied" | "superseded" | "conflict">()
+      .notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.tenantId,
+        table.edgeNodeId,
+        table.direction,
+        table.eventId,
+      ],
+    }),
+    index("edge_inbound_events_aggregate_idx").on(
+      table.tenantId,
+      table.edgeNodeId,
+      table.aggregateType,
+      table.aggregateId,
+      table.aggregateSequence,
+    ),
+    foreignKey({
+      name: "edge_inbound_events_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check(
+      "edge_inbound_events_direction_check",
+      directionCheck(table.direction),
+    ),
+    check("edge_inbound_events_kind_check", kindCheck(table.kind)),
+    check(
+      "edge_inbound_events_outcome_check",
+      sql`${table.outcome} IN ('applied', 'superseded', 'conflict')`,
+    ),
+  ],
+);
+
+export const edgeSyncConflicts = pgTable(
+  "edge_sync_conflicts",
+  {
+    id: ulidInUuid("id").notNull(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    direction: varchar("direction", { length: 20 })
+      .$type<SyncDirection>()
+      .notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    aggregateType: varchar("aggregate_type", { length: 255 }).notNull(),
+    aggregateId: varchar("aggregate_id", { length: 36 }).notNull(),
+    aggregateSequence: bigint("aggregate_sequence", {
+      mode: "number",
+    }).notNull(),
+    kind: varchar("kind", { length: 20 }).$type<EdgeEventKind>().notNull(),
+    reason: varchar("reason", { length: 50 }).notNull(),
+    resolution: varchar("resolution", { length: 20 })
+      .$type<EdgeConflictResolution>()
+      .notNull(),
+    /** Highest aggregate sequence this side already held. */
+    existingSequence: bigint("existing_sequence", { mode: "number" }).notNull(),
+    event: jsonb("event").$type<EventEnvelope>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    unique("edge_sync_conflicts_event_key").on(
+      table.tenantId,
+      table.edgeNodeId,
+      table.direction,
+      table.eventId,
+    ),
+    foreignKey({
+      name: "edge_sync_conflicts_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check(
+      "edge_sync_conflicts_direction_check",
+      directionCheck(table.direction),
+    ),
+    check("edge_sync_conflicts_kind_check", kindCheck(table.kind)),
+    check(
+      "edge_sync_conflicts_resolution_check",
+      sql`${table.resolution} IN ('cloud_wins', 'append_only')`,
+    ),
+  ],
+);
