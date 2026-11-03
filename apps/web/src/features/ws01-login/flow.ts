@@ -142,8 +142,9 @@ export function postLoginPath(session: {
  * A return path from the URL is untrusted: only a same-origin path, never a
  * protocol-relative `//host`, another scheme, or a backslash/whitespace form a
  * browser normalizes into one (`/\evil.example`, `/<TAB>/evil.example`). The
- * screens validate `?lanjut=` with the contract's returnPathSchema; this is the
- * same rule for code that builds a sign-in URL, so the two can never drift.
+ * screens validate `?lanjut=`/`?redirect=` with the contract's
+ * returnPathSchema; this is the same rule for code that builds a sign-in URL,
+ * so the two can never drift.
  */
 export function safeReturnPath(
   value: string | null | undefined,
@@ -152,8 +153,57 @@ export function safeReturnPath(
   return returnPathSchema.safeParse(value).success ? value : undefined;
 }
 
-/** Build the `/masuk?...` URL a page uses to hand the visitor to sign-in. */
-export function signInPath(returnTo: string | null | undefined): string {
+/**
+ * Query names `/masuk` accepts for "the page to go back to". `lanjut` is the
+ * app's own name; `redirect` is the alias captive portals and payment links
+ * use (bead legend-qhh5), so an external entry point does not have to know the
+ * internal name of the parameter.
+ */
+export const SIGN_IN_RETURN_PARAMS = ["lanjut", "redirect"] as const;
+export type SignInReturnParam = (typeof SIGN_IN_RETURN_PARAMS)[number];
+
+/** A search value is untrusted: arrays, objects and non-paths are ignored. */
+function returnPathValue(value: unknown): string | undefined {
+  return typeof value === "string" ? safeReturnPath(value) : undefined;
+}
+
+/**
+ * `validateSearch` for `/masuk`: keep `lanjut` and its `redirect` alias only
+ * when each is an app-local path. Everything else is dropped before render, so
+ * an unsafe value never reaches `SignInScreen`.
+ */
+export function signInSearch(search: Record<string, unknown>): {
+  lanjut?: string;
+  redirect?: string;
+} {
+  return {
+    lanjut: returnPathValue(search.lanjut),
+    redirect: returnPathValue(search.redirect),
+  };
+}
+
+/**
+ * The path a validated `/masuk` search returns to. `redirect` wins when both
+ * are present: it is the name the linking page just set. The value is checked
+ * again here, so a caller that skipped `signInSearch` cannot introduce an open
+ * redirect.
+ */
+export function signInReturnPath(search: {
+  readonly lanjut?: unknown;
+  readonly redirect?: unknown;
+}): string | undefined {
+  return returnPathValue(search.redirect) ?? returnPathValue(search.lanjut);
+}
+
+/**
+ * Build the `/masuk?...` URL a page uses to hand the visitor to sign-in.
+ * `param` chooses between the app's `lanjut` (default, keeps old links) and
+ * the `redirect` alias external portals use.
+ */
+export function signInPath(
+  returnTo: string | null | undefined,
+  param: SignInReturnParam = "lanjut",
+): string {
   const safe = safeReturnPath(returnTo);
-  return safe ? `/masuk?lanjut=${encodeURIComponent(safe)}` : "/masuk";
+  return safe ? `/masuk?${param}=${encodeURIComponent(safe)}` : "/masuk";
 }

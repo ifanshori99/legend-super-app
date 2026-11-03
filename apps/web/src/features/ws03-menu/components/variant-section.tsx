@@ -30,6 +30,7 @@ import {
   useUpdateVariant,
   useVariants,
 } from "../hooks";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 
 type EditorState = { mode: "new" } | { mode: "edit"; variant: Variant };
@@ -37,6 +38,7 @@ type EditorState = { mode: "new" } | { mode: "edit"; variant: Variant };
 export function VariantSection({ itemId }: { itemId: string }) {
   const t = useT();
   const toast = useToast();
+  const { canManageItems } = useMenuWrites();
   const variants = useVariants(itemId);
   const createVariant = useCreateVariant();
   const updateVariant = useUpdateVariant();
@@ -111,10 +113,12 @@ export function VariantSection({ itemId }: { itemId: string }) {
             {t("menu.variants.description")}
           </p>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={openNew}>
-          <Plus aria-hidden="true" />
-          {t("menu.variants.add")}
-        </Button>
+        {canManageItems && (
+          <Button type="button" variant="outline" size="sm" onClick={openNew}>
+            <Plus aria-hidden="true" />
+            {t("menu.variants.add")}
+          </Button>
+        )}
       </div>
 
       {variants.isPending ? (
@@ -151,39 +155,43 @@ export function VariantSection({ itemId }: { itemId: string }) {
             <TableHeader>
               <TableRow>
                 <TableHead>{t("menu.variants.columns.name")}</TableHead>
-                <TableHead numeric>
-                  {t("menu.variants.columns.actions")}
-                </TableHead>
+                {canManageItems && (
+                  <TableHead numeric>
+                    {t("menu.variants.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((variant) => (
                 <TableRow key={variant.id}>
                   <TableCell>{variant.name}</TableCell>
-                  <TableCell numeric>
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t("menu.variants.edit")}
-                        onClick={() => openEdit(variant)}
-                      >
-                        <Pencil aria-hidden="true" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t("menu.variants.deleteTitle", {
-                          name: variant.name,
-                        })}
-                        onClick={() => setDeleting(variant)}
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {canManageItems && (
+                    <TableCell numeric>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("menu.variants.edit")}
+                          onClick={() => openEdit(variant)}
+                        >
+                          <Pencil aria-hidden="true" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("menu.variants.deleteTitle", {
+                            name: variant.name,
+                          })}
+                          onClick={() => setDeleting(variant)}
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -192,7 +200,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
       )}
 
       <Dialog
-        open={editor !== null}
+        open={canManageItems && editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -236,7 +244,7 @@ export function VariantSection({ itemId }: { itemId: string }) {
       </Dialog>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.variants.deleteTitle", { name: deleting?.name ?? "" })}
         description={t("menu.variants.deleteBody")}
