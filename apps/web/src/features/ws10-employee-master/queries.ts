@@ -41,7 +41,7 @@ export function allPagesQuery<E extends ListEndpoint>(
   return queryOptions({
     queryKey: [endpoint.id, "all-pages", input] as const,
     queryFn: ({ signal }) =>
-      collectAllPages<unknown, AnyPage>(async (cursor) => {
+      collectAllPages<AnyPage>(async (cursor) => {
         const withCursor = {
           ...(input as Record<string, unknown>),
           query: {

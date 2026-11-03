@@ -10,7 +10,6 @@ import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardShell, CardShellBody } from "@/components/ui/card";
-import { ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { tabsListClass, tabsTriggerClass } from "@/components/ui/tabs";
 import { ApiError } from "@/lib/api/errors";

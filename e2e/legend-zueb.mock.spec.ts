@@ -52,8 +52,13 @@ test("HR-03 directory lists the fixture employees with NIP, position and status"
 }) => {
   await openDirectory(page, COLD_START_TIMEOUT_MS);
 
-  await expect(page.getByText("Rizky Pratama").first()).toBeVisible();
-  await expect(page.getByText("CL-1001").first()).toBeVisible();
+  // The table paginates; assert a first-page row, then prove search reaches the rest.
+  await expect(
+    page.getByText("Agus Setiawan").filter({ visible: true }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByText("CL-1005").filter({ visible: true }).first(),
+  ).toBeVisible();
   // The four kepegawaian metrics, not decorative deltas.
   await expect(page.getByText("Karyawan aktif")).toBeVisible();
   await expect(page.getByText("Kontrak berakhir ≤30 hari")).toBeVisible();
@@ -61,7 +66,9 @@ test("HR-03 directory lists the fixture employees with NIP, position and status"
   // Filters run over the whole catalog in memory (name or NIP).
   await page.getByLabel("Cari nama atau NIP").fill("Dewi");
   await expect(page.getByText("1 baris")).toBeVisible();
-  await expect(page.getByText("Dewi Lestari").first()).toBeVisible();
+  await expect(
+    page.getByText("Dewi Lestari").filter({ visible: true }).first(),
+  ).toBeVisible();
 });
 
 test("HR-03 profile shows masked PII for a role with hr.employee.view", async ({
@@ -166,7 +173,9 @@ for (const width of [390, 1440]) {
         theme,
       );
       await openDirectory(page);
-      await expect(page.getByText("Rizky Pratama").first()).toBeVisible();
+      await expect(
+        page.getByText("Agus Setiawan").filter({ visible: true }).first(),
+      ).toBeVisible();
       await captureScreenshot(
         page,
         `legend-zueb/directory-${width}-${theme}.png`,

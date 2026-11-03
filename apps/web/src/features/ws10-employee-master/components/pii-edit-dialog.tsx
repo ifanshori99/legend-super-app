@@ -74,6 +74,43 @@ export function PiiEditDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const t = useT();
+  const close = React.useCallback(() => onOpenChange(false), [onOpenChange]);
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (next) onOpenChange(true);
+        else close();
+      }}
+    >
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>
+            {t("employeeMaster.profile.pii.editTitle", {
+              name: employee.fullName,
+            })}
+          </DialogTitle>
+          <DialogDescription>
+            {t("employeeMaster.profile.pii.editDescription")}
+          </DialogDescription>
+        </DialogHeader>
+        {/* Mounting the form only while the dialog is open is the reset: a
+            fresh write starts with no stale values and a fresh idempotency
+            key (no setState in an effect). */}
+        {open ? <PiiEditForm employee={employee} onDone={close} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PiiEditForm({
+  employee,
+  onDone,
+}: {
+  employee: Employee;
+  onDone: () => void;
+}) {
+  const t = useT();
   const toast = useToast();
   const updatePii = useUpdateEmployeePii();
 
@@ -84,19 +121,6 @@ export function PiiEditDialog({
   );
   const [formError, setFormError] = React.useState<string>();
   const idempotencyKey = React.useRef(newIdempotencyKey());
-
-  // A fresh dialog is a fresh write: no stale values, no reused key.
-  React.useEffect(() => {
-    if (!open) return;
-    setValues(EMPTY_VALUES);
-    setErrors({});
-    setFormError(undefined);
-    idempotencyKey.current = newIdempotencyKey();
-  }, [open]);
-
-  function close() {
-    onOpenChange(false);
-  }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -137,7 +161,7 @@ export function PiiEditDialog({
             description: t("employeeMaster.profile.pii.savedBody"),
             tone: "success",
           });
-          close();
+          onDone();
         },
         onError: (error) =>
           setFormError(
@@ -150,67 +174,44 @@ export function PiiEditDialog({
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (next) onOpenChange(true);
-        else close();
-      }}
-    >
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>
-            {t("employeeMaster.profile.pii.editTitle", {
-              name: employee.fullName,
-            })}
-          </DialogTitle>
-          <DialogDescription>
-            {t("employeeMaster.profile.pii.editDescription")}
-          </DialogDescription>
-        </DialogHeader>
-        <form className="grid gap-4" onSubmit={submit} noValidate>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {PII_FIELDS.map((field) => (
-              <FormField
-                key={field}
-                label={t(PII_FIELD_LABEL[field])}
-                id={`pii-${field}`}
-                hint={t(HINT[field])}
-                error={errors[field]}
-              >
-                <Input
-                  id={`pii-${field}`}
-                  autoComplete="off"
-                  inputMode={INPUT_MODE[field]}
-                  value={values[field]}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      [field]: event.target.value,
-                    }))
-                  }
-                />
-              </FormField>
-            ))}
-          </div>
-          {formError && (
-            <p
-              className="text-sm leading-5 font-medium text-danger"
-              role="alert"
-            >
-              {formError}
-            </p>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={close}>
-              {t("common.cancel")}
-            </Button>
-            <Button type="submit" loading={updatePii.isPending}>
-              {t("employeeMaster.profile.pii.save")}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <form className="grid gap-4" onSubmit={submit} noValidate>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {PII_FIELDS.map((field) => (
+          <FormField
+            key={field}
+            label={t(PII_FIELD_LABEL[field])}
+            id={`pii-${field}`}
+            hint={t(HINT[field])}
+            error={errors[field]}
+          >
+            <Input
+              id={`pii-${field}`}
+              autoComplete="off"
+              inputMode={INPUT_MODE[field]}
+              value={values[field]}
+              onChange={(event) =>
+                setValues((current) => ({
+                  ...current,
+                  [field]: event.target.value,
+                }))
+              }
+            />
+          </FormField>
+        ))}
+      </div>
+      {formError && (
+        <p className="text-sm leading-5 font-medium text-danger" role="alert">
+          {formError}
+        </p>
+      )}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onDone}>
+          {t("common.cancel")}
+        </Button>
+        <Button type="submit" loading={updatePii.isPending}>
+          {t("employeeMaster.profile.pii.save")}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }

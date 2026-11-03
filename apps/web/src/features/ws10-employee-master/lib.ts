@@ -48,7 +48,7 @@ export const MAX_CATALOG_PAGES = 50;
  * holding every row, so screens that filter in memory never see a silently
  * truncated catalog. Throws past `maxPages` instead of looping forever.
  */
-export async function collectAllPages<T, P extends AnyPage>(
+export async function collectAllPages<P extends AnyPage>(
   fetchPage: (cursor: string | undefined) => Promise<P>,
   maxPages: number = MAX_CATALOG_PAGES,
 ): Promise<P> {
