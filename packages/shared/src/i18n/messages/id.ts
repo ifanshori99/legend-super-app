@@ -11,6 +11,7 @@ import { reportBuilderMessages } from "./report-builder.ts";
 import { reportViewerMessages } from "./report-viewer.ts";
 import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
+import { orgOutletMessages } from "./org-outlet.ts";
 import { accountingMessages } from "./accounting.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
@@ -59,6 +60,7 @@ export const id = {
   ...ws01AuthMessages,
   // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
   access: accessMessages,
+  orgOutlet: orgOutletMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
