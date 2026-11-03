@@ -19,6 +19,7 @@ import {
   assertTrustedScopedContext,
   createUlid,
   uuidSchema,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -36,7 +37,7 @@ import type { OperationsTx } from "./operations-idempotency.ts";
 /** The equipment row as the caller already loaded it, before the transition. */
 export type EquipmentAvailabilityRow = {
   id: string;
-  outletId: string;
+  outletId: OutletId;
   name: string;
   status: EquipmentStatus;
   linkedMenuItemIds: string[];
@@ -51,6 +52,7 @@ export type EquipmentAvailabilityRow = {
 type AvailabilityEventDefinition = {
   readonly name: string;
   readonly version: number;
+  readonly payloadSchemaRef: string;
   readonly entry: { readonly aggregateType: string };
   readonly envelopeSchema: { parse(value: unknown): unknown };
 };
@@ -94,7 +96,7 @@ async function liveMenuItems(
 async function ensureAvailabilityRow(
   tx: OperationsTx,
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   menuItemId: string,
   now: Date,
 ): Promise<{ id: string; status: AvailabilityStatus } | null> {
@@ -171,6 +173,7 @@ async function appendAvailabilityEvent(
     actor: { type: "user", id: input.actorUserId },
     deviceId: null,
     idempotencyKey: `${definition.name}:${input.availabilityId}:${sequence}`,
+    payloadSchemaRef: definition.payloadSchemaRef,
     payload: input.payload,
   });
   await appendOutbox(tx, context, {
