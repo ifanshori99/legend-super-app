@@ -46,6 +46,15 @@ async function openBuilder(page: Page) {
   ).toBeVisible();
 }
 
+/** A saved-report row in the page body (the confirmation toast is a listitem too). */
+function savedRow(page: Page, name: string) {
+  return page
+    .locator("#main-content")
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .first();
+}
+
 async function pickMetric(page: Page, name: string) {
   await page.getByLabel("Cari metrik").fill(name);
   await page
@@ -64,14 +73,16 @@ test("F36: pick a metric and a split, see the live preview table and chart", asy
   ).toBeVisible();
 
   await pickMetric(page, "Penjualan bersih");
-  await page.getByRole("checkbox", { name: "Jam" }).click();
+  await page.getByRole("checkbox", { name: "Jam", exact: true }).click();
 
   const table = page.getByRole("table");
   await expect(table).toBeVisible({ timeout: 15_000 });
   await expect(
     table.getByRole("columnheader", { name: "Penjualan bersih" }),
   ).toBeVisible();
-  await expect(table.getByRole("columnheader", { name: "Jam" })).toBeVisible();
+  await expect(
+    table.getByRole("columnheader", { name: "Jam", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("img", { name: /Grafik batang/ })).toBeVisible();
 });
 
@@ -82,7 +93,7 @@ test("DASH-01: a split the chosen metrics do not share cannot be picked", async 
   await pickMetric(page, "Penjualan bersih");
   await pickMetric(page, "Jumlah tamu");
   // Menu is offered by net sales only, so it is disabled with the reason.
-  const menu = page.getByRole("checkbox", { name: /^Menu/ });
+  const menu = page.getByRole("checkbox", { name: /^Menu Tidak dimiliki/ });
   await expect(menu).toBeDisabled();
   await expect(
     page.getByText("Tidak dimiliki semua metrik yang dipilih").first(),
@@ -94,16 +105,14 @@ test("F36: save a report, schedule an email and pause the schedule", async ({
 }) => {
   await openBuilder(page);
   await pickMetric(page, "Penjualan bersih");
-  await page.getByRole("checkbox", { name: "Kanal" }).click();
+  await page.getByRole("checkbox", { name: "Kanal", exact: true }).click();
   await expect(page.getByRole("table")).toBeVisible({ timeout: 15_000 });
 
   await page.getByLabel(/Nama laporan/).fill("Omzet per kanal");
   await page.getByRole("button", { name: "Simpan laporan" }).click();
-  await expect(
-    page.getByRole("listitem").filter({ hasText: "Omzet per kanal" }),
-  ).toBeVisible();
+  await expect(savedRow(page, "Omzet per kanal")).toBeVisible();
 
-  const row = page.getByRole("listitem").filter({ hasText: "Omzet per kanal" });
+  const row = savedRow(page, "Omzet per kanal");
   await row.getByRole("button", { name: "Jadwalkan" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel(/Penerima/).fill("owner@cafelegend.id");
@@ -122,16 +131,14 @@ test("DASH-04: a report split by person is not mailed; the approval requirement 
 }) => {
   await openBuilder(page);
   await pickMetric(page, "Penjualan bersih");
-  await page.getByRole("checkbox", { name: /^Karyawan/ }).click();
+  await page.getByRole("checkbox", { name: /^Karyawan Data pribadi/ }).click();
   await expect(
     page.getByText(/memecah atau menyaring per orang/),
   ).toBeVisible();
   await page.getByLabel(/Nama laporan/).fill("Omzet per karyawan");
   await page.getByRole("button", { name: "Simpan laporan" }).click();
 
-  const row = page
-    .getByRole("listitem")
-    .filter({ hasText: "Omzet per karyawan" });
+  const row = savedRow(page, "Omzet per karyawan");
   await row.getByRole("button", { name: "Jadwalkan" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Butuh approval")).toBeVisible();
@@ -151,15 +158,11 @@ for (const width of [390, 1440]) {
       await openBuilder(page);
       await pickMetric(page, "Penjualan bersih");
       await pickMetric(page, "Jumlah tamu");
-      await page.getByRole("checkbox", { name: "Jam" }).click();
+      await page.getByRole("checkbox", { name: "Jam", exact: true }).click();
       await expect(page.getByRole("table")).toBeVisible({ timeout: 15_000 });
       await page.getByLabel(/Nama laporan/).fill("Omzet dan tamu per jam");
       await page.getByRole("button", { name: "Simpan laporan" }).click();
-      await expect(
-        page
-          .getByRole("listitem")
-          .filter({ hasText: "Omzet dan tamu per jam" }),
-      ).toBeVisible();
+      await expect(savedRow(page, "Omzet dan tamu per jam")).toBeVisible();
 
       const contentHeight = await page.evaluate(
         () => document.querySelector("#main-content")?.scrollHeight ?? 900,
@@ -195,7 +198,7 @@ for (const width of [390, 1440]) {
 
     // Error: the preview and the saved list fail, each with its own retry.
     await page.evaluate(() => window.__legendMock?.setScenario("error"));
-    await page.getByRole("checkbox", { name: "Jam" }).click();
+    await page.getByRole("checkbox", { name: "Jam", exact: true }).click();
     await expect(page.getByText("Pratinjau gagal dimuat")).toBeVisible({
       timeout: 15_000,
     });
