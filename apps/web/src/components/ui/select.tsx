@@ -5,64 +5,18 @@ import { Select as SelectPrimitive } from "radix-ui";
 import { usePortalContainer } from "@/components/theme-scope";
 import { fieldClass } from "@/components/ui/input";
 
+const Select = SelectPrimitive.Root;
 const SelectGroup = SelectPrimitive.Group;
 const SelectValue = SelectPrimitive.Value;
 
-/**
- * Radix's Root renders no DOM node, so the id and ARIA props `FormField`
- * injects through its `Slot.Root` had nowhere to land: the label's `for`
- * pointed at nothing and a select was reachable only by position. Remember
- * them here and put them on the trigger, the element the user actually
- * focuses (WCAG 3.3.1 / 4.1.3).
- */
-type SelectFieldProps = {
-  id?: string;
-  "aria-describedby"?: string;
-  "aria-invalid"?: boolean;
-  "aria-required"?: boolean;
-};
-const SelectField = React.createContext<SelectFieldProps>({});
-
-function Select({
-  id,
-  "aria-describedby": describedBy,
-  "aria-invalid": invalid,
-  "aria-required": required,
-  ...props
-}: React.ComponentProps<typeof SelectPrimitive.Root> & SelectFieldProps) {
-  const field = React.useMemo(
-    () => ({
-      id,
-      "aria-describedby": describedBy,
-      "aria-invalid": invalid,
-      "aria-required": required,
-    }),
-    [id, describedBy, invalid, required],
-  );
-  return (
-    <SelectField.Provider value={field}>
-      <SelectPrimitive.Root {...props} />
-    </SelectField.Provider>
-  );
-}
-
 function SelectTrigger({
-  id,
-  "aria-describedby": describedBy,
-  "aria-invalid": invalid,
-  "aria-required": required,
   className,
   children,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger>) {
-  const field = React.useContext(SelectField);
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
-      id={id ?? field.id}
-      aria-describedby={describedBy ?? field["aria-describedby"]}
-      aria-invalid={invalid ?? field["aria-invalid"]}
-      aria-required={required ?? field["aria-required"]}
       className={cn(
         fieldClass,
         "flex h-control items-center justify-between gap-2 px-3 text-left data-placeholder:text-muted-foreground [&>span]:truncate",
