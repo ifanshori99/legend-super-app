@@ -171,8 +171,13 @@ test("legend-5a74 a view-only role sees combos and stations read-only", async ({
   await expect(
     page.getByRole("heading", { name: "Paket & combo", exact: true }),
   ).toBeVisible();
+  // The desktop table and the phone card render the same row (one is hidden
+  // by CSS); assert the visible one.
   await expect(
-    page.getByText("Paket Kopi dan Croissant", { exact: true }),
+    page
+      .getByText(/Paket Kopi dan Croissant/)
+      .filter({ visible: true })
+      .first(),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Tambah paket" })).toHaveCount(
     0,
@@ -189,7 +194,9 @@ test("legend-5a74 a view-only role sees combos and stations read-only", async ({
   await expect(
     page.getByRole("heading", { name: "Stasiun", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("Dapur", { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByText(/Dapur/).filter({ visible: true }).first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Tambah stasiun" }),
   ).toHaveCount(0);
@@ -252,7 +259,7 @@ test("legend-5a74 an item viewer opens the detail without save, photo, active, v
     page,
     () => page.getByRole("button", { name: "Lihat modifier" }).first().click(),
     async () =>
-      expect(page.getByText("Normal", { exact: true }).first()).toBeVisible(),
+      expect(page.getByRole("cell", { name: /Normal/ }).first()).toBeVisible(),
   );
   await expect(
     page.getByRole("button", { name: "Tambah modifier" }),

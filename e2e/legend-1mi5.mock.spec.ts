@@ -117,13 +117,17 @@ test("legend-1mi5 a cutoff outside 00:00–11:59 is refused with a visible messa
   // 13:00 is a valid time of day but outside the contract's range.
   await cutoff.fill("13:00");
   await save.click();
-  await expect(page.getByRole("alert")).toContainText("Isian belum benar");
+  await expect(page.getByRole("alert")).toContainText(
+    /Periksa \d+ isian yang ditandai\./,
+  );
   await expect(cutoff).toHaveValue("13:00");
 
   // "abc" is not a time at all.
   await cutoff.fill("abc");
   await save.click();
-  await expect(page.getByRole("alert")).toContainText("Isian belum benar");
+  await expect(page.getByRole("alert")).toContainText(
+    /Periksa \d+ isian yang ditandai\./,
+  );
 
   // Neither attempt reached the mock: a reload still shows the saved default.
   await page.reload();
@@ -139,10 +143,15 @@ test("legend-1mi5 an inventory business date uses the outlet cutoff, not the dev
   await page.goto("/kelola/inventori/opname");
   await waitForHydration(page);
   // The toolbar action (and the empty-state action when the list is empty).
-  await page
-    .getByRole("button", { name: "Mulai opname" })
-    .first()
-    .click({ timeout: 20_000 });
+  // Client-only controls drop a click that lands before hydration, so retry
+  // until the dialog's business-date field exists (legend-vxj pattern).
+  await expect(async () => {
+    await page
+      .getByRole("button", { name: "Mulai opname" })
+      .first()
+      .click({ timeout: 5_000 });
+    await expect(page.locator("#count-date")).toBeVisible({ timeout: 3_000 });
+  }).toPass({ timeout: 20_000 });
 
   // The count session defaults to the outlet's business date: with the fixture
   // outlet (Asia/Jakarta, cutoff 04:00) that is (now − 4h) in Jakarta, even
