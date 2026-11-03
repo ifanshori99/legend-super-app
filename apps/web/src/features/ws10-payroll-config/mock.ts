@@ -8,14 +8,11 @@
 // and idempotency keys are honored like a real endpoint: replaying one returns
 // the recorded result, reusing it for another body is refused with
 // IDEMPOTENCY_KEY_REUSED.
-import {
-  z,
-  userIdSchema,
-  type BusinessDate,
-} from "@starter/shared/core";
+import { z, userIdSchema } from "@starter/shared/core";
 import { zodIssuesToDetails } from "@starter/shared/api";
 import {
   PayrollError,
+  archiveStatutoryTable,
   archiveStatutoryVersion,
   cafeLegendPayrollFixtures,
   createPayComponent,
@@ -50,6 +47,7 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
+import { dispatchMock } from "../../lib/mock/runtime.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { addDays, businessDateToday, sortStatutoryVersions } from "./lib.ts";
 
@@ -84,13 +82,18 @@ type ReplayRecord = { fingerprint: string; response: unknown };
 
 const replays = createMockStore(() => new Map<string, ReplayRecord>());
 
+/** The request body without its idempotency key. */
+function withoutIdempotencyKey(body: object): Record<string, unknown> {
+  const copy = { ...body } as Record<string, unknown>;
+  delete copy.idempotencyKey;
+  return copy;
+}
+
 /** The request without its idempotency key: a replay must match it exactly. */
 function fingerprintOf(body: unknown): string {
-  const { idempotencyKey: _key, ...rest } = (body ?? {}) as Record<
-    string,
-    unknown
-  >;
-  return JSON.stringify(rest);
+  return JSON.stringify(
+    withoutIdempotencyKey((body ?? {}) as Record<string, unknown>),
+  );
 }
 
 function idempotent<T>(
@@ -154,9 +157,11 @@ function tenantId(): string {
 
 registerMock(listStatutoryTables, ({ query, scenario }) => {
   const rows = sortStatutoryVersions(
-    store.get().statutoryTables.filter(
-      (version) => query.type === undefined || version.type === query.type,
-    ),
+    store
+      .get()
+      .statutoryTables.filter(
+        (version) => query.type === undefined || version.type === query.type,
+      ),
   );
   return paginateFixture(rows, query, (version) => version.id, scenario);
 });
@@ -334,7 +339,7 @@ registerMock(updatePayrollPolicy, ({ params, body }) =>
       (policy) => policy.id === params.payrollPolicyId,
     );
     if (!found) notFound("Kebijakan payroll");
-    const { idempotencyKey: _key, ...patch } = body;
+    const patch = withoutIdempotencyKey(body);
     const updated = parseRow(payrollPolicySchema, {
       ...found,
       ...patch,
@@ -354,8 +359,7 @@ registerMock(updatePayrollPolicy, ({ params, body }) =>
 
 registerMock(listPayComponents, ({ query, scenario }) => {
   const rows = [...store.get().payComponents].sort(
-    (a, b) =>
-      a.displayOrder - b.displayOrder || a.code.localeCompare(b.code),
+    (a, b) => a.displayOrder - b.displayOrder || a.code.localeCompare(b.code),
   );
   return paginateFixture(rows, query, (component) => component.id, scenario);
 });
@@ -394,7 +398,7 @@ registerMock(updatePayComponent, ({ params, body }) =>
       (component) => component.id === params.componentId,
     );
     if (!found) notFound("Komponen gaji");
-    const { idempotencyKey: _key, ...patch } = body;
+    const patch = withoutIdempotencyKey(body);
     const updated = parseRow(payComponentSchema, {
       ...found,
       ...patch,
@@ -415,9 +419,7 @@ registerMock(updatePayComponent, ({ params, body }) =>
 registerMock(listEmployeePayComponents, ({ params, query, scenario }) => {
   const rows = store
     .get()
-    .employeePayComponents.filter(
-      (row) => row.employeeId === params.employeeId,
-    )
+    .employeePayComponents.filter((row) => row.employeeId === params.employeeId)
     .sort(
       (a, b) =>
         b.effectiveFrom.localeCompare(a.effectiveFrom) ||
@@ -435,7 +437,7 @@ registerMock(setEmployeePayComponent, ({ params, body }) =>
       )
     )
       notFound("Komponen gaji");
-    const effectiveFrom = body.effectiveFrom as BusinessDate;
+    const effectiveFrom = body.effectiveFrom;
     // Mirror the API: a new amount closes the open row of the same component
     // the day before it starts; the same start date replaces the amount.
     const replaced = state.employeePayComponents.find(
@@ -513,3 +515,38 @@ registerMock(createThrSchedule, ({ body }) =>
     return { data: row };
   }),
 );
+
+// ---- Dev-only replay control ----------------------------------------------
+//
+// The screen mints a fresh idempotency key per attempt, so a same-key replay
+// is not reachable through the UI. The mock spec therefore dispatches the
+// publish endpoint twice with one key through the same runtime the screen
+// uses, then lists the chain to assert one row, not two (PAYR-02). Never
+// present outside mock mode: the whole mock graph is compiled out of a normal
+// build.
+if (typeof window !== "undefined") {
+  (
+    window as unknown as {
+      __legendPayrollConfigMock?: {
+        publishStatutoryVersion: (
+          versionId: string,
+          idempotencyKey: string,
+        ) => Promise<unknown>;
+        listStatutoryTables: (type?: string) => Promise<unknown>;
+      };
+    }
+  ).__legendPayrollConfigMock = {
+    publishStatutoryVersion: (versionId, idempotencyKey) =>
+      dispatchMock({
+        method: "POST",
+        path: `/api/hris/payroll/statutory-tables/${versionId}/publish`,
+        body: { idempotencyKey },
+      }),
+    listStatutoryTables: (type) =>
+      dispatchMock({
+        method: "GET",
+        path: "/api/hris/payroll/statutory-tables",
+        query: { limit: 100, ...(type === undefined ? {} : { type }) },
+      }),
+  };
+}

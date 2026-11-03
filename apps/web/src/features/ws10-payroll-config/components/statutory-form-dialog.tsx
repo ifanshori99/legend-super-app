@@ -27,10 +27,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
+import type { PtkpStatus } from "@starter/shared/hris";
 import type {
   JkkRiskClass,
   OvertimeDayType,
-  PtkpStatus,
   StatutoryTableType,
   StatutoryTableVersion,
   TerCategory,
@@ -46,6 +46,7 @@ import { newIdempotencyKey } from "@/lib/idempotency";
 import { payrollMutationError } from "../errors";
 import { useCreateStatutoryDraft, useUpdateStatutoryDraft } from "../hooks";
 import {
+  DAY_TYPE_KEYS,
   JKK_RISK_KEYS,
   PTKP_STATUS_LIST,
   ROUNDING_KEYS,
@@ -113,9 +114,11 @@ type FormState =
       roundingMode: RoundingMode;
     };
 
-const OVERTIME_TYPES: readonly StatutoryTableType[] = STATUTORY_TABLE_TYPES;
+const STATUTORY_TYPES: readonly StatutoryTableType[] = STATUTORY_TABLE_TYPES;
 
-function bracketsToForm(rows: readonly { upToIdr: number | null; rateBp: number }[]): BracketForm[] {
+function bracketsToForm(
+  rows: readonly { upToIdr: number | null; rateBp: number }[],
+): BracketForm[] {
   return rows.map((row) => ({
     upToIdr: formatRupiahInput(row.upToIdr),
     rateBp: formatRateInput(row.rateBp),
@@ -207,8 +210,12 @@ function formFromDraft(draft: ReturnType<typeof draftOfVersion>): FormState {
         divisor: String(p.monthlyHoursDivisor),
         tiers: {
           workday: tiersToForm(p.tiersByDayType.workday),
-          rest_day_6_day_week: tiersToForm(p.tiersByDayType.rest_day_6_day_week),
-          rest_day_5_day_week: tiersToForm(p.tiersByDayType.rest_day_5_day_week),
+          rest_day_6_day_week: tiersToForm(
+            p.tiersByDayType.rest_day_6_day_week,
+          ),
+          rest_day_5_day_week: tiersToForm(
+            p.tiersByDayType.rest_day_5_day_week,
+          ),
         },
         roundingMode: p.roundingMode,
       };
@@ -343,7 +350,11 @@ function buildDraft(form: FormState): unknown {
       return { type: "ptkp", parameters: { annualAmountIdrByStatus: amounts } };
     }
     case "pph21_ter": {
-      const brackets: Record<TerCategory, unknown> = { A: null, B: null, C: null };
+      const brackets: Record<TerCategory, unknown> = {
+        A: null,
+        B: null,
+        C: null,
+      };
       for (const category of TER_CATEGORIES) {
         const rows = bracketsFromForm(form.brackets[category]);
         if (rows === null) return null;
@@ -676,7 +687,7 @@ export function StatutoryFormDialog({
   const editing = version !== undefined;
   const availableTypes = React.useMemo(
     () =>
-      OVERTIME_TYPES.filter(
+      STATUTORY_TYPES.filter(
         (type) => versionsOfType(versions, type).length > 0,
       ),
     [versions],
@@ -701,9 +712,9 @@ export function StatutoryFormDialog({
   const [legalBasis, setLegalBasis] = React.useState(
     version?.legalBasis ?? template?.legalBasis ?? "",
   );
-  const [errors, setErrors] = React.useState<Record<string, string | undefined>>(
-    {},
-  );
+  const [errors, setErrors] = React.useState<
+    Record<string, string | undefined>
+  >({});
 
   const pending = createDraft.isPending || updateDraft.isPending;
   const disabled = pending;
@@ -986,10 +997,9 @@ export function StatutoryFormDialog({
                   {PTKP_STATUS_LIST.map((status) => (
                     <FormField
                       key={status}
-                      label={t(
-                        "payrollConfig.statutory.form.terCategory",
-                        { status },
-                      )}
+                      label={t("payrollConfig.statutory.form.terCategory", {
+                        status,
+                      })}
                       required
                     >
                       <Select
@@ -1053,9 +1063,7 @@ export function StatutoryFormDialog({
                 />
                 <div className="grid gap-4 sm:grid-cols-2">
                   <FormField
-                    label={t(
-                      "payrollConfig.statutory.form.occupationalRate",
-                    )}
+                    label={t("payrollConfig.statutory.form.occupationalRate")}
                     required
                   >
                     <Input
@@ -1077,9 +1085,7 @@ export function StatutoryFormDialog({
                       value={form.occupationalCap}
                       onChange={(event) =>
                         patchForm({
-                          occupationalCap: maskRupiahTyping(
-                            event.target.value,
-                          ),
+                          occupationalCap: maskRupiahTyping(event.target.value),
                         })
                       }
                       disabled={disabled}
@@ -1146,11 +1152,7 @@ export function StatutoryFormDialog({
                 {OVERTIME_DAY_TYPES.map((dayType) => (
                   <section key={dayType} className="grid gap-2">
                     <h3 className="text-sm font-semibold">
-                      {t(
-                        `payrollConfig.statutory.form.dayType.${dayType}` as Parameters<
-                          typeof t
-                        >[0],
-                      )}
+                      {t(DAY_TYPE_KEYS[dayType])}
                     </h3>
                     <TierEditor
                       rows={form.tiers[dayType]}
@@ -1210,14 +1212,20 @@ export function StatutoryFormDialog({
             ) : null}
 
             {errors.parameters && (
-              <p className="text-sm leading-5 font-medium text-danger" role="alert">
+              <p
+                className="text-sm leading-5 font-medium text-danger"
+                role="alert"
+              >
                 {errors.parameters}
               </p>
             )}
           </fieldset>
 
           {errors.form && (
-            <p className="text-sm leading-5 font-medium text-danger" role="alert">
+            <p
+              className="text-sm leading-5 font-medium text-danger"
+              role="alert"
+            >
               {errors.form}
             </p>
           )}

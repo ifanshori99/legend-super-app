@@ -9,6 +9,7 @@ import type { StatutoryTableVersion } from "@starter/shared/hris/payroll";
 import {
   STATUTORY_STATUS_KEYS,
   effectiveVersion,
+  formatBusinessDate,
 } from "../lib";
 
 export function StatutoryStatusPill({
@@ -56,7 +57,7 @@ export function StatutoryEffectiveBadge({
       <Badge tone="info">
         <CalendarClock aria-hidden="true" />
         {t("payrollConfig.statutory.scheduled", {
-          date: version.effectiveFrom,
+          date: formatBusinessDate(version.effectiveFrom),
         })}
       </Badge>
     );
@@ -68,5 +69,7 @@ export function StatutoryEffectiveBadge({
         {t("payrollConfig.statutory.effectiveNow")}
       </Badge>
     );
-  return <Badge tone="neutral">{t("payrollConfig.statutory.superseded")}</Badge>;
+  return (
+    <Badge tone="neutral">{t("payrollConfig.statutory.superseded")}</Badge>
+  );
 }

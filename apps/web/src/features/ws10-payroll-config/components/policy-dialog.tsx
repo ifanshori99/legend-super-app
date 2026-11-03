@@ -5,7 +5,6 @@
 // enrolled BPJS programmes.
 import * as React from "react";
 import { businessDateSchema } from "@starter/shared/core";
-import type { BusinessDate } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,15 +35,15 @@ import type {
   PayrollCycle,
   PayrollPolicy,
 } from "@starter/shared/hris/payroll";
-import { BPJS_TABLE_TYPES, JKK_RISK_CLASSES } from "@starter/shared/hris/payroll";
+import {
+  BPJS_TABLE_TYPES,
+  JKK_RISK_CLASSES,
+} from "@starter/shared/hris/payroll";
 import type { EmploymentType } from "@starter/shared/hris";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { payrollMutationError } from "../errors";
 import { useCreatePayrollPolicy, useUpdatePayrollPolicy } from "../hooks";
-import {
-  EMPLOYMENT_TYPES,
-  EMPLOYMENT_TYPE_KEYS,
-} from "../labels";
+import { EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_KEYS } from "../labels";
 import {
   JKK_RISK_KEYS,
   PAY_DATE_ADJUSTMENT_KEYS,
@@ -155,7 +154,10 @@ export function PolicyDialog({
         payMonthOffset,
       };
     }
-    const days = daysAfter(payDaysAfterPeriodEnd, frequency === "biweekly" ? 14 : 7);
+    const days = daysAfter(
+      payDaysAfterPeriodEnd,
+      frequency === "biweekly" ? 14 : 7,
+    );
     if (days === null) return null;
     if (frequency === "biweekly") {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorDate)) return null;
@@ -193,10 +195,10 @@ export function PolicyDialog({
         pay <= cutoff
       )
         next.payDay = t("payrollConfig.policies.form.payDayAfterCutoff");
-    } else if (daysAfter(
-      payDaysAfterPeriodEnd,
-      frequency === "biweekly" ? 14 : 7,
-    ) === null) {
+    } else if (
+      daysAfter(payDaysAfterPeriodEnd, frequency === "biweekly" ? 14 : 7) ===
+      null
+    ) {
       next.payDaysAfterPeriodEnd = t("payrollConfig.form.number");
     } else if (
       frequency === "biweekly" &&
@@ -306,7 +308,7 @@ export function PolicyDialog({
 
           <fieldset className="grid gap-3">
             <legend className="text-sm font-semibold">
-              {t("payrollConfig.policies.form.groupName")}
+              {t("payrollConfig.policies.form.groupTitle")}
             </legend>
             {editing && (
               <p className="text-sm leading-5 text-muted-foreground">
@@ -413,9 +415,7 @@ export function PolicyDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {(
-                    Object.keys(
-                      PAY_DATE_ADJUSTMENT_KEYS,
-                    ) as PayDateAdjustment[]
+                    Object.keys(PAY_DATE_ADJUSTMENT_KEYS) as PayDateAdjustment[]
                   ).map((rule) => (
                     <SelectItem key={rule} value={rule}>
                       {t(PAY_DATE_ADJUSTMENT_KEYS[rule])}
@@ -607,7 +607,10 @@ export function PolicyDialog({
           </div>
 
           {errors.form && (
-            <p className="text-sm leading-5 font-medium text-danger" role="alert">
+            <p
+              className="text-sm leading-5 font-medium text-danger"
+              role="alert"
+            >
               {errors.form}
             </p>
           )}

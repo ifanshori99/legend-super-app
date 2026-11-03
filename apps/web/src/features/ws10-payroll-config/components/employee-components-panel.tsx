@@ -38,23 +38,21 @@ import type { Employee } from "@starter/shared/hris";
 import type { PayComponent } from "@starter/shared/hris/payroll";
 import { setEmployeePayComponentInputSchema } from "@starter/shared/hris/payroll";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { payrollMutationError } from "../errors";
+import { isOffline, payrollMutationError } from "../errors";
 import {
   useActiveEmployees,
   useEmployeePayComponents,
   usePayComponents,
   useSetEmployeePayComponent,
 } from "../hooks";
-import {
-  PAY_COMPONENT_CATEGORY_KEYS,
-} from "../labels";
+import { PAY_COMPONENT_CATEGORY_KEYS } from "../labels";
 import {
   businessDateToday,
   formatBusinessDate,
-  formatRupiahInput,
   maskRupiahTyping,
   parseRupiahInput,
 } from "../lib";
+import { PayrollOfflineState } from "./payroll-offline-state";
 
 function employeeLabel(employee: Employee): string {
   return `${employee.fullName} · ${employee.employeeNo}`;
@@ -73,11 +71,12 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
 
   const [search, setSearch] = React.useState("");
   const [employeeId, setEmployeeId] = React.useState<string | null>(null);
-  const [componentId, setComponentId] = React.useState("");
+  // null = follow the default component; a click pins one explicitly.
+  const [pickedComponentId, setPickedComponentId] = React.useState<
+    string | null
+  >(null);
   const [amountText, setAmountText] = React.useState("");
-  const [effectiveFrom, setEffectiveFrom] = React.useState(
-    businessDateToday(),
-  );
+  const [effectiveFrom, setEffectiveFrom] = React.useState(businessDateToday());
   const [formError, setFormError] = React.useState<string>();
 
   const employees = employeesQuery.data?.data ?? [];
@@ -92,9 +91,13 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
         );
   const employee = employees.find((row) => row.id === employeeId) ?? null;
 
-  const components = componentsQuery.data?.data ?? [];
+  const components = React.useMemo(
+    () => componentsQuery.data?.data ?? [],
+    [componentsQuery.data],
+  );
   const componentsById = React.useMemo(
-    () => new Map(components.map((component) => [component.id, component])),
+    () =>
+      new Map(components.map((component) => [String(component.id), component])),
     [components],
   );
   /** Fixed earnings are the ones an employee amount can be set for. */
@@ -111,13 +114,19 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
   const baseSalary = amountComponents.find(
     (component) => component.category === "base_salary",
   );
-
-  // Default the picker to the base-salary component once it is loaded.
-  React.useEffect(() => {
-    if (componentId !== "") return;
-    const preferred = baseSalary ?? amountComponents[0];
-    if (preferred) setComponentId(preferred.id);
-  }, [amountComponents, baseSalary, componentId]);
+  // Base salary is the usual target; the picker opens on it without an effect
+  // (cascading setState in an effect is a lint error in this repo).
+  const defaultComponent = baseSalary ?? amountComponents[0];
+  // A pinned id wins only while it is still one of the selectable components;
+  // Radix may clear an unmatched value to "", which must fall back to the
+  // default instead of disabling the submit button.
+  const componentId =
+    pickedComponentId !== null &&
+    amountComponents.some(
+      (component) => String(component.id) === pickedComponentId,
+    )
+      ? pickedComponentId
+      : (defaultComponent?.id ?? "");
 
   const rowsQuery = useEmployeePayComponents(employeeId);
   const rows = rowsQuery.data?.data ?? [];
@@ -190,7 +199,9 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
                 >
                   <SelectTrigger className="h-control-sm">
                     <SelectValue
-                      placeholder={t("payrollConfig.employees.selectPlaceholder")}
+                      placeholder={t(
+                        "payrollConfig.employees.selectPlaceholder",
+                      )}
                     />
                   </SelectTrigger>
                   <SelectContent>
@@ -203,17 +214,29 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
                 </Select>
               </FormField>
             </div>
-            {employees.length === 0 && !employeesQuery.isPending && (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {t("payrollConfig.employees.noEmployees")}
-              </p>
-            )}
+            {employeesQuery.isError ? (
+              isOffline(employeesQuery.error) ? (
+                <PayrollOfflineState
+                  onRetry={() => void employeesQuery.refetch()}
+                />
+              ) : (
+                <ErrorState onRetry={() => void employeesQuery.refetch()} />
+              )
+            ) : (
+              <>
+                {employees.length === 0 && !employeesQuery.isPending && (
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {t("payrollConfig.employees.noEmployees")}
+                  </p>
+                )}
 
-            {!employee && (
-              <EmptyState
-                title={t("payrollConfig.employees.emptyTitle")}
-                description={t("payrollConfig.employees.emptyHint")}
-              />
+                {!employee && (
+                  <EmptyState
+                    title={t("payrollConfig.employees.emptyTitle")}
+                    description={t("payrollConfig.employees.emptyHint")}
+                  />
+                )}
+              </>
             )}
 
             {employee && (
@@ -276,14 +299,10 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
                             <TableCell>
                               {row.effectiveTo === null
                                 ? t("payrollConfig.employees.openEnded", {
-                                    from: formatBusinessDate(
-                                      row.effectiveFrom,
-                                    ),
+                                    from: formatBusinessDate(row.effectiveFrom),
                                   })
                                 : t("payrollConfig.employees.effectiveRange", {
-                                    from: formatBusinessDate(
-                                      row.effectiveFrom,
-                                    ),
+                                    from: formatBusinessDate(row.effectiveFrom),
                                     to: formatBusinessDate(row.effectiveTo),
                                   })}
                             </TableCell>
@@ -321,7 +340,9 @@ export function EmployeeComponentsPanel({ canRun }: { canRun: boolean }) {
             >
               <Select
                 value={componentId}
-                onValueChange={setComponentId}
+                onValueChange={(value) =>
+                  setPickedComponentId(value === "" ? null : value)
+                }
                 disabled={!canRun || amountComponents.length === 0}
               >
                 <SelectTrigger>

@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { PayrollCycle, PayrollPolicy } from "@starter/shared/hris/payroll";
+import { isOffline } from "../errors";
 import { usePayrollPolicies, useStatutoryTables } from "../hooks";
 import {
   CYCLE_LABEL_KEYS,
@@ -48,6 +49,7 @@ import {
   publishedVersionOf,
 } from "../lib";
 import { PolicyDialog } from "./policy-dialog";
+import { PayrollOfflineState } from "./payroll-offline-state";
 
 type CycleFilter = PayrollCycle["frequency"] | "all";
 
@@ -93,6 +95,9 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
   );
 
   const editLabel = t("payrollConfig.policies.edit");
+
+  if (policiesQuery.isError && isOffline(policiesQuery.error))
+    return <PayrollOfflineState onRetry={() => void policiesQuery.refetch()} />;
 
   return (
     <>
@@ -179,13 +184,13 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
                 <SelectItem value="all">
                   {t("payrollConfig.policies.columns.cycle")}
                 </SelectItem>
-                {(Object.keys(CYCLE_LABEL_KEYS) as PayrollCycle["frequency"][]).map(
-                  (frequency) => (
-                    <SelectItem key={frequency} value={frequency}>
-                      {t(CYCLE_LABEL_KEYS[frequency])}
-                    </SelectItem>
-                  ),
-                )}
+                {(
+                  Object.keys(CYCLE_LABEL_KEYS) as PayrollCycle["frequency"][]
+                ).map((frequency) => (
+                  <SelectItem key={frequency} value={frequency}>
+                    {t(CYCLE_LABEL_KEYS[frequency])}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Button
@@ -217,8 +222,12 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t("payrollConfig.policies.columns.policy")}</TableHead>
-                <TableHead>{t("payrollConfig.policies.columns.cycle")}</TableHead>
+                <TableHead>
+                  {t("payrollConfig.policies.columns.policy")}
+                </TableHead>
+                <TableHead>
+                  {t("payrollConfig.policies.columns.cycle")}
+                </TableHead>
                 <TableHead>
                   {t("payrollConfig.policies.columns.schedule")}
                 </TableHead>
@@ -226,8 +235,12 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
                   {t("payrollConfig.policies.columns.payDate")}
                 </TableHead>
                 <TableHead>{t("payrollConfig.policies.columns.jkk")}</TableHead>
-                <TableHead>{t("payrollConfig.policies.columns.bpjs")}</TableHead>
-                <TableHead>{t("payrollConfig.policies.columns.status")}</TableHead>
+                <TableHead>
+                  {t("payrollConfig.policies.columns.bpjs")}
+                </TableHead>
+                <TableHead>
+                  {t("payrollConfig.policies.columns.status")}
+                </TableHead>
                 <TableHead numeric>
                   {t("payrollConfig.policies.columns.actions")}
                 </TableHead>
@@ -270,7 +283,9 @@ export function PoliciesTab({ canRun }: { canRun: boolean }) {
                       aria-label={`${editLabel} ${policy.name}`}
                       onClick={() => setEditing(policy)}
                       disabled={!canRun}
-                      title={!canRun ? t("payrollConfig.readOnlyHint") : undefined}
+                      title={
+                        !canRun ? t("payrollConfig.readOnlyHint") : undefined
+                      }
                     >
                       <Pencil aria-hidden="true" />
                     </Button>

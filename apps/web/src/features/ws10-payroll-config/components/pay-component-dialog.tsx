@@ -328,11 +328,13 @@ export function PayComponentDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(TAX_SCHEME_KEYS) as TaxScheme[]).map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {t(TAX_SCHEME_KEYS[value])}
-                    </SelectItem>
-                  ))}
+                  {(Object.keys(TAX_SCHEME_KEYS) as TaxScheme[]).map(
+                    (value) => (
+                      <SelectItem key={value} value={value}>
+                        {t(TAX_SCHEME_KEYS[value])}
+                      </SelectItem>
+                    ),
+                  )}
                 </SelectContent>
               </Select>
             </FormField>
@@ -382,7 +384,10 @@ export function PayComponentDialog({
           </fieldset>
 
           {errors.form && (
-            <p className="text-sm leading-5 font-medium text-danger" role="alert">
+            <p
+              className="text-sm leading-5 font-medium text-danger"
+              role="alert"
+            >
               {errors.form}
             </p>
           )}

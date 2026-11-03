@@ -164,6 +164,7 @@ export const payrollConfigMessages = {
       description:
         "Perubahan berlaku untuk payroll yang dibuat setelahnya; payroll yang sudah berjalan memakai snapshot konfigurasinya sendiri.",
       name: "Nama kebijakan",
+      groupTitle: "Kelompok karyawan",
       groupCode: "Kode kelompok",
       groupCodeHint: "Kode 2–30 karakter: A–Z, 0–9, dan garis bawah.",
       groupName: "Nama kelompok",
@@ -310,8 +311,7 @@ export const payrollConfigMessages = {
     filterType: "Jenis tabel",
     filterAll: "Semua jenis",
     filterStatus: "Status",
-    noTemplate:
-      "Belum ada versi yang dapat dijadikan dasar draf baru.",
+    noTemplate: "Belum ada versi yang dapat dijadikan dasar draf baru.",
     emptyTitle: "Belum ada tabel tarif",
     emptyHint:
       "Buat draf pertama dari tabel yang berlaku, lalu terbitkan setelah angkanya diperiksa.",
@@ -539,6 +539,9 @@ export const payrollConfigMessages = {
     notFound: "Data tidak ditemukan. Muat ulang halaman.",
     idempotencyReused:
       "Permintaan ini sudah dipakai untuk data lain. Muat ulang lalu coba lagi.",
+    offlineTitle: "Tidak ada koneksi internet",
+    offlineHint:
+      "Sambungkan perangkat ke internet, lalu muat ulang konfigurasi payroll.",
     PAYROLL_STATUTORY_TABLE_NOT_FOUND:
       "Tabel tarif yang berlaku untuk tanggal ini belum diterbitkan.",
     PAYROLL_STATUTORY_TABLE_AMBIGUOUS:
@@ -565,5 +568,7 @@ export const payrollConfigMessages = {
     PAYSLIP_PIN_INVALID: "PIN slip gaji salah.",
     PAYSLIP_PIN_LOCKED:
       "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
+    PAYROLL_BANK_FILE_MISMATCH:
+      "File transfer tidak cocok dengan payroll yang dipilih.",
   },
 } as const;

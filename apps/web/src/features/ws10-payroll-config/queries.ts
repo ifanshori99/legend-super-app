@@ -18,11 +18,13 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 /** Configuration lists are tenant config, not a growing log: one page. */
 export const PAYROLL_PAGE_SIZE = 100;
 
-export const statutoryTablesQuery = (query: Query<typeof listStatutoryTables>) =>
-  endpointQueryOptions(listStatutoryTables, { query });
+export const statutoryTablesQuery = (
+  query: Query<typeof listStatutoryTables>,
+) => endpointQueryOptions(listStatutoryTables, { query });
 
-export const payrollPoliciesQuery = (query: Query<typeof listPayrollPolicies>) =>
-  endpointQueryOptions(listPayrollPolicies, { query });
+export const payrollPoliciesQuery = (
+  query: Query<typeof listPayrollPolicies>,
+) => endpointQueryOptions(listPayrollPolicies, { query });
 
 export const payComponentsQuery = (query: Query<typeof listPayComponents>) =>
   endpointQueryOptions(listPayComponents, { query });

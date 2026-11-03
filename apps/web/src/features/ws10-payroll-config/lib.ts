@@ -7,16 +7,17 @@
 // No React and no `@/` alias, so a unit test can load this file with plain
 // Node ESM.
 
+import { businessDateSchema, localDateOf } from "@starter/shared/core";
 import type { BusinessDate, RoundingMode } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 import { ptkpStatusSchema } from "@starter/shared/hris";
+import type { PtkpStatus } from "@starter/shared/hris";
 import type {
   EmployeeGroup,
   JkkRiskClass,
   OvertimeDayType,
   PayrollCycle,
   PayrollPolicy,
-  PtkpStatus,
   RateBracket,
   StatutoryTableDraftInput,
   StatutoryTableType,
@@ -37,14 +38,17 @@ export const PAYROLL_TIME_ZONE = "Asia/Jakarta";
 /** PTKP statuses in contract order, for the statutory editors. */
 export const PTKP_STATUS_LIST: readonly PtkpStatus[] = ptkpStatusSchema.options;
 
-/** "2026-11-03" for the tenant's business date (never the device clock). */
+/**
+ * "2026-11-03" for the tenant's calendar date through core `localDateOf`.
+ * Payroll periods are calendar dates, so the outlet business-day cutoff
+ * (owner Q39) does not move them; the helper still keeps the date in the
+ * tenant zone instead of the device's own.
+ */
 export function businessDateToday(
   now: Date = new Date(),
   timeZone: string = PAYROLL_TIME_ZONE,
 ): BusinessDate {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-  }).format(now) as BusinessDate;
+  return localDateOf(now, timeZone);
 }
 
 /** "2027-03-10" → "10 Mar 2027" (locale-stable, id-ID). */
@@ -74,9 +78,10 @@ function toUtc(date: string): number {
 
 /** Calendar-day arithmetic on a business date (effective periods). */
 export function addDays(date: string, days: number): BusinessDate {
-  return new Date(toUtc(date) + days * 86_400_000)
+  const shifted = new Date(toUtc(date) + days * 86_400_000)
     .toISOString()
-    .slice(0, 10) as BusinessDate;
+    .slice(0, 10);
+  return businessDateSchema.parse(shifted);
 }
 
 /** 1000 bp → "10%", 550 → "5,5%" (id-ID decimal comma, max 2 places). */
@@ -237,14 +242,12 @@ export const STATUTORY_TYPE_KEYS: Record<StatutoryTableType, MessageKey> = {
   thr: "payrollConfig.statutoryTypes.thr",
 };
 
-export const STATUTORY_STATUS_KEYS: Record<
-  StatutoryVersionStatus,
-  MessageKey
-> = {
-  draft: "payrollConfig.statutoryStatus.draft",
-  published: "payrollConfig.statutoryStatus.published",
-  archived: "payrollConfig.statutoryStatus.archived",
-};
+export const STATUTORY_STATUS_KEYS: Record<StatutoryVersionStatus, MessageKey> =
+  {
+    draft: "payrollConfig.statutoryStatus.draft",
+    published: "payrollConfig.statutoryStatus.published",
+    archived: "payrollConfig.statutoryStatus.archived",
+  };
 
 export const ROUNDING_KEYS: Record<RoundingMode, MessageKey> = {
   half_up: "payrollConfig.rounding.half_up",
@@ -318,14 +321,14 @@ export function publishedVersionOf<T extends StatutoryTableType>(
   onDate: string,
 ): StatutoryTableVersionOf<T> | undefined {
   return effectiveVersion(versions, type, onDate) as
-    | StatutoryTableVersionOf<T>
-    | undefined;
+    StatutoryTableVersionOf<T> | undefined;
 }
 
 /**
  * End of a version's period: the day before the next version's effective date
  * in the same chain; null when no later version exists.
- */export function effectiveUntil(
+ */
+export function effectiveUntil(
   version: StatutoryTableVersion,
   versions: readonly StatutoryTableVersion[],
 ): BusinessDate | null {
@@ -384,16 +387,18 @@ export function suggestStatutoryEffectiveFrom(
 ): BusinessDate {
   const chain = versionsOfType(versions, type);
   const latest = chain.reduce<string | undefined>(
-    (best, row) => (best === undefined || row.effectiveFrom > best ? row.effectiveFrom : best),
+    (best, row) =>
+      best === undefined || row.effectiveFrom > best ? row.effectiveFrom : best,
     undefined,
   );
   if (latest !== undefined && latest >= today) return addDays(latest, 1);
-  return today as BusinessDate;
+  return businessDateSchema.parse(today);
 }
 
 // ---- Parameter rows (detail, editor seeds, version diff) -----------------
 
-export type ParameterValueKind = "amount" | "rate" | "decimal" | "count" | "text";
+export type ParameterValueKind =
+  "amount" | "rate" | "decimal" | "count" | "text";
 
 export type ParameterRow = {
   key: string;
@@ -415,9 +420,7 @@ export type ParameterRow = {
  * detail table and the version diff. Every row carries a catalog key so no
  * label is written in a component.
  */
-export function parameterRows(
-  draft: StatutoryTableDraftInput,
-): ParameterRow[] {
+export function parameterRows(draft: StatutoryTableDraftInput): ParameterRow[] {
   const rows: ParameterRow[] = [];
   const add = (
     labelKey: MessageKey,
@@ -522,7 +525,12 @@ export function parameterRows(
           { labelVars: { status } },
         );
       for (const category of TER_CATEGORIES)
-        pushBrackets(rows, draft.type, category, p.bracketsByCategory[category]);
+        pushBrackets(
+          rows,
+          draft.type,
+          category,
+          p.bracketsByCategory[category],
+        );
       rounding(p.roundingMode);
       break;
     }
@@ -608,8 +616,17 @@ export function parameterRows(
   return rows;
 }
 
+/** Overtime day types in contract order, for the editor sections. */
+export const DAY_TYPE_KEYS: Record<OvertimeDayType, MessageKey> = {
+  workday: "payrollConfig.statutory.form.dayType.workday",
+  rest_day_6_day_week:
+    "payrollConfig.statutory.form.dayType.rest_day_6_day_week",
+  rest_day_5_day_week:
+    "payrollConfig.statutory.form.dayType.rest_day_5_day_week",
+};
+
 function dayTypeNameKey(dayType: OvertimeDayType): MessageKey {
-  return `payrollConfig.statutory.form.dayType.${dayType}` as MessageKey;
+  return DAY_TYPE_KEYS[dayType];
 }
 
 function pushBrackets(
@@ -628,7 +645,8 @@ function pushBrackets(
       type === "pph21_ter"
         ? "payrollConfig.statutory.parameterLabels.terBracketRate"
         : "payrollConfig.statutory.parameterLabels.annualBracketRate";
-    const vars = category === null ? { index: position } : { category, index: position };
+    const vars: Record<string, string | number> =
+      category === null ? { index: position } : { category, index: position };
     rows.push({
       key: `${labelKey}|${JSON.stringify(vars)}`,
       labelKey,

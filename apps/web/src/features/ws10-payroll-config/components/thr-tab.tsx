@@ -3,12 +3,7 @@
 // itself is a versioned statutory table (type `thr`), so this tab reads the
 // published version and states it next to the list.
 import * as React from "react";
-import {
-  CalendarClock,
-  CircleCheck,
-  CircleSlash,
-  Plus,
-} from "lucide-react";
+import { CalendarClock, CircleCheck, CircleSlash, Plus } from "lucide-react";
 import { useT } from "@/components/i18n";
 import {
   Card,
@@ -34,6 +29,7 @@ import type {
   ThrSchedule,
   ThrScheduleStatus,
 } from "@starter/shared/hris/payroll";
+import { isOffline } from "../errors";
 import { useStatutoryTables, useThrSchedules } from "../hooks";
 import {
   businessDateToday,
@@ -43,6 +39,7 @@ import {
   thrYear,
 } from "../lib";
 import { ThrDialog } from "./thr-dialog";
+import { PayrollOfflineState } from "./payroll-offline-state";
 
 function ThrStatusPill({ status }: { status: ThrScheduleStatus }) {
   const t = useT();
@@ -65,10 +62,7 @@ function ThrStatusPill({ status }: { status: ThrScheduleStatus }) {
   );
 }
 
-function scopeLabel(
-  schedule: ThrSchedule,
-  t: ReturnType<typeof useT>,
-): string {
+function scopeLabel(schedule: ThrSchedule, t: ReturnType<typeof useT>): string {
   return schedule.employeeIds === null
     ? t("payrollConfig.thr.scope.all")
     : t("payrollConfig.thr.scope.selected", {
@@ -97,6 +91,11 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
   const paid = schedules.filter(
     (schedule) => schedule.status === "paid",
   ).length;
+
+  if (schedulesQuery.isError && isOffline(schedulesQuery.error))
+    return (
+      <PayrollOfflineState onRetry={() => void schedulesQuery.refetch()} />
+    );
 
   return (
     <>

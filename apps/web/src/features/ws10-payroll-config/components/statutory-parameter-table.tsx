@@ -12,11 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type {
-  ParameterDiff,
-  ParameterRow,
-  ParameterValueKind,
-} from "../lib";
+import type { ParameterDiff, ParameterRow, ParameterValueKind } from "../lib";
 import { formatBasisPoints, formatMultiplierInput } from "../lib";
 
 type Translate = ReturnType<typeof useT>;
@@ -78,7 +74,9 @@ export function StatutoryParameterTable({ rows }: { rows: ParameterRow[] }) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>{t("payrollConfig.statutory.detailDialog.parameters")}</TableHead>
+          <TableHead>
+            {t("payrollConfig.statutory.detailDialog.parameters")}
+          </TableHead>
           <TableHead numeric>
             {t("payrollConfig.statutory.detailDialog.value")}
           </TableHead>

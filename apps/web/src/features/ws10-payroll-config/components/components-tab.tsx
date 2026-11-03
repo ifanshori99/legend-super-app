@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { PayComponent } from "@starter/shared/hris/payroll";
+import { isOffline } from "../errors";
 import { usePayComponents } from "../hooks";
 import {
   PAY_COMPONENT_CATEGORY_KEYS,
@@ -26,6 +27,7 @@ import {
 } from "../labels";
 import { EmployeeComponentsPanel } from "./employee-components-panel";
 import { PayComponentDialog } from "./pay-component-dialog";
+import { PayrollOfflineState } from "./payroll-offline-state";
 
 function ComponentBasis({ component }: { component: PayComponent }) {
   const t = useT();
@@ -59,7 +61,9 @@ function ComponentIdentity({ component }: { component: PayComponent }) {
       <span className="flex flex-wrap items-center gap-1 font-semibold">
         {component.code}
         {component.isSystem && (
-          <Badge tone="brand">{t("payrollConfig.components.systemBadge")}</Badge>
+          <Badge tone="brand">
+            {t("payrollConfig.components.systemBadge")}
+          </Badge>
         )}
       </span>
       <span className="text-sm text-muted-foreground">{component.name}</span>
@@ -85,16 +89,25 @@ export function ComponentsTab({ canRun }: { canRun: boolean }) {
       .includes(needle);
   });
 
-  const systemCount = components.filter((component) => component.isSystem).length;
+  const systemCount = components.filter(
+    (component) => component.isSystem,
+  ).length;
   const customCount = components.length - systemCount;
   const deductionCount = components.filter(
     (component) => component.kind === "deduction",
   ).length;
   const nextDisplayOrder =
-    components.reduce((max, component) => Math.max(max, component.displayOrder), 0) +
-    10;
+    components.reduce(
+      (max, component) => Math.max(max, component.displayOrder),
+      0,
+    ) + 10;
 
   const editLabel = t("payrollConfig.components.edit");
+
+  if (componentsQuery.isError && isOffline(componentsQuery.error))
+    return (
+      <PayrollOfflineState onRetry={() => void componentsQuery.refetch()} />
+    );
 
   return (
     <>
@@ -215,7 +228,9 @@ export function ComponentsTab({ canRun }: { canRun: boolean }) {
                       aria-label={`${editLabel} ${component.code}`}
                       onClick={() => setEditing(component)}
                       disabled={!canRun}
-                      title={!canRun ? t("payrollConfig.readOnlyHint") : undefined}
+                      title={
+                        !canRun ? t("payrollConfig.readOnlyHint") : undefined
+                      }
                     >
                       <Pencil aria-hidden="true" />
                     </Button>

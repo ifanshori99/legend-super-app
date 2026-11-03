@@ -12,11 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/i18n";
 import type { StatutoryTableVersion } from "@starter/shared/hris/payroll";
-import {
-  STATUTORY_TYPE_KEYS,
-  diffParameterRows,
-  draftOfVersion,
-} from "../lib";
+import { STATUTORY_TYPE_KEYS, diffParameterRows, draftOfVersion } from "../lib";
 import { StatutoryDiffTable } from "./statutory-parameter-table";
 
 export function StatutoryCompareDialog({

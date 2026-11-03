@@ -42,7 +42,7 @@ import type {
   StatutoryVersionStatus,
 } from "@starter/shared/hris/payroll";
 import { STATUTORY_TABLE_TYPES } from "@starter/shared/hris/payroll";
-import { payrollMutationError } from "../errors";
+import { isOffline, payrollMutationError } from "../errors";
 import {
   useArchiveStatutory,
   usePublishStatutory,
@@ -62,6 +62,7 @@ import { StatutoryCompareDialog } from "./statutory-compare-dialog";
 import { StatutoryConfirmDialog } from "./statutory-confirm-dialog";
 import { StatutoryDetailDialog } from "./statutory-detail-dialog";
 import { StatutoryFormDialog } from "./statutory-form-dialog";
+import { PayrollOfflineState } from "./payroll-offline-state";
 import {
   StatutoryEffectiveBadge,
   StatutoryStatusPill,
@@ -120,7 +121,9 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
       .includes(needle);
   });
 
-  const published = versions.filter((version) => version.status === "published");
+  const published = versions.filter(
+    (version) => version.status === "published",
+  );
   const drafts = versions.filter((version) => version.status === "draft");
   const types = new Set(published.map((version) => version.type));
   const scheduled = published.filter(
@@ -128,7 +131,10 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
   ).length;
   const conflicts = statutoryConflicts(versions);
 
-  function openAction(kind: "publish" | "archive", version: StatutoryTableVersion) {
+  function openAction(
+    kind: "publish" | "archive",
+    version: StatutoryTableVersion,
+  ) {
     setActionError(undefined);
     setActionKey(newIdempotencyKey());
     setDialog({ kind, version });
@@ -178,6 +184,11 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
   const detailPrevious = detailVersion
     ? previousVersion(detailVersion, versions)
     : undefined;
+
+  if (statutoryQuery.isError && isOffline(statutoryQuery.error))
+    return (
+      <PayrollOfflineState onRetry={() => void statutoryQuery.refetch()} />
+    );
 
   return (
     <>
@@ -286,9 +297,7 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
                   {t("payrollConfig.statutory.filterStatus")}
                 </SelectItem>
                 {(
-                  Object.keys(
-                    STATUTORY_STATUS_KEYS,
-                  ) as StatutoryVersionStatus[]
+                  Object.keys(STATUTORY_STATUS_KEYS) as StatutoryVersionStatus[]
                 ).map((value) => (
                   <SelectItem key={value} value={value}>
                     {t(STATUTORY_STATUS_KEYS[value])}
@@ -384,9 +393,7 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
                           aria-label={`${t(
                             "payrollConfig.statutory.detail",
                           )} ${typeLabel}`}
-                          onClick={() =>
-                            setDialog({ kind: "detail", version })
-                          }
+                          onClick={() => setDialog({ kind: "detail", version })}
                         >
                           <Eye aria-hidden="true" />
                         </Button>
@@ -554,7 +561,9 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
           onEdit={() => setDialog({ kind: "edit", version: dialog.version })}
           onPublish={() => openAction("publish", dialog.version)}
           onArchive={() => openAction("archive", dialog.version)}
-          onCompare={() => setDialog({ kind: "compare", version: dialog.version })}
+          onCompare={() =>
+            setDialog({ kind: "compare", version: dialog.version })
+          }
         />
       )}
 
@@ -581,13 +590,10 @@ export function StatutoryTab({ canRun }: { canRun: boolean }) {
             type: t(STATUTORY_TYPE_KEYS[dialog.version.type]),
             version: dialog.version.version,
           })}
-          description={t(
-            "payrollConfig.statutory.publishDialog.description",
-            {
-              version: dialog.version.version,
-              date: formatBusinessDate(dialog.version.effectiveFrom),
-            },
-          )}
+          description={t("payrollConfig.statutory.publishDialog.description", {
+            version: dialog.version.version,
+            date: formatBusinessDate(dialog.version.effectiveFrom),
+          })}
           confirmLabel={t("payrollConfig.statutory.publishDialog.confirm")}
           error={actionError}
           pending={publishStatutory.isPending}

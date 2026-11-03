@@ -29,10 +29,7 @@ import type { Employee } from "@starter/shared/hris";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import type { ThrCreateInput } from "../api";
 import { payrollMutationError } from "../errors";
-import {
-  useActiveEmployees,
-  useCreateThrSchedule,
-} from "../hooks";
+import { useActiveEmployees, useCreateThrSchedule } from "../hooks";
 
 type Scope = "all" | "selected";
 type Errors = Record<string, string | undefined>;
@@ -109,7 +106,7 @@ export function ThrDialog({
     if (legalEntityId === null)
       found.form = t("payrollConfig.thr.form.legalEntityMissing");
     setErrors(found);
-    if (Object.keys(found).length > 0) return;
+    if (Object.keys(found).length > 0 || legalEntityId === null) return;
 
     createSchedule.mutate(
       {
@@ -184,7 +181,8 @@ export function ThrDialog({
                 value={holidayDate}
                 onChange={(event) => {
                   setHolidayDate(event.target.value);
-                  if (tenureAsOfDate === "") setTenureAsOfDate(event.target.value);
+                  if (tenureAsOfDate === "")
+                    setTenureAsOfDate(event.target.value);
                   if (payDate === "") setPayDate(event.target.value);
                 }}
                 disabled={pending}
@@ -284,12 +282,11 @@ export function ThrDialog({
             </fieldset>
           )}
 
-          <p className="rounded-container border border-border bg-card p-3 text-sm leading-5">
-            {t("payrollConfig.thr.form.tenureHint")}
-          </p>
-
           {errors.form && (
-            <p className="text-sm leading-5 font-medium text-danger" role="alert">
+            <p
+              className="text-sm leading-5 font-medium text-danger"
+              role="alert"
+            >
               {errors.form}
             </p>
           )}

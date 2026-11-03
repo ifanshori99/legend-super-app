@@ -23,7 +23,10 @@ import {
   parameterRows,
 } from "../lib";
 import { StatutoryParameterTable } from "./statutory-parameter-table";
-import { StatutoryEffectiveBadge, StatutoryStatusPill } from "./version-status-pill";
+import {
+  StatutoryEffectiveBadge,
+  StatutoryStatusPill,
+} from "./version-status-pill";
 
 export function StatutoryDetailDialog({
   version,
@@ -94,9 +97,7 @@ export function StatutoryDetailDialog({
               <dt className="type-eyebrow text-muted-foreground">
                 {t("payrollConfig.statutory.detailDialog.publishedAt")}
               </dt>
-              <dd className="tabular">
-                {formatDateTime(version.publishedAt)}
-              </dd>
+              <dd className="tabular">{formatDateTime(version.publishedAt)}</dd>
             </div>
           )}
         </dl>
@@ -115,11 +116,7 @@ export function StatutoryDetailDialog({
           </Button>
           {version.status === "draft" && canRun && (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onArchive}
-              >
+              <Button type="button" variant="outline" onClick={onArchive}>
                 <Archive aria-hidden="true" />
                 {t("payrollConfig.statutory.archive")}
               </Button>
