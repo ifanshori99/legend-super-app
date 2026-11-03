@@ -1,6 +1,7 @@
 // Failed-item recovery (ORD-08) on the mock API (bead legend-tz1; PRD §3 F10
 // "Pemulihan Item Gagal", "Voucher Permintaan Maaf", "Ulasan Pascamakan").
-// Run: pnpm exec playwright test -c playwright.mock.config.ts e2e/legend-tz1.spec.ts
+// Run: pnpm test:e2e:mock e2e/legend-tz1.mock.spec.ts — mock mode only, no API
+// and no DB.
 import { expect, test, type Page } from "@playwright/test";
 
 const privateRoom = `v1.${"E".repeat(40)}.${"F".repeat(43)}`; // P1: one open failed item

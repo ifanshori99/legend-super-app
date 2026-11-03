@@ -3,13 +3,13 @@ import { expect, test } from "@playwright/test";
 // Connectivity kit (bead legend-diq). PRD v1.7 §3 F5 (Print Agent, Fallback
 // Berlapis, Mode Latihan), §4 Alur F and EDG-05.
 //
-// These specs run against the web app in mock mode (VITE_API_MOCK=true), so
-// they need no API or database. The mock link state is seeded through
-// localStorage before the first load (see features/ws02-edge/mock.ts).
+// Run: pnpm test:e2e:mock e2e/legend-diq.mock.spec.ts — mock mode only, no API
+// and no DB. The mock link state is seeded through localStorage before the
+// first load (see features/ws02-edge/mock.ts).
 //
-// First assertion = explicit timeout (bead legend-1336): `pnpm test:e2e:mock`
-// warms every route first (e2e/mock-global-setup.ts), but a dev server started
-// by hand is cold and needs 20-35 s for the first route compile.
+// First assertion = explicit timeout (bead legend-1336): the runner warms every
+// route first (e2e/mock-global-setup.ts); a cold Vite server needs 20-35 s for
+// the first route compile.
 
 /** Cold Vite dev server: the first SSR hit can take >20 s (legend-1336). */
 const COLD_START_TIMEOUT_MS = 30_000;

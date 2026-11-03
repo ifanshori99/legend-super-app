@@ -1,7 +1,8 @@
 // Order status, call waiter, bill, split and point claim on the mock API (bead
 // legend-woz; PRD §3 F10 "Status Pesanan", "Panggil Waiter & Minta Tagihan",
 // "Split Bill", "Klaim Poin per Orang"; acceptance ORD-06, ORD-07).
-// Run: pnpm exec playwright test -c playwright.mock.config.ts e2e/legend-woz.spec.ts
+// Run: pnpm test:e2e:mock e2e/legend-woz.mock.spec.ts — mock mode only, no API
+// and no DB.
 import { expect, test, type Page } from "@playwright/test";
 
 const privateRoom = `v1.${"E".repeat(40)}.${"F".repeat(43)}`; // P1, open bill, bill + 2 splits (1 paid)

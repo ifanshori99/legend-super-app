@@ -104,6 +104,24 @@
   --scrim: rgb(0 0 0 / 0.64);
 }
 
+/* ---------------------------------------------------- Loading fill (v3) */
+/* A skeleton must read as a shape while content loads: WCAG 1.4.11 asks for
+ * ≥3:1 against the surface that surrounds it, and loading screens sit on the
+ * page. Fixed per mode, never tenant-driven, so the ratio holds in any theme
+ * island (Kontras dark stays ≥3.29:1). Measured with the sRGB
+ * relative-luminance contrast formula. */
+:root,
+[data-theme="light"] {
+  /* page/card 3.66:1 · surface-2 3.39:1 · muted 3.33:1 · surface-3 3.19:1 */
+  --skeleton: #8a857d;
+}
+
+.dark,
+[data-theme="dark"] {
+  /* page 3.69:1 · surface-2 3.49:1 · shell 3.43:1 · card 3.33:1 · raised 3.03:1 */
+  --skeleton: #6f6c67;
+}
+
 /* Elevation (DESIGN.md §6). Resting surfaces stay flat; `card` lift is for
  * interactive states only (hover, selected, dragging, sticky summary);
  * `overlay` is for menus, dialogs, sheets, toasts. Re-declared on every

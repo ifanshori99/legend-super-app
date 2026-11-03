@@ -29,7 +29,7 @@ export const MOCK_SPEC_PATTERNS = ["**/*.mock.spec.ts", "**/legend-*.spec.ts"];
 // Specs written before this runner self-skip unless a mock server address is
 // set, so a stray `playwright test` never fails on a server nobody started.
 // `LEGEND_MOCK_WEB_URL` is the name to use in new specs; `E2E_MOCK_BASE_URL` is
-// the legacy alias e2e/legend-g9r3.spec.ts reads. The mock config sets both to
+// the legacy alias e2e/legend-g9r3.mock.spec.ts reads. The mock config sets both to
 // the server it started.
 export const MOCK_WEB_URL_ENV = "LEGEND_MOCK_WEB_URL";
 export const LEGACY_MOCK_WEB_URL_ENV = "E2E_MOCK_BASE_URL";

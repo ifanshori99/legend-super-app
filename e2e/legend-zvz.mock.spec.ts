@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
-// Expo and pickup display (bead legend-zvz, PRD v1.7 §3 F12) against mock mode:
-// VITE_API_MOCK=true serves the @starter/shared/kitchen fixtures, so these flows
-// need no API or database. Point LEGEND_MOCK_WEB_URL at such a web server
-// (`VITE_API_MOCK=true pnpm dev:web`); until bead legend-y8n9 fixes the e2e
-// runner, `pnpm test:e2e` skips this file.
+// Expo and pickup display (bead legend-zvz, PRD v1.7 §3 F12).
+//
+// Run: pnpm test:e2e:mock e2e/legend-zvz.mock.spec.ts — mock mode only, no API
+// and no DB. This file reads LEGEND_MOCK_WEB_URL (the mock runner sets it) for
+// its own baseURL and skips when it is missing.
 const mockWebUrl = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(
   mockWebUrl === undefined,
-  "Set LEGEND_MOCK_WEB_URL to a VITE_API_MOCK=true web server to run the mock-mode screens.",
+  "Run with pnpm test:e2e:mock so LEGEND_MOCK_WEB_URL is set.",
 );
 test.use({ baseURL: mockWebUrl ?? "http://localhost:3000" });
 
