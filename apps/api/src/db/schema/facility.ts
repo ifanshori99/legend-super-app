@@ -13,11 +13,20 @@
 //   an overlapping hold impossible even if a service forgot its lock, and a
 //   cancelled / refunded / no_show ticket drops out of it (FAC-02).
 // - `facility_queue_entries` is the "masuk sekarang" wait queue.
+// - `facility_products`, `facility_addons`, `entitlement_rules`,
+//   `facility_subscription_plans`, `wifi_policies` and `facility_incidents`
+//   are the configuration and incident-log tables of bead legend-8dpm (PRD
+//   v1.7 §3 F22/F25 "Produk & Hak Akses", "Add-on Opsional", "Langganan
+//   Bulanan", "Keselamatan", §3 F39 "Wi-Fi Berbasis Belanja"). They are all
+//   outlet owned and repeat (tenant_id, outlet_id, facility_id) so a config
+//   row can never point at a facility of another outlet; `wifi_policies` is
+//   scoped to a floor zone and only one policy may exist per zone.
 //
-// Entitlement ledger, credentials (QR/PIN digests), products and add-ons are
-// separate beads (legend-fjk5, legend-bzih, legend-er32); `product_id` and
-// `entitlement_ledger_id` carry no FK until those tables land. Tenant RLS and
-// outlet RLS are installed in facility.custom.sql.
+// Entitlement ledger, credentials (QR/PIN digests) and subscription rows are
+// separate beads (legend-fjk5, legend-bzih, legend-gr3j); table/aggregate
+// references without a definition here (`menu_item_id`, `tax_rule_id`,
+// `zone_id`, `product_id`, `entitlement_ledger_id`) carry no FK. Tenant RLS
+// and outlet RLS are installed in facility.custom.sql.
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -27,6 +36,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  text,
   timestamp,
   unique,
   uniqueIndex,
@@ -36,12 +46,18 @@ import {
 import type {
   AccessTicketStatus,
   CancellationPolicy,
+  EntitlementRule,
   EntitlementSource,
+  EntitlementValidity,
   FacilityDayHours,
+  FacilityIncidentType,
+  FacilityProductType,
   FacilityQueueEntryStatus,
   FacilityType,
   FacilityUnitStatus,
   OvertimePolicy,
+  PeakWindow,
+  SubscriptionInterval,
   TicketAddon,
 } from "@starter/shared/facility";
 import {
@@ -50,7 +66,9 @@ import {
   tenantIdColumn,
   ulidInUuid,
 } from "../columns.ts";
+import { inventoryItems } from "./inventory.ts";
 import { outlets, tenants } from "./platform-org.ts";
+import { user } from "./user.ts";
 
 const createdAt = timestamp("created_at", { withTimezone: true })
   .notNull()
@@ -374,6 +392,320 @@ export const facilityQueueEntries = pgTable(
     check(
       "facility_queue_entries_notified_check",
       sql`(${table.status} <> 'notified') OR ${table.notifiedAt} IS NOT NULL`,
+    ),
+  ],
+);
+
+// ---- Configuration: products, add-ons, rules, plans, Wi-Fi policies --------
+
+/**
+ * One sellable access product (PRD §3 F25 "Produk & Hak Akses"; contract
+ * `facilityProductSchema`). `type` is the acquisition route the product
+ * belongs to and `sessions` how many sessions one purchase grants (1 for a
+ * single ticket, 10/20 for a plan). `is_active` stops new sales without
+ * deleting a product that issued tickets still reference.
+ */
+export const facilityProducts = pgTable(
+  "facility_products",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    name: varchar("name", { length: 150 }).notNull(),
+    type: varchar("type", { length: 20 })
+      .$type<FacilityProductType>()
+      .notNull(),
+    priceIdr: idrColumn("price_idr").notNull(),
+    /** Tax rule applied to the sale (WS-05); no FK until that table lands. */
+    taxRuleId: uuid("tax_rule_id"),
+    sessions: integer("sessions").notNull(),
+    /** Sessions per business day; null = unlimited. */
+    maxPerDay: integer("max_per_day"),
+    /** Menu package that carries this component (WS-03). */
+    menuItemId: uuid("menu_item_id"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("facility_products_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("facility_products_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    foreignKey({
+      name: "facility_products_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    index("facility_products_facility_idx").on(
+      table.tenantId,
+      table.facilityId,
+      table.type,
+    ),
+    check(
+      "facility_products_type_check",
+      sql`${table.type} IN ('single', 'package_component', 'subscription_plan')`,
+    ),
+    check(
+      "facility_products_amount_check",
+      sql`${table.priceIdr} >= 0 AND ${table.sessions} BETWEEN 1 AND 100 AND (${table.maxPerDay} IS NULL OR ${table.maxPerDay} BETWEEN 1 AND 10)`,
+    ),
+  ],
+);
+
+/** Optional add-on (towel, amenities kit, locker, hair dryer) per facility. */
+export const facilityAddons = pgTable(
+  "facility_addons",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    name: varchar("name", { length: 150 }).notNull(),
+    priceIdr: idrColumn("price_idr").notNull(),
+    /** Inventory item the add-on consumes (WS-06), else null. */
+    inventoryItemId: uuid("inventory_item_id"),
+    isEnabled: boolean("is_enabled").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("facility_addons_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("facility_addons_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    foreignKey({
+      name: "facility_addons_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    foreignKey({
+      name: "facility_addons_inventory_item_fk",
+      columns: [table.tenantId, table.inventoryItemId],
+      foreignColumns: [inventoryItems.tenantId, inventoryItems.id],
+    }),
+    index("facility_addons_facility_idx").on(
+      table.tenantId,
+      table.facilityId,
+      table.sortOrder,
+    ),
+    check(
+      "facility_addons_amount_check",
+      sql`${table.priceIdr} >= 0 AND ${table.sortOrder} >= 0`,
+    ),
+  ],
+);
+
+/**
+ * A rule under which a condition issues access rights (PRD §3 F25 "Produk &
+ * Hak Akses"). The condition shape is fixed per `type`, so the jsonb column
+ * is typed as the contract's discriminated condition union and a min-spend
+ * rule can never lose its threshold.
+ */
+export const entitlementRules = pgTable(
+  "entitlement_rules",
+  {
+    /** The client sends the id on PUT (upsert key). */
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    type: varchar("type", { length: 20 })
+      .$type<EntitlementRule["type"]>()
+      .notNull(),
+    condition: jsonb("condition")
+      .$type<EntitlementRule["condition"]>()
+      .notNull(),
+    sessions: integer("sessions").notNull(),
+    validity: jsonb("validity").$type<EntitlementValidity>().notNull(),
+    isEnabled: boolean("is_enabled").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("entitlement_rules_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("entitlement_rules_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    foreignKey({
+      name: "entitlement_rules_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    index("entitlement_rules_facility_idx").on(
+      table.tenantId,
+      table.facilityId,
+      table.type,
+    ),
+    check(
+      "entitlement_rules_type_check",
+      sql`${table.type} IN ('min_spend', 'tier_benefit', 'package')`,
+    ),
+    check(
+      "entitlement_rules_sessions_check",
+      sql`${table.sessions} BETWEEN 1 AND 100`,
+    ),
+  ],
+);
+
+/** A monthly/yearly access plan (PRD §3 F25 "Langganan Bulanan"). */
+export const facilitySubscriptionPlans = pgTable(
+  "facility_subscription_plans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    name: varchar("name", { length: 150 }).notNull(),
+    priceIdr: idrColumn("price_idr").notNull(),
+    /** Sessions included per billing period, e.g. 10 or 20. */
+    quotaPerPeriod: integer("quota_per_period").notNull(),
+    interval: varchar("interval", { length: 10 })
+      .$type<SubscriptionInterval>()
+      .notNull(),
+    /** Optional per-day cap; null = no daily limit. */
+    maxPerDay: integer("max_per_day"),
+    /** Plan id in the recurring-billing provider (DOIT). */
+    providerPlanId: varchar("provider_plan_id", { length: 100 }),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("facility_subscription_plans_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("facility_subscription_plans_tenant_outlet_id_key").on(
+      table.tenantId,
+      table.outletId,
+      table.id,
+    ),
+    foreignKey({
+      name: "facility_subscription_plans_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    index("facility_subscription_plans_facility_idx").on(
+      table.tenantId,
+      table.facilityId,
+      table.isActive,
+    ),
+    check(
+      "facility_subscription_plans_interval_check",
+      sql`${table.interval} IN ('month', 'year')`,
+    ),
+    check(
+      "facility_subscription_plans_amount_check",
+      sql`${table.priceIdr} >= 0 AND ${table.quotaPerPeriod} BETWEEN 1 AND 100 AND (${table.maxPerDay} IS NULL OR ${table.maxPerDay} BETWEEN 1 AND 10)`,
+    ),
+  ],
+);
+
+/**
+ * Guest Wi-Fi quota policy of one floor zone (PRD §3 F39 "Wi-Fi Berbasis
+ * Belanja", FAC-12/FAC-13/FAC-14). Every number is a row, so the admin panel
+ * changes the rules without a redeploy; one policy per zone. The zone lives
+ * in WS-03's `floor_zones` (no FK: another workstream owns it) and
+ * `facility_id` is null for a zone policy that is not facility specific.
+ */
+export const wifiPolicies = pgTable(
+  "wifi_policies",
+  {
+    /** The client sends the id on PUT (upsert key). */
+    id: uuid("id").primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    zoneId: uuid("zone_id").notNull(),
+    facilityId: uuid("facility_id"),
+    freeMinutes: integer("free_minutes").notNull(),
+    peakFreeMinutes: integer("peak_free_minutes").notNull(),
+    spendPerExtraHourIdr: idrColumn("spend_per_extra_hour_idr").notNull(),
+    extraMinutes: integer("extra_minutes").notNull(),
+    maxDevices: integer("max_devices").notNull(),
+    peakSchedule: jsonb("peak_schedule").$type<PeakWindow[]>().notNull(),
+    baseSpeedKbps: integer("base_speed_kbps").notNull(),
+    fullSpeedKbps: integer("full_speed_kbps").notNull(),
+    minSpendPerHourIdr: idrColumn("min_spend_per_hour_idr"),
+    tierBonusMinutes: jsonb("tier_bonus_minutes")
+      .$type<Record<string, number>>()
+      .notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    unique("wifi_policies_tenant_id_id_key").on(table.tenantId, table.id),
+    // One policy per zone: the PUT on a zone replaces the row, never adds one.
+    unique("wifi_policies_tenant_outlet_zone_key").on(
+      table.tenantId,
+      table.outletId,
+      table.zoneId,
+    ),
+    foreignKey({
+      name: "wifi_policies_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    index("wifi_policies_zone_idx").on(table.tenantId, table.zoneId, table.id),
+    check(
+      "wifi_policies_amount_check",
+      sql`${table.freeMinutes} >= 0 AND ${table.peakFreeMinutes} >= 0 AND ${table.spendPerExtraHourIdr} >= 0 AND ${table.extraMinutes} BETWEEN 1 AND 1440 AND ${table.maxDevices} BETWEEN 1 AND 20 AND ${table.baseSpeedKbps} >= 1 AND ${table.fullSpeedKbps} >= 1 AND (${table.minSpendPerHourIdr} IS NULL OR ${table.minSpendPerHourIdr} >= 0)`,
+    ),
+  ],
+);
+
+/**
+ * Emergency / assistance / damage report of a facility (PRD §3 F25
+ * "Keselamatan", FAC-08; contract `facilityIncidentSchema`). Raised by the
+ * panic button or staff, possibly offline, and answered with a resolution;
+ * `responded_by` is the Better Auth account id.
+ */
+export const facilityIncidents = pgTable(
+  "facility_incidents",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    unitId: uuid("unit_id"),
+    accessTicketId: ulidInUuid("access_ticket_id"),
+    type: varchar("type", { length: 20 })
+      .$type<FacilityIncidentType>()
+      .notNull(),
+    triggeredAt: timestamp("triggered_at", { withTimezone: true }).notNull(),
+    /** Raised on the edge while the outlet had no internet (FAC-08). */
+    offline: boolean("offline").notNull().default(false),
+    respondedBy: text("responded_by").references(() => user.id),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    resolution: varchar("resolution", { length: 500 }),
+    createdAt,
+  },
+  (table) => [
+    unique("facility_incidents_tenant_id_id_key").on(table.tenantId, table.id),
+    foreignKey({
+      name: "facility_incidents_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    // The incident log reads newest first per facility (cursor keys).
+    index("facility_incidents_log_idx").on(
+      table.tenantId,
+      table.outletId,
+      table.facilityId,
+      table.triggeredAt,
+      table.id,
+    ),
+    check(
+      "facility_incidents_type_check",
+      sql`${table.type} IN ('panic', 'assist', 'damage')`,
     ),
   ],
 );

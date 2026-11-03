@@ -1,15 +1,24 @@
-// Facility, area and unit configuration (PRD v1.7 §3 F22 "Model Generik",
-// "Konfigurasi Legend"; bead legend-nm4f). Routes: routes/facility.routes.ts.
+// Facility, area and unit configuration (PRD v1.7 §3 F22/F25 "Model Generik",
+// "Konfigurasi Legend", "Produk & Hak Akses"; beads legend-nm4f + legend-8dpm).
+// Routes: routes/facility.routes.ts.
 //
 // Every function runs inside `withTenant` (RLS scopes rows to the tenant and
 // the caller's outlets) and re-checks `facility.config.manage` on the
-// facility's own outlet. Products, add-ons, entitlement rules, subscription
-// plans and Wi-Fi policies live in later beads; the config read model returns
-// them as empty lists until those tables land.
-import { and, asc, eq } from "drizzle-orm";
+// facility's own outlet. The config read model returns the real products,
+// add-ons, entitlement rules, subscription plans and Wi-Fi policies; their
+// writes live in facility-products.service.ts and wifi-policy.service.ts.
+//
+// `listFacilities` backs the config index (GET /facilities): the facility ids
+// cannot be invented by a screen, so the list is gated by the config
+// permission and re-checked per distinct outlet of the page.
+import { and, asc, eq, gt, or } from "drizzle-orm";
 import {
+  decodeCursor,
+  encodeCursor,
+  type CursorPage,
   type ScopedTenantContext,
   userIdSchema,
+  uuidSchema,
   type z,
 } from "@starter/shared/core";
 import {
@@ -17,12 +26,12 @@ import {
   slotConfigSchema,
   type CreateFacilityAreaInput,
   type CreateFacilityUnitInput,
+  type Facility,
   type FacilityArea,
   type FacilityConfig,
   type FacilityUnit,
   type UpdateFacilityInput,
   type updateFacilityAreaSchema,
-  type Facility,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
 import {
@@ -45,8 +54,87 @@ import {
   toFacility,
   toUnit,
 } from "./facility-shared.ts";
+import {
+  listEntitlementRules,
+  listFacilityAddons,
+  listFacilityProducts,
+  listFacilitySubscriptionPlans,
+} from "./facility-products.service.ts";
+import { listWifiPoliciesForFacility } from "./wifi-policy.service.ts";
 
 type UpdateAreaInput = z.output<typeof updateFacilityAreaSchema>;
+
+/**
+ * The tenant's facilities for the config index, `name` then `id` as the
+ * keyset (both bounded columns). RLS limits the rows to the caller's outlet
+ * reach; the permission is re-checked per distinct outlet of the page because
+ * the list spans outlets (TEN-03).
+ */
+export async function listFacilities(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  query: { cursor?: string; limit: number },
+): Promise<CursorPage<Facility>> {
+  const actor = userIdSchema.parse(actorUserId);
+  return withTenant(db, context, async (tx) => {
+    const filters = [eq(facilities.tenantId, context.tenant.tenantId)];
+    if (query.cursor) {
+      const cursor = decodeFacilityCursor(query.cursor);
+      const cursorFilter = or(
+        gt(facilities.name, cursor.name),
+        and(eq(facilities.name, cursor.name), gt(facilities.id, cursor.id)),
+      );
+      if (cursorFilter) filters.push(cursorFilter);
+    }
+    const rows = await tx
+      .select()
+      .from(facilities)
+      .where(and(...filters))
+      .orderBy(asc(facilities.name), asc(facilities.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    const outlets = [...new Set(page.map((row) => row.outletId))];
+    for (const outletId of outlets)
+      await assertFacilityPermission(
+        tx,
+        context,
+        actor,
+        CONFIG_PERMISSION,
+        outletId,
+      );
+    return {
+      data: page.map(toFacility),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.name, last.id])
+            : null,
+      },
+    };
+  });
+}
+
+/** Strict keyset decode; a tampered cursor is a 422, never a 500. */
+function decodeFacilityCursor(cursor: string): { name: string; id: string } {
+  let keys: ReturnType<typeof decodeCursor>;
+  try {
+    keys = decodeCursor(cursor);
+  } catch {
+    throw new HttpError(422, "VALIDATION_ERROR", "Periksa cursor.");
+  }
+  const [name, id] = keys;
+  const parsedId = typeof id === "string" ? uuidSchema.safeParse(id) : null;
+  if (
+    typeof name !== "string" ||
+    name.length === 0 ||
+    parsedId === null ||
+    !parsedId.success
+  )
+    throw new HttpError(422, "VALIDATION_ERROR", "Periksa cursor.");
+  return { name, id: parsedId.data };
+}
 
 export async function getFacilityConfig(
   context: ScopedTenantContext,
@@ -63,12 +151,13 @@ export async function getFacilityConfig(
       CONFIG_PERMISSION,
       facility.outletId,
     );
+    const tenantId = context.tenant.tenantId;
     const areas = await tx
       .select()
       .from(facilityAreas)
       .where(
         and(
-          eq(facilityAreas.tenantId, context.tenant.tenantId),
+          eq(facilityAreas.tenantId, tenantId),
           eq(facilityAreas.facilityId, facility.id),
         ),
       )
@@ -78,7 +167,7 @@ export async function getFacilityConfig(
       .from(facilityUnits)
       .where(
         and(
-          eq(facilityUnits.tenantId, context.tenant.tenantId),
+          eq(facilityUnits.tenantId, tenantId),
           eq(facilityUnits.facilityId, facility.id),
         ),
       )
@@ -87,11 +176,20 @@ export async function getFacilityConfig(
       facility: toFacility(facility),
       areas: areas.map(toArea),
       units: units.map(toUnit),
-      products: [],
-      addons: [],
-      entitlementRules: [],
-      subscriptionPlans: [],
-      wifiPolicies: [],
+      products: await listFacilityProducts(tx, tenantId, facility.id),
+      addons: await listFacilityAddons(tx, tenantId, facility.id),
+      entitlementRules: await listEntitlementRules(tx, tenantId, facility.id),
+      subscriptionPlans: await listFacilitySubscriptionPlans(
+        tx,
+        tenantId,
+        facility.id,
+      ),
+      wifiPolicies: await listWifiPoliciesForFacility(
+        tx,
+        tenantId,
+        facility.outletId,
+        facility.id,
+      ),
     });
   });
 }

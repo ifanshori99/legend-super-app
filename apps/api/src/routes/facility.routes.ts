@@ -1,8 +1,8 @@
-// Facility schema, slot availability, queue and unit routes (PRD v1.7 §3 F22;
-// bead legend-nm4f; FAC-02, FAC-06). Paths, params, bodies and queries come
-// from the WS-09 contract (`@starter/shared/facility` defineEndpoint
-// objects), so the API and the web client cannot drift. Mount at
-// `/api/facility`.
+// Facility schema, slot availability, queue, unit and configuration routes
+// (PRD v1.7 §3 F22/F25; beads legend-nm4f + legend-8dpm; FAC-02, FAC-06).
+// Paths, params, bodies and queries come from the WS-09 contract
+// (`@starter/shared/facility` defineEndpoint objects), so the API and the web
+// client cannot drift. Mount at `/api/facility`.
 //
 // The tenant comes from the server-minted context, never the request
 // (TEN-02). The facility, area and unit records are outlet-owned and the
@@ -11,22 +11,34 @@
 // re-checks the permission on the concrete record's outlet inside the tenant
 // transaction (TEN-03); RLS hides other outlets.
 //
-// Ticket booking/credentials (legend-bzih), entitlements (legend-fjk5) and
-// cleaning tasks are other beads' routes.
+// The staff reads (unit board, availability, incident log) are gated by
+// `facility.booth.operate`; the config index and every config write by
+// `facility.config.manage` (the tenant admin holds the latter, not the
+// former). Ticket booking/credentials (legend-bzih), entitlements
+// (legend-fjk5) and cleaning tasks are other beads' routes.
 import { Router, type Request } from "express";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import {
+  createFacilityAddon as createFacilityAddonEndpoint,
   createFacilityArea as createFacilityAreaEndpoint,
+  createFacilityProduct as createFacilityProductEndpoint,
   createFacilityUnit as createFacilityUnitEndpoint,
+  createSubscriptionPlanEndpoint,
   getCurrentFacilityQueueEntry as getCurrentFacilityQueueEntryEndpoint,
   getFacilityAvailability as getFacilityAvailabilityEndpoint,
   getFacilityConfig as getFacilityConfigEndpoint,
   getFacilityUnitBoard as getFacilityUnitBoardEndpoint,
   joinFacilityQueue as joinFacilityQueueEndpoint,
   leaveFacilityQueue as leaveFacilityQueueEndpoint,
+  listFacilities as listFacilitiesEndpoint,
+  listFacilityIncidents as listFacilityIncidentsEndpoint,
+  putEntitlementRule as putEntitlementRuleEndpoint,
   updateFacility as updateFacilityEndpoint,
+  updateFacilityAddon as updateFacilityAddonEndpoint,
   updateFacilityArea as updateFacilityAreaEndpoint,
+  updateFacilityProduct as updateFacilityProductEndpoint,
   updateFacilityUnit as updateFacilityUnitEndpoint,
+  updateSubscriptionPlan as updateSubscriptionPlanEndpoint,
 } from "@starter/shared/facility";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
@@ -38,6 +50,8 @@ import {
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import * as config from "../services/facility-config.service.ts";
+import * as incidents from "../services/facility-incidents.service.ts";
+import * as products from "../services/facility-products.service.ts";
 import * as queue from "../services/facility-queue.service.ts";
 import * as slots from "../services/facility-slots.service.ts";
 import * as units from "../services/facility-units.service.ts";
@@ -229,3 +243,152 @@ facilityRouter.post("/units", manage, jsonBody, async (req, res) => {
     .location(`/api/facility/units/${unit.id}`)
     .json({ data: unit });
 });
+
+// ------------------------------------------------- incident log (staff read)
+
+facilityRouter.get("/incidents", operate, async (req, res) => {
+  const query = listFacilityIncidentsEndpoint.query.parse(req.query);
+  res.json({
+    data: await incidents.listFacilityIncidents(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  });
+});
+
+// ------------------------------------------------------ config: facility list
+
+// The config index read: gated by config.manage because the tenant admin holds
+// it without `facility.booth.operate` (bead legend-er32).
+facilityRouter.get("/facilities", manage, async (req, res) => {
+  const query = listFacilitiesEndpoint.query.parse(req.query);
+  res.json({
+    data: await config.listFacilities(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      query,
+    ),
+  });
+});
+
+// ------------------------------------------------------------ config: products
+
+facilityRouter.post("/products", manage, jsonBody, async (req, res) => {
+  const input = createFacilityProductEndpoint.body.parse(req.body);
+  const product = await products.createFacilityProduct(
+    getScopedTenantContext(req),
+    getAuth(req).user.id,
+    input,
+  );
+  res
+    .status(201)
+    .location(`/api/facility/products/${product.id}`)
+    .json({ data: product });
+});
+
+facilityRouter.patch(
+  "/products/:productId",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { productId } = updateFacilityProductEndpoint.params.parse(
+      req.params,
+    );
+    const input = updateFacilityProductEndpoint.body.parse(req.body);
+    res.json({
+      data: await products.updateFacilityProduct(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        productId,
+        input,
+      ),
+    });
+  },
+);
+
+// -------------------------------------------------------------- config: add-ons
+
+facilityRouter.post("/addons", manage, jsonBody, async (req, res) => {
+  const input = createFacilityAddonEndpoint.body.parse(req.body);
+  const addon = await products.createFacilityAddon(
+    getScopedTenantContext(req),
+    getAuth(req).user.id,
+    input,
+  );
+  res
+    .status(201)
+    .location(`/api/facility/addons/${addon.id}`)
+    .json({ data: addon });
+});
+
+facilityRouter.patch("/addons/:addonId", manage, jsonBody, async (req, res) => {
+  const { addonId } = updateFacilityAddonEndpoint.params.parse(req.params);
+  const input = updateFacilityAddonEndpoint.body.parse(req.body);
+  res.json({
+    data: await products.updateFacilityAddon(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      addonId,
+      input,
+    ),
+  });
+});
+
+// ------------------------------------------------- config: entitlement rules
+
+facilityRouter.put(
+  "/entitlement-rules/:ruleId",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { ruleId } = putEntitlementRuleEndpoint.params.parse(req.params);
+    const input = putEntitlementRuleEndpoint.body.parse(req.body);
+    res.json({
+      data: await products.putEntitlementRule(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        ruleId,
+        input,
+      ),
+    });
+  },
+);
+
+// ------------------------------------------------ config: subscription plans
+
+facilityRouter.post(
+  "/subscription-plans",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const input = createSubscriptionPlanEndpoint.body.parse(req.body);
+    const plan = await products.createSubscriptionPlan(
+      getScopedTenantContext(req),
+      getAuth(req).user.id,
+      input,
+    );
+    res
+      .status(201)
+      .location(`/api/facility/subscription-plans/${plan.id}`)
+      .json({ data: plan });
+  },
+);
+
+facilityRouter.patch(
+  "/subscription-plans/:planId",
+  manage,
+  jsonBody,
+  async (req, res) => {
+    const { planId } = updateSubscriptionPlanEndpoint.params.parse(req.params);
+    const input = updateSubscriptionPlanEndpoint.body.parse(req.body);
+    res.json({
+      data: await products.updateSubscriptionPlan(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        planId,
+        input,
+      ),
+    });
+  },
+);
