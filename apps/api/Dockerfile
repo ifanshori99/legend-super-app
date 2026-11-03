@@ -43,7 +43,19 @@ COPY --from=builder --chown=node:node /app/apps/api/drizzle ./drizzle
 USER node
 CMD ["node", "dist/migrate.js"]
 
-# --- Runner: the API. Keep last so it stays the default build target ---------
+# --- Worker: same bundle and runtime as API, with its own process -----------
+FROM node:${NODE_VERSION} AS worker
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder --chown=node:node /app/apps/api/dist ./dist
+USER node
+# Liveness only: PID 1 must still be the worker process. Queue/relay health
+# requires external monitoring; this probe does not claim readiness.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD \
+  node -e "const fs=require('node:fs');try{process.exit(fs.readFileSync('/proc/1/cmdline','utf8').includes('dist/worker.js')?0:1)}catch{process.exit(1)}"
+CMD ["node", "--enable-source-maps", "dist/worker.js"]
+
+# --- Runner: the API --------------------------------------------------------
 FROM node:${NODE_VERSION} AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -58,3 +70,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD \
   node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", "--enable-source-maps", "dist/server.js"]
+
+# An edge deployment uses the identical application bundle and runs with
+# EDGE_MODE=true; choose the edge target or set the variable on runner.
+FROM runner AS edge
+ENV EDGE_MODE=true
+
+# Keep the API as the default build target.
+FROM runner AS default

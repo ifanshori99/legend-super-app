@@ -2,7 +2,7 @@
 // Orang": each guest claims their own part, within 24 hours). Points need a
 // member account; ordering never does (ORD-01).
 import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { CircleCheck, Clock, Gift } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -19,6 +19,8 @@ export function ClaimCard({
   timeZone: string;
 }) {
   const t = useT();
+  // The card only renders on /t/$token/bill, so the table token is a route param.
+  const { token } = useParams({ strict: false }) as { token?: string };
   const claimQuery = usePointClaim(sessionId);
   const claim = useClaimPoints(sessionId);
   // Read once per mount: the 24 h deadline does not need a ticking clock.
@@ -72,7 +74,13 @@ export function ClaimCard({
               <>
                 <p className="text-sm">{t("qrOrders.bill.claimLogin")}</p>
                 <Button asChild variant="outline">
-                  <Link to="/sign-in">
+                  {/* legend-yoo9: come back to this bill after /masuk. */}
+                  <Link
+                    to="/masuk"
+                    search={{
+                      redirect: token ? `/t/${token}/bill` : undefined,
+                    }}
+                  >
                     {t("qrOrders.bill.claimLoginAction")}
                   </Link>
                 </Button>

@@ -12,10 +12,14 @@ export function apiBaseUrl() {
 }
 
 // Headers for a server-to-API call made on behalf of the current visitor: their
-// session cookie (so the API authenticates them) and this request's ID (so both
-// servers' logs correlate).
+// session cookie, public host, and request ID. The API must trust only its
+// internal SSR proxy hop when honoring X-Forwarded-Host (TEN-02).
 export function forwardedHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
+  // Use the Host received from the reverse proxy, never a client-provided
+  // X-Forwarded-Host. The proxy must preserve the validated public Host.
+  const host = getRequestHeader("host");
+  if (host) headers["x-forwarded-host"] = host;
   const cookie = getRequestHeader("cookie");
   if (cookie) headers.cookie = cookie;
   const reqId = getRequestContext()?.reqId;

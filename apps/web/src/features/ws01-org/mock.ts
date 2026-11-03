@@ -7,52 +7,23 @@
 // registers. That list handler reads `cafeLegendPlatformFixtures.outlets`
 // lazily, so a save is written back into the same fixture rows; a reload then
 // still shows the new cutoff (sessionStorage keeps the save for this tab).
+//
+// legend-5kop: the sessionStorage snapshot lives in outlet-store.ts, which the
+// app-level tenant resolver reads too, and a cutoff change appends an audit
+// event to the audit log mock (features/ws11-audit/mock.ts, the store the
+// /audit screen lists). Importing that module is safe: the mock transport
+// loads every feature's mock.ts eagerly anyway, so this only shares the one
+// registered list handler and its mutable store.
 import {
   cafeLegendPlatformFixtures,
   orgEndpoints,
-  outletSchema,
   type Outlet,
 } from "@starter/shared/platform";
 import { ApiError } from "../../lib/api/errors.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
-
-const STORAGE_KEY = "legend-org-outlets-mock:v1";
-
-/** sessionStorage in the browser only; the SSR server keeps the seed. */
-function browserStorage(): Storage | null {
-  try {
-    return typeof window === "undefined" ? null : window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
-
-/** Saves from this tab, validated so a stale snapshot cannot break the mock. */
-function readSaved(): Outlet[] | null {
-  const storage = browserStorage();
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = outletSchema.array().safeParse(JSON.parse(raw));
-    if (parsed.success) return parsed.data;
-    storage.removeItem(STORAGE_KEY);
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSaved(outlets: readonly Outlet[]): void {
-  const storage = browserStorage();
-  if (!storage) return;
-  try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(outlets));
-  } catch {
-    // Quota or private mode: the mock still works without reload memory.
-  }
-}
+import { appendMockAuditEvent } from "../ws11-audit/mock.ts";
+import { readSavedOutlets, writeSavedOutlets } from "./outlet-store.ts";
 
 /** The pristine rows, captured before any save mutates the shared fixtures. */
 const pristine: Outlet[] = cafeLegendPlatformFixtures.outlets.map((outlet) => ({
@@ -73,7 +44,9 @@ function syncFixtures(outlets: readonly Outlet[]): void {
 }
 
 function seed(): Outlet[] {
-  const rows = (readSaved() ?? pristine).map((outlet) => ({ ...outlet }));
+  const rows = (readSavedOutlets() ?? pristine).map((outlet) => ({
+    ...outlet,
+  }));
   syncFixtures(rows);
   return rows;
 }
@@ -104,6 +77,19 @@ registerMock(orgEndpoints.updateOutlet, ({ params, body }) => {
   );
   store.set(next);
   syncFixtures([updated]);
-  writeSaved(next);
+  writeSavedOutlets(next);
+  // PRD v1.7 §3 "Pengaturan" / contracts.md D-CORE-7: a cutoff change is an
+  // audited settings change. The audit trail screen lists this store, so the
+  // event is visible on /audit without leaving the SPA.
+  if (updated.businessDayCutoff !== current.businessDayCutoff) {
+    appendMockAuditEvent({
+      action: "outlet.business_day_cutoff.updated",
+      objectType: "outlet",
+      objectId: updated.id,
+      outletId: updated.id,
+      before: { businessDayCutoff: current.businessDayCutoff },
+      after: { businessDayCutoff: updated.businessDayCutoff },
+    });
+  }
   return { data: updated };
 });

@@ -4,12 +4,15 @@
 // registers the sales-family report runs through the shared run owner
 // (`lib/mock/handlers/report-runs.ts`, bead legend-jzud: one owner per endpoint).
 //
-// Runs are generated from one deterministic day model anchored on the owner
-// dashboard's fixture numbers for the open business day 1 Nov 2026 (net sales
-// Rp 7.420.000, 96 transactions, 148 guests, the four channels), so the same
-// report with a different split always adds up to the same totals (DASH-02),
-// and the owner board's own runs (skipped here, same key) agree with them.
-// Figures are mock-only, plausible Cafe Legend numbers; nothing is predicted.
+// Runs are generated from the shared deterministic day model in
+// `mock-day-model.ts`, anchored on the owner dashboard's fixture numbers for
+// the open business day 1 Nov 2026 (net sales Rp 7.420.000, 96 transactions,
+// 148 guests, the four channels), so the same report with a different split
+// always adds up to the same totals (DASH-02), the owner board's own runs
+// (skipped here, same key) agree with them, and the report builder's previews
+// (features/ws11-report-builder/mock-preview.ts, same module) show the same
+// cells. Figures are mock-only, plausible Cafe Legend numbers; nothing is
+// predicted.
 //
 // `?mock=empty` returns runs without rows and an empty catalog;
 // `?mock=slow|error|offline` are handled by the runtime.
@@ -19,7 +22,6 @@
 import { roleTemplate } from "@starter/shared/access";
 import { cafeLegendFixtures } from "@starter/shared/core";
 import {
-  cafeLegendManagementLayoutFixture,
   createReportExportEndpoint,
   getReportEndpoint,
   getReportExportEndpoint,
@@ -46,207 +48,30 @@ import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { registerMockReportRuns } from "../../lib/mock/handlers/report-runs.ts";
 import { namedPresets, resolvePreset, type DateRange } from "./lib.ts";
+import {
+  ATOM_KEYS,
+  BUSINESS_DATE,
+  MONTH_START,
+  distribute,
+  outletSplit,
+  periodAtoms,
+  splitSpecFor,
+  type AtomKey,
+  type Atoms,
+  type SplitSpec,
+} from "./mock-day-model.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
-const BUSINESS_DATE = cafeLegendManagementLayoutFixture.businessDate;
-const MONTH_START = `${BUSINESS_DATE.slice(0, 7)}-01`;
-const CLOSED_MONTH_NET_SALES = 412_800_000;
-const LAST_MONTH = (() => {
-  const end = new Date(`${MONTH_START}T00:00:00Z`);
-  end.setUTCDate(0);
-  const last = end.toISOString().slice(0, 10);
-  return { start: `${last.slice(0, 8)}01`, end: last };
-})();
 
 // ---- Day model ---------------------------------------------------------------
-
-type Atoms = {
-  net: number;
-  gross: number;
-  discount: number;
-  refund: number;
-  tx: number;
-  pax: number;
-  qty: number;
-  voided: number;
-};
-type AtomKey = keyof Atoms;
-
-/** The open business day (a Sunday), anchored on the owner board's figures. */
-const BASE_DAY: Atoms = {
-  net: 7_420_000,
-  gross: 7_920_000,
-  discount: 380_000,
-  refund: 120_000,
-  tx: 96,
-  pax: 148,
-  qty: 214,
-  voided: 95_000,
-};
-
-/** Monday .. Sunday; the business day (Sunday) is 1. */
-const WEEKDAY_FACTOR = [0.78, 0.82, 0.85, 0.9, 1.15, 1.3, 1] as const;
-
-function eachDay(range: DateRange): string[] {
-  const days: string[] = [];
-  const cursor = new Date(`${range.startDate}T00:00:00Z`);
-  const end = new Date(`${range.endDate}T00:00:00Z`);
-  while (cursor <= end && days.length < 400) {
-    days.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return days;
-}
-
-function periodAtoms(range: DateRange): Atoms {
-  const total: Atoms = {
-    net: 0,
-    gross: 0,
-    discount: 0,
-    refund: 0,
-    tx: 0,
-    pax: 0,
-    qty: 0,
-    voided: 0,
-  };
-  for (const day of eachDay(range)) {
-    const weekday = (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
-    const factor = WEEKDAY_FACTOR[weekday] ?? 1;
-    for (const key of Object.keys(total) as AtomKey[])
-      total[key] += Math.round(BASE_DAY[key] * factor);
-  }
-  // The last full month is the shareholder's closed month: its sales tie to the
-  // books (net sales Rp412.800.000, SH-01), so every figure scales together.
-  if (
-    range.startDate === LAST_MONTH.start &&
-    range.endDate === LAST_MONTH.end
-  ) {
-    const scale = CLOSED_MONTH_NET_SALES / total.net;
-    for (const key of Object.keys(total) as AtomKey[])
-      total[key] = Math.round(total[key] * scale);
-  }
-  return total;
-}
-
-/** Largest-remainder split, so the parts always add up to the total. */
-function distribute(total: number, weights: readonly number[]): number[] {
-  const sum = weights.reduce((a, b) => a + b, 0);
-  if (sum <= 0) return weights.map(() => 0);
-  const exact = weights.map((weight) => (total * weight) / sum);
-  const parts = exact.map(Math.floor);
-  let left = total - parts.reduce((a, b) => a + b, 0);
-  const order = exact
-    .map((value, index) => ({ index, rest: value - Math.floor(value) }))
-    .sort((a, b) => b.rest - a.rest || a.index - b.index);
-  for (const { index } of order) {
-    if (left <= 0) break;
-    parts[index] = (parts[index] ?? 0) + 1;
-    left -= 1;
-  }
-  return parts;
-}
-
-type SplitSpec = {
-  values: readonly string[];
-  /** Weights per atom; `net` is the fallback for atoms without their own. */
-  weights: Partial<Record<AtomKey, readonly number[]>> & {
-    net: readonly number[];
-  };
-};
-
-const SPLITS: Readonly<Record<string, SplitSpec>> = {
-  outlet: { values: [outlet.name], weights: { net: [1] } },
-  channel: {
-    values: ["qr", "pos", "gofood", "grabfood"],
-    weights: {
-      net: [4_150_000, 1_980_000, 780_000, 510_000],
-      tx: [52, 28, 10, 6],
-      pax: [92, 34, 14, 8],
-    },
-  },
-  hour: {
-    values: [
-      "08",
-      "09",
-      "10",
-      "11",
-      "12",
-      "13",
-      "14",
-      "15",
-      "16",
-      "17",
-      "18",
-      "19",
-      "20",
-      "21",
-    ],
-    weights: { net: [2, 3, 5, 8, 12, 11, 7, 6, 7, 9, 12, 10, 6, 3] },
-  },
-  menu_item: {
-    values: [
-      "Kopi Susu Aren",
-      "Nasi Goreng Kampung",
-      "Ayam Geprek",
-      "Matcha Latte",
-      "Croissant Mentega",
-      "Es Teh Lemon",
-      "Pisang Goreng Keju",
-      "Mie Goreng Seafood",
-      "Americano",
-      "Roti Bakar Coklat",
-    ],
-    weights: {
-      net: [
-        1_260_000, 1_085_000, 945_000, 720_000, 525_000, 640_000, 520_000,
-        480_000, 760_000, 485_000,
-      ],
-      qty: [42, 31, 27, 24, 21, 18, 14, 12, 16, 9],
-    },
-  },
-  menu_category: {
-    values: ["Kopi", "Makanan berat", "Nonkopi", "Pastry dan camilan"],
-    weights: {
-      net: [2_900_000, 2_700_000, 1_120_000, 700_000],
-      qty: [78, 62, 41, 33],
-    },
-  },
-  employee: {
-    values: ["Rani", "Dimas", "Putri", "Fajar"],
-    weights: {
-      net: [2_300_000, 2_050_000, 1_760_000, 1_310_000],
-      tx: [30, 26, 24, 16],
-      voided: [40_000, 25_000, 20_000, 10_000],
-    },
-  },
-  payment_method: {
-    values: ["qris", "cash", "debit", "ewallet"],
-    weights: {
-      net: [3_300_000, 2_200_000, 1_120_000, 800_000],
-      tx: [44, 26, 16, 10],
-      refund: [60_000, 30_000, 20_000, 10_000],
-    },
-  },
-  promo: {
-    values: ["Promo Gajian", "Voucher Member", "Diskon Jam Santai"],
-    weights: { net: [200_000, 110_000, 70_000] },
-  },
-};
-
-/** Single-day open business day: the café has only served until 11.40 WIB. */
-const OPEN_DAY_HOURS = ["08", "09", "10", "11"];
-const OPEN_DAY_HOUR_WEIGHTS = [2, 3, 5, 8];
+//
+// `mock-day-model.ts` owns the atoms, weekday factors, closed-month scaling and
+// split weights; only the outlet label is this feature's own (rows show the
+// name, while the builder's query carries the id).
 
 function splitFor(key: string, range: DateRange): SplitSpec | null {
-  const spec = SPLITS[key];
-  if (spec === undefined) return null;
-  if (
-    key === "hour" &&
-    range.startDate === BUSINESS_DATE &&
-    range.endDate === BUSINESS_DATE
-  )
-    return { values: OPEN_DAY_HOURS, weights: { net: OPEN_DAY_HOUR_WEIGHTS } };
-  return spec;
+  if (key === "outlet") return outletSplit(outlet.name);
+  return splitSpecFor(key, range);
 }
 
 // ---- Metric cells ------------------------------------------------------------
@@ -360,7 +185,7 @@ function buildRun(
   else {
     const spec = splitFor(groupBy, range);
     if (spec === null) return null;
-    const atomKeys = Object.keys(totals) as AtomKey[];
+    const atomKeys = ATOM_KEYS;
     const columns = Object.fromEntries(
       atomKeys.map((key) => [
         key,

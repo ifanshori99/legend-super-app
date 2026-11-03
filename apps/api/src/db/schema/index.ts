@@ -44,3 +44,5 @@ export * from "./hris";
 // WS-01 text overrides + consents (legend-cv3).
 export * from "./text-overrides";
 export * from "./consents";
+
+export * from "./operations";

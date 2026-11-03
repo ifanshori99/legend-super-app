@@ -14,6 +14,7 @@ import {
 import { FacilityError } from "@starter/shared/facility";
 import { IdentityError } from "@starter/shared/identity";
 import { NotificationError } from "@starter/shared/notification";
+import { OperationsError } from "@starter/shared/operations";
 import { PlatformError } from "@starter/shared/platform";
 import { PosError } from "@starter/shared/pos";
 import {
@@ -55,6 +56,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof FacilityError ||
     error instanceof IdentityError ||
     error instanceof NotificationError ||
+    error instanceof OperationsError ||
     error instanceof PlatformError ||
     error instanceof PosError ||
     error instanceof TaxError

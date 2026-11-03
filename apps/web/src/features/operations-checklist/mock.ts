@@ -143,6 +143,8 @@ registerMock(createChecklistRunEndpoint, ({ body }) => {
     dueAt: dueAtOf(body.shiftDate, template.schedule.dueTime),
     completedAt: null,
     status: "pending",
+    missedAt: null,
+    alertedAt: null,
     results: snapshot.items.map((item) => ({
       itemId: item.id,
       status: "pending" as const,
@@ -222,6 +224,8 @@ registerMock(postChecklistRunTransitionEndpoint, ({ params, body }) => {
       ...run,
       status: outcome,
       completedAt: now(),
+      missedAt: null,
+      alertedAt: null,
     });
     state.runs[runIndex] = next;
     return { data: clone(next) };
@@ -231,6 +235,11 @@ registerMock(postChecklistRunTransitionEndpoint, ({ params, body }) => {
     ...run,
     status: nextStatus,
     completedAt: null,
+    // OPS-01: a missed run carries the server miss time and the time its
+    // supervisor alert was queued (same instant on the server); any other
+    // transition clears both.
+    missedAt: nextStatus === "missed" ? now() : null,
+    alertedAt: nextStatus === "missed" ? now() : null,
   });
   state.runs[runIndex] = next;
   return { data: clone(next) };

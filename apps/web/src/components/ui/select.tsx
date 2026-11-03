@@ -47,6 +47,9 @@ function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       id={id ?? field?.controlId}
+      // Keep an explicit aria-label: destructuring it out of props above would
+      // otherwise drop the caller's only accessible name (legend-n138).
+      aria-label={ariaLabel}
       aria-labelledby={labelledBy}
       aria-describedby={ariaDescribedBy ?? field?.describedBy}
       aria-invalid={ariaInvalid ?? (field?.invalid ? true : undefined)}
