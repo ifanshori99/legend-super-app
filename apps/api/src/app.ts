@@ -161,10 +161,9 @@ export function createApp({
   };
 
   // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
-  // session to gate the development fallback on, and it must run before
-  // Better Auth's catch-all because the identity contract puts it under
-  // /api/auth/*. The tenant is the domain's (or device token's); in
-  // development with synthetic data only, the seeded tenant. Elsewhere an
+  // session. It must run before Better Auth's catch-all because the identity
+  // contract puts it under
+  // /api/auth/*. The tenant is the domain's (or device token's); an
   // unresolved host answers TENANT_NOT_FOUND instead of guessing (TEN-02).
   app.use(
     "/api/auth/login-challenges",
@@ -172,7 +171,6 @@ export function createApp({
       required: false,
       resolveDomain,
       verifyCredential: deviceTenantCredential,
-      fallback: developmentSyntheticTenant ? firstSyntheticTenant : undefined,
     }),
   );
   app.use("/api/auth/login-challenges", identityLoginChallengeRouter);

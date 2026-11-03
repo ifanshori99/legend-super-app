@@ -87,6 +87,7 @@ function kirimPayload(input: {
 async function postWebhook(body: string, secret = SECRET) {
   const signature = await signKirimWebhook({ rawBody: body, secret });
   return agent(app)
+    .host(fixtures.domains[0]!.hostname)
     .post("/api/webhooks/whatsapp")
     .set("Content-Type", "application/json")
     .set("X-Kirim-Signature", signature)
@@ -175,7 +176,7 @@ afterAll(async () => {
 
 describe("WhatsApp reverse-OTP login", () => {
   it("AUTH-01 issues a 40-bit code valid five minutes, bound to the asking browser", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -202,14 +203,14 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(String(issued.headers["set-cookie"])).toContain(".login_binding=");
 
     // Another browser that learns the challenge id gets nothing (AUTH-01).
-    const other = agent(app);
+    const other = agent(app).host(fixtures.domains[0]!.hostname);
     const peek = await other.get(`/api/auth/login-challenges/${challenge.id}`);
     expect(peek.status).toBe(403);
     expect(peek.body.error.code).toBe("CHALLENGE_BROWSER_MISMATCH");
   });
 
   it("AUTH-01 completes once and only the bound browser collects the session", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -260,12 +261,12 @@ describe("WhatsApp reverse-OTP login", () => {
     expect(replay.body.error.code).toBe("CHALLENGE_NOT_PENDING");
 
     // And a different browser never could, even holding the challenge id.
-    const thief = agent(app);
+    const thief = agent(app).host(fixtures.domains[0]!.hostname);
     expect((await thief.get(path)).status).toBe(403);
   });
 
   it("AUTH-07 links a verified number to the current account without issuing a new session", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(browser);
     const before = await browser.get("/api/auth/get-session");
     const issued = await browser
@@ -306,7 +307,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 verifies an existing unverified WhatsApp identity on the same account", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(browser);
     const current = await browser.get("/api/auth/get-session");
     await owner.query(
@@ -333,7 +334,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 rejects a number already linked to another account", async () => {
-    const first = agent(app);
+    const first = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(first);
     const issued = await first
       .post("/api/auth/login-challenges/whatsapp")
@@ -345,7 +346,7 @@ describe("WhatsApp reverse-OTP login", () => {
         text: `MASUK LEGEND ${issued.body.data.codeFormatted}`,
       }),
     );
-    const second = agent(app);
+    const second = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(second);
     const other = await second
       .post("/api/auth/login-challenges/whatsapp")
@@ -370,7 +371,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-07 refuses linking after the initiating session is revoked", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(browser);
     const current = await browser.get("/api/auth/get-session");
     const issued = await browser
@@ -426,7 +427,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-02 rolls back a failed link claim and retries the same delivery once", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     await signUp(browser);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
@@ -484,7 +485,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-01 stores only keyed digests, never the code or the raw number", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -536,7 +537,7 @@ describe("WhatsApp reverse-OTP login", () => {
 
   it("AUTH-04 stops a device or IP at five challenges per fifteen minutes", async () => {
     // One browser (one binding cookie, one client IP) gets five, not six.
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const issued = await browser
         .post("/api/auth/login-challenges/whatsapp")
@@ -610,6 +611,7 @@ describe("WhatsApp reverse-OTP login", () => {
     });
     const post = () =>
       agent(app)
+        .host(fixtures.domains[0]!.hostname)
         .post("/api/webhooks/whatsapp")
         .set("Content-Type", "application/json")
         .set("X-Kirim-Event-Id", "evt-" + randomUUID());
@@ -654,7 +656,7 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-02 processes a repeated message id once", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
@@ -758,13 +760,13 @@ describe("WhatsApp reverse-OTP login", () => {
   });
 
   it("AUTH-01 cancels a challenge from the asking browser only", async () => {
-    const browser = agent(app);
+    const browser = agent(app).host(fixtures.domains[0]!.hostname);
     const issued = await browser
       .post("/api/auth/login-challenges/whatsapp")
       .set(originHeader)
       .send({});
     const path = `/api/auth/login-challenges/${issued.body.data.challenge.id}`;
-    const other = agent(app);
+    const other = agent(app).host(fixtures.domains[0]!.hostname);
     const denied = await other.post(`${path}/cancel`).set(originHeader).send();
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe("CHALLENGE_BROWSER_MISMATCH");
