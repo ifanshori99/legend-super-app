@@ -7,6 +7,11 @@
 
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
+import { accountingApMessages } from "./accounting-ap.ts";
+import { accountingCashMessages } from "./accounting-cash.ts";
+import { accountingReportMessages } from "./accounting-report.ts";
+import { accountingShareMessages } from "./accounting-share.ts";
+import { accountingTaxMessages } from "./accounting-tax.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
@@ -58,7 +63,18 @@ export const id = {
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
   // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
-  accounting: accountingMessages,
+  accounting: {
+    ...accountingMessages,
+    // WS-07 sibling screens, one catalog file per bead so the five parallel
+    // beads never edit the same object: cash & bank (legend-53q), tax
+    // (legend-5fdy), payables/assets/budgets (legend-m4zn), statements &
+    // period close (legend-rx0h), profit share (legend-ogx3).
+    cash: accountingCashMessages,
+    tax: accountingTaxMessages,
+    ap: accountingApMessages,
+    report: accountingReportMessages,
+    share: accountingShareMessages,
+  },
   common: {
     save: "Simpan",
     cancel: "Batal",
