@@ -1,0 +1,35 @@
+# Mount a private file at /etc/pgbackrest/pgbackrest.conf, mode 0600 and
+# readable by postgres. Values below are placeholders, never credentials.
+[global]
+repo1-type=s3
+repo1-path=/legend
+repo1-s3-endpoint=REPLACE_BIZNET_GIO_S3_ENDPOINT
+repo1-s3-region=REPLACE_REGION
+repo1-s3-bucket=REPLACE_PRIMARY_BUCKET
+repo1-s3-key=REPLACE_ACCESS_KEY
+repo1-s3-key-secret=REPLACE_SECRET_KEY
+repo1-s3-uri-style=path
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass=REPLACE_LONG_RANDOM_ENCRYPTION_SECRET
+repo1-retention-full=2
+
+# A separately credentialed, geographically independent S3-compatible store.
+repo2-type=s3
+repo2-path=/legend-offsite
+repo2-s3-endpoint=REPLACE_OFFSITE_ENDPOINT
+repo2-s3-region=REPLACE_OFFSITE_REGION
+repo2-s3-bucket=REPLACE_OFFSITE_BUCKET
+repo2-s3-key=REPLACE_OFFSITE_ACCESS_KEY
+repo2-s3-key-secret=REPLACE_OFFSITE_SECRET_KEY
+repo2-s3-uri-style=path
+repo2-cipher-type=aes-256-cbc
+repo2-cipher-pass=REPLACE_DIFFERENT_LONG_RANDOM_ENCRYPTION_SECRET
+repo2-retention-full=2
+
+archive-async=y
+spool-path=/var/spool/pgbackrest
+process-max=1
+log-level-console=info
+
+[legend]
+pg1-path=/var/lib/postgresql/data

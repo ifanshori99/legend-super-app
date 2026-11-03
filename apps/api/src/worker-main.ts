@@ -2,6 +2,8 @@ import "./load-env";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { assertDeploymentEnv } from "@starter/shared/env";
+import { createProductionWorkerConfig } from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
@@ -44,13 +46,20 @@ import {
   createWakeListener,
 } from "./worker/relay";
 
+assertDeploymentEnv(process.env);
+
 // This module belongs to the deployment, never to the incoming request.
 const modulePath = process.env.WORKER_CONFIG_MODULE;
-if (!modulePath)
+const transportPath = process.env.WORKER_TRANSPORT_MODULE;
+if (!modulePath && !transportPath)
   throw new Error(
-    "WORKER_CONFIG_MODULE is required; no tenant resolver or consumer is configured",
+    "WORKER_TRANSPORT_MODULE is required; no durable sync transport is configured",
   );
-const config: unknown = await import(pathToFileURL(resolve(modulePath)).href);
+const config: unknown = modulePath
+  ? await import(pathToFileURL(resolve(modulePath)).href)
+  : createProductionWorkerConfig(
+      await import(pathToFileURL(resolve(transportPath!)).href),
+    );
 if (
   typeof config !== "object" ||
   config === null ||

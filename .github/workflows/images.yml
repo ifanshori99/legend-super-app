@@ -1,0 +1,45 @@
+name: Build and scan images
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "deploy/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/images.yml"
+permissions:
+  contents: read
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: api, file: apps/api/Dockerfile, target: runner }
+          - { name: worker, file: apps/api/Dockerfile, target: worker }
+          - { name: migrator, file: apps/api/Dockerfile, target: migrator }
+          - { name: edge-api, file: apps/api/Dockerfile, target: edge }
+          - { name: edge-web, file: apps/web/Dockerfile, target: edge }
+          - { name: postgres, file: deploy/backup/Dockerfile, target: "" }
+          - { name: web, file: apps/web/Dockerfile, target: runner }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          build-args: VITE_API_URL=https://api.example.invalid
+          load: true
+          push: false
+          tags: legend-${{ matrix.name }}:scan
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (pinned: never a moving branch)
+        with:
+          image-ref: legend-${{ matrix.name }}:scan
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
