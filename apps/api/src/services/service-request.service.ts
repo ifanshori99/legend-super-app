@@ -569,7 +569,7 @@ async function transition(
               { id: row.id, status: next, assignedTo: updated.assignedTo },
               AUDIT_SAFE_FIELDS,
             ),
-          } as never,
+          },
           ipHash: null,
           sensitiveAccess: false,
           retentionClass: "audit_2y",

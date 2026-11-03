@@ -216,3 +216,15 @@ over-redemption stays impossible even if a caller skipped a lock. The
 application row stores `paid_idr`, `refunded_paid_idr` and `rules_snapshot` at
 redeem time: a partial refund rechecks the original rules and can never pay out
 more than the guest paid (owner Q41).
+
+## Running a subset of API tests
+
+`pnpm test` provisions a disposable PostgreSQL and runs every API test. To run only some files against that
+database, set `LEGEND_TEST_FILES` (space separated, paths relative to `apps/api`); the root `node:test` suites are
+skipped in that mode:
+
+```bash
+LEGEND_TEST_FILES="src/test/qr-order-api.test.ts src/test/service-request-api.test.ts" pnpm test
+```
+
+On a shared machine run it through the gate lock (`.coordinator/gate.sh`).

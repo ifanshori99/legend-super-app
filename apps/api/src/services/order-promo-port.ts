@@ -29,7 +29,11 @@ export type OrderPromoQuote = {
 };
 
 export interface OrderPromoPort {
-  quote(tx: Tx, ctx: ScopedTenantContext, input: OrderPromoInput): Promise<OrderPromoQuote>;
+  quote(
+    tx: Tx,
+    ctx: ScopedTenantContext,
+    input: OrderPromoInput,
+  ): Promise<OrderPromoQuote>;
   /** Inside the order transaction, after the order row is locked/inserted. */
   redeem(
     tx: Tx,
@@ -44,6 +48,11 @@ export interface OrderPromoPort {
   release(
     tx: Tx,
     ctx: ScopedTenantContext,
-    input: { readonly orderId: string; readonly reason: string; readonly actorUserId: string | null; readonly at: Date },
+    input: {
+      readonly orderId: string;
+      readonly reason: string;
+      readonly actorUserId: string | null;
+      readonly at: Date;
+    },
   ): Promise<{ released: boolean; releasedDiscountIdr: Idr }>;
 }

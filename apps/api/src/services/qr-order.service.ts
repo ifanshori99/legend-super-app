@@ -466,7 +466,7 @@ async function auditOrder(
           input.after === null
             ? null
             : maskAuditChanges(input.after, AUDIT_SAFE_FIELDS),
-      } as never,
+      },
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y",

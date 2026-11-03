@@ -381,6 +381,11 @@ afterAll(async () => {
   setQrOrderDepositCreditLookup(null);
   // The isolated tenant stays in the disposable test database: its audit
   // rows are append-only, so the tenant cannot be deleted.
+  // Give it a valid creator so the platform tenant list still parses it.
+  await owner.query("UPDATE tenants SET created_by = $2 WHERE id = $1", [
+    tenant.tenantId,
+    randomUUID(),
+  ]);
   await owner.end();
 });
 

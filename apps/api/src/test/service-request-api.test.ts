@@ -273,7 +273,7 @@ describe("service requests (legend-7qg)", () => {
     expect(
       (await call(guest, { type: "call_waiter", reason: undefined })).status,
     ).toBe(422);
-    expect((await call(guest, { tenantId: randomUUID() })).status).toBe(400);
+    expect((await call(guest, { tenantId: randomUUID() })).status).toBe(422);
     expect((await call(guest, {}, { token: null })).status).toBe(401);
     expect((await call(guest, {}, { token: "x".repeat(40) })).status).toBe(401);
     const stranger = await newGuest();
