@@ -85,7 +85,10 @@ function ShiftChip({
           key={`${issue.code}|${issue.relatedAssignmentId ?? ""}|${issue.actual}`}
           className="flex items-start gap-1 font-medium text-danger"
         >
-          <TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+          <TriangleAlert
+            className="mt-0.5 size-3 shrink-0"
+            aria-hidden="true"
+          />
           {t(complianceMessageKey(issue.code), {
             actual: issue.actual,
             limit: issue.limit,
@@ -108,7 +111,11 @@ function CellMenu({
   day: string;
   drafts: readonly ShiftAssignment[];
   templates: readonly ShiftTemplate[];
-  onAssign: (employeeId: string, businessDate: string, templateId: string) => void;
+  onAssign: (
+    employeeId: string,
+    businessDate: string,
+    templateId: string,
+  ) => void;
   onRemoveDraft: (assignmentId: string) => void;
 }) {
   const t = useT();
@@ -184,10 +191,13 @@ function DayCell({
   templates: readonly ShiftTemplate[];
   positionLabel: string;
   issuesByAssignment: Map<string, ShiftComplianceIssue[]>;
-  onAssign: (employeeId: string, businessDate: string, templateId: string) => void;
+  onAssign: (
+    employeeId: string,
+    businessDate: string,
+    templateId: string,
+  ) => void;
   onRemoveDraft: (assignmentId: string) => void;
 }) {
-  const t = useT();
   const [over, setOver] = React.useState(false);
   return (
     <TableCell
@@ -245,7 +255,11 @@ export type WeekGridProps = {
   today: string;
   /** Filter controls rendered in the card header (position, station). */
   toolbar?: React.ReactNode;
-  onAssign: (employeeId: string, businessDate: string, templateId: string) => void;
+  onAssign: (
+    employeeId: string,
+    businessDate: string,
+    templateId: string,
+  ) => void;
   onRemoveDraft: (assignmentId: string) => void;
 };
 
@@ -344,9 +358,7 @@ export function WeekGrid({
                         <span className="tabular">
                           {t("roster.grid.totalHours", {
                             hours: formatNumber(
-                              Math.round(
-                                totalWorkedMinutes(employeeRows) / 60,
-                              ),
+                              Math.round(totalWorkedMinutes(employeeRows) / 60),
                             ),
                           })}
                         </span>

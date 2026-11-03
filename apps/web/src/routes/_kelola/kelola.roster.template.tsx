@@ -7,7 +7,7 @@ import { positionsQuery } from "@/features/ws10-roster/queries";
 
 // /kelola/roster/template — shift-template catalog (PRD v1.7 §3 Kelompok D 28
 // "Template Shift", F26). Read-only until the template endpoints land.
-export const Route = createFileRoute("/_kelola/kelola.roster/template")({
+export const Route = createFileRoute("/_kelola/kelola/roster/template")({
   beforeLoad: rosterGuard(["hr.schedule.manage"]),
   loader: ({ context, location }) =>
     isMockScenarioRequest(location.searchStr)

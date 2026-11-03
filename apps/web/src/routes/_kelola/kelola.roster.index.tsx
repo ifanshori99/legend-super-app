@@ -18,7 +18,7 @@ import {
 // /kelola/roster — weekly roster calendar (PRD v1.7 §3 Kelompok D 28, F26,
 // HR-05). `?week=YYYY-MM-DD` picks the ISO week (any day normalizes to its
 // Monday); without it the screen opens on the current outlet week.
-export const Route = createFileRoute("/_kelola/kelola.roster/")({
+export const Route = createFileRoute("/_kelola/kelola/roster/")({
   validateSearch: z.object({
     week: z
       .string()

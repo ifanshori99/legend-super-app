@@ -92,10 +92,24 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
   const range = formatWeekRange(weekStart);
   const today = todayBusinessDate();
 
-  const employees = employeesQ.data?.data ?? [];
-  const positions = positionsQ.data?.data ?? [];
-  const holidays = holidaysQ.data?.data ?? [];
-  const previousRows = previousWeekQ.data?.data ?? [];
+  // Stable array identities: the `?? []` fallback would otherwise be a new
+  // array on every render and invalidate every downstream useMemo.
+  const employees = React.useMemo(
+    () => employeesQ.data?.data ?? [],
+    [employeesQ.data],
+  );
+  const positions = React.useMemo(
+    () => positionsQ.data?.data ?? [],
+    [positionsQ.data],
+  );
+  const holidays = React.useMemo(
+    () => holidaysQ.data?.data ?? [],
+    [holidaysQ.data],
+  );
+  const previousRows = React.useMemo(
+    () => previousWeekQ.data?.data ?? [],
+    [previousWeekQ.data],
+  );
 
   const rows = React.useMemo(
     () =>
@@ -138,10 +152,7 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     () =>
       employees
         .filter((employee) => {
-          if (
-            positionFilter !== ALL &&
-            employee.positionId !== positionFilter
-          )
+          if (positionFilter !== ALL && employee.positionId !== positionFilter)
             return false;
           if (
             stationFilter !== ALL &&
@@ -197,7 +208,11 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     });
   };
 
-  const assign = (employeeId: string, businessDate: string, templateId: string) => {
+  const assign = (
+    employeeId: string,
+    businessDate: string,
+    templateId: string,
+  ) => {
     const template = templatesById.get(templateId);
     if (!template) return;
     local.addDrafts([draftFromTemplate(template, employeeId, businessDate)]);
@@ -211,7 +226,11 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
     const employee = employeesById.get(suggestion.employeeId);
     if (!template) return;
     local.addDrafts([
-      draftFromTemplate(template, suggestion.employeeId, suggestion.businessDate),
+      draftFromTemplate(
+        template,
+        suggestion.employeeId,
+        suggestion.businessDate,
+      ),
     ]);
     toast({
       title: t("roster.suggestions.accepted", {
@@ -392,7 +411,9 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
             <ErrorState
               title={t("roster.errors.load")}
               description={
-                offline ? t("roster.errors.offline") : t("roster.errors.loadHint")
+                offline
+                  ? t("roster.errors.offline")
+                  : t("roster.errors.loadHint")
               }
               onRetry={() => {
                 void employeesQ.refetch();
@@ -518,7 +539,10 @@ export function RosterPage({ weekStart }: { weekStart: string }) {
                         ))}
                     </SelectContent>
                   </Select>
-                  <Select value={stationFilter} onValueChange={setStationFilter}>
+                  <Select
+                    value={stationFilter}
+                    onValueChange={setStationFilter}
+                  >
                     <SelectTrigger
                       aria-label={t("roster.filters.station")}
                       className="w-full sm:w-44"

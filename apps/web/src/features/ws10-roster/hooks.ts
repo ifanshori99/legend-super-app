@@ -1,6 +1,7 @@
 // The only way the roster components touch data: queries keep their endpoint
 // keys, the publish mutation invalidates the assignment list, and the local
-// draft store is mirrored into React state so a drop re-renders the grid.
+// draft store is an external store (`useSyncExternalStore`) so a drop
+// re-renders the grid without a setState-in-effect round trip.
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -11,12 +12,13 @@ import {
 import * as api from "./api";
 import {
   clearDrafts,
-  readDrafts,
-  readPublication,
+  localWeekServerSnapshot,
+  localWeekSnapshot,
   removeDraft,
   replaceDrafts as replaceDraftsInStore,
   saveDraft,
   savePublication,
+  subscribeLocalRoster,
 } from "./draft-store";
 import {
   employeesQuery,
@@ -58,41 +60,41 @@ export type LocalRosterWeek = {
 };
 
 /**
- * Reads the local draft/publication store after hydration (localStorage is not
- * available during SSR) and writes every change back to it.
+ * The week's local drafts and publication. The server render and the hydration
+ * pass use the empty snapshot (localStorage does not exist on the server), then
+ * the client subscribes to the store, so the markup always matches.
  */
 export function useLocalRosterWeek(
   outletId: string,
   weekStart: string,
 ): LocalRosterWeek {
-  const [drafts, setDraftsState] = React.useState<ShiftAssignment[]>([]);
-  const [publication, setPublication] =
-    React.useState<RosterPublication | null>(null);
-
-  React.useEffect(() => {
-    setDraftsState(readDrafts(outletId, weekStart));
-    setPublication(readPublication(outletId, weekStart));
-  }, [outletId, weekStart]);
+  const getSnapshot = React.useCallback(
+    () => localWeekSnapshot(outletId, weekStart),
+    [outletId, weekStart],
+  );
+  const snapshot = React.useSyncExternalStore(
+    subscribeLocalRoster,
+    getSnapshot,
+    localWeekServerSnapshot,
+  );
 
   const addDrafts = React.useCallback(
     (rows: readonly ShiftAssignment[]) => {
-      let next = readDrafts(outletId, weekStart);
-      for (const row of rows) next = saveDraft(outletId, weekStart, row);
-      setDraftsState(next);
+      for (const row of rows) saveDraft(outletId, weekStart, row);
     },
     [outletId, weekStart],
   );
 
   const replaceWeekDrafts = React.useCallback(
     (rows: readonly ShiftAssignment[]) => {
-      setDraftsState(replaceDraftsInStore(outletId, weekStart, rows));
+      replaceDraftsInStore(outletId, weekStart, rows);
     },
     [outletId, weekStart],
   );
 
   const removeDraftRow = React.useCallback(
     (assignmentId: string) => {
-      setDraftsState(removeDraft(outletId, weekStart, assignmentId));
+      removeDraft(outletId, weekStart, assignmentId);
     },
     [outletId, weekStart],
   );
@@ -101,15 +103,13 @@ export function useLocalRosterWeek(
     (published: RosterPublication) => {
       savePublication(published);
       clearDrafts(published.outletId, published.weekStart);
-      setDraftsState([]);
-      setPublication(published);
     },
     [],
   );
 
   return {
-    drafts,
-    publication,
+    drafts: snapshot.drafts,
+    publication: snapshot.publication,
     addDrafts,
     replaceDrafts: replaceWeekDrafts,
     removeDraft: removeDraftRow,

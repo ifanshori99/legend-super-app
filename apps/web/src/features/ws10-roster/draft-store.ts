@@ -30,6 +30,30 @@ const emptyState = (): LocalState => ({ drafts: {}, publications: {} });
 
 let memory: LocalState = emptyState();
 
+/** One snapshot shape per outlet-week for `useSyncExternalStore`. */
+export type LocalWeekSnapshot = {
+  drafts: ShiftAssignment[];
+  publication: RosterPublication | null;
+};
+
+/** Stable references: `useSyncExternalStore` loops on fresh arrays. */
+const EMPTY_DRAFTS: ShiftAssignment[] = [];
+const EMPTY_SNAPSHOT: LocalWeekSnapshot = {
+  drafts: EMPTY_DRAFTS,
+  publication: null,
+};
+
+const snapshotCache = new Map<string, LocalWeekSnapshot>();
+const listeners = new Set<() => void>();
+
+/** A quota/blocked write makes memory the source of truth for this tab. */
+let storageUnavailable = false;
+
+function notifyLocalRoster(): void {
+  snapshotCache.clear();
+  for (const listener of listeners) listener();
+}
+
 function browserStorage(): Storage | null {
   try {
     return globalThis.localStorage ?? null;
@@ -71,7 +95,7 @@ function parseState(raw: string | null): LocalState {
 
 function readState(): LocalState {
   const storage = browserStorage();
-  if (!storage) return memory;
+  if (!storage || storageUnavailable) return memory;
   try {
     return parseState(storage.getItem(STORAGE_KEY));
   } catch {
@@ -82,17 +106,60 @@ function readState(): LocalState {
 function writeState(next: LocalState): void {
   memory = next;
   const storage = browserStorage();
-  if (!storage) return;
-  try {
-    storage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Storage can be full or blocked; the in-memory copy still serves this tab.
+  if (storage) {
+    try {
+      storage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Storage can be full or blocked: memory now serves this tab.
+      storageUnavailable = true;
+    }
   }
+  notifyLocalRoster();
 }
 
 /** One key per outlet-week; a week never bleeds into another. */
 export function weekKey(outletId: string, weekStart: string): string {
   return `${outletId}|${weekStart}`;
+}
+
+/**
+ * The week's rows and publication, cached until the store changes. The cache
+ * is what makes `useSyncExternalStore`'s snapshot comparison stable.
+ */
+export function localWeekSnapshot(
+  outletId: string,
+  weekStart: string,
+): LocalWeekSnapshot {
+  const key = weekKey(outletId, weekStart);
+  const cached = snapshotCache.get(key);
+  if (cached) return cached;
+  const state = readState();
+  const snapshot: LocalWeekSnapshot = {
+    drafts: state.drafts[key] ?? EMPTY_DRAFTS,
+    publication: state.publications[key] ?? null,
+  };
+  snapshotCache.set(key, snapshot);
+  return snapshot;
+}
+
+/** The server and the hydration pass see an empty week, then re-read. */
+export function localWeekServerSnapshot(): LocalWeekSnapshot {
+  return EMPTY_SNAPSHOT;
+}
+
+/** Store subscription for `useSyncExternalStore` (this tab and other tabs). */
+export function subscribeLocalRoster(listener: () => void): () => void {
+  listeners.add(listener);
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY) notifyLocalRoster();
+  };
+  if (typeof window !== "undefined")
+    window.addEventListener("storage", onStorage);
+  return () => {
+    listeners.delete(listener);
+    if (typeof window !== "undefined")
+      window.removeEventListener("storage", onStorage);
+  };
 }
 
 export function readDrafts(
@@ -158,9 +225,7 @@ export function readPublication(
   outletId: string,
   weekStart: string,
 ): RosterPublication | null {
-  return (
-    readState().publications[weekKey(outletId, weekStart)] ?? null
-  );
+  return readState().publications[weekKey(outletId, weekStart)] ?? null;
 }
 
 export function savePublication(publication: RosterPublication): void {

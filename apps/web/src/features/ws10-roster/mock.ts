@@ -9,6 +9,7 @@
 // (the mock runs in the browser too), flips the week's drafts to published,
 // evaluates compliance with the contract, and keeps the idempotency key so a
 // replayed request returns the first publication unchanged.
+import { userIdSchema } from "@starter/shared/core";
 import {
   addBusinessDays,
   cafeLegendHrisFixtures,
@@ -77,7 +78,8 @@ registerMock(publishRoster, ({ body }) => {
   // Drafts made on this device; deduplicated by id in case a row is in both.
   const byId = new Map<string, ShiftAssignment>();
   for (const row of fixtureRows) byId.set(row.id, row);
-  for (const draft of readDrafts(outletId, weekStart)) byId.set(draft.id, draft);
+  for (const draft of readDrafts(outletId, weekStart))
+    byId.set(draft.id, draft);
   const rows = sortRows([...byId.values()]);
   if (rows.length === 0)
     throw new ApiError(
@@ -87,7 +89,11 @@ registerMock(publishRoster, ({ body }) => {
     );
 
   const publishedAt = new Date().toISOString();
-  const publishedBy = cafeLegendHrisFixtures.userIds.outletManager;
+  // The shared fixture stores plain strings; the contract field is a branded
+  // `UserId`, so parse it like every other id instead of casting.
+  const publishedBy = userIdSchema.parse(
+    cafeLegendHrisFixtures.userIds.outletManager,
+  );
   const assignments: ShiftAssignment[] = rows.map((assignment) =>
     assignment.status === "draft"
       ? {

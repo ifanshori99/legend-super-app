@@ -56,7 +56,10 @@ export function PublishDialog({
         </p>
         {warningCount > 0 ? (
           <p className="flex items-start gap-2 rounded-container bg-warning-subtle p-3 text-sm font-medium text-warning">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <TriangleAlert
+              className="mt-0.5 size-4 shrink-0"
+              aria-hidden="true"
+            />
             {t("roster.publish.warnings", { count: warningCount })}
           </p>
         ) : (

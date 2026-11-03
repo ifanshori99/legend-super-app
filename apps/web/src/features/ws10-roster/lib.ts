@@ -19,10 +19,7 @@ import {
 } from "@starter/shared/hris";
 import type { MessageKey } from "@starter/shared/i18n";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import {
-  ROSTER_COMPLIANCE_POLICY,
-  ROSTER_TENANT_ID,
-} from "./fixtures";
+import { ROSTER_COMPLIANCE_POLICY, ROSTER_TENANT_ID } from "./fixtures";
 import {
   ROSTER_OUTLET_ID,
   ROSTER_TIME_ZONE,
@@ -355,7 +352,8 @@ export function staffingSuggestions(input: {
   }
   const busiest = Math.max(
     ...days.map(
-      (day) => new Set((byDate.get(day) ?? []).map((row) => row.employeeId)).size,
+      (day) =>
+        new Set((byDate.get(day) ?? []).map((row) => row.employeeId)).size,
     ),
   );
   if (busiest === 0) return [];

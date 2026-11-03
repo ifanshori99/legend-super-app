@@ -92,8 +92,7 @@ export const rosterMessages = {
     count: "{count} peringatan",
     ok: "Semua shift dalam batas kebijakan",
     shift_too_long: "Shift terlalu panjang: {actual} mnt (batas {limit})",
-    daily_limit_exceeded:
-      "Melebihi batas harian: {actual} mnt (batas {limit})",
+    daily_limit_exceeded: "Melebihi batas harian: {actual} mnt (batas {limit})",
     weekly_limit_exceeded:
       "Melebihi batas mingguan: {actual} mnt (batas {limit})",
     insufficient_rest:

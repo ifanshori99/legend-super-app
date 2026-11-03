@@ -37,7 +37,9 @@ export function SuggestionPanel({
         </header>
         {suggestions.length === 0 ? (
           <div className="grid gap-1 p-card">
-            <p className="text-sm font-medium">{t("roster.suggestions.empty")}</p>
+            <p className="text-sm font-medium">
+              {t("roster.suggestions.empty")}
+            </p>
             <p className="text-sm text-muted-foreground">
               {t("roster.suggestions.emptyHint")}
             </p>
