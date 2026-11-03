@@ -9,14 +9,55 @@ const Select = SelectPrimitive.Root;
 const SelectGroup = SelectPrimitive.Group;
 const SelectValue = SelectPrimitive.Value;
 
+/**
+ * The wiring FormField cannot hand to a Radix Select: the root renders no DOM
+ * node, so the id/aria props its Slot clones onto the child are dropped before
+ * they reach the trigger (legend-n138). FormField provides this for a direct
+ * Select child; SelectTrigger consumes it unless the caller passed its own
+ * prop. Native controls keep using the Slot path.
+ */
+type FormFieldSelectContextValue = {
+  controlId: string;
+  labelId: string;
+  describedBy?: string;
+  invalid: boolean;
+  required: boolean;
+};
+
+const FormFieldSelectContext =
+  React.createContext<FormFieldSelectContextValue | null>(null);
+
 function SelectTrigger({
   className,
   children,
+  id,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
+  "aria-required": ariaRequired,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger>) {
+  const field = React.useContext(FormFieldSelectContext);
+  // An explicit aria-label already names the trigger; aria-labelledby would
+  // override it, so only fall back to the FormField label when there is none.
+  const labelledBy =
+    ariaLabelledBy ?? (ariaLabel === undefined ? field?.labelId : undefined);
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
+      id={id ?? field?.controlId}
+      // Keep an explicit aria-label: destructuring it out of props above would
+      // otherwise drop the caller's only accessible name (legend-n138).
+      aria-label={ariaLabel}
+      aria-labelledby={labelledBy}
+      aria-describedby={ariaDescribedBy ?? field?.describedBy}
+      aria-invalid={ariaInvalid ?? (field?.invalid ? true : undefined)}
+      // Radix sets aria-required from the Root's `required` prop; keep that
+      // when neither the caller nor FormField has an opinion.
+      {...(ariaRequired === undefined && !field?.required
+        ? {}
+        : { "aria-required": ariaRequired ?? true })}
       className={cn(
         fieldClass,
         "flex h-control items-center justify-between gap-2 px-3 text-left data-placeholder:text-muted-foreground [&>span]:truncate",
@@ -111,6 +152,7 @@ function SelectSeparator({
 }
 
 export {
+  FormFieldSelectContext,
   Select,
   SelectContent,
   SelectGroup,
@@ -120,3 +162,4 @@ export {
   SelectTrigger,
   SelectValue,
 };
+export type { FormFieldSelectContextValue };

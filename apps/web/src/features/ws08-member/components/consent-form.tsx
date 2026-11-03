@@ -120,7 +120,8 @@ export function ConsentForm({ overview }: { overview: MemberOverview }) {
           </p>
           {!verified && (
             <Button asChild variant="outline" size="sm" className="w-fit">
-              <Link to="/sign-in">
+              {/* legend-yoo9: finish signup here after /masuk. */}
+              <Link to="/masuk" search={{ redirect: "/member/daftar" }}>
                 {t("member.signup.whatsappUnverifiedAction")}
               </Link>
             </Button>

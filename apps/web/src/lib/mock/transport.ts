@@ -5,9 +5,12 @@ import { dispatchMock, resetMocks } from "./runtime.ts";
 
 // Entry point apiFetch uses in mock mode. Every handler file is picked up by
 // glob, so a feature adds `features/<name>/mock.ts` (calling registerMock) and
-// never edits a shared file:
+// never edits a shared file. A split feature may also keep a second file named
+// `<part>-mock.ts` (squad invfe: hpp/recipe/supplier/receiving), so several
+// beads build in parallel without editing one `mock.ts`; the duplicate guard in
+// registry.ts still keeps one handler per endpoint.
 const handlerModules = import.meta.glob(
-  ["../../features/*/mock.ts", "./handlers/*.ts"],
+  ["../../features/*/mock.ts", "../../features/*/*-mock.ts", "./handlers/*.ts"],
   { eager: true },
 );
 

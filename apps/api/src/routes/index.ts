@@ -2,6 +2,9 @@ import { Router } from "express";
 import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
+import { serviceRequestRouter } from "./service-request.routes";
+import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
+import { qrOrderRouter } from "./qr-order.routes";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
@@ -35,7 +38,10 @@ import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
 import { facilityRouter } from "./facility.routes";
+import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { operationsRouter } from "./operations.routes";
+import { operationsEquipmentRouter } from "./operations-equipment.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -93,9 +99,14 @@ apiRouter.use("/notifications", createNotificationRouter());
 // table-session lifecycle; /qr is the public guest scan (legend-irw).
 apiRouter.use("/floor", floorRouter);
 apiRouter.use("/outlets", outletFloorRouter);
+// Before /table-sessions: guest + staff service-request paths span prefixes.
+apiRouter.use(serviceRequestRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
+apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);
+apiRouter.use("/staff-pins", staffPinRouter);
+apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);
@@ -112,5 +123,12 @@ apiRouter.use("/vouchers", vouchersRouter);
 apiRouter.use(reservationRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
+// WS-09 Wi-Fi policy configuration writes (legend-8dpm).
+apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
+// WS-14 daily operations (legend-btha checklists/food safety/prep;
+// legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
+// each applies its middleware per route so unmatched paths pass through.
+apiRouter.use("/operations", operationsRouter);
+apiRouter.use("/operations", operationsEquipmentRouter);

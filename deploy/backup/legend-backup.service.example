@@ -1,0 +1,9 @@
+[Unit]
+Description=Legend PostgreSQL backup to both object-storage repositories
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Replace both paths with protected absolute paths on the VM.
+ExecStart=/absolute/path/to/legend/deploy/backup/run-scheduled.sh /absolute/path/to/compose.env

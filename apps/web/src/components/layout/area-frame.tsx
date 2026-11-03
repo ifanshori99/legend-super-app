@@ -1,8 +1,9 @@
 // The shell of an area, chosen by its definition (lib/areas/definitions.ts):
 // Hangat → CustomerShell, Kontras Tinggi → OperationsShell, Padat →
 // ManagementShell. Route layouts render <AreaFrame> around their <Outlet />.
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useParams } from "@tanstack/react-router";
+import type { BusinessDayCutoff } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
@@ -20,11 +21,18 @@ import { AREAS, type AreaKey } from "@/lib/areas/definitions";
 import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
-import { resolveMockTenantContext } from "@/lib/mock/tenant-context";
+import {
+  resolveMockTenantContext,
+  savedOutletCutoff,
+} from "@/lib/mock/tenant-context";
+import { ORG_OUTLET_STORE_EVENT } from "@/features/ws01-org/outlet-store";
 import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
+import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
+import { SupportSessionBanner } from "@/features/ws01-support-access/components/session-banner";
+import { holdsAny } from "@/lib/areas/guard";
 
 type SessionLike = { user: { name: string } } | null;
 
@@ -41,10 +49,39 @@ type AreaFrameProps = {
  * the shell. Mock mode reads the Cafe Legend fixtures; outside mock mode there
  * is no config source yet, so the provider fails closed (catalog brand, no
  * outlet → the shell keeps its neutral copy).
+ *
+ * legend-5kop: the saved business-day cutoff lives in sessionStorage, which
+ * the SSR server does not have. The first render (server HTML and the hydration
+ * pass) therefore uses the fixture config; a client effect then reads the saved
+ * rows and replaces the cutoff, so the two renders that React compares are
+ * identical and no hydration mismatch is possible. The effect also re-reads on
+ * navigation and on ORG_OUTLET_STORE_EVENT (a save in this tab), so
+ * `useOutletClock()` anywhere follows what the outlet settings screen
+ * persisted. `?tenant=none` still resolves to null in both passes.
  */
 export function AreaFrame(props: AreaFrameProps) {
-  const { searchStr } = useLocation();
-  const config = resolveMockTenantContext(searchStr);
+  const { pathname, searchStr } = useLocation();
+  // Server-safe base: fixture outlet, or null (mock off / ?tenant=none).
+  const baseConfig = resolveMockTenantContext(searchStr);
+  const outletId = baseConfig?.outlet?.id ?? null;
+
+  const [savedCutoff, setSavedCutoff] = useState<BusinessDayCutoff | null>(
+    null,
+  );
+  useEffect(() => {
+    const read = () =>
+      setSavedCutoff(outletId === null ? null : savedOutletCutoff(outletId));
+    read();
+    window.addEventListener(ORG_OUTLET_STORE_EVENT, read);
+    return () => window.removeEventListener(ORG_OUTLET_STORE_EVENT, read);
+    // A navigation re-reads the store: the settings screen saves without
+    // leaving its route, and another area's shell mounts fresh.
+  }, [outletId, pathname]);
+
+  const config = useMemo(
+    () => resolveMockTenantContext(searchStr, savedCutoff),
+    [searchStr, savedCutoff],
+  );
   return (
     <TenantProvider config={config}>
       <AreaFrameBody {...props} />
@@ -62,7 +99,7 @@ function AreaFrameBody({
   const t = useT();
   const online = useOnline();
   const { brandName } = useTenantContext();
-  const { pathname } = useLocation();
+  const { href, pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
   const definition = AREAS[area];
   const nav = useMemo(
@@ -104,6 +141,11 @@ function AreaFrameBody({
         }
         actions={
           <>
+            <ApprovalInboxBadge
+              enabled={
+                area === "kelola" && holdsAny(access, ["approval.inbox.view"])
+              }
+            />
             <ThemeToggle />
             {signOut}
           </>
@@ -112,6 +154,9 @@ function AreaFrameBody({
         {/* PRD §3 F6: management sessions end after 30 idle minutes; the
             warning rides the management shell so every screen shows it. */}
         <IdleSessionWarning />
+        {/* PRD §3 F4: a Super Admin support session is always visible, with a
+            countdown, across tenant views (legend-335). */}
+        {area === "platform" ? null : <SupportSessionBanner source="org" />}
         {body}
       </ManagementShell>
     );
@@ -126,7 +171,13 @@ function AreaFrameBody({
         mode={definition.forcedMode}
         actions={definition.forcedMode ? undefined : <ThemeToggle />}
       >
-        <div className="h-full overflow-y-auto p-4">{body}</div>
+        <div className="h-full overflow-y-auto p-4">
+          {/* PRD §3 F4 / TEN-04: staff at the till and the kitchen also see a
+              running support session (legend-335). Renders nothing without
+              one or when the caller may not read it. */}
+          <SupportSessionBanner source="org" className="mb-4" />
+          {body}
+        </div>
       </OperationsShell>
     );
   }
@@ -137,7 +188,10 @@ function AreaFrameBody({
     signOut ??
     (access.authenticated ? null : (
       <Button asChild variant="outline" size="sm">
-        <Link to="/sign-in">{t("auth.signIn")}</Link>
+        {/* legend-yoo9: a signed-out visitor returns to this page after /masuk. */}
+        <Link to="/masuk" search={{ redirect: href }}>
+          {t("auth.signIn")}
+        </Link>
       </Button>
     ));
 

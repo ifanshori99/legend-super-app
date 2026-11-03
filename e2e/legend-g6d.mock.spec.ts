@@ -148,9 +148,13 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
     .first();
   await uncovered.getByRole("button", { name: "Atur" }).click();
 
+  // The matrix rows are CardShell (data-slot="card-shell") after the v3 shells;
+  // accept both slots so the heading still scopes the row.
   const card = page
     .getByRole("heading", { name: "Reimbursement" })
-    .locator("xpath=ancestor::div[@data-slot='card']");
+    .locator(
+      "xpath=ancestor::*[@data-slot='card' or @data-slot='card-shell'][1]",
+    );
   await card.getByRole("combobox", { name: "Penyetuju" }).click();
   await page
     .getByRole("option", { name: "Supervisor / Captain", exact: true })

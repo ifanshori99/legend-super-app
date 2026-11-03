@@ -2,15 +2,14 @@
 //
 // DASH-02: a builder cell must be the number the report viewer, the owner
 // board and the export show for the same metric, period and split. So this
-// file computes from the SAME deterministic day model as the viewer mock
-// (features/ws11-reports/mock.ts, owned by the viewer bead and read-only
-// here): the open business day 1 Nov 2026 anchored on the owner board
-// (net sales Rp 7.420.000, 96 transactions, 148 guests), the same weekday
-// factors, the closed-month tie to the books (Rp 412.800.000), the same split
-// weights and the same largest-remainder distribution, so parts always add up
-// to the total. The constants below are a copy of that model; the node test
-// asserts that every single-split preview equals the viewer's run for the
-// same key, so a drift fails the test instead of showing two numbers.
+// file computes from the SAME deterministic day model as the viewer mock:
+// `features/ws11-reports/mock-day-model.ts` owns the open business day 1 Nov
+// 2026 anchored on the owner board (net sales Rp 7.420.000, 96 transactions,
+// 148 guests), the weekday factors, the closed-month tie to the books
+// (Rp 412.800.000), the split weights and the largest-remainder distribution,
+// so parts always add up to the total. Both mocks import that one module; the
+// node test still compares their generated output single-split by single-split
+// (DASH-02), so a drift fails the test instead of showing two numbers.
 //
 // Nothing is invented: a metric the day model has no source figure for is
 // returned as `null` ("no data", never zero), and a split the model cannot
@@ -19,7 +18,6 @@
 //
 // Loaded in Node: bare package imports and relative `.ts` only.
 import {
-  cafeLegendManagementLayoutFixture,
   reportMetricByCode,
   reportResultSchema,
   type ReportBuilderQuery,
@@ -30,218 +28,27 @@ import {
   metricDefinitionRefSchema,
   type MetricDefinition,
 } from "@starter/shared/metrics";
-
-type DateRange = { startDate: string; endDate: string };
+import {
+  ATOM_KEYS,
+  BUSINESS_DATE,
+  MONTH_START,
+  dayAtoms,
+  distribute,
+  eachDay,
+  outletSplit,
+  periodAtoms,
+  splitSpecFor,
+  weekdayIndex,
+  zeroAtoms,
+  type AtomKey,
+  type Atoms,
+  type DateRange,
+  type SplitSpec,
+} from "../ws11-reports/mock-day-model.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
-const BUSINESS_DATE = cafeLegendManagementLayoutFixture.businessDate;
-const MONTH_START = `${BUSINESS_DATE.slice(0, 7)}-01`;
-const CLOSED_MONTH_NET_SALES = 412_800_000;
-const LAST_MONTH = (() => {
-  const end = new Date(`${MONTH_START}T00:00:00Z`);
-  end.setUTCDate(0);
-  const last = end.toISOString().slice(0, 10);
-  return { start: `${last.slice(0, 8)}01`, end: last };
-})();
 
-// ---- Day model (copy of the viewer mock; see the header) ---------------------
-
-type Atoms = {
-  net: number;
-  gross: number;
-  discount: number;
-  refund: number;
-  tx: number;
-  pax: number;
-  qty: number;
-  voided: number;
-};
-type AtomKey = keyof Atoms;
-const ATOM_KEYS: readonly AtomKey[] = [
-  "net",
-  "gross",
-  "discount",
-  "refund",
-  "tx",
-  "pax",
-  "qty",
-  "voided",
-];
-
-const BASE_DAY: Atoms = {
-  net: 7_420_000,
-  gross: 7_920_000,
-  discount: 380_000,
-  refund: 120_000,
-  tx: 96,
-  pax: 148,
-  qty: 214,
-  voided: 95_000,
-};
-
-/** Monday .. Sunday; the business day (Sunday) is 1. */
-const WEEKDAY_FACTOR = [0.78, 0.82, 0.85, 0.9, 1.15, 1.3, 1] as const;
-
-function zeroAtoms(): Atoms {
-  return {
-    net: 0,
-    gross: 0,
-    discount: 0,
-    refund: 0,
-    tx: 0,
-    pax: 0,
-    qty: 0,
-    voided: 0,
-  };
-}
-
-function eachDay(range: DateRange): string[] {
-  const days: string[] = [];
-  const cursor = new Date(`${range.startDate}T00:00:00Z`);
-  const end = new Date(`${range.endDate}T00:00:00Z`);
-  while (cursor <= end && days.length < 400) {
-    days.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return days;
-}
-
-/** ISO weekday index 0 (Monday) .. 6 (Sunday). */
-function weekdayIndex(day: string): number {
-  return (new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7;
-}
-
-function dayAtoms(day: string): Atoms {
-  const factor = WEEKDAY_FACTOR[weekdayIndex(day)] ?? 1;
-  const atoms = zeroAtoms();
-  for (const key of ATOM_KEYS) atoms[key] = Math.round(BASE_DAY[key] * factor);
-  return atoms;
-}
-
-function periodAtoms(range: DateRange): Atoms {
-  const total = zeroAtoms();
-  for (const day of eachDay(range)) {
-    const atoms = dayAtoms(day);
-    for (const key of ATOM_KEYS) total[key] += atoms[key];
-  }
-  if (
-    range.startDate === LAST_MONTH.start &&
-    range.endDate === LAST_MONTH.end
-  ) {
-    const scale = CLOSED_MONTH_NET_SALES / total.net;
-    for (const key of ATOM_KEYS) total[key] = Math.round(total[key] * scale);
-  }
-  return total;
-}
-
-/** Largest-remainder split, so the parts always add up to the total. */
-function distribute(total: number, weights: readonly number[]): number[] {
-  const sum = weights.reduce((a, b) => a + b, 0);
-  if (sum <= 0) return weights.map(() => 0);
-  const exact = weights.map((weight) => (total * weight) / sum);
-  const parts = exact.map(Math.floor);
-  let left = total - parts.reduce((a, b) => a + b, 0);
-  const order = exact
-    .map((value, index) => ({ index, rest: value - Math.floor(value) }))
-    .sort((a, b) => b.rest - a.rest || a.index - b.index);
-  for (const { index } of order) {
-    if (left <= 0) break;
-    parts[index] = (parts[index] ?? 0) + 1;
-    left -= 1;
-  }
-  return parts;
-}
-
-type SplitSpec = {
-  values: readonly string[];
-  weights: Partial<Record<AtomKey, readonly number[]>> & {
-    net: readonly number[];
-  };
-};
-
-const SPLITS: Readonly<Record<string, SplitSpec>> = {
-  // The builder names outlets by id (the preview resolves the name).
-  outlet: { values: [outlet.id], weights: { net: [1] } },
-  channel: {
-    values: ["qr", "pos", "gofood", "grabfood"],
-    weights: {
-      net: [4_150_000, 1_980_000, 780_000, 510_000],
-      tx: [52, 28, 10, 6],
-      pax: [92, 34, 14, 8],
-    },
-  },
-  hour: {
-    values: [
-      "08",
-      "09",
-      "10",
-      "11",
-      "12",
-      "13",
-      "14",
-      "15",
-      "16",
-      "17",
-      "18",
-      "19",
-      "20",
-      "21",
-    ],
-    weights: { net: [2, 3, 5, 8, 12, 11, 7, 6, 7, 9, 12, 10, 6, 3] },
-  },
-  menu_item: {
-    values: [
-      "Kopi Susu Aren",
-      "Nasi Goreng Kampung",
-      "Ayam Geprek",
-      "Matcha Latte",
-      "Croissant Mentega",
-      "Es Teh Lemon",
-      "Pisang Goreng Keju",
-      "Mie Goreng Seafood",
-      "Americano",
-      "Roti Bakar Coklat",
-    ],
-    weights: {
-      net: [
-        1_260_000, 1_085_000, 945_000, 720_000, 525_000, 640_000, 520_000,
-        480_000, 760_000, 485_000,
-      ],
-      qty: [42, 31, 27, 24, 21, 18, 14, 12, 16, 9],
-    },
-  },
-  menu_category: {
-    values: ["Kopi", "Makanan berat", "Nonkopi", "Pastry dan camilan"],
-    weights: {
-      net: [2_900_000, 2_700_000, 1_120_000, 700_000],
-      qty: [78, 62, 41, 33],
-    },
-  },
-  employee: {
-    values: ["Rani", "Dimas", "Putri", "Fajar"],
-    weights: {
-      net: [2_300_000, 2_050_000, 1_760_000, 1_310_000],
-      tx: [30, 26, 24, 16],
-      voided: [40_000, 25_000, 20_000, 10_000],
-    },
-  },
-  payment_method: {
-    values: ["qris", "cash", "debit", "ewallet"],
-    weights: {
-      net: [3_300_000, 2_200_000, 1_120_000, 800_000],
-      tx: [44, 26, 16, 10],
-      refund: [60_000, 30_000, 20_000, 10_000],
-    },
-  },
-  promo: {
-    values: ["Promo Gajian", "Voucher Member", "Diskon Jam Santai"],
-    weights: { net: [200_000, 110_000, 70_000] },
-  },
-};
-
-/** Single-day open business day: the café has only served until 11.40 WIB. */
-const OPEN_DAY_HOURS = ["08", "09", "10", "11"];
-const OPEN_DAY_HOUR_WEIGHTS = [2, 3, 5, 8];
+// ---- Day model (the shared module above; see the header) ---------------------
 
 /** Weekday split computed from the model's own days (exact, not invented). */
 function weekdaySplit(range: DateRange): SplitSpec {
@@ -262,15 +69,8 @@ function weekdaySplit(range: DateRange): SplitSpec {
 
 function splitFor(key: string, range: DateRange): SplitSpec | null {
   if (key === "day_of_week") return weekdaySplit(range);
-  const spec = SPLITS[key];
-  if (spec === undefined) return null;
-  if (
-    key === "hour" &&
-    range.startDate === BUSINESS_DATE &&
-    range.endDate === BUSINESS_DATE
-  )
-    return { values: OPEN_DAY_HOURS, weights: { net: OPEN_DAY_HOUR_WEIGHTS } };
-  return spec;
+  if (key === "outlet") return outletSplit(outlet.id);
+  return splitSpecFor(key, range);
 }
 
 // ---- Metric cells (same formulas as the viewer) -------------------------------

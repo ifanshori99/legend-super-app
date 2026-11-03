@@ -100,7 +100,10 @@ function DataTableShell({
           </header>
         )}
 
-        <div className="min-w-0">
+        {/* A wide table scrolls inside its card instead of pushing the grid
+            track wider than the viewport (squad invfe: the HPP/engineering and
+            purchasing tables overflowed a 390px screen). */}
+        <div className="min-w-0 overflow-x-auto">
           {state === "loading" && (
             <div className="grid gap-2 p-card">
               <span className="sr-only">{t("common.loading")}</span>

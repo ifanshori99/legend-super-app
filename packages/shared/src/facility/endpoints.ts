@@ -8,6 +8,7 @@
 
 import {
   z,
+  cursorPageQuerySchema,
   cursorPageSchema,
   dataResponseSchema,
   idrSchema,
@@ -284,6 +285,19 @@ export const respondFacilityIncident = defineEndpoint({
   response: dataResponseSchema(facilityIncidentSchema),
 });
 
+/**
+ * The incident log read (bead legend-1oi9). The contract could raise and
+ * respond to an incident but not list what was recorded, and the staff
+ * emergency screen must show the log (PRD §3 F25 "Keselamatan"). The API
+ * implementation is a follow-up bead; mock mode serves the fixtures.
+ */
+export const listFacilityIncidents = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/incidents",
+  query: cursorPageQuerySchema.extend({ facilityId: facilityIdSchema }),
+  response: cursorPageSchema(facilityIncidentSchema),
+});
+
 // ---- Guest Wi-Fi ------------------------------------------------------------
 
 export const getWifiPolicyForZone = defineEndpoint({
@@ -326,6 +340,19 @@ export const endWifiSession = defineEndpoint({
 });
 
 // ---- Admin configuration (bead legend-er32) --------------------------------
+
+/**
+ * The tenant's facilities, for the config index (bead legend-er32). The
+ * contract had no list read: a config screen cannot invent a facility id, and
+ * the hierarchy is facility → area → unit (PRD §3 F25 "Model Generik").
+ * The API implementation is a follow-up bead; mock mode serves the fixtures.
+ */
+export const listFacilities = defineEndpoint({
+  method: "GET",
+  path: "/api/facility/facilities",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(facilitySchema),
+});
 
 export const getFacilityConfig = defineEndpoint({
   method: "GET",
@@ -450,11 +477,13 @@ export const facilityEndpoints = [
   updateFacilityUnit,
   raiseFacilityIncident,
   respondFacilityIncident,
+  listFacilityIncidents,
   getWifiPolicyForZone,
   startWifiSession,
   getCurrentWifiSession,
   refreshWifiQuota,
   endWifiSession,
+  listFacilities,
   getFacilityConfig,
   updateFacility,
   createFacilityArea,

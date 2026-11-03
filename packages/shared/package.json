@@ -24,6 +24,7 @@
     "./api": "./src/api/index.ts",
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
+    "./access/override": "./src/access/override.ts",
     "./metrics": "./src/metrics/index.ts",
     "./kitchen": "./src/kitchen/index.ts",
     "./tax": "./src/tax/index.ts",

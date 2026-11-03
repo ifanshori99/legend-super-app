@@ -2,6 +2,8 @@ import "./load-env";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
+import { assertDeploymentEnv } from "@starter/shared/env";
+import { createProductionWorkerConfig } from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
@@ -31,7 +33,10 @@ import { createPaymentReservationDepositPort } from "./services/reservation-depo
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
 import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
+import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
+import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
+import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -46,13 +51,20 @@ import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 
+assertDeploymentEnv(process.env);
+
 // This module belongs to the deployment, never to the incoming request.
 const modulePath = process.env.WORKER_CONFIG_MODULE;
-if (!modulePath)
+const transportPath = process.env.WORKER_TRANSPORT_MODULE;
+if (!modulePath && !transportPath)
   throw new Error(
-    "WORKER_CONFIG_MODULE is required; no tenant resolver or consumer is configured",
+    "WORKER_TRANSPORT_MODULE is required; no durable sync transport is configured",
   );
-const config: unknown = await import(pathToFileURL(resolve(modulePath)).href);
+const config: unknown = modulePath
+  ? await import(pathToFileURL(resolve(modulePath)).href)
+  : createProductionWorkerConfig(
+      await import(pathToFileURL(resolve(transportPath!)).href),
+    );
 if (
   typeof config !== "object" ||
   config === null ||
@@ -220,6 +232,33 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
+    // supervisor alert through the notification outbox. Same fail-closed rule:
+    // a sweep error never blocks the relay, the next tick retries.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepMissedChecklistRuns(tx, context),
+      );
+    } catch {
+      console.error("Checklist missed-run sweep failed");
+    }
+    // OPS-03 (legend-sdet): raise the expiry alert for prep labels past their
+    // use-by exactly once. Fail closed like the other sweeps.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepExpiredPrepLabels(tx, context),
+      );
+    } catch {
+      console.error("Prep label expiry sweep failed");
+    }
+    // ORD-07 (legend-7qg): escalate waiter calls / bill requests left open
+    // past SERVICE_REQUEST_OVERDUE_SECONDS, once each. The relay ticks every
+    // minute, so an escalation fires 180-240 s after the call.
+    try {
+      await sweepOverdueServiceRequests(new Date(), context);
+    } catch {
+      console.error("Service request overdue sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.

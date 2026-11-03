@@ -22,6 +22,17 @@ import type { AuditEntry, AuditWriter } from "./audit-writer.ts";
  * an empty list (fully redacted) until it is added here deliberately.
  */
 const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
+  "pos_override.recorded": [
+    "action",
+    "method",
+    "requestedBy",
+    "approvedBy",
+    "valueIdr",
+    "reasonCode",
+    "objectType",
+    "objectId",
+    "approvalRequestId",
+  ],
   "tenant.created": [
     "slug",
     "plan",
