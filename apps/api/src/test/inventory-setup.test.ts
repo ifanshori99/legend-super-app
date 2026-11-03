@@ -26,7 +26,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { createApp } from "../app";
+import { createApp } from "../app.ts";
 import {
   conversionLinksConnectedUnits,
   createInventoryItemAlternate,
@@ -37,14 +37,15 @@ import {
   deleteParLevel,
   deleteUomConversion,
   listParLevels,
+  registerConversionReferenceCheck,
   updateParLevel,
   updateStockLocation,
-} from "../services/inventory-setup.service";
+} from "../services/inventory-setup.service.ts";
 import {
   getInventorySettings,
   updateInventorySettings,
-} from "../services/inventory-settings.service";
-import { agent, originHeader, signUp } from "./helpers";
+} from "../services/inventory-settings.service.ts";
+import { agent, originHeader, signUp } from "./helpers.ts";
 
 const tenantA = cafeLegendPlatformFixtures.tenant.id;
 const outletA = cafeLegendPlatformFixtures.outlets[0]!.id;
@@ -502,6 +503,49 @@ describe("SETUP-02 UOM conversions and alternates", () => {
     );
   });
 
+  it("SETUP-02 a conversion still referenced (recipe/purchase line) cannot be deleted", async () => {
+    const itemRef = await insertItem(uomKg, "Tepung Setup");
+    const created = await createUomConversion(
+      tenantContext(),
+      ownerUserId,
+      itemRef,
+      {
+        fromUomId: uomG,
+        toUomId: uomPcs,
+        factor: "5.0000" as never,
+        idempotencyKey: `uom-${randomUUID()}`,
+      },
+    );
+    const unregister = registerConversionReferenceCheck(
+      async (_tx, _context, subject) => subject.id === created.id,
+    );
+    try {
+      const error = await deleteUomConversion(
+        tenantContext(),
+        ownerUserId,
+        itemRef,
+        created.id,
+      ).then(
+        () => null,
+        (caught: unknown) => caught as { status?: number; code?: string },
+      );
+      expect(error).toMatchObject({ status: 409, code: "CONFLICT" });
+      const { rows } = await owner.query(
+        "SELECT 1 FROM uom_conversions WHERE id = $1",
+        [created.id],
+      );
+      expect(rows).toHaveLength(1);
+    } finally {
+      unregister();
+    }
+    await deleteUomConversion(
+      tenantContext(),
+      ownerUserId,
+      itemRef,
+      created.id,
+    );
+  });
+
   it("SETUP-02 alternates: no self link, no duplicate, replayable, deletable", async () => {
     await rejectsWithStatus(
       createInventoryItemAlternate(tenantContext(), ownerUserId, itemA, {
@@ -639,6 +683,59 @@ describe("SETUP-03 par levels", () => {
         idempotencyKey: `par-${randomUUID()}`,
       }),
       "OUTLET_OUT_OF_SCOPE",
+    );
+  });
+
+  it("TEN-03 SETUP-03 an outlet-scoped caller cannot list, edit or delete another outlet's level", async () => {
+    const itemC = await insertItem(uomKg, "Kopi Setup");
+    const foreign = await createParLevel(tenantContext(), ownerUserId, {
+      outletId: outletB,
+      locationId: locationOutletB as never,
+      inventoryItemId: itemC as never,
+      parMin: "1.0000" as never,
+      parMax: "4.0000" as never,
+      idempotencyKey: `par-${randomUUID()}`,
+    });
+    const scoped = tenantContext(tenantA, [outletA]);
+    await rejectsWithCode(
+      listParLevels(scoped, ownerUserId, { outletId: outletB, limit: 50 }),
+      "OUTLET_OUT_OF_SCOPE",
+    );
+    // RLS hides the other outlet's row: a 404, not a leak or a write.
+    await rejectsWithStatus(
+      updateParLevel(scoped, ownerUserId, foreign.id, {
+        parMax: "99.0000" as never,
+      }),
+      404,
+    );
+    await rejectsWithStatus(
+      deleteParLevel(scoped, ownerUserId, foreign.id),
+      404,
+    );
+    const { rows } = await owner.query<{ par_max: string }>(
+      "SELECT par_max FROM par_levels WHERE id = $1",
+      [foreign.id],
+    );
+    expect(rows[0]?.par_max).toBe("4.0000");
+  });
+
+  it("SETUP-03 concurrent creates of one location+item under different keys: one wins, one 409", async () => {
+    const itemD = await insertItem(uomKg, "Susu Setup");
+    const attempt = () =>
+      createParLevel(tenantContext(), ownerUserId, {
+        outletId: outletA,
+        locationId: locationA1 as never,
+        inventoryItemId: itemD as never,
+        parMin: "1.0000" as never,
+        parMax: "2.0000" as never,
+        idempotencyKey: `par-${randomUUID()}`,
+      });
+    const results = await Promise.allSettled([attempt(), attempt()]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const failure = results.find((r) => r.status === "rejected") as
+      PromiseRejectedResult | undefined;
+    expect((failure?.reason as { status?: number } | undefined)?.status).toBe(
+      409,
     );
   });
 

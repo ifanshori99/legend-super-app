@@ -55,28 +55,28 @@ import {
   type UomConversion,
 } from "@starter/shared/inventory";
 import type { z } from "zod";
-import type * as schema from "../db/schema";
+import type * as schema from "../db/schema/index.ts";
 import {
   inventoryItems,
   stockBalances,
   stockLocations,
   uomConversions,
   uoms,
-} from "../db/schema";
+} from "../db/schema/index.ts";
 import {
   inventoryItemAlternates,
   inventorySetupIdempotency,
   parLevels,
-} from "../db/schema/inventory-setup";
-import { outlets } from "../db/schema/platform-org";
-import { db } from "../db";
-import { withTenant } from "../db/tenant";
-import { HttpError } from "../lib/http-error";
-import { recordAudit } from "./core-audit";
+} from "../db/schema/inventory-setup.ts";
+import { outlets } from "../db/schema/platform-org.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { recordAudit } from "./core-audit.ts";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
-} from "./permission-resolver";
+} from "./permission-resolver.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 export type SetupTx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -314,6 +314,32 @@ function toAlternate(row: AlternateRow): InventoryItemAlternate {
 
 const notFound = (what: string) =>
   new HttpError(404, "NOT_FOUND", `${what} not found.`);
+
+/** PostgreSQL unique violation, directly or wrapped by drizzle's cause chain. */
+function uniqueViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23505" || uniqueViolation(candidate.cause, depth + 1)
+  );
+}
+
+/**
+ * Runs an insert whose pre-check can lose a race with a concurrent request
+ * under a different idempotency key: the unique constraint is the backstop,
+ * and its violation is the same 409 CONFLICT the pre-check returns.
+ */
+async function insertOrConflict<T>(
+  insert: () => Promise<T>,
+  message: string,
+): Promise<T> {
+  try {
+    return await insert();
+  } catch (error) {
+    if (uniqueViolation(error)) throw new HttpError(409, "CONFLICT", message);
+    throw error;
+  }
+}
 
 async function requireItem(tx: SetupTx, itemId: string) {
   const [row] = await tx
@@ -620,15 +646,19 @@ export async function createInventoryItemAlternate(
         "CONFLICT",
         "This alternate is already set for the item.",
       );
-    const [row] = await tx
-      .insert(inventoryItemAlternates)
-      .values({
-        tenantId: context.tenant.tenantId,
-        inventoryItemId: itemId,
-        alternateItemId: input.alternateItemId,
-        priority: input.priority,
-      })
-      .returning();
+    const [row] = await insertOrConflict(
+      () =>
+        tx
+          .insert(inventoryItemAlternates)
+          .values({
+            tenantId: context.tenant.tenantId,
+            inventoryItemId: itemId,
+            alternateItemId: input.alternateItemId,
+            priority: input.priority,
+          })
+          .returning(),
+      "This alternate is already set for the item.",
+    );
     const created = toAlternate(row!);
     await rememberIdempotentResource(
       tx,
@@ -667,15 +697,32 @@ export type SetupReferenceCheck = (
 ) => Promise<boolean>;
 const alternateReferenceChecks: SetupReferenceCheck[] = [];
 const conversionReferenceChecks: SetupReferenceCheck[] = [];
+function registerIn(
+  checks: SetupReferenceCheck[],
+  check: SetupReferenceCheck,
+): () => void {
+  checks.push(check);
+  return () => {
+    const index = checks.indexOf(check);
+    if (index >= 0) checks.splice(index, 1);
+  };
+}
+/** Returns an unregister handle (tests, hot reload). */
 export function registerAlternateReferenceCheck(
   check: SetupReferenceCheck,
-): void {
-  alternateReferenceChecks.push(check);
+): () => void {
+  return registerIn(alternateReferenceChecks, check);
 }
+/**
+ * Recipe lines (legend-db6) and purchase lines register here: neither table
+ * exists yet, so until they do nothing in the schema references a conversion
+ * (stock ledger and transfer lines are stored in the base unit). Follow-up
+ * legend-o1n1.
+ */
 export function registerConversionReferenceCheck(
   check: SetupReferenceCheck,
-): void {
-  conversionReferenceChecks.push(check);
+): () => void {
+  return registerIn(conversionReferenceChecks, check);
 }
 
 async function isReferenced(
@@ -1083,17 +1130,21 @@ export async function createParLevel(
         "CONFLICT",
         "A par level already exists for this item in this location.",
       );
-    const [row] = await tx
-      .insert(parLevels)
-      .values({
-        tenantId: context.tenant.tenantId,
-        outletId: input.outletId,
-        locationId: input.locationId,
-        inventoryItemId: input.inventoryItemId,
-        parMin: input.parMin,
-        parMax: input.parMax,
-      })
-      .returning();
+    const [row] = await insertOrConflict(
+      () =>
+        tx
+          .insert(parLevels)
+          .values({
+            tenantId: context.tenant.tenantId,
+            outletId: input.outletId,
+            locationId: input.locationId,
+            inventoryItemId: input.inventoryItemId,
+            parMin: input.parMin,
+            parMax: input.parMax,
+          })
+          .returning(),
+      "A par level already exists for this item in this location.",
+    );
     const created = toParLevel(row!);
     await rememberIdempotentResource(
       tx,

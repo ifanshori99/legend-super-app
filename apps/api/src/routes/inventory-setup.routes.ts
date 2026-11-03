@@ -27,16 +27,16 @@ import {
   updateParLevelInputSchema,
   updateStockLocationInputSchema,
 } from "@starter/shared/inventory";
-import { getAuth, requireAuth } from "../middleware/auth";
-import { jsonBody } from "../middleware/body";
-import { requireTrustedOrigin } from "../middleware/origin";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
+import { jsonBody } from "../middleware/body.ts";
+import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
   requireMenuPermission,
   requireOutletPermission,
   requireTenantPermission,
-} from "../middleware/permissions";
-import { requireTenantContext } from "../middleware/tenant";
+} from "../middleware/permissions.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   createInventoryItemAlternate,
   createParLevel,
@@ -49,11 +49,11 @@ import {
   listParLevels,
   updateParLevel,
   updateStockLocation,
-} from "../services/inventory-setup.service";
+} from "../services/inventory-setup.service.ts";
 import {
   getInventorySettings,
   updateInventorySettings,
-} from "../services/inventory-settings.service";
+} from "../services/inventory-settings.service.ts";
 
 export function createInventorySetupRouter(): Router {
   const router = Router();
