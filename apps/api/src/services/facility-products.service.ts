@@ -8,9 +8,10 @@
 // facility's outlet (TEN-03) and land an audit entry. Reads are exported as
 // transaction-scoped list functions so the config read and the write results
 // share one transaction and one permission check.
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull, or } from "drizzle-orm";
 import {
   userIdSchema,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
   type z,
@@ -32,6 +33,7 @@ import {
   type updateFacilityProductSchema,
   type updateSubscriptionPlanSchema,
 } from "@starter/shared/facility";
+import type { TaxRuleId } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import {
   entitlementRules,
@@ -39,6 +41,8 @@ import {
   facilityProducts,
   facilitySubscriptionPlans,
 } from "../db/schema/facility.ts";
+import { menuItems } from "../db/schema/menu.ts";
+import { taxRules } from "../db/schema/tax.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -92,6 +96,53 @@ async function guardingClientId<T>(
       throw new HttpError(409, code, message);
     throw error;
   }
+}
+
+/**
+ * `tax_rule_id` and `menu_item_id` carry no FK (other workstreams own those
+ * tables), so the service proves the id is a row of this tenant before it is
+ * stored: a tax rule must be tenant-wide or of the facility's own outlet, a
+ * menu item must be a live item of the tenant (TEN-01/TEN-03).
+ */
+async function assertTaxRuleRef(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  taxRuleId: string | null | undefined,
+): Promise<void> {
+  if (taxRuleId === null || taxRuleId === undefined) return;
+  const [row] = await tx
+    .select({ id: taxRules.id })
+    .from(taxRules)
+    .where(
+      and(
+        eq(taxRules.tenantId, context.tenant.tenantId),
+        eq(taxRules.id, taxRuleId as TaxRuleId),
+        or(isNull(taxRules.outletId), eq(taxRules.outletId, outletId)),
+      ),
+    )
+    .limit(1);
+  if (!row) throw notFound("Aturan pajak");
+}
+
+async function assertMenuItemRef(
+  tx: Tx,
+  context: ScopedTenantContext,
+  menuItemId: string | null | undefined,
+): Promise<void> {
+  if (menuItemId === null || menuItemId === undefined) return;
+  const [row] = await tx
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(
+      and(
+        eq(menuItems.tenantId, context.tenant.tenantId),
+        eq(menuItems.id, menuItemId),
+        isNull(menuItems.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!row) throw notFound("Item menu");
 }
 
 // ---- Mappers ---------------------------------------------------------------
@@ -256,6 +307,8 @@ export async function createFacilityProduct(
       CONFIG_PERMISSION,
       facility.outletId,
     );
+    await assertTaxRuleRef(tx, context, facility.outletId, input.taxRuleId);
+    await assertMenuItemRef(tx, context, input.menuItemId);
     const [row] = await tx
       .insert(facilityProducts)
       .values({
@@ -307,6 +360,8 @@ export async function updateFacilityProduct(
       CONFIG_PERMISSION,
       existing.outletId,
     );
+    await assertTaxRuleRef(tx, context, existing.outletId, input.taxRuleId);
+    await assertMenuItemRef(tx, context, input.menuItemId);
     const [row] = await tx
       .update(facilityProducts)
       .set({
@@ -484,6 +539,18 @@ export async function putEntitlementRule(
       )
       .limit(1)
       .for("update");
+    // A replace may move the rule to another facility: the caller must also
+    // hold the permission on the outlet the rule leaves (TEN-03).
+    if (existing && existing.outletId !== facility.outletId)
+      await assertFacilityPermission(
+        tx,
+        context,
+        actor,
+        CONFIG_PERMISSION,
+        existing.outletId,
+      );
+    if (input.type === "package")
+      await assertMenuItemRef(tx, context, input.condition.menuItemId);
     const values = {
       tenantId: context.tenant.tenantId,
       outletId: facility.outletId,

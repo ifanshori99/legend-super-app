@@ -168,6 +168,16 @@ export async function putWifiPolicy(
       )
       .limit(1)
       .for("update");
+    // A replace may move the policy to a zone of another outlet: the caller
+    // must also hold the permission on the outlet the policy leaves (TEN-03).
+    if (existing && existing.outletId !== zone.outletId)
+      await assertFacilityPermission(
+        tx,
+        context,
+        actor,
+        CONFIG_PERMISSION,
+        existing.outletId,
+      );
     const values = {
       tenantId: context.tenant.tenantId,
       outletId: zone.outletId,

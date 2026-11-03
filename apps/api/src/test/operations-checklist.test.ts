@@ -32,6 +32,7 @@ const createdUsers: string[] = [];
 const createdTemplateIds: string[] = [];
 const createdRunIds: string[] = [];
 const createdPrepLabelIds: string[] = [];
+const createdMediaIds: string[] = [];
 
 // Fixture rows the food-safety and prep endpoints read (equipment threshold,
 // inventory item, stock location and batch); inserted as the seeded tenant.
@@ -108,6 +109,20 @@ async function outletClient(outletId: string): Promise<Session> {
     [tenant.id, session.userId, roleId, outletId],
   );
   return session;
+}
+
+/** A stored evidence object (photo/signature) in one outlet of the tenant. */
+async function storedMedia(outletId: string = outletA.id): Promise<string> {
+  const id = randomUUID();
+  await asTenant((client) =>
+    client.query(
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+       VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
+      [tenant.id, outletId, id, `legend-btha/${id}.webp`],
+    ),
+  );
+  createdMediaIds.push(id);
+  return id;
 }
 
 /** A fresh idempotency key: the tenant-wide key space is shared. */
@@ -189,6 +204,11 @@ afterAll(async () => {
       "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND key LIKE 'legend-btha-%'",
       [tenant.id],
     );
+    if (createdMediaIds.length > 0)
+      await client.query(
+        "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND id = ANY($2)",
+        [tenant.id, createdMediaIds],
+      );
     await client.query("DELETE FROM equipment WHERE id = $1", [equipmentId]);
     await client.query("DELETE FROM stock_batches WHERE id = $1", [batchId]);
     await client.query("DELETE FROM stock_locations WHERE id = $1", [
@@ -529,7 +549,7 @@ describe("Operations checklist runs (legend-btha)", () => {
       run.id,
       itemIdOf(run, "Foto area bar"),
       {
-        photoMediaIds: [randomUUID()],
+        photoMediaIds: [await storedMedia()],
       },
     );
     expect(photo.status, JSON.stringify(photo.body)).toBe(200);
@@ -537,7 +557,7 @@ describe("Operations checklist runs (legend-btha)", () => {
       staff,
       run.id,
       itemIdOf(run, "Tanda tangan supervisor"),
-      { signatureMediaId: randomUUID() },
+      { signatureMediaId: await storedMedia() },
     );
     expect(signature.status, JSON.stringify(signature.body)).toBe(200);
 
@@ -563,10 +583,10 @@ describe("Operations checklist runs (legend-btha)", () => {
       note: "Chiller terlalu hangat",
     });
     await postResult(staff, run.id, itemIdOf(run, "Foto area bar"), {
-      photoMediaIds: [randomUUID()],
+      photoMediaIds: [await storedMedia()],
     });
     await postResult(staff, run.id, itemIdOf(run, "Tanda tangan supervisor"), {
-      signatureMediaId: randomUUID(),
+      signatureMediaId: await storedMedia(),
     });
 
     const failed = await postTransition(staff, run.id, "fail");
@@ -576,7 +596,8 @@ describe("Operations checklist runs (legend-btha)", () => {
 
     const events = await runEvents(run.id);
     const alert = events.find((event) => event.name === "checklist.failed");
-    expect(alert?.destination).toBe("cloud-sync");
+    // OPS-01: a failure alerts the supervisor through the notification consumer.
+    expect(alert?.destination).toBe("notification");
     expect(alert?.payload.runId).toBe(run.id);
     expect(alert?.payload.failedItemIds).toEqual([
       itemIdOf(run, "Suhu chiller"),
@@ -595,6 +616,55 @@ describe("Operations checklist runs (legend-btha)", () => {
     const events = await runEvents(run.id);
     const alert = events.find((event) => event.name === "checklist.missed");
     expect(alert?.destination).toBe("notification");
+  });
+
+  it("[legend-btha][D-CORE-5] replays a miss with the same key instead of answering 409, and alerts once", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    const body = { action: "miss", idempotencyKey: key() };
+    const path = `/api/operations/checklist-runs/${run.id}/transition`;
+    const first = await staff.client.post(path).set(originHeader).send(body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const again = await staff.client.post(path).set(originHeader).send(body);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data.status).toBe("missed");
+    expect(again.body.data.missedAt).toBe(first.body.data.missedAt);
+    const alerts = (await runEvents(run.id)).filter(
+      (event) => event.name === "checklist.missed",
+    );
+    expect(alerts).toHaveLength(1);
+  });
+
+  it("[legend-btha][OPS-01][TEN-03] refuses evidence ids that are not stored objects of this tenant and the run's outlet", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const photoItem = itemIdOf(run, "Foto area bar");
+    // An arbitrary UUID: no stored object at all (also what another tenant's
+    // object id looks like, since the lookup is tenant-filtered and RLS'd).
+    const unknown = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [randomUUID()],
+    });
+    expect(unknown.status, JSON.stringify(unknown.body)).toBe(422);
+    expect(unknown.body.error.code).toBe("VALIDATION_ERROR");
+    // A real object, but stored under outlet B: not evidence for an outlet A run.
+    const foreignOutlet = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [await storedMedia(outletB.id)],
+    });
+    expect(foreignOutlet.status, JSON.stringify(foreignOutlet.body)).toBe(422);
+    const signatureItem = itemIdOf(run, "Tanda tangan supervisor");
+    const badSignature = await postResult(staff, run.id, signatureItem, {
+      signatureMediaId: randomUUID(),
+    });
+    expect(badSignature.status, JSON.stringify(badSignature.body)).toBe(422);
+    // Nothing was written by the refused answers.
+    const reread = await staff.client.get(
+      `/api/operations/checklist-runs/${run.id}`,
+    );
+    expect(reread.body.data.results).toEqual([]);
+    // The same item accepts a stored outlet A object.
+    const ok = await postResult(staff, run.id, photoItem, {
+      photoMediaIds: [await storedMedia()],
+    });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
   });
 });
 
@@ -690,6 +760,41 @@ describe("Operations outlet isolation (legend-btha)", () => {
     );
     expect(own.status, JSON.stringify(own.body)).toBe(200);
     expect(own.body.data).toEqual([]);
+  });
+
+  it("[legend-btha][RBAC] a signed-in user without ops permissions is refused on every checklist route", async () => {
+    const nobody = await signedIn("Operations No Role");
+    const reads = [
+      `/api/operations/checklist-templates?outletId=${outletA.id}`,
+      `/api/operations/checklist-templates/${baseTemplateId}`,
+      `/api/operations/checklist-runs?outletId=${outletA.id}`,
+    ];
+    for (const path of reads)
+      expect((await nobody.client.get(path)).status, path).toBe(403);
+    const writes = [
+      "/api/operations/checklist-templates",
+      "/api/operations/checklist-runs",
+      `/api/operations/checklist-runs/${randomUUID()}/transition`,
+    ];
+    for (const path of writes)
+      expect(
+        (
+          await nobody.client
+            .post(path)
+            .set(originHeader)
+            .send({ action: "start", idempotencyKey: key() })
+        ).status,
+        path,
+      ).toBe(403);
+    const patched = await nobody.client
+      .patch(`/api/operations/checklist-templates/${baseTemplateId}`)
+      .set(originHeader)
+      .send({
+        name: "Tanpa izin",
+        expectedUpdatedAt: new Date().toISOString(),
+        idempotencyKey: key(),
+      });
+    expect(patched.status).toBe(403);
   });
 
   it("[legend-btha][TEN-01] an anonymous request is refused before any service runs", async () => {

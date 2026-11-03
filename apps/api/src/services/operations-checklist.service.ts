@@ -25,6 +25,7 @@ import {
   desc,
   eq,
   gt,
+  inArray,
   isNull,
   lt,
   lte,
@@ -70,11 +71,12 @@ import {
   type ChecklistTemplate,
 } from "@starter/shared/operations";
 import { db } from "../db/index.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import {
   opsChecklistRuns,
   opsChecklistTemplates,
 } from "../db/schema/operations.ts";
-import { roleAssignments } from "../db/schema/platform-access.ts";
+import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -82,7 +84,10 @@ import { zonedInstant } from "./facility-rules.ts";
 import { minutesOfDay } from "./menu-availability.ts";
 import { assertOutletPermission, type Tx } from "./menu-internals.ts";
 import { markChecklistRunMissed } from "./operations-escalation.service.ts";
-import { emitOperationsEvent } from "./operations-events.ts";
+import {
+  emitOperationsEvent,
+  OPERATIONS_NOTIFICATION_DESTINATION,
+} from "./operations-events.ts";
 import {
   operationsFingerprint,
   readIdempotentResult,
@@ -143,10 +148,17 @@ function cursorKeys(cursor: string, expected: number): string[] {
   return keys;
 }
 
+/** A cursor instant that does not parse is a client error, not a 500. */
+function cursorInstant(value: string): Date {
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) throw invalidCursor();
+  return at;
+}
+
 /** Keyset filter for `updated_at DESC, id DESC`. */
 function templateCursorWhere(cursor: string): SQL {
   const [updatedAt, id] = cursorKeys(cursor, 2);
-  const at = new Date(updatedAt);
+  const at = cursorInstant(updatedAt);
   return or(
     lt(opsChecklistTemplates.updatedAt, at),
     and(
@@ -159,7 +171,7 @@ function templateCursorWhere(cursor: string): SQL {
 /** Keyset filter for `shift_date DESC, due_at ASC, id DESC`. */
 function runCursorWhere(cursor: string): SQL {
   const [shiftDate, dueAt, id] = cursorKeys(cursor, 3);
-  const at = new Date(dueAt);
+  const at = cursorInstant(dueAt);
   return or(
     lt(opsChecklistRuns.shiftDate, shiftDate),
     and(
@@ -314,6 +326,53 @@ async function assertAssigneeInOutlet(
     );
 }
 
+/** A template may only name a role of its own tenant (no FK on role_id). */
+async function assertRoleInTenant(
+  tx: Tx,
+  tenantId: string,
+  roleId: string | null | undefined,
+): Promise<void> {
+  if (roleId === null || roleId === undefined) return;
+  const [role] = await tx
+    .select({ id: roles.id })
+    .from(roles)
+    .where(and(eq(roles.tenantId, tenantId), eq(roles.id, roleId)))
+    .limit(1);
+  if (!role)
+    throw new HttpError(422, "VALIDATION_ERROR", "Role tidak ditemukan.");
+}
+
+/**
+ * OPS-01 evidence must be a real stored object of THIS tenant and the run's
+ * outlet: an arbitrary UUID (or another tenant's/outlet's object id) would
+ * satisfy the evidence gate without any photo or signature behind it.
+ */
+async function assertEvidenceInOutlet(
+  tx: Tx,
+  tenantId: string,
+  outletId: string,
+  mediaIds: readonly string[],
+): Promise<void> {
+  const ids = [...new Set(mediaIds)];
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: coreStorageObjects.id })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, tenantId),
+        eq(coreStorageObjects.outletId, outletId),
+        inArray(coreStorageObjects.id, ids),
+      ),
+    );
+  if (rows.length !== ids.length)
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Foto atau tanda tangan tidak ditemukan. Unggah ulang lalu coba lagi.",
+    );
+}
+
 // --------------------------------------------------------------- templates
 
 export async function listChecklistTemplates(
@@ -395,6 +454,7 @@ export async function createChecklistTemplate(
       return toChecklistTemplate(
         await loadTemplateRow(tx, context.tenant.tenantId, replayed),
       );
+    await assertRoleInTenant(tx, context.tenant.tenantId, input.roleId);
     const [row] = await tx
       .insert(opsChecklistTemplates)
       .values({
@@ -474,6 +534,7 @@ export async function updateChecklistTemplate(
     const stamp = new Date(
       Math.max(now.getTime(), locked.updatedAt.getTime() + 1),
     );
+    await assertRoleInTenant(tx, context.tenant.tenantId, input.roleId);
     const items =
       input.items === undefined
         ? undefined
@@ -726,6 +787,10 @@ export async function recordChecklistItemResult(
         "CHECKLIST_ITEM_INCOMPLETE",
         "Butir checklist belum lengkap. Lengkapi foto, angka, atau tanda tangan yang diminta.",
       );
+    await assertEvidenceInOutlet(tx, context.tenant.tenantId, run.outletId, [
+      ...result.photoMediaIds,
+      ...(result.signatureMediaId === null ? [] : [result.signatureMediaId]),
+    ]);
     const index = run.results.findIndex((entry) => entry.itemId === item.id);
     const results =
       index >= 0
@@ -807,6 +872,15 @@ export async function transitionChecklistRun(
         },
         now,
       );
+      // Bind the key like every other action, so a retried miss replays the
+      // missed run instead of failing the machine with 409.
+      await storeIdempotentResult(tx, context, {
+        key: input.idempotencyKey,
+        fingerprint,
+        outletId: run.outletId,
+        resultTable: CHECKLIST_RUN_RESULT_TABLE,
+        resultId: run.id,
+      });
       return toChecklistRun(
         await loadRunRow(tx, context.tenant.tenantId, run.id, false),
       );
@@ -865,6 +939,9 @@ export async function transitionChecklistRun(
             completedAt: now.toISOString(),
             failedItemIds,
           },
+          // Like a miss, the supervisor alert is built by the notification
+          // consumer; the default cloud-sync stream would never alert anyone.
+          destination: OPERATIONS_NOTIFICATION_DESTINATION,
           now,
         },
       );

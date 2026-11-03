@@ -9,7 +9,7 @@
 // checklist, food-safety, prep, equipment, maintenance and handover services
 // all use these two helpers so the behaviour cannot drift between them.
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   CoreError,
@@ -55,6 +55,12 @@ export async function readIdempotentResult(
   resultTable: string,
 ): Promise<string | null> {
   const parsedKey = idempotencyKeySchema.parse(key);
+  // Serialise concurrent requests carrying the same key: without this lock two
+  // racing first attempts both miss the row and the loser fails on the
+  // (tenant_id, key) unique constraint with a 500 instead of a replay.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`operations-idempotency:${context.tenant.tenantId}:${parsedKey}`}))`,
+  );
   const [row] = await tx
     .select()
     .from(operationsIdempotency)

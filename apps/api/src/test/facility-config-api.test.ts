@@ -390,6 +390,66 @@ describe("Facility products, add-ons and plans API (legend-8dpm)", () => {
     ).toBe(404);
   });
 
+  it("[TEN-01][legend-8dpm] rejects a tax rule or menu item id that is not a row of this tenant (404)", async () => {
+    const { client } = await ownerClient();
+    const base = {
+      facilityId,
+      name: "Referensi Asing",
+      type: "single",
+      priceIdr: 1000,
+      sessions: 1,
+    };
+    const foreignTax = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({ ...base, taxRuleId: randomUUID() });
+    expect(foreignTax.status, JSON.stringify(foreignTax.body)).toBe(404);
+    const foreignMenu = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send({ ...base, menuItemId: randomUUID() });
+    expect(foreignMenu.status, JSON.stringify(foreignMenu.body)).toBe(404);
+
+    const product = await client
+      .post("/api/facility/products")
+      .set(originHeader)
+      .send(base);
+    expect(product.status, JSON.stringify(product.body)).toBe(201);
+    expect(
+      (
+        await client
+          .patch(`/api/facility/products/${product.body.data.id}`)
+          .set(originHeader)
+          .send({ taxRuleId: randomUUID() })
+      ).status,
+    ).toBe(404);
+    // Clearing a reference is always allowed.
+    expect(
+      (
+        await client
+          .patch(`/api/facility/products/${product.body.data.id}`)
+          .set(originHeader)
+          .send({ taxRuleId: null, menuItemId: null })
+      ).status,
+    ).toBe(200);
+
+    expect(
+      (
+        await client
+          .put(`/api/facility/entitlement-rules/${randomUUID()}`)
+          .set(originHeader)
+          .send({
+            facilityId,
+            type: "package",
+            condition: { menuItemId: randomUUID() },
+            sessions: 1,
+            validity: { kind: "operating_day" },
+            isEnabled: true,
+          })
+      ).status,
+    ).toBe(404);
+  });
+
   it("[FAC-02][legend-8dpm] creates and updates a subscription plan", async () => {
     const { client } = await ownerClient();
     const plan = await client

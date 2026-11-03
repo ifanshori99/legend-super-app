@@ -120,6 +120,7 @@ type PrepListRow = typeof prepLists.$inferSelect;
 const TEMPERATURE_RESULT_TABLE = "temperature_log";
 const PREP_LABEL_RESULT_TABLE = "prep_label";
 const PREP_LIST_RESULT_TABLE = "prep_list";
+const PREP_LIST_TRANSITION_RESULT_TABLE = "prep_list_transition";
 
 // ------------------------------------------------------------- helpers
 
@@ -946,7 +947,20 @@ export async function transitionPrepList(
       locked.outletId,
       now,
     );
-    const status = transitionPrepListMachine(locked.status, input.action);
+    // A retried transition (lost response) must replay, not answer
+    // PREP_LIST_TRANSITION_INVALID because the first attempt already moved
+    // the list. The key binds to (list, action) only.
+    const { idempotencyKey, action } = input;
+    const fingerprint = operationsFingerprint({ prepListId, action });
+    const replayed = await readIdempotentResult(
+      tx,
+      context,
+      idempotencyKey,
+      fingerprint,
+      PREP_LIST_TRANSITION_RESULT_TABLE,
+    );
+    if (replayed) return loadPrepList(tx, context, replayed);
+    const status = transitionPrepListMachine(locked.status, action);
     const [row] = await tx
       .update(prepLists)
       .set({ status, updatedAt: now })
@@ -965,6 +979,13 @@ export async function transitionPrepList(
       );
     if (status === "completed")
       await linkProductionOrdersForPrepList(tx, context, row.id, now);
+    await storeIdempotentResult(tx, context, {
+      key: idempotencyKey,
+      fingerprint,
+      outletId: row.outletId,
+      resultTable: PREP_LIST_TRANSITION_RESULT_TABLE,
+      resultId: row.id,
+    });
     return loadPrepList(tx, context, row.id);
   });
 }

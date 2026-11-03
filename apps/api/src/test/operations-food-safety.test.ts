@@ -350,6 +350,16 @@ afterAll(async () => {
     await client.query("DELETE FROM equipment WHERE tenant_id = $1", [
       otherTenant,
     ]);
+    // The cross-tenant batch test seeds inventory in the other tenant.
+    for (const table of [
+      "stock_batches",
+      "stock_locations",
+      "inventory_items",
+      "uoms",
+    ])
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+        otherTenant,
+      ]);
     await client.query("DELETE FROM outlets WHERE tenant_id = $1", [
       otherTenant,
     ]);
@@ -610,6 +620,41 @@ describe("legend-sdet OPS-03 prep labels", () => {
     expect(rows[0]!.n).toBe(0);
   });
 
+  it("[legend-sdet][OPS-03][TEN-01] a batch id from another tenant is refused and no label is written", async () => {
+    const foreignItem = await seedInventoryItem(
+      `Asing ${randomUUID().slice(0, 6)}`,
+      otherTenant,
+    );
+    const foreignBatch = await seedStockBatch(
+      otherOutlet,
+      foreignItem,
+      otherTenant,
+    );
+    const context = outletScope(outletA);
+    await expect(
+      createPrepLabel(
+        context,
+        operator,
+        {
+          outletId: outletA,
+          inventoryItemId: foreignItem,
+          batchId: foreignBatch,
+          producedAt: at(-60),
+          useBy: at(240),
+          idempotencyKey: nextKey("label-foreign-batch"),
+        },
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 422, code: "VALIDATION_ERROR" });
+    const { rows } = await asOwner(tenantId, (client) =>
+      client.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM prep_labels WHERE batch_id = $1",
+        [foreignBatch],
+      ),
+    );
+    expect(rows[0]!.n).toBe(0);
+  });
+
   it("[legend-sdet][OPS-03] the label links to its batch, lists by use-by and prints once", async () => {
     const item = await seedInventoryItem(`Saus ${randomUUID().slice(0, 6)}`);
     const batch = await seedStockBatch(outletA, item);
@@ -857,15 +902,38 @@ describe("legend-sdet daily prep list from the AI-07 forecast", () => {
         NOW,
       );
       expect(started.status).toBe("in_progress");
+      const completeKey = nextKey("prep-complete");
       const completed = await transitionPrepList(
         context,
         operator,
         list.id,
-        { action: "complete", idempotencyKey: nextKey("prep-complete") },
+        { action: "complete", idempotencyKey: completeKey },
         NOW,
       );
       expect(completed.status).toBe("completed");
       expect(calls).toHaveLength(1);
+      // A retried "complete" with the same key replays the completed list: no
+      // PREP_LIST_TRANSITION_INVALID and no second production hand-off.
+      const replayed = await transitionPrepList(
+        context,
+        operator,
+        list.id,
+        { action: "complete", idempotencyKey: completeKey },
+        NOW,
+      );
+      expect(replayed.id).toBe(list.id);
+      expect(replayed.status).toBe("completed");
+      expect(calls).toHaveLength(1);
+      // The same key for a different action is a reuse, never a second write.
+      await expect(
+        transitionPrepList(
+          context,
+          operator,
+          list.id,
+          { action: "start", idempotencyKey: completeKey },
+          NOW,
+        ),
+      ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
       expect(calls[0]!.input.prepListId).toBe(list.id);
       expect(calls[0]!.input.outletId).toBe(outletA);
       expect(calls[0]!.input.prepDate).toBe(prepDate);

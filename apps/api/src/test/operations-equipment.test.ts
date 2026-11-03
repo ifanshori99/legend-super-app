@@ -42,6 +42,7 @@ const createdTicketIds: string[] = [];
 const createdScheduleIds: string[] = [];
 const createdHandoverIds: string[] = [];
 const menuItemIds: string[] = [];
+const createdMediaIds: string[] = [];
 const menuCategoryId = randomUUID();
 /** The ticket test's machine, read again by the isolation test. */
 let ticketEquipmentId = "";
@@ -117,6 +118,20 @@ async function outletClient(outletId: string) {
   return result;
 }
 
+/** A stored breakdown photo in one outlet of the tenant (core storage). */
+async function storedMedia(outletId: string = outletA.id): Promise<string> {
+  const id = randomUUID();
+  await asTenant((client) =>
+    client.query(
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+       VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
+      [tenant.id, outletId, id, `legend-i57s/${id}.webp`],
+    ),
+  );
+  createdMediaIds.push(id);
+  return id;
+}
+
 async function itemAvailabilityStatus(menuItemId: string) {
   const result = await asTenant((client) =>
     client.query(
@@ -172,6 +187,11 @@ afterAll(async () => {
       await client.query(
         "DELETE FROM shift_handovers WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
         [tenant.id, createdHandoverIds],
+      );
+    if (createdMediaIds.length > 0)
+      await client.query(
+        "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenant.id, createdMediaIds],
       );
     await client.query(
       "DELETE FROM operations_idempotency WHERE tenant_id = $1 AND key LIKE 'legend-i57s-%'",
@@ -328,6 +348,9 @@ describe("Operations equipment API (legend-i57s)", () => {
       .send({ action: "start_maintenance", idempotencyKey: nextKey() });
     expect(maintenance.status, JSON.stringify(maintenance.body)).toBe(200);
     expect(maintenance.body.data.status).toBe("under_maintenance");
+    // The machine is still out of service: starting the repair must not put
+    // the item back on sale; only complete_maintenance does.
+    expect(await itemAvailabilityStatus(menuItemId())).toBe("sold_out");
 
     const repaired = await client
       .post(`${equipmentPath(equipmentId)}/transition`)
@@ -349,6 +372,142 @@ describe("Operations equipment API (legend-i57s)", () => {
       .send({ action: "report_breakdown", idempotencyKey: nextKey() });
     expect(fromRetired.status).toBe(409);
     expect(fromRetired.body.error.code).toBe("EQUIPMENT_TRANSITION_INVALID");
+  });
+});
+
+/** A fresh menu item of the test brand, cleaned up in afterAll. */
+async function createMenuItem(name: string) {
+  const itemId = randomUUID();
+  await asTenant((client) =>
+    client.query(
+      `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active)
+       VALUES ($1, $2, $3, $4, $5, true)`,
+      [itemId, tenant.id, brand.id, menuCategoryId, name],
+    ),
+  );
+  menuItemIds.push(itemId);
+  return itemId;
+}
+
+async function createMachine(
+  client: ReturnType<typeof agent>,
+  name: string,
+  linkedMenuItemIds: string[],
+) {
+  const created = await client.post(equipmentPath()).set(originHeader).send({
+    outletId: outletA.id,
+    name,
+    category: "other",
+    linkedMenuItemIds,
+    idempotencyKey: nextKey(),
+  });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const id = created.body.data.id as string;
+  createdEquipmentIds.push(id);
+  return id;
+}
+
+async function transition(
+  client: ReturnType<typeof agent>,
+  id: string,
+  action: string,
+) {
+  const response = await client
+    .post(`${equipmentPath(id)}/transition`)
+    .set(originHeader)
+    .send({ action, idempotencyKey: nextKey() });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return response;
+}
+
+describe("Operations equipment OPS-04 restore rules (legend-i57s)", () => {
+  it("[legend-i57s][OPS-04] a shared item stays sold out until the last broken machine is repaired", async () => {
+    const { client } = await ownerClient();
+    const shared = await createMenuItem("Latte Bersama Uji");
+    const first = await createMachine(client, "Espresso Kiri Uji", [shared]);
+    const second = await createMachine(client, "Espresso Kanan Uji", [shared]);
+
+    await transition(client, first, "report_breakdown");
+    expect(await itemAvailabilityStatus(shared)).toBe("sold_out");
+    await transition(client, second, "report_breakdown");
+    expect(await itemAvailabilityStatus(shared)).toBe("sold_out");
+
+    // Repairing the first machine must not sell an item the second one,
+    // still broken, cannot make.
+    await transition(client, first, "start_maintenance");
+    await transition(client, first, "complete_maintenance");
+    expect(await itemAvailabilityStatus(shared)).toBe("sold_out");
+
+    await transition(client, second, "start_maintenance");
+    expect(await itemAvailabilityStatus(shared)).toBe("sold_out");
+    await transition(client, second, "complete_maintenance");
+    expect(await itemAvailabilityStatus(shared)).toBe("available");
+  });
+
+  it("[legend-i57s][OPS-04] a repair never lifts a manual 86", async () => {
+    const { client } = await ownerClient();
+    const manual = await createMenuItem("Croissant 86 Manual Uji");
+    await asTenant((db) =>
+      db.query(
+        `INSERT INTO item_availability (tenant_id, outlet_id, menu_item_id, status)
+         VALUES ($1, $2, $3, 'sold_out')`,
+        [tenant.id, outletA.id, manual],
+      ),
+    );
+    const oven = await createMachine(client, "Oven Uji", [manual]);
+    await transition(client, oven, "report_breakdown");
+    await transition(client, oven, "start_maintenance");
+    await transition(client, oven, "complete_maintenance");
+    expect(await itemAvailabilityStatus(manual)).toBe("sold_out");
+  });
+
+  it("[legend-i57s][OPS-04] a breakdown ticket follows the equipment machine (retired / planned maintenance -> 409)", async () => {
+    const { client } = await ownerClient();
+    const item = await createMenuItem("Roti Bakar Uji");
+    const toaster = await createMachine(client, "Pemanggang Uji", [item]);
+    const photo = await storedMedia();
+    const ticketBody = () => ({
+      outletId: outletA.id,
+      equipmentId: toaster,
+      urgency: "high",
+      description: "Pemanggang tidak menyala.",
+      mediaIds: [photo],
+      marksEquipmentBroken: true,
+      idempotencyKey: nextKey(),
+    });
+
+    await transition(client, toaster, "start_maintenance");
+    const planned = await client
+      .post(ticketPath())
+      .set(originHeader)
+      .send(ticketBody());
+    expect(planned.status).toBe(409);
+    expect(planned.body.error.code).toBe("EQUIPMENT_TRANSITION_INVALID");
+    // Nothing was stored or sold out by the refused ticket.
+    expect(await itemAvailabilityStatus(item)).toBeUndefined();
+
+    await transition(client, toaster, "retire");
+    const retired = await client
+      .post(ticketPath())
+      .set(originHeader)
+      .send(ticketBody());
+    expect(retired.status).toBe(409);
+    expect(retired.body.error.code).toBe("EQUIPMENT_TRANSITION_INVALID");
+  });
+
+  it("[legend-i57s][OPS-04] an equipment transition writes an audit row", async () => {
+    const { client } = await ownerClient();
+    const machine = await createMachine(client, "Blender Audit Uji", []);
+    await transition(client, machine, "report_breakdown");
+    const audit = await asTenant((db) =>
+      db.query(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2
+            AND event->>'action' = 'equipment.transitioned'`,
+        [tenant.id, machine],
+      ),
+    );
+    expect(audit.rowCount).toBe(1);
   });
 });
 
@@ -383,7 +542,7 @@ describe("Operations maintenance API (legend-i57s)", () => {
         equipmentId,
         urgency: "critical",
         description: "Mesin mengeluarkan suara keras dan tidak memanas.",
-        mediaIds: [randomUUID()],
+        mediaIds: [await storedMedia()],
         marksEquipmentBroken: true,
         idempotencyKey: nextKey(),
       });
@@ -493,6 +652,23 @@ describe("Operations maintenance API (legend-i57s)", () => {
         idempotencyKey: nextKey(),
       });
     expect(missingMedia.status).toBe(422);
+
+    // A photo id must be an object stored for THIS tenant and outlet.
+    for (const mediaId of [randomUUID(), await storedMedia(outletB.id)]) {
+      const foreign = await client
+        .post(ticketPath())
+        .set(originHeader)
+        .send({
+          outletId: outletA.id,
+          equipmentId,
+          urgency: "high",
+          description: "Layar panel mati total.",
+          mediaIds: [mediaId],
+          idempotencyKey: nextKey(),
+        });
+      expect(foreign.status, JSON.stringify(foreign.body)).toBe(422);
+      expect(foreign.body.error.code).toBe("VALIDATION_ERROR");
+    }
   });
 
   it("[legend-i57s][F41] creates a maintenance schedule and lists it by equipment and due date", async () => {

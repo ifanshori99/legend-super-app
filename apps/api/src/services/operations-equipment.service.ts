@@ -35,11 +35,14 @@ import {
   lt,
   lte,
   or,
+  sql,
   type SQL,
 } from "drizzle-orm";
+import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
   CoreError,
+  createUlid,
   decodeCursor,
   encodeCursor,
   idr,
@@ -74,10 +77,10 @@ import {
   type EquipmentStatus,
   type MaintenanceSchedule,
   type MaintenanceTicket,
-  type OperationsErrorCode,
   type ShiftHandover,
 } from "@starter/shared/operations";
 import type { z } from "zod";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { menuItems } from "../db/schema/menu.ts";
 import {
   equipment,
@@ -89,6 +92,7 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { recordAudit } from "./core-audit.ts";
 import { assertOutletPermission } from "./menu-internals.ts";
 import { syncEquipmentAvailability } from "./operations-availability.service.ts";
 import { emitOperationsEvent } from "./operations-events.ts";
@@ -153,12 +157,6 @@ function contract<T>(run: () => T): T {
       throw new HttpError(error.status, error.code, error.message);
     throw error;
   }
-}
-
-/** A contract failure raised by the service itself (not by a machine call). */
-function operationsFailure(code: OperationsErrorCode): never {
-  const error = new OperationsError(code);
-  throw new HttpError(error.status, error.code, error.message);
 }
 
 function validationError(message: string): never {
@@ -327,6 +325,131 @@ async function assertLinkedMenuItems(
     return validationError(
       "Menu yang ditautkan tidak ditemukan di outlet ini.",
     );
+}
+
+/**
+ * Breakdown photos must be storage objects uploaded to this tenant AND outlet
+ * (same rule as checklist evidence); an arbitrary or foreign id is a 422.
+ */
+async function assertTicketMediaInOutlet(
+  tx: OperationsTx,
+  context: ScopedTenantContext,
+  outletId: string,
+  mediaIds: readonly string[],
+): Promise<void> {
+  const ids = [...new Set(mediaIds)];
+  if (ids.length === 0) return;
+  const rows = await tx
+    .select({ id: coreStorageObjects.id })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, context.tenant.tenantId),
+        eq(coreStorageObjects.outletId, outletId),
+        inArray(coreStorageObjects.id, ids),
+      ),
+    );
+  if (rows.length !== ids.length)
+    validationError(
+      "Foto kerusakan tidak ditemukan. Unggah ulang lalu coba lagi.",
+    );
+}
+
+// ------------------------------------------------------- OPS-04 availability
+
+/**
+ * Serializes every equipment status change that can sell out or restore menu
+ * items at one outlet. Two machines can share a menu item, so a repair of one
+ * and a breakdown of the other must not interleave (the restore would lift a
+ * sold-out the other machine still needs). Taken before any equipment row
+ * lock so the lock order is always advisory -> row.
+ */
+async function lockOutletAvailability(
+  tx: OperationsTx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ops-equipment-availability:${context.tenant.tenantId}:${outletId}`}, 0))`,
+  );
+}
+
+/**
+ * Availability view of an equipment status. A machine that went broken and
+ * then `start_maintenance` still cannot make its menu items: while it holds
+ * disabled items it counts as broken, so the items come back only on
+ * `complete_maintenance` (or `retire`), not when the technician starts work.
+ */
+function availabilityStatus(
+  status: EquipmentStatus,
+  disabledItemIds: readonly string[],
+): EquipmentStatus {
+  return status === "under_maintenance" && disabledItemIds.length > 0
+    ? "broken"
+    : status;
+}
+
+// -------------------------------------------------------------------- audit
+
+const EQUIPMENT_AUDIT_SAFE_FIELDS = [
+  "status",
+  "action",
+  "name",
+  "category",
+  "linkedMenuItemIds",
+  "urgency",
+  "marksEquipmentBroken",
+  "equipmentId",
+  "intervalDays",
+  "nextDueAt",
+  "costIdr",
+  "vendorId",
+  "fromShiftTemplateId",
+  "toShiftTemplateId",
+  "acknowledgedBy",
+] as const;
+
+/** Append-only audit row in the same tenant transaction as the change. */
+async function auditOperations(
+  tx: OperationsTx,
+  context: ScopedTenantContext,
+  actor: string,
+  now: Date,
+  entry: {
+    action: string;
+    objectType: string;
+    objectId: string;
+    outletId: string;
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  const mask = (value: Record<string, unknown> | null) =>
+    value === null
+      ? null
+      : maskAuditChanges(value, EQUIPMENT_AUDIT_SAFE_FIELDS);
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: entry.outletId,
+      actorType: "user",
+      actorId: actor,
+      deviceId: null,
+      action: entry.action,
+      objectType: entry.objectType,
+      objectId: entry.objectId,
+      reason: null,
+      maskedChanges: { before: mask(entry.before), after: mask(entry.after) },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    EQUIPMENT_AUDIT_SAFE_FIELDS,
+  );
 }
 
 // ----------------------------------------------------------------- replay
@@ -575,6 +698,19 @@ export async function createEquipment(
       })
       .returning();
     if (!row) throw new Error("Peralatan gagal disimpan.");
+    await auditOperations(tx, context, actor, now, {
+      action: "equipment.created",
+      objectType: "equipment",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: null,
+      after: {
+        name: row.name,
+        category: row.category,
+        status: row.status,
+        linkedMenuItemIds: row.linkedMenuItemIds,
+      },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,
@@ -659,6 +795,22 @@ export async function updateEquipment(
       )
       .returning();
     if (!row) throw new Error("Peralatan gagal diperbarui.");
+    await auditOperations(tx, context, actor, now, {
+      action: "equipment.updated",
+      objectType: "equipment",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: {
+        name: locked.name,
+        category: locked.category,
+        linkedMenuItemIds: locked.linkedMenuItemIds,
+      },
+      after: {
+        name: row.name,
+        category: row.category,
+        linkedMenuItemIds: row.linkedMenuItemIds,
+      },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,
@@ -686,6 +838,28 @@ export async function postEquipmentTransition(
   const fingerprint = requestFingerprint(input, equipmentId);
   return withTenant(db, context, async (tx) => {
     const now = new Date();
+    // The outlet never changes, so it can be read before the outlet lock;
+    // the row itself is locked (and re-read) after it, keeping lock order.
+    const [located] = await tx
+      .select({ outletId: equipment.outletId })
+      .from(equipment)
+      .where(
+        and(
+          eq(equipment.tenantId, context.tenant.tenantId),
+          eq(equipment.id, equipmentId),
+        ),
+      )
+      .limit(1);
+    if (!located) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_EQUIPMENT);
+    await assertOutletPermission(
+      tx,
+      context,
+      actor,
+      EQUIPMENT_PERMISSION,
+      located.outletId,
+      now,
+    );
+    await lockOutletAvailability(tx, context, located.outletId);
     const [locked] = await tx
       .select()
       .from(equipment)
@@ -698,14 +872,6 @@ export async function postEquipmentTransition(
       .limit(1)
       .for("update");
     if (!locked) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_EQUIPMENT);
-    await assertOutletPermission(
-      tx,
-      context,
-      actor,
-      EQUIPMENT_PERMISSION,
-      locked.outletId,
-      now,
-    );
     const replay = await replayEquipment(
       tx,
       context,
@@ -713,10 +879,19 @@ export async function postEquipmentTransition(
       fingerprint,
     );
     if (replay) return replay;
-    const previousStatus: EquipmentStatus = locked.status;
     const next = contract(() =>
       transitionEquipment(locked.status, input.action),
     );
+    // OPS-04 availability view: broken -> under_maintenance keeps the items
+    // sold out; they come back on complete_maintenance/retire.
+    const previousAvailability = availabilityStatus(
+      locked.status,
+      locked.disabledItemIds,
+    );
+    const nextAvailability: EquipmentStatus =
+      next === "under_maintenance" && previousAvailability === "broken"
+        ? "broken"
+        : next;
     const [updated] = await tx
       .update(equipment)
       .set({ status: next, updatedAt: now })
@@ -728,6 +903,8 @@ export async function postEquipmentTransition(
       )
       .returning();
     if (!updated) throw new Error("Peralatan gagal diperbarui.");
+    // A repair restores only items no other broken machine still holds; the
+    // availability service checks the other machines' bookkeeping.
     await syncEquipmentAvailability(
       tx,
       context,
@@ -736,13 +913,21 @@ export async function postEquipmentTransition(
         id: updated.id,
         outletId: updated.outletId,
         name: updated.name,
-        status: updated.status,
+        status: nextAvailability,
         linkedMenuItemIds: updated.linkedMenuItemIds,
         disabledItemIds: updated.disabledItemIds,
       },
-      previousStatus,
+      previousAvailability,
       now,
     );
+    await auditOperations(tx, context, actor, now, {
+      action: "equipment.transitioned",
+      objectType: "equipment",
+      objectId: updated.id,
+      outletId: updated.outletId,
+      before: { status: locked.status },
+      after: { status: next, action: input.action },
+    });
     const [row] = await tx
       .select()
       .from(equipment)
@@ -878,6 +1063,19 @@ export async function createMaintenanceSchedule(
       })
       .returning();
     if (!row) throw new Error("Jadwal perawatan gagal disimpan.");
+    await auditOperations(tx, context, actor, now, {
+      action: "maintenance_schedule.created",
+      objectType: "maintenance_schedule",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: null,
+      after: {
+        equipmentId: row.equipmentId,
+        intervalDays: row.intervalDays,
+        nextDueAt: row.nextDueAt.toISOString(),
+        vendorId: row.vendorId,
+      },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,
@@ -1013,6 +1211,15 @@ export async function createMaintenanceTicket(
     // The input schema already requires one photo; the contract gate keeps a
     // direct service caller (worker, test double) honest too.
     contract(() => assertMaintenanceTicketHasPhoto(input.mediaIds));
+    await assertTicketMediaInOutlet(
+      tx,
+      context,
+      input.outletId,
+      input.mediaIds,
+    );
+    const marksBroken = input.marksEquipmentBroken ?? false;
+    // Same lock order as an equipment transition: outlet, then the row.
+    if (marksBroken) await lockOutletAvailability(tx, context, input.outletId);
     const [locked] = await tx
       .select()
       .from(equipment)
@@ -1027,6 +1234,22 @@ export async function createMaintenanceTicket(
       .for("update");
     if (!locked) throw new HttpError(404, "NOT_FOUND", NOT_FOUND_EQUIPMENT);
 
+    // OPS-04 through the contract machine: operational -> broken via
+    // `report_breakdown`. A machine already out of service after a breakdown
+    // (broken, or under maintenance still holding its disabled items) stays
+    // as it is; any other state (retired, planned maintenance) is refused
+    // with the machine's own 409 before anything is stored.
+    const previousAvailability = availabilityStatus(
+      locked.status,
+      locked.disabledItemIds,
+    );
+    const nextStatus: EquipmentStatus | null =
+      !marksBroken || previousAvailability === "broken"
+        ? null
+        : contract(() =>
+            transitionEquipment(locked.status, "report_breakdown"),
+          );
+
     const [ticket] = await tx
       .insert(maintenanceTickets)
       .values({
@@ -1040,24 +1263,18 @@ export async function createMaintenanceTicket(
         vendorId: input.vendorId ?? null,
         costIdr: input.costIdr == null ? null : idr(input.costIdr),
         status: "reported",
-        marksEquipmentBroken: input.marksEquipmentBroken ?? false,
+        marksEquipmentBroken: marksBroken,
         reportedAt: now,
       })
       .returning();
     if (!ticket) throw new Error("Tiket perawatan gagal disimpan.");
 
-    if (ticket.marksEquipmentBroken) {
-      // A retired asset is terminal (contract equipment machine): a breakdown
-      // cannot force it back into service, so the ticket is refused with the
-      // machine's own code instead of storing an inconsistent pair.
-      if (locked.status === "retired")
-        operationsFailure("EQUIPMENT_TRANSITION_INVALID");
-      const previousStatus: EquipmentStatus = locked.status;
+    if (marksBroken) {
       let broken: EquipmentRow = locked;
-      if (locked.status !== "broken") {
+      if (nextStatus !== null) {
         const [updated] = await tx
           .update(equipment)
-          .set({ status: "broken", updatedAt: now })
+          .set({ status: nextStatus, updatedAt: now })
           .where(
             and(
               eq(equipment.tenantId, context.tenant.tenantId),
@@ -1067,22 +1284,30 @@ export async function createMaintenanceTicket(
           .returning();
         if (!updated) throw new Error("Peralatan gagal diperbarui.");
         broken = updated;
-      }
-      await syncEquipmentAvailability(
-        tx,
-        context,
-        actor,
-        {
-          id: broken.id,
+        await syncEquipmentAvailability(
+          tx,
+          context,
+          actor,
+          {
+            id: broken.id,
+            outletId: broken.outletId,
+            name: broken.name,
+            status: "broken",
+            linkedMenuItemIds: broken.linkedMenuItemIds,
+            disabledItemIds: broken.disabledItemIds,
+          },
+          previousAvailability,
+          now,
+        );
+        await auditOperations(tx, context, actor, now, {
+          action: "equipment.transitioned",
+          objectType: "equipment",
+          objectId: broken.id,
           outletId: broken.outletId,
-          name: broken.name,
-          status: "broken",
-          linkedMenuItemIds: broken.linkedMenuItemIds,
-          disabledItemIds: broken.disabledItemIds,
-        },
-        previousStatus,
-        now,
-      );
+          before: { status: locked.status },
+          after: { status: nextStatus, action: "report_breakdown" },
+        });
+      }
       await emitOperationsEvent(
         tx,
         context,
@@ -1102,6 +1327,20 @@ export async function createMaintenanceTicket(
         },
       );
     }
+
+    await auditOperations(tx, context, actor, now, {
+      action: "maintenance_ticket.created",
+      objectType: "maintenance_ticket",
+      objectId: ticket.id,
+      outletId: ticket.outletId,
+      before: null,
+      after: {
+        equipmentId: ticket.equipmentId,
+        urgency: ticket.urgency,
+        status: ticket.status,
+        marksEquipmentBroken: ticket.marksEquipmentBroken,
+      },
+    });
 
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
@@ -1188,6 +1427,19 @@ export async function postMaintenanceTicketTransition(
       )
       .returning();
     if (!row) throw new Error("Tiket perawatan gagal diperbarui.");
+    await auditOperations(tx, context, actor, now, {
+      action: "maintenance_ticket.transitioned",
+      objectType: "maintenance_ticket",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: { status: locked.status },
+      after: {
+        status: row.status,
+        action: input.action,
+        vendorId: row.vendorId,
+        costIdr: row.costIdr,
+      },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,
@@ -1324,6 +1576,18 @@ export async function createShiftHandover(
       })
       .returning();
     if (!row) throw new Error("Serah terima shift gagal disimpan.");
+    await auditOperations(tx, context, actor, now, {
+      action: "shift_handover.submitted",
+      objectType: "shift_handover",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: null,
+      after: {
+        status: row.status,
+        fromShiftTemplateId: row.fromShiftTemplateId,
+        toShiftTemplateId: row.toShiftTemplateId,
+      },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,
@@ -1403,6 +1667,14 @@ export async function postShiftHandoverAcknowledgement(
       )
       .returning();
     if (!row) throw new Error("Serah terima shift gagal diperbarui.");
+    await auditOperations(tx, context, actor, now, {
+      action: "shift_handover.acknowledged",
+      objectType: "shift_handover",
+      objectId: row.id,
+      outletId: row.outletId,
+      before: { status: locked.status },
+      after: { status: row.status, acknowledgedBy: row.acknowledgedBy },
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,

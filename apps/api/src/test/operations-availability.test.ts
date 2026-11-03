@@ -413,6 +413,191 @@ describe("OPS-04 sold-out write-through (legend-5zkp)", () => {
     }
   });
 
+  it("[legend-5zkp] OPS-04 two broken machines sharing an item: the item returns only after the last repair", async () => {
+    const shared = await seedMenuItem();
+    const onlyA = await seedMenuItem();
+    await seedAvailability(shared, "available");
+    await seedAvailability(onlyA, "available");
+    const machineA = await seedEquipment({
+      status: "broken",
+      linked: [shared, onlyA],
+    });
+    const machineB = await seedEquipment({
+      status: "broken",
+      linked: [shared],
+    });
+
+    // A breaks first and sells out both of its items.
+    const brokeA = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machineA, "broken", [shared, onlyA]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect(brokeA.sort()).toEqual([shared, onlyA].sort());
+
+    // B breaks while `shared` is already sold out by A: B co-holds it with no
+    // second broadcast.
+    const brokeB = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machineB, "broken", [shared]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect(brokeB).toEqual([]);
+    expect((await readEquipment(machineB)).disabled_item_ids).toEqual([shared]);
+    expect(await readItemEvents([shared])).toHaveLength(1);
+
+    // A is repaired: its own item returns, the shared one stays sold out
+    // because B is still broken.
+    await asOwner((client) =>
+      client.query(
+        "UPDATE equipment SET status = 'operational' WHERE tenant_id = $1 AND id = $2",
+        [tenantId, machineA],
+      ),
+    );
+    const repairedA = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machineA, "operational", [shared, onlyA], [shared, onlyA]),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repairedA).toEqual([onlyA]);
+    let availability = await readAvailability([shared, onlyA]);
+    expect(availability.get(shared)?.status).toBe("sold_out");
+    expect(availability.get(onlyA)?.status).toBe("available");
+    expect((await readEquipment(machineA)).disabled_item_ids).toEqual([]);
+
+    // B is repaired last: now the shared item returns, once.
+    await asOwner((client) =>
+      client.query(
+        "UPDATE equipment SET status = 'operational' WHERE tenant_id = $1 AND id = $2",
+        [tenantId, machineB],
+      ),
+    );
+    const repairedB = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machineB, "operational", [shared], [shared]),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repairedB).toEqual([shared]);
+    availability = await readAvailability([shared]);
+    expect(availability.get(shared)?.status).toBe("available");
+    expect(
+      (await readItemEvents([shared])).map((entry) => entry.event.name),
+    ).toEqual(["item.sold_out", "item.restored"]);
+  });
+
+  it("[legend-5zkp] OPS-04 a manual 86 before the breakdown is never taken over or lifted by the repair", async () => {
+    const manual = await seedMenuItem();
+    await seedAvailability(manual, "sold_out");
+    const machine = await seedEquipment({ status: "broken", linked: [manual] });
+
+    const broke = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "broken", [manual]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect(broke).toEqual([]);
+    expect((await readEquipment(machine)).disabled_item_ids).toEqual([]);
+
+    const repaired = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "operational", [manual], []),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repaired).toEqual([]);
+    expect((await readAvailability([manual])).get(manual)?.status).toBe(
+      "sold_out",
+    );
+    expect(await readItemEvents([manual])).toHaveLength(0);
+  });
+
+  it("[legend-5zkp] OPS-04 a timed manual 86 cannot lapse while the machine is broken and is not lifted by the repair", async () => {
+    const timed = await seedMenuItem();
+    const later = new Date(NOW.getTime() + 2 * 60 * 60_000);
+    await seedAvailability(timed, "sold_out", later);
+    const machine = await seedEquipment({ status: "broken", linked: [timed] });
+
+    const broke = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "broken", [timed]),
+        "operational",
+        NOW,
+      ),
+    );
+    expect(broke).toEqual([timed]);
+    const row = (await readAvailability([timed])).get(timed);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.sold_out_until).toBeNull();
+    // Still a manual 86: not in the equipment bookkeeping.
+    expect((await readEquipment(machine)).disabled_item_ids).toEqual([]);
+    const events = await readItemEvents([timed]);
+    expect(events).toHaveLength(1);
+    expect(events[0].event.name).toBe("item.sold_out");
+    expect(events[0].event.payload.soldOutUntil).toBeNull();
+  });
+
+  it("[legend-5zkp] OPS-04 an item re-86'd by staff with a deadline while broken is left alone by the repair", async () => {
+    const item = await seedMenuItem();
+    const later = new Date(NOW.getTime() + 2 * 60 * 60_000);
+    // The equipment sold it out (no deadline); staff then re-86'd it until
+    // later, which the equipment never writes.
+    await seedAvailability(item, "sold_out", later);
+    const machine = await seedEquipment({
+      status: "operational",
+      linked: [item],
+      disabled: [item],
+    });
+
+    const repaired = await withTenant(db, context, (tx) =>
+      syncEquipmentAvailability(
+        tx,
+        context,
+        actorUserId,
+        equipmentRow(machine, "operational", [item], [item]),
+        "broken",
+        NOW,
+      ),
+    );
+    expect(repaired).toEqual([]);
+    const row = (await readAvailability([item])).get(item);
+    expect(row?.status).toBe("sold_out");
+    expect(row?.sold_out_until?.toISOString()).toBe(later.toISOString());
+    expect((await readEquipment(machine)).disabled_item_ids).toEqual([]);
+    expect(await readItemEvents([item])).toHaveLength(0);
+  });
+
   it("[legend-5zkp] OPS-04 equipment without linked items writes nothing", async () => {
     const unrelatedItem = await seedMenuItem();
     const equipmentId = await seedEquipment({

@@ -355,6 +355,32 @@ describe("OPS-01 missed checklist escalation (legend-5zkp)", () => {
     expect(await readChecklistEvents(run)).toHaveLength(0);
   });
 
+  it("[legend-5zkp] OPS-01 a run before its deadline is untouched and an overdue in-progress run is marked missed", async () => {
+    const notYetDue = await seedChecklistRun({
+      status: "in_progress",
+      dueAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    const overdue = await seedChecklistRun({
+      status: "in_progress",
+      dueAt: before(1),
+    });
+    const context = outletScope(outletA);
+
+    await withTenant(db, context, (tx) =>
+      sweepMissedChecklistRuns(tx, context, NOW),
+    );
+
+    const pendingRow = await readRun(notYetDue);
+    expect(pendingRow.status).toBe("in_progress");
+    expect(pendingRow.missed_at).toBeNull();
+    expect(pendingRow.alerted_at).toBeNull();
+    expect(await readChecklistEvents(notYetDue)).toHaveLength(0);
+
+    const overdueRow = await readRun(overdue);
+    expect(overdueRow.status).toBe("missed");
+    expect(await readChecklistEvents(overdue)).toHaveLength(1);
+  });
+
   it("[legend-5zkp] OPS-01 the sweep stays inside the caller's tenant: another tenant's run is untouched and invisible", async () => {
     const foreign = await seedChecklistRun({
       tenant: otherTenant,
