@@ -44,6 +44,16 @@ export function ChangeDialog({
   const [reason, setReason] = React.useState("");
   const [touched, setTouched] = React.useState(false);
   const short = reason.trim().length < REASON_MIN;
+  // Every open starts with an empty reason, however the last one closed
+  // (cancel button, Esc, or a successful save that closed it from outside).
+  const [wasOpen, setWasOpen] = React.useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setReason("");
+      setTouched(false);
+    }
+  }
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -55,10 +65,8 @@ export function ChangeDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) {
-          setReason("");
-          setTouched(false);
-        }
+        // No closing mid-save: the result would land on a closed dialog.
+        if (!next && pending) return;
         onOpenChange(next);
       }}
     >
@@ -100,6 +108,7 @@ export function ChangeDialog({
             <Button
               type="button"
               variant="outline"
+              disabled={pending}
               onClick={() => onOpenChange(false)}
             >
               {t("common.cancel")}

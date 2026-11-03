@@ -47,6 +47,7 @@ import {
   parseBundleText,
   selectedSections,
   serializeBundle,
+  exportIsSafe,
   type ParsedBundle,
   type SectionDiff,
   type SectionStatus,
@@ -125,6 +126,10 @@ function ExportCard() {
       chosen.length === CONFIG_SECTIONS.length ? undefined : [...chosen],
       {
         onSuccess: (bundle) => {
+          if (!exportIsSafe(bundle)) {
+            setError(t("tenantSettings.config.exportUnsafe"));
+            return;
+          }
           download(bundleFileName(bundle.exportedAt), serializeBundle(bundle));
           toast({
             tone: "success",

@@ -137,7 +137,13 @@ function AreaFrameBody({
         mode={definition.forcedMode}
         actions={definition.forcedMode ? undefined : <ThemeToggle />}
       >
-        <div className="h-full overflow-y-auto p-4">{body}</div>
+        <div className="h-full overflow-y-auto p-4">
+          {/* PRD §3 F4 / TEN-04: staff at the till and the kitchen also see a
+              running support session (legend-335). Renders nothing without
+              one or when the caller may not read it. */}
+          <SupportSessionBanner source="org" className="mb-4" />
+          {body}
+        </div>
       </OperationsShell>
     );
   }

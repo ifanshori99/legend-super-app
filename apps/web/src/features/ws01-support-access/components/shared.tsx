@@ -1,13 +1,12 @@
 // Pieces shared by the platform page, the tenant page and the banner.
 import { CircleCheck, CircleSlash, Clock, Eye, Pencil } from "lucide-react";
-import {
-  supportAccessStatus,
-  type SupportAccessGrant,
-  type SupportAccessStatus,
+import type {
+  SupportAccessGrant,
+  SupportAccessStatus,
 } from "@starter/shared/platform";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
-import { formatCountdown, remainingMs } from "../logic.ts";
+import { displayStatus, formatCountdown, remainingMs } from "../logic.ts";
 import { useSecondClock } from "../use-now.ts";
 
 const INSTANT_FORMAT = new Intl.DateTimeFormat("id-ID", {
@@ -38,10 +37,8 @@ const STATUS_TONE = {
 
 export function useGrantStatus(grant: SupportAccessGrant): SupportAccessStatus {
   const nowMs = useSecondClock();
-  return supportAccessStatus(
-    grant,
-    new Date(nowMs ?? Date.parse(grant.startedAt)),
-  );
+  // Before hydration the start instant stands in for "now" (stable SSR markup).
+  return displayStatus(grant, nowMs ?? Date.parse(grant.startedAt));
 }
 
 export function GrantStatusBadge({ status }: { status: SupportAccessStatus }) {
@@ -74,12 +71,18 @@ export function ModeBadge({
 }
 
 /** Live "mm:ss" until the session expires; empty before hydration. */
-export function Countdown({ expiresAt }: { expiresAt: string }) {
+export function Countdown({
+  grant,
+}: {
+  grant: Pick<SupportAccessGrant, "expiresAt" | "durationMinutes">;
+}) {
   const nowMs = useSecondClock();
   if (nowMs === null) return null;
   return (
     <span className="tabular">
-      {formatCountdown(remainingMs(expiresAt, nowMs))}
+      {formatCountdown(
+        remainingMs(grant.expiresAt, nowMs, grant.durationMinutes),
+      )}
     </span>
   );
 }

@@ -25,8 +25,21 @@ export function fetchApproval(requestId: string, signal?: AbortSignal) {
   );
 }
 
-export function decideApproval(requestId: string, body: ApprovalDecisionInput) {
-  return callEndpoint(decideApprovalRequest, { params: { requestId }, body });
+/**
+ * One Idempotency-Key per decision attempt (contracts.md "Idempotent
+ * mutations"): a retry after a lost response replays the first result instead
+ * of failing with "already decided".
+ */
+export function decideApproval(
+  requestId: string,
+  body: ApprovalDecisionInput,
+  idempotencyKey: string,
+) {
+  return callEndpoint(
+    decideApprovalRequest,
+    { params: { requestId }, body },
+    { headers: { "Idempotency-Key": idempotencyKey } },
+  );
 }
 
 export function verifyFactor(input: { factorId: string; code: string }) {

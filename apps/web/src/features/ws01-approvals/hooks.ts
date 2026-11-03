@@ -61,8 +61,10 @@ export function useTotpFactor(enabled: boolean) {
 export function useDecide(requestId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: ApprovalDecisionInput) =>
-      decideApproval(requestId, body),
+    mutationFn: (input: {
+      body: ApprovalDecisionInput;
+      idempotencyKey: string;
+    }) => decideApproval(requestId, input.body, input.idempotencyKey),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: approvalKeys.all }),
     onError: () =>

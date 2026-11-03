@@ -55,6 +55,11 @@ test("AUTH-06 the requester cannot approve their own AI request", async ({
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Anda pemohon permintaan ini.")).toBeVisible();
+  // F38: an agent proposal is labelled a draft that has not been applied.
+  await expect(dialog.getByTestId("agent-draft-notice")).toContainText(
+    "Belum ada yang diterapkan",
+  );
+  await expect(dialog.locator('[data-source="ai"]')).toContainText("Draf AI");
   await expect(dialog.getByTestId("approval-diff")).toContainText("28.000");
   await expect(dialog.getByTestId("approval-diff")).toContainText("30.000");
   await expect(dialog.getByRole("button", { name: "Setujui" })).toBeDisabled();

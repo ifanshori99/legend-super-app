@@ -112,6 +112,8 @@ export const devicePinMessages = {
     close: "Tutup",
     retry: "Coba lagi",
     sameApprover: "Penyetuju tidak boleh sama dengan peminta (AUTH-06).",
+    noRequester:
+      "Peminta belum diketahui. Masuk dulu dengan PIN Anda, lalu ajukan override.",
     pinSuccess: "Disetujui oleh {name}.",
     sending: "Mengirim permintaan…",
     sendError: "Permintaan belum terkirim. Periksa koneksi lalu coba lagi.",

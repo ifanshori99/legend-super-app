@@ -106,3 +106,38 @@ test("EDG-03: a session revocation overlays an active row and never undoes a rev
   assert.equal(merged[0].status, "revoked");
   assert.equal(logic.deviceCounts(merged, NOW).revoked, 1);
 });
+
+test("EDG-03: heartbeat age uses the edge clock when the viewer clock runs behind", () => {
+  // Viewer clock is 60 s behind: the newest heartbeat is "in the future".
+  const viewerReceivedAt = NOW - 60_000;
+  const list = [
+    device({ lastSeenAt: ago(0) }),
+    device({ lastSeenAt: ago(45_000) }),
+  ];
+  const offset = logic.serverClockOffsetMs(list, viewerReceivedAt);
+  assert.equal(offset, 60_000);
+  // Without the offset the 45 s-old device would read "online".
+  assert.equal(logic.heartbeatState(list[1], viewerReceivedAt), "online");
+  assert.equal(
+    logic.heartbeatState(list[1], viewerReceivedAt + offset),
+    "offline",
+  );
+  // A viewer clock that runs ahead is never pulled back (safe direction).
+  assert.equal(logic.serverClockOffsetMs(list, NOW + 60_000), 0);
+  assert.equal(
+    logic.serverClockOffsetMs([device({ lastSeenAt: null })], NOW),
+    0,
+  );
+});
+
+test("TEN-02: outlet filter only offers outlets present in the scoped device list", () => {
+  const d = device();
+  const options = logic.outletOptions(
+    [
+      { id: d.outletId, name: "Cafe Legend" },
+      { id: "99999999-9999-4999-8999-999999999999", name: "Outlet lain" },
+    ],
+    [d],
+  );
+  assert.deepEqual(options, [{ id: d.outletId, name: "Cafe Legend" }]);
+});

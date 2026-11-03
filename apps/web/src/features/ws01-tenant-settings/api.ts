@@ -2,13 +2,9 @@
 // "Typed endpoints and mock mode"). Components use the hooks in ./hooks.ts.
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
 import { uploadMenuImage as uploadMenuImageEndpoint } from "@starter/shared/menu";
-import { orgEndpoints } from "@starter/shared/platform";
+import { orgEndpoints, textOverrideEndpoints } from "@starter/shared/platform";
 import { callEndpoint } from "@/lib/api/endpoint";
-import {
-  deleteTextOverride,
-  importOrgConfig,
-  upsertTextOverride,
-} from "./endpoints";
+import { deleteTextOverride, importOrgConfig } from "./endpoints";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
@@ -46,8 +42,9 @@ export const exportConfigCall = (
 export const importConfigCall = (body: Body<typeof importOrgConfig>) =>
   callEndpoint(importOrgConfig, { body });
 
-export const upsertTextOverrideCall = (body: Body<typeof upsertTextOverride>) =>
-  callEndpoint(upsertTextOverride, { body });
+export const upsertTextOverrideCall = (
+  body: Body<typeof textOverrideEndpoints.putTextOverride>,
+) => callEndpoint(textOverrideEndpoints.putTextOverride, { body });
 
 export const deleteTextOverrideCall = (overrideId: string) =>
   callEndpoint(deleteTextOverride, { params: { overrideId } });

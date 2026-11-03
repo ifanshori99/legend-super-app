@@ -105,7 +105,7 @@ function Fact({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid gap-0.5">
+    <div className="grid content-start gap-0.5">
       <dt className="type-eyebrow text-muted-foreground">{label}</dt>
       <dd className="text-sm font-medium">{children}</dd>
     </div>
@@ -247,8 +247,8 @@ function Identity({ tenant }: { tenant: Tenant }) {
             <span className="grid gap-0.5">
               <span>{admin.name}</span>
               <span className="text-xs font-normal text-muted-foreground">
-                {admin.whatsapp}
-                {admin.email ? ` · ${admin.email}` : ""}
+                {admin.whatsappMasked}
+                {admin.emailMasked ? ` · ${admin.emailMasked}` : ""}
               </span>
             </span>
           ) : (
@@ -345,6 +345,9 @@ function PackageSection({ tenant }: { tenant: Tenant }) {
   const enabled = new Set<string>(tenant.featureFlags.modules);
   return (
     <Section title={t(k("modules"))} description={t(k("modulesHint"))}>
+      <Button asChild variant="outline" size="sm" className="mb-3">
+        <Link to="/platform/paket">{t(k("changePackage"))}</Link>
+      </Button>
       <ul className="flex flex-wrap gap-2" aria-label={t(k("modules"))}>
         {MODULE_KEYS.map((key) => (
           <li key={key}>
@@ -468,14 +471,9 @@ function OrgSection({ tenantId }: { tenantId: string }) {
                 key={entity.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-control border-(length:--border-w) p-3 text-sm"
               >
-                <span className="grid gap-0.5">
-                  <span className="font-medium">{entity.name}</span>
-                  {entity.address && (
-                    <span className="text-muted-foreground">
-                      {entity.address}
-                    </span>
-                  )}
-                </span>
+                {/* TEN-04: registered address may be a person's home for a
+                    small CV; platform staff see name, NPWP last 4 and PKP only. */}
+                <span className="font-medium">{entity.name}</span>
                 <span className="flex items-center gap-2">
                   <span className="tabular text-muted-foreground">
                     {maskNpwp(entity.npwpLast4)

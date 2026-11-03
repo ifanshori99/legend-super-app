@@ -7,7 +7,7 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Money } from "@/components/ui/money";
-import { actionLabelKey, previewRow } from "../logic.ts";
+import { actionLabelKey, isAgentDraft, previewRow } from "../logic.ts";
 import {
   Deadline,
   RequestStatusBadge,
@@ -46,7 +46,12 @@ export function ApprovalCard({
       <div className="grid gap-1">
         <h3 className="text-base leading-6 font-semibold">{action}</h3>
         <p className="text-sm text-muted-foreground">
-          {t("approvals.requestedBy", { name: requester })}
+          {t(
+            isAgentDraft(request.source)
+              ? "approvals.draftFor"
+              : "approvals.requestedBy",
+            { name: requester },
+          )}
           {request.requiredLevels > 1 &&
             ` · ${t("approvals.level", { level: request.level, total: request.requiredLevels })}`}
         </p>

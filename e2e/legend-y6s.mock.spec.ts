@@ -118,6 +118,17 @@ test("TEN-05 · limits form validates with the contract and saves after a confir
   ).toBeVisible();
   await confirmWithReason(page, "Tenant menambah karyawan shift malam.");
   await expect(page.getByText("Batas tenant tersimpan.").first()).toBeVisible();
+
+  // The change lives in the tenants feature's mock store (one owner of
+  // setTenantPackage), so it survives moving between platform screens.
+  await page.getByRole("link", { name: "Paket & modul" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Modul per tenant" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Kuota & plafon" }).click();
+  await expect(
+    page.getByRole("textbox", { name: /Karyawan aktif/ }),
+  ).toHaveValue("45");
 });
 
 test("TEN-05 · available gateways are grouped and saved with a confirm", async ({

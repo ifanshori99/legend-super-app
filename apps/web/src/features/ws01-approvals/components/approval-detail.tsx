@@ -19,9 +19,15 @@ import {
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { useApproval, useNow } from "../hooks";
-import { actionLabelKey, moduleLabelKey, moduleOf } from "../logic.ts";
+import {
+  actionLabelKey,
+  isAgentDraft,
+  moduleLabelKey,
+  moduleOf,
+} from "../logic.ts";
 import { DecisionPanel } from "./decision-panel";
 import {
+  AgentDraftNotice,
   Deadline,
   RequestStatusBadge,
   SourceBadge,
@@ -61,11 +67,21 @@ export function ApprovalDetailBody({
         <Deadline request={request} now={now} />
       </div>
 
+      <AgentDraftNotice source={request.source} onBehalfOf={requester} />
+
       <dl className="divide-y">
         <Fact label={t("approvals.detail.module")}>
           {t(moduleLabelKey(moduleOf(request.actionType)))}
         </Fact>
-        <Fact label={t("approvals.detail.requester")}>{requester}</Fact>
+        <Fact
+          label={t(
+            isAgentDraft(request.source)
+              ? "approvals.detail.onBehalfOf"
+              : "approvals.detail.requester",
+          )}
+        >
+          {requester}
+        </Fact>
         <Fact label={t("approvals.detail.value")}>
           {request.amountIdr !== null ? (
             <Money amount={request.amountIdr} />

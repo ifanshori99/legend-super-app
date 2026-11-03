@@ -11,6 +11,9 @@ const nav: AreaNavEntry[] = [
     to: "/platform/tenant",
     icon: Building2,
     order: 10,
+    // Same permission as the route guard (guard.ts), so health-only viewers
+    // are not offered a link that answers 404.
+    anyPermission: ["platform.tenant.manage"],
   },
 ];
 

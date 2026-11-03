@@ -506,3 +506,14 @@ test("TEN-09 · the local endpoints reuse the contract's own input schemas", () 
     false,
   );
 });
+
+test("TEN-09 · an export carrying a secret or tenant id is never saved", () => {
+  const clean = { ...fx.configBundle, exportedAt: new Date().toISOString() };
+  assert.equal(configLib.exportIsSafe(clean), true);
+  const leaky = structuredClone(clean);
+  leaky.sections.leak = {
+    items: [{ key: "x", credentials: { apiKey: SECRET_A } }],
+  };
+  assert.equal(configLib.exportIsSafe(leaky), false);
+  assert.equal(configLib.exportIsSafe({ ...clean, note: fx.tenant.id }), false);
+});

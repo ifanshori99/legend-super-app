@@ -71,3 +71,60 @@ test("AUTH-06 · phone approval outcome: pending, decided, or expired past the d
     "rejected",
   );
 });
+
+// Regression for legend-6ew "typing the final PIN digit fails": a model of the
+// pad's entry loop built from the same pure rules the component uses. Keys
+// (keyboard or on-screen) append; a full PIN is handed over only when nothing
+// is being checked, and the pad empties itself on hand-over.
+function padModel() {
+  const length = identity.STAFF_PIN_LENGTH;
+  const state = { pin: "", pending: false, sent: [] };
+  const flush = () => {
+    if (logic.readyToHandOver(state.pin, state.pending, length)) {
+      state.sent.push(state.pin);
+      state.pin = "";
+      state.pending = true;
+    }
+  };
+  return {
+    state,
+    key(digit) {
+      state.pin = logic.appendDigit(state.pin, digit, length);
+      flush();
+    },
+    answer() {
+      state.pending = false;
+      flush();
+    },
+    dots: () => logic.pinPadDots(state.pin.length, state.pending, length),
+  };
+}
+
+for (const via of ["keyboard", "on-screen pad"]) {
+  test(`AUTH-06 · regression (${via}): the sixth digit submits even when typed during the previous check`, () => {
+    const pad = padModel();
+    for (const digit of "111222") pad.key(digit);
+    assert.deepEqual(pad.state.sent, ["111222"]);
+    assert.equal(
+      pad.dots(),
+      identity.STAFF_PIN_LENGTH,
+      "all dots while checking",
+    );
+    // The next PIN is typed before the first answer arrives.
+    for (const digit of "246810") pad.key(digit);
+    assert.equal(pad.state.pin, "246810", "no digit dropped while checking");
+    assert.deepEqual(pad.state.sent, ["111222"], "never two checks at once");
+    pad.answer(); // wrong PIN answered: the waiting PIN goes out at once
+    assert.deepEqual(pad.state.sent, ["111222", "246810"]);
+    assert.equal(pad.state.pin, "", "the PIN is not kept after hand-over");
+  });
+}
+
+test("AUTH-06 · a full PIN waits while checking and the pad shows typed digits", () => {
+  assert.equal(logic.readyToHandOver("246810", true, 6), false);
+  assert.equal(logic.readyToHandOver("24681", false, 6), false);
+  assert.equal(logic.readyToHandOver("246810", false, 6), true);
+  assert.equal(logic.pinPadDots(0, true, 6), 6);
+  assert.equal(logic.pinPadDots(2, true, 6), 2);
+  assert.equal(logic.pinPadDots(0, false, 6), 0);
+});

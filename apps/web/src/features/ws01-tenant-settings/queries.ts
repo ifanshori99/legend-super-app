@@ -2,8 +2,7 @@
 // endpoint id + input, so the integrations list shares its cache entry with
 // every other reader of the same endpoint.
 import { endpointQueryOptions } from "@/lib/api/endpoint";
-import { orgEndpoints } from "@starter/shared/platform";
-import { listTextOverrides } from "./endpoints";
+import { orgEndpoints, textOverrideEndpoints } from "@starter/shared/platform";
 
 export const integrationsQuery = () =>
   endpointQueryOptions(orgEndpoints.listIntegrations);
@@ -16,4 +15,6 @@ export const outletsQuery = () =>
 export const themesQuery = (brandId: string) =>
   endpointQueryOptions(orgEndpoints.listThemes, { query: { brandId } });
 
-export const textOverridesQuery = () => endpointQueryOptions(listTextOverrides);
+/** Both locales: the editor shows the `id` row as the fallback for `en`. */
+export const textOverridesQuery = () =>
+  endpointQueryOptions(textOverrideEndpoints.listTextOverrides, { query: {} });

@@ -100,6 +100,68 @@ test("TEN-06 · helpers: slug, whatsapp, usage thresholds, list query, NPWP mask
   assert.equal(logic.maskNpwp(null), null);
 });
 
+test("legend-tno · reserved subdomain slugs are refused for tenant and brand", () => {
+  const d = draft();
+  d.tenant.slug = "api";
+  d.brand.slug = "www";
+  assert.equal(
+    logic.validateStep("tenant", d, packages).slug,
+    "platformTenants.errors.slugReserved",
+  );
+  assert.equal(
+    logic.validateStep("brand", d).brandSlug,
+    "platformTenants.errors.slugReserved",
+  );
+  d.tenant.slug = "api-kopi";
+  assert.deepEqual(logic.validateStep("tenant", d, packages), {});
+});
+
+test("TEN-04 · first admin contact is masked; wizard defaults to the shared deployment", () => {
+  assert.equal(logic.maskWhatsapp("0812-3456-7890"), "62••••••7890");
+  assert.equal(logic.maskWhatsapp("+62 812 3456 78901"), "62••••••8901");
+  assert.equal(logic.maskWhatsapp("123"), "••••••");
+  assert.equal(logic.maskEmail("sari@kopisenja.id"), "s•••@kopisenja.id");
+  assert.equal(logic.maskEmail("  "), null);
+  assert.equal(logic.maskEmail(null), null);
+  assert.equal(logic.EMPTY_DRAFT.tenant.deploymentMode, "shared");
+});
+
+test("legend-tno · session cache never stores the full admin contact", () => {
+  const src = readFileSync(
+    "apps/web/src/features/ws01-platform-tenants/session-cache.ts",
+    "utf8",
+  );
+  assert.match(src, /whatsappMasked/);
+  assert.doesNotMatch(src, /whatsapp: string/);
+});
+
+test("legend-tno · tenant routes carry the platform.tenant.manage page guard", () => {
+  for (const name of [
+    "platform.tenant.index.tsx",
+    "platform.tenant.baru.tsx",
+    "platform.tenant.$tenantId.tsx",
+  ]) {
+    const src = readFileSync(`apps/web/src/routes/_platform/${name}`, "utf8");
+    assert.match(src, /beforeLoad: tenantGuard/, name);
+  }
+  const guard = readFileSync(
+    "apps/web/src/features/ws01-platform-tenants/guard.ts",
+    "utf8",
+  );
+  assert.match(guard, /"platform\.tenant\.manage"/);
+  assert.match(guard, /if \(!context\.access\) throw notFound\(\)/);
+});
+
+test("legend-tno · this feature is the single mock owner of setTenantPackage", () => {
+  const src = readFileSync(
+    "apps/web/src/features/ws01-platform-tenants/mock.ts",
+    "utf8",
+  );
+  assert.match(src, /registerMock\(platformEndpoints\.setTenantPackage/);
+  for (const name of ["getMockTenant", "listMockTenants", "onMockTenantChange"])
+    assert.match(src, new RegExp(`export (const|function) ${name}\\b`), name);
+});
+
 test("TEN-06 · every static platformTenants text key used by the feature exists", () => {
   const files = [];
   const walk = (dir) => {

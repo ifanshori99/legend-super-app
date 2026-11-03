@@ -34,6 +34,20 @@ async function typePinOutsideFields(page: Page, pin: string) {
   await typePin(page, pin);
 }
 
+// Gives each mock call a real round trip so a PIN typed during the check of
+// the previous one races it, as on a slow edge node.
+async function slowMock(page: Page, latencyMs: number) {
+  await page.evaluate(
+    (ms) =>
+      (
+        window as unknown as {
+          __legendMock?: { setLatencyMs: (v: number) => void };
+        }
+      ).__legendMock?.setLatencyMs(ms),
+    latencyMs,
+  );
+}
+
 async function shot(page: Page, name: string) {
   await captureScreenshot(page, `legend-6ew/${name}.png`);
 }
@@ -73,6 +87,49 @@ test("AUTH-06 · touch pad: tapping the digit keys verifies the PIN", async ({
   await expect(page.getByTestId("active-staff")).toContainText("Yusuf Hidayat");
 });
 
+// Regression (legend-6ew "typing the final PIN digit fails"): the pad used to
+// disable its keys while a PIN was checked, so digits typed straight after a
+// wrong PIN were dropped and the sixth digit never submitted; the focused key
+// also turned disabled and threw focus to <body>.
+test("AUTH-06 · regression: a PIN typed with the keyboard during the previous check still submits on its sixth digit", async ({
+  page,
+}) => {
+  await page.goto(SWITCH, NAV);
+  await slowMock(page, 400);
+  await page.getByRole("button", { name: "Nina Marlina" }).click();
+  await typePin(page, "111222");
+  // No wait for the answer: the next PIN is typed while the first is checked.
+  await typePin(page, "246810");
+  await expect(page.getByTestId("active-staff")).toContainText("Nina Marlina");
+});
+
+test("AUTH-06 · regression: tapping the on-screen keys straight after a wrong PIN submits, and focus stays on the pad", async ({
+  page,
+}) => {
+  await page.goto(SWITCH, NAV);
+  await slowMock(page, 400);
+  await page.getByRole("button", { name: "Nina Marlina" }).click();
+  for (const digit of "111222")
+    await page.getByRole("button", { name: `Angka ${digit}` }).click();
+  // The final key keeps focus while the PIN is checked (no drop to <body>).
+  await expect(page.getByRole("button", { name: "Angka 2" })).toBeFocused();
+  for (const digit of "246810")
+    await page.getByRole("button", { name: `Angka ${digit}` }).click();
+  await expect(page.getByTestId("active-staff")).toContainText("Nina Marlina");
+});
+
+test("AUTH-06 · regression: keyboard-only user activates the keys with Enter and keeps focus after the sixth digit", async ({
+  page,
+}) => {
+  await page.goto(SWITCH, NAV);
+  await page.getByRole("button", { name: "Yusuf Hidayat" }).click();
+  for (const digit of "482604") {
+    await page.getByRole("button", { name: `Angka ${digit}` }).focus();
+    await page.keyboard.press("Enter");
+  }
+  await expect(page.getByTestId("active-staff")).toContainText("Yusuf Hidayat");
+});
+
 test("AUTH-06 · a wrong PIN shows the error and attempts left; a PIN of another person is refused", async ({
   page,
 }) => {
@@ -96,7 +153,7 @@ test("AUTH-06 · five wrong PINs lock the pad with a countdown", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(SWITCH, NAV);
   await page.getByRole("button", { name: "Nina Marlina" }).click();
-  // The pad ignores keys while a PIN is being verified: wait for each answer.
+  // Wait for each answer so every try is counted on its own line.
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     await typePin(page, "111222");
     await expect(page.getByText(`Sisa ${5 - attempt} percobaan`)).toBeVisible();
@@ -131,6 +188,11 @@ test("AUTH-06 · override with a supervisor PIN records reason and value; the re
   await modal
     .getByLabel("Catatan alasan")
     .fill("Pelanggan batal sebelum dapur mulai");
+  // Fixed fields drop their error at once, not on the next PIN.
+  await expect(modal.getByText("Pilih kode alasan.")).toHaveCount(0);
+  await expect(
+    modal.getByText("Tulis alasan, minimal 3 karakter."),
+  ).toHaveCount(0);
   await shot(page, "override-pin-1440-light");
 
   await typePinOutsideFields(page, "246810");

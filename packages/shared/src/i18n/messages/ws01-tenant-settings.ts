@@ -298,6 +298,8 @@ export const tenantSettingsMessages = {
       "Tidak ikut diekspor: transaksi, pelanggan, karyawan, dan kredensial integrasi.",
     exportAction: "Ekspor konfigurasi",
     exported: "Konfigurasi diekspor ({count} bagian).",
+    exportUnsafe:
+      "Ekspor dibatalkan: berkas memuat kredensial atau ID tenant. Hubungi tim dukungan.",
     importTitle: "Impor",
     importHint:
       "Pilih berkas hasil ekspor. Anda melihat perbedaannya dulu; tidak ada yang berubah sebelum Anda menerapkan.",

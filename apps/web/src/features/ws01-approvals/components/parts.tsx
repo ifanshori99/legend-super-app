@@ -27,8 +27,8 @@ import {
   deadlineLabelKey,
   diffRows,
   humanizeKey,
+  isAgentDraft,
   shortId,
-  sourceLabelKey,
   statusLabelKey,
   type DiffRow,
 } from "../logic.ts";
@@ -40,15 +40,50 @@ const SOURCE_ICON: Record<ApprovalSource, LucideIcon> = {
 };
 const SOURCE_TONE = { user: "neutral", ai: "info", mcp: "brand" } as const;
 
-/** Who proposed it: a person, the AI assistant, or an MCP agent (PRD §4 Q). */
+/**
+ * Who proposed it: a person, or a draft from the AI assistant or an MCP agent
+ * (PRD §4 Q, F38 Draf Aksi). Agent rows read "Draf AI" / "Draf MCP" so a draft
+ * is never mistaken for something already done.
+ */
 export function SourceBadge({ source }: { source: ApprovalSource }) {
   const t = useT();
   const Icon = SOURCE_ICON[source];
   return (
     <Badge tone={SOURCE_TONE[source]} data-source={source}>
       <Icon aria-hidden="true" />
-      {t(sourceLabelKey(source))}
+      {t(`approvals.sourceBadge.${source}` as MessageKey)}
     </Badge>
+  );
+}
+
+/**
+ * PRD §2 "AI membantu, manusia memutuskan": states plainly that an agent only
+ * proposed this, on whose behalf, and that nothing runs until a human approves.
+ */
+export function AgentDraftNotice({
+  source,
+  onBehalfOf,
+}: {
+  source: ApprovalSource;
+  onBehalfOf: string;
+}) {
+  const t = useT();
+  if (!isAgentDraft(source)) return null;
+  const Icon = SOURCE_ICON[source];
+  return (
+    <div
+      role="note"
+      data-testid="agent-draft-notice"
+      className="grid gap-1 rounded-container border-(length:--border-w) bg-surface-2 p-3"
+    >
+      <p className="flex items-center gap-2 text-sm font-semibold">
+        <Icon className="size-4" aria-hidden="true" />
+        {t(`approvals.agentDraft.title.${source}` as MessageKey)}
+      </p>
+      <p className="text-sm text-muted-foreground">
+        {t("approvals.agentDraft.body", { name: onBehalfOf })}
+      </p>
+    </div>
   );
 }
 

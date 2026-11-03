@@ -13,9 +13,18 @@ type TimedGrant = {
   readonly endedAt: string | null;
 };
 
-/** Milliseconds until the session expires, never below zero. */
-export function remainingMs(expiresAt: string, nowMs: number): number {
-  return Math.max(0, Date.parse(expiresAt) - nowMs);
+/** Milliseconds until the session expires, never below zero and never above
+ * the granted duration (a client clock behind the server would otherwise show
+ * more time than the session has). */
+export function remainingMs(
+  expiresAt: string,
+  nowMs: number,
+  durationMinutes?: number,
+): number {
+  const left = Math.max(0, Date.parse(expiresAt) - nowMs);
+  return durationMinutes === undefined
+    ? left
+    : Math.min(left, durationMinutes * 60_000);
 }
 
 /** "59:07" under one hour, "1:59:07" otherwise. */
@@ -34,13 +43,23 @@ export function isExpiringSoon(expiresAt: string, nowMs: number): boolean {
   return remainingMs(expiresAt, nowMs) <= WARNING_BEFORE_EXPIRY_MS;
 }
 
-/** Same reading as the contract: running, not ended, not past expiry. */
+export type DisplayStatus = "active" | "expired" | "ended";
+
+/**
+ * Status for display on the client clock. Unlike the contract's
+ * `supportAccessStatus` (which fails closed for *access* decisions), the UI
+ * fails toward *showing* a session: any `endedAt` means the server ended it
+ * (even if the client clock is behind that instant), and a session whose
+ * start is still in the client's future counts as running, so a lagging
+ * clock never hides a freshly opened session from the tenant (TEN-04).
+ */
+export function displayStatus(grant: TimedGrant, nowMs: number): DisplayStatus {
+  if (grant.endedAt !== null) return "ended";
+  return nowMs < Date.parse(grant.expiresAt) ? "active" : "expired";
+}
+
 export function isGrantActive(grant: TimedGrant, nowMs: number): boolean {
-  if (grant.endedAt !== null && Date.parse(grant.endedAt) <= nowMs)
-    return false;
-  return (
-    nowMs >= Date.parse(grant.startedAt) && nowMs < Date.parse(grant.expiresAt)
-  );
+  return displayStatus(grant, nowMs) === "active";
 }
 
 /** Newest session first. */

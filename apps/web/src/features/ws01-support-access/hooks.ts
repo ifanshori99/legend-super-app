@@ -33,6 +33,9 @@ function useRefresh() {
 export function useRequestSupportAccess() {
   const refresh = useRefresh();
   return useMutation({
+    // The body carries the authenticator code: keep the finished mutation
+    // (and its variables) out of the mutation cache.
+    gcTime: 0,
     mutationFn: ({
       tenantId,
       body,

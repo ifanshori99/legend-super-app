@@ -246,6 +246,9 @@ export const platformOpsMessages = {
     title: "Riwayat audit",
     description:
       "Catatan tidak bisa diubah, nilai sensitif disamarkan, disimpan 2 tahun. Waktu dalam WIB.",
+    unavailableTitle: "Audit lintas tenant belum tersedia",
+    unavailableHint:
+      "Server belum menyediakan daftar audit lintas tenant. Catatan tetap tersimpan; buka audit tiap tenant dari panel tenant sampai fitur ini aktif.",
     emptyTitle: "Belum ada catatan audit",
     emptyHint: "Aksi Super Admin dan sistem akan tercatat di sini.",
     emptyFilteredTitle: "Tidak ada catatan yang cocok",

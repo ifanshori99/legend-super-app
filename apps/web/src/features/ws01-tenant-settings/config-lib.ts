@@ -5,6 +5,7 @@
 // source-tenant identifier or a secret is refused before any preview.
 import {
   CONFIG_SECTIONS,
+  findBundleIdentifiers,
   parseConfigBundle,
   type BundleIdentifierIssue,
   type ConfigBundle,
@@ -191,6 +192,15 @@ export function selectedSections(
   return diffs
     .filter((diff) => diff.status !== "unchanged" && !off.has(diff.section))
     .map((diff) => diff.section);
+}
+
+/**
+ * Defense in depth on export (TEN-09, PAY-06): the API builds the bundle, but
+ * the browser refuses to save a file that still carries a credential, secret
+ * reference, contact, or tenant-bound id. Same scan the import runs.
+ */
+export function exportIsSafe(bundle: unknown): boolean {
+  return findBundleIdentifiers(bundle).length === 0;
 }
 
 /** `konfigurasi-20261103.json` from the export timestamp. */

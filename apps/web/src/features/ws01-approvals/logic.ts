@@ -8,11 +8,16 @@ import {
   type ApprovalActionType,
   type ApprovalSource,
 } from "@starter/shared/access";
-import type {
-  ApprovalInboxQuery,
-  ApprovalRequest,
-  ApprovalRequestStatus,
+import {
+  APPROVAL_REQUEST_STATUSES,
+  approvalDecisionInputSchema,
+  assertApprovalRequestDecidable,
+  isApprovalRequestExpired,
+  type ApprovalInboxQuery,
+  type ApprovalRequest,
+  type ApprovalRequestStatus,
 } from "@starter/shared/identity";
+import type { UserId } from "@starter/shared/core";
 import { formatNumber, formatRupiah } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -82,13 +87,17 @@ export function moduleLabelKey(module: ApprovalModule): MessageKey {
 
 export const SOURCES: readonly ApprovalSource[] = ["user", "ai", "mcp"];
 
-export const STATUSES: readonly ApprovalRequestStatus[] = [
-  "pending",
-  "approved",
-  "rejected",
-  "expired",
-  "cancelled",
-];
+/**
+ * PRD §2 "AI membantu, manusia memutuskan", F38 Draf Aksi: an AI or MCP
+ * request is a draft an agent proposed on someone's behalf. Nothing has been
+ * applied; the action only runs after a human approves it.
+ */
+export function isAgentDraft(source: ApprovalSource): boolean {
+  return source === "ai" || source === "mcp";
+}
+
+export const STATUSES: readonly ApprovalRequestStatus[] =
+  APPROVAL_REQUEST_STATUSES;
 
 export function statusLabelKey(status: ApprovalRequestStatus): MessageKey {
   return `approvals.status.${status}` as MessageKey;
@@ -143,7 +152,7 @@ export function deadlineInfo(
   const { unit, amount } = splitDuration(remainingMs);
   let state: DeadlineState = "open";
   if (request.status !== "pending") state = "closed";
-  else if (remainingMs <= 0) state = "overdue";
+  else if (isApprovalRequestExpired(request, new Date(now))) state = "overdue";
   else if (remainingMs <= URGENT_WITHIN_MS) state = "urgent";
   return { state, unit, amount, remainingMs };
 }
@@ -199,8 +208,9 @@ export function matchesDeadline(
 ): boolean {
   if (filter === "all") return true;
   if (request.status !== "pending") return false;
+  if (filter === "overdue")
+    return isApprovalRequestExpired(request, new Date(now));
   const remaining = Date.parse(request.deadlineAt) - now;
-  if (filter === "overdue") return remaining <= 0;
   if (filter === "within1h") return remaining > 0 && remaining <= HOUR;
   return remaining > 0 && remaining <= DAY;
 }
@@ -263,7 +273,13 @@ export function isOwnRequest(
   );
 }
 
-/** Why the approve/reject controls are disabled, or null when they are live. */
+/**
+ * Why the approve/reject controls are disabled, or null when they are live.
+ * The lifecycle half (pending, deadline, approver ≠ requester) is the shared
+ * `assertApprovalRequestDecidable`, so the screen and the service refuse the
+ * same requests for the same reasons; only the permission, identity and MFA
+ * enrollment checks are screen-side.
+ */
 export function decisionBlock(input: {
   request: Pick<ApprovalRequest, "status" | "deadlineAt" | "requestedBy">;
   currentUserId: string | null | undefined;
@@ -271,12 +287,25 @@ export function decisionBlock(input: {
   mfaEnrollmentRequired?: boolean;
   now: number;
 }): DecisionBlock | null {
-  const { request, currentUserId, canDecide, now } = input;
+  const { request, currentUserId, canDecide } = input;
+  const now = new Date(input.now);
   if (request.status !== "pending") return "notPending";
-  if (Date.parse(request.deadlineAt) <= now) return "expired";
+  if (isApprovalRequestExpired(request, now)) return "expired";
   if (!canDecide) return "permission";
   if (!currentUserId) return "identity";
-  if (isOwnRequest(request, currentUserId)) return "own";
+  try {
+    assertApprovalRequestDecidable({
+      request: request as ApprovalRequest,
+      decidedBy: currentUserId as UserId,
+      priorApproverIds: [],
+      now,
+    });
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "APPROVER_IS_REQUESTER") return "own";
+    if (code === "APPROVAL_REQUEST_EXPIRED") return "expired";
+    return "notPending";
+  }
   if (input.mfaEnrollmentRequired) return "enrollment";
   return null;
 }
@@ -293,15 +322,18 @@ export function needsStepUp(auth: {
   return auth.mfaRequired && auth.session.mfaVerifiedAt === null;
 }
 
-export const REASON_MIN = 3;
-export const REASON_MAX = 500;
+const reasonSchema = approvalDecisionInputSchema.shape.reason;
+/** Bounds read from the shared schema, not copied (3..500 today). */
+export const REASON_MIN = reasonSchema.minLength ?? 3;
+export const REASON_MAX = reasonSchema.maxLength ?? 500;
 
-/** Mirrors approvalDecisionInputSchema: a trimmed reason of 3..500 chars. */
+/**
+ * Validates with approvalDecisionInputSchema's own `reason` field; the reason
+ * is required for approve and reject alike (F7 "approve/reject with reason").
+ */
 export function reasonProblem(reason: string): "short" | "long" | null {
-  const length = reason.trim().length;
-  if (length < REASON_MIN) return "short";
-  if (length > REASON_MAX) return "long";
-  return null;
+  if (reasonSchema.safeParse(reason).success) return null;
+  return reason.trim().length > REASON_MAX ? "long" : "short";
 }
 
 /** Catalog key for an API error code (contracts: identity + access errors). */
@@ -328,6 +360,8 @@ export function errorMessageKey(code: string | undefined): MessageKey {
       return "approvals.errors.notFound";
     case "NETWORK_ERROR":
       return "approvals.errors.offline";
+    case "IDEMPOTENCY_KEY_REUSED":
+      return "approvals.errors.idempotencyReused";
     default:
       return "approvals.errors.generic";
   }
@@ -430,7 +464,12 @@ export function previewRow(rows: readonly DiffRow[]): DiffRow | undefined {
 
 export type BadgeCount = { count: number; capped: boolean };
 
-/** Unread-style count for the shell badge; `capped` = more pages exist. */
+/**
+ * The badge and the inbox read the same server query (status=pending, same
+ * page size, see `toServerQuery(DEFAULT_FILTERS)`), so the badge equals the
+ * row count of the inbox under its default filters. Overdue-but-unswept rows
+ * stay counted because the inbox lists them too (as "Terlambat").
+ */
 export function badgeCount(
   rows: readonly Pick<ApprovalRequest, "status">[],
   hasMore: boolean,

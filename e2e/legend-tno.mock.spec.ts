@@ -48,6 +48,16 @@ test("TEN-06 · list shows status and plan, filters, searches and pages by curso
     await captureScreenshot(page, `legend-tno/${name}-light.png`);
   }
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  // The theme flips in JS (lib/theme.tsx); wait for it and one more frame so
+  // no colour transition is caught half-way (the name used to vanish here).
+  await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => done())),
+      ),
+  );
+  await expect(table.getByRole("link", { name: /Warung Senja/ })).toBeVisible();
   await captureScreenshot(page, "legend-tno/daftar-390-dark.png");
 });
 
@@ -130,7 +140,11 @@ test("TEN-06 · wizard creates tenant, brand, outlet, legal entity and first adm
     .fill("0812 3456 7890");
   await page.getByRole("button", { name: "Lanjut" }).click();
 
-  await expect(page.getByText("6281234567890")).toBeVisible();
+  // TEN-04: the admin contact is masked on review; the full number is never
+  // echoed back into the DOM.
+  await expect(page.getByText("62••••••7890")).toBeVisible();
+  await expect(page.getByText("6281234567890")).toHaveCount(0);
+  await expect(page.getByText("Kuota awal")).toBeVisible();
   await expect(page.getByText("••••1000")).toBeVisible();
   await captureScreenshot(page, "legend-tno/wizard-tinjau-1440-light.png");
   await page.getByRole("button", { name: "Buat tenant" }).click();
@@ -142,6 +156,7 @@ test("TEN-06 · wizard creates tenant, brand, outlet, legal entity and first adm
     page.getByRole("heading", { name: "Kopi Senja" }).first(),
   ).toBeVisible();
   await expect(page.getByText("Sari Wulandari").first()).toBeVisible();
+  await expect(page.getByText(/62••••••7890/).first()).toBeVisible();
   await expect(page.getByText("Kopi Senja Dago").first()).toBeVisible();
   await expect(page.getByText("PT Senja Nusantara").first()).toBeVisible();
 });

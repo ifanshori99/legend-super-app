@@ -244,4 +244,42 @@ describe("MCP-04 approval inbox logic", () => {
       { count: 1, capped: true },
     );
   });
+
+  test("MCP-04 badge equals the inbox default row count (same server query)", () => {
+    const rows = [
+      req({ deadlineAt: at(20) }),
+      req({ deadlineAt: at(-12) }),
+      req({ actionType: "ai_action", deadlineAt: at(130) }),
+    ];
+    const shown = logic.applyClientFilters(
+      rows,
+      logic.DEFAULT_FILTERS,
+      NOW,
+    ).length;
+    assert.equal(logic.badgeCount(rows, false).count, shown);
+    assert.deepEqual(logic.toServerQuery(logic.DEFAULT_FILTERS), {
+      limit: logic.INBOX_PAGE_SIZE,
+      status: "pending",
+    });
+  });
+
+  test("F38 AI and MCP requests are agent drafts; user requests are not", () => {
+    assert.equal(logic.isAgentDraft("ai"), true);
+    assert.equal(logic.isAgentDraft("mcp"), true);
+    assert.equal(logic.isAgentDraft("user"), false);
+  });
+
+  test("MCP-04 reason bounds come from approvalDecisionInputSchema", () => {
+    assert.equal(logic.REASON_MIN, 3);
+    assert.equal(logic.REASON_MAX, 500);
+    assert.equal(logic.reasonProblem(""), "short");
+    assert.equal(logic.reasonProblem("x".repeat(500)), null);
+  });
+
+  test("MCP-04 a reused idempotency key maps to its own message", () => {
+    assert.equal(
+      logic.errorMessageKey("IDEMPOTENCY_KEY_REUSED"),
+      "approvals.errors.idempotencyReused",
+    );
+  });
 });

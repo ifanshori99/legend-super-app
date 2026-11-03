@@ -101,6 +101,7 @@ export const platformTenantsMessages = {
     },
     modules: "Modul",
     modulesHint: "Modul yang aktif untuk tenant ini sesuai paketnya.",
+    changePackage: "Ubah paket",
     moduleOn: "aktif",
     moduleOff: "tidak aktif",
     brandsOutlets: "Brand & outlet",
@@ -162,13 +163,17 @@ export const platformTenantsMessages = {
     tenantName: "Nama tenant",
     slug: "Slug tenant",
     slugHint:
-      "Huruf kecil, angka, dan tanda hubung. Dipakai sebagai subdomain bawaan.",
+      "Huruf kecil, angka, dan tanda hubung, diawali dan diakhiri huruf atau angka.",
     plan: "Paket",
     planPlaceholder: "Pilih paket",
+    startingQuota: "Kuota awal",
+    startingQuotaValue:
+      "{outlets} outlet · {employees} karyawan aktif · {devices} perangkat",
     mode: "Penyebaran",
     brandName: "Nama brand",
     brandSlug: "Slug brand",
-    brandSlugHint: "Huruf kecil, angka, dan tanda hubung.",
+    brandSlugHint:
+      "Huruf kecil, angka, dan tanda hubung. Dipakai sebagai subdomain bawaan brand.",
     outletName: "Nama outlet",
     outletCode: "Kode outlet",
     outletCodeHint:
@@ -200,6 +205,7 @@ export const platformTenantsMessages = {
     tenantName: "Isi nama tenant, maksimal 150 karakter.",
     slug: "Slug hanya huruf kecil, angka, dan tanda hubung.",
     slugTaken: "Slug ini sudah dipakai tenant lain. Pilih slug yang berbeda.",
+    slugReserved: "Slug ini dipakai sistem. Pilih slug yang berbeda.",
     plan: "Pilih paket yang masih aktif.",
     brandName: "Isi nama brand, maksimal 150 karakter.",
     brandSlug: "Slug brand hanya huruf kecil, angka, dan tanda hubung.",

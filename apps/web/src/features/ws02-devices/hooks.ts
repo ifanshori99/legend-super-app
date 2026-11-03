@@ -36,13 +36,25 @@ export function useRevokedOverlay(): ReadonlyMap<string, Device> {
 export function useRevokeDevice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ deviceId, reason }: { deviceId: string; reason: string }) =>
-      revokeEdgeDeviceCall(deviceId, reason).then((r) => r.data),
+    mutationFn: ({
+      deviceId,
+      reason,
+      idempotencyKey,
+    }: {
+      deviceId: string;
+      reason: string;
+      idempotencyKey: string;
+    }) =>
+      revokeEdgeDeviceCall(deviceId, reason, idempotencyKey).then(
+        (r) => r.data,
+      ),
     onSuccess: (device: Device) => {
       queryClient.setQueryData<Map<string, Device>>(revokedKey, (current) =>
         new Map(current ?? []).set(device.id, device),
       );
       return queryClient.invalidateQueries({ queryKey: edgeKeys.all });
     },
+    // A conflict means the device is already revoked (or changed): reload.
+    onError: () => queryClient.invalidateQueries({ queryKey: edgeKeys.all }),
   });
 }

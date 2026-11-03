@@ -17,6 +17,30 @@ export function removeLastDigit(pin: string): string {
   return pin.slice(0, -1);
 }
 
+/**
+ * A full PIN is handed over only while nothing else is checked; until then
+ * it waits in the pad (typed during the previous check, legend-6ew).
+ */
+export function readyToHandOver(
+  pin: string,
+  busy: boolean,
+  length: number,
+): boolean {
+  return !busy && pin.length === length;
+}
+
+/**
+ * Dots to fill: the digits of the try being typed, or all of them while a
+ * handed-over PIN is checked and nothing new is typed yet.
+ */
+export function pinPadDots(
+  typed: number,
+  pending: boolean,
+  length: number,
+): number {
+  return pending && typed === 0 ? length : typed;
+}
+
 /** Milliseconds left of a lock; 0 when none or already over. */
 export function lockRemainingMs(
   lockedUntil: string | null,

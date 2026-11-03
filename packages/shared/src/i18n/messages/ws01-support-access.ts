@@ -115,6 +115,9 @@ export const supportAccessMessages = {
 
   banner: {
     label: "Sesi akses dukungan",
+    // The grant carries only the Super Admin's user id, not a name.
+    who: "Tim Legend (Super Admin)",
+    until: "Sampai {time}",
     tenant: "Tenant {name}",
     readOnly: "Hanya baca",
     readWrite: "Baca dan tulis",

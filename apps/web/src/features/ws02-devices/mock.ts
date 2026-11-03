@@ -7,6 +7,7 @@ import {
   deviceFixtures,
   deviceSchema,
   transitionDevice,
+  type Device,
 } from "@starter/shared/edge";
 import { CoreError } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
@@ -15,8 +16,12 @@ import { createMockStore } from "@/lib/mock/store";
 import { revokeEdgeDevice } from "./endpoints.ts";
 
 const revoked = createMockStore(() => new Map<string, string>());
+/** Idempotency replay: key → the first answer for that key. */
+const replies = createMockStore(() => new Map<string, { data: Device }>());
 
 registerMock(revokeEdgeDevice, ({ params, body }) => {
+  const replay = replies.get().get(body.idempotencyKey);
+  if (replay) return replay;
   const base = deviceFixtures.find((d) => d.id === params.deviceId);
   if (!base) throw new ApiError(404, "NOT_FOUND", "Perangkat tidak ditemukan.");
   const seen = revoked.get();
@@ -32,7 +37,7 @@ registerMock(revokeEdgeDevice, ({ params, body }) => {
   }
   const revokedAt = new Date().toISOString();
   seen.set(base.id, body.reason);
-  return {
+  const reply: { data: Device } = {
     data: deviceSchema.parse({
       ...base,
       lastSeenAt: new Date(Date.now() - 5_000).toISOString(),
@@ -40,4 +45,6 @@ registerMock(revokeEdgeDevice, ({ params, body }) => {
       revokedAt,
     }),
   };
+  replies.get().set(body.idempotencyKey, reply);
+  return reply;
 });

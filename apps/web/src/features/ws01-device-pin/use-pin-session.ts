@@ -22,9 +22,10 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
   const [clearSignal, setClearSignal] = useState(0);
   const [shakeSignal, setShakeSignal] = useState(0);
 
+  // The pad empties itself when it hands a PIN over, so a failure does not
+  // clear it: digits typed during the check are the next try (legend-6ew).
   const fail = useCallback((message: string) => {
     setError(message);
-    setClearSignal((n) => n + 1);
     setShakeSignal((n) => n + 1);
   }, []);
 
@@ -32,6 +33,9 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
     (pin: string) => {
       setError(null);
       verify.mutate(pin, {
+        // Forget the PIN as soon as the answer is in: the mutation keeps its
+        // variables until reset (no PIN in the query client, ever).
+        onSettled: () => verify.reset(),
         onSuccess: ({ data }) => {
           const refusal = accept?.(data) ?? null;
           if (refusal) {
@@ -39,6 +43,7 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
             return;
           }
           lock.recordSuccess();
+          // Drop anything typed while the right PIN was being checked.
           setClearSignal((n) => n + 1);
           onVerified(data);
         },
@@ -75,7 +80,8 @@ export function usePinSession({ onVerified, accept }: UsePinSessionOptions) {
     clear,
     padProps: {
       onComplete: submit,
-      disabled: lock.locked || verify.isPending,
+      disabled: lock.locked,
+      pending: verify.isPending,
       clearSignal,
       shakeSignal,
       error: lock.locked ? null : error,

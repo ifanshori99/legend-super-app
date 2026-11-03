@@ -84,7 +84,7 @@ function ActiveNotice({ grant }: { grant: SupportAccessGrant }) {
         </p>
         <span className="inline-flex items-center gap-2 text-sm font-semibold">
           <ModeBadge mode={grant.accessMode} />
-          <Countdown expiresAt={grant.expiresAt} />
+          <Countdown grant={grant} />
         </span>
       </div>
       <p className="text-sm">

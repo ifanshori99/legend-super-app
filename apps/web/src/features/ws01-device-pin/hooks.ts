@@ -9,7 +9,12 @@ import {
 
 /** Switch user with a personal PIN (POST /api/staff-pins/verify). */
 export function useVerifyStaffPin() {
-  return useMutation({ mutationFn: (pin: string) => verifyStaffPinCall(pin) });
+  // gcTime 0: a settled verify (its variables are the PIN) leaves the cache
+  // at once; usePinSession also resets it on settle.
+  return useMutation({
+    mutationFn: (pin: string) => verifyStaffPinCall(pin),
+    gcTime: 0,
+  });
 }
 
 export function useCreateApprovalRequest() {
@@ -21,8 +26,9 @@ export const APPROVAL_POLL_MS = 3_000;
 
 /**
  * Polls one approval request until it is decided. Polling stops once the
- * status leaves "pending"; a failed read keeps trying (the wait is on the
- * supervisor, not on this device).
+ * status leaves "pending" or the deadline passes (the screen then shows it
+ * expired), pauses while the tab is hidden and ends on unmount. A failed read
+ * keeps trying (the wait is on the supervisor, not on this device).
  */
 export function useApprovalRequestPolling(requestId: string | null) {
   return useQuery({
@@ -30,10 +36,15 @@ export function useApprovalRequestPolling(requestId: string | null) {
     queryFn: ({ signal }) =>
       getApprovalRequestCall(requestId as string, signal),
     enabled: requestId !== null,
-    refetchInterval: (query) =>
-      query.state.data?.data.status === "pending" || !query.state.data
+    refetchInterval: (query) => {
+      const request = query.state.data?.data;
+      if (!request) return APPROVAL_POLL_MS;
+      return request.status === "pending" &&
+        Date.now() < Date.parse(request.deadlineAt)
         ? APPROVAL_POLL_MS
-        : false,
+        : false;
+    },
+    refetchIntervalInBackground: false,
     retry: false,
     gcTime: 0,
   });

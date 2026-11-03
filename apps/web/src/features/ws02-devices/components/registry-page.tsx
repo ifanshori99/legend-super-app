@@ -40,6 +40,7 @@ import {
   filterDevices,
   mergeRevocations,
   outletOptions,
+  serverClockOffsetMs,
   shortId,
   type RegistryFilters,
 } from "../logic.ts";
@@ -57,7 +58,7 @@ export function DeviceRegistryPage({
 }) {
   const t = useT();
   const online = useOnline();
-  const nowMs = useNowMs();
+  const viewerNowMs = useNowMs();
   const query = useEdgeDevices();
   const outlets = useOutlets();
   const revoked = useRevokedOverlay();
@@ -83,11 +84,17 @@ export function DeviceRegistryPage({
     },
     [options, t],
   );
+  // Heartbeat age is measured on the edge clock, not only the viewer's.
+  const offsetMs = React.useMemo(
+    () => serverClockOffsetMs(query.data?.data ?? [], query.dataUpdatedAt),
+    [query.data, query.dataUpdatedAt],
+  );
+  const nowMs = viewerNowMs === null ? null : viewerNowMs + offsetMs;
   const rows = React.useMemo(
     () => filterDevices(devices, filters),
     [devices, filters],
   );
-  const counts = deviceCounts(devices, nowMs ?? 0);
+  const counts = nowMs === null ? null : deviceCounts(devices, nowMs);
   const opened = devices.find((d) => d.id === openId) ?? null;
   const revokeTarget = devices.find((d) => d.id === revokeId) ?? null;
 
@@ -196,7 +203,7 @@ export function DeviceRegistryPage({
         </div>
       )}
 
-      {state === "ready" && (
+      {state === "ready" && counts && (
         <StatStrip label={t("deviceRegistry.summary.label")} columns={4}>
           <StatTile
             label={t("deviceRegistry.summary.total")}

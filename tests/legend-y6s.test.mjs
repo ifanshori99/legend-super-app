@@ -3,8 +3,10 @@
 // apps/web/src/features/ws01-platform-ops/logic.ts checked against the platform
 // contract and its fixtures. Acceptance ID in every test name: TEN-05.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
+  AUDIT_REDACTED,
   auditEventSchema,
   cafeLegendAuditFixtures,
 } from "../packages/shared/src/audit/index.ts";
@@ -201,5 +203,42 @@ describe("TEN-05 cross-tenant audit", () => {
       changeRows(parsed.maskedChanges).map((row) => row.field),
       ["a", "b"],
     );
+  });
+
+  test("TEN-05 · detail rows never print a sensitive field, even nested or unmasked", () => {
+    const rows = changeRows({
+      before: { phone: "+62811", owner: { name: "Budi", plan: "lengkap" } },
+      after: { phone: "+62822", plan: "lengkap" },
+    });
+    const phone = rows.find((row) => row.field === "phone");
+    assert.equal(phone.before, AUDIT_REDACTED);
+    assert.equal(phone.after, AUDIT_REDACTED);
+    const owner = rows.find((row) => row.field === "owner");
+    assert.ok(!owner.before.includes("Budi"));
+    assert.ok(owner.before.includes("lengkap"));
+    assert.equal(rows.find((row) => row.field === "plan").after, "lengkap");
+  });
+});
+
+describe("TEN-05 one owner for tenant package state", () => {
+  const read = (path) =>
+    readFileSync(
+      new URL(`../apps/web/src/features/${path}`, import.meta.url),
+      "utf8",
+    );
+
+  test("TEN-05 · ops mock registers only the audit gap endpoint, never setTenantPackage", () => {
+    const mock = read("ws01-platform-ops/mock.ts");
+    const registered = [...mock.matchAll(/registerMock\(\s*([\w.]+)/g)].map(
+      (match) => match[1],
+    );
+    assert.deepEqual(registered, ["listPlatformAuditEvents"]);
+    assert.ok(!/createMockStore<Tenant/.test(mock));
+  });
+
+  test("TEN-05 · ops reads tenants through the tenants feature's queries", () => {
+    const queries = read("ws01-platform-ops/queries.ts");
+    assert.match(queries, /from "\.\.\/ws01-platform-tenants\/queries"/);
+    assert.ok(!queries.includes("endpointQueryOptions"));
   });
 });

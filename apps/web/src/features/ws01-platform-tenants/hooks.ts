@@ -32,6 +32,8 @@ import {
   buildLegalEntityInput,
   buildOutletInput,
   buildTenantInput,
+  maskEmail,
+  maskWhatsapp,
   type WizardDraft,
 } from "./logic";
 import { rememberProvisioned } from "./session-cache";
@@ -133,8 +135,8 @@ export function useProvisionTenant() {
         rememberProvisioned(done.current.tenant.id, {
           admin: {
             name: body.firstAdmin.name,
-            whatsapp: body.firstAdmin.whatsapp,
-            email: body.firstAdmin.email,
+            whatsappMasked: maskWhatsapp(body.firstAdmin.whatsapp),
+            emailMasked: maskEmail(body.firstAdmin.email),
           },
         });
       }

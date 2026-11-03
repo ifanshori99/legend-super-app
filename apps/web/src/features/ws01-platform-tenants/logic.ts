@@ -144,7 +144,9 @@ export const EMPTY_DRAFT: WizardDraft = {
     slug: "",
     slugTouched: false,
     plan: "",
-    deploymentMode: "dedicated",
+    // PRD v1.7 §2 "Mode deployment" / D5: tenants run on the shared
+    // deployment; dedicated is the exception Super Admin opts into.
+    deploymentMode: "shared",
   },
   brand: { name: "", slug: "", slugTouched: false },
   outlet: { code: "", name: "", address: "" },
@@ -199,6 +201,36 @@ export type FieldKey =
   | "email";
 
 export type FieldErrors = Partial<Record<FieldKey, MessageKey>>;
+
+/**
+ * Slugs that would collide with platform hostnames once used as
+ * `<slug>.<platform domain>` (domains.ts `platformSubdomain`). Invented list
+ * (not in the PRD or contract): the API must enforce its own; this only
+ * stops the obvious ones before a round trip.
+ */
+export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
+  "www",
+  "api",
+  "app",
+  "admin",
+  "platform",
+  "auth",
+  "login",
+  "mail",
+  "smtp",
+  "static",
+  "cdn",
+  "assets",
+  "media",
+  "status",
+  "help",
+  "support",
+  "docs",
+  "mcp",
+  "edge",
+]);
+
+export const isReservedSlug = (slug: string) => RESERVED_SLUGS.has(slug);
 
 const errorKey = (field: FieldKey) =>
   `platformTenants.errors.${field}` as MessageKey;
@@ -263,6 +295,8 @@ export function validateStep(
         }),
         { slug: "slug", name: "tenantName", plan: "plan" },
       );
+      if (!errors.slug && isReservedSlug(draft.tenant.slug))
+        errors.slug = "platformTenants.errors.slugReserved" as MessageKey;
       if (
         !errors.plan &&
         !assignablePackages(packages).some(
@@ -281,6 +315,8 @@ export function validateStep(
         }),
         { slug: "brandSlug", name: "brandName" },
       );
+      if (!errors.brandSlug && isReservedSlug(draft.brand.slug))
+        errors.brandSlug = "platformTenants.errors.slugReserved" as MessageKey;
       break;
     case "outlet":
       collect(
@@ -405,6 +441,24 @@ export function buildOutletInput(
 /** NPWP never leaves the server in full; show the last four digits only. */
 export function maskNpwp(last4: string | null): string | null {
   return last4 ? `••••${last4}` : null;
+}
+
+/**
+ * TEN-04: the first admin's contact is personal data. Platform screens show
+ * only enough to recognise it: "62••••••7890" / "s•••@kopisenja.id".
+ */
+export function maskWhatsapp(input: string): string {
+  const digits = normalizeWhatsapp(input);
+  if (digits.length < 8) return "••••••";
+  return `${digits.slice(0, 2)}••••••${digits.slice(-4)}`;
+}
+
+export function maskEmail(input: string | null): string | null {
+  const email = input?.trim();
+  if (!email) return null;
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return "•••";
+  return `${email[0]}•••${email.slice(at)}`;
 }
 
 /** Rows from the server plus rows just created in this session, by id. */

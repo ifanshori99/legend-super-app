@@ -20,26 +20,20 @@ import {
   tenantIntegrationSchema,
   tenantThemeSchema,
   orgEndpoints,
+  textOverrideEndpoints,
+  textOverrideRecordSchema,
   type ConfigBundle,
   type ConfigSection,
   type TenantIntegration,
   type TenantTheme,
+  type TextOverrideRecord,
 } from "@starter/shared/platform";
 import { COLOR_TOKENS } from "@starter/shared/theme";
-import {
-  cafeLegendTextFixtures,
-  textOverrideSchema,
-  type TextOverride,
-} from "@starter/shared/text";
+import { cafeLegendTextFixtures } from "@starter/shared/text";
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import {
-  deleteTextOverride,
-  importOrgConfig,
-  listTextOverrides,
-  upsertTextOverride,
-} from "./endpoints";
+import { deleteTextOverride, importOrgConfig } from "./endpoints";
 
 const fixtures = cafeLegendPlatformFixtures;
 const nowIso = () => new Date().toISOString();
@@ -286,25 +280,33 @@ registerMock(importOrgConfig, ({ body }) => {
 
 // ----------------------------------------------------------- text overrides
 
-const overrides = createMockStore<TextOverride[]>(() => [
-  ...cafeLegendTextFixtures.overrides,
-]);
+const overrides = createMockStore<TextOverrideRecord[]>(() =>
+  cafeLegendTextFixtures.overrides.map((row) =>
+    textOverrideRecordSchema.parse({ ...row, version: 1 }),
+  ),
+);
 
-registerMock(listTextOverrides, ({ scenario }) => ({
-  data: scenario === "empty" ? [] : overrides.get(),
-}));
+registerMock(textOverrideEndpoints.listTextOverrides, ({ scenario, query }) => {
+  const rows = scenario === "empty" ? [] : overrides.get();
+  return {
+    data: query.locale
+      ? rows.filter((row) => row.locale === query.locale)
+      : rows,
+  };
+});
 
-registerMock(upsertTextOverride, ({ body }) => {
+registerMock(textOverrideEndpoints.putTextOverride, ({ body }) => {
   const existing = overrides
     .get()
     .find((row) => row.locale === body.locale && row.key === body.key);
-  const row = textOverrideSchema.parse({
+  const row = textOverrideRecordSchema.parse({
     id: existing?.id ?? newId(),
     tenantId: fixtures.tenant.id,
     locale: body.locale,
     key: body.key,
     value: body.value,
     updatedAt: nowIso(),
+    version: (existing?.version ?? 0) + 1,
   });
   overrides.set(
     existing

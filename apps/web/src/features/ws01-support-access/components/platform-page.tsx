@@ -72,7 +72,7 @@ function GrantRow({
             {status === "active" ? (
               <>
                 {t("supportAccess.platform.remaining", { time: "" })}
-                <Countdown expiresAt={grant.expiresAt} />
+                <Countdown grant={grant} />
               </>
             ) : grant.endedAt ? (
               t("supportAccess.platform.endedAt", {

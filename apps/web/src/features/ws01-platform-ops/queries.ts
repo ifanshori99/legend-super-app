@@ -1,19 +1,22 @@
-import { endpointQueryOptions } from "@/lib/api/endpoint";
-import { platformEndpoints } from "@starter/shared/platform";
+// Tenant and package reads go through the tenants feature's query factories
+// (ws01-platform-tenants owns these endpoints and their mock store), so a
+// package/flag/limit change made here is the same cached row the tenant list
+// and detail screens show, and one invalidation refreshes every screen.
+import type { TenantId } from "@starter/shared/core";
+import {
+  packagesQuery,
+  tenantQuery as tenantByParams,
+  tenantsQuery as tenantsByQuery,
+  tenantUsageQuery,
+} from "../ws01-platform-tenants/queries";
 
-export const packagesQuery = () =>
-  endpointQueryOptions(platformEndpoints.listPackages);
+export { packagesQuery };
 
 /** The platform registry is small (a handful of tenants); one page of 100. */
-export const tenantsQuery = () =>
-  endpointQueryOptions(platformEndpoints.listTenants, {
-    query: { limit: 100 },
-  });
+export const tenantsQuery = () => tenantsByQuery({ limit: 100 });
 
 export const tenantQuery = (tenantId: string) =>
-  endpointQueryOptions(platformEndpoints.getTenant, { params: { tenantId } });
+  tenantByParams({ tenantId: tenantId as TenantId });
 
 export const usageQuery = (tenantId: string) =>
-  endpointQueryOptions(platformEndpoints.getTenantUsage, {
-    params: { tenantId },
-  });
+  tenantUsageQuery({ tenantId: tenantId as TenantId });

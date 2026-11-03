@@ -12,7 +12,10 @@ import { useEffect, useState } from "react";
 import { platformEndpoints } from "@starter/shared/platform";
 import * as api from "./api";
 import type { ListAuditEventsQuery } from "./contract-gap";
-import { listPlatformAuditEvents } from "./contract-gap";
+import {
+  listPlatformAuditEvents,
+  PLATFORM_AUDIT_AVAILABLE,
+} from "./contract-gap";
 import {
   packagesQuery,
   tenantQuery,
@@ -51,6 +54,11 @@ export function useSetTenantPackage(tenantId: string) {
   return useMutation({
     mutationFn: (body: api.SetTenantPackageBody) =>
       api.setTenantPackage(tenantId, body),
+    // Shared endpoint (its mock is owned by ws01-platform-tenants). Refetch
+    // every read the change can affect: the tenant row (paket, kuota, tenant
+    // detail), the registry list (tenant list, health), usage (quota bars,
+    // health attention) and the audit list. Keys are [endpoint.id, ...], so
+    // one prefix covers both features' copies of a read.
     onSuccess: () =>
       Promise.all(
         [
@@ -77,6 +85,8 @@ export function useAuditEvents(filters: AuditFilters) {
       ),
     getNextPageParam: (last) => last.meta.nextCursor ?? undefined,
     placeholderData: keepPreviousData,
+    // Contract gap: no real route answers this yet; never call it there.
+    enabled: PLATFORM_AUDIT_AVAILABLE,
   });
 }
 

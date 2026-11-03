@@ -4,6 +4,13 @@
 // Brand/outlet/legal-entity reads stay with their existing owners (ws01-access,
 // ws07-accounting); this file only registers the create calls and the
 // platform endpoints.
+//
+// Single owner of the in-memory tenant store: list, detail, usage, status AND
+// package changes (setTenantPackage) all read and write `tenants` below, so a
+// package changed on /platform/paket (ws01-platform-ops) shows on the tenant
+// list and detail, and vice versa. Other features must not keep their own
+// tenant copy: read it with `getMockTenant` / `listMockTenants` and react to
+// writes with `onMockTenantChange` (e.g. to append an audit row).
 import {
   COST_CAPS,
   COUNT_QUOTAS,
@@ -11,6 +18,7 @@ import {
   cafeLegendPlatformFixtures,
   canTransitionTenant,
   checkCountQuota,
+  modulesOutsidePackage,
   evaluateCostCap,
   legalEntitySchema,
   orgEndpoints,
@@ -78,6 +86,41 @@ function find(tenantId: string): Tenant {
   return row;
 }
 
+// ------------------------------------------- shared read/subscribe helpers
+
+/** A change to one tenant row, with the operator's audited reason. */
+export type MockTenantChange = {
+  kind: "status" | "package";
+  before: Tenant;
+  after: Tenant;
+  reason: string;
+};
+
+const listeners = new Set<(change: MockTenantChange) => void>();
+
+/** Current mock tenant (undefined when unknown). Read-only snapshot. */
+export const getMockTenant = (tenantId: string): Tenant | undefined =>
+  tenants.get().find((t) => t.id === tenantId);
+
+/** All mock tenants, newest first. Read-only snapshot. */
+export const listMockTenants = (): readonly Tenant[] => tenants.get();
+
+/** Subscribe to status/package writes; returns the unsubscribe function. */
+export function onMockTenantChange(
+  listener: (change: MockTenantChange) => void,
+): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function commit(change: MockTenantChange): Tenant {
+  tenants.set(
+    tenants.get().map((t) => (t.id === change.after.id ? change.after : t)),
+  );
+  for (const listener of listeners) listener(change);
+  return change.after;
+}
+
 registerMock(platformEndpoints.listPackages, ({ scenario }) => ({
   data: scenario === "empty" ? [] : fx.packages,
 }));
@@ -135,8 +178,48 @@ registerMock(platformEndpoints.setTenantStatus, ({ params, body }) => {
       "Perubahan status ini tidak diizinkan.",
     );
   const next: Tenant = { ...current, status: body.status };
-  tenants.set(tenants.get().map((t) => (t.id === next.id ? next : t)));
-  return { data: next };
+  return {
+    data: commit({
+      kind: "status",
+      before: current,
+      after: next,
+      reason: body.reason,
+    }),
+  };
+});
+
+// PUT /api/platform/tenants/:tenantId/package: the plan, its module flags and
+// limits change together; modules must stay inside the chosen package.
+registerMock(platformEndpoints.setTenantPackage, ({ params, body }) => {
+  const current = find(params.tenantId);
+  const pkg = fx.packages.find((p) => p.key === body.plan);
+  if (!pkg || pkg.status !== "active")
+    throw new ApiError(404, "NOT_FOUND", "Paket tidak ditemukan.");
+  const outside = modulesOutsidePackage(body.featureFlags.modules, pkg);
+  if (outside.length > 0)
+    throw new ApiError(
+      422,
+      "MODULE_NOT_IN_PACKAGE",
+      "Modul ini tidak termasuk paket yang dipilih.",
+      outside.map((field) => ({
+        field: `featureFlags.modules.${field}`,
+        message: "Tidak termasuk paket.",
+      })),
+    );
+  const next = tenantSchema.parse({
+    ...current,
+    plan: body.plan,
+    featureFlags: body.featureFlags,
+    limits: body.limits,
+  });
+  return {
+    data: commit({
+      kind: "package",
+      before: current,
+      after: next,
+      reason: body.reason,
+    }),
+  };
 });
 
 registerMock(platformEndpoints.getTenantUsage, ({ params }) => {

@@ -16,6 +16,8 @@ import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
+import { newIdempotencyKey } from "@/lib/idempotency";
 import { deviceErrorMessage } from "../errors.ts";
 import { useRevokeDevice } from "../hooks.ts";
 import { revokeConfirmationMatches, revokeReasonValid } from "../logic.ts";
@@ -38,12 +40,20 @@ export function RevokeDialog({
   const [reason, setReason] = React.useState("");
   const [touched, setTouched] = React.useState(false);
   const [serverError, setServerError] = React.useState<string | null>(null);
+  // One key per confirmation: a retry after a network error replays the same
+  // request, so the API audits a single revocation.
+  const keyRef = React.useRef<string | null>(null);
 
   const reset = () => {
     setTyped("");
     setReason("");
     setTouched(false);
     setServerError(null);
+    keyRef.current = null;
+  };
+  const close = () => {
+    reset();
+    onOpenChange(false);
   };
   const label = device?.label ?? "";
   const nameOk = revokeConfirmationMatches(typed, label) && label !== "";
@@ -52,18 +62,31 @@ export function RevokeDialog({
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     setTouched(true);
-    if (!device || !nameOk || !reasonOk) return;
+    if (!device || !nameOk || !reasonOk || revoke.isPending) return;
+    if (device.status !== "active") {
+      setServerError(t("deviceRegistry.revoke.alreadyRevoked"));
+      return;
+    }
     setServerError(null);
+    const idempotencyKey = (keyRef.current ??= newIdempotencyKey());
     revoke.mutate(
-      { deviceId: device.id, reason: reason.trim() },
+      {
+        deviceId: device.id,
+        reason: reason.trim(),
+        idempotencyKey,
+      },
       {
         onSuccess: () => {
           toast({ title: t("deviceRegistry.revoke.done"), tone: "success" });
-          reset();
-          onOpenChange(false);
+          close();
           onRevoked?.();
         },
-        onError: (error) => setServerError(deviceErrorMessage(error, t)),
+        onError: (error) =>
+          setServerError(
+            error instanceof ApiError && error.code === "CONFLICT"
+              ? t("deviceRegistry.revoke.alreadyRevoked")
+              : deviceErrorMessage(error, t),
+          ),
       },
     );
   };
@@ -72,8 +95,8 @@ export function RevokeDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
+        if (next) onOpenChange(true);
+        else close();
       }}
     >
       <DialogContent>
@@ -117,7 +140,10 @@ export function RevokeDialog({
           >
             <Textarea
               value={reason}
-              onChange={(event) => setReason(event.target.value)}
+              onChange={(event) => {
+                setReason(event.target.value);
+                keyRef.current = null;
+              }}
               maxLength={500}
               rows={3}
             />
@@ -128,11 +154,7 @@ export function RevokeDialog({
             </p>
           )}
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button type="button" variant="outline" onClick={close}>
               {t("common.cancel")}
             </Button>
             <Button

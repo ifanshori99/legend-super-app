@@ -3,7 +3,11 @@
 // and no `@/` alias, so tests/legend-y6s.test.mjs loads this file with plain
 // Node ESM. Rules come from the shared contract (limits.ts / modules.ts);
 // nothing here invents a business rule.
-import type { AuditEvent } from "@starter/shared/audit";
+import {
+  AUDIT_REDACTED,
+  isSensitiveAuditKey,
+  type AuditEvent,
+} from "@starter/shared/audit";
 import {
   COST_CAP_WARNING_BASIS_POINTS,
   INTEGRATION_PROVIDERS,
@@ -119,7 +123,9 @@ export function usagePercent(used: number, limit: number): number {
   return Math.min(100, Math.floor((used * 100) / limit));
 }
 
-/** Same thresholds as cost caps (R18): warning at 80%, stopped at 100%. */
+/** Same thresholds as cost caps (R18, COST_CAP_WARNING_BASIS_POINTS = 80%):
+ * warning at 80%, stopped at 100%. Applying the cost-cap threshold to count
+ * quotas is this screen's choice (the PRD only sets it for cost caps). */
 export function quotaState(used: number, limit: number): BarState {
   if (limit <= 0) return used > 0 ? "stopped" : "ok";
   if (used >= limit) return "stopped";
@@ -308,6 +314,28 @@ function show(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Defence in depth: the schema already rejects unmasked sensitive fields, but
+ * the platform view never prints one even if a row slipped through. Nested
+ * objects are shown as JSON, so they are re-masked by key as well. */
+function showMasked(field: string, value: unknown): string {
+  if (value === undefined) return "";
+  if (value === null) return show(value);
+  if (isSensitiveAuditKey(field)) return AUDIT_REDACTED;
+  return show(redactNested(value));
+}
+
+function redactNested(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactNested);
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        isSensitiveAuditKey(key) ? AUDIT_REDACTED : redactNested(entry),
+      ]),
+    );
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -322,8 +350,8 @@ export function changeRows(changes: AuditEvent["maskedChanges"]): ChangeRow[] {
     const fields = [...new Set([...Object.keys(left), ...Object.keys(right)])];
     return fields.map((field) => ({
       field,
-      before: show(left[field]),
-      after: show(right[field]),
+      before: showMasked(field, left[field]),
+      after: showMasked(field, right[field]),
     }));
   }
   if (before === null && after === null) return [];

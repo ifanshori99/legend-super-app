@@ -9,6 +9,7 @@ export const approvalsMessages = {
     "Permintaan dari semua modul, termasuk draf aksi AI dan agen MCP, menunggu keputusan Anda.",
   requesterUnknown: "Pengguna {id}",
   requestedBy: "Diminta oleh {name}",
+  draftFor: "Draf atas nama {name}",
   level: "Tingkat {level} dari {total}",
   review: "Tinjau",
   reviewAria: "Tinjau permintaan {action}",
@@ -58,6 +59,15 @@ export const approvalsMessages = {
   },
 
   source: { user: "Pengguna", ai: "AI", mcp: "MCP" },
+  sourceBadge: { user: "Pengguna", ai: "Draf AI", mcp: "Draf MCP" },
+
+  agentDraft: {
+    title: {
+      ai: "Draf yang diusulkan Tanya AI",
+      mcp: "Draf yang diusulkan agen MCP",
+    },
+    body: "Diajukan atas nama {name}. Belum ada yang diterapkan: aksi baru dijalankan setelah Anda setujui, dan tidak dijalankan bila ditolak atau kedaluwarsa.",
+  },
 
   status: {
     pending: "Menunggu",
@@ -134,6 +144,7 @@ export const approvalsMessages = {
     title: "Detail permintaan",
     module: "Modul",
     requester: "Pemohon",
+    onBehalfOf: "Atas nama",
     value: "Nilai",
     level: "Tingkat",
     deadline: "Batas waktu",
@@ -218,6 +229,8 @@ export const approvalsMessages = {
     forbidden: "Anda tidak punya izin untuk tindakan ini.",
     notFound: "Permintaan tidak ditemukan. Mungkin sudah dihapus.",
     offline: "Tidak ada koneksi. Periksa jaringan, lalu coba lagi.",
+    idempotencyReused:
+      "Keputusan ini sudah dikirim dengan isi berbeda. Muat ulang permintaan, lalu putuskan lagi.",
     generic: "Keputusan belum terkirim. Coba lagi sebentar lagi.",
   },
 

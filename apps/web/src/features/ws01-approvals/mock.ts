@@ -1,7 +1,9 @@
 // Mock mode for the approval inbox (VITE_API_MOCK=true). Serves the identity
 // fixtures, rebased on the mock clock so deadlines count down for real, and
-// enforces the same rules as the service: AUTH-06 distinct actor, a second
-// factor for the decision (AUTH-05), pending-only, deadline fail-closed.
+// enforces the same rules as the service by calling the shared lifecycle
+// (`recordApprovalDecision`: pending-only, deadline fail-closed, AUTH-06
+// approver ≠ requester, a different person per level, 3..500 char reason),
+// plus a second factor for the decision (AUTH-05) and Idempotency-Key replay.
 //
 // The signed-in mock user is the owner (ws01-auth mock). The AI price change
 // in the fixtures was requested by the owner, so it demonstrates the
@@ -14,8 +16,10 @@ import {
   decideApprovalRequest,
   getApprovalRequest,
   listApprovalRequests,
+  recordApprovalDecision,
   type ApprovalRequest,
 } from "@starter/shared/identity";
+import type { UserId } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
@@ -64,6 +68,22 @@ function seed(): ApprovalRequest[] {
 }
 
 const requests = createMockStore<ApprovalRequest[]>(seed);
+/** Idempotency-Key → (request + body fingerprint, stored result). */
+const replays = createMockStore<
+  Map<string, { fingerprint: string; result: ApprovalRequest }>
+>(() => new Map());
+
+/** The shared machines throw IdentityError / AccessError ({ code, status }). */
+function asApiError(error: unknown): never {
+  if (error instanceof ApiError) throw error;
+  const { code, status, message } = error as {
+    code?: string;
+    status?: number;
+    message?: string;
+  };
+  if (code && status) throw new ApiError(status, code, message ?? code);
+  throw error;
+}
 
 function find(requestId: string): ApprovalRequest {
   const row = requests.get().find((item) => item.id === requestId);
@@ -96,27 +116,49 @@ registerMock(getApprovalRequest, ({ params }) => {
   return { data: request };
 });
 
-registerMock(decideApprovalRequest, ({ params, body, scenario }) => {
+registerMock(decideApprovalRequest, ({ params, body, scenario, headers }) => {
+  const key = headers?.["Idempotency-Key"];
+  const fingerprint = JSON.stringify([params.requestId, body]);
+  const replay = key ? replays.get().get(key) : undefined;
+  if (replay) {
+    if (replay.fingerprint !== fingerprint)
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "Kunci idempotensi dipakai untuk keputusan lain.",
+      );
+    return { data: replay.result };
+  }
   const row = find(params.requestId);
-  if (row.status !== "pending")
-    throw new ApiError(
-      409,
-      "APPROVAL_REQUEST_NOT_PENDING",
-      "Permintaan ini sudah diputuskan.",
-    );
-  if (Date.parse(row.deadlineAt) <= Date.now())
-    throw new ApiError(
-      410,
-      "APPROVAL_REQUEST_EXPIRED",
-      "Batas waktu persetujuan sudah lewat.",
-    );
   const me = cafeLegendIdentityFixtures.usersByKey.owner;
-  if (row.requestedBy.toLowerCase() === me.id.toLowerCase())
-    throw new ApiError(
-      403,
-      "APPROVER_IS_REQUESTER",
-      "Penyetuju tidak boleh sama dengan pemohon.",
-    );
+  // Approvers of earlier levels of the same chain (same object and action).
+  const priorApproverIds = requests
+    .get()
+    .filter(
+      (item) =>
+        item.objectId === row.objectId &&
+        item.actionType === row.actionType &&
+        item.level < row.level &&
+        item.status === "approved" &&
+        item.decidedBy !== null,
+    )
+    .map((item) => item.decidedBy as UserId);
+  const decide = () =>
+    recordApprovalDecision({
+      request: row,
+      decision: body.decision,
+      decidedBy: me.id,
+      priorApproverIds,
+      reason: body.reason,
+      now: new Date(),
+    });
+  let decided: ApprovalRequest;
+  try {
+    decided = decide();
+  } catch (error) {
+    asApiError(error);
+  }
+  // The rules above pass before the factor check, as the service orders them.
   const auth = staffCurrentAuthMock({ scenario });
   if (me.mfaRequired && auth.data.session?.mfaVerifiedAt == null)
     throw new ApiError(
@@ -124,15 +166,10 @@ registerMock(decideApprovalRequest, ({ params, body, scenario }) => {
       "MFA_REQUIRED",
       "Verifikasi faktor kedua diperlukan.",
     );
-  const decided = approvalRequestSchema.parse({
-    ...row,
-    status: body.decision,
-    decidedBy: me.id,
-    decidedAt: new Date().toISOString(),
-    reason: body.reason,
-  });
+  decided = approvalRequestSchema.parse(decided);
   requests.set(
     requests.get().map((item) => (item.id === row.id ? decided : item)),
   );
+  if (key) replays.get().set(key, { fingerprint, result: decided });
   return { data: decided };
 });

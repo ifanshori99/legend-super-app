@@ -154,7 +154,10 @@ export function TenantListPage() {
                     params={{ tenantId: row.id }}
                     className="grid gap-0.5 font-semibold hover:underline"
                   >
-                    <span>{row.name}</span>
+                    {/* Own colour token: inheriting from the row would ride
+                        TableRow's colour transition on a theme switch and
+                        render dark-on-dark for a frame (legend-tno review). */}
+                    <span className="text-foreground">{row.name}</span>
                     <span className="text-xs font-normal text-muted-foreground">
                       {row.slug}
                     </span>

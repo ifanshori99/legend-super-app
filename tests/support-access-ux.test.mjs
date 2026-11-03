@@ -18,7 +18,7 @@ test("TEN-04: countdown formats mm:ss under an hour and h:mm:ss above", () => {
   assert.equal(logic.formatCountdown(-5_000), "00:00");
 });
 
-test("TEN-04: a session is active only between start and expiry, and not once ended", () => {
+test("TEN-04: a session shows as active until expiry, and not once ended", () => {
   assert.equal(
     logic.isGrantActive(grant, at("2026-11-01T05:00:00.000Z")),
     true,
@@ -28,13 +28,27 @@ test("TEN-04: a session is active only between start and expiry, and not once en
     false,
   );
   assert.equal(
-    logic.isGrantActive(grant, at("2026-11-01T04:00:00.000Z")),
-    false,
+    logic.displayStatus(grant, at("2026-11-01T05:30:00.000Z")),
+    "expired",
   );
   const ended = { ...grant, endedAt: "2026-11-01T04:45:00.000Z" };
   assert.equal(
     logic.isGrantActive(ended, at("2026-11-01T05:00:00.000Z")),
     false,
+  );
+});
+
+test("TEN-04: a client clock behind the server never hides or prolongs a session", () => {
+  // Client is 2 minutes behind: the fresh session must still show (fail to
+  // show, not fail to hide) and the countdown must not exceed the duration.
+  const lagging = at("2026-11-01T04:28:00.000Z");
+  assert.equal(logic.isGrantActive(grant, lagging), true);
+  assert.equal(logic.remainingMs(grant.expiresAt, lagging, 60), 60 * 60_000);
+  // A server-ended session reads as ended even before the client reaches endedAt.
+  const ended = { ...grant, endedAt: "2026-11-01T04:45:00.000Z" };
+  assert.equal(
+    logic.displayStatus(ended, at("2026-11-01T04:40:00.000Z")),
+    "ended",
   );
 });
 

@@ -125,6 +125,15 @@ function ModalBody({
   const [attempt, setAttempt] = useState(0);
 
   const values = { valueText, reasonCode, reason };
+  // A field's error goes away once that field is edited (not on the next PIN).
+  function edited(field: keyof OverrideFormErrors) {
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }
   const create = useCreateApprovalRequest();
 
   function finish(
@@ -138,11 +147,15 @@ function ModalBody({
     });
   }
 
+  // Fail closed (AUTH-06): with no known requester the approver cannot be
+  // told apart from them, so no PIN approves.
   const accept = useCallback(
     (result: StaffPinSwitch) =>
-      requesterId !== null && result.user.id === requesterId
-        ? t("devicePin.override.sameApprover")
-        : null,
+      requesterId === null
+        ? t("devicePin.override.noRequester")
+        : result.user.id === requesterId
+          ? t("devicePin.override.sameApprover")
+          : null,
     [requesterId, t],
   );
   const session = usePinSession({
@@ -198,6 +211,7 @@ function ModalBody({
     return (
       <PhoneWait
         requestId={requestId}
+        requesterId={requesterId}
         onApproved={(approvedBy) =>
           finish({
             method: "supervisor_phone",
@@ -229,7 +243,10 @@ function ModalBody({
           inputMode="numeric"
           autoComplete="off"
           value={valueText}
-          onChange={(event) => setValueText(event.target.value)}
+          onChange={(event) => {
+            setValueText(event.target.value);
+            edited("value");
+          }}
         />
       </FormField>
       <FormField
@@ -241,7 +258,13 @@ function ModalBody({
         }
         required
       >
-        <Select value={reasonCode} onValueChange={setReasonCode}>
+        <Select
+          value={reasonCode}
+          onValueChange={(code) => {
+            setReasonCode(code);
+            edited("reasonCode");
+          }}
+        >
           <SelectTrigger>
             <SelectValue
               placeholder={t("devicePin.override.reasonCodePlaceholder")}
@@ -270,7 +293,10 @@ function ModalBody({
           rows={2}
           value={reason}
           placeholder={t("devicePin.override.reasonPlaceholder")}
-          onChange={(event) => setReason(event.target.value)}
+          onChange={(event) => {
+            setReason(event.target.value);
+            edited("reason");
+          }}
         />
       </FormField>
 
@@ -327,12 +353,14 @@ function ModalBody({
 
 function PhoneWait({
   requestId,
+  requesterId,
   onApproved,
   onRejected,
   onRetry,
   onClose,
 }: {
   requestId: string;
+  requesterId: string | null;
   onApproved: (approvedBy: string | null) => void;
   onRejected: (reason: string | null) => void;
   onRetry: () => void;
@@ -342,8 +370,14 @@ function PhoneWait({
   const nowMs = useClockMs();
   const poll = useApprovalRequestPolling(requestId);
   const request = poll.data?.data ?? null;
-  const outcome =
+  const raw =
     request && nowMs !== null ? approvalOutcome(request, nowMs) : "pending";
+  // The server enforces requester != approver; the device checks it again and
+  // fails closed when the approver is missing or is the requester (AUTH-06).
+  const selfApproved =
+    raw === "approved" &&
+    (request?.decidedBy == null || request.decidedBy === requesterId);
+  const outcome = selfApproved ? "rejected" : raw;
 
   const notified = useRef(false);
   useEffect(() => {
@@ -417,7 +451,12 @@ function PhoneWait({
       <p className="text-sm text-muted-foreground">
         {t(`devicePin.outcome.${outcome}.body`)}
       </p>
-      {outcome === "rejected" && request?.reason && (
+      {selfApproved && (
+        <p className="text-sm font-semibold">
+          {t("devicePin.override.sameApprover")}
+        </p>
+      )}
+      {outcome === "rejected" && !selfApproved && request?.reason && (
         <p className="text-sm font-semibold">
           {t("devicePin.outcome.rejected.reasonPrefix", {
             reason: request.reason,

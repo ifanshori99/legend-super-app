@@ -6,7 +6,9 @@ import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Check } from "lucide-react";
 import { cn } from "cn";
+import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
+import type { PlatformPackage } from "@starter/shared/platform";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,8 +36,9 @@ import {
   assignablePackages,
   EMPTY_DRAFT,
   firstInvalidStep,
+  maskEmail,
+  maskWhatsapp,
   normalizeOutletCode,
-  normalizeWhatsapp,
   slugify,
   validateStep,
   WIZARD_STEPS,
@@ -107,6 +110,25 @@ export function TenantWizardPage() {
   const [errors, setErrors] = React.useState<FieldErrors>({});
   const [failure, setFailure] = React.useState<string | null>(null);
   const step = WIZARD_STEPS[index];
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+  const firstRender = React.useRef(true);
+
+  // Keyboard and screen-reader users land on the new step's heading...
+  React.useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    headingRef.current?.focus();
+  }, [index]);
+  // ...or on the first field that failed validation.
+  React.useEffect(() => {
+    if (Object.keys(errors).length === 0) return;
+    formRef.current
+      ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+      ?.focus();
+  }, [errors]);
   const options = assignablePackages(packages.data?.data ?? []);
   // Until the visitor picks, the first active package is the selection.
   const draft: WizardDraft = rawDraft.tenant.plan
@@ -210,6 +232,7 @@ export function TenantWizardPage() {
         <CardShell>
           <CardShellBody className="p-card">
             <form
+              ref={formRef}
               noValidate
               className="grid gap-4"
               onSubmit={(event) => {
@@ -219,7 +242,11 @@ export function TenantWizardPage() {
               }}
             >
               <div>
-                <h3 className="type-title">
+                <h3
+                  ref={headingRef}
+                  tabIndex={-1}
+                  className="type-title outline-none"
+                >
                   {t(`platformTenants.wizard.steps.${step}` as MessageKey)}
                 </h3>
                 <p className="text-sm text-muted-foreground">
@@ -513,9 +540,7 @@ export function TenantWizardPage() {
               {step === "review" && (
                 <Review
                   draft={draft}
-                  packageName={
-                    options.find((p) => p.key === draft.tenant.plan)?.name ?? ""
-                  }
+                  pkg={options.find((p) => p.key === draft.tenant.plan)}
                   onEdit={(target) => {
                     setErrors({});
                     setIndex(WIZARD_STEPS.indexOf(target));
@@ -561,11 +586,11 @@ export function TenantWizardPage() {
 
 function Review({
   draft,
-  packageName,
+  pkg,
   onEdit,
 }: {
   draft: WizardDraft;
-  packageName: string;
+  pkg: PlatformPackage | undefined;
   onEdit: (step: WizardStep) => void;
 }) {
   const t = useT();
@@ -579,7 +604,17 @@ function Review({
       items: [
         [t(k("tenantName")), draft.tenant.name],
         [t(k("slug")), draft.tenant.slug],
-        [t(k("plan")), packageName],
+        [t(k("plan")), pkg?.name ?? ""],
+        [
+          t(k("startingQuota")),
+          pkg
+            ? t(k("startingQuotaValue"), {
+                outlets: formatNumber(pkg.defaultLimits.maxOutlets),
+                employees: formatNumber(pkg.defaultLimits.maxActiveEmployees),
+                devices: formatNumber(pkg.defaultLimits.maxDevices),
+              })
+            : "-",
+        ],
         [
           t(k("mode")),
           t(
@@ -625,8 +660,9 @@ function Review({
       step: "admin",
       items: [
         [t(k("adminName")), draft.admin.name],
-        [t(k("whatsapp")), normalizeWhatsapp(draft.admin.whatsapp)],
-        [t(k("email")), draft.admin.email.trim() || "-"],
+        // TEN-04: contact shown masked even to the operator who typed it.
+        [t(k("whatsapp")), maskWhatsapp(draft.admin.whatsapp)],
+        [t(k("email")), maskEmail(draft.admin.email) ?? "-"],
       ],
     },
   ];

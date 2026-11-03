@@ -7,6 +7,7 @@ import {
 } from "@starter/shared/identity";
 import { endpointQueryOptions } from "@/lib/api/endpoint";
 import { fetchApproval, fetchApprovals } from "./api.ts";
+import { DEFAULT_FILTERS, toServerQuery } from "./logic.ts";
 
 export const approvalKeys = {
   all: ["approvals"] as const,
@@ -35,12 +36,16 @@ export function approvalQuery(requestId: string) {
   });
 }
 
-/** Pending count for the shell badge; polls because approvals are time-boxed. */
+/**
+ * Pending count for the shell badge; polls because approvals are time-boxed.
+ * Same server query as the inbox's default view, so the badge number is the
+ * inbox's default row count.
+ */
 export function approvalBadgeQuery() {
   return queryOptions({
     queryKey: approvalKeys.badge(),
     queryFn: ({ signal }) =>
-      fetchApprovals({ status: "pending", limit: 50 }, signal),
+      fetchApprovals(toServerQuery(DEFAULT_FILTERS), signal),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
     staleTime: 30_000,

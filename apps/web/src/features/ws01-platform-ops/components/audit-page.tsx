@@ -3,12 +3,13 @@
 // kind, action, date range (Asia/Jakarta days). Cursor pagination appends
 // pages; a row expands to its masked before/after, reason and ids.
 import * as React from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, FileClock } from "lucide-react";
 import type { AuditEvent } from "@starter/shared/audit";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
+import { EmptyState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,6 +33,7 @@ import {
   useTenants,
   type AuditFilters,
 } from "../hooks";
+import { PLATFORM_AUDIT_AVAILABLE } from "../contract-gap";
 import { changeRows, formatWhen, jakartaDayRange, shortId } from "../logic";
 import { OpsPage, Section } from "./ops-shell";
 
@@ -39,6 +41,24 @@ const ALL = "all";
 const ACTOR_TYPES = ["user", "ai", "mcp_client", "system", "device"] as const;
 
 export function AuditPage() {
+  const t = useT();
+  // Contract gap (contract-gap.ts #1): say so instead of a generic error.
+  if (!PLATFORM_AUDIT_AVAILABLE)
+    return (
+      <OpsPage>
+        <Section title={t("platformOps.audit.title")}>
+          <EmptyState
+            icon={FileClock}
+            title={t("platformOps.audit.unavailableTitle")}
+            description={t("platformOps.audit.unavailableHint")}
+          />
+        </Section>
+      </OpsPage>
+    );
+  return <AuditList />;
+}
+
+function AuditList() {
   const t = useT();
   const tenants = useTenants();
   const tenantRows = tenants.data?.data ?? [];

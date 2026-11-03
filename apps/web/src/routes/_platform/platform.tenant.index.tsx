@@ -1,12 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
+import { tenantGuard } from "@/features/ws01-platform-tenants/guard";
 import { TenantListPage } from "@/features/ws01-platform-tenants/components/tenant-list-page";
 
 const t = createTranslator();
 
 // Panel Platform tenant list (bead legend-tno; PRD §3 F1 "Layar Platform").
 export const Route = createFileRoute("/_platform/platform/tenant/")({
+  beforeLoad: tenantGuard,
   head: () => ({
     meta: [
       {
