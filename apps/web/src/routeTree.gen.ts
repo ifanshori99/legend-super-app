@@ -51,6 +51,7 @@ import { Route as KaryawanKaryawanIndexRouteImport } from './routes/_karyawan/ka
 import { Route as KaryawanKaryawanKasbonRouteImport } from './routes/_karyawan/karyawan.kasbon'
 import { Route as KaryawanKaryawanReimbursementRouteImport } from './routes/_karyawan/karyawan.reimbursement'
 import { Route as KelolaKelolaIndexRouteImport } from './routes/_kelola/kelola.index'
+import { Route as KelolaKelolaAksesDukunganRouteImport } from './routes/_kelola/kelola.akses-dukungan'
 import { Route as KelolaKelolaDapurRouteImport } from './routes/_kelola/kelola.dapur'
 import { Route as KelolaKelolaKeamananRouteImport } from './routes/_kelola/kelola.keamanan'
 import { Route as KelolaKelolaNotifikasiRouteImport } from './routes/_kelola/kelola.notifikasi'
@@ -58,16 +59,24 @@ import { Route as KelolaKelolaOrganisasiRouteImport } from './routes/_kelola/kel
 import { Route as KelolaKelolaPembayaranRouteImport } from './routes/_kelola/kelola.pembayaran'
 import { Route as KelolaKelolaPengadaanRouteImport } from './routes/_kelola/kelola.pengadaan'
 import { Route as KelolaKelolaPengaturanRouteImport } from './routes/_kelola/kelola.pengaturan'
+import { Route as KelolaKelolaPerangkatRouteImport } from './routes/_kelola/kelola.perangkat'
 import { Route as KelolaReportsIndexRouteImport } from './routes/_kelola/reports.index'
 import { Route as KelolaReportsBuilderRouteImport } from './routes/_kelola/reports.builder'
 import { Route as KitchenKdsIndexRouteImport } from './routes/_kitchen/kds.index'
+import { Route as KitchenKdsGantiPenggunaRouteImport } from './routes/_kitchen/kds.ganti-pengguna'
 import { Route as OpsOperasionalKoneksiRouteImport } from './routes/_ops/operasional.koneksi'
 import { Route as OpsPosIndexRouteImport } from './routes/_ops/pos.index'
 import { Route as OpsPosCustomerDisplayRouteImport } from './routes/_ops/pos.customer-display'
+import { Route as OpsPosGantiPenggunaRouteImport } from './routes/_ops/pos.ganti-pengguna'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as PlatformPlatformIndexRouteImport } from './routes/_platform/platform.index'
+import { Route as PlatformPlatformAksesDukunganRouteImport } from './routes/_platform/platform.akses-dukungan'
+import { Route as PlatformPlatformAuditRouteImport } from './routes/_platform/platform.audit'
 import { Route as PlatformPlatformKeamananRouteImport } from './routes/_platform/platform.keamanan'
+import { Route as PlatformPlatformKesehatanRouteImport } from './routes/_platform/platform.kesehatan'
+import { Route as PlatformPlatformKuotaRouteImport } from './routes/_platform/platform.kuota'
+import { Route as PlatformPlatformPaketRouteImport } from './routes/_platform/platform.paket'
 import { Route as PublicMasukIndexRouteImport } from './routes/_public/masuk.index'
 import { Route as PublicMasukEmailRouteImport } from './routes/_public/masuk.email'
 import { Route as PublicMasukGoogleRouteImport } from './routes/_public/masuk.google'
@@ -145,8 +154,14 @@ import { Route as KelolaKelolaPayrollPengaturanRouteImport } from './routes/_kel
 import { Route as KelolaKelolaPayrollServiceChargeRouteImport } from './routes/_kelola/kelola.payroll.service-charge'
 import { Route as KelolaKelolaPelatihanIndexRouteImport } from './routes/_kelola/kelola.pelatihan.index'
 import { Route as KelolaKelolaPelatihanTrainingIdRouteImport } from './routes/_kelola/kelola.pelatihan.$trainingId'
+import { Route as KelolaKelolaPengaturanIntegrasiRouteImport } from './routes/_kelola/kelola.pengaturan.integrasi'
+import { Route as KelolaKelolaPengaturanIstilahRouteImport } from './routes/_kelola/kelola.pengaturan.istilah'
+import { Route as KelolaKelolaPengaturanKonfigurasiRouteImport } from './routes/_kelola/kelola.pengaturan.konfigurasi'
+import { Route as KelolaKelolaPengaturanTemaRouteImport } from './routes/_kelola/kelola.pengaturan.tema'
 import { Route as KelolaKelolaPengaturanOutletRouteImport } from './routes/_kelola/kelola.pengaturan_.outlet'
 import { Route as KelolaKelolaPengumumanIndexRouteImport } from './routes/_kelola/kelola.pengumuman.index'
+import { Route as KelolaKelolaPersetujuanIndexRouteImport } from './routes/_kelola/kelola.persetujuan.index'
+import { Route as KelolaKelolaPersetujuanRequestIdRouteImport } from './routes/_kelola/kelola.persetujuan.$requestId'
 import { Route as KelolaKelolaPromoIndexRouteImport } from './routes/_kelola/kelola.promo.index'
 import { Route as KelolaKelolaPromoPromotionIdRouteImport } from './routes/_kelola/kelola.promo.$promotionId'
 import { Route as KelolaKelolaPromoRoiRouteImport } from './routes/_kelola/kelola.promo.roi'
@@ -166,6 +181,9 @@ import { Route as KelolaReportsSalesRefundRouteImport } from './routes/_kelola/r
 import { Route as KelolaReportsSalesTransactionsRouteImport } from './routes/_kelola/reports.sales.transactions'
 import { Route as KelolaReportsSalesVoidRouteImport } from './routes/_kelola/reports.sales.void'
 import { Route as OpsPosMejaIndexRouteImport } from './routes/_ops/pos.meja.index'
+import { Route as PlatformPlatformTenantIndexRouteImport } from './routes/_platform/platform.tenant.index'
+import { Route as PlatformPlatformTenantTenantIdRouteImport } from './routes/_platform/platform.tenant.$tenantId'
+import { Route as PlatformPlatformTenantBaruRouteImport } from './routes/_platform/platform.tenant.baru'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
 import { Route as KelolaKelolaAksesRoleRoleIdRouteImport } from './routes/_kelola/kelola.akses.role.$roleId'
@@ -385,6 +403,12 @@ const KelolaKelolaIndexRoute = KelolaKelolaIndexRouteImport.update({
   path: '/kelola/',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaAksesDukunganRoute =
+  KelolaKelolaAksesDukunganRouteImport.update({
+    id: '/kelola/akses-dukungan',
+    path: '/kelola/akses-dukungan',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaDapurRoute = KelolaKelolaDapurRouteImport.update({
   id: '/kelola/dapur',
   path: '/kelola/dapur',
@@ -420,6 +444,11 @@ const KelolaKelolaPengaturanRoute = KelolaKelolaPengaturanRouteImport.update({
   path: '/kelola/pengaturan',
   getParentRoute: () => KelolaRoute,
 } as any)
+const KelolaKelolaPerangkatRoute = KelolaKelolaPerangkatRouteImport.update({
+  id: '/kelola/perangkat',
+  path: '/kelola/perangkat',
+  getParentRoute: () => KelolaRoute,
+} as any)
 const KelolaReportsIndexRoute = KelolaReportsIndexRouteImport.update({
   id: '/reports/',
   path: '/reports/',
@@ -433,6 +462,11 @@ const KelolaReportsBuilderRoute = KelolaReportsBuilderRouteImport.update({
 const KitchenKdsIndexRoute = KitchenKdsIndexRouteImport.update({
   id: '/kds/',
   path: '/kds/',
+  getParentRoute: () => KitchenRoute,
+} as any)
+const KitchenKdsGantiPenggunaRoute = KitchenKdsGantiPenggunaRouteImport.update({
+  id: '/kds/ganti-pengguna',
+  path: '/kds/ganti-pengguna',
   getParentRoute: () => KitchenRoute,
 } as any)
 const OpsOperasionalKoneksiRoute = OpsOperasionalKoneksiRouteImport.update({
@@ -450,6 +484,11 @@ const OpsPosCustomerDisplayRoute = OpsPosCustomerDisplayRouteImport.update({
   path: '/pos/customer-display',
   getParentRoute: () => OpsRoute,
 } as any)
+const OpsPosGantiPenggunaRoute = OpsPosGantiPenggunaRouteImport.update({
+  id: '/pos/ganti-pengguna',
+  path: '/pos/ganti-pengguna',
+  getParentRoute: () => OpsRoute,
+} as any)
 const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
   id: '/pos/reservasi',
   path: '/pos/reservasi',
@@ -465,12 +504,39 @@ const PlatformPlatformIndexRoute = PlatformPlatformIndexRouteImport.update({
   path: '/platform/',
   getParentRoute: () => PlatformRoute,
 } as any)
+const PlatformPlatformAksesDukunganRoute =
+  PlatformPlatformAksesDukunganRouteImport.update({
+    id: '/platform/akses-dukungan',
+    path: '/platform/akses-dukungan',
+    getParentRoute: () => PlatformRoute,
+  } as any)
+const PlatformPlatformAuditRoute = PlatformPlatformAuditRouteImport.update({
+  id: '/platform/audit',
+  path: '/platform/audit',
+  getParentRoute: () => PlatformRoute,
+} as any)
 const PlatformPlatformKeamananRoute =
   PlatformPlatformKeamananRouteImport.update({
     id: '/platform/keamanan',
     path: '/platform/keamanan',
     getParentRoute: () => PlatformRoute,
   } as any)
+const PlatformPlatformKesehatanRoute =
+  PlatformPlatformKesehatanRouteImport.update({
+    id: '/platform/kesehatan',
+    path: '/platform/kesehatan',
+    getParentRoute: () => PlatformRoute,
+  } as any)
+const PlatformPlatformKuotaRoute = PlatformPlatformKuotaRouteImport.update({
+  id: '/platform/kuota',
+  path: '/platform/kuota',
+  getParentRoute: () => PlatformRoute,
+} as any)
+const PlatformPlatformPaketRoute = PlatformPlatformPaketRouteImport.update({
+  id: '/platform/paket',
+  path: '/platform/paket',
+  getParentRoute: () => PlatformRoute,
+} as any)
 const PublicMasukIndexRoute = PublicMasukIndexRouteImport.update({
   id: '/masuk/',
   path: '/masuk/',
@@ -906,6 +972,30 @@ const KelolaKelolaPelatihanTrainingIdRoute =
     path: '/kelola/pelatihan/$trainingId',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengaturanIntegrasiRoute =
+  KelolaKelolaPengaturanIntegrasiRouteImport.update({
+    id: '/integrasi',
+    path: '/integrasi',
+    getParentRoute: () => KelolaKelolaPengaturanRoute,
+  } as any)
+const KelolaKelolaPengaturanIstilahRoute =
+  KelolaKelolaPengaturanIstilahRouteImport.update({
+    id: '/istilah',
+    path: '/istilah',
+    getParentRoute: () => KelolaKelolaPengaturanRoute,
+  } as any)
+const KelolaKelolaPengaturanKonfigurasiRoute =
+  KelolaKelolaPengaturanKonfigurasiRouteImport.update({
+    id: '/konfigurasi',
+    path: '/konfigurasi',
+    getParentRoute: () => KelolaKelolaPengaturanRoute,
+  } as any)
+const KelolaKelolaPengaturanTemaRoute =
+  KelolaKelolaPengaturanTemaRouteImport.update({
+    id: '/tema',
+    path: '/tema',
+    getParentRoute: () => KelolaKelolaPengaturanRoute,
+  } as any)
 const KelolaKelolaPengaturanOutletRoute =
   KelolaKelolaPengaturanOutletRouteImport.update({
     id: '/kelola/pengaturan_/outlet',
@@ -916,6 +1006,18 @@ const KelolaKelolaPengumumanIndexRoute =
   KelolaKelolaPengumumanIndexRouteImport.update({
     id: '/kelola/pengumuman/',
     path: '/kelola/pengumuman/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPersetujuanIndexRoute =
+  KelolaKelolaPersetujuanIndexRouteImport.update({
+    id: '/kelola/persetujuan/',
+    path: '/kelola/persetujuan/',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPersetujuanRequestIdRoute =
+  KelolaKelolaPersetujuanRequestIdRouteImport.update({
+    id: '/kelola/persetujuan/$requestId',
+    path: '/kelola/persetujuan/$requestId',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPromoIndexRoute = KelolaKelolaPromoIndexRouteImport.update({
@@ -1025,6 +1127,24 @@ const OpsPosMejaIndexRoute = OpsPosMejaIndexRouteImport.update({
   path: '/pos/meja/',
   getParentRoute: () => OpsRoute,
 } as any)
+const PlatformPlatformTenantIndexRoute =
+  PlatformPlatformTenantIndexRouteImport.update({
+    id: '/platform/tenant/',
+    path: '/platform/tenant/',
+    getParentRoute: () => PlatformRoute,
+  } as any)
+const PlatformPlatformTenantTenantIdRoute =
+  PlatformPlatformTenantTenantIdRouteImport.update({
+    id: '/platform/tenant/$tenantId',
+    path: '/platform/tenant/$tenantId',
+    getParentRoute: () => PlatformRoute,
+  } as any)
+const PlatformPlatformTenantBaruRoute =
+  PlatformPlatformTenantBaruRouteImport.update({
+    id: '/platform/tenant/baru',
+    path: '/platform/tenant/baru',
+    getParentRoute: () => PlatformRoute,
+  } as any)
 const CustomerTTokenIssueIssueIdRoute =
   CustomerTTokenIssueIssueIdRouteImport.update({
     id: '/issue/$issueId',
@@ -1163,18 +1283,27 @@ export interface FileRoutesByFullPath {
   '/t/$token': typeof CustomerTTokenRouteWithChildren
   '/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
   '/karyawan/reimbursement': typeof KaryawanKaryawanReimbursementRoute
+  '/kelola/akses-dukungan': typeof KelolaKelolaAksesDukunganRoute
   '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/kelola/organisasi': typeof KelolaKelolaOrganisasiRoute
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
-  '/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
+  '/kelola/pengaturan': typeof KelolaKelolaPengaturanRouteWithChildren
+  '/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
   '/reports/builder': typeof KelolaReportsBuilderRoute
+  '/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
+  '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
+  '/platform/audit': typeof PlatformPlatformAuditRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/platform/kesehatan': typeof PlatformPlatformKesehatanRoute
+  '/platform/kuota': typeof PlatformPlatformKuotaRoute
+  '/platform/paket': typeof PlatformPlatformPaketRoute
   '/masuk/email': typeof PublicMasukEmailRoute
   '/masuk/google': typeof PublicMasukGoogleRoute
   '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
@@ -1244,7 +1373,12 @@ export interface FileRoutesByFullPath {
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
+  '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
+  '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
+  '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1260,6 +1394,8 @@ export interface FileRoutesByFullPath {
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
+  '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token/': typeof CustomerTTokenIndexRoute
   '/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -1277,10 +1413,12 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
   '/kelola/pelatihan/': typeof KelolaKelolaPelatihanIndexRoute
   '/kelola/pengumuman/': typeof KelolaKelolaPengumumanIndexRoute
+  '/kelola/persetujuan/': typeof KelolaKelolaPersetujuanIndexRoute
   '/kelola/promo/': typeof KelolaKelolaPromoIndexRoute
   '/kelola/roster/': typeof KelolaKelolaRosterIndexRoute
   '/kelola/sop/': typeof KelolaKelolaSopIndexRoute
   '/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
@@ -1327,18 +1465,27 @@ export interface FileRoutesByTo {
   '/member/voucher': typeof CustomerMemberVoucherRoute
   '/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
   '/karyawan/reimbursement': typeof KaryawanKaryawanReimbursementRoute
+  '/kelola/akses-dukungan': typeof KelolaKelolaAksesDukunganRoute
   '/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/kelola/organisasi': typeof KelolaKelolaOrganisasiRoute
   '/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
-  '/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
+  '/kelola/pengaturan': typeof KelolaKelolaPengaturanRouteWithChildren
+  '/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
   '/reports/builder': typeof KelolaReportsBuilderRoute
+  '/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
   '/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/pos/customer-display': typeof OpsPosCustomerDisplayRoute
+  '/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
+  '/platform/audit': typeof PlatformPlatformAuditRoute
   '/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/platform/kesehatan': typeof PlatformPlatformKesehatanRoute
+  '/platform/kuota': typeof PlatformPlatformKuotaRoute
+  '/platform/paket': typeof PlatformPlatformPaketRoute
   '/masuk/email': typeof PublicMasukEmailRoute
   '/masuk/google': typeof PublicMasukGoogleRoute
   '/masuk/hubungkan': typeof PublicMasukHubungkanRoute
@@ -1407,7 +1554,12 @@ export interface FileRoutesByTo {
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
+  '/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
+  '/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
+  '/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1423,6 +1575,8 @@ export interface FileRoutesByTo {
   '/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
   '/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
+  '/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/member/fasilitas': typeof CustomerMemberFasilitasIndexRoute
   '/t/$token': typeof CustomerTTokenIndexRoute
   '/karyawan/absensi': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -1440,10 +1594,12 @@ export interface FileRoutesByTo {
   '/kelola/pajak': typeof KelolaKelolaPajakIndexRoute
   '/kelola/pelatihan': typeof KelolaKelolaPelatihanIndexRoute
   '/kelola/pengumuman': typeof KelolaKelolaPengumumanIndexRoute
+  '/kelola/persetujuan': typeof KelolaKelolaPersetujuanIndexRoute
   '/kelola/promo': typeof KelolaKelolaPromoIndexRoute
   '/kelola/roster': typeof KelolaKelolaRosterIndexRoute
   '/kelola/sop': typeof KelolaKelolaSopIndexRoute
   '/pos/meja': typeof OpsPosMejaIndexRoute
+  '/platform/tenant': typeof PlatformPlatformTenantIndexRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
@@ -1504,18 +1660,27 @@ export interface FileRoutesById {
   '/_customer/t/$token': typeof CustomerTTokenRouteWithChildren
   '/_karyawan/karyawan/kasbon': typeof KaryawanKaryawanKasbonRoute
   '/_karyawan/karyawan/reimbursement': typeof KaryawanKaryawanReimbursementRoute
+  '/_kelola/kelola/akses-dukungan': typeof KelolaKelolaAksesDukunganRoute
   '/_kelola/kelola/dapur': typeof KelolaKelolaDapurRoute
   '/_kelola/kelola/keamanan': typeof KelolaKelolaKeamananRoute
   '/_kelola/kelola/notifikasi': typeof KelolaKelolaNotifikasiRoute
   '/_kelola/kelola/organisasi': typeof KelolaKelolaOrganisasiRoute
   '/_kelola/kelola/pembayaran': typeof KelolaKelolaPembayaranRoute
   '/_kelola/kelola/pengadaan': typeof KelolaKelolaPengadaanRoute
-  '/_kelola/kelola/pengaturan': typeof KelolaKelolaPengaturanRoute
+  '/_kelola/kelola/pengaturan': typeof KelolaKelolaPengaturanRouteWithChildren
+  '/_kelola/kelola/perangkat': typeof KelolaKelolaPerangkatRoute
   '/_kelola/reports/builder': typeof KelolaReportsBuilderRoute
+  '/_kitchen/kds/ganti-pengguna': typeof KitchenKdsGantiPenggunaRoute
   '/_ops/operasional/koneksi': typeof OpsOperasionalKoneksiRoute
   '/_ops/pos/customer-display': typeof OpsPosCustomerDisplayRoute
+  '/_ops/pos/ganti-pengguna': typeof OpsPosGantiPenggunaRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
+  '/_platform/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
+  '/_platform/platform/audit': typeof PlatformPlatformAuditRoute
   '/_platform/platform/keamanan': typeof PlatformPlatformKeamananRoute
+  '/_platform/platform/kesehatan': typeof PlatformPlatformKesehatanRoute
+  '/_platform/platform/kuota': typeof PlatformPlatformKuotaRoute
+  '/_platform/platform/paket': typeof PlatformPlatformPaketRoute
   '/_public/masuk/email': typeof PublicMasukEmailRoute
   '/_public/masuk/google': typeof PublicMasukGoogleRoute
   '/_public/masuk/hubungkan': typeof PublicMasukHubungkanRoute
@@ -1585,7 +1750,12 @@ export interface FileRoutesById {
   '/_kelola/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
   '/_kelola/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/_kelola/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/_kelola/kelola/pengaturan/integrasi': typeof KelolaKelolaPengaturanIntegrasiRoute
+  '/_kelola/kelola/pengaturan/istilah': typeof KelolaKelolaPengaturanIstilahRoute
+  '/_kelola/kelola/pengaturan/konfigurasi': typeof KelolaKelolaPengaturanKonfigurasiRoute
+  '/_kelola/kelola/pengaturan/tema': typeof KelolaKelolaPengaturanTemaRoute
   '/_kelola/kelola/pengaturan_/outlet': typeof KelolaKelolaPengaturanOutletRoute
+  '/_kelola/kelola/persetujuan/$requestId': typeof KelolaKelolaPersetujuanRequestIdRoute
   '/_kelola/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/_kelola/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1601,6 +1771,8 @@ export interface FileRoutesById {
   '/_kelola/reports/sales/refund': typeof KelolaReportsSalesRefundRoute
   '/_kelola/reports/sales/transactions': typeof KelolaReportsSalesTransactionsRoute
   '/_kelola/reports/sales/void': typeof KelolaReportsSalesVoidRoute
+  '/_platform/platform/tenant/$tenantId': typeof PlatformPlatformTenantTenantIdRoute
+  '/_platform/platform/tenant/baru': typeof PlatformPlatformTenantBaruRoute
   '/_customer/member/fasilitas/': typeof CustomerMemberFasilitasIndexRoute
   '/_customer/t/$token/': typeof CustomerTTokenIndexRoute
   '/_karyawan/karyawan/absensi/': typeof KaryawanKaryawanAbsensiIndexRoute
@@ -1618,10 +1790,12 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/': typeof KelolaKelolaPajakIndexRoute
   '/_kelola/kelola/pelatihan/': typeof KelolaKelolaPelatihanIndexRoute
   '/_kelola/kelola/pengumuman/': typeof KelolaKelolaPengumumanIndexRoute
+  '/_kelola/kelola/persetujuan/': typeof KelolaKelolaPersetujuanIndexRoute
   '/_kelola/kelola/promo/': typeof KelolaKelolaPromoIndexRoute
   '/_kelola/kelola/roster/': typeof KelolaKelolaRosterIndexRoute
   '/_kelola/kelola/sop/': typeof KelolaKelolaSopIndexRoute
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
+  '/_platform/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/_kelola/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
@@ -1672,6 +1846,7 @@ export interface FileRouteTypes {
     | '/t/$token'
     | '/karyawan/kasbon'
     | '/karyawan/reimbursement'
+    | '/kelola/akses-dukungan'
     | '/kelola/dapur'
     | '/kelola/keamanan'
     | '/kelola/notifikasi'
@@ -1679,11 +1854,19 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/kelola/pengaturan'
+    | '/kelola/perangkat'
     | '/reports/builder'
+    | '/kds/ganti-pengguna'
     | '/operasional/koneksi'
     | '/pos/customer-display'
+    | '/pos/ganti-pengguna'
     | '/pos/reservasi'
+    | '/platform/akses-dukungan'
+    | '/platform/audit'
     | '/platform/keamanan'
+    | '/platform/kesehatan'
+    | '/platform/kuota'
+    | '/platform/paket'
     | '/masuk/email'
     | '/masuk/google'
     | '/masuk/hubungkan'
@@ -1753,7 +1936,12 @@ export interface FileRouteTypes {
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pengaturan/integrasi'
+    | '/kelola/pengaturan/istilah'
+    | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/tema'
     | '/kelola/pengaturan/outlet'
+    | '/kelola/persetujuan/$requestId'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -1769,6 +1957,8 @@ export interface FileRouteTypes {
     | '/reports/sales/refund'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
+    | '/platform/tenant/$tenantId'
+    | '/platform/tenant/baru'
     | '/member/fasilitas/'
     | '/t/$token/'
     | '/karyawan/absensi/'
@@ -1786,10 +1976,12 @@ export interface FileRouteTypes {
     | '/kelola/pajak/'
     | '/kelola/pelatihan/'
     | '/kelola/pengumuman/'
+    | '/kelola/persetujuan/'
     | '/kelola/promo/'
     | '/kelola/roster/'
     | '/kelola/sop/'
     | '/pos/meja/'
+    | '/platform/tenant/'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
     | '/kelola/akses/role/$roleId'
@@ -1836,6 +2028,7 @@ export interface FileRouteTypes {
     | '/member/voucher'
     | '/karyawan/kasbon'
     | '/karyawan/reimbursement'
+    | '/kelola/akses-dukungan'
     | '/kelola/dapur'
     | '/kelola/keamanan'
     | '/kelola/notifikasi'
@@ -1843,11 +2036,19 @@ export interface FileRouteTypes {
     | '/kelola/pembayaran'
     | '/kelola/pengadaan'
     | '/kelola/pengaturan'
+    | '/kelola/perangkat'
     | '/reports/builder'
+    | '/kds/ganti-pengguna'
     | '/operasional/koneksi'
     | '/pos/customer-display'
+    | '/pos/ganti-pengguna'
     | '/pos/reservasi'
+    | '/platform/akses-dukungan'
+    | '/platform/audit'
     | '/platform/keamanan'
+    | '/platform/kesehatan'
+    | '/platform/kuota'
+    | '/platform/paket'
     | '/masuk/email'
     | '/masuk/google'
     | '/masuk/hubungkan'
@@ -1916,7 +2117,12 @@ export interface FileRouteTypes {
     | '/kelola/payroll/pengaturan'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pengaturan/integrasi'
+    | '/kelola/pengaturan/istilah'
+    | '/kelola/pengaturan/konfigurasi'
+    | '/kelola/pengaturan/tema'
     | '/kelola/pengaturan/outlet'
+    | '/kelola/persetujuan/$requestId'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -1932,6 +2138,8 @@ export interface FileRouteTypes {
     | '/reports/sales/refund'
     | '/reports/sales/transactions'
     | '/reports/sales/void'
+    | '/platform/tenant/$tenantId'
+    | '/platform/tenant/baru'
     | '/member/fasilitas'
     | '/t/$token'
     | '/karyawan/absensi'
@@ -1949,10 +2157,12 @@ export interface FileRouteTypes {
     | '/kelola/pajak'
     | '/kelola/pelatihan'
     | '/kelola/pengumuman'
+    | '/kelola/persetujuan'
     | '/kelola/promo'
     | '/kelola/roster'
     | '/kelola/sop'
     | '/pos/meja'
+    | '/platform/tenant'
     | '/t/$token/issue/$issueId'
     | '/t/$token/pay/$paymentId'
     | '/kelola/akses/role/$roleId'
@@ -2012,6 +2222,7 @@ export interface FileRouteTypes {
     | '/_customer/t/$token'
     | '/_karyawan/karyawan/kasbon'
     | '/_karyawan/karyawan/reimbursement'
+    | '/_kelola/kelola/akses-dukungan'
     | '/_kelola/kelola/dapur'
     | '/_kelola/kelola/keamanan'
     | '/_kelola/kelola/notifikasi'
@@ -2019,11 +2230,19 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pembayaran'
     | '/_kelola/kelola/pengadaan'
     | '/_kelola/kelola/pengaturan'
+    | '/_kelola/kelola/perangkat'
     | '/_kelola/reports/builder'
+    | '/_kitchen/kds/ganti-pengguna'
     | '/_ops/operasional/koneksi'
     | '/_ops/pos/customer-display'
+    | '/_ops/pos/ganti-pengguna'
     | '/_ops/pos/reservasi'
+    | '/_platform/platform/akses-dukungan'
+    | '/_platform/platform/audit'
     | '/_platform/platform/keamanan'
+    | '/_platform/platform/kesehatan'
+    | '/_platform/platform/kuota'
+    | '/_platform/platform/paket'
     | '/_public/masuk/email'
     | '/_public/masuk/google'
     | '/_public/masuk/hubungkan'
@@ -2093,7 +2312,12 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/payroll/pengaturan'
     | '/_kelola/kelola/payroll/service-charge'
     | '/_kelola/kelola/pelatihan/$trainingId'
+    | '/_kelola/kelola/pengaturan/integrasi'
+    | '/_kelola/kelola/pengaturan/istilah'
+    | '/_kelola/kelola/pengaturan/konfigurasi'
+    | '/_kelola/kelola/pengaturan/tema'
     | '/_kelola/kelola/pengaturan_/outlet'
+    | '/_kelola/kelola/persetujuan/$requestId'
     | '/_kelola/kelola/promo/$promotionId'
     | '/_kelola/kelola/promo/roi'
     | '/_kelola/kelola/promo/tumpang-tindih'
@@ -2109,6 +2333,8 @@ export interface FileRouteTypes {
     | '/_kelola/reports/sales/refund'
     | '/_kelola/reports/sales/transactions'
     | '/_kelola/reports/sales/void'
+    | '/_platform/platform/tenant/$tenantId'
+    | '/_platform/platform/tenant/baru'
     | '/_customer/member/fasilitas/'
     | '/_customer/t/$token/'
     | '/_karyawan/karyawan/absensi/'
@@ -2126,10 +2352,12 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/'
     | '/_kelola/kelola/pelatihan/'
     | '/_kelola/kelola/pengumuman/'
+    | '/_kelola/kelola/persetujuan/'
     | '/_kelola/kelola/promo/'
     | '/_kelola/kelola/roster/'
     | '/_kelola/kelola/sop/'
     | '/_ops/pos/meja/'
+    | '/_platform/platform/tenant/'
     | '/_customer/t/$token/issue/$issueId'
     | '/_customer/t/$token/pay/$paymentId'
     | '/_kelola/kelola/akses/role/$roleId'
@@ -2464,6 +2692,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaIndexRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/akses-dukungan': {
+      id: '/_kelola/kelola/akses-dukungan'
+      path: '/kelola/akses-dukungan'
+      fullPath: '/kelola/akses-dukungan'
+      preLoaderRoute: typeof KelolaKelolaAksesDukunganRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/dapur': {
       id: '/_kelola/kelola/dapur'
       path: '/kelola/dapur'
@@ -2513,6 +2748,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPengaturanRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/perangkat': {
+      id: '/_kelola/kelola/perangkat'
+      path: '/kelola/perangkat'
+      fullPath: '/kelola/perangkat'
+      preLoaderRoute: typeof KelolaKelolaPerangkatRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/reports/': {
       id: '/_kelola/reports/'
       path: '/reports'
@@ -2532,6 +2774,13 @@ declare module '@tanstack/react-router' {
       path: '/kds'
       fullPath: '/kds/'
       preLoaderRoute: typeof KitchenKdsIndexRouteImport
+      parentRoute: typeof KitchenRoute
+    }
+    '/_kitchen/kds/ganti-pengguna': {
+      id: '/_kitchen/kds/ganti-pengguna'
+      path: '/kds/ganti-pengguna'
+      fullPath: '/kds/ganti-pengguna'
+      preLoaderRoute: typeof KitchenKdsGantiPenggunaRouteImport
       parentRoute: typeof KitchenRoute
     }
     '/_ops/operasional/koneksi': {
@@ -2555,6 +2804,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsPosCustomerDisplayRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/_ops/pos/ganti-pengguna': {
+      id: '/_ops/pos/ganti-pengguna'
+      path: '/pos/ganti-pengguna'
+      fullPath: '/pos/ganti-pengguna'
+      preLoaderRoute: typeof OpsPosGantiPenggunaRouteImport
+      parentRoute: typeof OpsRoute
+    }
     '/_ops/pos/reservasi': {
       id: '/_ops/pos/reservasi'
       path: '/pos/reservasi'
@@ -2576,11 +2832,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformPlatformIndexRouteImport
       parentRoute: typeof PlatformRoute
     }
+    '/_platform/platform/akses-dukungan': {
+      id: '/_platform/platform/akses-dukungan'
+      path: '/platform/akses-dukungan'
+      fullPath: '/platform/akses-dukungan'
+      preLoaderRoute: typeof PlatformPlatformAksesDukunganRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/audit': {
+      id: '/_platform/platform/audit'
+      path: '/platform/audit'
+      fullPath: '/platform/audit'
+      preLoaderRoute: typeof PlatformPlatformAuditRouteImport
+      parentRoute: typeof PlatformRoute
+    }
     '/_platform/platform/keamanan': {
       id: '/_platform/platform/keamanan'
       path: '/platform/keamanan'
       fullPath: '/platform/keamanan'
       preLoaderRoute: typeof PlatformPlatformKeamananRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/kesehatan': {
+      id: '/_platform/platform/kesehatan'
+      path: '/platform/kesehatan'
+      fullPath: '/platform/kesehatan'
+      preLoaderRoute: typeof PlatformPlatformKesehatanRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/kuota': {
+      id: '/_platform/platform/kuota'
+      path: '/platform/kuota'
+      fullPath: '/platform/kuota'
+      preLoaderRoute: typeof PlatformPlatformKuotaRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/paket': {
+      id: '/_platform/platform/paket'
+      path: '/platform/paket'
+      fullPath: '/platform/paket'
+      preLoaderRoute: typeof PlatformPlatformPaketRouteImport
       parentRoute: typeof PlatformRoute
     }
     '/_public/masuk/': {
@@ -3122,6 +3413,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPelatihanTrainingIdRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan/integrasi': {
+      id: '/_kelola/kelola/pengaturan/integrasi'
+      path: '/integrasi'
+      fullPath: '/kelola/pengaturan/integrasi'
+      preLoaderRoute: typeof KelolaKelolaPengaturanIntegrasiRouteImport
+      parentRoute: typeof KelolaKelolaPengaturanRoute
+    }
+    '/_kelola/kelola/pengaturan/istilah': {
+      id: '/_kelola/kelola/pengaturan/istilah'
+      path: '/istilah'
+      fullPath: '/kelola/pengaturan/istilah'
+      preLoaderRoute: typeof KelolaKelolaPengaturanIstilahRouteImport
+      parentRoute: typeof KelolaKelolaPengaturanRoute
+    }
+    '/_kelola/kelola/pengaturan/konfigurasi': {
+      id: '/_kelola/kelola/pengaturan/konfigurasi'
+      path: '/konfigurasi'
+      fullPath: '/kelola/pengaturan/konfigurasi'
+      preLoaderRoute: typeof KelolaKelolaPengaturanKonfigurasiRouteImport
+      parentRoute: typeof KelolaKelolaPengaturanRoute
+    }
+    '/_kelola/kelola/pengaturan/tema': {
+      id: '/_kelola/kelola/pengaturan/tema'
+      path: '/tema'
+      fullPath: '/kelola/pengaturan/tema'
+      preLoaderRoute: typeof KelolaKelolaPengaturanTemaRouteImport
+      parentRoute: typeof KelolaKelolaPengaturanRoute
+    }
     '/_kelola/kelola/pengaturan_/outlet': {
       id: '/_kelola/kelola/pengaturan_/outlet'
       path: '/kelola/pengaturan/outlet'
@@ -3134,6 +3453,20 @@ declare module '@tanstack/react-router' {
       path: '/kelola/pengumuman'
       fullPath: '/kelola/pengumuman/'
       preLoaderRoute: typeof KelolaKelolaPengumumanIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/persetujuan/': {
+      id: '/_kelola/kelola/persetujuan/'
+      path: '/kelola/persetujuan'
+      fullPath: '/kelola/persetujuan/'
+      preLoaderRoute: typeof KelolaKelolaPersetujuanIndexRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/persetujuan/$requestId': {
+      id: '/_kelola/kelola/persetujuan/$requestId'
+      path: '/kelola/persetujuan/$requestId'
+      fullPath: '/kelola/persetujuan/$requestId'
+      preLoaderRoute: typeof KelolaKelolaPersetujuanRequestIdRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/promo/': {
@@ -3268,6 +3601,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/pos/meja/'
       preLoaderRoute: typeof OpsPosMejaIndexRouteImport
       parentRoute: typeof OpsRoute
+    }
+    '/_platform/platform/tenant/': {
+      id: '/_platform/platform/tenant/'
+      path: '/platform/tenant'
+      fullPath: '/platform/tenant/'
+      preLoaderRoute: typeof PlatformPlatformTenantIndexRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/tenant/$tenantId': {
+      id: '/_platform/platform/tenant/$tenantId'
+      path: '/platform/tenant/$tenantId'
+      fullPath: '/platform/tenant/$tenantId'
+      preLoaderRoute: typeof PlatformPlatformTenantTenantIdRouteImport
+      parentRoute: typeof PlatformRoute
+    }
+    '/_platform/platform/tenant/baru': {
+      id: '/_platform/platform/tenant/baru'
+      path: '/platform/tenant/baru'
+      fullPath: '/platform/tenant/baru'
+      preLoaderRoute: typeof PlatformPlatformTenantBaruRouteImport
+      parentRoute: typeof PlatformRoute
     }
     '/_customer/t/$token/issue/$issueId': {
       id: '/_customer/t/$token/issue/$issueId'
@@ -3513,6 +3867,27 @@ const KaryawanRouteWithChildren = KaryawanRoute._addFileChildren(
   KaryawanRouteChildren,
 )
 
+interface KelolaKelolaPengaturanRouteChildren {
+  KelolaKelolaPengaturanIntegrasiRoute: typeof KelolaKelolaPengaturanIntegrasiRoute
+  KelolaKelolaPengaturanIstilahRoute: typeof KelolaKelolaPengaturanIstilahRoute
+  KelolaKelolaPengaturanKonfigurasiRoute: typeof KelolaKelolaPengaturanKonfigurasiRoute
+  KelolaKelolaPengaturanTemaRoute: typeof KelolaKelolaPengaturanTemaRoute
+}
+
+const KelolaKelolaPengaturanRouteChildren: KelolaKelolaPengaturanRouteChildren =
+  {
+    KelolaKelolaPengaturanIntegrasiRoute: KelolaKelolaPengaturanIntegrasiRoute,
+    KelolaKelolaPengaturanIstilahRoute: KelolaKelolaPengaturanIstilahRoute,
+    KelolaKelolaPengaturanKonfigurasiRoute:
+      KelolaKelolaPengaturanKonfigurasiRoute,
+    KelolaKelolaPengaturanTemaRoute: KelolaKelolaPengaturanTemaRoute,
+  }
+
+const KelolaKelolaPengaturanRouteWithChildren =
+  KelolaKelolaPengaturanRoute._addFileChildren(
+    KelolaKelolaPengaturanRouteChildren,
+  )
+
 interface KelolaKelolaInventoriTransferRouteChildren {
   KelolaKelolaInventoriTransferBaruRoute: typeof KelolaKelolaInventoriTransferBaruRoute
   KelolaKelolaInventoriTransferIndexRoute: typeof KelolaKelolaInventoriTransferIndexRoute
@@ -3533,13 +3908,15 @@ const KelolaKelolaInventoriTransferRouteWithChildren =
 
 interface KelolaRouteChildren {
   KelolaAuditRoute: typeof KelolaAuditRoute
+  KelolaKelolaAksesDukunganRoute: typeof KelolaKelolaAksesDukunganRoute
   KelolaKelolaDapurRoute: typeof KelolaKelolaDapurRoute
   KelolaKelolaKeamananRoute: typeof KelolaKelolaKeamananRoute
   KelolaKelolaNotifikasiRoute: typeof KelolaKelolaNotifikasiRoute
   KelolaKelolaOrganisasiRoute: typeof KelolaKelolaOrganisasiRoute
   KelolaKelolaPembayaranRoute: typeof KelolaKelolaPembayaranRoute
   KelolaKelolaPengadaanRoute: typeof KelolaKelolaPengadaanRoute
-  KelolaKelolaPengaturanRoute: typeof KelolaKelolaPengaturanRoute
+  KelolaKelolaPengaturanRoute: typeof KelolaKelolaPengaturanRouteWithChildren
+  KelolaKelolaPerangkatRoute: typeof KelolaKelolaPerangkatRoute
   KelolaReportsBuilderRoute: typeof KelolaReportsBuilderRoute
   KelolaKelolaIndexRoute: typeof KelolaKelolaIndexRoute
   KelolaReportsIndexRoute: typeof KelolaReportsIndexRoute
@@ -3589,6 +3966,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPayrollServiceChargeRoute: typeof KelolaKelolaPayrollServiceChargeRoute
   KelolaKelolaPelatihanTrainingIdRoute: typeof KelolaKelolaPelatihanTrainingIdRoute
   KelolaKelolaPengaturanOutletRoute: typeof KelolaKelolaPengaturanOutletRoute
+  KelolaKelolaPersetujuanRequestIdRoute: typeof KelolaKelolaPersetujuanRequestIdRoute
   KelolaKelolaPromoPromotionIdRoute: typeof KelolaKelolaPromoPromotionIdRoute
   KelolaKelolaPromoRoiRoute: typeof KelolaKelolaPromoRoiRoute
   KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
@@ -3617,6 +3995,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakIndexRoute: typeof KelolaKelolaPajakIndexRoute
   KelolaKelolaPelatihanIndexRoute: typeof KelolaKelolaPelatihanIndexRoute
   KelolaKelolaPengumumanIndexRoute: typeof KelolaKelolaPengumumanIndexRoute
+  KelolaKelolaPersetujuanIndexRoute: typeof KelolaKelolaPersetujuanIndexRoute
   KelolaKelolaPromoIndexRoute: typeof KelolaKelolaPromoIndexRoute
   KelolaKelolaRosterIndexRoute: typeof KelolaKelolaRosterIndexRoute
   KelolaKelolaSopIndexRoute: typeof KelolaKelolaSopIndexRoute
@@ -3638,13 +4017,15 @@ interface KelolaRouteChildren {
 
 const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaAuditRoute: KelolaAuditRoute,
+  KelolaKelolaAksesDukunganRoute: KelolaKelolaAksesDukunganRoute,
   KelolaKelolaDapurRoute: KelolaKelolaDapurRoute,
   KelolaKelolaKeamananRoute: KelolaKelolaKeamananRoute,
   KelolaKelolaNotifikasiRoute: KelolaKelolaNotifikasiRoute,
   KelolaKelolaOrganisasiRoute: KelolaKelolaOrganisasiRoute,
   KelolaKelolaPembayaranRoute: KelolaKelolaPembayaranRoute,
   KelolaKelolaPengadaanRoute: KelolaKelolaPengadaanRoute,
-  KelolaKelolaPengaturanRoute: KelolaKelolaPengaturanRoute,
+  KelolaKelolaPengaturanRoute: KelolaKelolaPengaturanRouteWithChildren,
+  KelolaKelolaPerangkatRoute: KelolaKelolaPerangkatRoute,
   KelolaReportsBuilderRoute: KelolaReportsBuilderRoute,
   KelolaKelolaIndexRoute: KelolaKelolaIndexRoute,
   KelolaReportsIndexRoute: KelolaReportsIndexRoute,
@@ -3700,6 +4081,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPayrollServiceChargeRoute: KelolaKelolaPayrollServiceChargeRoute,
   KelolaKelolaPelatihanTrainingIdRoute: KelolaKelolaPelatihanTrainingIdRoute,
   KelolaKelolaPengaturanOutletRoute: KelolaKelolaPengaturanOutletRoute,
+  KelolaKelolaPersetujuanRequestIdRoute: KelolaKelolaPersetujuanRequestIdRoute,
   KelolaKelolaPromoPromotionIdRoute: KelolaKelolaPromoPromotionIdRoute,
   KelolaKelolaPromoRoiRoute: KelolaKelolaPromoRoiRoute,
   KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,
@@ -3728,6 +4110,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakIndexRoute: KelolaKelolaPajakIndexRoute,
   KelolaKelolaPelatihanIndexRoute: KelolaKelolaPelatihanIndexRoute,
   KelolaKelolaPengumumanIndexRoute: KelolaKelolaPengumumanIndexRoute,
+  KelolaKelolaPersetujuanIndexRoute: KelolaKelolaPersetujuanIndexRoute,
   KelolaKelolaPromoIndexRoute: KelolaKelolaPromoIndexRoute,
   KelolaKelolaRosterIndexRoute: KelolaKelolaRosterIndexRoute,
   KelolaKelolaSopIndexRoute: KelolaKelolaSopIndexRoute,
@@ -3761,12 +4144,14 @@ const KelolaRouteWithChildren =
 interface KitchenRouteChildren {
   KitchenExpoRoute: typeof KitchenExpoRoute
   KitchenPickupRoute: typeof KitchenPickupRoute
+  KitchenKdsGantiPenggunaRoute: typeof KitchenKdsGantiPenggunaRoute
   KitchenKdsIndexRoute: typeof KitchenKdsIndexRoute
 }
 
 const KitchenRouteChildren: KitchenRouteChildren = {
   KitchenExpoRoute: KitchenExpoRoute,
   KitchenPickupRoute: KitchenPickupRoute,
+  KitchenKdsGantiPenggunaRoute: KitchenKdsGantiPenggunaRoute,
   KitchenKdsIndexRoute: KitchenKdsIndexRoute,
 }
 
@@ -3776,6 +4161,7 @@ const KitchenRouteWithChildren =
 interface OpsRouteChildren {
   OpsOperasionalKoneksiRoute: typeof OpsOperasionalKoneksiRoute
   OpsPosCustomerDisplayRoute: typeof OpsPosCustomerDisplayRoute
+  OpsPosGantiPenggunaRoute: typeof OpsPosGantiPenggunaRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsPosMejaIndexRoute: typeof OpsPosMejaIndexRoute
@@ -3784,6 +4170,7 @@ interface OpsRouteChildren {
 const OpsRouteChildren: OpsRouteChildren = {
   OpsOperasionalKoneksiRoute: OpsOperasionalKoneksiRoute,
   OpsPosCustomerDisplayRoute: OpsPosCustomerDisplayRoute,
+  OpsPosGantiPenggunaRoute: OpsPosGantiPenggunaRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsPosMejaIndexRoute: OpsPosMejaIndexRoute,
@@ -3802,13 +4189,29 @@ const OwnerRouteChildren: OwnerRouteChildren = {
 const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
 
 interface PlatformRouteChildren {
+  PlatformPlatformAksesDukunganRoute: typeof PlatformPlatformAksesDukunganRoute
+  PlatformPlatformAuditRoute: typeof PlatformPlatformAuditRoute
   PlatformPlatformKeamananRoute: typeof PlatformPlatformKeamananRoute
+  PlatformPlatformKesehatanRoute: typeof PlatformPlatformKesehatanRoute
+  PlatformPlatformKuotaRoute: typeof PlatformPlatformKuotaRoute
+  PlatformPlatformPaketRoute: typeof PlatformPlatformPaketRoute
   PlatformPlatformIndexRoute: typeof PlatformPlatformIndexRoute
+  PlatformPlatformTenantTenantIdRoute: typeof PlatformPlatformTenantTenantIdRoute
+  PlatformPlatformTenantBaruRoute: typeof PlatformPlatformTenantBaruRoute
+  PlatformPlatformTenantIndexRoute: typeof PlatformPlatformTenantIndexRoute
 }
 
 const PlatformRouteChildren: PlatformRouteChildren = {
+  PlatformPlatformAksesDukunganRoute: PlatformPlatformAksesDukunganRoute,
+  PlatformPlatformAuditRoute: PlatformPlatformAuditRoute,
   PlatformPlatformKeamananRoute: PlatformPlatformKeamananRoute,
+  PlatformPlatformKesehatanRoute: PlatformPlatformKesehatanRoute,
+  PlatformPlatformKuotaRoute: PlatformPlatformKuotaRoute,
+  PlatformPlatformPaketRoute: PlatformPlatformPaketRoute,
   PlatformPlatformIndexRoute: PlatformPlatformIndexRoute,
+  PlatformPlatformTenantTenantIdRoute: PlatformPlatformTenantTenantIdRoute,
+  PlatformPlatformTenantBaruRoute: PlatformPlatformTenantBaruRoute,
+  PlatformPlatformTenantIndexRoute: PlatformPlatformTenantIndexRoute,
 }
 
 const PlatformRouteWithChildren = PlatformRoute._addFileChildren(
