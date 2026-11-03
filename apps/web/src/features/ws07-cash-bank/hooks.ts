@@ -39,8 +39,8 @@ export function useStatementLinesInfinite(filters: StatementLineFilters) {
     queryKey: [...cashBankKeys.lineList(filters), "infinite"] as const,
     queryFn: ({ pageParam, signal }) =>
       api.fetchStatementLines(
+        filters.bankAccountId,
         {
-          bankAccountId: filters.bankAccountId,
           from: filters.from,
           to: filters.to,
           limit: STATEMENT_PAGE_SIZE,

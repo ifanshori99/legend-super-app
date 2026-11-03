@@ -89,7 +89,7 @@ function CashDepositForm({
   const [slipReference, setSlipReference] = React.useState("");
   const [touched, setTouched] = React.useState(false);
   const [serverError, setServerError] = React.useState<string | null>(null);
-  const outlets = outletsQuery.data?.data ?? [];
+  const outlets = outletsQuery.data ?? [];
   const effectiveOutlet = outletId || outlets[0]?.id || "";
   const amountIdr = parseRupiahInput(amount);
   const amountError =

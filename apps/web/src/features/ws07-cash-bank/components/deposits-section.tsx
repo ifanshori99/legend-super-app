@@ -51,7 +51,7 @@ export function DepositsSection({
   const alerts = useUndepositedAlerts(legalEntityId, today);
   const outlets = useOutlets();
   const outletName = (outletId: string) =>
-    outlets.data?.data.find((outlet) => outlet.id === outletId)?.name ??
+    outlets.data?.find((outlet) => outlet.id === outletId)?.name ??
     outletId.slice(0, 8);
   const accountLabel = (bankAccountId: string) => {
     const account = accounts.find((row) => row.id === bankAccountId);

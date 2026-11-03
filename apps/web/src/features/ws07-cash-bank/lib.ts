@@ -30,12 +30,14 @@ import {
   type MatchingPolicy,
   type ReconciliationCase,
   type ReconciliationCaseStatus,
-  type ReconciliationCaseType,
   type ReconciliationRef,
   type UndepositedCashAlert,
 } from "@starter/shared/accounting";
 import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
+
+/** Re-exported so the match workspace types its suggestion from the lib. */
+export type { MatchOutcome };
 
 // The API body cap is 100 kB; the contract allows a 90 kB CSV (banking.ts).
 export const MAX_IMPORT_CSV_CHARS = 90_000;
@@ -547,6 +549,9 @@ export const CASE_STATUS_TONES: Record<ReconciliationCaseStatus, Tone> = {
   resolved: "success",
   written_off: "neutral",
 };
+
+/** Case kind as the contract carries it (the schema has no exported alias). */
+export type ReconciliationCaseType = ReconciliationCase["type"];
 
 export const CASE_TYPE_KEYS: Record<ReconciliationCaseType, MessageKey> = {
   bank_statement: "accounting.cash.recon.type.bank_statement",

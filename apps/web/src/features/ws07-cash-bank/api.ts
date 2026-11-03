@@ -98,10 +98,19 @@ export async function importBankStatement(
 // ---- Statement lines and matching -----------------------------------------
 
 export async function fetchStatementLines(
+  bankAccountId: string,
   query: BankStatementLineQuery,
   signal?: AbortSignal,
 ) {
-  return callEndpoint(listStatementLinesEndpoint, { query }, { signal });
+  // The account is a path param in the contract, not a query field.
+  return callEndpoint(
+    listStatementLinesEndpoint,
+    {
+      params: { bankAccountId } as Params<typeof listStatementLinesEndpoint>,
+      query,
+    },
+    { signal },
+  );
 }
 
 export async function matchStatementLine(

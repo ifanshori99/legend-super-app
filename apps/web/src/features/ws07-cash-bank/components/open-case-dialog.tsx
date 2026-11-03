@@ -2,10 +2,7 @@
 // dengan PIC"). The PIC list is the tenant user directory port of WS-01; it
 // fails closed outside mock mode until GET /api/access/users exists.
 import * as React from "react";
-import type {
-  ReconciliationCaseType,
-  ReconciliationRef,
-} from "@starter/shared/accounting";
+import type { ReconciliationRef } from "@starter/shared/accounting";
 import type { UserId } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -30,7 +27,7 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useAssignablePeople } from "@/features/ws01-access/people";
 import { useOpenReconciliationCase } from "../hooks";
-import { REF_TYPE_KEYS, shortId } from "../lib";
+import { REF_TYPE_KEYS, shortId, type ReconciliationCaseType } from "../lib";
 
 export function OpenCaseDialog({
   open,
@@ -160,12 +157,15 @@ function OpenCaseForm({
         </p>
       ) : (
         <FormField
+          // The Select root renders no DOM node, so the label must point at the
+          // trigger itself; otherwise the control has no accessible name.
+          id="recon-case-pic"
           label={t("accounting.cash.case.pic")}
           hint={t("accounting.cash.case.picHint")}
           required
         >
           <Select value={effectiveOwner} onValueChange={setOwnerId}>
-            <SelectTrigger>
+            <SelectTrigger id="recon-case-pic">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

@@ -75,8 +75,8 @@ export function statementLineListQuery(filters: StatementLineFilters) {
     queryKey: [...cashBankKeys.lineList(filters), "page"] as const,
     queryFn: ({ signal }) =>
       fetchStatementLines(
+        filters.bankAccountId,
         {
-          bankAccountId: filters.bankAccountId,
           from: filters.from,
           to: filters.to,
           limit: STATEMENT_PAGE_SIZE,
@@ -98,8 +98,8 @@ export function statementLineDedupeKeysQuery(
     queryKey: cashBankKeys.dedupeKeys(bankAccountId ?? "none"),
     queryFn: ({ signal }) =>
       fetchStatementLines(
+        bankAccountId ?? "",
         {
-          bankAccountId: bankAccountId ?? "",
           from: DEDUPE_SCAN_RANGE.from,
           to: DEDUPE_SCAN_RANGE.to,
           limit: 100,
@@ -124,7 +124,8 @@ export function statementLinesForPeriodQuery(
     }),
     queryFn: ({ signal }) =>
       fetchStatementLines(
-        { bankAccountId: bankAccountId ?? "", from, to, limit: 100 },
+        bankAccountId ?? "",
+        { from, to, limit: 100 },
         signal,
       ),
     enabled: Boolean(bankAccountId && from && to),
