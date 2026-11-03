@@ -142,8 +142,10 @@ function OutletSettingsScreen({
                       onClick={() => setSelectedId(outlet.id)}
                       className={[
                         "grid w-full min-w-0 gap-1 rounded-control border-(length:--border-w) px-3 py-2 text-start transition-colors duration-(--duration-fast)",
+                        // Selection reads in ink, not accent (DESIGN.md
+                        // accent budget: the Save CTA owns the accent).
                         current
-                          ? "border-primary bg-primary-tint"
+                          ? "border-border bg-surface-3"
                           : "border-transparent hover:bg-surface-2",
                       ].join(" ")}
                     >
@@ -151,9 +153,7 @@ function OutletSettingsScreen({
                         <span className="truncate text-sm leading-5 font-semibold">
                           {outlet.name}
                         </span>
-                        <Badge tone={current ? "brand" : "neutral"}>
-                          {outlet.code}
-                        </Badge>
+                        <Badge tone="neutral">{outlet.code}</Badge>
                       </span>
                       <span className="truncate text-sm leading-5 text-muted-foreground tabular">
                         {outlet.timeZone} · {outlet.businessDayCutoff}

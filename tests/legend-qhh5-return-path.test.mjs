@@ -129,6 +129,57 @@ describe("legend-qhh5: app-local return path for sign-in", () => {
     assert.equal(signInReturnPath(search), PORTAL);
   });
 
+  test("legend-qhh5 review: encoded separators, control chars, dot segments and API paths are refused", () => {
+    const refused = [
+      "/%2F%2Fevil.example",
+      "/%2f%2fevil.example",
+      "/%5Cevil.example",
+      "/%5cevil.example",
+      "/%2F/evil.example",
+      "/wifi%2F..%2F..%2Fapi",
+      "/\u0000/evil.example",
+      "/\u0001evil",
+      "/\u007fevil",
+      "/ /evil.example",
+      "/ /evil.example",
+      "/﻿/evil.example",
+      "/%09/evil.example",
+      "/%0a/evil.example",
+      "/%20/evil.example",
+      "/%E0%A4%A",
+      "/api",
+      "/api/auth/sign-out",
+      "/API/auth/callback",
+      "/auth/callback",
+      "/wifi/../api/org/outlets",
+      "/./api/x",
+      "/%2e%2e/api/x",
+      "/x/%2e%2e/api/x",
+      "javascript:alert(1)",
+      "JaVaScRiPt:alert(1)",
+      " /wifi",
+      "/wifi ",
+    ];
+    for (const value of refused) {
+      assert.equal(safeReturnPath(value), undefined, JSON.stringify(value));
+      assert.equal(
+        signInReturnPath({ redirect: value }),
+        undefined,
+        JSON.stringify(value),
+      );
+      assert.equal(signInPath(value, "redirect"), "/masuk");
+    }
+    // An encoded value inside the query is data, not a separator.
+    for (const value of [
+      "/wifi?next=%2Fmenu",
+      "/member?q=nasi%20goreng",
+      "/apiary",
+      "/authors",
+    ]) {
+      assert.equal(safeReturnPath(value), value, value);
+    }
+  });
+
   test("legend-qhh5: percent-encoded protocol-relative values are decoded before the check", () => {
     const url = new URL(
       "/masuk?redirect=%2F%2Fevil.example",

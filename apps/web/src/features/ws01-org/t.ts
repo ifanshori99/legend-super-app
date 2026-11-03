@@ -22,6 +22,10 @@ const FALLBACKS: Readonly<Record<string, MessageKey>> = {
   "orgOutlet.fields.name": "inventory.units.columns.name",
   "orgOutlet.fields.address": "website.home.addressTitle",
   "orgOutlet.fields.timeZone": "notification.preferences.timeZone",
+  // "Jam mulai" + the hint below ("hari dimulai pukul 04.00, …") reads as the
+  // hour the business day starts until "Jam tutup buku" is in the catalog.
+  "orgOutlet.fields.cutoff": "promo.editor.timeStart",
+  "orgOutlet.saved": "opname.detail.line.saved",
   "orgOutlet.timeZoneHint": "notification.preferences.timeZone",
   "orgOutlet.cutoffHint": "promo.editor.startsOnHint",
   "orgOutlet.previewTitle": "opname.create.businessDate",
