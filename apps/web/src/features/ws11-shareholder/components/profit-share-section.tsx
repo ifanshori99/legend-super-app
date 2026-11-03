@@ -26,7 +26,7 @@ import {
   sortedDistributions,
 } from "../board.ts";
 import { useMyProfitShare } from "../hooks";
-import { FinalityBadge } from "./region";
+import { FinalityBadge, RegionFailure } from "./region";
 
 function Estimates({ data }: { data: MyProfitShare }) {
   const t = useT();
@@ -269,13 +269,17 @@ export function ProfitShareSection() {
   const t = useT();
   const { status, data, retry } = useMyProfitShare();
 
-  if (
-    status === "loading" ||
-    status === "error" ||
-    status === "offline" ||
-    status === "empty" ||
-    data === null
-  ) {
+  if (status === "error" || status === "offline")
+    return (
+      <DataTableShell
+        title={t("shareholderHome.tabs.profitShare")}
+        state="ready"
+      >
+        <RegionFailure status={status} retry={retry} />
+      </DataTableShell>
+    );
+
+  if (status === "loading" || status === "empty" || data === null) {
     return (
       <DataTableShell
         title={t("shareholderHome.tabs.profitShare")}

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { formatInstantDate } from "../board.ts";
 import { useShareholderDocuments } from "../hooks";
+import { RegionFailure } from "./region";
 
 export function DocumentsSection() {
   const t = useT();
@@ -17,9 +18,19 @@ export function DocumentsSection() {
       ? "loading"
       : docs.status === "empty"
         ? "empty"
-        : docs.status === "ready"
-          ? "ready"
-          : "error";
+        : "ready";
+  // DataTableShell's error state cannot tell offline from a server error, so a
+  // failure renders in the shell's ready slot through the shared frame.
+  if (docs.status === "error" || docs.status === "offline")
+    return (
+      <DataTableShell
+        title={t("shareholderHome.documents.title")}
+        description={t("shareholderHome.documents.hint")}
+        state="ready"
+      >
+        <RegionFailure status={docs.status} retry={docs.retry} />
+      </DataTableShell>
+    );
   return (
     <DataTableShell
       title={t("shareholderHome.documents.title")}
