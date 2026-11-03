@@ -425,9 +425,11 @@ function RecipeEditorForm({
         },
         onError: (error) =>
           setFormError(
-            error instanceof ApiError
-              ? error.message
-              : t("inventoryRecipe.errors.saveFailed"),
+            error instanceof ApiError && error.code === "RECIPE_CYCLE"
+              ? t("inventoryRecipe.errors.cycle")
+              : error instanceof ApiError
+                ? error.message
+                : t("inventoryRecipe.errors.saveFailed"),
           ),
       },
     );

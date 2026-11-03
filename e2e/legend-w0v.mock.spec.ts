@@ -97,6 +97,23 @@ test("F17 gross = net / (1 - waste), so 150 g net at 10% waste draws 166,6667 g"
   });
 });
 
+test("F17 owner rule Q19: 100 g net at 10% waste draws 111,1111 g gross, not 110 g", async ({
+  page,
+}) => {
+  await open(page, `/kelola/inventori/resep/${NASI_GORENG_RECIPE_ID}`);
+
+  // gross = net ÷ (1 − waste): 100 ÷ 0,9 = 111,1111 g. The wrong
+  // net × (1 + waste) reading would show 110 g.
+  const net = page.getByLabel("Net", { exact: true }).first();
+  const waste = page.getByLabel("Susut (%)").first();
+  await retry(async () => {
+    await net.fill("100");
+    await waste.fill("10");
+    await expect(page.getByText("111,1111 g")).toBeVisible({ timeout: 1000 });
+  });
+  await expect(page.getByText("110 g", { exact: true })).toHaveCount(0);
+});
+
 test("F17 creates a recipe and saves the edit as a new version", async ({
   page,
 }) => {

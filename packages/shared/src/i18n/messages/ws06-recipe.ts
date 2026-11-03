@@ -14,6 +14,8 @@ export const inventoryRecipeMessages = {
     offline: "Anda sedang offline. Sambungkan perangkat lalu coba lagi.",
     saveFailed:
       "Perubahan gagal disimpan. Periksa kembali isian lalu coba lagi.",
+    cycle:
+      "Resep komponen sudah memakai resep ini, jadi akan membentuk lingkaran. Pilih komponen lain.",
   },
   menuOutput: "Menu",
   unknownItem: "Item tidak ditemukan",

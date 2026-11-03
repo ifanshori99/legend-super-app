@@ -119,6 +119,33 @@ function requireComponent(
 }
 
 /**
+ * True when `recipeId` can reach itself through nested recipe lines. The
+ * contract's line schema only blocks a direct self-reference; the API rejects
+ * an indirect loop (A uses B, B uses A) with RECIPE_CYCLE, so the mock must too.
+ */
+function hasRecipeCycle(
+  lines: readonly RecipeLine[],
+  recipeId: string,
+): boolean {
+  const seen = new Set<string>();
+  const stack = lines
+    .filter(
+      (line) => line.recipeId === recipeId && line.componentType === "recipe",
+    )
+    .map((line) => line.componentId);
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (id === recipeId) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const line of lines)
+      if (line.recipeId === id && line.componentType === "recipe")
+        stack.push(line.componentId);
+  }
+  return false;
+}
+
+/**
  * The current cost book: moving-average costs from the fixtures' balances,
  * then each semi-finished recipe's HPP for output items that have no balance
  * yet (a freshly created semi-finished recipe). Resolving in passes handles a
@@ -311,6 +338,13 @@ registerMock(createRecipeVersion, ({ params, body, headers }) => {
         (line) => line.recipeId !== current.id,
       );
       const allLines = [...keptLines, ...lines];
+      if (hasRecipeCycle(allLines, current.id))
+        throw new ApiError(
+          409,
+          "RECIPE_CYCLE",
+          "Resep komponen sudah memakai resep ini, sehingga membentuk lingkaran.",
+          [{ field: "lines", message: "RECIPE_CYCLE" }],
+        );
       const costed: Recipe = {
         ...next,
         theoreticalCostIdr: theoreticalUnitCost(
@@ -385,7 +419,17 @@ registerMock(postProductionOrderTransition, ({ params, body, headers }) => {
         (row) => row.id === params.productionOrderId,
       );
       if (!current) notFound("Perintah produksi");
-      const status = transitionProductionOrder(current.status, body.action);
+      let status: ProductionOrder["status"];
+      try {
+        status = transitionProductionOrder(current.status, body.action);
+      } catch {
+        // The API maps the contract's PRODUCTION_INVALID_TRANSITION to 409.
+        throw new ApiError(
+          409,
+          "PRODUCTION_INVALID_TRANSITION",
+          "Status perintah produksi sudah berubah. Muat ulang lalu coba lagi.",
+        );
+      }
       if (body.action === "complete" && body.actualQty === undefined)
         invalid("actualQty", "Hasil aktual wajib diisi saat menyelesaikan.");
       const recipe = requireRecipe(current.recipeId);
