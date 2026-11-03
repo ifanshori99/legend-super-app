@@ -25,6 +25,9 @@ import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
+import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
+import { SupportSessionBanner } from "@/features/ws01-support-access/components/session-banner";
+import { holdsAny } from "@/lib/areas/guard";
 
 type SessionLike = { user: { name: string } } | null;
 
@@ -104,6 +107,11 @@ function AreaFrameBody({
         }
         actions={
           <>
+            <ApprovalInboxBadge
+              enabled={
+                area === "kelola" && holdsAny(access, ["approval.inbox.view"])
+              }
+            />
             <ThemeToggle />
             {signOut}
           </>
@@ -112,6 +120,9 @@ function AreaFrameBody({
         {/* PRD §3 F6: management sessions end after 30 idle minutes; the
             warning rides the management shell so every screen shows it. */}
         <IdleSessionWarning />
+        {/* PRD §3 F4: a Super Admin support session is always visible, with a
+            countdown, across tenant views (legend-335). */}
+        {area === "platform" ? null : <SupportSessionBanner source="org" />}
         {body}
       </ManagementShell>
     );
@@ -126,7 +137,13 @@ function AreaFrameBody({
         mode={definition.forcedMode}
         actions={definition.forcedMode ? undefined : <ThemeToggle />}
       >
-        <div className="h-full overflow-y-auto p-4">{body}</div>
+        <div className="h-full overflow-y-auto p-4">
+          {/* PRD §3 F4 / TEN-04: staff at the till and the kitchen also see a
+              running support session (legend-335). Renders nothing without
+              one or when the caller may not read it. */}
+          <SupportSessionBanner source="org" className="mb-4" />
+          {body}
+        </div>
       </OperationsShell>
     );
   }
