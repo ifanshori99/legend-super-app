@@ -20,6 +20,7 @@
 // fingerprint of file hash + brand + outlet + options; a retry replays the
 // stored counts, the same key with different input is a 409.
 
+import { outlets } from "../db/schema/platform-org.ts";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
@@ -42,7 +43,6 @@ import {
   itemAvailability,
   menuCategories,
   menuItems,
-  outlets,
   priceListItems,
   priceLists,
   stations,

@@ -19,6 +19,8 @@
 // once. A burst of events therefore yields one regeneration per outlet. An
 // unchanged payload hash is not re-stored.
 
+import type { OutletId } from "@starter/shared/core";
+import { outlets } from "../db/schema/platform-org.ts";
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
@@ -35,7 +37,6 @@ import {
   itemAvailability,
   menuCategories,
   menuItems,
-  outlets,
 } from "../db/schema/menu.ts";
 import { printableMenuRenders } from "../db/schema/menu-import.ts";
 import { brands } from "../db/schema/platform-org.ts";
@@ -447,7 +448,7 @@ export async function regenerateMenuPrint(
     const object = await uploadStorage(
       db,
       context,
-      { purpose: "document", outletId },
+      { purpose: "document", outletId: outletId as OutletId },
       pdf,
       {
         storage: deps.storage,

@@ -21,6 +21,8 @@ import {
 } from "../services/menu-print.service";
 import {
   createIsolatedTenant,
+  dropIsolatedTenant,
+  type IsolatedTenant,
   owner,
   staffWithRole,
   type Staff,
@@ -56,12 +58,19 @@ class CountingRenderer implements MenuPdfRenderer {
   }
 }
 
+const testStartedAt = new Date();
 let staff: Staff;
+const isolatedTenants: IsolatedTenant[] = [];
 const renderer = new CountingRenderer();
 const deps = { storage: new FakeObjectStorage(), renderer };
 
 beforeAll(async () => {
-  staff = await staffWithRole(app, { template: "owner" });
+  staff = await staffWithRole(app, { template: "owner", tenantId });
+  // Service calls below use a fixed past clock; the grant must already be valid.
+  await owner.query(
+    "UPDATE role_assignments SET valid_from = $2 WHERE user_id = $1",
+    [staff.userId, "2026-01-01T00:00:00Z"],
+  );
   const client = await owner.connect();
   try {
     await client.query("BEGIN");
@@ -108,7 +117,57 @@ beforeAll(async () => {
   }
 });
 
-afterAll(async () => {});
+afterAll(async () => {
+  for (const t of isolatedTenants) await dropIsolatedTenant(t);
+  await cleanupSeededTenant("category_id = $2", [ids.category]);
+});
+/** Remove what this file wrote into the shared seeded tenant so the other
+ *  menu suites (latest price list wins, guest menu lists) are not disturbed. */
+async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    const items = `SELECT id FROM menu_items WHERE tenant_id = $1 AND (${itemFilter})`;
+    const p = [tenantId, ...params];
+    await client.query(
+      `DELETE FROM item_availability WHERE tenant_id = $1 AND menu_item_id IN (${items})`,
+      p,
+    );
+    await client.query(
+      `DELETE FROM price_list_items WHERE tenant_id = $1 AND item_id IN (${items})`,
+      p,
+    );
+    await client.query(
+      "DELETE FROM price_lists pl WHERE pl.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM price_list_items i WHERE i.price_list_id = pl.id) AND pl.created_at >= $2",
+      [tenantId, testStartedAt],
+    );
+    await client.query(
+      `DELETE FROM menu_items WHERE tenant_id = $1 AND (${itemFilter})`,
+      p,
+    );
+    await client.query("DELETE FROM menu_import_jobs WHERE tenant_id = $1", [
+      tenantId,
+    ]);
+    await client.query(
+      "DELETE FROM printable_menu_renders WHERE tenant_id = $1",
+      [tenantId],
+    );
+    await client.query(
+      "DELETE FROM menu_categories c WHERE c.tenant_id = $1 AND c.created_at >= $2 AND NOT EXISTS (SELECT 1 FROM menu_items m WHERE m.category_id = c.id)",
+      [tenantId, testStartedAt],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 describe("printable menu", () => {
   it("prints only AVAILABLE published items that have a price", async () => {
@@ -177,6 +236,7 @@ describe("printable menu", () => {
 
   it("TEN-01 cross-tenant: another tenant cannot read this outlet's printable menu", async () => {
     const other = await createIsolatedTenant(`prt-${randomUUID().slice(0, 6)}`);
+    isolatedTenants.push(other);
     const otherCtx = establishScopedTenantContext(
       establishTenantContext({
         tenantId: other.tenantId,
