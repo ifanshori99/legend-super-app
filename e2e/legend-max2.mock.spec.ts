@@ -27,12 +27,12 @@ declare global {
 async function waitForHydration(page: Page) {
   await page.waitForFunction(
     () => {
-      const button = document.querySelector(
-        "main button, #main-content button",
-      );
+      // The hub has only links inside <main>; the shell header always has a
+      // button, so any interactive element with a React fiber proves hydration.
+      const control = document.querySelector("button, a[href]");
       return (
-        button !== null &&
-        Object.keys(button).some((key) => key.startsWith("__reactFiber$"))
+        control !== null &&
+        Object.keys(control).some((key) => key.startsWith("__reactFiber$"))
       );
     },
     undefined,
@@ -71,8 +71,11 @@ test("AUDIT-VIEW-01: the log shows who, what, when and where for every actor kin
   await expect(rows(page).filter({ hasText: "Sistem" }).first()).toBeVisible();
   // What + where.
   await expect(page.getByText("Pengaturan diubah").first()).toBeVisible();
-  await expect(page.getByText("Cafe Legend Bandung").first()).toBeVisible();
-  await expect(page.getByText("Laptop Kantor").first()).toBeVisible();
+  // Scoped to the list: the outlet filter also holds a hidden <option>.
+  await expect(
+    rows(page).getByText("Cafe Legend Bandung").first(),
+  ).toBeVisible();
+  await expect(rows(page).getByText("Laptop Kantor").first()).toBeVisible();
 });
 
 test("AUDIT-VIEW-01: filters narrow the list by actor kind and action; reset restores it", async ({
@@ -83,7 +86,7 @@ test("AUDIT-VIEW-01: filters narrow the list by actor kind and action; reset res
 
   await page.getByLabel("Jenis pelaku").click();
   await page.getByRole("option", { name: "Asisten AI" }).click();
-  await page.getByRole("button", { name: "Terapkan" }).click();
+  await page.getByRole("button", { name: "Terapkan", exact: true }).click();
   await expect(rows(page).first()).toContainText("Asisten Operasional");
   const aiRows = await rows(page).count();
   expect(aiRows).toBeGreaterThan(0);
@@ -182,11 +185,17 @@ test("SETTINGS-HUB-01: the hub links existing tenant, brand and outlet screens o
     await expect(
       page.getByRole("heading", { name, exact: true }),
     ).toBeVisible();
-  await expect(page.locator('a[href="/audit"]')).toBeVisible();
-  await expect(page.locator('a[href="/kelola/pajak"]')).toBeVisible();
-  await expect(page.locator('a[href="/kelola/menu"]')).toBeVisible();
-  await expect(page.locator('a[href="/kelola/meja"]')).toBeVisible();
-  await page.locator('a[href="/audit"]').click();
+  await expect(page.locator('#main-content a[href="/audit"]')).toBeVisible();
+  await expect(
+    page.locator('#main-content a[href="/kelola/pajak"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('#main-content a[href="/kelola/menu"]'),
+  ).toBeVisible();
+  await expect(
+    page.locator('#main-content a[href="/kelola/meja"]'),
+  ).toBeVisible();
+  await page.locator('#main-content a[href="/audit"]').click();
   await expect(page).toHaveURL(/\/audit$/);
 });
 
