@@ -4,12 +4,14 @@
 // matrix editor. Kept in its own file so parallel WS-01 beads never edit the
 // same lines in id.ts.
 //
-// The `perm` tree mirrors the permission catalog codes one level per segment
-// (`access.perm.pos.void.approve` ↔ `pos.void.approve`), so a screen can read
-// the label with `t(\`access.perm.${code}\`)`. A contract test asserts every
-// tenant permission has a label.
+// The permission labels mirror the catalog codes nested one level per dot
+// segment (`access.perm.pos.void.approve` ↔ `pos.void.approve`), because the
+// translator resolves a key by walking nested objects, not by flat-key lookup.
+// Both `access.perm.<code>` (screens shipped with legend-g6d) and
+// `access.permission.<code>` (the contract name used by legend-svza) resolve to
+// the same tree. A contract test asserts every catalog code has a label.
 
-export const accessMessages = {
+const accessBaseMessages = {
   title: "Akses & peran",
   subtitle:
     "Atur peran, penugasan, dan matriks approval. Setiap perubahan berlaku seketika dan tercatat di audit log.",
@@ -45,6 +47,38 @@ export const accessMessages = {
     emptyHint: "Peran template dibuat otomatis saat tenant disiapkan.",
     readOnlyTemplate:
       "Peran template tidak dapat diubah; buat peran khusus untuk menyesuaikan izin.",
+  },
+
+  // One-line purpose per role template. The name stays data in
+  // ROLE_TEMPLATES.defaultName (tenants may rename it), so only the hint lives
+  // in the catalog.
+  templateHint: {
+    super_admin:
+      "Mengelola platform lintas tenant; data tenant hanya lewat support access.",
+    owner: "Akses penuh ke seluruh tenant sesuai cakupan, tanpa alat platform.",
+    shareholder: "Hanya melihat agregat dan data miliknya, tanpa data pribadi.",
+    tenant_admin:
+      "Mengatur organisasi, akses, dan pengaturan tenant tanpa kewenangan keuangan otomatis.",
+    general_manager:
+      "Menjalankan operasional dan approval lintas outlet, tanpa mengubah payroll.",
+    outlet_manager:
+      "Mengelola satu outlet: operasional, approval, dan laporan outlet.",
+    supervisor:
+      "Mengawasi shift di outlet dengan override PIN, tanpa laporan keuangan.",
+    cashier: "Melayani transaksi POS pada shift yang ditugaskan.",
+    waiter:
+      "Melayani pesanan dan meja, tanpa akses pembayaran kecuali diizinkan.",
+    barista_cook: "Memproses tiket dapur di stasiun yang ditugaskan.",
+    facility_attendant: "Mengoperasikan bilik fasilitas dan checklist harian.",
+    kitchen_lead:
+      "Memimpin dapur: resep, stok, dan persiapan, tanpa akses pembayaran.",
+    purchasing: "Mengelola supplier dan purchase order, tanpa akses payroll.",
+    warehouse: "Mengelola stok masuk, transfer, dan opname di outlet.",
+    finance: "Mengelola akuntansi, rekonsiliasi, dan laporan keuangan.",
+    hr: "Mengelola data karyawan, absensi, dan payroll.",
+    marketing:
+      "Mengelola loyalitas, CRM, promo, dan konten; ekspor massal lewat approval.",
+    employee: "Layanan mandiri: profil, absen, jadwal, dan slip gaji sendiri.",
   },
 
   role: {
@@ -249,6 +283,7 @@ export const accessMessages = {
   },
 
   module: {
+    platform: "Panel platform",
     org: "Organisasi & pengaturan",
     device: "Perangkat",
     access: "Akses & peran",
@@ -289,6 +324,13 @@ export const accessMessages = {
   },
 
   perm: {
+    platform: {
+      tenant: { manage: "Kelola tenant platform" },
+      package: { manage: "Kelola paket langganan" },
+      integration: { manage: "Kelola integrasi platform" },
+      health: { view: "Lihat kesehatan platform" },
+      support_access: { request: "Minta akses dukungan ke tenant" },
+    },
     org: {
       structure: { manage: "Kelola struktur organisasi" },
       settings: { manage: "Ubah pengaturan tenant" },
@@ -500,4 +542,33 @@ export const accessMessages = {
     offline: "Tidak ada koneksi. Periksa jaringan lalu coba lagi.",
     generic: "Terjadi kesalahan. Coba lagi.",
   },
+
+  // One message per ACCESS_ERROR_CODES entry, keyed by the code the API sends.
+  error: {
+    PERMISSION_DENIED: "Anda tidak punya izin untuk tindakan ini.",
+    MFA_REQUIRED: "Halaman ini memerlukan verifikasi faktor kedua.",
+    REAUTH_REQUIRED:
+      "Verifikasi ulang diperlukan. Masukkan kode faktor kedua lalu coba lagi.",
+    SELF_ELEVATION_FORBIDDEN:
+      "Anda tidak dapat memberi peran kepada diri sendiri.",
+    ROLE_SCOPE_NOT_ALLOWED: "Cakupan ini tidak diizinkan untuk peran tersebut.",
+    ROLE_NOT_ASSIGNABLE: "Peran ini tidak dapat diberikan di tingkat tenant.",
+    PERMISSION_NOT_IN_CATALOG:
+      "Izin tidak dikenal atau tidak boleh dipakai di peran tenant.",
+    APPROVER_IS_REQUESTER: "Penyetuju tidak boleh sama dengan pemohon.",
+    APPROVER_ALREADY_DECIDED:
+      "Anda sudah memberi keputusan pada permintaan ini.",
+    APPROVER_ROLE_MISMATCH:
+      "Peran Anda tidak berwenang menyetujui tingkat ini.",
+    APPROVAL_LEVEL_OUT_OF_ORDER: "Tingkat approval ini belum dapat diputuskan.",
+    APPROVAL_POLICY_MISSING:
+      "Matriks approval untuk tindakan ini belum diatur.",
+  },
+} as const;
+
+// `access.permission.<code>` is the contract name (legend-svza); the existing
+// `access.perm.*` keys stay for the RBAC screens already reading them.
+export const accessMessages = {
+  ...accessBaseMessages,
+  permission: accessBaseMessages.perm,
 } as const;

@@ -7,6 +7,22 @@ import type { DashboardTile } from "@starter/shared/dashboard";
 import { ownerBoardTilePath, ownerBoardTileReportName } from "../board";
 import { useOwnerBoardContext } from "../board-context";
 
+/**
+ * Whether a tile has a source link to render: a report name and an existing
+ * route. A StatTile draws its chevron for any `source`, so callers pass one only
+ * when this is true (no orphan chevron next to an absent link).
+ */
+export function useHasTileSource(tile: DashboardTile): boolean {
+  const routeAvailable = useRouteAvailable();
+  const { layout } = useOwnerBoardContext();
+  const path = ownerBoardTilePath(tile, layout);
+  return (
+    path !== null &&
+    ownerBoardTileReportName(tile) !== null &&
+    routeAvailable(path)
+  );
+}
+
 export function TileSource({
   tile,
   className,

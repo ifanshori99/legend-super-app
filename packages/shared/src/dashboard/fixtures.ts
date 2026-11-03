@@ -195,9 +195,9 @@ export const managementDashboardKpiRuns: Readonly<
   Record<string, ReportResult>
 > = Object.freeze({
   "sales.per_channel": kpiRun("sales.per_channel", managementDayPeriod, [
-    { metricCode: "net_sales", value: { unit: "idr", valueIdr: 44_750_000 } },
-    { metricCode: "pax", value: { unit: "count", value: 182 } },
-    { metricCode: "transaction_count", value: { unit: "count", value: 168 } },
+    { metricCode: "net_sales", value: { unit: "idr", valueIdr: 7_420_000 } },
+    { metricCode: "pax", value: { unit: "count", value: 148 } },
+    { metricCode: "transaction_count", value: { unit: "count", value: 96 } },
   ]),
   "operations.table_turnover": kpiRun(
     "operations.table_turnover",

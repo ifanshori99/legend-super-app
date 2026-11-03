@@ -10,7 +10,11 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import type { Feedback } from "@starter/shared/crm";
-import type { DashboardLayout, ReportResult } from "@starter/shared/dashboard";
+import type {
+  DashboardLayout,
+  ReportResult,
+  ReportRunInput,
+} from "@starter/shared/dashboard";
 import { isReportResultEmpty, ownerBoardRunInputs } from "./board.ts";
 import {
   latestRatingsQuery,
@@ -54,7 +58,7 @@ export type OwnerBoard = {
   refresh: () => void;
 };
 
-function reportState(
+export function reportState(
   query: UseQueryResult<ReportResult, Error> | undefined,
 ): BoardReport {
   if (query === undefined)
@@ -138,4 +142,33 @@ export function useOwnerBoard(layout: DashboardLayout): OwnerBoard {
         reviewsQuery.isFetching),
     refresh,
   };
+}
+
+/** Aggregate state of several runs: any failure, then any wait, then empty. */
+export function combineReports(reports: readonly BoardReport[]): BoardReport {
+  const retry = () => reports.forEach((report) => report.retry());
+  if (reports.some((report) => report.status === "error"))
+    return { status: "error", result: null, retry };
+  if (reports.some((report) => report.status === "loading"))
+    return { status: "loading", result: null, retry };
+  const ready = reports.filter((report) => report.status === "ready");
+  return {
+    status: ready.length === 0 ? "empty" : "ready",
+    result: null,
+    retry,
+  };
+}
+
+/**
+ * Runs the given source reports (part 2 sections run theirs only while their
+ * tab is open). Same query keys as the board, so refresh reloads them too.
+ */
+export function useReportRuns(
+  inputs: readonly ReportRunInput[],
+): BoardReport[] {
+  const hydrated = useHydrated();
+  const queries = useQueries({
+    queries: inputs.map((input) => ownerReportQuery(input, hydrated)),
+  });
+  return queries.map((query) => reportState(query));
 }

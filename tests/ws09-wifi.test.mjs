@@ -3,7 +3,7 @@
 // suite, no database: it loads the shared facility contract, the web app's
 // mock runtime and the portal's own helpers with Node type stripping.
 //
-// The portal screen itself is exercised end-to-end in e2e/legend-g9r3.spec.ts;
+// The portal screen itself is exercised end-to-end in e2e/legend-g9r3.mock.spec.ts;
 // this file proves the data layer and the derivations the screen renders.
 
 import assert from "node:assert/strict";
