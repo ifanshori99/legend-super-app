@@ -47,6 +47,7 @@ import {
   userIdSchema,
   type ScopedTenantContext,
   type TenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { and, desc, eq, or, sql } from "drizzle-orm";
@@ -151,7 +152,7 @@ async function assertRequesterMember(
 
 async function lockIdempotencyKey(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   requestedBy: string,
   key: string,
 ): Promise<void> {
@@ -163,7 +164,7 @@ async function lockIdempotencyKey(
 /** Same key + same body → the stored row; same key + another body → refused. */
 async function findReplay(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   requestedBy: string,
   key: string | null,
   requestFingerprint: string,

@@ -19,6 +19,7 @@ import {
   CoreError,
   idr,
   outletIdSchema,
+  type OutletId,
   toIsoDateTime,
   type Idr,
   type ScopedTenantContext,
@@ -98,7 +99,7 @@ export async function loadCatalogue(
   context: ScopedTenantContext,
   input: {
     brandId: string;
-    outletId: string;
+    outletId: OutletId;
     timeZone: string;
     businessDate: string;
     itemIds: readonly string[];
@@ -579,7 +580,7 @@ export function buildQuote(input: {
   context: ScopedTenantContext;
   sessionId: string;
   cartVersion: number;
-  outletId: string;
+  outletId: OutletId;
   businessDate: string;
   zone: ZoneRow;
   lines: readonly PricedQuoteLine[];

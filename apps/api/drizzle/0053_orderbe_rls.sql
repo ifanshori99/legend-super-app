@@ -1,0 +1,37 @@
+-- Custom SQL migration file, put your code below! ---
+-- squad-orderbe (legend-e2x, 7qg, dxb): tenant + outlet RLS on all new tables (TEN-01/02/03).
+SELECT app.enforce_tenant_rls('public.service_requests'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.service_requests'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.zone_waiter_assignments'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.zone_waiter_assignments'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.staff_pins'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.staff_pins'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.pos_overrides'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.pos_overrides'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.table_session_carts'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.table_session_carts'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.cart_lines'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.cart_lines'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.orders'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.orders'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.order_items'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.order_items'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.qr_order_idempotency'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.qr_order_idempotency'::regclass);

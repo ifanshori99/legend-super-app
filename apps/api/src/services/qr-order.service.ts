@@ -1,3 +1,4 @@
+import { maskAuditChanges } from "@starter/shared/audit";
 // QR order: shared cart, server quote, checkout and the session bill (bead
 // legend-e2x; PRD v1.7 §3 F10 "Menu & Keranjang", "Mode Bayar", "Estimasi
 // Waktu Saji"; §4 Alur A (bayar di muka) and B (open bill); ORD-01, ORD-02,
@@ -44,6 +45,7 @@ import {
   uuidSchema,
   z,
   type Idr,
+  type OutletId,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -455,7 +457,16 @@ async function auditOrder(
       objectType: "order",
       objectId: input.order.id,
       reason: input.reason ?? null,
-      maskedChanges: { before: input.before, after: input.after },
+      maskedChanges: {
+        before:
+          input.before === null
+            ? null
+            : maskAuditChanges(input.before, AUDIT_SAFE_FIELDS),
+        after:
+          input.after === null
+            ? null
+            : maskAuditChanges(input.after, AUDIT_SAFE_FIELDS),
+      } as never,
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y",
@@ -798,7 +809,7 @@ async function priceCartLines(
 ): Promise<PricedCart> {
   const catalogue = await loadCatalogue(tx, context, {
     brandId: outlet.brandId,
-    outletId: outlet.id,
+    outletId: outlet.id as OutletId,
     timeZone: outlet.timezone,
     businessDate: businessDateFor(outlet, now),
     itemIds: lines.map((line) => line.menuItemId),
@@ -918,7 +929,7 @@ async function quoteFor(
     context,
     sessionId: input.session.id,
     cartVersion: input.cartVersion,
-    outletId: input.outlet.id,
+    outletId: input.outlet.id as OutletId,
     businessDate: businessDateFor(input.outlet, input.now),
     zone: input.zone,
     lines,
@@ -1049,7 +1060,7 @@ export async function addCartLine(
         const outlet = await loadOutlet(tx, context, session.outletId);
         const catalogue = await loadCatalogue(tx, context, {
           brandId: outlet.brandId,
-          outletId: outlet.id,
+          outletId: outlet.id as OutletId,
           timeZone: outlet.timezone,
           businessDate: businessDateFor(outlet, now),
           itemIds: [parsed.menuItemId],
@@ -1156,7 +1167,7 @@ export async function updateCartLine(
           const outlet = await loadOutlet(tx, context, session.outletId);
           const catalogue = await loadCatalogue(tx, context, {
             brandId: outlet.brandId,
-            outletId: outlet.id,
+            outletId: outlet.id as OutletId,
             timeZone: outlet.timezone,
             businessDate: businessDateFor(outlet, now),
             itemIds: [current.menuItemId],

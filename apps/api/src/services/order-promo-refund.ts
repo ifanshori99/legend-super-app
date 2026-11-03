@@ -33,6 +33,7 @@ import {
   idr,
   ulidIdSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   promotionOrderApplications,
@@ -56,7 +57,7 @@ const CLAMP_AUDIT_FIELDS: readonly string[] = [
 ];
 
 /** Same key as the engine's per-order lock (crm-promo-engine `lockOrder`). */
-async function lockOrder(tx: Tx, tenantId: string, orderId: string) {
+async function lockOrder(tx: Tx, tenantId: TenantId, orderId: string) {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`promo:${tenantId}:${orderId}`}, 0))`,
   );
@@ -82,7 +83,7 @@ export function clampedDiscountOf(
  */
 async function lowerAppliedDiscount(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   orderId: string,
   amount: number,
   now: Date,

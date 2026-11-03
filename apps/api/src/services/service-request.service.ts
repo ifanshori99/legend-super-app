@@ -1,3 +1,4 @@
+import { maskAuditChanges } from "@starter/shared/audit";
 // Waiter call / bill request / complaint (PRD v1.7 §3 F10 "Panggil Waiter &
 // Minta Tagihan", §6 C service_requests; ORD-07: the call shows on the phone of
 // the zone's waiter within 3 seconds).
@@ -28,6 +29,8 @@ import {
   toIsoDateTime,
   z,
   type ScopedTenantContext,
+  type TenantId,
+  type OutletId,
 } from "@starter/shared/core";
 import {
   eventEnvelopeSchema,
@@ -141,7 +144,7 @@ async function nextSequence(
 /** Zone waiters (user ids) of one zone; the only push audience. */
 async function zoneWaiterIds(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   zoneId: string,
 ): Promise<string[]> {
   const rows = await tx
@@ -392,7 +395,7 @@ export async function createServiceRequest(
     await emitAndNotify(
       tx,
       context,
-      event,
+      event as EventEnvelope,
       await zoneWaiterIds(tx, tenantId, table.zoneId),
       {
         title: `${TYPE_LABEL[input.type]} - Meja ${table.code}`,
@@ -409,7 +412,7 @@ export async function createServiceRequest(
 /** Staff inbox for one outlet, newest first (cursor on createdAt, id). */
 export async function listServiceRequests(
   context: ScopedTenantContext,
-  outletId: string,
+  outletId: OutletId,
   query: ListQuery,
 ) {
   assertOutletInScope(context.outletScope, outletId);
@@ -558,9 +561,15 @@ async function transition(
           objectId: row.id,
           reason: note,
           maskedChanges: {
-            before: { id: row.id, status: row.status },
-            after: { id: row.id, status: next, assignedTo: updated.assignedTo },
-          },
+            before: maskAuditChanges(
+              { id: row.id, status: row.status },
+              AUDIT_SAFE_FIELDS,
+            ),
+            after: maskAuditChanges(
+              { id: row.id, status: next, assignedTo: updated.assignedTo },
+              AUDIT_SAFE_FIELDS,
+            ),
+          } as never,
           ipHash: null,
           sensitiveAccess: false,
           retentionClass: "audit_2y",

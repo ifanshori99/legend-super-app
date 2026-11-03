@@ -22,7 +22,11 @@ import { apiRouter } from "./routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
 import { orderPromoPort } from "./services/order-promo";
-import { setQrOrderPromoPort } from "./services/qr-order-ports";
+import { depositCreditForSession } from "./services/reservation-lifecycle";
+import {
+  setQrOrderDepositCreditLookup,
+  setQrOrderPromoPort,
+} from "./services/qr-order-ports";
 import { qrOrderSettlementLookup } from "./services/qr-order.service";
 import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
@@ -36,6 +40,7 @@ import { deviceTenantCredential } from "./services/platform-tenant.service";
 setAuditWriter(coreAuditWriter);
 // WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
 setQrOrderPromoPort(orderPromoPort);
+setQrOrderDepositCreditLookup(depositCreditForSession);
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
