@@ -32,3 +32,9 @@ export * from "./payment-admin";
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).
 export * from "./crm-promo";
+// WS-03 waiter call / bill request (legend-7qg).
+export * from "./service-request";
+// WS-01 device PIN + supervisor override (legend-dxb).
+export * from "./device-pin";
+// WS-03 QR order carts/orders (legend-e2x).
+export * from "./qr-order";

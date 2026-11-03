@@ -2,6 +2,9 @@ import { Router } from "express";
 import { noStore } from "../middleware/no-store";
 import { accessRouter } from "./access.routes";
 import { adminRouter } from "./admin.routes";
+import { serviceRequestRouter } from "./service-request.routes";
+import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
+import { qrOrderRouter } from "./qr-order.routes";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { meRouter } from "./me.routes";
@@ -65,9 +68,14 @@ apiRouter.use("/notifications", createNotificationRouter());
 // table-session lifecycle; /qr is the public guest scan (legend-irw).
 apiRouter.use("/floor", floorRouter);
 apiRouter.use("/outlets", outletFloorRouter);
+// Before /table-sessions: guest + staff service-request paths span prefixes.
+apiRouter.use(serviceRequestRouter);
 apiRouter.use("/tables", tablesRouter);
 apiRouter.use("/table-sessions", tableSessionsRouter);
+apiRouter.use("/table-sessions", qrOrderRouter);
 apiRouter.use("/qr", qrRouter);
+apiRouter.use("/staff-pins", staffPinRouter);
+apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);

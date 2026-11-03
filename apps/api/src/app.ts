@@ -21,6 +21,10 @@ import { identityAuthRouter } from "./routes/identity.routes";
 import { apiRouter } from "./routes";
 import { setAuditWriter } from "./services/audit-writer";
 import { coreAuditWriter } from "./services/core-audit-writer";
+import { orderPromoPort } from "./services/order-promo";
+import { setQrOrderPromoPort } from "./services/qr-order-ports";
+import { qrOrderSettlementLookup } from "./services/qr-order.service";
+import { setTableSessionSettlementLookup } from "./services/table-session.service";
 import { loginChallengeRouter as identityLoginChallengeRouter } from "./routes/identity-auth.routes";
 import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes";
 import { resolveHostname } from "./services/org-resolve.service";
@@ -30,6 +34,9 @@ import { deviceTenantCredential } from "./services/platform-tenant.service";
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
 // Tests may swap the writer; without one the port fails closed with a 503.
 setAuditWriter(coreAuditWriter);
+// WS-03 QR order wiring (legend-e2x/souz): promo engine port + ORD-10 settlement.
+setQrOrderPromoPort(orderPromoPort);
+setTableSessionSettlementLookup(qrOrderSettlementLookup);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 
