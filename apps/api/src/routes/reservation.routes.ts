@@ -11,8 +11,12 @@
 //   the path is checked against that tenant in the service.
 // - Staff: requireAuth + requireTrustedOrigin + requireTenantContext, then
 //   `reservation.view` / `reservation.manage` on the path's outlet (TEN-03).
-// - Every mutation needs an idempotency key: `Idempotency-Key` header (or an
-//   `idempotencyKey` body field, stripped before the strict contract parse).
+// - Every mutation needs the `Idempotency-Key` header (8-100 characters). The
+//   body goes to the strict contract parse untouched, so a body
+//   `idempotencyKey` is refused as an unknown key (bead legend-5jqa).
+// - The public booking POST has its own write rate limit (per IP, per tenant)
+//   and a cap per guest contact, apart from the read limiter app.ts mounts on
+//   /api/public/outlets (middleware/public-rate-limit.ts).
 //
 // Waitlist, pre-order and package endpoints belong to legend-y9o7.
 import { Router, type Request } from "express";
@@ -36,6 +40,7 @@ import {
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
+import { createPublicBookingLimits } from "../middleware/public-rate-limit.ts";
 import {
   getTenantContext,
   requireTenantContext,
@@ -58,28 +63,22 @@ export const reservationRouter = Router();
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const view = requireOutletPermission("reservation.view", outletOf);
 const manage = requireOutletPermission("reservation.manage", outletOf);
+const bookingLimits = createPublicBookingLimits();
 const staff = [requireAuth, requireTrustedOrigin, requireTenantContext];
 
-/** Header first, then a body field; the body field never reaches the contract. */
+/** The `Idempotency-Key` header only; the body is returned unchanged. */
 function takeIdempotencyKey(req: Request): {
   key: string;
-  body: Record<string, unknown>;
+  body: unknown;
 } {
-  const raw =
-    typeof req.body === "object" && req.body !== null
-      ? { ...(req.body as Record<string, unknown>) }
-      : {};
-  const fromBody = raw.idempotencyKey;
-  delete raw.idempotencyKey;
-  const candidate = req.header("idempotency-key") ?? fromBody;
-  const parsed = idempotencyKeySchema.safeParse(candidate);
+  const parsed = idempotencyKeySchema.safeParse(req.header("idempotency-key"));
   if (!parsed.success)
     throw new HttpError(
       422,
       "VALIDATION_ERROR",
       "Idempotency-Key wajib diisi (8-100 karakter).",
     );
-  return { key: parsed.data, body: raw };
+  return { key: parsed.data, body: req.body };
 }
 
 // ------------------------------------------------------------- public
@@ -102,7 +101,9 @@ reservationRouter.get(
 reservationRouter.post(
   "/public/outlets/:outletId/reservations",
   requireTenantContext,
+  bookingLimits.perRequest,
   jsonBody,
+  bookingLimits.perContact,
   async (req, res) => {
     const { outletId } = createEndpoint.params.parse(req.params);
     const { key, body } = takeIdempotencyKey(req);

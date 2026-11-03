@@ -29,6 +29,7 @@ import type { Request, RequestHandler } from "express";
 import { MINUTE_MS } from "@starter/shared/identity";
 import { env } from "../config/env";
 import { HttpError } from "../lib/http-error";
+import { whatsAppDigest } from "../lib/identity-digest";
 import { findTenantContext } from "./tenant";
 
 /** One fixed window for every public read; env limits are per minute. */
@@ -171,5 +172,127 @@ export function publicRateLimit(
       throw new HttpError(429, "RATE_LIMITED", PUBLIC_RATE_LIMIT_MESSAGE);
     }
     next();
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public booking writes (bead legend-t8bz). A guest booking creates rows and
+// may open a DP payment, so it gets its own, much lower budget than the reads
+// above (app.ts mounts the read limiter on /api/public/outlets, which the
+// booking POST also passes through), plus a cap per guest contact so one
+// number cannot be used to flood an outlet's table plan from many IPs.
+
+/** Booking POSTs allowed per client IP per minute. */
+export const PUBLIC_WRITE_PER_IP = 10;
+/** Booking POSTs allowed per tenant per minute. */
+export const PUBLIC_WRITE_PER_TENANT = 60;
+/** Booking POSTs allowed per contact, tenant and outlet per hour. */
+export const PUBLIC_WRITE_PER_CONTACT = 5;
+export const PUBLIC_WRITE_CONTACT_WINDOW_MS = 60 * MINUTE_MS;
+
+export type PublicWriteRateLimitOptions = {
+  perIp: number;
+  perTenant: number;
+  perContact: number;
+  internalIps?: readonly string[];
+  windowMs?: number;
+  contactWindowMs?: number;
+  capacity?: number;
+  now?: () => number;
+};
+
+function rejectRateLimited(res: Parameters<RequestHandler>[1], retry: number) {
+  res.setHeader("Retry-After", String(retry));
+  res.setHeader("Cache-Control", "no-store");
+  throw new HttpError(429, "RATE_LIMITED", PUBLIC_RATE_LIMIT_MESSAGE);
+}
+
+/**
+ * Two handlers for one public booking route. Mount `perRequest` before the
+ * body parser (IP + tenant buckets) and `perContact` after it (it reads
+ * `contactPhone`). The contact bucket key is the keyed WhatsApp digest, never
+ * the raw number. A body whose number does not normalize skips the contact
+ * bucket: the strict contract refuses it afterwards and it writes nothing.
+ *
+ * Replays: a request repeating an `Idempotency-Key` already seen for the same
+ * contact inside the window is not charged to the contact bucket again, so a
+ * client retrying after a network error cannot lock itself out. The IP and
+ * tenant buckets still count every request.
+ */
+export function createPublicBookingLimits(
+  options: Partial<PublicWriteRateLimitOptions> = {},
+): { perRequest: RequestHandler; perContact: RequestHandler } {
+  const windowMs = options.windowMs ?? PUBLIC_RATE_LIMIT_WINDOW_MS;
+  const contactWindowMs =
+    options.contactWindowMs ?? PUBLIC_WRITE_CONTACT_WINDOW_MS;
+  const capacity = options.capacity ?? PUBLIC_RATE_LIMIT_CAPACITY;
+  const clock = options.now ?? Date.now;
+  const internalIps = new Set(
+    options.internalIps ?? env.PUBLIC_RATE_LIMIT_INTERNAL_IPS,
+  );
+  const perIp = createFixedWindowCounter({
+    limit: options.perIp ?? PUBLIC_WRITE_PER_IP,
+    windowMs,
+    capacity,
+  });
+  const perTenant = createFixedWindowCounter({
+    limit: options.perTenant ?? PUBLIC_WRITE_PER_TENANT,
+    windowMs,
+    capacity,
+  });
+  const perContact = createFixedWindowCounter({
+    limit: options.perContact ?? PUBLIC_WRITE_PER_CONTACT,
+    windowMs: contactWindowMs,
+    capacity,
+  });
+  // Replay memory: bounded, insertion ordered, values are expiry instants.
+  const seenKeys = new Map<string, number>();
+
+  return {
+    perRequest: (req, res, next) => {
+      const now = clock();
+      const ip = clientIp(req);
+      const ipRetry = internalIps.has(ip)
+        ? null
+        : perIp.take(`write-ip:${ip}`, now);
+      const tenant = findTenantContext(req);
+      const tenantRetry = tenant
+        ? perTenant.take(`write-tenant:${tenant.tenantId}`, now)
+        : null;
+      const retry = ipRetry ?? tenantRetry;
+      if (retry !== null) rejectRateLimited(res, retry);
+      next();
+    },
+    perContact: async (req, res, next) => {
+      const now = clock();
+      const tenant = findTenantContext(req);
+      const phone = (req.body as { contactPhone?: unknown } | undefined)
+        ?.contactPhone;
+      if (!tenant || typeof phone !== "string") return next();
+      let digest: string;
+      try {
+        digest = await whatsAppDigest(phone);
+      } catch {
+        return next();
+      }
+      const scope = `${tenant.tenantId}:${String(req.params.outletId ?? "")}:${digest}`;
+      const idempotencyKey = req.header("idempotency-key");
+      const replayKey = idempotencyKey ? `${scope}:${idempotencyKey}` : null;
+      if (replayKey) {
+        const expiresAt = seenKeys.get(replayKey);
+        if (expiresAt !== undefined && expiresAt > now) return next();
+      }
+      const retry = perContact.take(`contact:${scope}`, now);
+      if (retry !== null) rejectRateLimited(res, retry);
+      if (replayKey) {
+        if (seenKeys.size >= capacity) {
+          const oldest = seenKeys.keys().next().value;
+          if (oldest !== undefined) seenKeys.delete(oldest);
+        }
+        seenKeys.delete(replayKey);
+        seenKeys.set(replayKey, now + contactWindowMs);
+      }
+      next();
+    },
   };
 }

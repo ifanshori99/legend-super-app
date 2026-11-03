@@ -61,6 +61,32 @@ describe("reservation routes", () => {
     expect(response.status).toBe(422);
   });
 
+  it("RSV-01 legend-5jqa a body idempotencyKey is refused as an unknown key; only the header counts", async () => {
+    const response = await agent(app)
+      .post(`/api/public/outlets/${seededOutletA}/reservations`)
+      .set("Host", seededHostname)
+      .send({
+        reservedFor: new Date(Date.now() + 86_400_000 * 30).toISOString(),
+        pax: 2,
+        guestName: "Tamu",
+        contactPhone: "081234567890",
+        idempotencyKey: `rsv-${randomUUID()}`,
+      });
+    expect(response.status).toBe(422);
+    const withHeader = await agent(app)
+      .post(`/api/public/outlets/${seededOutletA}/reservations`)
+      .set("Host", seededHostname)
+      .set("Idempotency-Key", `rsv-${randomUUID()}`)
+      .send({
+        reservedFor: new Date(Date.now() + 86_400_000 * 30).toISOString(),
+        pax: 2,
+        guestName: "Tamu",
+        contactPhone: "081234567890",
+        idempotencyKey: `rsv-${randomUUID()}`,
+      });
+    expect(withHeader.status).toBe(422);
+  });
+
   it("RSV-02 RSV-03 staff routes need a session, an origin and the outlet permission", async () => {
     const anonymous = await agent(app).get(
       `/api/outlets/${seededOutletA}/reservations`,
