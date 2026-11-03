@@ -27,6 +27,12 @@ import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
+import { invfeNavMessages } from "./invfe-nav.ts";
+import { inventoryRecipeMessages } from "./ws06-recipe.ts";
+import { inventoryHppMessages } from "./ws06-hpp.ts";
+import { inventorySuppliersMessages } from "./ws06-suppliers.ts";
+import { inventoryReceivingMessages } from "./ws06-receiving.ts";
+import { menuImportMessages } from "./ws03-menu-import.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -65,6 +71,15 @@ export const id = {
   // WS-06 stock opname and waste screens (legend-fzx), also in their own file.
   opname: opnameMessages,
   waste: wasteMessages,
+  // Squad invfe (2026-11-03): the tab-strip labels shared by several WS-06/WS-03
+  // beads, plus one module per bead so parallel agents never edit the same
+  // catalog lines.
+  invfeNav: invfeNavMessages,
+  inventoryRecipe: inventoryRecipeMessages,
+  inventoryHpp: inventoryHppMessages,
+  inventorySuppliers: inventorySuppliersMessages,
+  inventoryReceiving: inventoryReceivingMessages,
+  menuImport: menuImportMessages,
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
