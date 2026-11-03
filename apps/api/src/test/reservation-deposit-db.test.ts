@@ -42,6 +42,7 @@ import {
 import { zonedInstant } from "../services/reservation-plan.ts";
 import { setReservationDepositPort } from "../services/reservation-ports.ts";
 import {
+  REFUND_MAX_ATTEMPTS,
   requestDepositRefund,
   retryPendingRefunds,
 } from "../services/reservation-refunds.ts";
@@ -215,6 +216,22 @@ async function eventCount(reservationId: string, name: string) {
     ),
   );
   return rows.length;
+}
+
+/** WS-05 refund requests written for one DP intent. */
+async function depositRefundRows(intentId: string) {
+  const { rows } = await asOwner((client) =>
+    client.query<{
+      id: string;
+      amount_idr: string;
+      requested_by: string;
+      status: string;
+    }>(
+      "SELECT id, amount_idr::text, requested_by, status FROM payment_refunds WHERE payment_intent_id = $1",
+      [intentId],
+    ),
+  );
+  return rows;
 }
 
 /** The guest opens the hosted page and creates a QRIS code (no payment yet). */
@@ -639,6 +656,121 @@ describe("RSV-01 an unpaid DP never holds a table forever", () => {
   });
 });
 
+describe("RSV-02 a late DP is refunded in full", () => {
+  it("RSV-02 a DP paid after its hold was released is refunded in full, once", async () => {
+    await setPolicy("required", 100_000);
+    const f = await floor(1);
+    const t0 = dayAt("2027-05-21", "10:00");
+    const created = await createReservation(
+      tenantScope(),
+      outletA,
+      booking(f.zoneId, "2027-05-27", "Telat Bayar"),
+      key(),
+      t0,
+    );
+    const intentId = await openIntent(created);
+    // The window passes with the code unpaid: the sweep releases the hold.
+    await withTenant(db, tenantScope(), (tx) =>
+      sweepStaleDepositHolds(
+        tx,
+        tenantScope(),
+        new Date(t0.getTime() + 61 * MINUTE),
+        { outletId: outletA },
+      ),
+    );
+    expect((await reservationRow(created.reservation.id)).status).toBe(
+      "cancelled",
+    );
+
+    // The guest still pays the code (late payment, PRD §3.13 "Siklus
+    // Pembayaran"): the reservation keeps nothing.
+    await settle(intentId, 100_000);
+    const event = await paymentPaidEvent(intentId);
+    expect(await handlePaymentPaid(tenantScope(), event)).toBe(
+      "late_refund_requested",
+    );
+    const row = await reservationRow(created.reservation.id);
+    expect(row).toMatchObject({
+      status: "cancelled",
+      deposit_payment_id: intentId,
+      refund_status: "requested",
+    });
+    const refunds = await depositRefundRows(intentId);
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({
+      amount_idr: "100000",
+      requested_by: RESERVATION_SYSTEM_ACTOR,
+    });
+    expect(row.refund_payment_refund_id).toBe(refunds[0]!.id);
+
+    // A redelivered payment asks for no second refund.
+    expect(await handlePaymentPaid(tenantScope(), event)).toBe("unchanged");
+    expect(await depositRefundRows(intentId)).toHaveLength(1);
+  });
+
+  it("RSV-02 a DP that settles while the sweep closes the hold is refunded, not lost", async () => {
+    await setPolicy("required", 100_000);
+    const f = await floor(1);
+    const created = await createReservation(
+      tenantScope(),
+      outletA,
+      booking(f.zoneId, "2027-05-28", "Balapan Sapu"),
+      key(),
+    );
+    const intentId = await openIntent(created);
+    await settle(intentId, 100_000);
+    const event = await paymentPaidEvent(intentId);
+
+    // The sweep locks its whole batch before it closes each row. Hold the row,
+    // let the consumer read `pending_deposit` and block on the lock, then close
+    // the row the way the sweep does; the payment must not be kept silently.
+    const blocker = await owner.connect();
+    const probe = await owner.connect();
+    let handled: ReturnType<typeof handlePaymentPaid> | null = null;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [seededTenantId],
+      );
+      await blocker.query(
+        "SELECT 1 FROM reservations WHERE id = $1 FOR UPDATE",
+        [created.reservation.id],
+      );
+      handled = handlePaymentPaid(tenantScope(), event);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i += 1) {
+        const { rows } = await probe.query<{ waiting: number }>(
+          `SELECT count(*)::int AS waiting FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock'
+             AND state = 'active' AND pid <> pg_backend_pid()`,
+        );
+        waiting = (rows[0]?.waiting ?? 0) > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(waiting).toBe(true);
+      await blocker.query(
+        `UPDATE reservations SET status = 'cancelled', closed_at = now(),
+           close_reason = 'deposit_not_paid', refund_status = 'not_required'
+         WHERE id = $1`,
+        [created.reservation.id],
+      );
+      await blocker.query("COMMIT");
+      expect(await handled).toBe("late_refund_requested");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      probe.release();
+      if (handled) await handled.catch(() => undefined);
+    }
+    const row = await reservationRow(created.reservation.id);
+    expect(row.status).toBe("cancelled");
+    expect(row.deposit_payment_id).toBe(intentId);
+    expect(row.refund_status).toBe("requested");
+    expect(await depositRefundRows(intentId)).toHaveLength(1);
+  });
+});
+
 describe("RSV-03 a DP refund is a WS-05 refund request", () => {
   async function paidConfirmed(date: string) {
     await setPolicy("required", 100_000);
@@ -742,6 +874,47 @@ describe("RSV-03 a DP refund is a WS-05 refund request", () => {
     row = await reservationRow(created.reservation.id);
     expect(row.refund_status).toBe("requested");
     expect(row.refund_payment_refund_id).not.toBeNull();
+
+    // The retry budget is REFUND_MAX_ATTEMPTS: the last failure gives up with
+    // an audit row for a human and the sweep never picks the row up again.
+    const stuck = await paidConfirmed("2027-06-22");
+    await asOwner((client) =>
+      client.query(
+        `UPDATE reservations SET status = 'cancelled', closed_at = now(), close_reason = 'x',
+           deposit_refund_idr = 100000, deposit_forfeited_idr = 0, refund_status = 'pending',
+           refund_attempts = $2
+         WHERE id = $1`,
+        [stuck.created.reservation.id, REFUND_MAX_ATTEMPTS - 1],
+      ),
+    );
+    await requestDepositRefund(
+      tenantScope(),
+      outletA,
+      stuck.created.reservation.id,
+      { intentId: stuck.intentId, refundIdr: 1 },
+      "cancelled",
+      null,
+    );
+    const capped = await reservationRow(stuck.created.reservation.id);
+    expect(capped.refund_attempts).toBe(REFUND_MAX_ATTEMPTS);
+    expect(capped.refund_next_attempt_at).toBeNull();
+    const audit = await asOwner((client) =>
+      client.query(
+        `SELECT 1 FROM audit_logs
+         WHERE tenant_id = $1 AND event->>'objectId' = $2
+           AND event->>'action' = 'reservation.refund_retry_exhausted'`,
+        [seededTenantId, stuck.created.reservation.id],
+      ),
+    );
+    expect(audit.rows).toHaveLength(1);
+    await retryPendingRefunds(
+      tenantScope(),
+      new Date(Date.now() + 48 * 60 * MINUTE),
+    );
+    expect(await refundRows(stuck.intentId)).toHaveLength(0);
+    expect(
+      (await reservationRow(stuck.created.reservation.id)).refund_status,
+    ).toBe("pending");
   });
 });
 

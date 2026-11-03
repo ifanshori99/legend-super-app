@@ -13,6 +13,13 @@
 // booking any more. PRD silent; safest rule: record it as the reservation's DP
 // and request a FULL refund through WS-05 (approval stays with WS-05), never
 // keep the guest's money for a booking that no longer exists.
+//
+// The decision is taken from the row locked by `confirmReservationDeposit`,
+// never from the read before it: the stale-hold sweep locks its batch first
+// and closes a row afterwards, so a payment delivered while that transaction
+// is open would see `pending_deposit`, then find the row cancelled under the
+// lock. Reading the status again after the lock is what makes that payment a
+// late payment instead of a silent loss.
 import { and, eq, isNull, or } from "drizzle-orm";
 import {
   idr,
@@ -159,20 +166,22 @@ export async function handlePaymentPaid(
   const { intentId, paymentLinkId } = payload.data;
   const row = await findDepositReservation(context, intentId, paymentLinkId);
   if (!row) return "ignored";
-  if (row.status === "pending_deposit") {
-    const after = await confirmReservationDeposit(
-      context,
-      row.outletId,
-      row.id,
-      now,
-    );
-    return after.status === "confirmed" ? "confirmed" : "unchanged";
-  }
-  if (
-    (row.status === "cancelled" || row.status === "no_show") &&
-    row.depositPaymentId === null &&
-    (await refundLateDeposit(context, row, intentId, now))
-  )
-    return "late_refund_requested";
-  return "unchanged";
+  // Reconcile from the locked row, not the read above: the stale-hold sweep
+  // (or a new booking's lazy sweep) may close a `pending_deposit` reservation
+  // while this event waits for its lock. The status below is the one the lock
+  // saw; a payment that lost that race is a late payment.
+  const status =
+    row.status === "pending_deposit"
+      ? (await confirmReservationDeposit(context, row.outletId, row.id, now))
+          .status
+      : row.status;
+  if (status === "confirmed")
+    return row.status === "pending_deposit" ? "confirmed" : "unchanged";
+  if (status !== "cancelled" && status !== "no_show") return "unchanged";
+  // The reservation closed without ever recording a DP: the amount just paid
+  // is refunded in full. `refundLateDeposit` re-locks and re-checks, so a
+  // replay or a racing worker is a no-op.
+  return (await refundLateDeposit(context, row, intentId, now))
+    ? "late_refund_requested"
+    : "unchanged";
 }
