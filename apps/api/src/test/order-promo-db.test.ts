@@ -12,6 +12,7 @@ import {
   createUlid,
   idr,
   outletIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -140,7 +141,7 @@ async function applicationCount(orderId: string) {
   const result = await asOwner((client) =>
     client.query(
       "SELECT count(*)::int AS n FROM promotion_order_applications WHERE tenant_id = $1 AND order_id = $2",
-      [tenantId, orderId],
+      [tenantId, ulidToUuid(orderId as never)],
     ),
   );
   return result.rows[0].n as number;
@@ -150,7 +151,7 @@ async function redemptionDiscounts(orderId: string) {
   const result = await asOwner((client) =>
     client.query(
       "SELECT discount_idr FROM promotion_redemptions WHERE tenant_id = $1 AND order_id = $2 AND status = 'applied'",
-      [tenantId, orderId],
+      [tenantId, ulidToUuid(orderId as never)],
     ),
   );
   return result.rows.map((row) => Number(row.discount_idr));
