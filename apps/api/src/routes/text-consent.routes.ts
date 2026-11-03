@@ -17,6 +17,7 @@ import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
+  requireMenuPermission,
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
@@ -64,8 +65,11 @@ textOverridesRouter.put(
 
 export const consentRouter = Router();
 const viewCustomers = requireTenantPermission("crm.customer.view");
-// legend-ovi8: recording consent is a write, not a customer-view read.
-const recordConsentPermission = requireTenantPermission("crm.consent.record");
+// legend-ovi8: recording consent is a write, not a customer-view read. The
+// cashier template is outlet-scoped, so the gate mints the caller's reachable
+// scope (tenant or their outlets) instead of demanding a tenant-wide grant;
+// recordConsent limits outlet-scoped callers to source "cashier".
+const recordConsentPermission = requireMenuPermission("crm.consent.record");
 
 consentRouter.get("/", ...base, viewCustomers, async (req, res) => {
   const query = listConsentsQuerySchema.parse(req.query);
