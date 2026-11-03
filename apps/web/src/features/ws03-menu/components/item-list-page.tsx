@@ -54,6 +54,7 @@ import {
   type ItemSort,
   type ItemStatus,
 } from "../lib";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 import { ReorderButtons } from "./reorder-buttons";
 import { ItemStatusBadge } from "./status-badge";
@@ -81,54 +82,64 @@ const INITIAL_FILTERS: FilterState = {
 function RowActions({
   row,
   pending,
+  canManage,
+  canToggle,
   onToggle,
   onDelete,
 }: {
   row: ItemRow;
   pending: boolean;
+  canManage: boolean;
+  canToggle: boolean;
   onToggle: () => void;
   onDelete: () => void;
 }) {
   const t = useT();
   return (
     <div className="flex justify-end gap-1">
-      <Button
-        asChild
-        variant="ghost"
-        size="icon-sm"
-        aria-label={t("menu.list.edit")}
-      >
-        <Link to="/kelola/menu/$itemId" params={{ itemId: row.item.id }}>
-          <Pencil aria-hidden="true" />
-        </Link>
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        aria-label={
-          row.status === "sold_out"
-            ? t("menu.list.restore")
-            : t("menu.list.sellOut")
-        }
-        disabled={!row.availability || pending}
-        onClick={onToggle}
-      >
-        {row.status === "sold_out" ? (
-          <RotateCcw aria-hidden="true" />
-        ) : (
-          <CircleSlash aria-hidden="true" />
-        )}
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        aria-label={t("menu.list.delete")}
-        onClick={onDelete}
-      >
-        <Trash2 aria-hidden="true" />
-      </Button>
+      {canManage && (
+        <Button
+          asChild
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t("menu.list.edit")}
+        >
+          <Link to="/kelola/menu/$itemId" params={{ itemId: row.item.id }}>
+            <Pencil aria-hidden="true" />
+          </Link>
+        </Button>
+      )}
+      {canToggle && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={
+            row.status === "sold_out"
+              ? t("menu.list.restore")
+              : t("menu.list.sellOut")
+          }
+          disabled={!row.availability || pending}
+          onClick={onToggle}
+        >
+          {row.status === "sold_out" ? (
+            <RotateCcw aria-hidden="true" />
+          ) : (
+            <CircleSlash aria-hidden="true" />
+          )}
+        </Button>
+      )}
+      {canManage && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t("menu.list.delete")}
+          onClick={onDelete}
+        >
+          <Trash2 aria-hidden="true" />
+        </Button>
+      )}
     </div>
   );
 }
@@ -136,6 +147,8 @@ function RowActions({
 export function ItemListPage() {
   const t = useT();
   const toast = useToast();
+  const { canManageItems, canToggleAvailability } = useMenuWrites();
+  const showActions = canManageItems || canToggleAvailability;
   const [filters, setFilters] = React.useState<FilterState>(INITIAL_FILTERS);
   const [page, setPage] = React.useState(1);
   const [deleting, setDeleting] = React.useState<ItemRow | null>(null);
@@ -207,6 +220,7 @@ export function ItemListPage() {
   );
 
   const reorderEnabled =
+    canManageItems &&
     filters.categoryId !== ALL &&
     filters.stationId === ALL &&
     filters.status === ALL &&
@@ -442,35 +456,39 @@ export function ItemListPage() {
           label: t("menu.list.searchPlaceholder"),
         }}
         actions={
-          <Button asChild>
-            <Link to="/kelola/menu/$itemId" params={{ itemId: "baru" }}>
-              <UtensilsCrossed aria-hidden="true" />
-              {t("menu.list.add")}
-            </Link>
-          </Button>
+          canManageItems ? (
+            <Button asChild>
+              <Link to="/kelola/menu/$itemId" params={{ itemId: "baru" }}>
+                <UtensilsCrossed aria-hidden="true" />
+                {t("menu.list.add")}
+              </Link>
+            </Button>
+          ) : undefined
         }
         onRetry={retry}
         empty={{
           title: t("menu.list.emptyTitle"),
           description: t("menu.list.emptyHint"),
-          action: (
+          action: canManageItems ? (
             <Button asChild variant="outline">
               <Link to="/kelola/menu/$itemId" params={{ itemId: "baru" }}>
                 {t("menu.list.add")}
               </Link>
             </Button>
-          ),
+          ) : undefined,
         }}
         noResults={data.filtered.length === 0 && data.items.length > 0}
         page={{ page: safePage, total: totalPages, onChange: setPage }}
         rowCount={data.filtered.length}
         loadingRows={6}
       >
-        <p className="border-b px-card py-2 text-sm leading-5 text-muted-foreground">
-          {reorderEnabled
-            ? t("menu.list.reorderHint")
-            : t("menu.list.reorderDisabledHint")}
-        </p>
+        {canManageItems && (
+          <p className="border-b px-card py-2 text-sm leading-5 text-muted-foreground">
+            {reorderEnabled
+              ? t("menu.list.reorderHint")
+              : t("menu.list.reorderDisabledHint")}
+          </p>
+        )}
         <div className="hidden md:block">
           <Table>
             <TableHeader>
@@ -489,7 +507,11 @@ export function ItemListPage() {
                 </TableHead>
                 <TableHead numeric>{t("menu.list.columns.price")}</TableHead>
                 <TableHead>{t("menu.list.columns.status")}</TableHead>
-                <TableHead numeric>{t("menu.list.columns.actions")}</TableHead>
+                {showActions && (
+                  <TableHead numeric>
+                    {t("menu.list.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -574,14 +596,18 @@ export function ItemListPage() {
                   <TableCell>
                     <ItemStatusBadge status={row.status} />
                   </TableCell>
-                  <TableCell numeric>
-                    <RowActions
-                      row={row}
-                      pending={setStatus.isPending}
-                      onToggle={() => toggleStatus(row)}
-                      onDelete={() => setDeleting(row)}
-                    />
-                  </TableCell>
+                  {showActions && (
+                    <TableCell numeric>
+                      <RowActions
+                        row={row}
+                        pending={setStatus.isPending}
+                        canManage={canManageItems}
+                        canToggle={canToggleAvailability}
+                        onToggle={() => toggleStatus(row)}
+                        onDelete={() => setDeleting(row)}
+                      />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -623,35 +649,41 @@ export function ItemListPage() {
                 </div>
                 <ItemStatusBadge status={row.status} />
               </div>
-              <div className="flex items-center justify-between gap-2">
-                {reorderEnabled ? (
-                  <ReorderButtons
-                    index={index}
-                    count={pageRows.length}
-                    labelUp={t("menu.list.moveUp", { name: row.item.name })}
-                    labelDown={t("menu.list.moveDown", {
-                      name: row.item.name,
-                    })}
-                    disabled={reorder.isPending}
-                    onMove={(direction) => move(row, direction)}
-                  />
-                ) : (
-                  <span />
-                )}
-                <RowActions
-                  row={row}
-                  pending={setStatus.isPending}
-                  onToggle={() => toggleStatus(row)}
-                  onDelete={() => setDeleting(row)}
-                />
-              </div>
+              {(reorderEnabled || showActions) && (
+                <div className="flex items-center justify-between gap-2">
+                  {reorderEnabled ? (
+                    <ReorderButtons
+                      index={index}
+                      count={pageRows.length}
+                      labelUp={t("menu.list.moveUp", { name: row.item.name })}
+                      labelDown={t("menu.list.moveDown", {
+                        name: row.item.name,
+                      })}
+                      disabled={reorder.isPending}
+                      onMove={(direction) => move(row, direction)}
+                    />
+                  ) : (
+                    <span />
+                  )}
+                  {showActions && (
+                    <RowActions
+                      row={row}
+                      pending={setStatus.isPending}
+                      canManage={canManageItems}
+                      canToggle={canToggleAvailability}
+                      onToggle={() => toggleStatus(row)}
+                      onDelete={() => setDeleting(row)}
+                    />
+                  )}
+                </div>
+              )}
             </li>
           ))}
         </ul>
       </DataTableShell>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.list.deleteTitle", { name: deleting?.item.name ?? "" })}
         description={t("menu.list.deleteBody")}
@@ -661,7 +693,7 @@ export function ItemListPage() {
       />
 
       <ConfirmDialog
-        open={restoring !== null}
+        open={canToggleAvailability && restoring !== null}
         onOpenChange={(open) => !open && setRestoring(null)}
         title={t("menu.availability.confirmRestoreTitle", {
           name: restoring?.item.name ?? "",
