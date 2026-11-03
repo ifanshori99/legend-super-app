@@ -57,7 +57,8 @@ test("F11 customer display: a live bill shows its items, total and QRIS", async 
     page.getByRole("heading", { name: "Rincian tagihan" }),
   ).toBeVisible();
   await expect(page.getByText("Service charge")).toBeVisible();
-  await expect(page.getByText("Pajak")).toBeVisible();
+  // Exact: a support-session banner also contains the word "pajak".
+  await expect(page.getByText("Pajak", { exact: true })).toBeVisible();
   // The hero total is a `<data>` value; the v3 Money tier renders the `Rp`
   // prefix at 0.6em, so the figure is the stable assertion.
   await expect(page.locator('data[value="120100"]').first()).toBeVisible();
