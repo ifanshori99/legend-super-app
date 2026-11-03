@@ -8,6 +8,12 @@
 // platform service sets that tenant's context explicitly for the operation,
 // and the tenant admin reads the same rows through the tenant API. A tenant
 // transaction can therefore never see another tenant's support sessions.
+//
+// Lifecycle (legend-33f): a grant is open until it is ended early
+// (ended_at/ended_by) or its expiry is recorded (expiry_recorded_at, set by
+// the worker sweep or the next request once expires_at has passed). Access is
+// always decided against the clock at read time; expiry_recorded_at only makes
+// the expiry audit row + support_access.ended event happen exactly once.
 
 import { sql } from "drizzle-orm";
 import {
@@ -17,6 +23,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -54,6 +61,8 @@ export const supportAccessGrants = pgTable(
     }),
     endedAt: timestamp("ended_at", { withTimezone: true }),
     endedBy: text("ended_by"),
+    /** When the automatic expiry was audited and announced (never extended). */
+    expiryRecordedAt: timestamp("expiry_recorded_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -79,17 +88,36 @@ export const supportAccessGrants = pgTable(
       "support_access_ended_pair_check",
       sql`(${table.endedAt} IS NULL) = (${table.endedBy} IS NULL)`,
     ),
+    // TEN-04 "read-only secara default": a write session is an explicit
+    // choice and is capped shorter than a read session (PRD silent on the
+    // cap; safest option, see SUPPORT_ACCESS_WRITE_MAX_MINUTES).
+    check(
+      "support_access_write_duration_check",
+      sql`${table.accessMode} = 'read_only' OR ${table.durationMinutes} <= 30`,
+    ),
+    // An expiry is recorded only for a session that was not ended early, and
+    // never before it actually expired.
+    check(
+      "support_access_expiry_recorded_check",
+      sql`${table.expiryRecordedAt} IS NULL OR (${table.endedAt} IS NULL AND ${table.expiryRecordedAt} >= ${table.expiresAt})`,
+    ),
     // TEN-04 audit view: the tenant's grants, newest first.
     index("support_access_tenant_started_idx").on(
       table.tenantId,
       table.startedAt.desc(),
     ),
-    // "One open session per Super Admin and tenant" is checked in the service
-    // because expiry is a clock comparison, not a stored predicate.
     index("support_access_admin_open_idx").on(
       table.tenantId,
       table.superAdminUserId,
       table.expiresAt,
     ),
+    // One open session per Super Admin and tenant. Expiry is a clock
+    // comparison, so the service also takes an advisory lock and records any
+    // lapsed session before opening a new one; this index is the backstop.
+    uniqueIndex("support_access_one_open_key")
+      .on(table.tenantId, table.superAdminUserId)
+      .where(
+        sql`${table.endedAt} IS NULL AND ${table.expiryRecordedAt} IS NULL`,
+      ),
   ],
 );
