@@ -23,12 +23,17 @@ import {
 import { defineDomainEvent, eventEnvelopeSchema } from "../events/index.ts";
 import type { EventCatalogEntry, EventEnvelope } from "../events/index.ts";
 import {
+  inventoryItemIdSchema,
+  stockBatchIdSchema,
+} from "../inventory/schemas.ts";
+import {
   equipmentIdSchema,
   maintenanceTicketIdSchema,
   maintenanceUrgencySchema,
   opsChecklistItemIdSchema,
   opsChecklistRunIdSchema,
   opsChecklistTemplateIdSchema,
+  prepLabelIdSchema,
   temperatureLogIdSchema,
 } from "./schemas.ts";
 
@@ -37,6 +42,7 @@ export const operationsEventNames = [
   "checklist.failed",
   "temperature.out_of_range",
   "equipment.broken",
+  "prep_label.expired",
 ] as const;
 export type OperationsEventName = (typeof operationsEventNames)[number];
 
@@ -94,12 +100,26 @@ export type EquipmentBrokenEventPayload = z.infer<
   typeof equipmentBrokenEventPayloadSchema
 >;
 
+/** OPS-03: a prep label crossed its use-by while unprinted or still stored.
+ * The expiry-alert sweep emits it once per label. */
+export const prepLabelExpiredEventPayloadSchema = z.strictObject({
+  prepLabelId: prepLabelIdSchema,
+  inventoryItemId: inventoryItemIdSchema,
+  batchId: stockBatchIdSchema,
+  useBy: isoDateTimeSchema,
+  detectedAt: isoDateTimeSchema,
+});
+export type PrepLabelExpiredEventPayload = z.infer<
+  typeof prepLabelExpiredEventPayloadSchema
+>;
+
 /** Payload schema per event name, for the outbox writer and consumers. */
 export const operationsEventPayloadSchemas = {
   "checklist.missed": checklistMissedEventPayloadSchema,
   "checklist.failed": checklistFailedEventPayloadSchema,
   "temperature.out_of_range": temperatureOutOfRangeEventPayloadSchema,
   "equipment.broken": equipmentBrokenEventPayloadSchema,
+  "prep_label.expired": prepLabelExpiredEventPayloadSchema,
 } as const;
 
 /**

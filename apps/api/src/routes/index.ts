@@ -34,7 +34,10 @@ import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
 import { facilityRouter } from "./facility.routes";
+import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { operationsRouter } from "./operations.routes";
+import { operationsEquipmentRouter } from "./operations-equipment.routes";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -107,5 +110,12 @@ apiRouter.use("/vouchers", vouchersRouter);
 apiRouter.use(reservationRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
+// WS-09 Wi-Fi policy configuration writes (legend-8dpm).
+apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
+// WS-14 daily operations (legend-btha checklists/food safety/prep;
+// legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
+// each applies its middleware per route so unmatched paths pass through.
+apiRouter.use("/operations", operationsRouter);
+apiRouter.use("/operations", operationsEquipmentRouter);

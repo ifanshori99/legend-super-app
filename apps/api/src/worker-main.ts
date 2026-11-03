@@ -35,6 +35,8 @@ import { retryPendingRefunds } from "./services/reservation-refunds.ts";
 import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
 import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
+import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
+import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -209,6 +211,25 @@ const relay = createRelayRuntime({
       await retryPendingRefunds(context, new Date());
     } catch {
       console.error("Reservation refund retry sweep failed");
+    }
+    // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
+    // supervisor alert through the notification outbox. Same fail-closed rule:
+    // a sweep error never blocks the relay, the next tick retries.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepMissedChecklistRuns(tx, context),
+      );
+    } catch {
+      console.error("Checklist missed-run sweep failed");
+    }
+    // OPS-03 (legend-sdet): raise the expiry alert for prep labels past their
+    // use-by exactly once. Fail closed like the other sweeps.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepExpiredPrepLabels(tx, context),
+      );
+    } catch {
+      console.error("Prep label expiry sweep failed");
     }
     // ORD-07 (legend-7qg): escalate waiter calls / bill requests left open
     // past SERVICE_REQUEST_OVERDUE_SECONDS, once each. The relay ticks every

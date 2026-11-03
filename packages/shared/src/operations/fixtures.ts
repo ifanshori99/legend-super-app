@@ -337,6 +337,8 @@ const openingRun = {
   dueAt: "2026-11-01T01:30:00.000Z",
   completedAt: "2026-11-01T01:20:00.000Z",
   status: "completed",
+  missedAt: null,
+  alertedAt: null,
   results: [
     finished(
       id(8111),
@@ -375,6 +377,8 @@ const closingRun = {
   dueAt: "2026-11-01T15:15:00.000Z",
   completedAt: null,
   status: "pending",
+  missedAt: null,
+  alertedAt: null,
   results: [
     pendingResult(id(8121)),
     pendingResult(id(8122)),
@@ -393,6 +397,8 @@ const cleaningRun = {
   dueAt: "2026-11-01T16:00:00.000Z",
   completedAt: null,
   status: "in_progress",
+  missedAt: null,
+  alertedAt: null,
   results: [
     finished(
       id(8131),
@@ -417,6 +423,8 @@ const missedRun = {
   dueAt: "2026-10-31T09:00:00.000Z",
   completedAt: null,
   status: "missed",
+  missedAt: "2026-10-31T09:12:00.000Z",
+  alertedAt: "2026-10-31T09:12:00.000Z",
   results: [
     finished(id(8141), "done", "2026-10-31T08:40:00.000Z", people.barista.id, {
       photoMediaIds: [id(9004)],
@@ -437,6 +445,8 @@ const failedRun = {
   dueAt: "2026-10-31T01:30:00.000Z",
   completedAt: "2026-10-31T01:25:00.000Z",
   status: "failed",
+  missedAt: null,
+  alertedAt: null,
   results: [
     finished(
       id(8111),
