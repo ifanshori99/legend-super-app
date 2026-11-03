@@ -12,6 +12,8 @@ import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { createNotificationService } from "../services/notification-center.ts";
 
+import { seedTenantOutlets } from "./floor-test-helpers";
+
 const pool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const database = drizzle(pool, { schema });
 const tenantA = randomUUID(),
@@ -112,9 +114,8 @@ describe("notification center (PRD §3.15)", () => {
     });
   });
   it("TEN-03 restricts all notification operations to assigned outlets", async () => {
-    const restrictedUser = randomUUID(),
-      allowed = randomUUID(),
-      blocked = randomUUID();
+    const restrictedUser = randomUUID();
+    const [allowed, blocked] = await seedTenantOutlets(tenantA, 2);
     const a = randomUUID(),
       b = randomUUID(),
       c = randomUUID();

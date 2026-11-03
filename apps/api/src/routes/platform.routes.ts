@@ -14,6 +14,7 @@ import {
   listTenantsQuerySchema,
   setTenantPackageInputSchema,
   setTenantStatusInputSchema,
+  platformEndpoints,
   requestSupportAccessInputSchema,
   supportAccessGrantIdSchema,
 } from "@starter/shared/platform";
@@ -34,8 +35,9 @@ import {
 } from "../services/platform-org.service";
 import {
   endSupportAccess,
+  listPlatformSupportAccess,
   requestSupportAccess,
-} from "../services/platform-support.service";
+} from "../services/platform-support.service.ts";
 
 export const platformRouter = Router();
 
@@ -78,13 +80,17 @@ platformRouter.get("/tenants/:tenantId", async (req, res) => {
 platformRouter.post("/tenants/:tenantId/status", jsonBody, async (req, res) => {
   const { tenantId } = tenantParams.parse(req.params);
   const input = setTenantStatusInputSchema.parse(req.body);
-  res.json({ data: await setTenantStatus(tenantId, input) });
+  res.json({
+    data: await setTenantStatus(tenantId, input, getAuth(req).user.id),
+  });
 });
 
 platformRouter.put("/tenants/:tenantId/package", jsonBody, async (req, res) => {
   const { tenantId } = tenantParams.parse(req.params);
   const input = setTenantPackageInputSchema.parse(req.body);
-  res.json({ data: await setTenantPackage(tenantId, input) });
+  res.json({
+    data: await setTenantPackage(tenantId, input, getAuth(req).user.id),
+  });
 });
 
 platformRouter.post(
@@ -97,7 +103,8 @@ platformRouter.post(
       tenantId,
       actorUserId: getAuth(req).user.id,
       request: input,
-      // Fail closed until the identity bead stores MFA factors (lib/mfa.ts).
+      // TEN-04: the TOTP code in this request is re-verified (lib/mfa.ts);
+      // no factor or a wrong/replayed code → null → refused and audited.
       mfaVerifiedAt: await verifiedMfaAt(req),
     });
     res.status(201).location(`/api/platform/support-access/${grant.id}`).json({
@@ -106,13 +113,22 @@ platformRouter.post(
   },
 );
 
+// TEN-04: every support session across tenants (optionally one tenant),
+// newest first. Grants stay tenant-owned (RLS); the service reads each
+// tenant in its own transaction.
+platformRouter.get("/support-access", async (req, res) => {
+  const query = platformEndpoints.listSupportAccess.query.parse(req.query);
+  res.json(await listPlatformSupportAccess(query));
+});
+
 platformRouter.post("/support-access/:grantId/end", async (req, res) => {
   const { grantId } = grantParams.parse(req.params);
-  // support_access_grants is tenant-owned (RLS), so ending a session needs
-  // its tenant; the platform contract has no body here, so the tenant
-  // travels as a validated query parameter. The grant id alone is never
-  // trusted to pick a tenant.
-  const tenantId = tenantIdSchema.parse(req.query.tenantId);
+  // The contract carries only the grant id; the service locates its tenant
+  // under RLS. A validated ?tenantId= narrows the lookup (never widens it:
+  // a grant outside that tenant is a 404). Ending is idempotent.
+  const { tenantId } = z
+    .strictObject({ tenantId: tenantIdSchema.optional() })
+    .parse(req.query);
   const grant = await endSupportAccess({
     tenantId,
     grantId,

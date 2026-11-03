@@ -7,10 +7,30 @@ export const accountingMessages = {
   subtitle:
     "Bagan akun per badan usaha, jurnal yang sudah dibukukan, dan jurnal manual yang menunggu persetujuan.",
   tabs: {
+    // Section groups of the accounting area (legend-53q/5fdy/m4zn/rx0h/ogx3):
+    // thirteen sections no longer fit one strip, so navigation is two tiers.
+    groups: {
+      books: "Buku Besar",
+      cash: "Kas & Bank",
+      tax: "Pajak",
+      assets: "Utang & Aset",
+      reports: "Laporan",
+      share: "Bagi Hasil",
+    },
     coa: "Bagan Akun",
     journals: "Jurnal",
     manual: "Jurnal Manual",
     recurring: "Jurnal Berulang",
+    cash: "Kas & Bank",
+    recon: "Rekonsiliasi",
+    tax: "Rekap Pajak",
+    aging: "Piutang & Utang",
+    assets: "Aset Tetap",
+    budgets: "Anggaran",
+    statements: "Laporan Keuangan",
+    periods: "Tutup Periode",
+    shareholders: "Pemegang Saham",
+    distributions: "Distribusi",
   },
   entity: {
     label: "Badan usaha",

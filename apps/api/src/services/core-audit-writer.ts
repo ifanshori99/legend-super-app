@@ -22,6 +22,60 @@ import type { AuditEntry, AuditWriter } from "./audit-writer.ts";
  * an empty list (fully redacted) until it is added here deliberately.
  */
 const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
+  "tenant.created": [
+    "slug",
+    "plan",
+    "deploymentMode",
+    "modules",
+    "firstAdminUserId",
+    "adminProvisioning",
+  ],
+  "tenant.status_changed": ["status"],
+  "tenant.package_changed": [
+    "plan",
+    "modules",
+    "maxOutlets",
+    "maxActiveEmployees",
+    "maxDevices",
+    "aiRequestsPerMonth",
+    "aiCostCapIdr",
+    "emailCostCapIdr",
+  ],
+  "support_access.granted": [
+    "accessMode",
+    "durationMinutes",
+    "startedAt",
+    "expiresAt",
+  ],
+  "support_access.ended": ["status", "endedAt", "superAdminUserId"],
+  "support_access.expired": ["status", "expiresAt", "superAdminUserId"],
+  "support_access.denied": ["cause", "accessMode", "durationMinutes"],
+  "integration.created": ["provider", "outletId", "status", "configKeys"],
+  "integration.config.updated": [
+    "provider",
+    "outletId",
+    "status",
+    "configKeys",
+  ],
+  "integration.credentials.replaced": [
+    "provider",
+    "outletId",
+    "status",
+    "configKeys",
+  ],
+  "integration.status.changed": [
+    "provider",
+    "outletId",
+    "status",
+    "configKeys",
+  ],
+  "integration.credentials.rotated": [
+    "provider",
+    "outletId",
+    "status",
+    "configKeys",
+  ],
+  "outbox.replayed": ["dispatchState", "generation"],
   "role.created": ["permissions", "mfaRequired", "allowedScopeTypes"],
   "role.updated": ["permissions", "mfaRequired", "allowedScopeTypes"],
   "role_assignment.granted": [

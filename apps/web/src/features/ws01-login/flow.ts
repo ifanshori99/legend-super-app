@@ -145,12 +145,51 @@ export function postLoginPath(session: {
  * screens validate `?lanjut=`/`?redirect=` with the contract's
  * returnPathSchema; this is the same rule for code that builds a sign-in URL,
  * so the two can never drift.
+ *
+ * On top of the contract rule the browser side also refuses (legend-qhh5
+ * review): any C0/DEL control character, a percent-encoded `/` or `\` in the
+ * path (a router that decodes before navigating would turn `/%2F%2Fevil` or
+ * `/%5Cevil` into a protocol-relative URL), dot segments that resolve to
+ * another origin or to an API path, and the API/auth endpoints themselves
+ * (a return to `/api/...` would replay a request, not show a page).
  */
+const RETURN_PATH_BASE = "https://return-path.invalid";
+const BLOCKED_RETURN_PREFIXES = ["/api", "/auth"] as const;
+// eslint-disable-next-line no-control-regex -- refusing control characters is the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const ENCODED_SEPARATOR = /%(?:2f|5c)/i;
+
 export function safeReturnPath(
   value: string | null | undefined,
 ): string | undefined {
   if (!value) return undefined;
-  return returnPathSchema.safeParse(value).success ? value : undefined;
+  if (!returnPathSchema.safeParse(value).success) return undefined;
+  if (CONTROL_CHARS.test(value)) return undefined;
+  const rawPath = value.split(/[?#]/, 1)[0] ?? "";
+  if (ENCODED_SEPARATOR.test(rawPath)) return undefined;
+  let url: URL;
+  let decodedPath: string;
+  try {
+    url = new URL(value, RETURN_PATH_BASE);
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== RETURN_PATH_BASE) return undefined;
+  if (
+    decodedPath.startsWith("//") ||
+    /[\s\\]/.test(decodedPath) ||
+    CONTROL_CHARS.test(decodedPath)
+  )
+    return undefined;
+  const pathname = url.pathname.toLowerCase();
+  if (
+    BLOCKED_RETURN_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    )
+  )
+    return undefined;
+  return value;
 }
 
 /**
