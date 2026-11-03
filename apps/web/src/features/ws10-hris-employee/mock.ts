@@ -18,36 +18,23 @@ import {
   cafeLegendHrisFixtures,
   clockAttendance,
   evaluateAttendanceSubmission,
-  getMyHrisProfile,
-  isAnnouncementVisibleTo,
-  listAnnouncements,
   listAttendanceCorrections,
-  listAttendanceLogs,
-  listPositions,
-  listShiftAssignments,
   requestAttendanceCorrection,
-  type Announcement,
-  type AttendanceCorrection,
-  type AttendanceLog,
 } from "@starter/shared/hris";
 import { localDateOf, createUlid } from "@starter/shared/core";
 import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
+import {
+  MOCK_ME as me,
+  MOCK_OUTLET as outlet,
+  hrisMockCorrectionsFor,
+  hrisMockStore as store,
+} from "../../lib/mock/handlers/hris-directory.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
-import { createMockStore } from "../../lib/mock/store.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 
-const { tenant, outlets, employees, attendancePolicy, shiftAssignments } =
+const { tenant, outlets, attendancePolicy, shiftAssignments } =
   cafeLegendHrisFixtures;
-const outlet = outlets[0];
-
-/**
- * The mock's signed-in employee (HR-01): CL-1003, the fixture row that has
- * published shifts and a full day of attendance logs to render.
- */
-const me =
-  employees.find((employee) => employee.employeeNo === "CL-1003") ??
-  employees[0];
 
 /**
  * Outlet point for the geofence. The HRIS fixtures carry distances, not
@@ -99,8 +86,6 @@ export function distanceMetres(
 const MOCK_PHOTO_URL =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
-type Replay = { fingerprint: string; id: string };
-
 function idempotencyConflict(): ApiError {
   return new ApiError(
     409,
@@ -114,60 +99,6 @@ function fingerprintOf(body: { idempotencyKey: string }): string {
   const { idempotencyKey, ...rest } = body;
   void idempotencyKey;
   return JSON.stringify(rest);
-}
-
-type MockState = {
-  logs: AttendanceLog[];
-  corrections: AttendanceCorrection[];
-  /**
-   * Idempotency key → (request fingerprint, row id), so a replay never creates
-   * a second row and a reused key with a different body fails like the API
-   * (`IDEMPOTENCY_KEY_REUSED`, docs/plan/contracts.md "Idempotent mutations").
-   */
-  correctionReplays: Record<string, Replay>;
-  clockReplays: Record<string, Replay>;
-  /** Per-device binding hashes a supervisor has registered (F25). */
-  boundDevices: string[];
-};
-
-function seed(): MockState {
-  return {
-    logs: [...cafeLegendHrisFixtures.attendanceLogs],
-    corrections: [...cafeLegendHrisFixtures.attendanceCorrections],
-    correctionReplays: {},
-    clockReplays: {},
-    // Fixture logs record their own device hashes; they are bound devices.
-    boundDevices: [
-      ...new Set(
-        cafeLegendHrisFixtures.attendanceLogs
-          .filter((log) => log.employeeId === me.id)
-          .map((log) => log.deviceIdHash)
-          .filter((hash): hash is string => hash !== null),
-      ),
-    ],
-  };
-}
-
-const store = createMockStore<MockState>(seed);
-
-function myLogs(): AttendanceLog[] {
-  return store
-    .get()
-    .logs.filter((log) => log.employeeId === me.id)
-    .sort(
-      (left, right) =>
-        Date.parse(right.occurredAt) - Date.parse(left.occurredAt),
-    );
-}
-
-function myCorrections(): AttendanceCorrection[] {
-  return store
-    .get()
-    .corrections.filter((row) => row.employeeId === me.id)
-    .sort(
-      (left, right) =>
-        Date.parse(right.requestedAt) - Date.parse(left.requestedAt),
-    );
 }
 
 /**
@@ -195,80 +126,19 @@ if (typeof window !== "undefined")
   (window as unknown as HrisMockWindow).__legendHrisMock =
     hrisAttendanceMockControl;
 
-registerMock(getMyHrisProfile, ({ scenario }) => {
-  // The profile is required to render anything; `?mock=empty` empties the
-  // lists around it, not the signed-in employee.
-  void scenario;
-  return { data: { employee: me, outlet } };
-});
-
-registerMock(listShiftAssignments, ({ query, scenario }) => {
-  const rows = shiftAssignments
-    .filter((assignment) => assignment.employeeId === me.id)
-    .filter(
-      (assignment) =>
-        query.from === undefined || assignment.businessDate >= query.from,
-    )
-    .filter(
-      (assignment) =>
-        query.to === undefined || assignment.businessDate <= query.to,
-    )
-    .sort((left, right) => left.businessDate.localeCompare(right.businessDate));
-  return paginateFixture(rows, query, (assignment) => assignment.id, scenario);
-});
-
-registerMock(listPositions, ({ query }) => {
-  const rows = cafeLegendHrisFixtures.positions.filter(
-    (position) =>
-      query.orgUnitId === undefined || position.orgUnitId === query.orgUnitId,
-  );
-  // Reference data for a label, not a list the employee screens: keep it
-  // when `?mock=empty` empties the day's logs and roster.
-  return paginateFixture(rows, query, (position) => position.id);
-});
-
-registerMock(listAttendanceLogs, ({ query, scenario }) => {
-  const rows = myLogs()
-    .filter(
-      (log) =>
-        query.employeeId === undefined || log.employeeId === query.employeeId,
-    )
-    .filter(
-      (log) =>
-        query.businessDate === undefined ||
-        localDateOf(log.occurredAt, outlet.timeZone) === query.businessDate,
-    );
-  return paginateFixture(rows, query, (log) => log.id, scenario);
-});
+// The profile, roster, attendance-log, position and announcement reads are
+// shared with other WS-10 screens (one mock owner per endpoint), so they live in
+// `lib/mock/handlers/hris-directory.ts`. This file keeps the self-scoped clock
+// and correction flow, which write into that shared store.
 
 registerMock(listAttendanceCorrections, ({ query, scenario }) => {
-  const rows = myCorrections()
+  const rows = hrisMockCorrectionsFor(me.id)
     .filter(
       (row) =>
         query.employeeId === undefined || row.employeeId === query.employeeId,
     )
     .filter((row) => query.status === undefined || row.status === query.status);
   return paginateFixture(rows, query, (row) => row.id, scenario);
-});
-
-registerMock(listAnnouncements, ({ query, scenario }) => {
-  const rows: Announcement[] = cafeLegendHrisFixtures.announcements
-    .filter((announcement) =>
-      isAnnouncementVisibleTo(announcement, {
-        employeeId: me.id,
-        outletId: outlet.id,
-      }),
-    )
-    .sort(
-      (left, right) =>
-        Date.parse(right.publishedAt) - Date.parse(left.publishedAt),
-    );
-  return paginateFixture(
-    rows,
-    query,
-    (announcement) => announcement.id,
-    scenario,
-  );
 });
 
 registerMock(clockAttendance, ({ body }) => {

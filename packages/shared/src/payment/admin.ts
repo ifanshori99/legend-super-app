@@ -189,6 +189,18 @@ export const refundStatusSchema = z.enum([
 ]);
 export type RefundStatus = z.infer<typeof refundStatusSchema>;
 
+/**
+ * Non-human requesters: a module that files the refund request by rule (e.g.
+ * the reservation DP refund decided from the policy snapshot, PRD §3.22). The
+ * approval still needs a person with `payment.reconcile` (never the system).
+ */
+export const systemRefundActorSchema = z.enum(["system:reservation"]);
+export type SystemRefundActor = z.infer<typeof systemRefundActorSchema>;
+/** Display names for system requesters (no `user` row exists for them). */
+export const systemRefundActorNames: Record<SystemRefundActor, string> = {
+  "system:reservation": "Sistem (reservasi)",
+};
+
 export const refundViewSchema = z.strictObject({
   ...refundSchema.shape,
   paymentReference: ref,
@@ -196,7 +208,7 @@ export const refundViewSchema = z.strictObject({
   paidAmountIdr: positiveIdr,
   outletName: ref,
   /** Staff who asked for the refund; the approver must be someone else (PRD §3 "Matriks Approval"). */
-  requestedBy: uuidSchema,
+  requestedBy: z.union([uuidSchema, systemRefundActorSchema]),
   requestedByName: ref,
   /**
    * Server-computed for the signed-in viewer: pending, the approval matrix lets

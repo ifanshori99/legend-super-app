@@ -50,6 +50,7 @@ import {
   useUpdateModifier,
   useUpdateModifierGroup,
 } from "../hooks";
+import { useMenuWrites } from "../access";
 import { ConfirmDialog } from "./confirm-dialog";
 
 type GroupEditor = { mode: "new" } | { mode: "edit"; group: ModifierGroup };
@@ -57,6 +58,7 @@ type GroupEditor = { mode: "new" } | { mode: "edit"; group: ModifierGroup };
 export function ModifierSection({ itemId }: { itemId: string }) {
   const t = useT();
   const toast = useToast();
+  const { canManageItems, canManagePrices } = useMenuWrites();
   const groupsQuery = useModifierGroups({ limit: 100 });
   const attachedQuery = useItemModifierGroups(itemId);
   const stationsQuery = useStations({ limit: 100 });
@@ -68,6 +70,9 @@ export function ModifierSection({ itemId }: { itemId: string }) {
   const [override, setOverride] = React.useState<string[] | null>(null);
   const attachedIds = override ?? attachedQuery.data?.data.groupIds ?? [];
   const groups = groupsQuery.data?.data ?? [];
+  const attachedGroups = groups.filter((group) =>
+    attachedIds.includes(group.id),
+  );
   const stations = stationsQuery.data?.data ?? [];
 
   const [editor, setEditor] = React.useState<GroupEditor | null>(null);
@@ -209,6 +214,26 @@ export function ModifierSection({ itemId }: { itemId: string }) {
           <p className="text-sm text-muted-foreground">
             {t("menu.modifiers.attachedEmpty")}
           </p>
+        ) : !canManageItems ? (
+          attachedGroups.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t("menu.modifiers.attachedEmpty")}
+            </p>
+          ) : (
+            <ul className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-3 shadow-hairline sm:grid-cols-2">
+              {attachedGroups.map((group) => (
+                <li key={group.id} className="grid gap-0.5">
+                  <span className="font-medium">{group.name}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {t("menu.modifiers.bounds", {
+                      min: group.minSelect,
+                      max: group.maxSelect,
+                    })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
         ) : (
           <ul className="grid gap-2 rounded-container border-(length:--border-w) bg-card p-3 shadow-hairline sm:grid-cols-2">
             {groups.map((group) => {
@@ -242,15 +267,17 @@ export function ModifierSection({ itemId }: { itemId: string }) {
       <section className="grid gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <h3 className="type-heading">{t("menu.modifiers.manageTitle")}</h3>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={openNewGroup}
-          >
-            <Plus aria-hidden="true" />
-            {t("menu.modifiers.addGroup")}
-          </Button>
+          {canManageItems && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={openNewGroup}
+            >
+              <Plus aria-hidden="true" />
+              {t("menu.modifiers.addGroup")}
+            </Button>
+          )}
         </div>
 
         {groupsQuery.isPending ? (
@@ -334,26 +361,33 @@ export function ModifierSection({ itemId }: { itemId: string }) {
                                 <ChevronDown aria-hidden="true" />
                               )}
                             </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={t("menu.modifiers.editGroup")}
-                              onClick={() => openEditGroup(group)}
-                            >
-                              <Pencil aria-hidden="true" />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={t("menu.modifiers.deleteGroupTitle", {
-                                name: group.name,
-                              })}
-                              onClick={() => setDeleting(group)}
-                            >
-                              <Trash2 aria-hidden="true" />
-                            </Button>
+                            {canManageItems && (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label={t("menu.modifiers.editGroup")}
+                                  onClick={() => openEditGroup(group)}
+                                >
+                                  <Pencil aria-hidden="true" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label={t(
+                                    "menu.modifiers.deleteGroupTitle",
+                                    {
+                                      name: group.name,
+                                    },
+                                  )}
+                                  onClick={() => setDeleting(group)}
+                                >
+                                  <Trash2 aria-hidden="true" />
+                                </Button>
+                              </>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -363,6 +397,8 @@ export function ModifierSection({ itemId }: { itemId: string }) {
                             <GroupModifiers
                               groupId={group.id}
                               stations={stations}
+                              canManageItems={canManageItems}
+                              canManagePrices={canManagePrices}
                             />
                           </TableCell>
                         </TableRow>
@@ -377,7 +413,7 @@ export function ModifierSection({ itemId }: { itemId: string }) {
       </section>
 
       <Dialog
-        open={editor !== null}
+        open={canManageItems && editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -447,7 +483,7 @@ export function ModifierSection({ itemId }: { itemId: string }) {
       </Dialog>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.modifiers.deleteGroupTitle", {
           name: deleting?.name ?? "",
@@ -495,9 +531,13 @@ type ModifierEditor =
 function GroupModifiers({
   groupId,
   stations,
+  canManageItems,
+  canManagePrices,
 }: {
   groupId: string;
   stations: Station[];
+  canManageItems: boolean;
+  canManagePrices: boolean;
 }) {
   const t = useT();
   const toast = useToast();
@@ -550,7 +590,11 @@ function GroupModifiers({
     }
     const body = {
       name: trimmed,
-      priceIdr: idr(priceIdr),
+      // A creation always carries a price (the API requires price.manage);
+      // when editing without it, leave the stored price untouched.
+      ...(editor?.mode !== "edit" || canManagePrices
+        ? { priceIdr: idr(priceIdr) }
+        : {}),
       stationId: stationId === "none" ? null : stationId,
     };
     const onSuccess = () => {
@@ -599,10 +643,12 @@ function GroupModifiers({
         <p className="text-sm font-semibold">
           {t("menu.modifiers.modifiersTitle")}
         </p>
-        <Button type="button" variant="outline" size="sm" onClick={openNew}>
-          <Plus aria-hidden="true" />
-          {t("menu.modifiers.addModifier")}
-        </Button>
+        {canManageItems && canManagePrices && (
+          <Button type="button" variant="outline" size="sm" onClick={openNew}>
+            <Plus aria-hidden="true" />
+            {t("menu.modifiers.addModifier")}
+          </Button>
+        )}
       </div>
       {modifiers.isPending ? (
         <p className="text-sm text-muted-foreground" role="status">
@@ -636,9 +682,11 @@ function GroupModifiers({
                 <TableHead numeric>
                   {t("menu.modifiers.modifierPrice")}
                 </TableHead>
-                <TableHead numeric>
-                  {t("menu.modifiers.columns.actions")}
-                </TableHead>
+                {canManageItems && (
+                  <TableHead numeric>
+                    {t("menu.modifiers.columns.actions")}
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -659,32 +707,37 @@ function GroupModifiers({
                   <TableCell numeric>
                     <Money amount={modifier.priceIdr} size="sm" />
                   </TableCell>
-                  <TableCell numeric>
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t("menu.modifiers.editModifier")}
-                        onClick={() => openEdit(modifier)}
-                      >
-                        <Pencil aria-hidden="true" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t("menu.modifiers.deleteModifierTitle", {
-                          name: modifier.name,
-                        })}
-                        onClick={() =>
-                          setDeleting({ id: modifier.id, name: modifier.name })
-                        }
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </Button>
-                    </div>
-                  </TableCell>
+                  {canManageItems && (
+                    <TableCell numeric>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("menu.modifiers.editModifier")}
+                          onClick={() => openEdit(modifier)}
+                        >
+                          <Pencil aria-hidden="true" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("menu.modifiers.deleteModifierTitle", {
+                            name: modifier.name,
+                          })}
+                          onClick={() =>
+                            setDeleting({
+                              id: modifier.id,
+                              name: modifier.name,
+                            })
+                          }
+                        >
+                          <Trash2 aria-hidden="true" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -693,7 +746,7 @@ function GroupModifiers({
       )}
 
       <Dialog
-        open={editor !== null}
+        open={canManageItems && editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
       >
         <DialogContent>
@@ -707,6 +760,7 @@ function GroupModifiers({
           <FormField
             label={t("menu.modifiers.modifierName")}
             hint={t("menu.modifiers.modifierNameHint")}
+            error={error}
             required
           >
             <Input
@@ -715,19 +769,17 @@ function GroupModifiers({
               autoComplete="off"
             />
           </FormField>
-          <FormField
-            label={t("menu.modifiers.modifierPrice")}
-            error={error}
-            required
-          >
-            <Input
-              type="number"
-              min={0}
-              step={500}
-              value={price}
-              onChange={(event) => setPrice(event.target.value)}
-            />
-          </FormField>
+          {canManagePrices && (
+            <FormField label={t("menu.modifiers.modifierPrice")} required>
+              <Input
+                type="number"
+                min={0}
+                step={500}
+                value={price}
+                onChange={(event) => setPrice(event.target.value)}
+              />
+            </FormField>
+          )}
           <FormField
             label={t("menu.modifiers.modifierStation")}
             hint={t("menu.modifiers.modifierStationHint")}
@@ -767,7 +819,7 @@ function GroupModifiers({
       </Dialog>
 
       <ConfirmDialog
-        open={deleting !== null}
+        open={canManageItems && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.modifiers.deleteModifierTitle", {
           name: deleting?.name ?? "",

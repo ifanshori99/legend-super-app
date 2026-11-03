@@ -64,10 +64,19 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
         nav: "Inventori",
         current: "Saldo & Par",
       },
-      { path: "/kelola/akuntansi", nav: "Akuntansi", current: "Bagan Akun" },
+      // legend-acctfe made the accounting navigation two tiers: the outer group
+      // (Buku Besar · Kas & Bank · …) and the sections of the active group. Each
+      // tier keeps exactly one current tab.
+      {
+        path: "/kelola/akuntansi",
+        nav: "Akuntansi",
+        group: "Buku Besar",
+        current: "Bagan Akun",
+      },
       {
         path: `/kelola/akuntansi/jurnal/${JOURNAL}`,
         nav: "Akuntansi",
+        group: "Buku Besar",
         current: "Jurnal",
       },
       {
@@ -89,7 +98,16 @@ test.describe("legend-vvth · finance & stock v3 sweep", () => {
       await expect(nav).toBeVisible();
       const current = nav.locator('a[aria-current="page"]');
       await expect(current).toHaveCount(1);
-      await expect(current).toHaveText(entry.current);
+      if ("group" in entry) {
+        // Two-tier area: the outer nav marks the group, the inner one the section.
+        await expect(current).toHaveText(entry.group);
+        const sections = page.getByRole("navigation", { name: entry.group });
+        const section = sections.locator('a[aria-current="page"]');
+        await expect(section).toHaveCount(1);
+        await expect(section).toHaveText(entry.current);
+      } else {
+        await expect(current).toHaveText(entry.current);
+      }
     }
   });
 

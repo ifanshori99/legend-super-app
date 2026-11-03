@@ -23,6 +23,12 @@ export const accountingErrorHttpStatus = {
   PERIOD_NOT_CLOSED: 409,
   /** Reopening a closed period needs a written reason (§3.19 Tutup Periode). */
   REOPEN_REASON_REQUIRED: 422,
+  /**
+   * Separation of duties on a reopen (ACC-02, coordinator decision
+   * 2026-11-03): the person who closed the period may not approve reopening
+   * it. "Approver is the requester" stays APPROVER_IS_REQUESTER (AUTH-06).
+   */
+  APPROVER_IS_CLOSER: 403,
   /** Debit and credit totals differ, or fewer than two lines (ACC-01). */
   JOURNAL_UNBALANCED: 422,
   /** A line has both or neither side, or a negative amount. */
@@ -93,6 +99,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   PERIOD_ALREADY_OPEN: "Periode ini masih terbuka.",
   PERIOD_NOT_CLOSED: "Periode ini belum ditutup.",
   REOPEN_REASON_REQUIRED: "Alasan pembukaan ulang wajib diisi.",
+  APPROVER_IS_CLOSER:
+    "Penutup periode tidak boleh menyetujui pembukaan ulangnya sendiri.",
   JOURNAL_UNBALANCED: "Total debit dan kredit harus sama.",
   JOURNAL_LINE_INVALID:
     "Setiap baris diisi debit atau kredit, salah satu saja.",
