@@ -29,6 +29,7 @@
 // journal posts through the `document:asset_revaluation` rule; while the
 // contract has no such rule it fails closed with POSTING_RULE_MISSING.
 
+import type { TenantId } from "@starter/shared/core";
 import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import {
   AccountingError,
@@ -266,7 +267,7 @@ async function lockAsset(
 
 async function postedPeriodsByAsset(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   assetIds: readonly string[],
 ): Promise<Map<string, Set<string>>> {
   const result = new Map<string, Set<string>>();
@@ -352,7 +353,7 @@ async function postDepreciationJournal(
 /** Ledger rows + accumulated/status update for one asset. */
 async function applyDepreciation(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   asset: FixedAssetRow,
   rows: readonly DepreciationScheduleRow[],
   runId: string | null,
@@ -1045,7 +1046,7 @@ export async function runDepreciation(
 /** Whether a run already exists (the scheduled job skips those periods). */
 export async function depreciationRunExists(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   legalEntityId: string,
   period: string,
 ): Promise<boolean> {
@@ -1066,7 +1067,7 @@ export async function depreciationRunExists(
 /** Whether any active asset of the entity has depreciation due up to `period`. */
 export async function hasDueAssets(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   legalEntityId: string,
   period: string,
 ): Promise<boolean> {
