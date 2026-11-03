@@ -7,6 +7,13 @@ import { inventoryRouter } from "./inventory.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
 import { orgRouter } from "./org.routes";
+import {
+  orgIntegrationsRouter,
+  platformUsageRouter,
+} from "./platform-integrations.routes";
+import { orgThemesRouter } from "./org-themes.routes";
+import { opsOutboxRouter } from "./ops-outbox.routes";
+import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
@@ -39,8 +46,15 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/notes", notesRouter);
 apiRouter.use("/admin", adminRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
+apiRouter.use("/platform", platformUsageRouter);
 apiRouter.use("/platform", platformRouter);
+apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
+apiRouter.use("/org", orgThemesRouter);
+apiRouter.use("/org/text-overrides", textOverridesRouter);
+apiRouter.use("/consents", consentRouter);
+// Operator outbox replay (legend-m119).
+apiRouter.use("/ops", opsOutboxRouter);
 // Whitelabel brand context for SSR (TEN-08), resolved from the request host.
 apiRouter.use("/tenant", platformBrandRouter);
 // Reverse-proxy endpoints (Caddy on-demand TLS ask). Not for browsers.

@@ -18,6 +18,8 @@ import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliverNotificationAttempt } from "../services/notification-delivery.ts";
 
+import { seedTenantOutlets } from "./floor-test-helpers";
+
 const pool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const db = drizzle(pool, { schema });
 const tenant = randomUUID();
@@ -41,8 +43,13 @@ const policy = notificationPolicySchema.parse({
   webPushEnabled: true,
   emailEnabled: true,
 });
+let seededOutlet: string | undefined;
+async function whatsappOutlet() {
+  seededOutlet ??= (await seedTenantOutlets(tenant))[0];
+  return seededOutlet;
+}
 async function makeAttempt(channel: "email" | "web_push" | "whatsapp") {
-  const outletId = channel === "whatsapp" ? randomUUID() : null;
+  const outletId = channel === "whatsapp" ? await whatsappOutlet() : null;
   const notificationId = createUlid();
   const attemptId = createUlid();
   await withTenant(db, context, async (tx) => {

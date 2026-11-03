@@ -25,6 +25,7 @@ import {
 } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -155,6 +156,12 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // TEN-04: record lapsed support-access sessions exactly once.
+    try {
+      await expireDueSupportAccessGrants(context);
+    } catch {
+      console.error("Support access expiry sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
