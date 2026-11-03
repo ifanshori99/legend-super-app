@@ -42,6 +42,7 @@ import {
   useApprovalRequestPolling,
   useCreateApprovalRequest,
 } from "../hooks.ts";
+import { useRoster } from "../storage.ts";
 import { usePinSession } from "../use-pin-session.ts";
 import { useClockMs } from "../use-clock.ts";
 import { LockoutNotice } from "./lockout-notice.tsx";
@@ -135,6 +136,10 @@ function ModalBody({
     });
   }
   const create = useCreateApprovalRequest();
+  // The verify contract counts misses per staff (AUTH-06), so the supervisor
+  // whose PIN is being typed must be named. The roster is the mock/device list.
+  const roster = useRoster();
+  const [approverId, setApproverId] = useState<string | null>(null);
 
   function finish(
     result: Omit<OverrideResult, "reasonCode" | "reason" | "valueIdr">,
@@ -159,6 +164,7 @@ function ModalBody({
     [requesterId, t],
   );
   const session = usePinSession({
+    userId: approverId,
     accept,
     onVerified: (result) =>
       finish({
@@ -312,6 +318,23 @@ function ModalBody({
 
       {method === "pin" ? (
         <div className="grid gap-3" data-attempt={attempt}>
+          <FormField label={t("devicePin.error.approver")}>
+            <Select
+              value={approverId ?? undefined}
+              onValueChange={(value) => setApproverId(value)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t("devicePin.error.approver")} />
+              </SelectTrigger>
+              <SelectContent>
+                {roster.map((entry) => (
+                  <SelectItem key={entry.userId} value={entry.userId}>
+                    {entry.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
           <p className="text-sm text-muted-foreground">
             {t("devicePin.override.pinHint")}
           </p>

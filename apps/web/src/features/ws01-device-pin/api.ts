@@ -5,11 +5,12 @@ import {
   getApprovalRequest,
   verifyStaffPin,
   type CreateApprovalRequestInput,
+  type VerifyStaffPinInput,
 } from "@starter/shared/identity";
 import { callEndpoint } from "@/lib/api/endpoint";
 
-export const verifyStaffPinCall = (pin: string) =>
-  callEndpoint(verifyStaffPin, { body: { pin } });
+export const verifyStaffPinCall = (input: VerifyStaffPinInput) =>
+  callEndpoint(verifyStaffPin, { body: input });
 
 export const createApprovalRequestCall = (body: CreateApprovalRequestInput) =>
   callEndpoint(createApprovalRequest, { body });

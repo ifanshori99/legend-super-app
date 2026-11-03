@@ -64,7 +64,12 @@ export function SwitchUserScreen({ shell }: { shell: "pos" | "kds" }) {
     },
     [t, toast],
   );
-  const session = usePinSession({ onVerified, accept });
+  const session = usePinSession({
+    // The per-staff lockout counts misses for the tile the guest picked.
+    userId: picked && picked !== "other" ? picked.userId : null,
+    onVerified,
+    accept,
+  });
 
   return (
     <div className="mx-auto grid w-full max-w-3xl gap-6 p-4 sm:p-6">
