@@ -149,7 +149,11 @@ test("F25 (legend-0z5k): a supervisor reviews a flagged selfie sample and the de
   // the action is now "Tinjau ulang" (not a second, fresh decision).
   await row.getByRole("button", { name: "Tinjau ulang" }).click();
   await expect(page.getByRole("dialog").getByText("Disetujui")).toBeVisible();
-  await page.getByRole("dialog").getByRole("button", { name: "Tutup" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Tutup" })
+    .first()
+    .click();
 });
 
 test("F25 (legend-0z5k): the review list is honest when there are no logs today", async ({

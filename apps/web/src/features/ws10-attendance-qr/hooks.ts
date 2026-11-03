@@ -1,6 +1,6 @@
 // Custom hooks for the attendance QR display and the review screen: the only
 // way components touch its data (docs/frontend.md "Custom hooks").
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { localDateOf, type BusinessDate } from "@starter/shared/core";
 import {
@@ -23,22 +23,24 @@ import {
  */
 export function useNow(intervalMs: number): number | null {
   const hydrated = useHydrated();
-  const [now, setNow] = useState<number | null>(null);
-  useEffect(() => {
-    if (!hydrated) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+  // A quantised snapshot keeps useSyncExternalStore stable inside one tick and
+  // re-renders once per interval, without a setState-in-effect.
+  const subscribe = (notify: () => void) => {
+    const timer = window.setInterval(notify, intervalMs);
     return () => window.clearInterval(timer);
-  }, [hydrated, intervalMs]);
-  return hydrated ? now : null;
+  };
+  const now = useSyncExternalStore(
+    subscribe,
+    () => Math.floor(Date.now() / intervalMs) * intervalMs,
+    () => 0,
+  );
+  return hydrated && now > 0 ? now : null;
 }
 
 /** Today's business date in the outlet time zone, re-checked every minute. */
 export function useBusinessDate(): BusinessDate | null {
   const now = useNow(60_000);
-  return now === null
-    ? null
-    : localDateOf(new Date(now), ATTENDANCE_TIME_ZONE);
+  return now === null ? null : localDateOf(new Date(now), ATTENDANCE_TIME_ZONE);
 }
 
 export function useAttendanceQr() {
