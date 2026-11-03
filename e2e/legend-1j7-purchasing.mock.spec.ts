@@ -2,9 +2,14 @@ import { expect, test } from "@playwright/test";
 
 // PRD v1.7 §3.18 and §4 Alur I. The purchasing API is represented by
 // contract fixtures in mock mode until the integration bead lands.
+//
+// Run: pnpm test:e2e:mock e2e/legend-1j7-purchasing.mock.spec.ts — mock mode only, no API and no DB.
 const baseURL =
   process.env.LEGEND_MOCK_WEB_URL ?? process.env.E2E_MOCK_BASE_URL;
-test.skip(!baseURL, "Run against a VITE_API_MOCK=true web server.");
+test.skip(
+  !baseURL,
+  "Mock runner not started: use pnpm test:e2e:mock (playwright.mock.config.ts).",
+);
 test.use({ baseURL });
 
 test("PRD §3.18 / Alur I: request, approve, create a PO and generate a sample share link", async ({
