@@ -270,6 +270,14 @@ export const checklistRunSchema = z
     dueAt: isoDateTimeSchema,
     completedAt: isoDateTimeSchema.nullable(),
     status: checklistRunStatusSchema,
+    /**
+     * OPS-01 server flag: set when the run is missed (the sweep or a manual
+     * `miss` transition), so the 15-minute badge no longer has to be derived
+     * from `dueAt` alone.
+     */
+    missedAt: isoDateTimeSchema.nullable(),
+    /** OPS-01 delivery evidence: when the supervisor alert was queued. */
+    alertedAt: isoDateTimeSchema.nullable(),
     results: z.array(checklistItemResultSchema),
   })
   .superRefine((run, ctx) => {
@@ -313,6 +321,19 @@ export const checklistRunSchema = z
         code: "custom",
         path: ["completedAt"],
         message: "A completed or failed run carries its completion time",
+      });
+    const missed = run.status === "missed";
+    if (missed !== (run.missedAt !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["missedAt"],
+        message: "A missed run carries its miss time (OPS-01)",
+      });
+    if (run.alertedAt !== null && !missed)
+      ctx.addIssue({
+        code: "custom",
+        path: ["alertedAt"],
+        message: "Only a missed run carries a supervisor alert time",
       });
     if (finished) {
       const resultByItem = new Map(
