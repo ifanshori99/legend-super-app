@@ -343,7 +343,17 @@ export async function createServiceRequest(
           inArray(serviceRequests.status, ["pending", "acknowledged"]),
         ),
       );
-    if (open) return { request: toRequest(open), created: false };
+    // The open request may come from an earlier guest session at this table
+    // (left open when that session closed): the call still routes to the same
+    // table, but the earlier guest's free-text message is never shown here.
+    if (open)
+      return {
+        request:
+          open.tableSessionId === session.id
+            ? toRequest(open)
+            : { ...toRequest(open), message: null },
+        created: false,
+      };
 
     const id = randomUUID();
     const [row] = await tx

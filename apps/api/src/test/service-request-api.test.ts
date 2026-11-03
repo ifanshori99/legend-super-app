@@ -252,6 +252,22 @@ describe("service requests (legend-7qg)", () => {
     expect(next.body.data.id).not.toBe(first.body.data.id);
   });
 
+  it("ORD-07 never shows an earlier session's message on a dedupe hit", async () => {
+    const guest = await newGuest();
+    const other = await newGuest();
+    const first = await call(guest, { message: "Tolong bawa sendok" });
+    expect(first.status).toBe(201);
+    // Simulate a request left open by an earlier session at this table.
+    await owner.query(
+      "UPDATE service_requests SET table_session_id = $1 WHERE tenant_id = $2 AND id = $3",
+      [other.sessionId, seededTenantId, first.body.data.id],
+    );
+    const again = await call(guest);
+    expect(again.status).toBe(200);
+    expect(again.body.data.id).toBe(first.body.data.id);
+    expect(again.body.data.message).toBeNull();
+  });
+
   it("ORD-07 binds the idempotency key to the request fingerprint", async () => {
     const guest = await newGuest();
     const key = randomUUID();
