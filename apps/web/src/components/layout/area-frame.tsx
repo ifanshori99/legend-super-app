@@ -62,7 +62,7 @@ function AreaFrameBody({
   const t = useT();
   const online = useOnline();
   const { brandName } = useTenantContext();
-  const { pathname } = useLocation();
+  const { href, pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
   const definition = AREAS[area];
   const nav = useMemo(
@@ -137,7 +137,10 @@ function AreaFrameBody({
     signOut ??
     (access.authenticated ? null : (
       <Button asChild variant="outline" size="sm">
-        <Link to="/sign-in">{t("auth.signIn")}</Link>
+        {/* legend-yoo9: a signed-out visitor returns to this page after /masuk. */}
+        <Link to="/masuk" search={{ redirect: href }}>
+          {t("auth.signIn")}
+        </Link>
       </Button>
     ));
 
