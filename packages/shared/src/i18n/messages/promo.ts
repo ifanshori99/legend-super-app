@@ -1,11 +1,7 @@
 // Promo admin texts (bead legend-oadp · PRD v1.7 §3 F21 / §3.21 "Promo
 // Engine", "ROI Promo"). One file so parallel beads never edit the same lines.
-//
-
-// packages/shared/src/i18n/messages/promo.ts, spread it in id.ts under
-// `promo: promoMessages`, then in components replace `usePromoT` from
-// "../t" with `useT` and prefix every key with "promo.". Until then the
-// feature reads this object through ../t.ts, so it works without id.ts edits.
+// Spread in id.ts as `promo: promoMessages`; the feature reads every key as
+// "promo.<path>" through usePromoT (apps/web/src/features/ws08-promo/t.ts).
 // Placeholders use {name}.
 export const promoMessages = {
   title: "Promo & voucher",
@@ -135,7 +131,10 @@ export const promoMessages = {
       "Draf tidak dipakai. Aktifkan setelah ringkasan di kanan sudah benar.",
     startsOn: "Mulai tanggal",
     endsOn: "Berakhir tanggal",
-    endsOnHint: "Kosongkan jika promo tanpa batas akhir.",
+    startsOnHint:
+      "Dihitung per hari bisnis outlet: hari dimulai pukul 04.00, jadi transaksi 01.30 masih ikut hari sebelumnya.",
+    endsOnHint:
+      "Berlaku sampai hari bisnis ini selesai (04.00 esok harinya). Kosongkan jika tanpa batas akhir.",
     conditionsHint:
       "Semua syarat yang dicentang harus terpenuhi sekaligus (DAN). Tanpa syarat, promo berlaku untuk semua transaksi.",
     minSpend: "Minimum belanja (Rp)",
@@ -227,6 +226,13 @@ export const promoMessages = {
     voucher: "Hanya berlaku dengan kode voucher.",
     stackAlone: "Dipakai sendirian (tidak digabung).",
     stackGroup: "Boleh digabung, grup {group}.",
+    freeSameItem:
+      "Item gratis termasuk item yang dibeli, jadi satu kelipatan butuh {units} unit di tagihan ({paid} dibayar + {free} gratis).",
+    freeCheapest: "Unit termurah yang digratiskan lebih dulu.",
+    facilityDaily:
+      "Minimum belanja dihitung dari total semua tagihan pelanggan di outlet yang sama pada hari bisnis itu; akses diberikan sekali per hari.",
+    refundWithdraws:
+      "Jika refund sebagian membuat tagihan tidak lagi memenuhi syarat, promo ditarik dan refund dikurangi diskonnya.",
     allDays: "setiap hari",
     anyItem: "item pilihan",
     unknownItem: "menu tidak dikenal",
@@ -405,6 +411,8 @@ export const promoMessages = {
     emptyHint: "ROI muncul setelah promo dipakai di transaksi.",
     rowError: "Gagal dimuat",
     retry: "Muat ulang",
+    partial:
+      "Total di atas belum termasuk {count} promo yang gagal dimuat. Muat ulang baris yang gagal.",
     marginNote:
       "Margin bersih = omzet dikurangi biaya diskon. Negatif berarti promo merugi.",
     negative: "Merugi",

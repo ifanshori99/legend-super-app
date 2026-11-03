@@ -63,7 +63,9 @@ function BudgetCell({ promotion, t }: { promotion: Promotion; t: PromoT }) {
         className="h-1.5 overflow-hidden rounded-full bg-surface-3"
       >
         <div
-          className={percent >= 90 ? "h-full bg-warning" : "h-full bg-primary"}
+          className={
+            percent >= 90 ? "h-full bg-warning" : "h-full bg-muted-foreground"
+          }
           style={{ width: `${percent}%` }}
         />
       </div>
@@ -89,7 +91,7 @@ function windowLine(promotion: Promotion, t: PromoT): string {
     ? t("promo.list.windowOpen", { from: formatDateLabel(promotion.startsAt) })
     : t("promo.list.window", {
         from: formatDateLabel(promotion.startsAt),
-        to: formatDateLabel(promotion.endsAt),
+        to: formatDateLabel(promotion.endsAt, "end"),
       });
 }
 

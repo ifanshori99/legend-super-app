@@ -91,6 +91,8 @@ test("PRD §3.21 Rule builder: a percent promo with minimum spend gets a plain-l
   const summary = page.getByTestId("promo-summary");
   await expect(summary).toContainText("diskon 15%");
   await expect(summary).toContainText(/belanja minimal Rp\s*50\.000/);
+  // Owner Q41: a partial refund below the minimum withdraws the promotion.
+  await expect(summary).toContainText("refund sebagian");
   await expect(summary).toContainText("Berlaku");
 
   // Default policy is exclusive: the new promo competes with the active ones.

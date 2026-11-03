@@ -89,7 +89,7 @@ function validityLine(voucher: VoucherDto, t: PromoT): string {
     ? t("promo.list.windowOpen", { from: formatDateLabel(voucher.validFrom) })
     : t("promo.list.window", {
         from: formatDateLabel(voucher.validFrom),
-        to: formatDateLabel(voucher.validUntil),
+        to: formatDateLabel(voucher.validUntil, "end"),
       });
 }
 
@@ -358,13 +358,21 @@ function IssueDialog({
   };
 
   function submit() {
+    // Enter can re-submit while the first request is still running; the
+    // contract has no idempotency key for this POST, so a second submit
+    // would issue a second code.
+    if (issue.isPending) return;
     const next: IssueErrors = {};
     const hasPromo = form.promotionId !== "none";
     const value =
       form.value.trim() === "" ? null : parseWholeNumber(form.value);
     if (!hasPromo && form.value.trim() === "")
       next.value = "vouchers.errorPromoOrValue";
-    else if (form.value.trim() !== "" && (value === null || value < 0))
+    else if (
+      form.value.trim() !== "" &&
+      // A fixed-value voucher without a promotion must be worth something.
+      (value === null || value < 0 || (!hasPromo && value === 0))
+    )
       next.value = "vouchers.errorValue";
     if (form.customer.trim() !== "" && !isUuid(form.customer))
       next.customer = "vouchers.errorCustomer";

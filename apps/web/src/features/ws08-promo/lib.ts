@@ -13,7 +13,11 @@ import type {
   PromotionStatus,
 } from "@starter/shared/crm";
 import type { createPromotion } from "@starter/shared/crm";
-import { DEFAULT_TIME_ZONE, localDateOf } from "@starter/shared/core";
+import {
+  DEFAULT_BUSINESS_DAY_CLOCK,
+  businessDateOf,
+  businessDayRange,
+} from "@starter/shared/core";
 import { formatRupiah, type TranslateVars } from "@starter/shared/i18n";
 import type { PromoKey, PromoT } from "./t.ts";
 
@@ -64,11 +68,20 @@ export function isMockScenarioRequest(searchStr: string): boolean {
 
 // ---- Numbers --------------------------------------------------------------
 
-/** A whole number from a text input; null when empty or not an integer. */
+/**
+ * A whole number from a text input; null when empty or not an integer.
+ * Accepts plain digits ("12500", "-5") or id-ID thousands groups ("12.500").
+ * Anything else ("12.5", "1e3", "0x10", "12,5") is rejected, so a decimal
+ * typed into a rupiah field can never silently become a 10× larger amount.
+ */
 export function parseWholeNumber(input: string): number | null {
-  const trimmed = input.trim().replace(/\./g, "");
-  if (trimmed === "") return null;
-  const value = Number(trimmed);
+  const trimmed = input.trim();
+  let digits: string;
+  if (/^-?\d+$/.test(trimmed)) digits = trimmed;
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(trimmed))
+    digits = trimmed.replace(/\./g, "");
+  else return null;
+  const value = Number(digits);
   return Number.isSafeInteger(value) ? value : null;
 }
 
@@ -93,49 +106,31 @@ export function bpToInput(bp: number): string {
 
 // ---- Dates ----------------------------------------------------------------
 
-function zoneOffsetMinutes(instant: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(instant);
-  const part = (type: string) =>
-    Number(parts.find((entry) => entry.type === type)?.value ?? 0);
-  const wall = Date.UTC(
-    part("year"),
-    part("month") - 1,
-    part("day"),
-    part("hour"),
-    part("minute"),
-    part("second"),
-  );
-  return Math.round((wall - Math.floor(instant / 1000) * 1000) / 60_000);
-}
+// Promo validity is counted in outlet BUSINESS days (owner Q39: the day
+// starts at the outlet cutoff, default 04:00), so "berakhir 31 Okt" still
+// covers a 01:30 sale after a late 31 Okt close. The engine treats `endsAt`
+// as exclusive (`!before(at, endsAt)` = ended), so the end instant is the
+// cutoff that OPENS the next business day. The admin has no outlet picker,
+// so the tenant default clock (Asia/Jakarta, 04:00) is used.
+const CLOCK = DEFAULT_BUSINESS_DAY_CLOCK;
 
-/** Outlet business day of an instant, as `<input type="date">` wants it. */
-export function dateInputValue(iso: string): string {
-  return localDateOf(iso, DEFAULT_TIME_ZONE);
-}
-
-/** `<input type="date">` value → opening / closing instant of that outlet day. */
-export function isoFromDateInput(
-  value: string,
-  edge: "start" | "end",
-  timeZone: string = DEFAULT_TIME_ZONE,
+/**
+ * Business date of a validity instant, as `<input type="date">` wants it.
+ * An end instant is exclusive, so it is read 1 ms earlier: the cutoff that
+ * opens 1 Nov is the end of business day 31 Okt.
+ */
+export function dateInputValue(
+  iso: string,
+  edge: "start" | "end" = "start",
 ): string {
-  const [year, month, day] = value.split("-").map(Number);
-  const wall =
-    edge === "start"
-      ? Date.UTC(year, month - 1, day, 0, 0, 0)
-      : Date.UTC(year, month - 1, day, 23, 59, 59);
-  return new Date(
-    wall - zoneOffsetMinutes(wall, timeZone) * 60_000,
-  ).toISOString();
+  if (edge === "start") return businessDateOf(iso, CLOCK);
+  return businessDateOf(new Date(Date.parse(iso) - 1), CLOCK);
+}
+
+/** `<input type="date">` value → opening / (exclusive) closing instant. */
+export function isoFromDateInput(value: string, edge: "start" | "end"): string {
+  const range = businessDayRange(value, CLOCK);
+  return (edge === "start" ? range.start : range.end).toISOString();
 }
 
 const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
@@ -146,8 +141,11 @@ const DAY_FORMAT = new Intl.DateTimeFormat("id-ID", {
 });
 
 /** ISO instant or "2026-10-01" → "1 Okt 2026" (outlet business day). */
-export function formatDateLabel(value: string): string {
-  const day = value.length > 10 ? localDateOf(value, DEFAULT_TIME_ZONE) : value;
+export function formatDateLabel(
+  value: string,
+  edge: "start" | "end" = "start",
+): string {
+  const day = value.length > 10 ? dateInputValue(value, edge) : value;
   const [year, month, date] = day.split("-").map(Number);
   return DAY_FORMAT.format(Date.UTC(year, month - 1, date));
 }
@@ -330,7 +328,7 @@ export function promoFormFrom(promotion: Promotion): PromoForm {
     description: promotion.description,
     status: promotion.status,
     startsOn: dateInputValue(promotion.startsAt),
-    endsOn: promotion.endsAt ? dateInputValue(promotion.endsAt) : "",
+    endsOn: promotion.endsAt ? dateInputValue(promotion.endsAt, "end") : "",
     voucherRequired: promotion.voucherRequired,
     hasStoredCode: promotion.codeHash !== null,
     stackGroup: promotion.stackGroup,
@@ -740,9 +738,10 @@ export function summarizePromotion(
         })
       : t("promo.summary.validity", {
           from: formatDateLabel(body.startsAt),
-          to: formatDateLabel(body.endsAt),
+          to: formatDateLabel(body.endsAt, "end"),
         }),
   );
+  lines.push(...ruleNotes(body, ctx));
   const limits: string[] = [];
   if (body.quotaTotal !== null)
     limits.push(t("promo.summary.quotaTotal", { total: body.quotaTotal }));
@@ -763,6 +762,50 @@ export function summarizePromotion(
       : t("promo.summary.stackAlone"),
   );
   return lines;
+}
+
+/**
+ * Owner rules the engine applies that the rule itself does not spell out
+ * (PRD §3.21; owner Q40, Q41; legend-w3zf), so the summary never promises
+ * more than the engine gives.
+ */
+export function ruleNotes(
+  body: Pick<PromoBody, "benefit" | "conditions">,
+  ctx: SummaryContext,
+): string[] {
+  const { t } = ctx;
+  const notes: string[] = [];
+  const benefit = body.benefit;
+  if (benefit.kind === "free_items") {
+    const buy = body.conditions.find((c) => c.kind === "item_quantity");
+    if (
+      buy?.kind === "item_quantity" &&
+      benefit.menuItemIds.some((id) => buy.menuItemIds.includes(id))
+    )
+      // Same rule as the engine's freeItemBenefit: a free unit drawn from the
+      // buy items is not a paid unit, so one multiple needs X + Y units.
+      notes.push(
+        t("promo.summary.freeSameItem", {
+          units: buy.minQuantity + benefit.quantityPerMultiple,
+          paid: buy.minQuantity,
+          free: benefit.quantityPerMultiple,
+        }),
+      );
+    notes.push(t("promo.summary.freeCheapest"));
+  }
+  const hasMinSpend = body.conditions.some((c) => c.kind === "min_spend");
+  if (hasMinSpend && benefit.kind === "facility_entitlement")
+    notes.push(t("promo.summary.facilityDaily"));
+  if (
+    body.conditions.some(
+      (c) =>
+        c.kind === "min_spend" ||
+        c.kind === "item_quantity" ||
+        c.kind === "bundle",
+    )
+  )
+    notes.push(t("promo.summary.refundWithdraws"));
+  return notes;
 }
 
 /** Draft body from a possibly incomplete form, for the live summary. */

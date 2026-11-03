@@ -22,7 +22,7 @@ import { cn } from "cn";
 import { usePromotionRois, usePromotions } from "../hooks";
 import { formatPercentBp, totalRoi } from "../lib";
 import { usePromoT, type PromoT } from "../t";
-import { PromoStatusPill } from "./promo-shell";
+import { Notice, PromoStatusPill } from "./promo-shell";
 
 function RoiValue({ roiBp, t }: { roiBp: number | null; t: PromoT }) {
   if (roiBp === null)
@@ -54,6 +54,12 @@ export function RoiPage() {
   );
   const total = totalRoi(loaded as PromotionRoi[]);
   const roiLoading = roiQueries.some((query) => query.isPending);
+  // Totals only sum rows that answered. While rows load the tiles wait, and a
+  // failed row is called out, so a partial sum never reads as the whole.
+  const roiFailed = roiQueries.filter((query) => query.isError).length;
+  const pendingValue = <span aria-busy="true">…</span>;
+  const money = (amount: number) =>
+    roiLoading ? pendingValue : <Money amount={amount} size="stat" />;
   const filtered = rows.filter(({ promotion }) =>
     promotion.name
       .toLocaleLowerCase("id-ID")
@@ -70,31 +76,32 @@ export function RoiPage() {
 
   return (
     <div className="grid min-w-0 gap-5">
+      {state === "ready" && roiFailed > 0 && (
+        <Notice tone="warning" role="status">
+          {t("promo.roi.partial", { count: roiFailed })}
+        </Notice>
+      )}
       {state === "ready" && (
         <StatStrip label={t("promo.roi.summaryLabel")} columns={4}>
           <StatTile
             label={t("promo.roi.totalCost")}
-            value={<Money amount={total.cost} size="stat" />}
+            value={money(total.cost)}
             context={t("promo.roi.contextAll")}
           />
           <StatTile
             label={t("promo.roi.totalRevenue")}
-            value={<Money amount={total.revenue} size="stat" />}
+            value={money(total.revenue)}
             context={t("promo.roi.contextAll")}
           />
           <StatTile
             label={t("promo.roi.netMargin")}
-            value={<Money amount={total.net} size="stat" />}
+            value={money(total.net)}
             context={t("promo.roi.marginNote")}
           />
           <StatTile
             label={t("promo.roi.avgRoi")}
             value={
-              roiLoading ? (
-                <span aria-busy="true">…</span>
-              ) : (
-                <RoiValue roiBp={total.roiBp} t={t} />
-              )
+              roiLoading ? pendingValue : <RoiValue roiBp={total.roiBp} t={t} />
             }
             context={`${formatNumber(total.transactions)} ${t("promo.roi.columns.transactions").toLocaleLowerCase("id-ID")}`}
           />

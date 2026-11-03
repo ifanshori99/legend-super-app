@@ -152,9 +152,20 @@ registerMock(updatePromoStackingPolicy, ({ body }) => {
 /** Revenue per rupiah of discount, fixed per promotion so the report is stable. */
 const ROI_FACTORS = [8, 5, 6, 7, 4, 9, 3, 6, 5, 0.8, 0];
 
-function roiFor(promotion: Promotion, index: number): PromotionRoi {
+/**
+ * Keyed by the promotion's place in the FIXTURES, not in the live list, so a
+ * newly created promotion (prepended) never reshuffles the other rows' ROI.
+ */
+function factorFor(promotionId: string): number {
+  const index = cafeLegendCrmFixtures.promotions.findIndex(
+    (promotion) => promotion.id === promotionId,
+  );
+  return index < 0 ? 4 : (ROI_FACTORS[index % ROI_FACTORS.length] ?? 4);
+}
+
+function roiFor(promotion: Promotion): PromotionRoi {
   const cost = promotion.spentIdr;
-  const factor = ROI_FACTORS[index % ROI_FACTORS.length] ?? 4;
+  const factor = factorFor(promotion.id);
   const revenue = Math.round(cost * factor);
   const net = revenue - cost;
   return {
@@ -168,9 +179,7 @@ function roiFor(promotion: Promotion, index: number): PromotionRoi {
 }
 
 registerMock(getPromotionRoi, ({ params }) => {
-  const promotions = store.get().promotions;
-  const promotion = findPromotion(params.promotionId);
-  return { data: roiFor(promotion, promotions.indexOf(promotion)) };
+  return { data: roiFor(findPromotion(params.promotionId)) };
 });
 
 // ---- Vouchers -------------------------------------------------------------

@@ -268,8 +268,16 @@ export function CheckGroup({
   columns?: boolean;
 }) {
   const hintId = `${idPrefix}-hint`;
+  const errorId = `${idPrefix}-error`;
+  const describedBy =
+    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
+    undefined;
   return (
-    <fieldset className={cn("grid gap-2", className)}>
+    <fieldset
+      aria-describedby={describedBy}
+      aria-invalid={error ? true : undefined}
+      className={cn("grid gap-2", className)}
+    >
       <legend className="text-sm leading-5 font-semibold">{legend}</legend>
       {hint && (
         <p id={hintId} className="text-sm leading-5 text-muted-foreground">
@@ -316,7 +324,7 @@ export function CheckGroup({
         )}
       </div>
       {error && (
-        <p role="alert" className="text-sm leading-5 text-danger">
+        <p id={errorId} role="alert" className="text-sm leading-5 text-danger">
           {error}
         </p>
       )}

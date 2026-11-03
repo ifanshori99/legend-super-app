@@ -83,6 +83,7 @@ function PolicyForm({ policy }: { policy: PromoStackingPolicy }) {
   const [failed, setFailed] = React.useState(false);
 
   function submit() {
+    if (save.isPending || !online) return;
     const max = parseWholeNumber(draft.maxStacked);
     const invalid =
       draft.mode === "stackable" && (max === null || max < 1 || max > 10);

@@ -253,6 +253,9 @@ function PromoEditorForm({
   const errorCount = Object.values(errors).filter(Boolean).length;
 
   function save() {
+    // Enter submits even while a save runs; the create POST carries no
+    // idempotency key, so a second submit would create a duplicate promo.
+    if (pending || !online) return;
     const next = validatePromoForm(form);
     setErrors(next);
     if (hasErrors(next)) return;
@@ -719,6 +722,7 @@ function PromoEditorForm({
           <Section title={t("promo.editor.sections.validity")}>
             <FormField
               label={t("promo.editor.startsOn")}
+              hint={t("promo.editor.startsOnHint")}
               error={err("startsOn")}
               required
             >
