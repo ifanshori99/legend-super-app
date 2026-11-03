@@ -242,7 +242,9 @@ test("F18 retur pembelian tidak melebihi jumlah diterima baik", async ({
 
   await quantity.fill("1");
   await dialog.getByRole("button", { name: "Simpan retur" }).click();
-  await expect(page.getByText("Retur tersimpan.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Retur tersimpan.", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText(/RET\/MOCK\//)).toBeVisible();
 });
 
