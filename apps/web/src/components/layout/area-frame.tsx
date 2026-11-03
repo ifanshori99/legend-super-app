@@ -23,6 +23,9 @@ import { registeredNav } from "@/lib/areas/nav-registry";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
+import { ApprovalInboxBadge } from "@/features/ws01-approvals/components/inbox-badge";
+import { SupportSessionBanner } from "@/features/ws01-support-access/components/session-banner";
+import { holdsAny } from "@/lib/areas/guard";
 
 /**
  * Outlet wall-clock zone until the outlet context bead supplies the outlet's
@@ -90,6 +93,11 @@ export function AreaFrame({
         }
         actions={
           <>
+            <ApprovalInboxBadge
+              enabled={
+                area === "kelola" && holdsAny(access, ["approval.inbox.view"])
+              }
+            />
             <ThemeToggle />
             {signOut}
           </>
@@ -98,6 +106,9 @@ export function AreaFrame({
         {/* PRD §3 F6: management sessions end after 30 idle minutes; the
             warning rides the management shell so every screen shows it. */}
         <IdleSessionWarning />
+        {/* PRD §3 F4: a Super Admin support session is always visible, with a
+            countdown, across tenant views (legend-335). */}
+        {area === "platform" ? null : <SupportSessionBanner source="org" />}
         {body}
       </ManagementShell>
     );
