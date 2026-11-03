@@ -110,11 +110,19 @@ try {
   if (mode === "unit") {
     await run(
       pnpmCommand(),
-      ["--filter", "@starter/api", "run", "test"],
+      [
+        "--filter",
+        "@starter/api",
+        "run",
+        "test",
+        ...(process.env.LEGEND_TEST_FILES?.split(" ").filter(Boolean) ?? []),
+      ],
       testEnv,
     );
     const files = readdirSync(resolve(root, "tests"))
-      .filter((file) => file.endsWith(".test.mjs"))
+      .filter(
+        (file) => !process.env.LEGEND_TEST_FILES && file.endsWith(".test.mjs"),
+      )
       .map((file) => `tests/${file}`);
     // LEGEND_TEST_CONCURRENCY caps parallel node:test processes so several
     // agents' gates on one 16 GB machine do not starve the OS (2026-11-03 panic).
@@ -124,7 +132,9 @@ try {
       : [];
     await run(
       process.execPath,
-      ["--test", ...concurrencyArgs, ...files],
+      process.env.LEGEND_TEST_FILES
+        ? ["-e", "0"]
+        : ["--test", ...concurrencyArgs, ...files],
       testEnv,
     );
   } else {

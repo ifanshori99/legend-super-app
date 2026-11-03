@@ -102,6 +102,10 @@ EDGE_MODE=false
 DATA_CLASSIFICATION=real
 DATABASE_URL=postgresql://user:password@database-host:5432/app
 BETTER_AUTH_SECRET=your-random-secret-at-least-32-characters
+# Staff device PINs (PRD §3 F6): its own secret, never derived from
+# BETTER_AUTH_SECRET. Required in production; rotating it invalidates every
+# stored PIN, so staff must set a new one after a rotation.
+STAFF_PIN_PEPPER=another-random-secret-at-least-32-characters
 BETTER_AUTH_URL=https://api.example.com
 WEB_URL=https://app.example.com
 COOKIE_DOMAIN=.example.com
@@ -163,6 +167,7 @@ docker run -d -p 4000:4000 \
   -e DATA_CLASSIFICATION=real \
   -e DATABASE_URL="$DATABASE_URL" \
   -e BETTER_AUTH_SECRET="$BETTER_AUTH_SECRET" \
+  -e STAFF_PIN_PEPPER="$STAFF_PIN_PEPPER" \
   -e BETTER_AUTH_URL=https://api.example.com \
   -e WEB_URL=https://app.example.com \
   -e COOKIE_DOMAIN=.example.com \
