@@ -105,6 +105,10 @@ Files ending in `.server.ts` (`session.server.ts`, `logger.server.ts`, `api/upst
 5. A page under `routes/_protected/` whose loader ensures the query; `roleHasPermission` in `beforeLoad` for cross-account pages.
 6. A Playwright test in `e2e/` for the main flow, then `pnpm test:e2e`.
 
+### Forms
+
+Use `FormField` (`components/ui/form-field.tsx`) for every labelled control; it owns the label, hint, error and the `id`/`aria-describedby`/`aria-invalid`/`aria-required` wiring. **FormField + Select: the trigger takes the label through context; don't hand-wire `htmlFor` for Radix Select.** A Radix `<Select>` root renders no DOM node, so FormField hands the wiring to `SelectTrigger` by context — keep the `<Select>` as the direct child and leave the trigger without an `id`/`aria-label` unless the visible label really differs.
+
 ## Where to put a new screen
 
 Bead `legend-fbu` · PRD v1.7 §3 F3, §5 "Peta situs". Every URL belongs to one of nine **areas**. An area fixes the shell, the density, the guard and the navigation, so a feature bead only adds its screen.
@@ -407,4 +411,5 @@ await captureScreenshot(page, "legend-baa/masuk-hubungkan-390-light.png");
   Commit only the screenshots you meant to change; anything else in `git status` is a signal, not noise. Only the value `1` opts in.
 
 - **Full page is the default**, matching the evidence beads have always produced; pass `{ fullPage: false }` for a viewport crop.
+- **Tall screens**: the area shells scroll `#main-content`, not the window, so Playwright's `fullPage` alone stopped at the 900px viewport and left the rest blank (bead legend-ivz8). A full-page capture now measures that container, raises the viewport to its `scrollHeight` plus the shell header, captures, and restores the viewport; pass `{ scrollContainer: "<selector>" }` when a screen scrolls a different element.
 - **The guard**: `tests/e2e-screenshot-paths.test.mjs` fails `pnpm test` when an e2e file contains a `docs/` path literal outside the helper, so the tracked evidence cannot be rewritten by accident.

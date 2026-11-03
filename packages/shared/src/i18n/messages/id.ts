@@ -11,6 +11,7 @@ import { reportBuilderMessages } from "./report-builder.ts";
 import { reportViewerMessages } from "./report-viewer.ts";
 import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
+import { orgOutletMessages } from "./org-outlet.ts";
 import { accountingMessages } from "./accounting.ts";
 import { accountingApMessages } from "./accounting-ap.ts";
 import { accountingCashMessages } from "./accounting-cash.ts";
@@ -91,6 +92,7 @@ export const id = {
   ...ws01AuthMessages,
   // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
   access: accessMessages,
+  orgOutlet: orgOutletMessages,
   // Platform squad (legend-mxl/6ew/335/tno/y6s/q2c), one file each.
   approvals: approvalsMessages,
   devicePin: devicePinMessages,

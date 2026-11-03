@@ -397,7 +397,11 @@ export function CheckoutPage() {
               {t("qrCart.checkout.loginHint")}
             </p>
             <Button asChild variant="outline" className="w-fit">
-              <Link to="/sign-in">{t("qrCart.checkout.signIn")}</Link>
+              {/* legend-yoo9: resume this checkout after /masuk; `redirect` is
+                  the alias the sign-in screen accepts for a linking page. */}
+              <Link to="/masuk" search={{ redirect: `/t/${qrToken}/checkout` }}>
+                {t("qrCart.checkout.signIn")}
+              </Link>
             </Button>
           </CardContent>
         </Card>
