@@ -9,6 +9,7 @@ import type { PurchaseRequestDetail } from "@starter/shared/inventory";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { ApiError } from "@/lib/api/errors";
+import { useOutletClock } from "@/lib/tenant-context";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,6 +61,9 @@ import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 export function SuggestionsPage() {
   const t = useT();
   const toast = useToast();
+  // The "needed by" floor follows the outlet business date (D-CORE-7), never
+  // the device clock; with no outlet the hook returns the documented default.
+  const { clock } = useOutletClock();
   const { access } = useRouteContext({ strict: false }) as {
     access: AreaAccess;
   };
@@ -71,6 +75,11 @@ export function SuggestionsPage() {
   const locationsQuery = useStockLocations();
   const unitsQuery = useUnits({ limit: STOCK_LIST_LIMIT });
   const mutation = useCreatePurchaseRequest();
+
+  const today = React.useMemo(
+    () => businessDateToday(new Date(), clock.timeZone, clock.cutoff),
+    [clock.timeZone, clock.cutoff],
+  );
 
   const suggestions = React.useMemo(
     () =>
@@ -96,9 +105,7 @@ export function SuggestionsPage() {
     new Set(),
   );
   const [dialogOpen, setDialogOpen] = React.useState(false);
-  const [neededBy, setNeededBy] = React.useState(() =>
-    addDays(businessDateToday(), 3),
-  );
+  const [neededBy, setNeededBy] = React.useState(() => addDays(today, 3));
   const [note, setNote] = React.useState("");
   const [dateError, setDateError] = React.useState<string | undefined>();
   const [created, setCreated] = React.useState<PurchaseRequestDetail | null>(
@@ -360,7 +367,7 @@ export function SuggestionsPage() {
               <Input
                 type="date"
                 value={neededBy}
-                min={businessDateToday()}
+                min={today}
                 onChange={(event) => {
                   setNeededBy(event.target.value);
                   setDateError(undefined);

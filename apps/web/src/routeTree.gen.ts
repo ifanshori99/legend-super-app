@@ -119,6 +119,7 @@ import { Route as KelolaKelolaPajakIndexRouteImport } from './routes/_kelola/kel
 import { Route as KelolaKelolaPajakLaporanRouteImport } from './routes/_kelola/kelola.pajak.laporan'
 import { Route as KelolaKelolaPajakOpsiRouteImport } from './routes/_kelola/kelola.pajak.opsi'
 import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_kelola/kelola.pajak.service-charge'
+import { Route as KelolaKelolaPengaturanOutletRouteImport } from './routes/_kelola/kelola.pengaturan_.outlet'
 import { Route as KelolaKelolaPromoIndexRouteImport } from './routes/_kelola/kelola.promo.index'
 import { Route as KelolaKelolaPromoPromotionIdRouteImport } from './routes/_kelola/kelola.promo.$promotionId'
 import { Route as KelolaKelolaPromoRoiRouteImport } from './routes/_kelola/kelola.promo.roi'
@@ -719,6 +720,12 @@ const KelolaKelolaPajakServiceChargeRoute =
     path: '/kelola/pajak/service-charge',
     getParentRoute: () => KelolaRoute,
   } as any)
+const KelolaKelolaPengaturanOutletRoute =
+  KelolaKelolaPengaturanOutletRouteImport.update({
+    id: '/kelola/pengaturan_/outlet',
+    path: '/kelola/pengaturan/outlet',
+    getParentRoute: () => KelolaRoute,
+  } as any)
 const KelolaKelolaPromoIndexRoute = KelolaKelolaPromoIndexRouteImport.update({
   id: '/kelola/promo/',
   path: '/kelola/promo/',
@@ -985,6 +992,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1113,6 +1121,7 @@ export interface FileRoutesByTo {
   '/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/kelola/pengaturan/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1256,6 +1265,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/laporan': typeof KelolaKelolaPajakLaporanRoute
   '/_kelola/kelola/pajak/opsi': typeof KelolaKelolaPajakOpsiRoute
   '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
+  '/_kelola/kelola/pengaturan_/outlet': typeof KelolaKelolaPengaturanOutletRoute
   '/_kelola/kelola/promo/$promotionId': typeof KelolaKelolaPromoPromotionIdRoute
   '/_kelola/kelola/promo/roi': typeof KelolaKelolaPromoRoiRoute
   '/_kelola/kelola/promo/tumpang-tindih': typeof KelolaKelolaPromoTumpangTindihRoute
@@ -1389,6 +1399,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/pengaturan/outlet'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -1517,6 +1528,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/laporan'
     | '/kelola/pajak/opsi'
     | '/kelola/pajak/service-charge'
+    | '/kelola/pengaturan/outlet'
     | '/kelola/promo/$promotionId'
     | '/kelola/promo/roi'
     | '/kelola/promo/tumpang-tindih'
@@ -1659,6 +1671,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/laporan'
     | '/_kelola/kelola/pajak/opsi'
     | '/_kelola/kelola/pajak/service-charge'
+    | '/_kelola/kelola/pengaturan_/outlet'
     | '/_kelola/kelola/promo/$promotionId'
     | '/_kelola/kelola/promo/roi'
     | '/_kelola/kelola/promo/tumpang-tindih'
@@ -2491,6 +2504,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof KelolaKelolaPajakServiceChargeRouteImport
       parentRoute: typeof KelolaRoute
     }
+    '/_kelola/kelola/pengaturan_/outlet': {
+      id: '/_kelola/kelola/pengaturan_/outlet'
+      path: '/kelola/pengaturan/outlet'
+      fullPath: '/kelola/pengaturan/outlet'
+      preLoaderRoute: typeof KelolaKelolaPengaturanOutletRouteImport
+      parentRoute: typeof KelolaRoute
+    }
     '/_kelola/kelola/promo/': {
       id: '/_kelola/kelola/promo/'
       path: '/kelola/promo'
@@ -2868,6 +2888,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakLaporanRoute: typeof KelolaKelolaPajakLaporanRoute
   KelolaKelolaPajakOpsiRoute: typeof KelolaKelolaPajakOpsiRoute
   KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
+  KelolaKelolaPengaturanOutletRoute: typeof KelolaKelolaPengaturanOutletRoute
   KelolaKelolaPromoPromotionIdRoute: typeof KelolaKelolaPromoPromotionIdRoute
   KelolaKelolaPromoRoiRoute: typeof KelolaKelolaPromoRoiRoute
   KelolaKelolaPromoTumpangTindihRoute: typeof KelolaKelolaPromoTumpangTindihRoute
@@ -2944,6 +2965,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakLaporanRoute: KelolaKelolaPajakLaporanRoute,
   KelolaKelolaPajakOpsiRoute: KelolaKelolaPajakOpsiRoute,
   KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
+  KelolaKelolaPengaturanOutletRoute: KelolaKelolaPengaturanOutletRoute,
   KelolaKelolaPromoPromotionIdRoute: KelolaKelolaPromoPromotionIdRoute,
   KelolaKelolaPromoRoiRoute: KelolaKelolaPromoRoiRoute,
   KelolaKelolaPromoTumpangTindihRoute: KelolaKelolaPromoTumpangTindihRoute,
