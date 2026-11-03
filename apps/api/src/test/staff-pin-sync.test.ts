@@ -11,7 +11,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import type { StaffPinEdgeRecord } from "@starter/shared/access/override";
-import type { TenantContext } from "@starter/shared/core";
+import type { TenantContext, TenantId } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -299,7 +299,11 @@ describe("legend-obh5 staff pin edge export (§6 B staff_pins (T, E))", () => {
     await staffWithPin(ago(60_000));
     await expect(
       listStaffPinRecordsSince(
-        { tenantId: randomUUID(), outletId: bandung, edgeNodeId: randomUUID() },
+        {
+          tenantId: randomUUID() as TenantId,
+          outletId: bandung,
+          edgeNodeId: randomUUID(),
+        },
         { limit: 10 },
         { settleMs: 0 },
       ),

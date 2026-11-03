@@ -599,7 +599,9 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
       const guest = await seatAtNewTable();
       const usageBefore = await usageOf(ids.terbatas);
       const { orderId, totalIdr } = await placeOrder(guest, ids.terbatas);
-      expect(promo.redeemed).toEqual([orderId]);
+      // The checkout redeems only a positive quoted discount (legend-souz);
+      // this port quotes none, so the void's release is what is counted.
+      expect(promo.redeemed).toEqual([]);
       expect(await usageOf(ids.terbatas)).toBe(usageBefore + 1);
       const intentId = await openPayment(guest, orderId);
 

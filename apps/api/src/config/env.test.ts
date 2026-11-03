@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { test } from "vitest";
 
 const base: NodeJS.ProcessEnv = {
@@ -40,12 +41,35 @@ test("validates deployment, edge, and data classification settings at startup", 
     { DEPLOYMENT_MODE: "staging", DATA_CLASSIFICATION: "real" },
   ];
   for (const settings of invalidSettings) assert.equal(run(settings).status, 1);
+  // An edge node refuses to start without its cloud link settings, with a
+  // plain ws:// link outside development, or a malformed credential
+  // (legend-2pi, edge/config.ts).
+  const edgeProduction = {
+    DEPLOYMENT_MODE: "production",
+    DATA_CLASSIFICATION: "real",
+    EDGE_MODE: "true",
+    APP_DATABASE_URL: appUrl,
+  };
+  const credential = `edg1.${randomUUID()}.${randomUUID()}.${randomUUID()}.${"a".repeat(43)}`;
+  const incompleteEdge: Record<string, string>[] = [
+    {},
+    { EDGE_CLOUD_URL: "wss://cloud.example.test/api/edge-link" },
+    {
+      EDGE_CLOUD_URL: "ws://cloud.example.test/api/edge-link",
+      EDGE_NODE_CREDENTIAL: credential,
+    },
+    {
+      EDGE_CLOUD_URL: "wss://cloud.example.test/api/edge-link",
+      EDGE_NODE_CREDENTIAL: "not-a-credential",
+    },
+  ];
+  for (const settings of incompleteEdge)
+    assert.equal(run({ ...edgeProduction, ...settings }).status, 1);
   assert.equal(
     run({
-      DEPLOYMENT_MODE: "production",
-      DATA_CLASSIFICATION: "real",
-      EDGE_MODE: "true",
-      APP_DATABASE_URL: appUrl,
+      ...edgeProduction,
+      EDGE_CLOUD_URL: "wss://cloud.example.test/api/edge-link",
+      EDGE_NODE_CREDENTIAL: credential,
     }).status,
     0,
   );
