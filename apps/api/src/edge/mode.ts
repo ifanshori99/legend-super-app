@@ -87,7 +87,17 @@ export function classifyApiPath(path: string): ApiRouteClass {
  */
 export function edgeRouteGuard(options: { edgeMode: boolean }): RequestHandler {
   return (req, _res, next) => {
-    const path = (req.originalUrl ?? req.url).split("?", 1)[0] ?? "";
+    const raw = req.originalUrl ?? req.url;
+    // Only origin-form request targets ("/path"). An absolute-form target
+    // ("http://host/api/...") would skip the prefix check below while the
+    // router still resolves its pathname (review fix: guard bypass).
+    if (!raw.startsWith("/"))
+      throw new HttpError(
+        400,
+        "BAD_REQUEST_TARGET",
+        "Alamat permintaan tidak valid.",
+      );
+    const path = raw.split("?", 1)[0] ?? "";
     if (!path.toLowerCase().startsWith("/api")) return next();
     const routeClass = classifyApiPath(path);
     if (options.edgeMode && routeClass === "cloud_only")

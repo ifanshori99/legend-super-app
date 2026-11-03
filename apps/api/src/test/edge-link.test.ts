@@ -4,7 +4,7 @@
 // the Postgres store's rules and an in-memory transport that can drop,
 // duplicate and disconnect. No database (the Postgres store, RLS and
 // registry are covered by edge-db.test.ts).
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import express from "express";
@@ -620,6 +620,43 @@ describe("EDG-01 EDGE_MODE route split", () => {
     );
     expect((await request(edge).get("/pos")).status).toBe(200);
   });
+
+  it("EDG-01 an absolute-form request target cannot skip the route split", async () => {
+    // GET http://edge/api/platform/tenants HTTP/1.1: Express still routes the
+    // pathname, so the guard must refuse it instead of passing it on.
+    const httpServer = createServer(app(true));
+    await new Promise<void>((resolve) =>
+      httpServer.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const port = (httpServer.address() as AddressInfo).port;
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = httpRequest(
+          {
+            host: "127.0.0.1",
+            port,
+            method: "GET",
+            path: "http://edge.invalid/api/platform/tenants",
+          },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+      expect(status).toBe(400);
+    } finally {
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    }
+    // Case and duplicate slashes are normalised before the prefix check.
+    const edge = app(true);
+    expect((await request(edge).get("/API/Platform/tenants")).status).toBe(404);
+    expect((await request(edge).get("/api//platform/tenants")).status).toBe(
+      404,
+    );
+  });
 });
 
 describe("EDG-01 WebSocket link (real ws, in-memory stores)", () => {
@@ -682,6 +719,43 @@ describe("EDG-01 WebSocket link (real ws, in-memory stores)", () => {
     active = false; // EDG-03: revoked on the cloud
     await settle(() => client.state().refused);
     expect(client.state().cloudLink).toBe("disconnected");
+    await client.stop();
+    await linkServer.close();
+  });
+
+  it("EDG-01 a cloud-side failure while authenticating is retried, not treated as a refusal", async () => {
+    const { token } = mintEdgeCredential(scope);
+    let failures = 2;
+    const errors: unknown[] = [];
+    server = createServer();
+    const linkServer = createEdgeLinkServer(server, {
+      version: "cloud",
+      authenticate: async (presented) => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error("database unavailable");
+        }
+        return presented === token ? { scope } : null;
+      },
+      isActive: async () => true,
+      storeFor: () => new MemoryStore("cloud_to_edge"),
+      onError: (error) => errors.push(error),
+    });
+    await new Promise<void>((resolve) =>
+      server!.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as AddressInfo).port;
+    const client = createEdgeLinkClient({
+      url: `ws://127.0.0.1:${port}/api/edge-link`,
+      credential: token,
+      scope,
+      store: new MemoryStore("edge_to_cloud"),
+      version: "edge",
+      random: () => 0,
+    });
+    await settle(() => client.state().cloudLink === "connected", 6000);
+    expect(client.state().refused).toBe(false);
+    expect(errors.length).toBe(2);
     await client.stop();
     await linkServer.close();
   });

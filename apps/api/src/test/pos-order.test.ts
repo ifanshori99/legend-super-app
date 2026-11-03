@@ -18,6 +18,7 @@ import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  idr,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
@@ -28,7 +29,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import type { PosReceipt } from "@starter/shared/pos";
+import { refundAllocation, type PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import { verifyEdgeNodeCredential } from "../services/edge-node.service.ts";
@@ -36,6 +37,7 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { stillRefundableByMethod } from "../services/pos-order-corrections.ts";
 import { getPosOrder } from "../services/pos-order.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -603,6 +605,78 @@ describe("POS order service (legend-kk7)", () => {
     expect(refunded.status, JSON.stringify(refunded.body)).toBeLessThan(300);
     expect(refunded.body.data).toMatchObject({ orderId, amountIdr: part });
     expect((await pos().get(orderId)).body.data.status).toBe("completed");
+  });
+});
+
+describe("POS money review fixes (legend-kk7)", () => {
+  it("POS-04 partial refunds never return more through one method than it took in", () => {
+    // Cash 1 + QRIS 2: three Rp1 refunds. A pro-rata split of each refund over
+    // the original tenders sends all three to QRIS (Rp3 > Rp2 taken in).
+    const tender = (method: string, amountIdr: number) =>
+      ({ method, amountIdr: idr(amountIdr), status: "captured" }) as never;
+    const tenders = [tender("cash", 1), tender("qris", 2)];
+    const refunds: {
+      lines: { method: string; amountIdr: number; reference: null }[];
+    }[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const lines = refundAllocation(
+        stillRefundableByMethod(tenders, refunds),
+        idr(1),
+      ).map((line) => ({
+        method: line.method,
+        amountIdr: Number(line.amountIdr),
+        reference: null,
+      }));
+      refunds.push({ lines });
+    }
+    const byMethod = (method: string) =>
+      refunds
+        .flatMap((row) => row.lines)
+        .filter((line) => line.method === method)
+        .reduce((sum, line) => sum + line.amountIdr, 0);
+    expect(byMethod("cash")).toBe(1);
+    expect(byMethod("qris")).toBe(2);
+  });
+
+  it("POS-02 the total cannot be changed by a discount while a QRIS tender waits for payment", async () => {
+    const created = await pos().create();
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const orderId = created.body.data.id as string;
+    const submitted = await pos().submit(orderId, "draft");
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+    // A pending WS-05 QRIS bill for the whole balance (what addPosTender
+    // stores for method qris before payment.paid arrives).
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, payment_link_id,
+            payment_link_token_sealed, payment_intent_id, amount_idr, status, requested_at)
+         VALUES ($1, $2, $3, 'qris', 'doit', $4, 'sealed', $5, $6, 'authorized', now())`,
+        [
+          tenant.tenantId,
+          tenant.outletId,
+          ulidToUuid(orderId),
+          randomUUID(),
+          randomUUID(),
+          created.body.data.totalIdr,
+        ],
+      ),
+    );
+    const discounted = await cashier.client
+      .post(`${pos().base}/${orderId}/discounts`)
+      .set(headers)
+      .set(originHeader)
+      .send({
+        idempotencyKey: randomUUID(),
+        source: "manual",
+        kind: "percent",
+        percentBp: 1_000,
+        reason: "manager_goodwill",
+        reasonNote: "Pelanggan tetap",
+      });
+    expect(discounted.status, JSON.stringify(discounted.body)).toBe(409);
+    const after = await pos().get(orderId);
+    expect(after.body.data.totalIdr).toBe(created.body.data.totalIdr);
   });
 });
 

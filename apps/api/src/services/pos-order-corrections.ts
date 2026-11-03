@@ -33,6 +33,7 @@ import {
   tenderBucket,
   voidPosOrderCorrection as voidCorrectionEndpoint,
   type PosRefund,
+  type PosTender,
   type PosVoid,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
@@ -327,6 +328,42 @@ function refundSplit(
   };
 }
 
+/**
+ * The captured tenders reduced, per method, by what earlier refunds already
+ * returned through that method. A later partial refund is split over what is
+ * still refundable, so the per-method refunds never exceed what each method
+ * took in (rounding of several pro-rata splits cannot over-refund one method,
+ * and the last refund returns exactly the remainder of each method).
+ */
+export function stillRefundableByMethod(
+  tenders: readonly PosTender[],
+  refunds: readonly Pick<RefundRow, "lines">[],
+): PosTender[] {
+  const refunded = new Map<string, number>();
+  for (const row of refunds)
+    for (const line of row.lines)
+      refunded.set(
+        line.method,
+        (refunded.get(line.method) ?? 0) + Number(line.amountIdr),
+      );
+  const byMethod = new Map<string, PosTender>();
+  const captured = new Map<string, number>();
+  for (const tender of tenders) {
+    if (tender.status !== "captured") continue;
+    if (!byMethod.has(tender.method)) byMethod.set(tender.method, tender);
+    captured.set(
+      tender.method,
+      (captured.get(tender.method) ?? 0) + Number(tender.amountIdr),
+    );
+  }
+  return [...byMethod.entries()].map(([method, tender]) => ({
+    ...tender,
+    amountIdr: idr(
+      Math.max(0, (captured.get(method) ?? 0) - (refunded.get(method) ?? 0)),
+    ),
+  }));
+}
+
 /** POST .../corrections/refund — linked refund against a paid sale (POS-04). */
 export async function refundPosOrder(
   context: ScopedTenantContext,
@@ -369,7 +406,10 @@ export async function refundPosOrder(
         approvalRequestId: input.approvalRequestId,
         minValueIdr: input.amountIdr,
       });
-      const allocation = refundAllocation(tenders, idr(input.amountIdr));
+      const allocation = refundAllocation(
+        stillRefundableByMethod(tenders, refunds),
+        idr(input.amountIdr),
+      );
       const lines = allocation.map((line) => ({
         method: line.method,
         amountIdr: Number(line.amountIdr),

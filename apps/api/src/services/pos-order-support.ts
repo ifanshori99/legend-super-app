@@ -325,6 +325,27 @@ export function remainingIdr(
 
 // ---- Guards -----------------------------------------------------------------
 
+/**
+ * A QRIS tender still waiting for its verified payment was billed for the
+ * remaining balance at that time. Changing the order total (discount, line
+ * void) while it is pending would let the guest pay a stale amount that
+ * `handlePosPaymentPaid` can no longer capture: fail closed instead.
+ */
+export function assertNoPendingGatewayTender(
+  tenders: readonly TenderRow[],
+): void {
+  if (
+    tenders.some(
+      (tender) =>
+        tender.status === "authorized" && tender.paymentLinkId !== null,
+    )
+  )
+    throw new CoreError(
+      "CONFLICT",
+      "Masih ada QRIS yang menunggu pembayaran; total pesanan tidak dapat diubah.",
+    );
+}
+
 /** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */
 export function assertExpectedStatus(
   order: OrderRow,
@@ -679,13 +700,24 @@ export async function consumeApproval(
   //    ULID id rarely parses as an RFC UUID): the newest unused PIN override
   //    for exactly this action, object, requester and approver, at most
   //    PIN_APPROVAL_WINDOW_MS old. Single use is enforced below either way.
+  // Only the candidates' uses (not the tenant's whole approval ledger).
   const used = new Set(
-    (
-      await tx
-        .select({ overrideId: posOrderApprovalUses.overrideId })
-        .from(posOrderApprovalUses)
-        .where(eq(posOrderApprovalUses.tenantId, tenantId))
-    ).map((row) => row.overrideId),
+    candidates.length === 0
+      ? []
+      : (
+          await tx
+            .select({ overrideId: posOrderApprovalUses.overrideId })
+            .from(posOrderApprovalUses)
+            .where(
+              and(
+                eq(posOrderApprovalUses.tenantId, tenantId),
+                inArray(
+                  posOrderApprovalUses.overrideId,
+                  candidates.map((row) => row.id),
+                ),
+              ),
+            )
+        ).map((row) => row.overrideId),
   );
   const fresh = Date.now() - PIN_APPROVAL_WINDOW_MS;
   const override =
@@ -699,6 +731,7 @@ export async function consumeApproval(
         row.method === "supervisor_pin" &&
         !used.has(row.id) &&
         row.createdAt.getTime() >= fresh &&
+        row.valueIdr >= input.minValueIdr &&
         row.approvedBy?.toLowerCase() === input.approvedBy.toLowerCase(),
     );
   if (

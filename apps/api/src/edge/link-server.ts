@@ -62,10 +62,13 @@ export type EdgeLinkServer = {
   close(): Promise<void>;
 };
 
-function refuse(socket: Duplex, status: 400 | 401 | 403) {
-  const text = { 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden" }[
-    status
-  ];
+function refuse(socket: Duplex, status: 400 | 401 | 403 | 503) {
+  const text = {
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    503: "Service Unavailable",
+  }[status];
   socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
   socket.destroy();
 }
@@ -159,7 +162,10 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
         wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));
       } catch (error) {
         deps.onError?.(error);
-        if (!socket.destroyed) refuse(socket, 401);
+        // A cloud-side failure (database blip, pool exhausted) is transient:
+        // 503 keeps the edge retrying. Only a refused credential is 401, which
+        // the edge client treats as final (review fix).
+        if (!socket.destroyed) refuse(socket, 503);
       }
     })();
   };

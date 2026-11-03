@@ -41,6 +41,7 @@ import {
 import {
   appendOrderEvent,
   assertMutable,
+  assertNoPendingGatewayTender,
   auditPos,
   bumpPos,
   capturedIdr,
@@ -69,6 +70,9 @@ async function assertBeforeSettlement(
       "CONFLICT",
       "Diskon hanya dapat diubah sebelum pembayaran diterima.",
     );
+  // A pending QRIS bill was opened for the old total: repricing now would let
+  // the guest pay a stale amount that can no longer be captured (review fix).
+  assertNoPendingGatewayTender(tenders);
 }
 
 /** POST .../discounts. */
@@ -136,7 +140,11 @@ export async function applyPosDiscount(
           subtotalIdr: idr(subtotal),
           thresholdBp: await discountThresholdBp(tx, context, outletId),
         });
-        if (needsApproval && input.approvalRequestId === undefined)
+        if (
+          needsApproval &&
+          (input.approvalRequestId === undefined ||
+            input.approvedBy === undefined)
+        )
           throw new PosError("DISCOUNT_APPROVAL_REQUIRED");
         // An approval that is sent is always verified, required or not.
         if (

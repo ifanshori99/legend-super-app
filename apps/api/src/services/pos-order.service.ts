@@ -94,6 +94,7 @@ import {
   assertExpectedStatus,
   assertExpectedVersion,
   assertMutable,
+  assertNoPendingGatewayTender,
   auditPos,
   businessDateFor,
   bumpPos,
@@ -1468,6 +1469,7 @@ export async function voidPosOrderItem(
           "CONFLICT",
           "Ini item terakhir pesanan; void pesanannya.",
         );
+      assertNoPendingGatewayTender(await tendersOf(tx, context, order.id));
       const discounts = await liveDiscountsOf(tx, context, order.id);
       if (discounts.some((row) => row.source !== "manual"))
         throw new CoreError(
