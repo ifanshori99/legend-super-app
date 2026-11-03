@@ -265,13 +265,15 @@ function MatrixCell({
 }) {
   const t = useT();
   return (
+    // A matrix cell is a filter, so it selects in ink, never accent
+    // (DESIGN.md §2 accent budget: tabs and filters select in ink).
     <button
       type="button"
       aria-pressed={selected}
       onClick={() => onSelect(value)}
       className={
         selected
-          ? "grid min-w-0 gap-1 rounded-container border-(length:--border-w) border-primary bg-primary-tint p-3 text-left transition-colors duration-(--duration-fast) sm:p-card"
+          ? "grid min-w-0 gap-1 rounded-container border-(length:--border-w) border-foreground bg-surface-2 p-3 text-left ring-1 ring-foreground transition-colors duration-(--duration-fast) sm:p-card"
           : "grid min-w-0 gap-1 rounded-container border-(length:--border-w) border-border bg-card p-3 text-left transition-colors duration-(--duration-fast) hover:bg-surface-2 sm:p-card"
       }
     >

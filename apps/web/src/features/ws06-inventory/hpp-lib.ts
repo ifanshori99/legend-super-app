@@ -17,6 +17,7 @@ import {
 import { formatNumber } from "@starter/shared/i18n";
 import { cafeLegendMenuFixtures } from "@starter/shared/menu";
 import type {
+  FoodCostComparison,
   MenuCost,
   MenuEngineeringClass,
   MenuEngineeringRow,
@@ -129,6 +130,30 @@ export function sortRecipeCoverage(
   return [...rows].sort((a, b) =>
     menuNameOf(a.menuItemId).localeCompare(menuNameOf(b.menuItemId), "id-ID"),
   );
+}
+
+// ---- Food cost -----------------------------------------------------------
+
+/**
+ * Food-cost comparisons newest first (by start, then end date). The summary
+ * strip and the chart both read the first row, so they always agree.
+ */
+export function sortFoodCost(
+  rows: readonly FoodCostComparison[],
+): FoodCostComparison[] {
+  return [...rows].sort(
+    (a, b) =>
+      b.fromDate.localeCompare(a.fromDate) || b.toDate.localeCompare(a.toDate),
+  );
+}
+
+/**
+ * The label for a comparison row's own period. A row covers the closed range
+ * the server computed, which may differ from the selector window that merely
+ * overlaps it, so figures are always labelled with the row's dates.
+ */
+export function foodCostPeriodLabel(row: FoodCostComparison): string {
+  return periodLabel({ fromDate: row.fromDate, toDate: row.toDate });
 }
 
 // ---- Menu engineering ----------------------------------------------------

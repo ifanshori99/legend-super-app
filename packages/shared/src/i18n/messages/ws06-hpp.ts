@@ -67,7 +67,8 @@ export const inventoryHppMessages = {
     chartTitle: "Teoretis vs aktual",
     chartHint:
       "Batang aktual disorot; batang teoretis menjadi pembanding. Tabel di bawah memuat angka yang sama.",
-    chartAria: "Grafik batang food cost teoretis dan aktual periode {period}",
+    chartAria:
+      "Grafik batang food cost periode {period}: teoretis {theoretical}, aktual {actual}",
     legend: {
       theoretical: "Teoretis",
       actual: "Aktual",

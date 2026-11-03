@@ -22,9 +22,10 @@ import { useFoodCost, useOnlineStatus, useRecipeCoverage } from "../hpp-hooks";
 import {
   coverageCounts,
   defaultPeriod,
+  foodCostPeriodLabel,
   formatBasisPoints,
   HPP_OUTLET_NAME,
-  periodLabel,
+  sortFoodCost,
   type HppPeriod,
 } from "../hpp-lib";
 import { HppCoverageTab } from "./hpp-coverage-tab";
@@ -184,10 +185,12 @@ function HppSummary({
   const failed = foodCost.isError || coverage.isError;
   const error = foodCost.error ?? coverage.error;
   const offline = error instanceof ApiError && error.code === "NETWORK_ERROR";
-  const row = foodCost.data?.data.at(0);
+  // Newest comparison, labelled with its own dates: the selector window only
+  // has to overlap the server's period, so its dates are not the figures'.
+  const row = sortFoodCost(foodCost.data?.data ?? []).at(0);
   const coverageRows = coverage.data?.data ?? [];
   const counts = coverageCounts(coverageRows);
-  const label = periodLabel(period);
+  const label = row ? foodCostPeriodLabel(row) : "";
 
   const retry = () => {
     void foodCost.refetch();

@@ -103,11 +103,19 @@ test("F17 actual vs theoretical food cost explains the variance in a chart and a
 }) => {
   await open(page, "/kelola/inventori/hpp");
   await expect(page.getByText("3,63%", { exact: true })).toBeVisible();
+  // The summary labels its figures with the comparison's own dates, not the
+  // 30-day selector window that merely overlaps them.
+  await expect(
+    page
+      .getByRole("region", { name: "Ringkasan food cost periode ini" })
+      .getByText("1 Okt 2026 – 31 Okt 2026")
+      .first(),
+  ).toBeVisible();
 
   await openTab(page, "Aktual vs teoretis");
   await expect(
     page.getByRole("img", {
-      name: /Grafik batang food cost teoretis dan aktual/,
+      name: /Grafik batang food cost periode 1 Okt 2026 – 31 Okt 2026: teoretis Rp\s18\.450\.000, aktual Rp\s19\.120\.000/,
     }),
   ).toBeVisible();
 

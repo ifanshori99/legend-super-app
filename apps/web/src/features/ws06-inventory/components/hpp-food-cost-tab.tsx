@@ -23,7 +23,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useFoodCost } from "../hpp-hooks";
-import { periodLabel, type HppPeriod } from "../hpp-lib";
+import { formatRupiah } from "@starter/shared/i18n";
+import { foodCostPeriodLabel, sortFoodCost, type HppPeriod } from "../hpp-lib";
 import { FoodCostChart, type FoodCostBar } from "./hpp-food-cost-chart";
 import { SignedMoney } from "./hpp-signed-money";
 
@@ -32,12 +33,7 @@ export function HppFoodCostTab({ period }: { period: HppPeriod }) {
   const query = useFoodCost(period);
 
   const rows = React.useMemo(
-    () =>
-      [...(query.data?.data ?? [])].sort(
-        (a, b) =>
-          b.fromDate.localeCompare(a.fromDate) ||
-          b.toDate.localeCompare(a.toDate),
-      ),
+    () => sortFoodCost(query.data?.data ?? []),
     [query.data],
   );
 
@@ -66,9 +62,7 @@ export function HppFoodCostTab({ period }: { period: HppPeriod }) {
   }
 
   const latest = rows[0];
-  const latestPeriod = latest
-    ? periodLabel({ fromDate: latest.fromDate, toDate: latest.toDate })
-    : periodLabel(period);
+  const latestPeriod = latest ? foodCostPeriodLabel(latest) : "";
   const bars: FoodCostBar[] = latest
     ? [
         {
@@ -103,6 +97,10 @@ export function HppFoodCostTab({ period }: { period: HppPeriod }) {
             bars={bars}
             ariaLabel={t("inventoryHpp.foodCost.chartAria", {
               period: latestPeriod,
+              theoretical: latest
+                ? formatRupiah(latest.theoreticalCostIdr)
+                : "",
+              actual: latest ? formatRupiah(latest.actualCostIdr) : "",
             })}
           />
         </CardShellBody>
@@ -143,10 +141,7 @@ export function HppFoodCostTab({ period }: { period: HppPeriod }) {
             {rows.map((row) => (
               <TableRow key={`${row.outletId}:${row.fromDate}:${row.toDate}`}>
                 <TableCell className="whitespace-nowrap font-medium">
-                  {periodLabel({
-                    fromDate: row.fromDate,
-                    toDate: row.toDate,
-                  })}
+                  {foodCostPeriodLabel(row)}
                 </TableCell>
                 <TableCell numeric>
                   <Money amount={row.theoreticalCostIdr} />
