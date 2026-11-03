@@ -350,6 +350,18 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["asset_disposal_result", "credit", "resultIdr"],
     ],
   ),
+  rule(
+    { document: "asset_revaluation" },
+    "asset_revaluation",
+    "Revaluasi aset tetap (surplus ke ekuitas, penurunan ke laba rugi)",
+    "§3.19 Aset Tetap",
+    [
+      ["accumulated_depreciation", "debit", "accumulatedIdr"],
+      ["fixed_assets", "debit", "costChangeIdr"],
+      ["asset_revaluation_loss", "debit", "lossIdr"],
+      ["revaluation_surplus", "credit", "surplusIdr"],
+    ],
+  ),
 ]);
 
 /** The rule for an event (optionally a variant) or a document; fails closed. */

@@ -10,3 +10,4 @@ export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";
 export * from "./purchasing/index.ts";
+export * from "./alerts.ts";

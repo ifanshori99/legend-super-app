@@ -400,6 +400,20 @@
       "when": 1793716833149,
       "tag": "0056_facility_config_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1793746287625,
+      "tag": "0057_invbe_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1793746297797,
+      "tag": "0058_invbe_rls",
+      "breakpoints": true
     }
   ]
 }

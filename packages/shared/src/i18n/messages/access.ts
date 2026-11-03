@@ -412,6 +412,7 @@ const accessBaseMessages = {
       },
       opname: { count: "Hitung stok opname" },
       waste: { record: "Catat waste" },
+      production: { record: "Catat produksi batch" },
       adjustment: { approve: "Setujui penyesuaian stok" },
       cost: { view: "Lihat biaya stok" },
     },
@@ -448,6 +449,7 @@ const accessBaseMessages = {
     loyalty: { program: { manage: "Kelola program loyalitas" } },
     crm: {
       customer: { view: "Lihat profil pelanggan" },
+      consent: { record: "Catat persetujuan pelanggan" },
       segment: { manage: "Kelola segmen pelanggan" },
     },
     promo: { manage: "Kelola promo" },

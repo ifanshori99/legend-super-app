@@ -69,6 +69,10 @@ import {
   wasteReasonSchema,
   wasteTargetTypeSchema,
   foodCostComparisonSchema,
+  expiryWarningDaysSchema,
+  inventorySettingsSchema,
+  parLevelIdSchema,
+  recipeDeductionModeSchema,
 } from "./schemas.ts";
 
 // ---- List queries ---------------------------------------------------------
@@ -232,6 +236,49 @@ export const createUomConversionInputSchema = clientInputSchema({
   message: "A conversion needs two different units",
 });
 
+/**
+ * Per-location par level (PRD §16 "Par Level & Saran Pembelian"). One level per
+ * (location, item); the location must belong to `outletId` (TEN-03).
+ */
+export const createParLevelInputSchema = clientInputSchema({
+  outletId: outletIdSchema,
+  locationId: stockLocationIdSchema,
+  inventoryItemId: inventoryItemIdSchema,
+  parMin: nonnegativeDecimal4Schema,
+  parMax: nonnegativeDecimal4Schema,
+  idempotencyKey: idempotencyKeySchema,
+}).refine((par) => parseDecimal4(par.parMax) >= parseDecimal4(par.parMin), {
+  path: ["parMax"],
+  message: "parMax must be at least parMin",
+});
+
+export const updateParLevelInputSchema = clientInputSchema({
+  parMin: nonnegativeDecimal4Schema.optional(),
+  parMax: nonnegativeDecimal4Schema.optional(),
+})
+  .refine((par) => par.parMin !== undefined || par.parMax !== undefined, {
+    message: "Send parMin, parMax or both",
+  })
+  .refine(
+    (par) =>
+      par.parMin === undefined ||
+      par.parMax === undefined ||
+      parseDecimal4(par.parMax) >= parseDecimal4(par.parMin),
+    { path: ["parMax"], message: "parMax must be at least parMin" },
+  );
+
+/**
+ * Tenant inventory settings (PRD §16 "Pemotongan Otomatis", "Batch &
+ * Kedaluwarsa"). A full replacement; `expectedUpdatedAt` is null for a tenant
+ * that has not saved settings yet (optimistic concurrency, PRECONDITION_FAILED).
+ */
+export const updateInventorySettingsInputSchema = clientInputSchema({
+  recipeDeductionMode: recipeDeductionModeSchema,
+  expiryWarningDays: expiryWarningDaysSchema,
+  expectedUpdatedAt: isoDateTimeSchema.nullable(),
+  idempotencyKey: idempotencyKeySchema,
+});
+
 export const createStockTransferInputSchema = clientInputSchema({
   outletId: outletIdSchema,
   fromLocationId: stockLocationIdSchema,
@@ -300,6 +347,8 @@ export const createProductionOrderInputSchema = clientInputSchema({
   outletId: outletIdSchema,
   recipeId: recipeIdSchema,
   plannedQty: positiveDecimal4Schema,
+  /** Production location; omitted = the outlet's single active kitchen. */
+  locationId: stockLocationIdSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -554,6 +603,40 @@ export const deleteUomConversion = defineEndpoint({
   }),
 });
 
+export const createParLevel = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/par-levels",
+  body: createParLevelInputSchema,
+  response: dataResponseSchema(parLevelSchema),
+});
+
+export const updateParLevel = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/par-levels/:parLevelId",
+  params: z.strictObject({ parLevelId: parLevelIdSchema }),
+  body: updateParLevelInputSchema,
+  response: dataResponseSchema(parLevelSchema),
+});
+
+export const deleteParLevel = defineEndpoint({
+  method: "DELETE",
+  path: "/api/inventory/par-levels/:parLevelId",
+  params: z.strictObject({ parLevelId: parLevelIdSchema }),
+});
+
+export const getInventorySettings = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/settings",
+  response: dataResponseSchema(inventorySettingsSchema),
+});
+
+export const updateInventorySettings = defineEndpoint({
+  method: "PUT",
+  path: "/api/inventory/settings",
+  body: updateInventorySettingsInputSchema,
+  response: dataResponseSchema(inventorySettingsSchema),
+});
+
 export const listStockTransfers = defineEndpoint({
   method: "GET",
   path: "/api/inventory/transfers",
@@ -667,6 +750,11 @@ export const inventoryEndpoints = [
   deleteInventoryItemAlternate,
   createUomConversion,
   deleteUomConversion,
+  createParLevel,
+  updateParLevel,
+  deleteParLevel,
+  getInventorySettings,
+  updateInventorySettings,
   listStockTransfers,
   createStockTransfer,
   createStockCount,
