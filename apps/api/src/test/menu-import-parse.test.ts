@@ -260,6 +260,49 @@ describe("menu import parser (WS-03 F8 Impor Massal)", () => {
     );
   });
 
+  it("scans adversarial XLSX XML in linear time (unclosed tags are corrupt)", () => {
+    const sheetOf = (body: string) =>
+      zip(
+        {
+          "xl/worksheets/sheet1.xml": `<worksheet><sheetData>${body}</sheetData></worksheet>`,
+        },
+        true,
+      );
+    const startedAt = Date.now();
+    for (const body of [
+      "<row>".repeat(200_000),
+      `<row r="1">${"<c>".repeat(200_000)}</row>`,
+      `<row r="1"><c r="A1">${"<v>".repeat(200_000)}</c></row>`,
+    ])
+      expect(() => parse(sheetOf(body), "menu.xlsx")).toThrowError(
+        expect.objectContaining({ code: "FILE_CORRUPT" }),
+      );
+    // A backtracking regex reader needed minutes here; the linear scan is ms.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("reads self-closing XLSX cells and ignores an empty shared-string ref", () => {
+    const sheet = `<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row><row r="2"><c r="A2" t="s"><v>4</v></c><c r="B2" t="s"><v>5</v></c><c r="C2"><v>15000</v></c><c r="D2" t="s"><v>6</v></c><c r="E2" s="1"/><c r="F2" t="s"><v/></c></row></sheetData></worksheet>`;
+    const strings = [
+      "Kategori",
+      "Nama",
+      "Harga",
+      "Stasiun",
+      "Minuman",
+      "Teh",
+      "Bar",
+    ];
+    const result = parse(
+      zip({
+        "xl/sharedStrings.xml": `<sst>${strings.map((s) => `<si><t>${s}</t></si>`).join("")}</sst>`,
+        "xl/worksheets/sheet1.xml": sheet,
+      }),
+      "menu.xlsx",
+    );
+    expect(result.rows[0]).toMatchObject({ rowNumber: 2, errors: [] });
+    expect(result.rows[0].data).toMatchObject({ name: "Teh", priceIdr: 15000 });
+  });
+
   it("refuses a file whose content does not match its extension", () => {
     expect(() => parse(Buffer.from("not a zip"), "menu.xlsx")).toThrowError(
       expect.objectContaining({ code: "FILE_UNSUPPORTED" }),

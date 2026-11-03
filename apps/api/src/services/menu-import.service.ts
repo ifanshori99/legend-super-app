@@ -18,7 +18,8 @@
 // list in force is copied forward first, so unrelated prices are not lost.
 // Idempotency: the `Idempotency-Key` is unique per tenant and bound to a
 // fingerprint of file hash + brand + outlet + options; a retry replays the
-// stored counts, the same key with different input is a 409.
+// stored counts, the same key with different input is a 409. Commits into one
+// brand are serialised by an advisory lock (no duplicate items under races).
 
 import { outlets } from "../db/schema/platform-org.ts";
 import { createHash } from "node:crypto";
@@ -410,6 +411,15 @@ export async function commitMenuImport(
     // Serialise retries of one key: the second waits, then replays.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`menu-import:${tenantId}:${key}`}))`,
+    );
+    // Serialise every commit into one brand (any key): menu_items and
+    // menu_categories have no (category, name) unique constraint, so two
+    // concurrent imports of the same file under different keys would both see
+    // "not existing yet" and create duplicates. The second one now waits and
+    // then sees the first one's rows (DUPLICATE_EXISTING / update in place).
+    const lockedBrandId = await resolveBrand(tx, context, input.brandId);
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`menu-import-brand:${tenantId}:${lockedBrandId}`}))`,
     );
     const resolved = await resolveImport(
       tx,

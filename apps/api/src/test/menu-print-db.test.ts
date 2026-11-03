@@ -156,6 +156,11 @@ async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
       "DELETE FROM printable_menu_renders WHERE tenant_id = $1",
       [tenantId],
     );
+    // The PDFs this file stored (purpose `document`, created during the run).
+    await client.query(
+      "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND purpose = 'document' AND created_at >= $2",
+      [tenantId, testStartedAt],
+    );
     await client.query(
       "DELETE FROM menu_categories c WHERE c.tenant_id = $1 AND c.created_at >= $2 AND NOT EXISTS (SELECT 1 FROM menu_items m WHERE m.category_id = c.id)",
       [tenantId, testStartedAt],
@@ -198,16 +203,26 @@ describe("printable menu", () => {
   it("debounce: a burst of changes yields ONE regeneration per outlet", async () => {
     const before = renderer.calls;
     // change a price so the payload hash differs
-    await owner.query("BEGIN");
-    await owner.query(
-      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [tenantId],
-    );
-    await owner.query(
-      "UPDATE price_list_items SET price_idr = 22000 WHERE tenant_id = $1 AND item_id = $2",
-      [tenantId, ids.ok],
-    );
-    await owner.query("COMMIT");
+    // One pooled client for the whole transaction: Pool.query may hand each
+    // statement to a different connection (set_config would not apply).
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query(
+        "UPDATE price_list_items SET price_idr = 22000 WHERE tenant_id = $1 AND item_id = $2",
+        [tenantId, ids.ok],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     await withTenant(db, ctx(), async (tx) => {
       for (let i = 0; i < 5; i += 1)
         await markMenuPrintDirty(
@@ -232,6 +247,28 @@ describe("printable menu", () => {
     expect(second.regenerated).toEqual([]);
     expect(renderer.calls).toBe(before + 1);
     expect(renderer.html).toContain("Rp 22.000");
+  });
+
+  it("fails closed without a PDF renderer: 503 on first read, sweep does not throw", async () => {
+    const noRenderer = { storage: deps.storage, renderer: null };
+    await expect(
+      getLatestMenuPrint(
+        ctx(),
+        staff.userId,
+        { outletId: outlets[1].id },
+        noRenderer,
+        now,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+    await withTenant(db, ctx(), (tx) =>
+      markMenuPrintDirty(tx, tenantId, [outletA], now, 0),
+    );
+    const sweep = await runDueMenuPrints(
+      ctx(),
+      noRenderer,
+      new Date(now.getTime() + 1_000),
+    );
+    expect(sweep).toEqual({ regenerated: [], failed: [outletA] });
   });
 
   it("TEN-01 cross-tenant: another tenant cannot read this outlet's printable menu", async () => {

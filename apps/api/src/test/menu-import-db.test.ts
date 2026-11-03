@@ -107,13 +107,24 @@ async function cleanupSeededTenant(itemFilter: string, params: unknown[]) {
       `DELETE FROM price_list_items WHERE tenant_id = $1 AND item_id IN (${items})`,
       p,
     );
+    // Commits create "today's" price list and copy the list in force forward
+    // (seeded items included): drop those lists whole, or they would stay the
+    // seeded outlet's current list for every later suite (files run serially).
     await client.query(
-      "DELETE FROM price_lists pl WHERE pl.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM price_list_items i WHERE i.price_list_id = pl.id) AND pl.created_at >= $2",
+      "DELETE FROM price_list_items WHERE tenant_id = $1 AND price_list_id IN (SELECT id FROM price_lists WHERE tenant_id = $1 AND created_at >= $2)",
+      [tenantId, testStartedAt],
+    );
+    await client.query(
+      "DELETE FROM price_lists WHERE tenant_id = $1 AND created_at >= $2",
       [tenantId, testStartedAt],
     );
     await client.query(
       `DELETE FROM menu_items WHERE tenant_id = $1 AND (${itemFilter})`,
       p,
+    );
+    await client.query(
+      "DELETE FROM stations WHERE tenant_id = $1 AND id = $2",
+      [tenantId, stationId],
     );
     await client.query("DELETE FROM menu_import_jobs WHERE tenant_id = $1", [
       tenantId,
@@ -251,6 +262,73 @@ describe("menu import commit", () => {
     );
     expect(prices).toHaveLength(1);
     expect(Number(prices[0].priceIdr)).toBe(11000);
+  });
+
+  it("concurrent commits of one file under different keys create the item once", async () => {
+    const input = file(`${categoryName},Balapan,,,9000,Bar Impor,,,`);
+    // Deterministic race: hold the brand lock from another session so both
+    // commits are provably in flight and queued on it before either may run.
+    const lockKey = `menu-import-brand:${tenantId}:${brand.id}`;
+    const holder = await owner.connect();
+    let pending: Promise<PromiseSettledResult<unknown>[]>;
+    try {
+      await holder.query("SELECT pg_advisory_lock(hashtext($1))", [lockKey]);
+      pending = Promise.allSettled([
+        commitMenuImport(ctx(), staff.userId, `race-a-${randomUUID()}`, input),
+        commitMenuImport(ctx(), staff.userId, `race-b-${randomUUID()}`, input),
+      ]);
+      for (let waited = 0; ; waited += 1) {
+        const { rows } = await holder.query<{ n: number }>(
+          "SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = (hashtext($1)::bigint & 4294967295)::oid",
+          [lockKey],
+        );
+        if (rows[0].n >= 2) break;
+        if (waited > 200) throw new Error("commits never queued on the lock");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await holder.query("SELECT pg_advisory_unlock(hashtext($1))", [lockKey]);
+      holder.release();
+    }
+    const results = await pending;
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      MenuImportInvalidError,
+    );
+    const items = await withTenant(db, ctx(), (tx) =>
+      tx.select().from(menuItems).where(eq(menuItems.name, "Balapan")),
+    );
+    expect(items).toHaveLength(1);
+    const cats = await withTenant(db, ctx(), (tx) =>
+      tx
+        .select()
+        .from(menuCategories)
+        .where(eq(menuCategories.name, categoryName)),
+    );
+    expect(cats).toHaveLength(1);
+  });
+
+  it("onDuplicate=update never publishes a draft (Q23: no photo stays inactive)", async () => {
+    const line = (price: number) =>
+      file(`${categoryName},Draf Tetap,,,${price},Bar Impor,,,`);
+    await commitMenuImport(
+      ctx(),
+      staff.userId,
+      `q23a-${randomUUID()}`,
+      line(5000),
+    );
+    await commitMenuImport(ctx(), staff.userId, `q23b-${randomUUID()}`, {
+      ...line(6000),
+      onDuplicate: "update",
+    });
+    const [item] = await withTenant(db, ctx(), (tx) =>
+      tx.select().from(menuItems).where(eq(menuItems.name, "Draf Tetap")),
+    );
+    expect(item.isActive).toBe(false);
+    expect(item.mediaId).toBeNull();
   });
 
   it("TEN-01 cross-tenant: another tenant cannot import into or read this brand/jobs", async () => {

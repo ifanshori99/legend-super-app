@@ -4,8 +4,9 @@
 // Safety rules (all enforced here, covered by menu-import-parse.test.ts):
 // - hard limits on file size, rows, columns, cell length and (XLSX) the
 //   decompressed size, so a zip bomb or a million-row sheet is refused early;
-// - XLSX is read by a minimal reader that never evaluates formulas: a cell that
-//   holds a formula becomes a row error, its cached value is ignored;
+// - XLSX is read by a minimal, linear (indexOf, no backtracking regex) reader
+//   that never evaluates formulas: a cell that holds a formula becomes a row
+//   error, its cached value is ignored;
 // - XML with a DOCTYPE / ENTITY declaration is refused (no entity expansion);
 // - CSV/formula injection: a text cell that starts with = + - @ (or a control
 //   character) is refused instead of stored, so a later CSV export of the menu
@@ -335,21 +336,66 @@ function decodeXml(value: string): string {
   );
 }
 
+/**
+ * Linear scan of `<tag ...>inner</tag>` and `<tag .../>` elements (the tag must
+ * not nest inside itself). indexOf only, never a backtracking regex over the
+ * whole part: a crafted sheet of unclosed tags would otherwise make the scan
+ * quadratic and block the event loop. An unclosed element is FILE_CORRUPT.
+ */
+function* xmlElements(
+  xml: string,
+  tag: string,
+): Generator<{ attrs: string; inner: string }> {
+  const open = `<${tag}`;
+  const close = `</${tag}>`;
+  let pos = 0;
+  for (;;) {
+    const start = xml.indexOf(open, pos);
+    if (start < 0) return;
+    const next = xml[start + open.length];
+    if (next !== ">" && next !== "/" && !/\s/.test(next ?? "")) {
+      pos = start + open.length;
+      continue;
+    }
+    const tagEnd = xml.indexOf(">", start + open.length);
+    if (tagEnd < 0)
+      throw new ImportFileError("FILE_CORRUPT", "Berkas XLSX tidak valid.");
+    if (xml[tagEnd - 1] === "/") {
+      yield { attrs: xml.slice(start + open.length, tagEnd - 1), inner: "" };
+      pos = tagEnd + 1;
+      continue;
+    }
+    const end = xml.indexOf(close, tagEnd + 1);
+    if (end < 0)
+      throw new ImportFileError("FILE_CORRUPT", "Berkas XLSX tidak valid.");
+    yield {
+      attrs: xml.slice(start + open.length, tagEnd),
+      inner: xml.slice(tagEnd + 1, end),
+    };
+    pos = end + close.length;
+  }
+}
+
+function firstElement(
+  xml: string,
+  tag: string,
+): { attrs: string; inner: string } | null {
+  for (const element of xmlElements(xml, tag)) return element;
+  return null;
+}
+
 /** Concatenated text of every <t> in a fragment (rich text safe). */
 function textOf(fragment: string): string {
   let out = "";
-  const re = /<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g;
-  for (let m = re.exec(fragment); m; m = re.exec(fragment))
-    out += decodeXml(m[1]);
+  for (const t of xmlElements(fragment, "t")) out += decodeXml(t.inner);
   return out;
 }
 
 function sharedStrings(xml: string | null): string[] {
   if (xml === null) return [];
   const out: string[] = [];
-  const re = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>|<si\s*\/>/g;
-  for (let m = re.exec(xml); m; m = re.exec(xml)) {
-    out.push(m[1] === undefined ? "" : textOf(m[1]));
+  for (const si of xmlElements(xml, "si")) {
+    out.push(textOf(si.inner));
     if (out.length > 200_000)
       throw new ImportFileError("FILE_TOO_LARGE", "Berkas XLSX terlalu besar.");
   }
@@ -369,13 +415,13 @@ function firstSheetPath(
   rels: string | null,
 ): string {
   if (workbook !== null && rels !== null) {
-    const sheet = /<sheet\b[^>]*\br:id="([^"]+)"/.exec(workbook);
-    if (sheet) {
-      const relRe = /<Relationship\b[^>]*>/g;
-      for (let m = relRe.exec(rels); m; m = relRe.exec(rels)) {
-        const id = /\bId="([^"]+)"/.exec(m[0])?.[1];
-        const target = /\bTarget="([^"]+)"/.exec(m[0])?.[1];
-        if (id === sheet[1] && target) {
+    const sheet = firstElement(workbook, "sheet");
+    const sheetRel = sheet ? /\br:id="([^"]+)"/.exec(sheet.attrs)?.[1] : null;
+    if (sheetRel) {
+      for (const rel of xmlElements(rels, "Relationship")) {
+        const id = /\bId="([^"]+)"/.exec(rel.attrs)?.[1];
+        const target = /\bTarget="([^"]+)"/.exec(rel.attrs)?.[1];
+        if (id === sheetRel && target) {
           const path = target.startsWith("/")
             ? target.slice(1)
             : `xl/${target.replace(/^\.\//, "")}`;
@@ -410,19 +456,19 @@ export function parseXlsxBytes(bytes: Buffer): string[][] {
   if (sheet === null)
     throw new ImportFileError("FILE_CORRUPT", "Lembar kerja tidak ditemukan.");
   const rows: string[][] = [];
-  const rowRe = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
-  for (let r = rowRe.exec(sheet); r; r = rowRe.exec(sheet)) {
-    const rowNumber = Number(/\br="(\d+)"/.exec(r[1])?.[1] ?? rows.length + 1);
+  for (const row of xmlElements(sheet, "row")) {
+    const rowNumber = Number(
+      /\br="(\d+)"/.exec(row.attrs)?.[1] ?? rows.length + 1,
+    );
     if (rowNumber > IMPORT_MAX_ROWS + 1)
       throw new ImportFileError(
         "TOO_MANY_ROWS",
         `Berkas melebihi ${IMPORT_MAX_ROWS} baris.`,
       );
     const cells: string[] = [];
-    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
-    for (let c = cellRe.exec(r[2] ?? ""); c; c = cellRe.exec(r[2] ?? "")) {
-      const attrs = c[1];
-      const inner = c[2] ?? "";
+    for (const cell of xmlElements(row.inner, "c")) {
+      const attrs = cell.attrs;
+      const inner = cell.inner;
       const ref = /\br="([A-Z]+)\d+"/i.exec(attrs)?.[1];
       const index = ref ? columnIndex(ref) : cells.length;
       if (index >= IMPORT_MAX_COLUMNS) {
@@ -435,12 +481,12 @@ export function parseXlsxBytes(bytes: Buffer): string[][] {
       }
       const type = /\bt="([^"]+)"/.exec(attrs)?.[1] ?? "n";
       let value = "";
-      const formula = /<f\b[^>]*?(?:\/>|>([\s\S]*?)<\/f>)/.exec(inner);
-      if (formula) value = `=${decodeXml(formula[1] ?? "")}`;
+      const formula = firstElement(inner, "f");
+      if (formula) value = `=${decodeXml(formula.inner)}`;
       else if (type === "inlineStr") value = textOf(inner);
       else {
-        const v = /<v>([\s\S]*?)<\/v>/.exec(inner)?.[1];
-        if (v !== undefined) {
+        const v = firstElement(inner, "v")?.inner;
+        if (v !== undefined && v !== "") {
           if (type === "s") value = strings[Number(v)] ?? "";
           else if (type === "e") value = "";
           else value = decodeXml(v);

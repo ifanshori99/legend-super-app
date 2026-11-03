@@ -26,9 +26,15 @@ export async function runMenuPrintSweepJob(
   let regenerated = 0;
   let failed = 0;
   for (const context of contexts) {
-    const result = await runDueMenuPrints(context, deps, now);
-    regenerated += result.regenerated.length;
-    failed += result.failed.length;
+    // One tenant's failure (DB error, bad context) must not stop the sweep for
+    // the others; a missing renderer already comes back as `failed` outlets.
+    try {
+      const result = await runDueMenuPrints(context, deps, now);
+      regenerated += result.regenerated.length;
+      failed += result.failed.length;
+    } catch {
+      failed += 1;
+    }
   }
   return { regenerated, failed };
 }
