@@ -8,6 +8,7 @@ import { test } from "node:test";
 import * as facility from "../packages/shared/src/facility/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import { matchEndpointPath } from "../packages/shared/src/api/index.ts";
+import { cursorPageSchema } from "../packages/shared/src/core/index.ts";
 
 const f = facility.cafeLegendFacilityFixtures;
 const uid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -904,6 +905,37 @@ test("the facility contract exports one subpath, well-formed endpoints and no ru
       file,
     );
   }
+});
+
+test("legend-er32: the facility list read is a cursor page of tenant facilities", () => {
+  // The admin config index cannot invent a facility id (PRD §3 F25 "Model
+  // Generik": facility → area → unit), so the contract exposes the read.
+  assert.equal(facility.listFacilities.method, "GET");
+  assert.equal(facility.listFacilities.path, "/api/facility/facilities");
+  const page = cursorPageSchema(facility.facilitySchema).parse({
+    data: f.facilities,
+    meta: { limit: 50, nextCursor: null },
+  });
+  assert.equal(page.data.length, f.facilities.length);
+  // A committed mutation is not part of a read.
+  assert.equal(facility.listFacilities.method === "GET", true);
+});
+
+test("legend-1oi9: the incident log read pages tenant incidents per facility", () => {
+  // The staff emergency screen shows the log (PRD §3 F25 "Keselamatan") and
+  // the contract could only raise/respond before, so the read is contracted.
+  assert.equal(facility.listFacilityIncidents.method, "GET");
+  assert.equal(facility.listFacilityIncidents.path, "/api/facility/incidents");
+  const query = facility.listFacilityIncidents.query;
+  assert.equal(
+    query.safeParse({ facilityId: f.ids.showerFacilityId }).success,
+    true,
+  );
+  assert.equal(query.safeParse({}).success, false);
+  cursorPageSchema(facility.facilityIncidentSchema).parse({
+    data: f.incidents,
+    meta: { limit: 50, nextCursor: null },
+  });
 });
 
 test("FAC-12: re-authorising an active device never counts against the 2-device limit", () => {
