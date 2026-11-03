@@ -49,7 +49,7 @@ import {
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
-import { PAYSLIP_PIN_MAX_ATTEMPTS, isOpenLoan } from "./state.ts";
+import { PAYSLIP_PIN_MAX_ATTEMPTS } from "./state.ts";
 
 /** The demo employee's payslip PIN (mock only; the API mints the real one). */
 export const DEMO_PAYSLIP_PIN = "123456";

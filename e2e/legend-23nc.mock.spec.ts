@@ -10,7 +10,7 @@
 //
 // New routes are not in e2e/mock-global-setup.ts WARM_ROUTES (a shared file
 // this bead must not edit), so the first assertion on each route allows for a
-// cold Vite compile (docs/frontend.md "Browser specs in mock mode").
+// cold Vite compile (frontend.md "Browser specs in mock mode").
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
 
@@ -177,7 +177,7 @@ test("HR-01 empty states keep the payslip history and kasbon pages honest", asyn
   });
 });
 
-// ---- Screenshot evidence (docs/frontend.md §8) ----------------------------
+// ---- Screenshot evidence (frontend.md §8) ----------------------------
 
 for (const theme of ["light", "dark"] as const) {
   test(`HR-01 visual payslip gate 390 ${theme}`, async ({ page }) => {
