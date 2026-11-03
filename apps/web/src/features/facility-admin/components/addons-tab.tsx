@@ -373,6 +373,7 @@ function AddonDialog({
           </FormField>
           <FormField
             label={t("facilityAdmin.addons.fieldsPrice")}
+            hint={t("facilityAdmin.common.priceExclTaxHint")}
             error={errors.priceIdr}
             required
           >

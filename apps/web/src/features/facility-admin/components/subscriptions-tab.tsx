@@ -386,6 +386,7 @@ function PlanDialog({
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField
               label={t("facilityAdmin.subscriptions.fieldsPrice")}
+              hint={t("facilityAdmin.common.priceExclTaxHint")}
               error={errors.priceIdr}
               required
             >

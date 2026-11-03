@@ -458,6 +458,12 @@ export function GeneralTab({
                   >
                     <Input
                       type="time"
+                      aria-invalid={hoursErrors[day] ? true : undefined}
+                      aria-describedby={
+                        hoursErrors[day]
+                          ? `facility-day-${day}-error`
+                          : undefined
+                      }
                       value={row.opensAt}
                       disabled={!row.enabled}
                       onChange={(event) =>
@@ -474,6 +480,12 @@ export function GeneralTab({
                   >
                     <Input
                       type="time"
+                      aria-invalid={hoursErrors[day] ? true : undefined}
+                      aria-describedby={
+                        hoursErrors[day]
+                          ? `facility-day-${day}-error`
+                          : undefined
+                      }
                       value={row.closesAt}
                       disabled={!row.enabled}
                       onChange={(event) =>
@@ -483,7 +495,10 @@ export function GeneralTab({
                   </FormField>
                 </div>
                 {hoursErrors[day] && (
-                  <p className="text-sm leading-5 font-medium text-danger">
+                  <p
+                    id={`facility-day-${day}-error`}
+                    className="text-sm leading-5 font-medium text-danger"
+                  >
                     {hoursErrors[day]}
                   </p>
                 )}
