@@ -2,8 +2,10 @@
 // membership is what ties the session to a person (PRD §3 "Wi-Fi Tamu":
 // maksimal 2 perangkat per akun). The WhatsApp login screen itself is WS-01
 // (bead legend-baa); this card only sends the guest there, and keeps the
-// table menu open meanwhile (FAC-11).
-import { Link } from "@tanstack/react-router";
+// table menu open meanwhile (FAC-11). The sign-in URL carries this portal's
+// path and query, so the guest comes back to the same zone/table after signing
+// in (bead legend-qhh5).
+import { Link, useLocation } from "@tanstack/react-router";
 import { MessageCircle } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -15,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type { WifiPolicy } from "@starter/shared/facility";
+import { signInPath } from "@/features/ws01-login/flow";
 import { tableMenuToken } from "../state.ts";
 import { WifiFacts } from "./wifi-facts";
 
@@ -26,6 +29,7 @@ export function WifiLoginGate({
   tableToken: string | undefined;
 }) {
   const t = useT();
+  const location = useLocation();
   const menuToken = tableMenuToken(tableToken);
   return (
     <Card>
@@ -42,7 +46,10 @@ export function WifiLoginGate({
       </CardHeader>
       <WifiFacts policy={policy} />
       <Button asChild>
-        <Link to="/sign-in">{t("wifi.loginAction")}</Link>
+        {/* `redirect` is the alias /masuk accepts for an external entry point. */}
+        <Link href={signInPath(location.href, "redirect")}>
+          {t("wifi.loginAction")}
+        </Link>
       </Button>
       {menuToken && (
         <div className="grid gap-2 border-t-(length:--border-w) pt-4">
