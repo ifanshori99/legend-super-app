@@ -10,14 +10,11 @@
 //
 // Loaded in Node by tests/ws11-owner-dashboard.test.mjs: bare package imports
 // and relative `.ts` paths only, no `@/` alias.
-import { cafeLegendCrmFixtures, listFeedback } from "@starter/shared/crm";
 import {
   cafeLegendDashboardFixtures,
   ownerDashboardBoardRuns,
 } from "@starter/shared/dashboard";
 import { ownerInsightRuns } from "./insights-mock.ts";
-import { registerMock } from "../../lib/mock/registry.ts";
-import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMockDashboard } from "../../lib/mock/handlers/dashboards.ts";
 import { registerMockReportRuns } from "../../lib/mock/handlers/report-runs.ts";
 
@@ -31,15 +28,6 @@ registerMockReportRuns(ownerDashboardBoardRuns);
 // Part 2 (bead legend-gb03): cost, service, finance, alert, multi-outlet runs.
 registerMockReportRuns(ownerInsightRuns);
 
-// "Ulasan terbaru" reads the CRM feedback queue (PRD §3 F34 "Operasional").
-// No other feature owns GET /api/feedback yet, so this screen registers it.
-registerMock(listFeedback, ({ query, scenario }) =>
-  paginateFixture(
-    cafeLegendCrmFixtures.feedback.filter(
-      (item) => query.kind === undefined || item.kind === query.kind,
-    ),
-    query,
-    (item) => item.id,
-    scenario,
-  ),
-);
+// "Ulasan terbaru" reads GET /api/feedback, whose single mock owner is the CRM
+// queue (`features/ws08-crm-360/mock.ts`, legend-i026). Its handler filters by
+// status/kind/outlet, a superset of the owner dashboard's kind filter.

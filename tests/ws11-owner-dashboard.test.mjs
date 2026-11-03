@@ -17,6 +17,8 @@ import * as insights from "../apps/web/src/features/ws11-owner-dashboard/insight
 import * as board from "../apps/web/src/features/ws11-owner-dashboard/board.ts";
 // Side effect: registers the owner layout and runs through the shared owners.
 import "../apps/web/src/features/ws11-owner-dashboard/mock.ts";
+// GET /api/feedback has one mock owner: the CRM review queue (legend-i026).
+import "../apps/web/src/features/ws08-crm-360/mock.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
 
