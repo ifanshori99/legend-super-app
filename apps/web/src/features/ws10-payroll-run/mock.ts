@@ -23,7 +23,7 @@ import { ApiError } from "@/lib/api/errors";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import { sumIdr } from "@starter/shared/core";
+import { decimal4Schema, sumIdr } from "@starter/shared/core";
 import { cafeLegendHrisFixtures } from "@starter/shared/hris";
 import {
   applyPayrollRunCommand,
@@ -251,7 +251,9 @@ function currentActor() {
 }
 
 function requireRun(runId: string): PayrollRun {
-  return state().runs.find((run) => run.id === runId) ?? notFound("Payroll run");
+  return (
+    state().runs.find((run) => run.id === runId) ?? notFound("Payroll run")
+  );
 }
 
 function requirePool(poolId: string): ServiceChargePool {
@@ -270,7 +272,9 @@ function replaceRun(next: PayrollRun) {
 
 /** One run action through the contract reducer, then stored. */
 function applyRun(run: PayrollRun, command: PayrollRunCommand): PayrollRun {
-  const next = contract(() => payrollRunSchema.parse(applyPayrollRunCommand(run, command)));
+  const next = contract(() =>
+    payrollRunSchema.parse(applyPayrollRunCommand(run, command)),
+  );
   replaceRun(next);
   return next;
 }
@@ -342,11 +346,7 @@ registerMock(createPayrollRun, ({ body }) => {
       run.runType === body.runType,
   );
   if (duplicate)
-    throw new ApiError(
-      409,
-      "CONFLICT",
-      "Periode ini sudah punya payroll run.",
-    );
+    throw new ApiError(409, "CONFLICT", "Periode ini sudah punya payroll run.");
   const run = once(body.idempotencyKey, body, () =>
     payrollRunSchema.parse({
       id: newUuid(),
@@ -412,17 +412,22 @@ registerMock(listPayrollRunEmployeeResults, ({ params, query, scenario }) => {
 
 registerMock(returnPayrollRunToDraft, ({ params, body }) => {
   const run = requireRun(params.payrollRunId);
-  const next = onceAction(body.idempotencyKey, run.id, "return_to_draft", () => {
-    const drafted = applyRun(run, {
-      action: "return_to_draft",
-      at: now(),
-    });
-    store.set({
-      ...state(),
-      resultsByRun: { ...state().resultsByRun, [run.id]: [] },
-    });
-    return drafted;
-  });
+  const next = onceAction(
+    body.idempotencyKey,
+    run.id,
+    "return_to_draft",
+    () => {
+      const drafted = applyRun(run, {
+        action: "return_to_draft",
+        at: now(),
+      });
+      store.set({
+        ...state(),
+        resultsByRun: { ...state().resultsByRun, [run.id]: [] },
+      });
+      return drafted;
+    },
+  );
   return { data: next };
 });
 
@@ -538,11 +543,13 @@ registerMock(decidePayrollRunReversal, ({ params, body }) => {
     body.idempotencyKey,
     run.id,
     `decide_reversal_${body.action}`,
-    () => applyRun(run, {
-      action: body.action === "approve" ? "approve_reversal" : "reject_reversal",
-      actorId: currentActor(),
-      at: now(),
-    }),
+    () =>
+      applyRun(run, {
+        action:
+          body.action === "approve" ? "approve_reversal" : "reject_reversal",
+        actorId: currentActor(),
+        at: now(),
+      }),
   );
   if (next.status === "reversed") {
     // PAYR-05: a reversal gives the distributed pools back to `approved`.
@@ -562,9 +569,7 @@ registerMock(decidePayrollRunReversal, ({ params, body }) => {
 
 registerMock(listPayrollRunPayslips, ({ params, query, scenario }) => {
   const run = requireRun(params.payrollRunId);
-  const rows = state().payslips.filter(
-    (slip) => slip.payrollRunId === run.id,
-  );
+  const rows = state().payslips.filter((slip) => slip.payrollRunId === run.id);
   return paginateFixture(rows, query, (slip) => slip.id, scenario);
 });
 
@@ -600,9 +605,7 @@ registerMock(createBankTransferFile, async ({ params, body }) => {
   if (run.status !== "locked" && run.status !== "paid")
     invalid("Berkas transfer dibuat setelah payroll dikunci.");
   if (run.totals === null) invalid("Payroll belum punya hasil simulasi.");
-  const slips = state().payslips.filter(
-    (slip) => slip.payrollRunId === run.id,
-  );
+  const slips = state().payslips.filter((slip) => slip.payrollRunId === run.id);
   const bankSlips = slips.filter(
     (slip) => slip.paymentMethod === "bank_transfer" && slip.netIdr > 0,
   );
@@ -644,9 +647,7 @@ registerMock(createBankTransferFile, async ({ params, body }) => {
 
 registerMock(listBankTransferFiles, ({ params, query, scenario }) => {
   const run = requireRun(params.payrollRunId);
-  const rows = state().bankFiles.filter(
-    (file) => file.payrollRunId === run.id,
-  );
+  const rows = state().bankFiles.filter((file) => file.payrollRunId === run.id);
   return paginateFixture(rows, query, (file) => file.id, scenario);
 });
 
@@ -674,9 +675,12 @@ registerMock(createPayrollTaxExport, ({ body }) => {
 registerMock(listServiceChargePools, ({ query, scenario }) => {
   const rows = state()
     .pools.filter(
-      (pool) => query.outletId === undefined || pool.outletId === query.outletId,
+      (pool) =>
+        query.outletId === undefined || pool.outletId === query.outletId,
     )
-    .filter((pool) => query.status === undefined || pool.status === query.status)
+    .filter(
+      (pool) => query.status === undefined || pool.status === query.status,
+    )
     .sort((a, b) => b.periodStart.localeCompare(a.periodStart));
   return paginateFixture(rows, query, (pool) => pool.id, scenario);
 });
@@ -725,7 +729,9 @@ registerMock(calculateServiceChargePool, ({ params, body }) => {
             return {
               employeeId: employee.id,
               employmentType: employee.employmentType,
-              points: position?.serviceChargePoints ?? "1.0000",
+              points: decimal4Schema.parse(
+                position?.serviceChargePoints ?? "1.0000",
+              ),
               attendanceDays: 20 + (index % 5),
             };
           });

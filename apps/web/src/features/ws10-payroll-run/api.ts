@@ -10,11 +10,7 @@ import type {
   EndpointInput,
   EndpointOutput,
 } from "@starter/shared/api";
-import {
-  listEmployees,
-  listPositions,
-  type Position,
-} from "@starter/shared/hris";
+import { listEmployees, listPositions } from "@starter/shared/hris";
 import {
   approvePayrollRunFinal,
   approvePayrollRunHr,
@@ -37,7 +33,6 @@ import {
   requestPayrollRunReversal,
   returnPayrollRunToDraft,
   simulatePayrollRun,
-  type Employee,
   type PayrollRun,
 } from "@starter/shared/hris/payroll";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -48,8 +43,9 @@ type BodyOf<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
 // Request bodies the screens build (mints its idempotency key per attempt).
 export type CreateRunInput = BodyOf<typeof createPayrollRun>;
-export type CreateBankFileFormat =
-  BodyOf<typeof createBankTransferFile>["format"];
+export type CreateBankFileFormat = BodyOf<
+  typeof createBankTransferFile
+>["format"];
 export type CreateTaxExportInput = BodyOf<typeof createPayrollTaxExport>;
 export type CreatePoolInput = BodyOf<typeof createServiceChargePool>;
 
@@ -135,7 +131,7 @@ export async function fetchAllocations(
 export async function fetchEmployees(
   cursor?: string,
   signal?: AbortSignal,
-): Promise<{ data: Employee[]; meta: { nextCursor: string | null } }> {
+): Promise<EndpointOutput<typeof listEmployees>> {
   return callEndpoint(
     listEmployees,
     { query: { limit: LIST_LIMIT, cursor } },
@@ -146,7 +142,7 @@ export async function fetchEmployees(
 export async function fetchPositions(
   cursor?: string,
   signal?: AbortSignal,
-): Promise<{ data: Position[]; meta: { nextCursor: string | null } }> {
+): Promise<EndpointOutput<typeof listPositions>> {
   return callEndpoint(
     listPositions,
     { query: { limit: LIST_LIMIT, cursor } },
@@ -158,10 +154,7 @@ export async function fetchPositions(
 
 /** Actions whose route only needs an idempotency key (mark_paid adds a file). */
 export type SimpleRunAction =
-  | "simulate"
-  | "approve_hr"
-  | "approve_final"
-  | "lock";
+  "simulate" | "approve_hr" | "approve_final" | "lock";
 
 const SIMPLE_ACTIONS = {
   simulate: simulatePayrollRun,
@@ -260,9 +253,7 @@ export async function createTaxExport(
 
 // ---- Service-charge pools ----------------------------------------------
 
-export async function createPool(
-  body: BodyOf<typeof createServiceChargePool>,
-) {
+export async function createPool(body: BodyOf<typeof createServiceChargePool>) {
   const response = await callEndpoint(createServiceChargePool, { body });
   return response.data;
 }

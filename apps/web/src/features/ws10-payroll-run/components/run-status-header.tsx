@@ -15,7 +15,10 @@ import {
   Undo2,
   Wallet,
 } from "lucide-react";
-import type { PayrollRun, PayrollRunStatus } from "@starter/shared/hris/payroll";
+import type {
+  PayrollRun,
+  PayrollRunStatus,
+} from "@starter/shared/hris/payroll";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { StatusBand, type StatusBandTone } from "@/components/ui/status-band";
@@ -65,7 +68,13 @@ const STEP_STATE_CLASS: Record<RunStepState, string> = {
   blocked: "bg-danger-subtle text-danger",
 };
 
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid gap-0.5">
       <dt className="type-eyebrow text-muted-foreground">{label}</dt>
@@ -238,7 +247,7 @@ export function RunStatusHeader({
           </dl>
 
           <div className="flex flex-wrap items-center gap-2">
-            {primary && (
+            {primary && PrimaryIcon && (
               <span className="inline-flex flex-col gap-1">
                 <Button
                   type="button"
@@ -299,13 +308,16 @@ export function RunStatusHeader({
                 {t("payrollRun.action.decideReversal")}
               </Button>
             )}
-            {!primary && !canReturnToDraft && !canRequestReversal && !pendingReversal && (
-              <p className="text-sm leading-5 text-muted-foreground">
-                {reversed
-                  ? t("payrollRun.detail.reversedHint")
-                  : t("payrollRun.detail.finishedHint")}
-              </p>
-            )}
+            {!primary &&
+              !canReturnToDraft &&
+              !canRequestReversal &&
+              !pendingReversal && (
+                <p className="text-sm leading-5 text-muted-foreground">
+                  {reversed
+                    ? t("payrollRun.detail.reversedHint")
+                    : t("payrollRun.detail.finishedHint")}
+                </p>
+              )}
           </div>
 
           {pendingReversal && (

@@ -7,11 +7,15 @@ import { HandCoins } from "lucide-react";
 import {
   businessDateOf,
   businessDateSchema,
+  DEFAULT_BUSINESS_DAY_CUTOFF,
   idr,
   type Idr,
 } from "@starter/shared/core";
 import type { EmploymentType } from "@starter/shared/hris";
-import type { ServiceChargeMethod } from "@starter/shared/hris/payroll";
+import {
+  serviceChargeMethodSchema,
+  type ServiceChargeMethod,
+} from "@starter/shared/hris/payroll";
 import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -75,16 +79,16 @@ export function CreatePoolDialog({
   const createPool = useCreatePool();
   const [start, setStart] = React.useState(() => {
     const today = businessDateOf(new Date(), {
-        timeZone: PAYROLL_TIME_ZONE,
-        cutoff: "04:00",
-      });
+      timeZone: PAYROLL_TIME_ZONE,
+      cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
+    });
     return `${today.slice(0, 7)}-01`;
   });
   const [end, setEnd] = React.useState(() =>
     businessDateOf(new Date(), {
-        timeZone: PAYROLL_TIME_ZONE,
-        cutoff: "04:00",
-      }),
+      timeZone: PAYROLL_TIME_ZONE,
+      cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
+    }),
   );
   const [amount, setAmount] = React.useState("");
   const [method, setMethod] = React.useState<ServiceChargeMethod>(
@@ -201,21 +205,22 @@ export function CreatePoolDialog({
           <FormField label={t("payrollRun.pool.method")} required>
             <Select
               value={method}
-              onValueChange={(value) =>
-                setMethod(value as ServiceChargeMethod)
-              }
+              onValueChange={(value) => {
+                const parsed = serviceChargeMethodSchema.safeParse(value);
+                if (parsed.success) setMethod(parsed.data);
+              }}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {(
-                  ["points", "points_x_attendance", "equal"] as const
-                ).map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {t(POOL_METHOD_LABEL[value])}
-                  </SelectItem>
-                ))}
+                {(["points", "points_x_attendance", "equal"] as const).map(
+                  (value) => (
+                    <SelectItem key={value} value={value}>
+                      {t(POOL_METHOD_LABEL[value])}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
           </FormField>

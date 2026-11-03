@@ -419,8 +419,7 @@ export const payrollRunMessages = {
       equal: "Sama rata",
     },
     minDays: "Minimal hari hadir",
-    minDaysHint:
-      "Karyawan dengan kehadiran kurang dari ini tidak dapat porsi.",
+    minDaysHint: "Karyawan dengan kehadiran kurang dari ini tidak dapat porsi.",
     minDaysInvalid: "Minimal hari hadir harus 0–31.",
     employmentTypes: "Jenis kerja yang ikut",
     typesRequired: "Pilih minimal satu jenis kerja.",

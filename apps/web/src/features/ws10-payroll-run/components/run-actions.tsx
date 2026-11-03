@@ -4,7 +4,14 @@
 // fixes: PAYR-01 (two approvals, two people, then lock), PAYR-02 (a locked run
 // is frozen) and PAYR-05 (a reversal posts a reversing journal).
 import * as React from "react";
-import { Ban, Calculator, Lock, ShieldCheck, Undo2, Wallet } from "lucide-react";
+import {
+  Ban,
+  Calculator,
+  Lock,
+  ShieldCheck,
+  Undo2,
+  Wallet,
+} from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
 import { formatRupiah } from "@starter/shared/i18n";
 import type {
@@ -52,14 +59,18 @@ export type RunDialog =
   | "request_reversal"
   | "decide_reversal";
 
-const CONFIRM_ACTIONS = [
+const CONFIRM_ACTION_LIST = [
   "simulate",
   "approve_hr",
   "approve_final",
   "lock",
   "mark_paid",
 ] as const;
-type ConfirmAction = (typeof CONFIRM_ACTIONS)[number];
+type ConfirmAction = (typeof CONFIRM_ACTION_LIST)[number];
+const CONFIRM_ACTIONS: ReadonlySet<RunDialog> = new Set(CONFIRM_ACTION_LIST);
+
+const isConfirmAction = (dialog: RunDialog | null): dialog is ConfirmAction =>
+  dialog !== null && CONFIRM_ACTIONS.has(dialog);
 
 const CONFIRM_TEXT: Record<
   ConfirmAction,
@@ -183,7 +194,7 @@ export function RunActionDialogs({
   const [reason, setReason] = React.useState("");
   const [bankFileId, setBankFileId] = React.useState("none");
 
-  const isConfirm = dialog !== null && CONFIRM_ACTIONS.includes(dialog as ConfirmAction);
+  const isConfirm = isConfirmAction(dialog);
   const pending =
     runAction.isPending ||
     markPaid.isPending ||
@@ -202,8 +213,8 @@ export function RunActionDialogs({
   }
 
   function submitConfirm() {
-    if (dialog === null || !isConfirm) return;
-    const action = dialog as ConfirmAction;
+    if (!isConfirmAction(dialog)) return;
+    const action = dialog;
     const done = CONFIRM_TEXT[action].done;
     const onSuccess = () => {
       toast({ title: t(done), tone: "success" });
@@ -273,14 +284,11 @@ export function RunActionDialogs({
 
   return (
     <>
-      <Dialog
-        open={isConfirm}
-        onOpenChange={(open) => !open && close()}
-      >
+      <Dialog open={isConfirm} onOpenChange={(open) => !open && close()}>
         <DialogContent>
-          {isConfirm && dialog !== null && (
+          {isConfirmAction(dialog) && (
             <ConfirmBody
-              action={dialog as ConfirmAction}
+              action={dialog}
               run={run}
               files={files}
               bankFileId={bankFileId}

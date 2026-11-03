@@ -5,9 +5,15 @@
 // the policies the existing runs already name and says so when there is none.
 import * as React from "react";
 import { CalendarPlus } from "lucide-react";
-import { businessDateSchema } from "@starter/shared/core";
-import { businessDateOf, DEFAULT_BUSINESS_DAY_CUTOFF } from "@starter/shared/core";
-import type { PayrollRun } from "@starter/shared/hris/payroll";
+import {
+  businessDateOf,
+  businessDateSchema,
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+} from "@starter/shared/core";
+import {
+  payrollPolicyIdSchema,
+  type PayrollRun,
+} from "@starter/shared/hris/payroll";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,41 +57,35 @@ export function CreateRunDialog({
   const toast = useToast();
   const createRun = useCreateRun();
 
-  const entities = React.useMemo(
-    () => legalEntitiesOf(sortRuns(runs)),
-    [runs],
+  const entities = React.useMemo(() => legalEntitiesOf(sortRuns(runs)), [runs]);
+  // Selection is derived, never copied into state by an effect: a run the
+  // dialog has not seen yet falls back to the first entity and its policy.
+  const [selectedEntityId, setSelectedEntityId] = React.useState("");
+  const legalEntityId = entities.some(
+    (entity) => entity.legalEntityId === selectedEntityId,
+  )
+    ? selectedEntityId
+    : (entities[0]?.legalEntityId ?? "");
+  const policyIds = React.useMemo(
+    () =>
+      entities.find((entity) => entity.legalEntityId === legalEntityId)
+        ?.policyIds ?? [],
+    [entities, legalEntityId],
   );
-  const [legalEntityId, setLegalEntityId] = React.useState(
-    entities[0]?.legalEntityId ?? "",
-  );
-  const policyIds =
-    entities.find((entity) => entity.legalEntityId === legalEntityId)
-      ?.policyIds ?? [];
-  const [policyId, setPolicyId] = React.useState(policyIds[0] ?? "");
+  const [selectedPolicyId, setSelectedPolicyId] = React.useState("");
+  const policyId = policyIds.includes(selectedPolicyId)
+    ? selectedPolicyId
+    : (policyIds[0] ?? "");
   const [referenceDate, setReferenceDate] = React.useState(() =>
     businessDateOf(new Date(), {
-        timeZone: PAYROLL_TIME_ZONE,
-        cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
-      }),
+      timeZone: PAYROLL_TIME_ZONE,
+      cutoff: DEFAULT_BUSINESS_DAY_CUTOFF,
+    }),
   );
   const [runType, setRunType] = React.useState<RunType>("regular");
   const [error, setError] = React.useState<string | null>(null);
   // One key per dialog attempt: a double submit creates one run, not two.
   const [idempotencyKey] = React.useState(() => newIdempotencyKey());
-
-  React.useEffect(() => {
-    setLegalEntityId((current) =>
-      entities.some((entity) => entity.legalEntityId === current)
-        ? current
-        : (entities[0]?.legalEntityId ?? ""),
-    );
-  }, [entities]);
-
-  React.useEffect(() => {
-    setPolicyId((current) =>
-      policyIds.includes(current) ? current : (policyIds[0] ?? ""),
-    );
-  }, [policyIds]);
 
   const hasSource = entities.length > 0 && policyId !== "";
 
@@ -97,9 +97,14 @@ export function CreateRunDialog({
       setError(t("payrollRun.create.dateInvalid"));
       return;
     }
+    const parsedPolicy = payrollPolicyIdSchema.safeParse(policyId);
+    if (!parsedPolicy.success) {
+      setError(t("payrollRun.create.noPolicy"));
+      return;
+    }
     createRun.mutate(
       {
-        payrollPolicyId: policyId as PayrollRun["payrollPolicyId"],
+        payrollPolicyId: parsedPolicy.data,
         runType,
         referenceDate: parsedDate.data,
         thrScheduleId: null,
@@ -149,7 +154,7 @@ export function CreateRunDialog({
               >
                 <Select
                   value={legalEntityId}
-                  onValueChange={setLegalEntityId}
+                  onValueChange={setSelectedEntityId}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -173,7 +178,7 @@ export function CreateRunDialog({
                 hint={t("payrollRun.create.policyHint")}
                 required
               >
-                <Select value={policyId} onValueChange={setPolicyId}>
+                <Select value={policyId} onValueChange={setSelectedPolicyId}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -198,7 +203,9 @@ export function CreateRunDialog({
           <FormField label={t("payrollRun.create.runType")} required>
             <Select
               value={runType}
-              onValueChange={(value) => setRunType(value as RunType)}
+              onValueChange={(value) =>
+                setRunType(value === "off_cycle" ? "off_cycle" : "regular")
+              }
             >
               <SelectTrigger>
                 <SelectValue />
@@ -222,7 +229,10 @@ export function CreateRunDialog({
           </FormField>
 
           {error && (
-            <p role="alert" className="text-sm leading-5 font-medium text-danger">
+            <p
+              role="alert"
+              className="text-sm leading-5 font-medium text-danger"
+            >
               {error}
             </p>
           )}

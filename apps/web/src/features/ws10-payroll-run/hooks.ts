@@ -133,11 +133,7 @@ export function useRunAction() {
   const storeRun = useStoreRun();
   return useMutation({
     mutationFn: (variables: { action: SimpleRunAction; runId: string }) =>
-      api.runAction(
-        variables.action,
-        variables.runId,
-        newIdempotencyKey(),
-      ),
+      api.runAction(variables.action, variables.runId, newIdempotencyKey()),
     onSuccess: (run) => {
       storeRun(run);
       return refresh();
@@ -150,11 +146,7 @@ export function useReturnToDraft() {
   const storeRun = useStoreRun();
   return useMutation({
     mutationFn: (variables: { runId: string; reason: string }) =>
-      api.returnToDraft(
-        variables.runId,
-        variables.reason,
-        newIdempotencyKey(),
-      ),
+      api.returnToDraft(variables.runId, variables.reason, newIdempotencyKey()),
     onSuccess: (run) => {
       storeRun(run);
       return refresh();
@@ -203,10 +195,7 @@ export function useDecideReversal() {
   const refresh = useRefresh([...RUN_LISTS, getPayrollRun]);
   const storeRun = useStoreRun();
   return useMutation({
-    mutationFn: (variables: {
-      runId: string;
-      action: "approve" | "reject";
-    }) =>
+    mutationFn: (variables: { runId: string; action: "approve" | "reject" }) =>
       api.decideReversal(
         variables.runId,
         variables.action,
@@ -239,8 +228,7 @@ export function useCreateBankFile() {
 
 export function useCreateTaxExport() {
   return useMutation({
-    mutationFn: (body: api.CreateTaxExportInput) =>
-      api.createTaxExport(body),
+    mutationFn: (body: api.CreateTaxExportInput) => api.createTaxExport(body),
   });
 }
 

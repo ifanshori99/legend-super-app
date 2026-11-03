@@ -34,21 +34,22 @@ const MAX_CATALOG_PAGES = 50;
 
 type Page<T> = {
   data: T[];
-  meta: { limit: number; nextCursor: string | null };
+  /** Cursor pages carry `limit` too; the walker only needs the next cursor. */
+  meta: { nextCursor: string | null };
 };
 
-export async function collectAllPages<T, P extends Page<T>>(
-  fetchPage: (cursor: string | undefined) => Promise<P>,
+export async function collectAllPages<T>(
+  fetchPage: (cursor: string | undefined) => Promise<Page<T>>,
   maxPages: number = MAX_CATALOG_PAGES,
-): Promise<P> {
+): Promise<Page<T>> {
   let cursor: string | undefined;
-  let merged: P | undefined;
+  let merged: Page<T> | undefined;
   for (let page = 0; page < maxPages; page += 1) {
     const next = await fetchPage(cursor);
     merged =
       merged === undefined
         ? next
-        : { ...next, data: [...merged.data, ...next.data] };
+        : { data: [...merged.data, ...next.data], meta: next.meta };
     if (next.meta.nextCursor === null) return merged;
     cursor = next.meta.nextCursor;
   }
@@ -79,7 +80,9 @@ export const RUN_STATUS_LABEL: Record<PayrollRunStatus, MessageKey> = {
 
 /** Status is always icon + words; tone only reinforces it (WCAG 1.4.1). */
 export const RUN_STATUS_TONE: Record<PayrollRunStatus, StatusKind> = {
-  draft: "neutral",
+  // `StatusKind` has no plain neutral tone; `info` is the quietest one and the
+  // pill's own label always carries the state (WCAG 1.4.1).
+  draft: "info",
   simulated: "info",
   hr_approved: "warning",
   approved: "info",
@@ -147,10 +150,7 @@ export const STEP_HINT: Record<RunStepKey, MessageKey> = {
  * Milestones already reached, derived from the run's own timestamps — the
  * same facts the audit strip shows (Alur K). Nothing here changes a status.
  */
-export function runStepState(
-  run: PayrollRun,
-  step: RunStepKey,
-): RunStepState {
+export function runStepState(run: PayrollRun, step: RunStepKey): RunStepState {
   const rank = runRank(run.status);
   if (run.status === "reversed" && (step === "paid" || step === "lock"))
     return "blocked";
@@ -229,11 +229,13 @@ export function formatSignedRupiah(amount: Idr): string {
   return formatRupiah(amount);
 }
 
-/** Tone for a signed delta: more net is success, less is danger (status tokens). */
-export function deltaTone(amount: Idr): StatusKind {
+/** Tone for a signed delta: more net is success, less is danger, zero is quiet. */
+export type DeltaTone = "muted" | "success" | "danger";
+
+export function deltaTone(amount: Idr): DeltaTone {
   if (amount > 0) return "success";
   if (amount < 0) return "danger";
-  return "neutral";
+  return "muted";
 }
 
 /** A share of a total as "12,5%", integer arithmetic (no float rupiah math). */
@@ -297,9 +299,15 @@ export function legalEntitiesOf(
 export function statusCounts(
   runs: readonly PayrollRun[],
 ): Record<PayrollRunStatus, number> {
-  const counts = Object.fromEntries(
-    RUN_STATUS_ORDER.map((status) => [status, 0]),
-  ) as Record<PayrollRunStatus, number>;
+  const counts: Record<PayrollRunStatus, number> = {
+    draft: 0,
+    simulated: 0,
+    hr_approved: 0,
+    approved: 0,
+    locked: 0,
+    paid: 0,
+    reversed: 0,
+  };
   for (const run of runs) counts[run.status] += 1;
   return counts;
 }
@@ -315,11 +323,11 @@ export const POOL_STATUS_LABEL: Record<ServiceChargePoolStatus, MessageKey> = {
 };
 
 export const POOL_STATUS_TONE: Record<ServiceChargePoolStatus, StatusKind> = {
-  draft: "neutral",
+  draft: "info",
   calculated: "info",
   approved: "warning",
   distributed: "success",
-  cancelled: "neutral",
+  cancelled: "danger",
 };
 
 export const POOL_METHOD_LABEL: Record<ServiceChargeMethod, MessageKey> = {

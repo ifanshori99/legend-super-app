@@ -7,11 +7,14 @@ import * as React from "react";
 import { Download, FileSpreadsheet, Landmark, ReceiptText } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
 import { formatRupiah } from "@starter/shared/i18n";
-import type {
-  BankTransferFile,
-  PayrollRun,
-  PayrollTaxExport,
-  Payslip,
+import {
+  BANK_TRANSFER_FORMATS,
+  bankTransferFormatSchema,
+  payrollTaxExportKindSchema,
+  type BankTransferFile,
+  type PayrollRun,
+  type PayrollTaxExport,
+  type Payslip,
 } from "@starter/shared/hris/payroll";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
@@ -93,7 +96,8 @@ function BankCard({
   const t = useT();
   const toast = useToast();
   const createFile = useCreateBankFile();
-  const [format, setFormat] = React.useState<CreateBankFileFormat>("generic_csv");
+  const [format, setFormat] =
+    React.useState<CreateBankFileFormat>("generic_csv");
   const [error, setError] = React.useState<string | null>(null);
   const exportable = run.status === "locked" || run.status === "paid";
   const expected = run.totals?.bankTransferIdr ?? null;
@@ -109,7 +113,10 @@ function BankCard({
       { runId: run.id, format },
       {
         onSuccess: () => {
-          toast({ title: t("payrollRun.exports.bankCreated"), tone: "success" });
+          toast({
+            title: t("payrollRun.exports.bankCreated"),
+            tone: "success",
+          });
         },
         onError: (cause) => setError(payrollErrorMessage(cause, t)),
       },
@@ -120,7 +127,10 @@ function BankCard({
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Landmark className="size-5 text-muted-foreground" aria-hidden="true" />
+          <Landmark
+            className="size-5 text-muted-foreground"
+            aria-hidden="true"
+          />
           {t("payrollRun.exports.bankTitle")}
         </CardTitle>
         <CardDescription>{t("payrollRun.exports.bankBody")}</CardDescription>
@@ -136,20 +146,22 @@ function BankCard({
           </p>
         ) : (
           <div className="flex flex-wrap items-end gap-2">
-            <FormField label={t("payrollRun.exports.bankFormat")} className="min-w-40">
+            <FormField
+              label={t("payrollRun.exports.bankFormat")}
+              className="min-w-40"
+            >
               <Select
                 value={format}
-                onValueChange={(value) =>
-                  setFormat(value as CreateBankFileFormat)
-                }
+                onValueChange={(value) => {
+                  const parsed = bankTransferFormatSchema.safeParse(value);
+                  if (parsed.success) setFormat(parsed.data);
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(
-                    ["generic_csv", "bca", "mandiri", "bni", "bjb"] as const
-                  ).map((value) => (
+                  {BANK_TRANSFER_FORMATS.map((value) => (
                     <SelectItem key={value} value={value}>
                       {t(FORMAT_LABEL[value])}
                     </SelectItem>
@@ -230,25 +242,18 @@ function BankCard({
   );
 }
 
-function TaxCard({
-  run,
-  canExport,
-}: {
-  run: PayrollRun;
-  canExport: boolean;
-}) {
+function TaxCard({ run, canExport }: { run: PayrollRun; canExport: boolean }) {
   const t = useT();
   const toast = useToast();
   const createExport = useCreateTaxExport();
   const [kind, setKind] = React.useState<
     "monthly_withholding" | "annual_statement"
   >("monthly_withholding");
-  const [period, setPeriod] = React.useState(
-    run.periodEnd.slice(0, 7),
-  );
+  const [period, setPeriod] = React.useState(run.periodEnd.slice(0, 7));
   const [created, setCreated] = React.useState<PayrollTaxExport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const pattern = kind === "monthly_withholding" ? MONTHLY_PERIOD : ANNUAL_PERIOD;
+  const pattern =
+    kind === "monthly_withholding" ? MONTHLY_PERIOD : ANNUAL_PERIOD;
 
   function submit() {
     setError(null);
@@ -292,11 +297,16 @@ function TaxCard({
           </p>
         ) : (
           <div className="flex flex-wrap items-end gap-2">
-            <FormField label={t("payrollRun.exports.taxKind")} className="min-w-48">
+            <FormField
+              label={t("payrollRun.exports.taxKind")}
+              className="min-w-48"
+            >
               <Select
                 value={kind}
                 onValueChange={(value) => {
-                  const next = value as typeof kind;
+                  const parsed = payrollTaxExportKindSchema.safeParse(value);
+                  if (!parsed.success) return;
+                  const next = parsed.data;
                   setKind(next);
                   setPeriod(
                     next === "annual_statement"
@@ -407,7 +417,9 @@ function PayslipCard({
         <TableHeader>
           <TableRow>
             <TableHead>{t("payrollRun.payslips.columnEmployee")}</TableHead>
-            <TableHead numeric>{t("payrollRun.payslips.columnGross")}</TableHead>
+            <TableHead numeric>
+              {t("payrollRun.payslips.columnGross")}
+            </TableHead>
             <TableHead numeric>
               {t("payrollRun.payslips.columnDeductions")}
             </TableHead>
@@ -448,7 +460,9 @@ function PayslipCard({
                     {t("payrollRun.payslips.notViewed")}
                   </span>
                 ) : (
-                  <span className="tabular">{formatDateTime(slip.viewedAt)}</span>
+                  <span className="tabular">
+                    {formatDateTime(slip.viewedAt)}
+                  </span>
                 )}
               </TableCell>
               <TableCell className="text-right">

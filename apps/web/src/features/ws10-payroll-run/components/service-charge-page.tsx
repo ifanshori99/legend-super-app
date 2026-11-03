@@ -6,6 +6,7 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { HandCoins, Scale } from "lucide-react";
+import type { Employee, Position } from "@starter/shared/hris";
 import type { ServiceChargePool } from "@starter/shared/hris/payroll";
 import type { AreaAccess } from "@/lib/areas/access";
 import { useT } from "@/components/i18n";
@@ -80,20 +81,29 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
     () => sortPools(pools.data?.data ?? []),
     [pools.data],
   );
+  // No selection yet means the newest pool, so the table always has a subject.
   const selected: ServiceChargePool | null =
     poolRows.find((pool) => pool.id === selectedId) ?? poolRows[0] ?? null;
   const allocations = useAllocations(selected?.id);
 
-  React.useEffect(() => {
-    if (selected && selected.id !== selectedId) setSelectedId(selected.id);
-  }, [selected, selectedId]);
-
   const employeeById = React.useMemo(
-    () => new Map((employees.data?.data ?? []).map((row) => [row.id, row])),
+    () =>
+      new Map<string, Employee>(
+        (employees.data?.data ?? []).map((row): [string, Employee] => [
+          row.id,
+          row,
+        ]),
+      ),
     [employees.data],
   );
   const positionById = React.useMemo(
-    () => new Map((positions.data?.data ?? []).map((row) => [row.id, row])),
+    () =>
+      new Map<string, Position>(
+        (positions.data?.data ?? []).map((row): [string, Position] => [
+          row.id,
+          row,
+        ]),
+      ),
     [positions.data],
   );
 
@@ -142,7 +152,9 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
     selected !== null &&
     (selected.status === "draft" || selected.status === "calculated");
   const canApprove =
-    permissions.canApprove && selected !== null && selected.status === "calculated";
+    permissions.canApprove &&
+    selected !== null &&
+    selected.status === "calculated";
 
   function runAction(kind: PoolAction) {
     if (!selected) return;
@@ -392,7 +404,8 @@ export function ServiceChargePage({ access }: { access: AreaAccess }) {
             {allocationsRows.map((row) => {
               const employee = employeeById.get(row.employeeId);
               const position =
-                employee?.positionId === null || employee?.positionId === undefined
+                employee?.positionId === null ||
+                employee?.positionId === undefined
                   ? undefined
                   : positionById.get(employee.positionId);
               return (

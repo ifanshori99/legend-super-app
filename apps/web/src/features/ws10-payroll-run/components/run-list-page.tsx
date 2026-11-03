@@ -110,17 +110,15 @@ export function RunListPage({ access }: { access: AreaAccess }) {
       >
         <div className="flex flex-col gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <h2 className="type-title">{t("payrollRun.list.statusBandTitle")}</h2>
+            <h2 className="type-title">
+              {t("payrollRun.list.statusBandTitle")}
+            </h2>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("payrollRun.list.statusBandHint")}
             </p>
           </div>
           {canRun && (
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setCreateOpen(true)}
-            >
+            <Button type="button" size="sm" onClick={() => setCreateOpen(true)}>
               <CalendarPlus aria-hidden="true" />
               {t("payrollRun.list.create")}
             </Button>

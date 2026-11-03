@@ -10,9 +10,7 @@ import { formatRupiah } from "@starter/shared/i18n";
 import type { AreaAccess } from "@/lib/areas/access";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
-import {
-  ErrorState,
-} from "@/components/ui/feedback-state";
+import { ErrorState } from "@/components/ui/feedback-state";
 import { Money, NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, StatTile } from "@/components/ui/stat-tile";
@@ -20,7 +18,6 @@ import type { DataState } from "@/components/ui/data-table-shell";
 import { isOffline, payrollErrorMessage } from "../errors";
 import { payrollAccess } from "../guard";
 import { useBankFiles, useRun, useRunResults } from "../hooks";
-import { RUN_STEPS, STEP_LABEL } from "../lib";
 import { AuditTrail } from "./audit-trail";
 import { EmployeeReviewTable } from "./employee-review-table";
 import { ExportsSection } from "./exports-section";
@@ -111,9 +108,7 @@ export function RunDetailPage({
       <StatStrip label={t("payrollRun.detail.stripLabel")}>
         <StatTile
           label={t("payrollRun.detail.gross")}
-          value={
-            totals ? <Money amount={totals.grossIdr} size="stat" /> : none
-          }
+          value={totals ? <Money amount={totals.grossIdr} size="stat" /> : none}
           context={t("payrollRun.detail.grossContext")}
         />
         <StatTile

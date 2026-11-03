@@ -2,7 +2,7 @@
 // against the previous run is the point of the screen: the contract carries
 // `previousNetIdr` and `netChangeIdr` per row, so the diff is never recomputed
 // with float arithmetic here. Color only reinforces the sign (status tokens).
-import { Calculator, Funnel } from "lucide-react";
+import { Calculator } from "lucide-react";
 import { sumIdr } from "@starter/shared/core";
 import type {
   PayrollRun,
@@ -11,7 +11,7 @@ import type {
 import type { MessageKey } from "@starter/shared/i18n";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
-import { Badge, StatusPill, type StatusKind } from "@/components/ui/badge";
+import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DataTableShell,
@@ -27,14 +27,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { deltaTone, formatSignedRupiah } from "../lib";
+import { deltaTone, formatSignedRupiah, type DeltaTone } from "../lib";
 
-const DELTA_CLASS: Record<StatusKind, string> = {
-  neutral: "text-muted-foreground",
+const DELTA_CLASS: Record<DeltaTone, string> = {
+  muted: "text-muted-foreground",
   success: "text-success",
-  warning: "text-warning",
   danger: "text-danger",
-  info: "text-info",
 };
 
 const FLAG_LABEL: Record<string, MessageKey> = {
@@ -42,7 +40,8 @@ const FLAG_LABEL: Record<string, MessageKey> = {
   missing_bank_account: "payrollRun.review.flagMissingBank",
 };
 
-const FLAG_TONE: Record<string, StatusKind> = {
+// Badge tones, not StatusKind: a flag is a tinted label, not a status pill.
+const FLAG_TONE: Record<string, "warning" | "danger"> = {
   net_change_over_threshold: "warning",
   missing_bank_account: "danger",
 };
@@ -95,7 +94,6 @@ export function EmployeeReviewTable({
         ) : undefined
       }
       empty={{
-        icon: Funnel,
         title: t("payrollRun.review.emptyTitle"),
         description: t("payrollRun.review.emptyHint"),
         action:
@@ -134,7 +132,9 @@ export function EmployeeReviewTable({
                   {row.employeeNo}
                 </p>
               </TableCell>
-              <TableCell>{row.positionName ?? t("payrollRun.common.none")}</TableCell>
+              <TableCell>
+                {row.positionName ?? t("payrollRun.common.none")}
+              </TableCell>
               <TableCell numeric>
                 <Money amount={row.grossIdr} />
               </TableCell>
