@@ -618,6 +618,75 @@ describe("legend-hpgo fixed assets and depreciation (§3.19 Aset Tetap)", () => 
     expect(march.journalEntryId).toBeNull();
   });
 
+  it("ACC-01 §3.19 a disposal/revaluation dated before an already-posted run is refused (no phantom depreciation)", async () => {
+    const entity = await createEntity("FA backdated");
+    await setupLedger(entity);
+    const machine = await asset(entity);
+    await run(entity, "2026-01");
+    await run(entity, "2026-02");
+    await run(entity, "2026-03");
+
+    // The ledger already charges January–March: a February disposal would
+    // keep March's expense and compute the gain on a stale carrying amount.
+    await expect(
+      disposeFixedAsset(
+        tenantScope(),
+        machine.id,
+        {
+          disposedOn: "2026-02-20",
+          proceedsIdr: 10_000_000,
+          reason: "Dijual mundur",
+          idempotencyKey: key("disp"),
+        },
+        actor,
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "CONFLICT" });
+    await expect(
+      revalueFixedAsset(
+        tenantScope(),
+        machine.id,
+        {
+          revaluedOn: "2026-02-25",
+          newCarryingAmountIdr: 10_000_000,
+          reason: "Penilaian mundur",
+          idempotencyKey: key("reval"),
+        },
+        actor,
+        NOW,
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "CONFLICT" });
+
+    // Nothing moved: same cost, same accumulated, still active, no journal.
+    const after = await getFixedAsset(tenantScope(), machine.id);
+    expect(after.asset.costIdr).toBe(12_000_000);
+    expect(after.asset.accumulatedDepreciationIdr).toBe(3_000_000);
+    expect(after.asset.status).toBe("active");
+    const { rows } = await owner.query(
+      `SELECT 1 FROM journal_entries
+        WHERE tenant_id = $1 AND legal_entity_id = $2
+          AND source_type IN ('asset_disposal', 'asset_revaluation')`,
+      [tenantId, entity],
+    );
+    expect(rows).toEqual([]);
+
+    // The last posted month is still accepted (carrying 9,000,000, sold at it).
+    const sold = await disposeFixedAsset(
+      tenantScope(),
+      machine.id,
+      {
+        disposedOn: "2026-03-15",
+        proceedsIdr: 9_000_000,
+        reason: "Dijual Maret",
+        idempotencyKey: key("disp"),
+      },
+      actor,
+      NOW,
+    );
+    expect(sold.status).toBe("disposed");
+    expect(sold.accumulatedDepreciationIdr).toBe(3_000_000);
+  });
+
   it.runIf(hasRevaluationRule)(
     "§3.19 revaluation eliminates accumulated depreciation, books the surplus and re-spreads the new base; audited",
     async () => {

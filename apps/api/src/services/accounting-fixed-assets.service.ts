@@ -402,12 +402,26 @@ async function catchUpAsset(
   idempotencyKey: string,
   now: Date,
 ): Promise<FixedAssetRow> {
-  if (asset.status !== "active") return asset;
   const tenantId = context.tenant.tenantId;
   const posted = await postedPeriodsByAsset(tx, tenantId, [asset.id]);
+  const postedPeriods = posted.get(asset.id) ?? new Set<string>();
+  // A disposal/revaluation dated before a month that already carries
+  // depreciation would keep the expense of months the asset went (or was
+  // measured) before, and compute the gain/loss on a carrying amount it no
+  // longer had. Nothing can be un-posted, so fail closed instead (ACC-01:
+  // the ledger is append-only; PRD §3.19 is silent on back-dated disposals —
+  // decision in the bead report).
+  const lastPosted = [...postedPeriods].sort().at(-1);
+  if (lastPosted !== undefined && lastPosted > uptoPeriod)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      `Depreciation has already been posted through ${lastPosted}; date the disposal/revaluation in that month or later.`,
+    );
+  if (asset.status !== "active") return asset;
   const pending = pendingDepreciation(
     toFixedAsset(asset),
-    posted.get(asset.id) ?? new Set(),
+    postedPeriods,
     uptoPeriod,
   );
   if (pending.length === 0) return asset;
