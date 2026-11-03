@@ -11,5 +11,8 @@
         "matcher": ""
       }
     ]
+  },
+  "enabledPlugins": {
+    "claude-mem@thedotmack": false
   }
 }

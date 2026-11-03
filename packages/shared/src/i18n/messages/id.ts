@@ -31,8 +31,21 @@ import { posDisplayMessages } from "./pos-display.ts";
 import { reservationMessages } from "./reservation.ts";
 import { websiteMessages } from "./website.ts";
 import { ws01AuthMessages } from "./ws01-auth.ts";
+import { approvalsMessages } from "./ws01-approvals.ts";
+import { devicePinMessages } from "./ws01-device-pin.ts";
+import { platformOpsMessages } from "./ws01-platform-ops.ts";
+import { platformTenantsMessages } from "./ws01-platform-tenants.ts";
+import { tenantSettingsMessages } from "./ws01-tenant-settings.ts";
+import { supportAccessMessages } from "./ws01-support-access.ts";
+import { deviceRegistryMessages } from "./ws02-devices.ts";
 import { inventoryStockMessages } from "./ws06-inventory.ts";
 import { opnameMessages, wasteMessages } from "./ws06-opname.ts";
+import { invfeNavMessages } from "./invfe-nav.ts";
+import { inventoryRecipeMessages } from "./ws06-recipe.ts";
+import { inventoryHppMessages } from "./ws06-hpp.ts";
+import { inventorySuppliersMessages } from "./ws06-suppliers.ts";
+import { inventoryReceivingMessages } from "./ws06-receiving.ts";
+import { menuImportMessages } from "./ws03-menu-import.ts";
 import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
 import { employeeMasterMessages } from "./ws10-employee-master.ts";
 import { learningMessages } from "./ws10-learning.ts";
@@ -41,6 +54,12 @@ import { payrollConfigMessages } from "./ws10-payroll-config.ts";
 import { payrollRunMessages } from "./ws10-payroll-run.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { rosterMessages } from "./ws10-roster.ts";
+import { facilityStaffMessages } from "./facility-staff.ts";
+import { facilityAdminMessages } from "./facility-admin.ts";
+import { facilityReportMessages } from "./facility-report.ts";
+import { opsEquipmentMessages } from "./ops-equipment.ts";
+import { opsFoodSafetyMessages } from "./ops-food-safety.ts";
+import { opsChecklistMessages } from "./ops-checklist.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -74,12 +93,29 @@ export const id = {
   // RBAC admin (PRD §3 F7, bead legend-g6d), kept in its own file.
   access: accessMessages,
   orgOutlet: orgOutletMessages,
+  // Platform squad (legend-mxl/6ew/335/tno/y6s/q2c), one file each.
+  approvals: approvalsMessages,
+  devicePin: devicePinMessages,
+  supportAccess: supportAccessMessages,
+  platformTenants: platformTenantsMessages,
+  platformOps: platformOpsMessages,
+  deviceRegistry: deviceRegistryMessages,
+  tenantSettings: tenantSettingsMessages,
   // WS-06 stock control screens (legend-vxj): stock card, balances/par,
   // expiry, purchase suggestions. Its own file for the same reason.
   inventoryStock: inventoryStockMessages,
   // WS-06 stock opname and waste screens (legend-fzx), also in their own file.
   opname: opnameMessages,
   waste: wasteMessages,
+  // Squad invfe (2026-11-03): the tab-strip labels shared by several WS-06/WS-03
+  // beads, plus one module per bead so parallel agents never edit the same
+  // catalog lines.
+  invfeNav: invfeNavMessages,
+  inventoryRecipe: inventoryRecipeMessages,
+  inventoryHpp: inventoryHppMessages,
+  inventorySuppliers: inventorySuppliersMessages,
+  inventoryReceiving: inventoryReceivingMessages,
+  menuImport: menuImportMessages,
   // Loyalty back office (PRD §3.20), one file so parallel beads never edit the
   // same lines (legend-m8ow).
   loyalty: loyaltyMessages,
@@ -108,6 +144,14 @@ export const id = {
   payrollRun: payrollRunMessages,
   payslip: payslipMessages,
   learning: learningMessages,
+  // WS-09/WS-14 ops squad (2026-11-03): one catalog file per bead so the six
+  // parallel beads never edit the same lines.
+  facilityStaff: facilityStaffMessages,
+  facilityAdmin: facilityAdminMessages,
+  facilityReport: facilityReportMessages,
+  opsEquipment: opsEquipmentMessages,
+  opsFoodSafety: opsFoodSafetyMessages,
+  opsChecklist: opsChecklistMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",

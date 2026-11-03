@@ -105,8 +105,12 @@ export const staffPinInputSchema = z
   .regex(staffPinPattern, "Expected a 6-digit pin");
 export type StaffPinInput = z.infer<typeof staffPinInputSchema>;
 
-/** The device token already names the outlet (TEN-02); only the pin is sent. */
+/**
+ * The device token already names the outlet (TEN-02). The staff tile picked on
+ * the device names the user so a miss is counted per staff (lock after 5, AUTH-06).
+ */
 export const verifyStaffPinSchema = clientInputSchema({
+  userId: userIdSchema,
   pin: staffPinInputSchema,
 });
 export type VerifyStaffPinInput = z.infer<typeof verifyStaffPinSchema>;

@@ -16,7 +16,12 @@ export function PhotoField({
   error,
   onSelect,
   onClear,
+  label,
+  hint,
 }: {
+  /** Overrides the waste-log wording, e.g. where the photo is mandatory. */
+  label?: string;
+  hint?: string;
   previewUrl: string | null;
   error?: string;
   onSelect: (file: File) => void;
@@ -27,9 +32,11 @@ export function PhotoField({
   const inputId = React.useId();
   return (
     <div className="grid gap-2">
-      <p className="text-sm leading-5 font-semibold">{t("waste.form.photo")}</p>
+      <p className="text-sm leading-5 font-semibold">
+        {label ?? t("waste.form.photo")}
+      </p>
       <p className="text-sm leading-5 text-muted-foreground">
-        {t("waste.form.photoHint")}
+        {hint ?? t("waste.form.photoHint")}
       </p>
       <div className="flex flex-wrap items-center gap-3">
         {previewUrl ? (

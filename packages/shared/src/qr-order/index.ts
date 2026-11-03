@@ -3,6 +3,7 @@
 // apology vouchers, post-meal reviews and the staff floor-board operations.
 // See docs/plan/contracts.md.
 export * from "./schemas.ts";
+export * from "./errors.ts";
 export * from "./pricing.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
