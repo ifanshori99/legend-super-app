@@ -12,7 +12,7 @@ import {
 // web dev server with VITE_API_MOCK=true and nothing else.
 //
 //   pnpm test:e2e:mock                          every mock spec
-//   pnpm test:e2e:mock e2e/legend-g9r3.spec.ts  one spec
+//   pnpm test:e2e:mock e2e/legend-g9r3.mock.spec.ts  one spec
 //   pnpm test:e2e:mock --shard=1/2              one shard (CI, bead legend-x5be)
 //   pnpm test:e2e:mock:shard 1/4                one shard with a checked argument
 //   LEGEND_MOCK_PORT=3235 pnpm test:e2e:mock    another port (parallel worktree)

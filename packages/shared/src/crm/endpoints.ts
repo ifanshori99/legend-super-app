@@ -59,6 +59,7 @@ import {
   promoStackingPolicySchema,
   promotionApplicationResultSchema,
   promotionObjectSchema,
+  promotionOutletSchema,
   promotionRoiSchema,
   promotionSchema,
   promotionStatusSchema,
@@ -377,6 +378,34 @@ export const getPromotionRoi = defineEndpoint({
   path: "/api/promotions/:promotionId/roi",
   params: promotionIdParams,
   response: dataResponseSchema(promotionRoiSchema),
+});
+
+/**
+ * Per-outlet promotion switch (contract PromotionOutlet, bead legend-e5it).
+ * A promotion runs at every outlet of the tenant unless an outlet switches it
+ * off (`enabled: false`). The list answers every outlet of the tenant with its
+ * effective state; PUT sets one outlet.
+ */
+export const listPromotionOutlets = defineEndpoint({
+  method: "GET",
+  path: "/api/promotions/:promotionId/outlets",
+  params: promotionIdParams,
+  response: dataResponseSchema(z.array(promotionOutletSchema)),
+});
+
+export const setPromotionOutletInputSchema = clientInputSchema({
+  enabled: z.boolean(),
+});
+
+export const setPromotionOutlet = defineEndpoint({
+  method: "PUT",
+  path: "/api/promotions/:promotionId/outlets/:outletId",
+  params: z.strictObject({
+    promotionId: uuidSchema,
+    outletId: outletIdSchema,
+  }),
+  body: setPromotionOutletInputSchema,
+  response: dataResponseSchema(promotionOutletSchema),
 });
 
 /**

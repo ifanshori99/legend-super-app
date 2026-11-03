@@ -15,6 +15,7 @@ import {
   cafeLegendDashboardFixtures,
   ownerDashboardBoardRuns,
 } from "@starter/shared/dashboard";
+import { ownerInsightRuns } from "./insights-mock.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import { registerMockDashboard } from "../../lib/mock/handlers/dashboards.ts";
@@ -27,6 +28,8 @@ registerMockDashboard("owner", {
 });
 
 registerMockReportRuns(ownerDashboardBoardRuns);
+// Part 2 (bead legend-gb03): cost, service, finance, alert, multi-outlet runs.
+registerMockReportRuns(ownerInsightRuns);
 
 // "Ulasan terbaru" reads the CRM feedback queue (PRD §3 F34 "Operasional").
 // No other feature owns GET /api/feedback yet, so this screen registers it.

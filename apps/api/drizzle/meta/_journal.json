@@ -281,6 +281,27 @@
       "when": 1793659557415,
       "tag": "0039_special_lake",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1793662075114,
+      "tag": "0040_serious_centennial",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1793662076092,
+      "tag": "0041_promo_outlets_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1793663749351,
+      "tag": "0042_safe_hydra",
+      "breakpoints": true
     }
   ]
 }
