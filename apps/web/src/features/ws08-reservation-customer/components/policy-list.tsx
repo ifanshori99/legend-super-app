@@ -26,13 +26,15 @@ export function PolicyList({
           : t("reservationBooking.policy.noDeposit")}
       </p>
       <ul className="grid gap-1.5 text-sm leading-5 text-muted-foreground">
-        <li>
-          {t("reservationBooking.policy.freeCancel", {
-            hours: policy.freeCancellationHours,
-          })}
-        </li>
+        {/* The cancellation windows only move DP money (RSV-03): without a
+            DP there is nothing to refund, so no refund rule is shown. */}
         {hasDeposit && (
           <>
+            <li>
+              {t("reservationBooking.policy.freeCancel", {
+                hours: policy.freeCancellationHours,
+              })}
+            </li>
             <li>
               {t("reservationBooking.policy.lateCancel", {
                 hours: policy.freeCancellationHours,

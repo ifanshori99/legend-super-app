@@ -72,6 +72,14 @@ export const reservationBookingMessages = {
     errorTitle: "Reservasi belum terkirim",
     errorHint:
       "Coba kirim lagi. Percobaan ulang tidak membuat reservasi kedua.",
+    slotTakenTitle: "Jam ini baru saja terisi",
+    slotTakenHint:
+      "Daftar jam sudah diperbarui. Pilih jam lain, lalu kirim lagi.",
+    packageGoneTitle: "Paket ini tidak lagi tersedia",
+    packageGoneHint:
+      "Pilih paket lain atau lanjutkan tanpa paket, lalu kirim lagi.",
+    rateLimitedTitle: "Terlalu banyak percobaan",
+    rateLimitedHint: "Tunggu sebentar, lalu kirim lagi.",
     newBooking: "Buat reservasi lain",
   },
   confirmation: {
@@ -93,6 +101,12 @@ export const reservationBookingMessages = {
     depositHint: "Tautan pembayaran dibuka di halaman pembayaran yang aman.",
     depositWindow:
       "Batas waktu pembayaran DP {minutes} menit setelah reservasi dibuat.",
+    statusSnapshot:
+      "Status ini sesuai saat reservasi dibuat. Setelah DP dibayar, reservasi terkonfirmasi otomatis.",
+    expiredStatus: "Batas DP lewat",
+    expiredTitle: "Batas waktu pembayaran DP sudah lewat",
+    expiredHint:
+      "Tautan DP ini tidak bisa dipakai lagi. Buat reservasi lain bila Anda masih ingin datang.",
   },
   policy: {
     title: "Kebijakan reservasi Anda",
@@ -125,7 +139,9 @@ export const reservationBookingMessages = {
     call: "Staf akan memanggil nama Anda saat meja siap. Tidak ada notifikasi otomatis ke ponsel.",
     errorTitle: "Pendaftaran belum terkirim",
     errorHint: "Coba kirim lagi. Percobaan ulang tidak membuat dua entri.",
-    again: "Perbarui data",
+    duplicateTitle: "Anda sudah ada di daftar tunggu",
+    duplicateHint:
+      "Nomor ini sudah terdaftar hari ini. Staf akan memanggil nama Anda; tanyakan staf bila perlu mengubah jumlah tamu.",
     toBooking: "Buat reservasi meja",
   },
 };

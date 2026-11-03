@@ -5,8 +5,9 @@
 // The DP link is the contract's app-local path (`/bayar/<token>`); the page
 // takes the token out of it instead of building a payment URL, so a gateway
 // change never needs a code change here (WS-05 owns that page).
+import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { CircleCheck, Clock } from "lucide-react";
+import { CircleCheck, Clock, TriangleAlert } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import type { ReservationCreated } from "@starter/shared/reservation";
 import type { PublicSite } from "@starter/shared/website";
@@ -41,8 +42,31 @@ export function ConfirmationPanel({
   const t = useT();
   const timeZone = site.outlet.timeZone;
   const { reservation, deposit } = created;
-  const waitingForDeposit = reservation.status === "pending_deposit";
+  // RSV-02: only a `confirmed` booking is shown as confirmed; anything else
+  // still waits for its DP.
+  const waitingForDeposit = reservation.status !== "confirmed";
   const token = deposit ? depositToken(deposit.paymentPath) : null;
+  // The clock is browser-only (SSR and hydration must agree), so expiry is
+  // known only after mount. A restored confirmation whose DP window passed no
+  // longer offers a dead payment link.
+  const [nowMs, setNowMs] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the clock is browser-only; reading it after mount keeps SSR and hydration identical.
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const depositExpired =
+    waitingForDeposit &&
+    deposit !== null &&
+    nowMs !== null &&
+    nowMs >= Date.parse(deposit.expiresAt);
+  // Move focus to the result so keyboard and screen-reader users hear it
+  // after the form is replaced.
+  const heading = React.useRef<HTMLHeadingElement>(null);
+  React.useEffect(() => {
+    heading.current?.focus();
+  }, []);
   const zone = zoneName(reservation.zoneId);
   const businessDate = businessDateOfInstant(reservation.reservedFor, timeZone);
 
@@ -51,7 +75,11 @@ export function ConfirmationPanel({
       <Card>
         <CardContent className="grid gap-5">
           <div className="grid gap-2">
-            <h2 className="type-display-xl">
+            <h2
+              ref={heading}
+              tabIndex={-1}
+              className="type-display-xl outline-none"
+            >
               {waitingForDeposit
                 ? t("reservationBooking.confirmation.title")
                 : t("reservationBooking.confirmation.titleConfirmed")}
@@ -63,16 +91,36 @@ export function ConfirmationPanel({
             </p>
           </div>
 
-          <Badge tone={waitingForDeposit ? "warning" : "success"}>
-            {waitingForDeposit ? (
-              <Clock aria-hidden="true" />
-            ) : (
-              <CircleCheck aria-hidden="true" />
+          <div className="grid gap-1.5">
+            <Badge
+              tone={
+                depositExpired
+                  ? "danger"
+                  : waitingForDeposit
+                    ? "warning"
+                    : "success"
+              }
+              className="w-fit"
+            >
+              {depositExpired ? (
+                <TriangleAlert aria-hidden="true" />
+              ) : waitingForDeposit ? (
+                <Clock aria-hidden="true" />
+              ) : (
+                <CircleCheck aria-hidden="true" />
+              )}
+              {depositExpired
+                ? t("reservationBooking.confirmation.expiredStatus")
+                : waitingForDeposit
+                  ? t("reservationBooking.confirmation.pendingStatus")
+                  : t("reservationBooking.confirmation.confirmedStatus")}
+            </Badge>
+            {waitingForDeposit && !depositExpired && (
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("reservationBooking.confirmation.statusSnapshot")}
+              </p>
             )}
-            {waitingForDeposit
-              ? t("reservationBooking.confirmation.pendingStatus")
-              : t("reservationBooking.confirmation.confirmedStatus")}
-          </Badge>
+          </div>
 
           <div className="grid gap-1 border-t-(length:--border-w) pt-4">
             <p className="text-base leading-6 font-semibold">
@@ -119,7 +167,19 @@ export function ConfirmationPanel({
                   })}
                 </CardDescription>
               </div>
-              {token ? (
+              {depositExpired ? (
+                <div
+                  role="status"
+                  className="grid gap-0.5 rounded-field bg-danger-subtle px-3 py-2"
+                >
+                  <p className="text-sm leading-5 font-semibold">
+                    {t("reservationBooking.confirmation.expiredTitle")}
+                  </p>
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {t("reservationBooking.confirmation.expiredHint")}
+                  </p>
+                </div>
+              ) : !waitingForDeposit ? null : token ? (
                 <Button asChild size="lg">
                   <Link to="/bayar/$token" params={{ token }}>
                     {t("reservationBooking.confirmation.depositAction")}

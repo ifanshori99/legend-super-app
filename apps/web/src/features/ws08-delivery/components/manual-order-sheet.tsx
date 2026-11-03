@@ -191,6 +191,7 @@ export function ManualOrderSheet({
               <Input
                 value={externalOrderId}
                 onChange={(event) => setExternalOrderId(event.target.value)}
+                maxLength={100}
                 autoComplete="off"
                 className="font-mono"
               />
@@ -306,7 +307,12 @@ export function ManualOrderSheet({
                             value={line.quantity}
                             onChange={(event) =>
                               updateLine(line.key, {
-                                quantity: Number(event.target.value),
+                                // Contract: 1–99 per line; typing past it is
+                                // clamped instead of failing on submit.
+                                quantity: Math.min(
+                                  99,
+                                  Number(event.target.value),
+                                ),
                               })
                             }
                           />
@@ -363,6 +369,7 @@ export function ManualOrderSheet({
               value={customerNote}
               onChange={(event) => setCustomerNote(event.target.value)}
               rows={2}
+              maxLength={300}
             />
           </FormField>
 

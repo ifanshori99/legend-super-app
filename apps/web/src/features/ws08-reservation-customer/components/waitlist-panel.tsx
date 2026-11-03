@@ -28,7 +28,12 @@ import {
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { useT } from "@/components/i18n";
 import { useJoinWaitlist } from "../hooks";
-import { MAX_PAX, validateGuestDetails } from "../lib";
+import {
+  MAX_PAX,
+  validateGuestDetails,
+  submitProblemOf,
+  type SubmitProblem,
+} from "../lib";
 import { zoneOptions } from "../zones";
 
 const ANY_ZONE = "any";
@@ -49,7 +54,8 @@ export function WaitlistPanel({
   const [pax, setPax] = React.useState(2);
   const [zoneId, setZoneId] = React.useState(ANY_ZONE);
   const [errors, setErrors] = React.useState<WaitlistErrors>({});
-  const [submitFailed, setSubmitFailed] = React.useState(false);
+  const [submitProblem, setSubmitProblem] =
+    React.useState<SubmitProblem | null>(null);
   const [result, setResult] = React.useState<JoinWaitlistResult | null>(null);
   /**
    * One Idempotency-Key per attempt: a retry of the same form reuses it, an
@@ -72,11 +78,11 @@ export function WaitlistPanel({
     );
     if (!check.ok) {
       setErrors({ name: check.errors.name, phone: check.errors.phone });
-      setSubmitFailed(false);
+      setSubmitProblem(null);
       return;
     }
     setErrors({});
-    setSubmitFailed(false);
+    setSubmitProblem(null);
     const body = {
       name: name.trim(),
       pax,
@@ -92,8 +98,12 @@ export function WaitlistPanel({
     join.mutate(
       { body, idempotencyKey: key },
       {
-        onSuccess: (created) => setResult(created),
-        onError: () => setSubmitFailed(true),
+        onSuccess: (created) => {
+          // The entry exists now; a later join is a new attempt (new key).
+          attempt.current = null;
+          setResult(created);
+        },
+        onError: (error) => setSubmitProblem(submitProblemOf(error)),
       },
     );
   };
@@ -102,7 +112,7 @@ export function WaitlistPanel({
     return (
       <Card>
         <CardContent className="grid gap-4">
-          <div className="grid gap-1">
+          <div className="grid gap-1" role="status">
             <CardTitle>
               {t("reservationBooking.waitlist.resultTitle")}
             </CardTitle>
@@ -116,9 +126,6 @@ export function WaitlistPanel({
             })}
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => setResult(null)}>
-              {t("reservationBooking.waitlist.again")}
-            </Button>
             <Button variant="outline" onClick={onBooking}>
               {t("reservationBooking.waitlist.toBooking")}
             </Button>
@@ -223,7 +230,7 @@ export function WaitlistPanel({
             )}
           </div>
 
-          {submitFailed && (
+          {submitProblem !== null && (
             <div
               role="alert"
               className="flex items-start gap-2 rounded-field bg-danger-subtle px-3 py-2"
@@ -234,10 +241,22 @@ export function WaitlistPanel({
               />
               <div className="grid gap-0.5">
                 <p className="text-sm leading-5 font-semibold">
-                  {t("reservationBooking.waitlist.errorTitle")}
+                  {t(
+                    submitProblem === "duplicate"
+                      ? "reservationBooking.waitlist.duplicateTitle"
+                      : submitProblem === "rateLimited"
+                        ? "reservationBooking.submit.rateLimitedTitle"
+                        : "reservationBooking.waitlist.errorTitle",
+                  )}
                 </p>
                 <p className="text-sm leading-5 text-muted-foreground">
-                  {t("reservationBooking.waitlist.errorHint")}
+                  {t(
+                    submitProblem === "duplicate"
+                      ? "reservationBooking.waitlist.duplicateHint"
+                      : submitProblem === "rateLimited"
+                        ? "reservationBooking.submit.rateLimitedHint"
+                        : "reservationBooking.waitlist.errorHint",
+                  )}
                 </p>
               </div>
             </div>

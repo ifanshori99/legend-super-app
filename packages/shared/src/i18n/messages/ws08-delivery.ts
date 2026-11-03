@@ -55,7 +55,7 @@ export const deliveryOpsMessages = {
     emptyTitle: "Belum ada kanal pengiriman",
     emptyHint:
       "Hubungkan GoFood, GrabFood, atau ShopeeFood melalui adapter agar kanalnya tampil di sini.",
-    manualLabel: "Mode manual (D12)",
+    manualLabel: "Mode manual",
     manualNoteLabel: "Pesanan ojek online dicatat manual",
     manualBody:
       "Selama integrasi belum disetujui platform, kasir mencatat pesanan ojek online melalui POS dengan kanal dan harga yang benar.",
@@ -109,6 +109,7 @@ export const deliveryOpsMessages = {
       action: "Aksi",
     },
     view: "Lihat rincian",
+    viewOrder: "Lihat rincian pesanan {id}",
     manualButton: "Catat pesanan manual",
     handleOnly: "Butuh izin menangani pesanan untuk mengubah status.",
     updated: "Status pesanan diperbarui.",
@@ -158,7 +159,7 @@ export const deliveryOpsMessages = {
   manual: {
     title: "Catat pesanan manual",
     description:
-      "Mode manual (D12): catat pesanan ojek online sebelum integrasi platform aktif.",
+      "Mode manual: catat pesanan ojek online sebelum integrasi platform aktif.",
     platform: "Platform",
     externalOrderId: "Nomor pesanan platform",
     externalOrderIdHint:
@@ -237,7 +238,7 @@ export const deliveryOpsMessages = {
     DELIVERY_CHANNEL_CLOSED:
       "Toko ditutup di platform ini; pesanan tidak dapat diterima.",
     DELIVERY_MAPPING_INCOMPLETE:
-      "Sebagian item belum terhubung ke menu Cafe Legend.",
+      "Sebagian item belum terhubung ke menu outlet.",
     DELIVERY_CHANNEL_UNKNOWN: "Kanal pengiriman ini belum terhubung.",
     fallback: "Permintaan tidak dapat diproses. Coba lagi sebentar lagi.",
   },

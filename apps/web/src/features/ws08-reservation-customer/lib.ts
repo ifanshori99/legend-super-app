@@ -263,3 +263,32 @@ export function clearConfirmation(): void {
     // Nothing to clean up when storage is unavailable.
   }
 }
+
+/**
+ * Which problem a failed booking or waitlist submit reports. A 409 the guest
+ * cannot fix by resending (slot taken, package gone, already on the list) gets
+ * its own copy and action instead of "coba kirim lagi"; anything else is a
+ * retryable send failure that reuses the attempt's Idempotency-Key.
+ */
+export type SubmitProblem =
+  "slot" | "package" | "duplicate" | "rateLimited" | "retry";
+
+export function submitProblemOf(error: unknown): SubmitProblem {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  switch (code) {
+    case "RESERVATION_SLOT_TAKEN":
+    case "RESERVATION_SLOT_UNAVAILABLE":
+      return "slot";
+    case "RESERVATION_PACKAGE_UNAVAILABLE":
+      return "package";
+    case "WAITLIST_DUPLICATE_ENTRY":
+      return "duplicate";
+    case "RATE_LIMITED":
+      return "rateLimited";
+    default:
+      return "retry";
+  }
+}

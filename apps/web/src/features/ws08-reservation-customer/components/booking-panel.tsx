@@ -52,8 +52,33 @@ import {
   packageTotal,
   shiftBusinessDate,
   validateGuestDetails,
+  submitProblemOf,
+  type SubmitProblem,
 } from "../lib";
 import { zoneOptions } from "../zones";
+
+const SUBMIT_PROBLEM_COPY = {
+  slot: {
+    title: "reservationBooking.submit.slotTakenTitle",
+    hint: "reservationBooking.submit.slotTakenHint",
+  },
+  package: {
+    title: "reservationBooking.submit.packageGoneTitle",
+    hint: "reservationBooking.submit.packageGoneHint",
+  },
+  duplicate: {
+    title: "reservationBooking.submit.errorTitle",
+    hint: "reservationBooking.submit.errorHint",
+  },
+  rateLimited: {
+    title: "reservationBooking.submit.rateLimitedTitle",
+    hint: "reservationBooking.submit.rateLimitedHint",
+  },
+  retry: {
+    title: "reservationBooking.submit.errorTitle",
+    hint: "reservationBooking.submit.errorHint",
+  },
+} as const satisfies Record<SubmitProblem, { title: string; hint: string }>;
 
 /** A Radix Select item always needs a value, so "none" is a sentinel. */
 const ANY_ZONE = "any";
@@ -101,7 +126,9 @@ export function BookingPanel({
   // contract's branded id, so it is validated at this boundary (a stale option
   // from a reloaded fixture is dropped rather than sent).
   const parsedZone =
-    zoneId === ANY_ZONE ? null : floorZoneIdSchema.safeParse(zoneId).data ?? null;
+    zoneId === ANY_ZONE
+      ? null
+      : (floorZoneIdSchema.safeParse(zoneId).data ?? null);
   const availability = useAvailability(site.outlet.id, {
     date,
     pax: paxValid ? pax : 1,
@@ -130,7 +157,8 @@ export function BookingPanel({
   const [note, setNote] = React.useState("");
   const [packageId, setPackageId] = React.useState<string>(NO_PACKAGE);
   const [errors, setErrors] = React.useState<GuestErrors>({});
-  const [submitFailed, setSubmitFailed] = React.useState(false);
+  const [submitProblem, setSubmitProblem] =
+    React.useState<SubmitProblem | null>(null);
 
   const packages = useReservationPackages(site.outlet.id);
   const eligible = React.useMemo(() => {
@@ -173,12 +201,12 @@ export function BookingPanel({
         ...(check.ok ? {} : check.errors),
         ...(slotMissing ? { slot: true } : {}),
       });
-      setSubmitFailed(false);
+      setSubmitProblem(null);
       return;
     }
     if (!selectedSlot) return;
     setErrors({});
-    setSubmitFailed(false);
+    setSubmitProblem(null);
     const body = {
       reservedFor: selectedSlot.startsAt,
       durationMinutes: duration,
@@ -200,7 +228,14 @@ export function BookingPanel({
       { body, idempotencyKey: key },
       {
         onSuccess: (created) => onCreated(created),
-        onError: () => setSubmitFailed(true),
+        onError: (error) => {
+          const problem = submitProblemOf(error);
+          setSubmitProblem(problem);
+          // The slot or package is gone: the guest picks again from the
+          // refreshed list (the hook refetches it) instead of resending.
+          if (problem === "slot") setStartsAt(null);
+          if (problem === "package") setPackageId(NO_PACKAGE);
+        },
       },
     );
   };
@@ -518,7 +553,7 @@ export function BookingPanel({
                 </p>
               </div>
             )}
-            {submitFailed && (
+            {submitProblem !== null && (
               <div
                 role="alert"
                 className="flex items-start gap-2 rounded-field bg-danger-subtle px-3 py-2"
@@ -529,10 +564,10 @@ export function BookingPanel({
                 />
                 <div className="grid gap-0.5">
                   <p className="text-sm leading-5 font-semibold">
-                    {t("reservationBooking.submit.errorTitle")}
+                    {t(SUBMIT_PROBLEM_COPY[submitProblem].title)}
                   </p>
                   <p className="text-sm leading-5 text-muted-foreground">
-                    {t("reservationBooking.submit.errorHint")}
+                    {t(SUBMIT_PROBLEM_COPY[submitProblem].hint)}
                   </p>
                 </div>
               </div>

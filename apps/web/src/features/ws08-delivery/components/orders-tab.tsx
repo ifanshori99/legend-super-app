@@ -231,6 +231,9 @@ export function OrdersTab({
                       variant="ghost"
                       size="sm"
                       onClick={() => setSelectedId(order.id)}
+                      aria-label={t("deliveryOps.pesanan.viewOrder", {
+                        id: order.externalOrderId,
+                      })}
                     >
                       {t("deliveryOps.pesanan.view")}
                     </Button>

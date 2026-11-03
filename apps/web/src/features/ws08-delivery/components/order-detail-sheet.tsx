@@ -348,6 +348,7 @@ function OrderDetailBody({
                   onChange={(event) => setReason(event.target.value)}
                   placeholder={t("deliveryOps.detail.reasonPlaceholder")}
                   rows={3}
+                  maxLength={300}
                 />
               </FormField>
               <div className="flex flex-wrap gap-2">

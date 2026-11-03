@@ -15,7 +15,7 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { SiteSection } from "@/features/ws08-website/components/blocks";
 import { SiteFrame } from "@/features/ws08-website/components/site-frame";
 import { API_MOCK } from "@/lib/api/mock-flag.ts";
-import { clearConfirmation, readConfirmation, saveConfirmation } from "../lib";
+import { clearConfirmation, readConfirmation } from "../lib";
 import { BookingPanel } from "./booking-panel";
 import { ConfirmationPanel } from "./confirmation-panel";
 import { WaitlistPanel } from "./waitlist-panel";
@@ -39,20 +39,21 @@ export function ReservasiPage({
 
   // Storage is browser-only: restore after mount so the server render and the
   // first client render agree (no hydration mismatch).
+  // Re-read when the guest returns to the booking tab: a booking that finished
+  // while the waitlist tab was open was saved by the mutation itself.
   React.useEffect(() => {
+    if (mode !== "booking") return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- sessionStorage cannot be read during SSR; restoring after mount is the point.
     setConfirmation(readConfirmation());
-  }, []);
+  }, [mode]);
 
   const startOver = () => {
     clearConfirmation();
     setConfirmation(null);
   };
 
-  const created = (next: ReservationCreated) => {
-    saveConfirmation(next);
-    setConfirmation(next);
-  };
+  // useCreateBooking already saved it to sessionStorage.
+  const created = (next: ReservationCreated) => setConfirmation(next);
 
   return (
     <SiteFrame site={site} signedIn={signedIn}>
