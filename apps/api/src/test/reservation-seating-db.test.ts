@@ -12,6 +12,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { closeTableSessionInputSchema } from "@starter/shared/qr-order";
 import {
   createReservationInputSchema,
   seatReservationInputSchema,
@@ -28,7 +29,10 @@ import {
   setReservationDepositPort,
   type ReservationDepositPort,
 } from "../services/reservation-ports.ts";
-import { openOrJoinTableSession } from "../services/table-session.service.ts";
+import {
+  closeTableSession,
+  openOrJoinTableSession,
+} from "../services/table-session.service.ts";
 import {
   createTable,
   createZone,
@@ -303,6 +307,26 @@ describe("RSV-02 multi-table seating", () => {
     ]);
     expect(await tableStatus(a.id)).toBe("occupied");
     expect(await tableStatus(b.id)).toBe("occupied");
+  });
+
+  it("RSV-02 closing a two-table party's session frees the secondary table too", async () => {
+    const f = await floor(2);
+    const [a, b] = f.tables as [(typeof f.tables)[0], (typeof f.tables)[0]];
+    const created = await book(f.zoneId, "2027-04-08");
+    const seated = await seat(created.reservation.id, [b.id, a.id]);
+    const closed = await closeTableSession(
+      tenantScope(),
+      seated.tableSessionId,
+      closeTableSessionInputSchema.parse({
+        tableCleaned: false,
+        waiterConfirmedEmpty: true,
+      }),
+      staff.userId,
+    );
+    expect(closed.status).toBe("closed");
+    // Not cleaned: both the primary and the secondary table need a wipe.
+    expect(await tableStatus(b.id)).toBe("dirty");
+    expect(await tableStatus(a.id)).toBe("dirty");
   });
 
   it("RSV-02 opposite table orders seated concurrently do not deadlock: exactly one wins", async () => {

@@ -14,6 +14,7 @@ import {
 } from "@starter/shared/core/server";
 import { eventEnvelopeSchema } from "@starter/shared/events";
 import { createPaymentIntentInputSchema } from "@starter/shared/payment";
+import { listRefunds as listRefundsContract } from "@starter/shared/payment/admin";
 import {
   cancelReservationInputSchema,
   createReservationInputSchema,
@@ -28,6 +29,7 @@ import {
   type GatewayIntentRequest,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
+import { listRefunds } from "../services/payment-admin.service.ts";
 import { confirmPayment, createIntent } from "../services/payment.service.ts";
 import { createReservation } from "../services/reservation-booking.ts";
 import { handlePaymentPaid } from "../services/reservation-consumers.ts";
@@ -817,6 +819,21 @@ describe("RSV-03 a DP refund is a WS-05 refund request", () => {
     const row = await reservationRow(created.reservation.id);
     expect(row.refund_status).toBe("requested");
     expect(row.refund_payment_refund_id).toBe(rows[0]!.id);
+
+    // The WS-05 refund screen lists a system-requested refund (no user row
+    // for `system:reservation`) instead of failing the whole tenant's list.
+    const listed = await listRefunds(
+      tenantScope(),
+      staff.userId,
+      listRefundsContract.query.parse({}),
+    );
+    const view = listed.data.find((refund) => refund.id === rows[0]!.id);
+    expect(view).toMatchObject({
+      requestedBy: RESERVATION_SYSTEM_ACTOR,
+      requestedByName: "Sistem (reservasi)",
+      amountIdr: 100_000,
+      status: "pending",
+    });
 
     await requestDepositRefund(
       tenantScope(),

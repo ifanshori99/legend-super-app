@@ -13,6 +13,7 @@ import {
   outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import { paymentGateway } from "./payment-gateway.ts";
 import { createPaymentLink } from "./payment.service.ts";
 import {
@@ -21,7 +22,7 @@ import {
 } from "./reservation-ports.ts";
 
 /** Actor recorded on WS-05 rows the reservation module creates by itself. */
-export const RESERVATION_SYSTEM_ACTOR = "system:reservation";
+export const RESERVATION_SYSTEM_ACTOR: SystemRefundActor = "system:reservation";
 
 /** Where the payment page sends the guest back (app-local, public booking). */
 const DEPOSIT_RETURN_PATH = "/reservation";

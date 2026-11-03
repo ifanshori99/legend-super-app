@@ -119,6 +119,7 @@ async function refundView(tx: Tx, refund: Refund) {
     requestedBy: refund.requestedBy,
     requestedByName:
       names.find((n) => n.id === refund.requestedBy)?.name ??
+      systemRequesterName(refund.requestedBy) ??
       refund.requestedBy,
     // The approval inbox/provider is not wired yet; never advertise an unsafe approval.
     viewerCanApprove: false,
@@ -130,6 +131,10 @@ async function refundView(tx: Tx, refund: Refund) {
     createdAt: refund.createdAt.toISOString(),
     decidedAt: refund.decidedAt?.toISOString() ?? null,
   });
+}
+function systemRequesterName(requestedBy: string): string | null {
+  const actor = contract.systemRefundActorSchema.safeParse(requestedBy);
+  return actor.success ? contract.systemRefundActorNames[actor.data] : null;
 }
 async function audit(
   tx: Tx,
