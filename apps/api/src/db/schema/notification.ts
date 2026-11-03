@@ -13,6 +13,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { outlets } from "./platform-org";
 
 /** IDs in the shared ULID contract are stored losslessly as UUIDs. */
 export const notificationOutbox = pgTable(
@@ -68,6 +69,12 @@ export const notifications = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    // legend-bd95: the outlet must belong to the row's own tenant (MATCH SIMPLE: NULL outlet stays valid).
+    foreignKey({
+      name: "notifications_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
     unique("notifications_dedupe_key").on(table.tenantId, table.dedupeKey),
     index("notifications_user_created_idx").on(
       table.tenantId,
@@ -103,6 +110,12 @@ export const deliveryAttempts = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    // legend-bd95: the outlet must belong to the row's own tenant (MATCH SIMPLE: NULL outlet stays valid).
+    foreignKey({
+      name: "delivery_attempts_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
     unique("delivery_attempts_channel_key").on(
       table.tenantId,
       table.notificationId,
@@ -239,6 +252,12 @@ export const whatsappReservations = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    // legend-bd95: the outlet must belong to the row's own tenant (MATCH SIMPLE: NULL outlet stays valid).
+    foreignKey({
+      name: "whatsapp_reservations_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
     unique("whatsapp_reservations_attempt_key").on(
       table.tenantId,
       table.deliveryAttemptId,

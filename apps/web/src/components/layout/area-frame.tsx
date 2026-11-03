@@ -20,33 +20,48 @@ import { AREAS, type AreaKey } from "@/lib/areas/definitions";
 import type { AreaGate } from "@/lib/areas/guard";
 import { buildAreaNav } from "@/lib/areas/nav";
 import { registeredNav } from "@/lib/areas/nav-registry";
+import { resolveMockTenantContext } from "@/lib/mock/tenant-context";
+import { TenantProvider, useTenantContext } from "@/lib/tenant-context";
 import { useOnline } from "@/lib/use-online";
 import { TableCustomerFrame } from "@/features/ws03-qr-order/components/table-frame";
 import { IdleSessionWarning } from "@/features/ws01-auth/components/idle-session-warning";
 
-/**
- * Outlet wall-clock zone until the outlet context bead supplies the outlet's
- * own IANA zone (PRD: business dates in the outlet time zone).
- */
-const DEFAULT_OUTLET_TIME_ZONE = "Asia/Jakarta";
-
 type SessionLike = { user: { name: string } } | null;
 
-export function AreaFrame({
-  area,
-  access,
-  gate,
-  session,
-  children,
-}: {
+type AreaFrameProps = {
   area: AreaKey;
   access: AreaAccess;
   gate: AreaGate;
   session: SessionLike;
   children: ReactNode;
-}) {
+};
+
+/**
+ * Resolves the tenant/outlet config for this navigation and mounts it around
+ * the shell. Mock mode reads the Cafe Legend fixtures; outside mock mode there
+ * is no config source yet, so the provider fails closed (catalog brand, no
+ * outlet → the shell keeps its neutral copy).
+ */
+export function AreaFrame(props: AreaFrameProps) {
+  const { searchStr } = useLocation();
+  const config = resolveMockTenantContext(searchStr);
+  return (
+    <TenantProvider config={config}>
+      <AreaFrameBody {...props} />
+    </TenantProvider>
+  );
+}
+
+function AreaFrameBody({
+  area,
+  access,
+  gate,
+  session,
+  children,
+}: AreaFrameProps) {
   const t = useT();
   const online = useOnline();
+  const { brandName } = useTenantContext();
   const { pathname } = useLocation();
   const { token } = useParams({ strict: false }) as { token?: string };
   const definition = AREAS[area];
@@ -72,7 +87,6 @@ export function AreaFrame({
       {children}
     </>
   );
-  const brandName = t("app.defaultBrand");
   const signOut = session ? <SignOutButton /> : null;
 
   if (definition.shell === "management") {
@@ -107,10 +121,8 @@ export function AreaFrame({
     return (
       <OperationsShell
         title={t(definition.nameKey)}
-        outlet={t("area.ops.outletUnset")}
         staffName={session?.user.name}
         online={online}
-        timeZone={DEFAULT_OUTLET_TIME_ZONE}
         mode={definition.forcedMode}
         actions={definition.forcedMode ? undefined : <ThemeToggle />}
       >

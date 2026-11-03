@@ -174,6 +174,28 @@ describe("Panel Platform API", () => {
       `/api/platform/tenants/${created.body.data.id}`,
     );
 
+    // Flow R step 3 (legend-2ign): the first admin holds the tenant_admin
+    // template at tenant scope, and the response carries no credential.
+    const firstAdmin = await owner.query<{ user_id: string }>(
+      `SELECT ra.user_id FROM role_assignments ra JOIN roles r
+         ON r.tenant_id = ra.tenant_id AND r.id = ra.role_id
+        WHERE ra.tenant_id = $1 AND r.template_key = 'tenant_admin'
+          AND ra.scope_type = 'tenant'`,
+      [created.body.data.id],
+    );
+    expect(firstAdmin.rows).toHaveLength(1);
+    expect(JSON.stringify(created.body)).not.toMatch(
+      /token|password|secret|6281234567890/i,
+    );
+    const audited = await owner.query<{ action: string }>(
+      "SELECT event->>'action' AS action FROM audit_logs WHERE tenant_id = $1",
+      [created.body.data.id],
+    );
+    expect(audited.rows.map((row) => row.action).sort()).toEqual([
+      "role_assignment.granted",
+      "tenant.created",
+    ]);
+
     const fetched = await client.get(
       `/api/platform/tenants/${created.body.data.id}`,
     );
@@ -200,8 +222,8 @@ describe("Panel Platform API", () => {
     expect(outsidePackage.body.error.code).toBe("MODULE_NOT_IN_PACKAGE");
   });
 
-  it("moves a tenant through its status machine and assigns a package", async () => {
-    const { client } = await adminClient();
+  it("TEN-04 TEN-06 moves a tenant through its status machine and assigns a package (audited)", async () => {
+    const { client, userId } = await adminClient();
     const created = await client
       .post("/api/platform/tenants")
       .set(originHeader)
@@ -243,6 +265,39 @@ describe("Panel Platform API", () => {
     expect(pkg.status).toBe(200);
     expect(pkg.body.data).toMatchObject({ plan: "outlet-dasar" });
     expect(pkg.body.data.featureFlags.modules).toEqual(["pos"]);
+
+    // legend-bd95: each accepted change is audited on the tenant by the
+    // signed-in Super Admin; the refused reopen wrote nothing.
+    const audited = await owner.query<{
+      action: string;
+      actor_id: string;
+      reason: string | null;
+    }>(
+      `SELECT event->>'action' AS action, event->>'actorId' AS actor_id,
+              event->>'reason' AS reason
+         FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'objectType' = 'tenant'
+          AND event->>'action' <> 'tenant.created'
+        ORDER BY id`,
+      [id],
+    );
+    expect(audited.rows).toEqual([
+      {
+        action: "tenant.status_changed",
+        actor_id: userId,
+        reason: "Tidak membayar tagihan bulan ini.",
+      },
+      {
+        action: "tenant.status_changed",
+        actor_id: userId,
+        reason: "Tenant berhenti beroperasi.",
+      },
+      {
+        action: "tenant.package_changed",
+        actor_id: userId,
+        reason: "Turun ke paket outlet dasar.",
+      },
+    ]);
   });
 
   it("TEN-04 refuses a support session until MFA verification exists", async () => {

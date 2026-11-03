@@ -352,18 +352,28 @@ afterAll(async () => {
         [tenant, createdRoles],
       );
     });
-  await asOwner(otherTenant, async (client) => {
-    await client.query("DELETE FROM outlets WHERE tenant_id = $1", [
-      otherTenant,
-    ]);
-    await client.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
-      otherTenant,
-    ]);
-    await client.query("DELETE FROM brands WHERE tenant_id = $1", [
-      otherTenant,
-    ]);
-  });
-  await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
+  // platformbe's 0050 constrains audit_logs.outlet_id to outlets, and audit
+  // rows are append-only: an outlet that an audited action referenced cannot be
+  // deleted any more. Leave that fixture tenant in place instead of failing the
+  // suite (the database is disposable per run).
+  const referenced = await owner.query(
+    "SELECT 1 FROM audit_logs WHERE tenant_id = $1 AND outlet_id IS NOT NULL LIMIT 1",
+    [otherTenant],
+  );
+  if ((referenced.rowCount ?? 0) === 0) {
+    await asOwner(otherTenant, async (client) => {
+      await client.query("DELETE FROM outlets WHERE tenant_id = $1", [
+        otherTenant,
+      ]);
+      await client.query("DELETE FROM legal_entities WHERE tenant_id = $1", [
+        otherTenant,
+      ]);
+      await client.query("DELETE FROM brands WHERE tenant_id = $1", [
+        otherTenant,
+      ]);
+    });
+    await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
+  }
   await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await owner.end();
 });

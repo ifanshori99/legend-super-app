@@ -150,6 +150,10 @@ beforeEach(async () => {
   await owner.query("DELETE FROM wa_inbound_messages");
   await owner.query("DELETE FROM login_challenges");
   await owner.query("DELETE FROM user_identities");
+  await owner.query(
+    'DELETE FROM role_assignments WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
+    ["%@wa.invalid"],
+  );
   await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
 });
 
@@ -157,6 +161,10 @@ afterAll(async () => {
   await owner.query("DELETE FROM wa_inbound_messages");
   await owner.query("DELETE FROM login_challenges");
   await owner.query("DELETE FROM user_identities");
+  await owner.query(
+    'DELETE FROM role_assignments WHERE user_id IN (SELECT id FROM "user" WHERE email LIKE $1)',
+    ["%@wa.invalid"],
+  );
   await owner.query('DELETE FROM "user" WHERE email LIKE $1', ["%@wa.invalid"]);
   await owner.query("DELETE FROM tenant_integrations WHERE tenant_id = $1", [
     TENANT_B,

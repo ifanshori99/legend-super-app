@@ -12,6 +12,11 @@ import { reportViewerMessages } from "./report-viewer.ts";
 import { shareholderHomeMessages } from "./shareholder-home.ts";
 import { accessMessages } from "./access.ts";
 import { accountingMessages } from "./accounting.ts";
+import { accountingApMessages } from "./accounting-ap.ts";
+import { accountingCashMessages } from "./accounting-cash.ts";
+import { accountingReportMessages } from "./accounting-report.ts";
+import { accountingShareMessages } from "./accounting-share.ts";
+import { accountingTaxMessages } from "./accounting-tax.ts";
 import { kdsMessages } from "./kds.ts";
 import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
@@ -33,6 +38,14 @@ import { inventoryHppMessages } from "./ws06-hpp.ts";
 import { inventorySuppliersMessages } from "./ws06-suppliers.ts";
 import { inventoryReceivingMessages } from "./ws06-receiving.ts";
 import { menuImportMessages } from "./ws03-menu-import.ts";
+import { attendanceQrMessages } from "./ws10-attendance-qr.ts";
+import { employeeMasterMessages } from "./ws10-employee-master.ts";
+import { learningMessages } from "./ws10-learning.ts";
+import { lifecycleMessages } from "./ws10-lifecycle.ts";
+import { payrollConfigMessages } from "./ws10-payroll-config.ts";
+import { payrollRunMessages } from "./ws10-payroll-run.ts";
+import { payslipMessages } from "./ws10-payslip.ts";
+import { rosterMessages } from "./ws10-roster.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -86,7 +99,28 @@ export const id = {
   // Promo engine admin (PRD §3.21), own file (legend-oadp).
   promo: promoMessages,
   // Accounting back office (PRD §3.19), own file for the parallel WS-07 beads.
-  accounting: accountingMessages,
+  accounting: {
+    ...accountingMessages,
+    // WS-07 sibling screens, one catalog file per bead so the five parallel
+    // beads never edit the same object: cash & bank (legend-53q), tax
+    // (legend-5fdy), payables/assets/budgets (legend-m4zn), statements &
+    // period close (legend-rx0h), profit share (legend-ogx3).
+    cash: accountingCashMessages,
+    tax: accountingTaxMessages,
+    ap: accountingApMessages,
+    report: accountingReportMessages,
+    share: accountingShareMessages,
+  },
+  // WS-10 HRIS screens (PRD §3 F26-F32): one file per bead so the parallel
+  // squad never edits the same catalog lines.
+  employeeMaster: employeeMasterMessages,
+  attendanceQr: attendanceQrMessages,
+  roster: rosterMessages,
+  lifecycle: lifecycleMessages,
+  payrollConfig: payrollConfigMessages,
+  payrollRun: payrollRunMessages,
+  payslip: payslipMessages,
+  learning: learningMessages,
   common: {
     save: "Simpan",
     cancel: "Batal",
