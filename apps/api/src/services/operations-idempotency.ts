@@ -14,6 +14,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   CoreError,
   idempotencyKeySchema,
+  outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type * as schema from "../db/schema/index.ts";
@@ -87,7 +88,7 @@ export async function storeIdempotentResult(
 ): Promise<void> {
   await tx.insert(operationsIdempotency).values({
     tenantId: context.tenant.tenantId,
-    outletId: input.outletId,
+    outletId: outletIdSchema.parse(input.outletId),
     key: idempotencyKeySchema.parse(input.key),
     fingerprint: input.fingerprint,
     resultTable: input.resultTable,
