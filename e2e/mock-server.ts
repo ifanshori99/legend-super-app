@@ -6,8 +6,8 @@
 // builds and ignores those files, because a production build compiles mock mode
 // out (docs/frontend.md).
 //
-// A mock spec is named `<name>.mock.spec.ts` (the convention for new work) or
-// `legend-<bead>.spec.ts` (what earlier beads used before this runner existed).
+// A mock spec is named `<name>.mock.spec.ts`; every earlier `legend-<bead>.spec.ts`
+// was converted (beads legend-xsau, legend-ny7j), so that is the only pattern.
 // Any other `*.spec.ts` belongs to the production e2e project.
 
 // Parallel worktrees each run their own mock server, so the port is
@@ -24,7 +24,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535)
 
 export const MOCK_WEB_URL = `http://localhost:${port}`;
 
-export const MOCK_SPEC_PATTERNS = ["**/*.mock.spec.ts", "**/legend-*.spec.ts"];
+export const MOCK_SPEC_PATTERNS = ["**/*.mock.spec.ts"];
 
 // Specs written before this runner self-skip unless a mock server address is
 // set, so a stray `playwright test` never fails on a server nobody started.

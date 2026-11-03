@@ -1,7 +1,7 @@
 // The mock-mode runner's own smoke test (bead legend-n2sp). It proves what
 // `pnpm test:e2e:mock` promises: a Vite dev server with VITE_API_MOCK=true, no
 // API and no database, answering contract-backed endpoints from @starter/shared
-// fixtures. Feature specs (e2e/*.mock.spec.ts, e2e/legend-*.spec.ts) ride on
+// fixtures. Feature specs (e2e/*.mock.spec.ts) ride on
 // the same project.
 import { expect, test } from "@playwright/test";
 import {
