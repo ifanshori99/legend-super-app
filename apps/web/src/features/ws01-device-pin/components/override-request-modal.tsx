@@ -318,13 +318,15 @@ function ModalBody({
 
       {method === "pin" ? (
         <div className="grid gap-3" data-attempt={attempt}>
-          <FormField label={t("devicePin.error.approver")}>
+          <FormField label={t("devicePin.override.approverLabel")}>
             <Select
               value={approverId ?? undefined}
               onValueChange={(value) => setApproverId(value)}
             >
               <SelectTrigger>
-                <SelectValue placeholder={t("devicePin.error.approver")} />
+                <SelectValue
+                  placeholder={t("devicePin.override.approverLabel")}
+                />
               </SelectTrigger>
               <SelectContent>
                 {roster.map((entry) => (
