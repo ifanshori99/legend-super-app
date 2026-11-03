@@ -27,16 +27,10 @@ import {
   type SQL,
 } from "drizzle-orm";
 import {
-  businessDateSchema,
   createUlid,
-  cursorPageQuerySchema,
-  decimal4Schema,
   encodeCursor,
   formatDecimal4,
-  isoDateTimeSchema,
-  outletIdSchema,
   parseDecimal4,
-  uuidSchema,
   z,
   type Decimal4,
   type ScopedTenantContext,
@@ -44,11 +38,10 @@ import {
 import {
   effectiveParLevel,
   inventoryEvents,
-  inventoryItemIdSchema,
-  nonnegativeDecimal4Schema,
   parStatus,
-  stockBatchIdSchema,
-  stockLocationIdSchema,
+  stockAlertQuerySchema,
+  stockAlertSchema,
+  type StockAlert,
 } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
 import {
@@ -77,33 +70,6 @@ import {
 import type { AlertEvaluationResult } from "./inventory-expiry.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
-
-export const stockAlertKindSchema = z.enum([
-  "par_critical",
-  "expiring_soon",
-  "expired",
-]);
-
-export const stockAlertSchema = z.strictObject({
-  id: uuidSchema,
-  outletId: outletIdSchema,
-  locationId: stockLocationIdSchema,
-  inventoryItemId: inventoryItemIdSchema,
-  batchId: stockBatchIdSchema.nullable(),
-  kind: stockAlertKindSchema,
-  /** On hand (par) or left in the batch (expiry) when the alert was raised. */
-  quantity: decimal4Schema,
-  parMin: nonnegativeDecimal4Schema.nullable(),
-  expiresOn: businessDateSchema.nullable(),
-  raisedAt: isoDateTimeSchema,
-});
-export type StockAlert = z.infer<typeof stockAlertSchema>;
-
-export const stockAlertQuerySchema = cursorPageQuerySchema.extend({
-  outletId: outletIdSchema,
-  kind: stockAlertKindSchema.optional(),
-  locationId: stockLocationIdSchema.optional(),
-});
 
 type AlertRow = typeof inventoryStockAlerts.$inferSelect;
 

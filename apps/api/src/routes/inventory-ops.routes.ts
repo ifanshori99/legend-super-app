@@ -16,6 +16,11 @@
 // re-checks the permission against the order's own outlet. Services re-check
 // every permission inside their tenant transaction (deny by default).
 
+import {
+  expiryAlertQuerySchema,
+  stockAlertQuerySchema,
+  purchaseSuggestionQuerySchema,
+} from "@starter/shared/inventory";
 import { Router, type Request } from "express";
 import {
   createProductionOrderInputSchema,
@@ -36,24 +41,15 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
-import {
-  expiryAlertQuerySchema,
-  listExpiryAlerts,
-} from "../services/inventory-expiry.service.ts";
-import {
-  listStockAlerts,
-  stockAlertQuerySchema,
-} from "../services/inventory-par-alerts.service.ts";
+import { listExpiryAlerts } from "../services/inventory-expiry.service.ts";
+import { listStockAlerts } from "../services/inventory-par-alerts.service.ts";
 import {
   createProductionOrder,
   listProductionOrders,
   PRODUCTION_WRITE_PERMISSION,
   transitionProductionOrderStatus,
 } from "../services/inventory-production.service.ts";
-import {
-  listPurchaseSuggestions,
-  purchaseSuggestionQuerySchema,
-} from "../services/inventory-suggestions.service.ts";
+import { listPurchaseSuggestions } from "../services/inventory-suggestions.service.ts";
 import {
   createStockTransfer,
   listStockTransfers,

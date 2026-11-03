@@ -11,20 +11,16 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import {
-  decimal4Schema,
   formatDecimal4,
-  outletIdSchema,
   parseDecimal4,
   z,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
-  inventoryItemIdSchema,
-  nonnegativeDecimal4Schema,
   parStatus,
-  positiveDecimal4Schema,
-  stockLocationIdSchema,
-  uomIdSchema,
+  purchaseSuggestionQuerySchema,
+  purchaseSuggestionSchema,
+  type PurchaseSuggestion,
 } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
 import { inventoryItems, stockLocations } from "../db/schema/inventory.ts";
@@ -36,28 +32,6 @@ import {
 } from "./inventory-par-alerts.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
-
-export const purchaseSuggestionSchema = z.strictObject({
-  outletId: outletIdSchema,
-  locationId: stockLocationIdSchema,
-  inventoryItemId: inventoryItemIdSchema,
-  baseUomId: uomIdSchema,
-  /** May be negative when real-time sale deduction ran ahead of a receipt. */
-  onHand: decimal4Schema,
-  parMin: nonnegativeDecimal4Schema,
-  parMax: nonnegativeDecimal4Schema,
-  suggestedQty: positiveDecimal4Schema,
-  /** Which par applied: the location override or the item default. */
-  parSource: z.enum(["location", "item_default"]),
-  /** Rule basis; `forecast` joins once AI-07 lands (legend-hkd4). */
-  basis: z.literal("par_level"),
-});
-export type PurchaseSuggestion = z.infer<typeof purchaseSuggestionSchema>;
-
-export const purchaseSuggestionQuerySchema = z.strictObject({
-  outletId: outletIdSchema,
-  locationId: stockLocationIdSchema.optional(),
-});
 
 /**
  * GET purchase suggestions for one outlet, most critical first (lowest

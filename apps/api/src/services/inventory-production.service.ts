@@ -67,14 +67,9 @@ import {
 import { evaluateParAlertsInTransaction } from "./inventory-par-alerts.service.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 
-/**
- * The contract input, plus an optional production location. The contract has
- * no `locationId` yet (proposed in the bead report); service callers (the
- * WS-14 prep list, legend-sdet) and a future contract field pass it here.
- */
 export type CreateProductionOrderInput = z.infer<
   typeof createProductionOrderInputSchema
-> & { locationId?: string };
+>;
 export type TransitionProductionOrderInput = z.infer<
   typeof transitionProductionOrderInputSchema
 >;
@@ -82,10 +77,11 @@ export type ProductionOrderQuery = z.infer<typeof productionOrderQuerySchema>;
 
 /**
  * Production is recipe work done by the kitchen (PRD §17); the catalog has no
- * production code, so writes need `recipe.manage` (kitchen lead, GM, owner).
- * See the bead report: a dedicated `inventory.production.record` is proposed.
+ * production code, so writes need `inventory.production.record` (coordinator decision:
+ * kitchen lead, outlet manager, tenant admin).
  */
-export const PRODUCTION_WRITE_PERMISSION = "recipe.manage" as const;
+export const PRODUCTION_WRITE_PERMISSION =
+  "inventory.production.record" as const;
 const PRODUCTION_AUDIT_FIELDS = [
   "recipeId",
   "plannedQty",

@@ -347,6 +347,8 @@ export const createProductionOrderInputSchema = clientInputSchema({
   outletId: outletIdSchema,
   recipeId: recipeIdSchema,
   plannedQty: positiveDecimal4Schema,
+  /** Production location; omitted = the outlet's single active kitchen. */
+  locationId: stockLocationIdSchema.optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 

@@ -412,6 +412,7 @@ const accessBaseMessages = {
       },
       opname: { count: "Hitung stok opname" },
       waste: { record: "Catat waste" },
+      production: { record: "Catat produksi batch" },
       adjustment: { approve: "Setujui penyesuaian stok" },
       cost: { view: "Lihat biaya stok" },
     },

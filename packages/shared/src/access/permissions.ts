@@ -122,6 +122,7 @@ const entries = [
   ["inventory.stock.transfer", []],
   ["inventory.opname.count", []],
   ["inventory.waste.record", []],
+  ["inventory.production.record", []],
   ["inventory.adjustment.approve", ["approve"]],
   ["inventory.cost.view", ["finance"]],
   ["recipe.manage", []],

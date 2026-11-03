@@ -9,6 +9,12 @@
 // Covers FEFO order, the no-oversell race, idempotency replay + fingerprint
 // mismatch, transfer atomicity and cost carry, production costing (INV-02),
 // par alert dedupe, the AI-08 rule, expiry alerts, TEN-01/TEN-03 denial.
+import type { StockLocationId } from "@starter/shared/inventory";
+import {
+  expiryAlertQuerySchema,
+  stockAlertQuerySchema,
+  purchaseSuggestionQuerySchema,
+} from "@starter/shared/inventory";
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -46,7 +52,6 @@ import {
 } from "../services/inventory.service.ts";
 import {
   allocateFefo,
-  expiryAlertQuerySchema,
   fefoAvailability,
   listExpiryAlerts,
 } from "../services/inventory-expiry.service.ts";
@@ -54,19 +59,13 @@ import {
   setInventoryRecipeSource,
   type RecipeForStock,
 } from "../services/inventory-ops.shared.ts";
-import {
-  listStockAlerts,
-  stockAlertQuerySchema,
-} from "../services/inventory-par-alerts.service.ts";
+import { listStockAlerts } from "../services/inventory-par-alerts.service.ts";
 import {
   createProductionOrder,
   listProductionOrders,
   transitionProductionOrderStatus,
 } from "../services/inventory-production.service.ts";
-import {
-  listPurchaseSuggestions,
-  purchaseSuggestionQuerySchema,
-} from "../services/inventory-suggestions.service.ts";
+import { listPurchaseSuggestions } from "../services/inventory-suggestions.service.ts";
 import {
   createStockTransfer,
   listStockTransfers,
@@ -900,7 +899,7 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
         plannedQty: "2000.0000",
         idempotencyKey: createKey,
       }),
-      locationId: fx.kitchen,
+      locationId: fx.kitchen as StockLocationId,
     };
     const order = await createProductionOrder(
       tenantContext(),
@@ -973,7 +972,7 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
         plannedQty: "100000.0000",
         idempotencyKey: key("prod"),
       }),
-      locationId: fx.kitchen,
+      locationId: fx.kitchen as StockLocationId,
     });
     await transition(order.id, "start");
     await rejectsWithStatus(
@@ -1001,7 +1000,7 @@ describe("F17 production batches (PRD §17 Produksi Batch, INV-02)", () => {
         plannedQty: "1000.0000",
         idempotencyKey: key("prod"),
       }),
-      locationId: fx.kitchen,
+      locationId: fx.kitchen as StockLocationId,
     });
     await transition(order.id, "start");
     const results = await Promise.allSettled([
@@ -1325,7 +1324,7 @@ describe("TEN-01/TEN-03 isolation of the operation tables", () => {
     });
     await rejectsWithStatus(
       listWasteLogs(
-        tenantContext(randomUUID()),
+        tenantContext(randomUUID() as never),
         ownerUserId,
         wasteLogQuerySchema.parse({
           outletId: outletA,

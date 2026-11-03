@@ -26,9 +26,7 @@ import {
 import {
   addBusinessDays,
   businessDateOf,
-  businessDateSchema,
   formatDecimal4,
-  outletIdSchema,
   parseDecimal4,
   z,
   type BusinessDate,
@@ -39,13 +37,14 @@ import {
   batchExpiryStatus,
   DEFAULT_EXPIRY_WARNING_DAYS,
   fefoSort,
-  inventoryItemIdSchema,
-  positiveDecimal4Schema,
   stockBatchSchema,
-  stockLocationIdSchema,
   type StockBatch,
+  type StockBatchId,
   type StockMovementType,
   type StockSourceType,
+  expiryAlertQuerySchema,
+  expiryAlertSchema,
+  type ExpiryAlert,
 } from "@starter/shared/inventory";
 import { db } from "../db/index.ts";
 import {
@@ -74,24 +73,6 @@ import { recordStockMovementInTransaction } from "./inventory.service.ts";
  * window, with the quantity the FEFO attribution says is still on hand.
  * `fefoRank` 1 is the batch to use first for its location + item.
  */
-export const expiryAlertSchema = z.strictObject({
-  batch: stockBatchSchema,
-  status: z.enum(["expired", "expiring_soon"]),
-  /** Negative when already expired; 0 = expires today (outlet business date). */
-  daysUntilExpiry: z.number().int(),
-  availableQty: positiveDecimal4Schema,
-  fefoRank: z.number().int().positive(),
-  /** The outlet business date the status was computed for (D-CORE-6). */
-  asOf: businessDateSchema,
-  warnDays: z.number().int().min(1).max(365),
-});
-export type ExpiryAlert = z.infer<typeof expiryAlertSchema>;
-
-export const expiryAlertQuerySchema = z.strictObject({
-  outletId: outletIdSchema,
-  locationId: stockLocationIdSchema.optional(),
-  inventoryItemId: inventoryItemIdSchema.optional(),
-});
 
 // ---- Pure FEFO helpers ----------------------------------------------------
 
@@ -527,7 +508,9 @@ export async function evaluateExpiryAlertsForOutlet(
   let resolved = 0;
   const stillOpen = new Set<string>();
   for (const alert of open) {
-    const want = alert.batchId ? desired.get(alert.batchId) : undefined;
+    const want = alert.batchId
+      ? desired.get(alert.batchId as StockBatchId)
+      : undefined;
     if (want && want.status === alert.kind) {
       stillOpen.add(`${alert.batchId}:${alert.kind}`);
       continue;
