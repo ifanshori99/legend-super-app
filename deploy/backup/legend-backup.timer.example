@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Legend PostgreSQL base backup
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=legend-backup.service
+
+[Install]
+WantedBy=timers.target
