@@ -26,9 +26,9 @@ export const facilityReportMessages = {
       revpashTitle: "RevPASH dan okupansi zona",
       revpashBody:
         "RevPASH adalah pendapatan per kursi tersedia per jam: omzet zona dibagi (kursi tersedia × jam buka). Bandingkan zona pada jam yang sama, bukan pada jam berbeda. Okupansi tinggi dengan RevPASH rendah berarti kursi terisi lama tetapi belanjanya kecil, sedangkan RevPASH tinggi dengan okupansi sedang berarti perputaran dan belanja tamu sehat.",
-      utilizationTitle: "Utilisasi bilik per jam",
+      utilizationTitle: "Utilisasi bilik",
       utilizationBody:
-        "Utilisasi bilik membandingkan menit bilik terpakai dengan menit bilik tersedia pada jam buka, dirata-ratakan untuk periode terpilih. Baca per bilik untuk melihat bilik yang jarang terpakai (misalnya karena pembersihan atau perawatan) dan bandingkan dengan rata-rata. Rincian per jam ada di laporan RevPASH yang memecah zona per jam; sesi dihitung dari tiket yang terpakai, bukan tiket yang terjual.",
+        "Utilisasi bilik membandingkan menit bilik terpakai dengan menit bilik tersedia pada jam buka, dirata-ratakan untuk periode terpilih. Baca per bilik untuk melihat bilik yang jarang terpakai (misalnya karena pembersihan atau perawatan) dan bandingkan dengan rata-rata. Sesi dihitung dari tiket yang terpakai, bukan tiket yang terjual.",
       quotaTitle: "Langganan, kuota Wi-Fi, dan konversi",
       quotaBody:
         "Langganan aktif dibaca sebagai jumlah terakhir pada periode, bukan penjumlahan harian. Kuota Wi-Fi menunjukkan GB yang terpakai tamu. Konversi ke F&B adalah sesi shower yang disertai pesanan F&B dibagi seluruh sesi shower, jadi konversi tinggi berarti tamu fasilitas juga membelanjakan di kafe.",

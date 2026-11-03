@@ -168,14 +168,16 @@ const FACILITY_PRODUCTS: readonly FacilityProduct[] = [
   {
     name: showerFacility.name,
     subscriptions: 18,
-    revenueIdr: 1_050_000,
+    revenueIdr: 1_350_000,
     wifiSessions: 60,
     wifiQuotaGb: 10.2,
   },
   {
     name: wfcFacility.name,
     subscriptions: 5,
-    revenueIdr: 300_000,
+    // `shower_revenue` is shower-room tickets + subscriptions only, so the
+    // WFC row carries none of it (the whole Rp1.350.000 is the shower room's).
+    revenueIdr: 0,
     wifiSessions: 150,
     wifiQuotaGb: 32.5,
   },

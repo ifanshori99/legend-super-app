@@ -10,7 +10,6 @@ import { Badge } from "@/components/ui/badge";
 import { CardShell, CardShellBody } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback-state";
 import {
-  REPORT_FAMILY_INFO,
   reportMetricByCode,
   type ReportDefinition,
 } from "@starter/shared/dashboard";
@@ -59,9 +58,6 @@ function ReportCard({ report }: { report: ReportDefinition }) {
                   {report.description}
                 </p>
               </div>
-              <Badge tone="neutral">
-                {REPORT_FAMILY_INFO[report.family].label}
-              </Badge>
             </div>
             <dl className="grid gap-2">
               <DetailLine
