@@ -39,6 +39,10 @@ export default defineConfig({
         WEB_URL,
         DATABASE_URL: testUrl,
         BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET ?? "",
+        // NODE_ENV=production requires its own pin pepper (legend-dxb).
+        STAFF_PIN_PEPPER:
+          process.env.STAFF_PIN_PEPPER ??
+          "e2e-only-staff-pin-pepper-not-a-secret-000",
         LOG_LEVEL: "warn",
       },
       gracefulShutdown: { signal: "SIGTERM", timeout: 5000 },

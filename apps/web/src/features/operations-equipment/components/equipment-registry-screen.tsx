@@ -89,7 +89,7 @@ export function EquipmentRegistryScreen() {
   const vendorName = new Map(vendorRows.map((row) => [row.id, row.name]));
 
   const down = rows.filter((row) => row.status === "broken");
-  const due = dueSchedules(scheduleRows, now);
+  const due = dueSchedules(scheduleRows, now, timeZone);
   const monthlyCost = monthlyServiceCostIdr(ticketRows, now, timeZone);
   const needle = query.trim().toLocaleLowerCase("id-ID");
   const visible = rows.filter((row) => {
@@ -416,7 +416,9 @@ export function EquipmentRegistryScreen() {
               const schedule = nextSchedule(scheduleRows, row.id);
               const last = lastResolvedTicket(ticketRows, row.id);
               const vendorId = schedule?.vendorId ?? last?.vendorId ?? null;
-              const days = schedule ? daysUntil(schedule.nextDueAt, now) : null;
+              const days = schedule
+                ? daysUntil(schedule.nextDueAt, now, timeZone)
+                : null;
               const timing = schedule
                 ? days !== null && days < 0
                   ? t("opsEquipment.equipment.overdueDays", {

@@ -38,6 +38,8 @@ export function unitBoardQuery(facilityId: string) {
     queryKey: staffKeys.board(facilityId),
     queryFn: ({ signal }) => api.fetchUnitBoard(facilityId, signal),
     staleTime: 0,
+    // A tablet on the wall: unit status changes elsewhere (session end, POS).
+    refetchInterval: 15_000,
   });
 }
 
@@ -47,5 +49,9 @@ export function incidentsQuery(facilityId: string) {
     queryKey: staffKeys.incidents(facilityId),
     queryFn: ({ signal }) => api.fetchIncidents(facilityId, signal),
     staleTime: 0,
+    // FAC-08 targets staff notification within 5 seconds; poll inside that
+    // window until the edge push channel exists (WS-02).
+    refetchInterval: 4_000,
+    refetchIntervalInBackground: true,
   });
 }

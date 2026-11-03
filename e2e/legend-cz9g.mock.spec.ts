@@ -138,8 +138,8 @@ test("OPS-04 equipment detail shows status, service history and cost history", a
     "Belum ada jadwal servis.",
   );
 
-  // The espresso machine has a resolved ticket with a cost, so its detail
-  // carries the cost history.
+  // The espresso machine has no resolved ticket with a cost (the oven carries
+  // the fixture's cost), so its cost history is honestly empty.
   await page.goto(
     `/operasional/peralatan/${ESPRESSO_EQUIPMENT_ID}?mock=normal`,
   );
@@ -152,6 +152,37 @@ test("OPS-04 equipment detail shows status, service history and cost history", a
   await expect(page.locator('[data-slot="cost-history"]')).toContainText(
     "Belum ada biaya servis tercatat.",
   );
+});
+
+test("OPS-04 breakdown ticket moves reported -> in progress -> resolved with a rupiah cost", async ({
+  page,
+}) => {
+  await openRegistry(page);
+  await page
+    .getByRole("link", { name: "Blender Bar Nonkopi", exact: true })
+    .click();
+  const ticket = page
+    .locator('[data-slot="maintenance-ticket"]')
+    .filter({ hasText: "Pisau blender berhenti berputar" });
+  await expect(ticket).toContainText("Dilaporkan");
+  // The contract machine offers only start/cancel on a reported ticket.
+  await expect(
+    ticket.getByRole("button", { name: "Selesaikan tiket" }),
+  ).toHaveCount(0);
+
+  await ticket.getByRole("button", { name: "Mulai perawatan" }).click();
+  await expect(ticket).toContainText("Dikerjakan");
+
+  await ticket.getByRole("button", { name: "Selesaikan tiket" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Biaya servis (Rp)").fill("350000");
+  await dialog.getByRole("button", { name: "Tandai selesai" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(ticket).toContainText("Selesai");
+  await expect(ticket.getByRole("button")).toHaveCount(0);
+  const costs = page.locator('[data-slot="cost-history"]');
+  await expect(costs).toContainText("350.000");
+  await expect(costs).not.toContainText("Belum ada biaya servis tercatat.");
 });
 
 test("OPS-05 handover cannot close before the receiving shift confirms", async ({
@@ -182,7 +213,7 @@ test("OPS-05 handover cannot close before the receiving shift confirms", async (
   });
   await expect(blockedClose).toBeDisabled();
   await expect(card).toContainText(
-    "Shift penerima harus mengonfirmasi sebelum serah terima dapat ditutup (OPS-05).",
+    "Shift penerima harus mengonfirmasi sebelum serah terima dapat ditutup.",
   );
 
   await card.getByRole("button", { name: "Konfirmasi penerimaan" }).click();

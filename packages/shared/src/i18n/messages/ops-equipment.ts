@@ -60,8 +60,7 @@ export const opsEquipmentMessages = {
     overdueDays: "Terlambat {days} hari",
     noSchedule: "Belum dijadwalkan",
     menuDisabledTitle: "Menu dinonaktifkan",
-    menuDisabledHint:
-      "Peralatan rusak menonaktifkan menu yang terhubung (OPS-04).",
+    menuDisabledHint: "Peralatan rusak menonaktifkan menu yang terhubung.",
     menuDisabledEmpty: "Tidak ada menu yang dinonaktifkan saat ini.",
     menuDisabledFor: "{equipment}",
     menuUnavailable: "Nama menu belum dapat dimuat.",
@@ -77,7 +76,7 @@ export const opsEquipmentMessages = {
       maxCelsius: "Suhu maksimum (°C)",
       linkedMenus: "Menu yang terhubung",
       linkedMenusHint:
-        "Saat peralatan rusak, menu ini ditandai tidak tersedia (OPS-04).",
+        "Saat peralatan rusak, menu ini ditandai tidak tersedia.",
       menusLoading: "Memuat menu…",
       menusFailed: "Menu tidak dapat dimuat.",
       menusEmpty: "Belum ada menu untuk dihubungkan.",
@@ -105,8 +104,7 @@ export const opsEquipmentMessages = {
       urgency: "Urgensi",
       description: "Deskripsi kerusakan",
       photo: "Foto kerusakan",
-      photoHint:
-        "Wajib satu foto (PRD F45). Pratinjau lokal; unggahan media menyusul.",
+      photoHint: "Wajib satu foto kerusakan.",
       photoChoose: "Pilih foto",
       photoSelected: "Foto dipilih: {name}",
       photoAlt: "Pratinjau foto kerusakan {name}",
@@ -115,7 +113,7 @@ export const opsEquipmentMessages = {
       cost: "Perkiraan biaya (Rp)",
       marksBroken: "Tandai peralatan rusak",
       marksBrokenHint:
-        "Menu yang terhubung dinonaktifkan sampai peralatan kembali beroperasi (OPS-04).",
+        "Menu yang terhubung dinonaktifkan sampai peralatan kembali beroperasi.",
       affectedMenus: "Menu yang akan dinonaktifkan",
       affectedMenusEmpty:
         "Peralatan ini belum punya menu terhubung, jadi tidak ada menu yang dinonaktifkan.",
@@ -253,7 +251,7 @@ export const opsEquipmentMessages = {
     confirmHint: "Hanya shift penerima yang boleh mengonfirmasi.",
     close: "Tutup serah terima",
     closeBlocked:
-      "Shift penerima harus mengonfirmasi sebelum serah terima dapat ditutup (OPS-05).",
+      "Shift penerima harus mengonfirmasi sebelum serah terima dapat ditutup.",
     closed: "Ditutup",
     closeTitle: "Tutup serah terima?",
     closeHint: "Setelah ditutup, serah terima menjadi arsip shift.",
@@ -278,6 +276,7 @@ export const opsEquipmentMessages = {
         "Daftar shift belum tersedia dari API. Hubungi admin untuk melengkapi data shift.",
       submit: "Kirim serah terima",
       invalid: "Periksa isian serah terima.",
+      sameShift: "Shift penerima harus berbeda dari shift yang menyerahkan.",
     },
     toasts: {
       created: "Serah terima dikirim.",

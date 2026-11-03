@@ -129,16 +129,35 @@ export function canRunTicketAction(
 
 export type ServiceTiming = "overdue" | "due_soon" | "scheduled";
 
-/** Days until `dueAt` (negative when overdue), rounded up at the day boundary. */
-export function daysUntil(dueAt: string, now: Date): number {
-  return Math.ceil((Date.parse(dueAt) - now.getTime()) / DAY_MS);
+/** The outlet's calendar date ("YYYY-MM-DD") for an instant. */
+function outletDateKey(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+/** Calendar days from today to the due date, both read in the outlet time
+ * zone (negative when overdue, 0 when due today). */
+export function daysUntil(dueAt: string, now: Date, timeZone: string): number {
+  const due = Date.parse(`${outletDateKey(new Date(dueAt), timeZone)}T00:00Z`);
+  const today = Date.parse(`${outletDateKey(now, timeZone)}T00:00Z`);
+  return Math.round((due - today) / DAY_MS);
+}
+
+/** Overdue once the outlet's calendar date is past the due date; due soon
+ * inside the reminder horizon (today included). */
 export function serviceTiming(
   schedule: Pick<MaintenanceSchedule, "nextDueAt">,
   now: Date,
+  timeZone: string,
 ): ServiceTiming {
-  const days = daysUntil(schedule.nextDueAt, now);
+  const days = daysUntil(schedule.nextDueAt, now, timeZone);
   if (days < 0) return "overdue";
   if (days <= SERVICE_DUE_WINDOW_DAYS) return "due_soon";
   return "scheduled";
@@ -148,9 +167,12 @@ export function serviceTiming(
 export function dueSchedules(
   schedules: readonly MaintenanceSchedule[],
   now: Date,
+  timeZone: string,
 ): MaintenanceSchedule[] {
   return schedules
-    .filter((schedule) => serviceTiming(schedule, now) !== "scheduled")
+    .filter(
+      (schedule) => serviceTiming(schedule, now, timeZone) !== "scheduled",
+    )
     .sort(
       (left, right) => Date.parse(left.nextDueAt) - Date.parse(right.nextDueAt),
     );
@@ -239,11 +261,46 @@ export function formatDateTime(iso: string | null, timeZone: string): string {
   }).format(new Date(iso));
 }
 
-/** "2026-12-01T09:00" from a datetime-local field → ISO instant. */
-export function datetimeLocalToIso(value: string): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+/** The outlet's UTC offset (ms) at an instant. */
+function timeZoneOffsetMs(instant: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(instant));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((item) => item.type === type)?.value ?? "0");
+  const wall = Date.UTC(
+    part("year"),
+    part("month") - 1,
+    part("day"),
+    part("hour"),
+    part("minute"),
+    part("second"),
+  );
+  return wall - Math.floor(instant / 1000) * 1000;
+}
+
+/** "2026-12-01T09:00" from a datetime-local field, read as wall-clock time in
+ * the outlet time zone (the inverse of `isoToDatetimeLocal`) → ISO instant. */
+export function datetimeLocalToIso(
+  value: string,
+  timeZone: string,
+): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!match) return null;
+  const field = (index: number) => Number(match[index] ?? "");
+  const wall = Date.UTC(field(1), field(2) - 1, field(3), field(4), field(5));
+  if (Number.isNaN(wall)) return null;
+  // Two passes settle the offset across a DST edge.
+  let instant = wall - timeZoneOffsetMs(wall, timeZone);
+  instant = wall - timeZoneOffsetMs(instant, timeZone);
+  return new Date(instant).toISOString();
 }
 
 /** ISO instant → the `YYYY-MM-DDTHH:mm` a datetime-local field expects, in the

@@ -4,6 +4,7 @@
 // without a booth), and every acknowledgement carries the action taken plus the
 // seconds it took, so the five-second target is visible.
 import * as React from "react";
+import { cn } from "cn";
 import { RefreshCw, ShieldAlert, WifiOff } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
@@ -302,7 +303,11 @@ export function IncidentScreen({ facilityId }: { facilityId?: string }) {
                         data-incident-id={incident.id}
                         data-incident-status={open ? "open" : "responded"}
                         data-incident-type={incident.type}
-                        className="h-full"
+                        // Urgent (Q25): solid pill + 2px border + 6px start rule.
+                        className={cn(
+                          "h-full",
+                          open && "border-2 border-s-[6px] border-danger",
+                        )}
                       >
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-1.5">

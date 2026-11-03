@@ -133,7 +133,9 @@ test("legend-er32 F25 Model Generik: an area and a unit are added", async ({
   await page.getByRole("button", { name: "Tambah area" }).click();
   await page.getByLabel("Nama area").fill("Area Keluarga");
   await page.getByRole("button", { name: "Simpan area" }).click();
-  await expect(page.getByText("Area ditambahkan.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Area ditambahkan.", { exact: true }),
+  ).toBeVisible();
   const area = page
     .locator('[data-slot="facility-area"]')
     .filter({ hasText: "Area Keluarga" });
@@ -142,7 +144,9 @@ test("legend-er32 F25 Model Generik: an area and a unit are added", async ({
   await area.getByRole("button", { name: "Tambah unit" }).click();
   await page.getByLabel("Kode unit").fill("K1");
   await page.getByRole("button", { name: "Simpan unit" }).click();
-  await expect(page.getByText("Unit ditambahkan.", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Unit ditambahkan.", { exact: true }),
+  ).toBeVisible();
   await expect(
     area.locator('[data-slot="facility-unit"]').filter({ hasText: "K1" }),
   ).toBeVisible();

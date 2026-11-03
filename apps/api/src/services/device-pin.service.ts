@@ -1,0 +1,499 @@
+// Staff device pins (bead legend-dxb; PRD v1.7 §3 F6 "Staf — PIN Perangkat":
+// "staf berganti pengguna dengan PIN pribadi 6 digit pada perangkat
+// terdaftar. PIN dikunci setelah 5 kali salah"; §6 B staff_pins "(T, E)").
+//
+// - Set: a staff member sets their own pin at an outlet they belong to, or a
+//   holder of `device.registry.manage` on the outlet sets it for a member of
+//   that outlet (identity endpoints contract). A trivial pin is refused
+//   (WEAK_STAFF_PIN). Setting clears the counter and any lock.
+// - Verify: one staff_pins row is locked FOR UPDATE for the whole attempt, so
+//   concurrent guesses are counted one after the other and can never exceed
+//   the limit; the counter commits in its own transaction even though the
+//   caller then answers PIN_INVALID / PIN_LOCKED. The fifth consecutive miss
+//   locks for STAFF_PIN_LOCK_MINUTES (shared machine); a correct pin resets.
+//   A locked row is refused without checking the pin (no oracle while
+//   locked). An unknown user or missing row costs the same scrypt and answers
+//   the same PIN_INVALID.
+// - Edge: `exportStaffPinRecords` is the replication shape (hash only).
+//
+// Never log, audit or emit a pin. Audit and events carry ids only.
+
+import {
+  type StaffPinEdgeRecord,
+  staffPinEdgeRecordSchema,
+  STAFF_PIN_HASH_ALGORITHM,
+  staffPinLockedEvent,
+  staffPinSetEvent,
+} from "@starter/shared/access/override";
+import { AccessError } from "@starter/shared/access";
+import {
+  CoreError,
+  outletIdSchema,
+  userIdSchema,
+  type ScopedTenantContext,
+  type TenantContext,
+} from "@starter/shared/core";
+import {
+  assertStrongStaffPin,
+  IdentityError,
+  isStaffPinLocked,
+  recordStaffPinAttempt,
+  staffPinSwitchSchema,
+  type StaffPinSwitch,
+} from "@starter/shared/identity";
+import { and, eq } from "drizzle-orm";
+import { db } from "../db";
+import { staffPins } from "../db/schema/device-pin";
+import { user } from "../db/schema/user";
+import { withTenant } from "../db/tenant";
+import { recordAudit } from "./audit-writer";
+import {
+  burnStaffPinCheck,
+  hashStaffPin,
+  verifyStaffPinHash,
+  type StaffPinBinding,
+} from "./device-pin-hash";
+import { STAFF_PIN_PEPPER_VERSION, staffPinPepper } from "./device-pin-pepper";
+import {
+  appendDevicePinEvent,
+  isOutletMember,
+  outletContext,
+  outletTarget,
+} from "./device-pin-support";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type Tx,
+} from "./permission-resolver";
+
+type PinRow = typeof staffPins.$inferSelect;
+
+// ------------------------------------------------- device → outlet (WS-02)
+
+/**
+ * Resolves the outlet a registered device belongs to. Device registration
+ * lives in WS-02 (legend-165), which installs the real resolver. Until then
+ * the default answers null and every device pin verify is refused (fail
+ * closed): a signed token alone never names an outlet.
+ */
+export type DeviceOutletResolver = (input: {
+  readonly tenantId: string;
+  readonly deviceId: string;
+}) => Promise<string | null>;
+
+const denyAllDevices: DeviceOutletResolver = async () => null;
+let deviceOutletResolver: DeviceOutletResolver = denyAllDevices;
+
+export function setDeviceOutletResolver(
+  next: DeviceOutletResolver | null,
+): void {
+  deviceOutletResolver = next ?? denyAllDevices;
+}
+
+// ------------------------------------------------------------------ helpers
+
+function bindingOf(row: Pick<PinRow, "tenantId" | "outletId" | "userId">) {
+  return {
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    userId: row.userId,
+  } satisfies StaffPinBinding;
+}
+
+function storedHashOf(row: PinRow) {
+  return {
+    salt: row.pinSalt,
+    pinHash: row.pinHash,
+    params: { N: row.kdfN, r: row.kdfR, p: row.kdfP, keyLength: 32 as const },
+  };
+}
+
+async function activeUser(tx: Tx, userId: string) {
+  const [row] = await tx
+    .select({
+      id: user.id,
+      name: user.name,
+      banned: user.banned,
+      createdAt: user.createdAt,
+    })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1);
+  return row && row.banned !== true ? row : null;
+}
+
+// --------------------------------------------------------------------- set
+
+export type SetStaffPinOptions = {
+  readonly now?: Date;
+  readonly deviceId?: string | null;
+};
+
+/**
+ * PUT /api/staff-pins/:outletId/:userId. Self, or `device.registry.manage` on
+ * the outlet for another member. The pin is hashed before the transaction and
+ * never stored, logged or audited.
+ */
+export async function setStaffPin(
+  tenant: TenantContext,
+  actorUserId: string,
+  target: { readonly outletId: string; readonly userId: string },
+  input: { readonly pin: string },
+  options: SetStaffPinOptions = {},
+): Promise<void> {
+  const now = options.now ?? new Date();
+  const actorId = userIdSchema.parse(actorUserId);
+  const outletId = outletIdSchema.parse(target.outletId);
+  const userId = userIdSchema.parse(target.userId);
+  assertStrongStaffPin(input.pin);
+  const self = actorId.toLowerCase() === userId.toLowerCase();
+  const context = outletContext(tenant, outletId);
+  const binding: StaffPinBinding = {
+    tenantId: tenant.tenantId,
+    outletId,
+    userId,
+  };
+  const hashed = await hashStaffPin({
+    pepper: staffPinPepper(tenant.tenantId),
+    binding,
+    pin: input.pin,
+  });
+
+  await withTenant(db, context, async (tx) => {
+    const actorData = await loadTenantAccessInTransaction(tx, context, actorId);
+    if (self) {
+      if (!isOutletMember(tenant, actorId, actorData, outletId, now))
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Anda tidak terdaftar di outlet ini.",
+        );
+    } else {
+      const actor = resolveAccessSnapshot({
+        tenant,
+        userId: actorId,
+        ...actorData,
+        mfaVerified: false,
+        now,
+      });
+      if (!actor.allows("device.registry.manage", outletTarget(outletId)))
+        throw new AccessError("PERMISSION_DENIED");
+      const targetData = await loadTenantAccessInTransaction(
+        tx,
+        context,
+        userId,
+      );
+      if (!isOutletMember(tenant, userId, targetData, outletId, now))
+        throw new CoreError("NOT_FOUND", "Staf tidak terdaftar di outlet ini.");
+    }
+    if (!(await activeUser(tx, userId)))
+      throw new CoreError("NOT_FOUND", "Staf tidak ditemukan.");
+
+    const [previous] = await tx
+      .select({ id: staffPins.id })
+      .from(staffPins)
+      .where(
+        and(
+          eq(staffPins.tenantId, tenant.tenantId),
+          eq(staffPins.outletId, outletId),
+          eq(staffPins.userId, userId),
+        ),
+      )
+      .for("update");
+    const values = {
+      pinHash: hashed.pinHash,
+      pinSalt: hashed.salt,
+      kdfN: hashed.params.N,
+      kdfR: hashed.params.r,
+      kdfP: hashed.params.p,
+      pepperVersion: STAFF_PIN_PEPPER_VERSION,
+      failedAttempts: 0,
+      lockedUntil: null,
+      setBy: actorId,
+      updatedAt: now,
+    };
+    const [row] = previous
+      ? await tx
+          .update(staffPins)
+          .set(values)
+          .where(eq(staffPins.id, previous.id))
+          .returning({ id: staffPins.id })
+      : await tx
+          .insert(staffPins)
+          .values({
+            tenantId: tenant.tenantId,
+            outletId,
+            userId,
+            createdAt: now,
+            ...values,
+          })
+          .returning({ id: staffPins.id });
+    if (!row) throw new Error("staff pin write returned no row");
+
+    await appendDevicePinEvent(tx, context, staffPinSetEvent, {
+      aggregateId: row.id,
+      outletId,
+      actor: { type: "user", id: actorId },
+      deviceId: options.deviceId ?? null,
+      now,
+      payload: { staffPinId: row.id, userId, setBy: actorId, self },
+    });
+    await recordAudit(
+      {
+        tenantId: tenant.tenantId,
+        outletId,
+        actorType: "user",
+        actorId,
+        deviceId: options.deviceId ?? null,
+        action: previous ? "staff_pin.reset" : "staff_pin.set",
+        objectType: "staff_pin",
+        objectId: row.id,
+        reason: null,
+        // Never the pin or its hash.
+        before: previous ? { userId } : null,
+        after: { userId, failedAttempts: 0, locked: false, self },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+  });
+}
+
+// ------------------------------------------------------------------ verify
+
+export type PinAttemptOutcome =
+  | { readonly kind: "ok"; readonly userId: string }
+  | { readonly kind: "invalid" }
+  | { readonly kind: "locked" }
+  | { readonly kind: "not_member" };
+
+/**
+ * One pin attempt for (outlet, user), counted and committed on its own
+ * transaction under the row lock. Returns the outcome instead of throwing so
+ * the counter survives; callers map it with `assertPinAttemptOk`.
+ */
+export async function attemptStaffPin(
+  tenant: TenantContext,
+  input: {
+    readonly outletId: string;
+    readonly userId: string;
+    readonly pin: string;
+    readonly deviceId?: string | null;
+    readonly now?: Date;
+  },
+): Promise<PinAttemptOutcome> {
+  const now = input.now ?? new Date();
+  const outletId = outletIdSchema.parse(input.outletId);
+  const parsedUser = userIdSchema.safeParse(input.userId);
+  const pepper = staffPinPepper(tenant.tenantId);
+  if (!parsedUser.success) {
+    await burnStaffPinCheck(pepper);
+    return { kind: "invalid" };
+  }
+  const userId = parsedUser.data;
+  const context = outletContext(tenant, outletId);
+  return withTenant(db, context, async (tx): Promise<PinAttemptOutcome> => {
+    const [row] = await tx
+      .select()
+      .from(staffPins)
+      .where(
+        and(
+          eq(staffPins.tenantId, tenant.tenantId),
+          eq(staffPins.outletId, outletId),
+          eq(staffPins.userId, userId),
+        ),
+      )
+      .for("update");
+    if (!row || row.pepperVersion !== STAFF_PIN_PEPPER_VERSION) {
+      await burnStaffPinCheck(pepper);
+      return { kind: "invalid" };
+    }
+    const state = {
+      failedAttempts: row.failedAttempts,
+      lockedUntil: row.lockedUntil?.toISOString() ?? null,
+    };
+    // §3 F6: a locked pin is refused without looking at the guess.
+    if (isStaffPinLocked(state, now)) return { kind: "locked" };
+    const correct = await verifyStaffPinHash({
+      pepper,
+      binding: bindingOf(row),
+      pin: input.pin,
+      stored: storedHashOf(row),
+    });
+    const next = recordStaffPinAttempt({ state, correct, now });
+    await tx
+      .update(staffPins)
+      .set({
+        failedAttempts: next.failedAttempts,
+        lockedUntil:
+          next.lockedUntil === null ? null : new Date(next.lockedUntil),
+        updatedAt: now,
+      })
+      .where(eq(staffPins.id, row.id));
+    if (!correct) {
+      if (next.lockedUntil === null) return { kind: "invalid" };
+      await appendDevicePinEvent(tx, context, staffPinLockedEvent, {
+        aggregateId: row.id,
+        outletId,
+        actor: { type: "system" },
+        deviceId: input.deviceId ?? null,
+        now,
+        payload: {
+          staffPinId: row.id,
+          userId: row.userId,
+          lockedUntil: next.lockedUntil,
+        },
+      });
+      await recordAudit(
+        {
+          tenantId: tenant.tenantId,
+          outletId,
+          actorType: input.deviceId ? "device" : "system",
+          actorId: input.deviceId ?? null,
+          deviceId: input.deviceId ?? null,
+          action: "staff_pin.locked",
+          objectType: "staff_pin",
+          objectId: row.id,
+          reason: null,
+          before: { failedAttempts: row.failedAttempts },
+          after: {
+            userId: row.userId,
+            failedAttempts: next.failedAttempts,
+            lockedUntil: next.lockedUntil,
+          },
+          sensitiveAccess: false,
+        },
+        { tx, context },
+      );
+      return { kind: "locked" };
+    }
+    // A correct pin of someone who no longer works here, or a disabled
+    // account, never switches in.
+    const data = await loadTenantAccessInTransaction(tx, context, userId);
+    if (
+      !isOutletMember(tenant, userId, data, outletId, now) ||
+      !(await activeUser(tx, userId))
+    )
+      return { kind: "not_member" };
+    return { kind: "ok", userId };
+  });
+}
+
+/** Maps a failed attempt to the identity error the device shows. */
+export function assertPinAttemptOk(
+  outcome: PinAttemptOutcome,
+): asserts outcome is { kind: "ok"; userId: string } {
+  if (outcome.kind === "locked") throw new IdentityError("PIN_LOCKED");
+  if (outcome.kind === "not_member")
+    throw new AccessError(
+      "PERMISSION_DENIED",
+      "Staf tidak terdaftar di outlet ini.",
+    );
+  if (outcome.kind !== "ok") throw new IdentityError("PIN_INVALID");
+}
+
+/**
+ * POST /api/staff-pins/verify from a registered outlet device. The outlet is
+ * the device's (WS-02 resolver; fail closed until it is installed).
+ */
+export async function verifyStaffPinOnDevice(
+  tenant: TenantContext,
+  input: {
+    readonly deviceId: string;
+    readonly userId: string;
+    readonly pin: string;
+    readonly now?: Date;
+  },
+): Promise<StaffPinSwitch> {
+  const now = input.now ?? new Date();
+  const resolved = await deviceOutletResolver({
+    tenantId: tenant.tenantId,
+    deviceId: input.deviceId,
+  });
+  const outlet = outletIdSchema.safeParse(resolved);
+  if (resolved === null || !outlet.success)
+    throw new CoreError(
+      "FORBIDDEN",
+      "Perangkat ini belum terdaftar di outlet mana pun.",
+    );
+  const outcome = await attemptStaffPin(tenant, {
+    outletId: outlet.data,
+    userId: input.userId,
+    pin: input.pin,
+    deviceId: input.deviceId,
+    now,
+  });
+  assertPinAttemptOk(outcome);
+  const context = outletContext(tenant, outlet.data);
+  return withTenant(db, context, async (tx) => {
+    const account = await activeUser(tx, outcome.userId);
+    if (!account) throw new IdentityError("PIN_INVALID");
+    const data = await loadTenantAccessInTransaction(
+      tx,
+      context,
+      outcome.userId,
+    );
+    const snapshot = resolveAccessSnapshot({
+      tenant,
+      userId: outcome.userId,
+      ...data,
+      mfaVerified: false,
+      now,
+    });
+    return staffPinSwitchSchema.parse({
+      user: {
+        id: account.id,
+        displayName: account.name.trim().slice(0, 150) || "Staf",
+        kind: "staff",
+        status: "active",
+        mfaRequired: snapshot.mfaRequired,
+        lastLoginAt: null,
+        createdAt: account.createdAt.toISOString(),
+      },
+      outletId: outlet.data,
+      verifiedAt: now.toISOString(),
+    });
+  });
+}
+
+// -------------------------------------------------------------------- edge
+
+/**
+ * The replication shape for the outlet edge (§6 B staff_pins "(T, E)"): hash,
+ * salt, cost and lock state, never the pin. The sync layer (WS-02) calls this
+ * inside its own outlet-scoped job; the pepper travels separately
+ * (`staffPinPepper`) over the edge provisioning channel.
+ */
+export async function exportStaffPinRecords(
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<StaffPinEdgeRecord[]> {
+  const outlet = outletIdSchema.parse(outletId);
+  return withTenant(db, context, async (tx) => {
+    const rows = await tx
+      .select()
+      .from(staffPins)
+      .where(
+        and(
+          eq(staffPins.tenantId, context.tenant.tenantId),
+          eq(staffPins.outletId, outlet),
+        ),
+      )
+      .orderBy(staffPins.id);
+    return rows.map((row) =>
+      staffPinEdgeRecordSchema.parse({
+        id: row.id,
+        tenantId: row.tenantId,
+        outletId: row.outletId,
+        userId: row.userId,
+        algorithm: STAFF_PIN_HASH_ALGORITHM,
+        salt: row.pinSalt,
+        pinHash: row.pinHash,
+        params: storedHashOf(row).params,
+        pepperVersion: row.pepperVersion,
+        failedAttempts: row.failedAttempts,
+        lockedUntil: row.lockedUntil?.toISOString() ?? null,
+        updatedAt: row.updatedAt.toISOString(),
+      }),
+    );
+  });
+}

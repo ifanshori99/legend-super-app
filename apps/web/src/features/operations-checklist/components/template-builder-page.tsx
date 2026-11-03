@@ -215,6 +215,22 @@ function TemplateForm({
     itemLabels?: Record<string, string | undefined>;
   }>({});
   const [formError, setFormError] = React.useState<string | null>(null);
+  // Reorder feedback for screen readers, and where focus lands after a move
+  // or removal (the pressed button may become disabled or disappear).
+  const [reorderMessage, setReorderMessage] = React.useState("");
+  const formRef = React.useRef<HTMLFormElement>(null);
+  const pendingFocus = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    const key = pendingFocus.current;
+    if (key === null) return;
+    pendingFocus.current = null;
+    formRef.current
+      ?.querySelector<HTMLButtonElement>(
+        `[data-reorder-key="${CSS.escape(key)}"]`,
+      )
+      ?.focus();
+  });
 
   const shiftOpts = shiftOptions(outletId);
   const stationOpts = stationOptions(outletId);
@@ -244,20 +260,42 @@ function TemplateForm({
   }
 
   function moveItem(key: string, delta: number) {
-    setItems((current) => {
-      const index = current.findIndex((item) => item.key === key);
-      const target = index + delta;
-      if (index < 0 || target < 0 || target >= current.length) return current;
-      const next = [...current];
-      const moved = next[index];
-      next[index] = next[target];
-      next[target] = moved;
-      return next;
-    });
+    const index = items.findIndex((item) => item.key === key);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= items.length) return;
+    const next = [...items];
+    const moved = next[index];
+    next[index] = next[target];
+    next[target] = moved;
+    setItems(next);
+    // Keep focus on the same arrow unless it is now disabled at an edge.
+    const atEdge = delta < 0 ? target === 0 : target === next.length - 1;
+    pendingFocus.current = `${key}:${
+      atEdge ? (delta < 0 ? "down" : "up") : delta < 0 ? "up" : "down"
+    }`;
+    setReorderMessage(
+      t("opsChecklist.builder.itemMoved", {
+        position: target + 1,
+        total: next.length,
+      }),
+    );
+  }
+
+  function removeItem(key: string) {
+    const index = items.findIndex((item) => item.key === key);
+    if (index < 0) return;
+    const next = items.filter((item) => item.key !== key);
+    setItems(next);
+    const neighbour = next[Math.min(index, next.length - 1)];
+    pendingFocus.current = neighbour ? `${neighbour.key}:remove` : "add";
+    setReorderMessage(
+      t("opsChecklist.builder.itemRemoved", { position: index + 1 }),
+    );
   }
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!online) return;
     const nextErrors: typeof errors = {};
     if (name.trim() === "")
       nextErrors.name = t("opsChecklist.builder.nameRequired");
@@ -378,7 +416,7 @@ function TemplateForm({
         />
       )}
 
-      <form className="grid gap-4" onSubmit={submit} noValidate>
+      <form ref={formRef} className="grid gap-4" onSubmit={submit} noValidate>
         <Card data-slot="checklist-template-identity">
           <h2 className="type-title">{t("opsChecklist.builder.name")}</h2>
           <FormField
@@ -579,6 +617,10 @@ function TemplateForm({
             </p>
           )}
 
+          <p className="sr-only" role="status" aria-live="polite">
+            {reorderMessage}
+          </p>
+
           <ul className="grid gap-3">
             {items.map((item, index) => (
               <li
@@ -596,7 +638,10 @@ function TemplateForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      aria-label={t("opsChecklist.builder.moveUp")}
+                      data-reorder-key={`${item.key}:up`}
+                      aria-label={t("opsChecklist.builder.moveUp", {
+                        position: index + 1,
+                      })}
                       disabled={index === 0}
                       onClick={() => moveItem(item.key, -1)}
                     >
@@ -606,7 +651,10 @@ function TemplateForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      aria-label={t("opsChecklist.builder.moveDown")}
+                      data-reorder-key={`${item.key}:down`}
+                      aria-label={t("opsChecklist.builder.moveDown", {
+                        position: index + 1,
+                      })}
                       disabled={index === items.length - 1}
                       onClick={() => moveItem(item.key, 1)}
                     >
@@ -616,12 +664,11 @@ function TemplateForm({
                       type="button"
                       variant="ghost"
                       size="icon-sm"
-                      aria-label={t("opsChecklist.builder.removeItem")}
-                      onClick={() =>
-                        setItems((current) =>
-                          current.filter((entry) => entry.key !== item.key),
-                        )
-                      }
+                      data-reorder-key={`${item.key}:remove`}
+                      aria-label={t("opsChecklist.builder.removeItem", {
+                        position: index + 1,
+                      })}
+                      onClick={() => removeItem(item.key)}
                     >
                       <Trash2 aria-hidden="true" />
                     </Button>
@@ -693,6 +740,7 @@ function TemplateForm({
 
           <div>
             <Button
+              data-reorder-key="add"
               type="button"
               variant="outline"
               onClick={() =>
@@ -717,7 +765,7 @@ function TemplateForm({
               {t("common.cancel")}
             </Link>
           </Button>
-          <Button type="submit" loading={saving}>
+          <Button type="submit" loading={saving} disabled={!online}>
             {t("opsChecklist.builder.save")}
           </Button>
         </div>

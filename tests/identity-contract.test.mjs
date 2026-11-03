@@ -941,7 +941,15 @@ test("§3 F6 setting a staff pin refuses an easily guessed pin; verifying still 
     true,
   );
   assert.equal(
-    identity.verifyStaffPinSchema.safeParse({ pin: "123456" }).success,
+    identity.verifyStaffPinSchema.safeParse({
+      userId: "0190f0a0-0000-7000-8000-000000000001",
+      pin: "123456",
+    }).success,
     true,
+  );
+  // The lock is per staff (AUTH-06): a verify without the staff user is refused.
+  assert.equal(
+    identity.verifyStaffPinSchema.safeParse({ pin: "123456" }).success,
+    false,
   );
 });

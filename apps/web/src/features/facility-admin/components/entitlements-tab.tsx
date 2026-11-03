@@ -348,6 +348,8 @@ function RuleDialog({
         next.tierKeys = t("facilityAdmin.entitlements.errorsTierRequired");
       else if (tiers.some((key) => key.length > 30))
         next.tierKeys = t("facilityAdmin.errors.tierKeyLength");
+      else if (new Set(tiers).size !== tiers.length)
+        next.tierKeys = t("facilityAdmin.errors.tierKeyDuplicate");
     }
 
     setErrors(next);

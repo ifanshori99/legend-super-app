@@ -384,7 +384,7 @@ function WifiDialog({
         return;
       }
       if (seenKeys.has(key)) {
-        nextTiers[index] = t("facilityAdmin.errors.tierKeyLength");
+        nextTiers[index] = t("facilityAdmin.errors.tierKeyDuplicate");
         return;
       }
       seenKeys.add(key);
@@ -527,6 +527,7 @@ function WifiDialog({
               </FormField>
               <FormField
                 label={t("facilityAdmin.wifi.fieldsSpendPerExtraHourIdr")}
+                hint={t("facilityAdmin.wifi.fieldsSpendPerExtraHourHint")}
                 error={errors.spendPerExtraHourIdr}
                 required
               >
@@ -735,6 +736,12 @@ function WifiDialog({
                     >
                       <Input
                         type="time"
+                        aria-invalid={peakErrors[index] ? true : undefined}
+                        aria-describedby={
+                          peakErrors[index]
+                            ? `wifi-peak-${index}-error`
+                            : undefined
+                        }
                         value={window.startsAt}
                         onChange={(event) =>
                           updatePeak(index, {
@@ -751,6 +758,12 @@ function WifiDialog({
                     >
                       <Input
                         type="time"
+                        aria-invalid={peakErrors[index] ? true : undefined}
+                        aria-describedby={
+                          peakErrors[index]
+                            ? `wifi-peak-${index}-error`
+                            : undefined
+                        }
                         value={window.endsAt}
                         onChange={(event) =>
                           updatePeak(index, { endsAt: event.target.value })
@@ -759,7 +772,10 @@ function WifiDialog({
                     </FormField>
                   </div>
                   {peakErrors[index] && (
-                    <p className="text-sm leading-5 font-medium text-danger">
+                    <p
+                      id={`wifi-peak-${index}-error`}
+                      className="text-sm leading-5 font-medium text-danger"
+                    >
                       {peakErrors[index]}
                     </p>
                   )}
@@ -800,6 +816,12 @@ function WifiDialog({
                 >
                   <FormField label={t("facilityAdmin.wifi.tierKey")} required>
                     <Input
+                      aria-invalid={tierErrors[index] ? true : undefined}
+                      aria-describedby={
+                        tierErrors[index]
+                          ? `wifi-tier-${index}-error`
+                          : undefined
+                      }
                       value={tier.key}
                       onChange={(event) =>
                         updateTier(index, { key: event.target.value })
@@ -813,6 +835,12 @@ function WifiDialog({
                   >
                     <Input
                       inputMode="numeric"
+                      aria-invalid={tierErrors[index] ? true : undefined}
+                      aria-describedby={
+                        tierErrors[index]
+                          ? `wifi-tier-${index}-error`
+                          : undefined
+                      }
                       value={tier.minutes}
                       onChange={(event) =>
                         updateTier(index, { minutes: event.target.value })
@@ -837,7 +865,10 @@ function WifiDialog({
                     <Trash2 aria-hidden="true" />
                   </Button>
                   {tierErrors[index] && (
-                    <p className="text-sm leading-5 font-medium text-danger sm:col-span-3">
+                    <p
+                      id={`wifi-tier-${index}-error`}
+                      className="text-sm leading-5 font-medium text-danger sm:col-span-3"
+                    >
                       {tierErrors[index]}
                     </p>
                   )}

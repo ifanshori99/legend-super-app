@@ -590,6 +590,7 @@ function ProductDialog({
           <div className="grid gap-4 sm:grid-cols-3">
             <FormField
               label={t("facilityAdmin.products.fieldsPrice")}
+              hint={t("facilityAdmin.common.priceExclTaxHint")}
               error={errors.priceIdr}
               required
             >

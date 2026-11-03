@@ -3,6 +3,7 @@ import { ApiError } from "@/lib/api/errors";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
+import { listSupplierCatalogMock, listSuppliersMock } from "./supplier-mock.ts";
 import { idr } from "@starter/shared/core";
 import {
   cafeLegendPurchasingFixtures as fixtures,
@@ -142,25 +143,8 @@ registerMock(listPurchaseOrders, ({ query, scenario }) =>
     scenario,
   ),
 );
-registerMock(listSuppliers, ({ query, scenario }) =>
-  paginateFixture(
-    fixtures.suppliers.filter(
-      (x) => !query.isActive || String(x.isActive) === query.isActive,
-    ),
-    query,
-    (x) => x.id,
-    scenario,
-  ),
-);
-
-registerMock(listSupplierCatalog, ({ params, query, scenario }) =>
-  paginateFixture(
-    fixtures.supplierCatalog.filter((x) => x.supplierId === params.supplierId),
-    query,
-    (x) => x.id,
-    scenario,
-  ),
-);
+registerMock(listSuppliers, listSuppliersMock);
+registerMock(listSupplierCatalog, listSupplierCatalogMock);
 registerMock(getPurchaseRequest, ({ params }) => ({
   data:
     store

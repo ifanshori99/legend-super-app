@@ -19,6 +19,7 @@ export const facilityAdminMessages = {
     backToList: "Kembali ke daftar fasilitas",
     unlimited: "Tanpa batas",
     notSet: "Belum diatur",
+    priceExclTaxHint: "Harga belum termasuk pajak.",
   },
   list: {
     title: "Konfigurasi fasilitas",
@@ -104,22 +105,20 @@ export const facilityAdminMessages = {
     fieldsOpensAt: "Jam buka {day}",
     fieldsClosesAt: "Jam tutup {day}",
     hintsName: "Nama yang tampil di halaman pemesanan dan papan staf.",
-    hintsSessionMinutes:
-      "Default 20 menit dan dapat diubah per fasilitas (PRD §3 F25 Konfigurasi Legend).",
+    hintsSessionMinutes: "Default 20 menit dan dapat diubah per fasilitas.",
     hintsCleaningMinutes:
-      "Jeda ini memblokir booking berikutnya. Default 10 menit (PRD §3 F25).",
+      "Jeda ini memblokir booking berikutnya. Default 10 menit.",
     hintsArrivalGraceMinutes:
-      "Toleransi kedatangan sebelum tiket dianggap no-show. Default 10 menit (PRD §3 F25).",
-    hintsGraceMinutes:
-      "Kelebihan waktu dalam batas ini tidak dikenai biaya (PRD §3 F25 Sesi & Pengingat).",
+      "Toleransi kedatangan sebelum tiket dianggap no-show. Default 10 menit.",
+    hintsGraceMinutes: "Kelebihan waktu dalam batas ini tidak dikenai biaya.",
     hintsBlockMinutes: "Kelebihan waktu ditagih per blok yang dimulai.",
     hintsFeePerBlockIdr: "Biaya untuk setiap blok kelebihan waktu.",
     hintsFreeCancelMinutesBefore:
-      "Pembatalan lebih awal dari ini mengembalikan hak akses penuh (PRD §3 F25 Pembatalan).",
+      "Pembatalan lebih awal dari ini mengembalikan hak akses penuh.",
     hintsLateCancelFeeIdr:
       "Wajib lebih dari 0 bila kebijakannya refund sebagian.",
     hintsHours:
-      "Jam buka per hari (PRD §3 F25). Sesi harus muat di dalam jam buka setiap hari yang dipilih.",
+      "Jam buka per hari. Sesi harus muat di dalam jam buka setiap hari yang dipilih.",
     hintsResolution: "Kebijakan ini berlaku untuk tiket yang sudah terbit.",
     save: "Simpan pengaturan umum",
     saved: "Pengaturan umum disimpan.",
@@ -166,7 +165,7 @@ export const facilityAdminMessages = {
   areas: {
     title: "Area & unit",
     description:
-      "Hierarki fasilitas → area → unit (PRD §3 F25 Model Generik). Unit adalah bilik yang dipesan tamu.",
+      "Hierarki fasilitas → area → unit. Unit adalah bilik yang dipesan tamu.",
     addArea: "Tambah area",
     addUnit: "Tambah unit",
     editArea: "Ubah area",
@@ -214,7 +213,7 @@ export const facilityAdminMessages = {
   products: {
     title: "Produk fasilitas",
     description:
-      "Satu katalog produk; hak aksesnya dapat diperoleh lewat lima cara (PRD §3 F25 Produk & Hak Akses).",
+      "Satu katalog produk; hak aksesnya dapat diperoleh lewat lima cara.",
     add: "Tambah produk",
     edit: "Ubah produk {name}",
     columnsName: "Produk",
@@ -249,8 +248,7 @@ export const facilityAdminMessages = {
     fieldsMaxPerDay: "Maksimum sesi per hari",
     fieldsMaxPerDayHint: "Kosongkan untuk tanpa batas harian.",
     fieldsMenuItem: "Paket menu",
-    fieldsMenuItemHint:
-      "Paket menu yang menerbitkan komponen fasilitas ini (PRD §3 F25 Menu paket).",
+    fieldsMenuItemHint: "Paket menu yang menerbitkan komponen fasilitas ini.",
     fieldsActive: "Produk aktif dijual",
     menuNone: "Tanpa paket menu",
     menuFallback: "Paket #{id}",
@@ -268,7 +266,7 @@ export const facilityAdminMessages = {
   sources: {
     title: "Sumber hak akses",
     description:
-      "Lima cara pelanggan memperoleh sesi; seluruhnya dikonfigurasi admin (PRD §3 F25 Produk & Hak Akses).",
+      "Lima cara pelanggan memperoleh sesi; seluruhnya dikonfigurasi admin.",
     purchase: "Sekali bayar",
     package: "Menu paket",
     min_spend: "Minimum belanja",
@@ -340,7 +338,7 @@ export const facilityAdminMessages = {
   addons: {
     title: "Add-on",
     description:
-      "Handuk, amenities kit, locker, dan hair dryer; aktif atau nonaktif per fasilitas (PRD §3 F25 Add-on Opsional).",
+      "Handuk, amenities kit, locker, dan hair dryer; aktif atau nonaktif per fasilitas.",
     add: "Tambah add-on",
     edit: "Ubah add-on {name}",
     columnsName: "Add-on",
@@ -379,7 +377,7 @@ export const facilityAdminMessages = {
   subscriptions: {
     title: "Paket langganan",
     description:
-      "Kuota sesi per periode, ditagih lewat Recurring Billing DOIT (PRD §3 F25 Langganan Bulanan).",
+      "Kuota sesi per periode, ditagih lewat Recurring Billing DOIT.",
     add: "Tambah paket",
     edit: "Ubah paket {name}",
     columnsName: "Paket",
@@ -421,7 +419,7 @@ export const facilityAdminMessages = {
   wifi: {
     title: "Wi-Fi & WFC",
     description:
-      "Kuota gratis, bonus belanja, jam ramai, dan minimum spend per zona (PRD §3 F25 Wi-Fi Tamu & WFC).",
+      "Kuota gratis, bonus belanja, jam ramai, dan minimum spend per zona.",
     empty: "Belum ada kebijakan Wi-Fi",
     emptyHint: "Kebijakan Wi-Fi dibuat per zona lantai.",
     zoneWfc: "Zona WFC",
@@ -448,6 +446,8 @@ export const facilityAdminMessages = {
     fieldsFreeMinutes: "Menit gratis per hari",
     fieldsPeakFreeMinutes: "Menit gratis saat jam ramai",
     fieldsSpendPerExtraHourIdr: "Belanja per tambahan (Rp)",
+    fieldsSpendPerExtraHourHint:
+      "Hanya kelipatan penuh yang dihitung: dengan Rp30.000, belanja Rp90.000 = 3 tambahan, Rp45.000 = 1 tambahan.",
     fieldsExtraMinutes: "Menit tambahan per langkah belanja",
     fieldsMaxDevices: "Maksimum perangkat per akun",
     fieldsBaseSpeedKbps: "Kecepatan dasar (Kbps)",
@@ -487,6 +487,7 @@ export const facilityAdminMessages = {
     spendStep: "Belanja per tambahan harus lebih dari 0.",
     speedOrder: "Kecepatan penuh harus lebih besar dari kecepatan dasar.",
     tierKeyLength: "Nama tier harus 1–30 karakter.",
+    tierKeyDuplicate: "Nama tier tidak boleh dobel.",
     tierMinutes: "Menit bonus harus 0–720.",
     timeRequired: "Jam mulai dan selesai wajib diisi.",
     saveFailed: "Perubahan gagal disimpan.",

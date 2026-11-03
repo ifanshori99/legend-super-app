@@ -70,9 +70,26 @@ import {
   type EquipmentAction,
   type MaintenanceTicket,
   type MaintenanceTicketAction,
+  type MaintenanceUrgency,
 } from "@starter/shared/operations";
 import type { Supplier } from "@starter/shared/inventory";
 import { ApiError } from "@/lib/api/errors";
+import { cn } from "@/lib/utils";
+
+const URGENCY_RANK: Record<MaintenanceUrgency, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+function isOpenTicket(ticket: MaintenanceTicket): boolean {
+  return ticket.status === "reported" || ticket.status === "in_progress";
+}
+
+function isUrgentTicket(ticket: MaintenanceTicket): boolean {
+  return ticket.urgency === "critical" && isOpenTicket(ticket);
+}
 
 const EQUIPMENT_ACTION_ORDER: EquipmentAction[] = [
   "report_breakdown",
@@ -603,9 +620,15 @@ export function EquipmentDetailScreen({
   const scheduleRows = (schedules.data?.data ?? []).filter(
     (schedule) => schedule.equipmentId === equipment.id,
   );
-  const ticketRows = (tickets.data?.data ?? []).filter(
-    (ticket) => ticket.equipmentId === equipment.id,
-  );
+  // Open tickets first (most urgent on top), then the history newest first.
+  const ticketRows = (tickets.data?.data ?? [])
+    .filter((ticket) => ticket.equipmentId === equipment.id)
+    .sort(
+      (left, right) =>
+        Number(isOpenTicket(right)) - Number(isOpenTicket(left)) ||
+        URGENCY_RANK[right.urgency] - URGENCY_RANK[left.urgency] ||
+        Date.parse(right.reportedAt) - Date.parse(left.reportedAt),
+    );
   const vendorRows = vendors.data?.data ?? [];
   const vendorName = new Map(vendorRows.map((row) => [row.id, row.name]));
   const menuItems = menu.data?.data ?? [];
@@ -803,7 +826,7 @@ export function EquipmentDetailScreen({
             vendors={vendorRows}
             defaultEquipmentId={equipment.id}
             trigger={
-              <Button type="button" variant="outline" size="sm">
+              <Button type="button" variant="outline">
                 {t("opsEquipment.equipment.detail.addSchedule")}
               </Button>
             }
@@ -816,8 +839,8 @@ export function EquipmentDetailScreen({
         ) : (
           <ul className="grid gap-3">
             {scheduleRows.map((schedule) => {
-              const timing = serviceTiming(schedule, now);
-              const days = daysUntil(schedule.nextDueAt, now);
+              const timing = serviceTiming(schedule, now, timeZone);
+              const days = daysUntil(schedule.nextDueAt, now, timeZone);
               return (
                 <li
                   key={schedule.id}
@@ -830,7 +853,7 @@ export function EquipmentDetailScreen({
                       })}
                     </span>
                     {timing === "overdue" ? (
-                      <StatusPill status="danger">
+                      <StatusPill status="danger" solid>
                         {t("opsEquipment.equipment.detail.scheduleOverdue")}
                       </StatusPill>
                     ) : timing === "due_soon" ? (
@@ -878,7 +901,14 @@ export function EquipmentDetailScreen({
               <li
                 key={ticket.id}
                 data-slot="maintenance-ticket"
-                className="grid gap-2 rounded-container border border-border p-3"
+                data-urgent={isUrgentTicket(ticket) || undefined}
+                // DESIGN.md §5 (Q25): an open critical ticket is urgent — solid
+                // pill + 2px status border + 6px start rule.
+                className={cn(
+                  "grid gap-2 rounded-container border border-border p-3",
+                  isUrgentTicket(ticket) &&
+                    "border-2 border-danger border-s-[6px]",
+                )}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <UrgencyPill urgency={ticket.urgency} />

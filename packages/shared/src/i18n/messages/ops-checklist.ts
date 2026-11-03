@@ -72,7 +72,7 @@ export const opsChecklistMessages = {
     cardLabel: "{name} · {status} · {time}",
     offlineTitle: "Anda sedang offline",
     offlineHint:
-      "Data checklist mungkin sudah usang. Sambungkan kembali sebelum mengubah hasil.",
+      "Data checklist mungkin sudah usang. Perubahan tidak bisa disimpan sampai tersambung kembali.",
   },
   start: {
     title: "Mulai checklist baru",
@@ -158,7 +158,7 @@ export const opsChecklistMessages = {
     transitionFailed: "Status checklist belum berubah. Coba lagi.",
     offlineTitle: "Anda sedang offline",
     offlineHint:
-      "Data checklist mungkin sudah usang. Sambungkan kembali sebelum menutup checklist.",
+      "Hasil tidak bisa disimpan saat offline dan tidak diantrekan. Sambungkan kembali untuk mencatat butir atau menutup checklist.",
   },
   templates: {
     title: "Template checklist",
@@ -217,9 +217,11 @@ export const opsChecklistMessages = {
     itemEvidence: "Bukti wajib",
     evidenceHint:
       "Pilih bukti yang harus dilampirkan untuk menandai butir selesai.",
-    removeItem: "Hapus butir",
-    moveUp: "Naikkan butir",
-    moveDown: "Turunkan butir",
+    removeItem: "Hapus butir {position}",
+    moveUp: "Naikkan butir {position}",
+    moveDown: "Turunkan butir {position}",
+    itemMoved: "Butir dipindah ke posisi {position} dari {total}.",
+    itemRemoved: "Butir {position} dihapus.",
     itemsRequired: "Tambahkan minimal satu butir.",
     save: "Simpan template",
     saved: "Template tersimpan.",

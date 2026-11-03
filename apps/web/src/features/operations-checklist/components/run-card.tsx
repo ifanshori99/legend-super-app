@@ -1,11 +1,11 @@
 // One run on the checklist board as a tappable card: template, status,
 // deadline, assignee, scope and progress. The card is a router link, so the
 // whole tile is the 60px-min touch target; no nested interactive elements.
-import { CalendarClock, UserRound } from "lucide-react";
+import { AlertTriangle, CalendarClock, UserRound } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
-import { Badge } from "@/components/ui/badge";
+import { Badge, StatusPill } from "@/components/ui/badge";
 import {
   escalationOf,
   formatDateTime,
@@ -87,13 +87,22 @@ export function RunCard({
 
       <span className="flex flex-wrap items-center gap-1.5">
         <EscalationBadge escalation={escalation} />
-        {progress.failed > 0 && (
-          <Badge tone="danger">
-            {t("opsChecklist.runs.progressFailed", {
-              count: progress.failed,
-            })}
-          </Badge>
-        )}
+        {progress.failed > 0 &&
+          (escalation === "none" ? (
+            // A failed item alone makes the card urgent: it carries the one
+            // solid pill the urgent card needs (DESIGN.md Q25).
+            <StatusPill status="danger" solid icon={AlertTriangle}>
+              {t("opsChecklist.runs.progressFailed", {
+                count: progress.failed,
+              })}
+            </StatusPill>
+          ) : (
+            <Badge tone="danger">
+              {t("opsChecklist.runs.progressFailed", {
+                count: progress.failed,
+              })}
+            </Badge>
+          ))}
       </span>
 
       <span className="grid gap-1 text-sm leading-5 text-muted-foreground">

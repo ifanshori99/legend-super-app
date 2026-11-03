@@ -33,7 +33,7 @@ export const facilityStaffMessages = {
     bookableYes: "Bisa dibooking",
     bookableNo: "Belum bisa dibooking",
     facRule:
-      "FAC-06: bilik yang belum bersih atau sedang perawatan tidak bisa dibooking.",
+      "Bilik yang belum bersih atau sedang perawatan tidak bisa dibooking.",
     status: {
       available: "Tersedia",
       inUse: "Dipakai",
@@ -116,7 +116,11 @@ export const facilityStaffMessages = {
       checklistTitle: "Siklus kebersihan",
       startHint: "Mulai tugas untuk mengaktifkan checklist.",
       photoLabel: "Foto hasil pembersihan",
-      photoHint: "Pratinjau lokal. Unggahan foto ke penyimpanan menyusul.",
+      photoHint: "JPG, PNG, atau WebP, maksimal 5 MB.",
+      photoWrongType: "Pilih foto JPG, PNG, atau WebP.",
+      photoTooLarge: "Ukuran foto melebihi 5 MB. Pilih foto yang lebih kecil.",
+      photoOffline:
+        "Perangkat offline. Foto disimpan di perangkat ini dan dikirim bersama checklist saat koneksi kembali.",
       photoAlt: "Pratinjau foto bilik {unit}",
       removePhoto: "Hapus foto",
       incomplete: "Centang semua langkah sebelum menyelesaikan.",

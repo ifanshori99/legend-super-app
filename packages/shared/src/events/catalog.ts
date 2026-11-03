@@ -35,11 +35,11 @@ export const eventCatalogEntrySchema = z
 export type EventCatalogEntry = z.infer<typeof eventCatalogEntrySchema>;
 const namesByWorkstream = {
   "WS-01":
-    "login_challenge.created login_challenge.completed identity.linked session.created session.revoked action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed approval.requested approval.decided approval.resolved tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.granted support_access.ended config_import.completed usage_limit.reached",
+    "login_challenge.created login_challenge.completed identity.linked session.created session.revoked action_request.created action_request.approved action_request.executed role.updated employee_access.updated role.created role_assignment.granted role_assignment.ended approval_policy.changed approval.requested approval.decided approval.resolved tenant.created tenant.status_changed tenant.package_changed brand.created brand.updated outlet.created outlet.updated outlet.status_changed legal_entity.created legal_entity.updated tenant_domain.added tenant_domain.verified tenant_domain.removed tenant_integration.updated tenant_integration.status_changed tenant_theme.activated support_access.granted support_access.ended config_import.completed usage_limit.reached staff_pin.set staff_pin.locked pos_override.recorded",
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed order.placed item.failed service_request.created service_request.overdue",
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded",
   "WS-05":

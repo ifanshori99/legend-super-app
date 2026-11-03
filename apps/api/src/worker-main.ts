@@ -31,6 +31,7 @@ import { createPaymentReservationDepositPort } from "./services/reservation-depo
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
 import { retryPendingRefunds } from "./services/reservation-refunds.ts";
 import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
+import { sweepOverdueServiceRequests } from "./services/service-request.service.ts";
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
@@ -220,6 +221,14 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Prep label expiry sweep failed");
+    }
+    // ORD-07 (legend-7qg): escalate waiter calls / bill requests left open
+    // past SERVICE_REQUEST_OVERDUE_SECONDS, once each. The relay ticks every
+    // minute, so an escalation fires 180-240 s after the call.
+    try {
+      await sweepOverdueServiceRequests(new Date(), context);
+    } catch {
+      console.error("Service request overdue sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
