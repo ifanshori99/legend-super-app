@@ -65,6 +65,10 @@ test("OPS-02 an out-of-range reading cannot be saved without a corrective action
     page.getByText("Tindakan korektif wajib diisi untuk suhu di luar ambang."),
   ).toBeVisible();
   await expect(rows).toHaveCount(before);
+  await expect(page.getByLabel("Tindakan korektif")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
 
   const corrective = "Es batu ditambahkan dan chiller disetel ulang.";
   await page.getByLabel("Tindakan korektif").fill(corrective);
@@ -76,6 +80,8 @@ test("OPS-02 an out-of-range reading cannot be saved without a corrective action
   await expect(saved).toHaveCount(1, { timeout: 15_000 });
   await expect(saved).toContainText("9,2 °C");
   await expect(saved).toContainText("Di luar ambang");
+  // Urgent row treatment: stored verdict is out of range (solid pill + rule).
+  await expect(saved).toHaveAttribute("data-in-range", "false");
   await expect(rows).toHaveCount(before + 1);
 });
 

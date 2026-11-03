@@ -429,7 +429,17 @@ export function FoodSafetyTemperatureScreen() {
                   required
                   error={errors.equipment}
                 >
-                  <Select value={equipmentId} onValueChange={setEquipmentId}>
+                  <Select
+                    value={equipmentId}
+                    onValueChange={(value) => {
+                      setEquipmentId(value);
+                      setErrors((current) => ({
+                        ...current,
+                        equipment: undefined,
+                        corrective: undefined,
+                      }));
+                    }}
+                  >
                     <SelectTrigger id="food-safety-equipment">
                       <SelectValue
                         placeholder={t(
@@ -507,6 +517,7 @@ export function FoodSafetyTemperatureScreen() {
               >
                 <Textarea
                   rows={3}
+                  maxLength={1000}
                   value={corrective}
                   onChange={(event) => setCorrective(event.target.value)}
                 />

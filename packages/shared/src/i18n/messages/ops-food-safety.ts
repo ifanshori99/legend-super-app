@@ -20,7 +20,7 @@ export const opsFoodSafetyMessages = {
   temperature: {
     title: "Log keamanan pangan",
     subtitle:
-      "Catat suhu chiller dan freezer beberapa kali sehari sesuai jadwal. Suhu di luar ambang wajib disertai tindakan korektif sebelum disimpan (OPS-02).",
+      "Catat suhu chiller dan freezer beberapa kali sehari sesuai jadwal. Suhu di luar ambang wajib disertai tindakan korektif sebelum disimpan.",
     action: {
       title: "Perlu tindakan",
       outOfRange: "{count} suhu di luar ambang",
@@ -50,7 +50,7 @@ export const opsFoodSafetyMessages = {
     },
     form: {
       title: "Catat pembacaan suhu",
-      hint: "Pilih alat, isi suhu terukur, lalu simpan. Pembacaan di luar ambang tidak dapat disimpan tanpa tindakan korektif (OPS-02).",
+      hint: "Pilih alat, isi suhu terukur, lalu simpan. Pembacaan di luar ambang tidak dapat disimpan tanpa tindakan korektif.",
       equipment: "Peralatan",
       equipmentPlaceholder: "Pilih chiller atau freezer",
       reading: "Suhu terukur (°C)",
@@ -94,7 +94,7 @@ export const opsFoodSafetyMessages = {
   prepLabels: {
     title: "Label prep",
     subtitle:
-      "Cetak label bahan prep dan setengah jadi: nama, waktu produksi, batas pakai, penanggung jawab, dan batch inventori (OPS-03).",
+      "Cetak label bahan prep dan setengah jadi: nama, waktu produksi, batas pakai, penanggung jawab, dan batch inventori.",
     expired: {
       title: "Lewat batas pakai",
       count: "{count} label",
@@ -132,8 +132,9 @@ export const opsFoodSafetyMessages = {
       batchEmpty: "Bahan ini belum memiliki batch.",
       producedAt: "Waktu produksi",
       useBy: "Batas pakai",
-      useByHint: "Batas pakai harus setelah waktu produksi (OPS-03).",
-      useBySuggested: "Disarankan dari kedaluwarsa batch {date}.",
+      useByHint: "Batas pakai harus setelah waktu produksi.",
+      useBySuggested:
+        "Disarankan dari kedaluwarsa batch {date}. Sesuaikan dengan masa simpan bahan prep; jangan melebihi tanggal batch.",
       responsible: "Penanggung jawab",
       responsibleHint: "Diisi sistem dari sesi petugas yang mencatat.",
       save: "Buat label",
@@ -175,7 +176,7 @@ export const opsFoodSafetyMessages = {
   prepList: {
     title: "Daftar prep harian",
     subtitle:
-      "Bahan setengah jadi yang perlu disiapkan pagi ini, dihitung dari prakiraan penjualan, resep, dan stok (PRD §3 F41).",
+      "Bahan setengah jadi yang perlu disiapkan pagi ini, dihitung dari prakiraan penjualan, resep, dan stok.",
     actionNew: "Buat daftar prep",
     status: {
       pending: "Menunggu",
