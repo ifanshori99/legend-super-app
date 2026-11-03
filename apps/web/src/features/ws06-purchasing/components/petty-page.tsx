@@ -232,6 +232,8 @@ function PettyFormDialog({
         </div>
         <div className="grid min-w-0 gap-4">
           <PhotoField
+            label={t("inventoryReceiving.petty.photoSection")}
+            hint={t("inventoryReceiving.petty.photoHint")}
             previewUrl={photo?.previewUrl ?? null}
             error={photoError}
             onSelect={selectPhoto}
@@ -333,6 +335,12 @@ export function PettyPage({ canCreate }: { canCreate: boolean }) {
   const [search, setSearch] = React.useState("");
   const [today] = React.useState<BusinessDate>(() => todayBusinessDate());
 
+  // Deny by default (contract `assertPettyPurchaseWithinLimit`): a missing
+  // policy row answers NOT_FOUND, which is the "no limit configured" state, not
+  // a load failure that would also hide the purchase history.
+  const noPolicy =
+    policy.error instanceof ApiError && policy.error.code === "NOT_FOUND";
+  const policyFailed = policy.isError && !noPolicy;
   const limitIdr = policy.data?.data.limitIdr ?? null;
   const spent = pettySpentOn(purchases.data?.data ?? [], today);
   const rows = React.useMemo(
@@ -348,7 +356,7 @@ export function PettyPage({ canCreate }: { canCreate: boolean }) {
   );
 
   const loading = purchases.isPending || policy.isPending;
-  const failed = purchases.isError || policy.isError;
+  const failed = purchases.isError || policyFailed;
   const state: DataState = loading
     ? "loading"
     : failed
@@ -379,7 +387,7 @@ export function PettyPage({ canCreate }: { canCreate: boolean }) {
         </div>
         {policy.isPending ? (
           <Skeleton className="h-12" />
-        ) : policy.isError ? (
+        ) : policyFailed ? (
           <p className="text-sm leading-5 text-muted-foreground">
             {t("inventoryReceiving.errors.load")}
           </p>

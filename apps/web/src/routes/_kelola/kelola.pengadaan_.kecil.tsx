@@ -24,7 +24,8 @@ export const Route = createFileRoute("/_kelola/kelola/pengadaan_/kecil")({
           context.queryClient.ensureQueryData(
             pettyPurchasesQuery({ outletId: INVENTORY_OUTLET_ID, limit: 100 }),
           ),
-          context.queryClient.ensureQueryData(
+          // prefetch, not ensure: a missing policy (404) is a page state.
+          context.queryClient.prefetchQuery(
             pettyPurchasePolicyQuery({ outletId: INVENTORY_OUTLET_ID }),
           ),
         ]),

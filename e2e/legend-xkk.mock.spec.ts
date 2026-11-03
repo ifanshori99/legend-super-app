@@ -100,7 +100,7 @@ test("INV-05 form penerimaan menolak jumlah di atas sisa PO lalu menyimpan", asy
   await captureBoth(page, "receiving-form", { fullPage: false });
   await submitted.click();
   await expect(
-    page.getByText("Jumlah diterima melebihi sisa pesanan."),
+    page.getByText("Jumlah diterima baik melebihi sisa pesanan."),
   ).toBeVisible();
 
   await received.fill("1");
@@ -242,7 +242,7 @@ test("F18 retur pembelian tidak melebihi jumlah diterima baik", async ({
 
   await quantity.fill("1");
   await dialog.getByRole("button", { name: "Simpan retur" }).click();
-  await expect(page.getByText("Retur tersimpan.")).toBeVisible();
+  await expect(page.getByText("Retur tersimpan.", { exact: true })).toBeVisible();
   await expect(page.getByText(/RET\/MOCK\//)).toBeVisible();
 });
 

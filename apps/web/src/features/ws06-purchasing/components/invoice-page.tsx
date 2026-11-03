@@ -545,7 +545,14 @@ function InvoiceDetailDialog({
                               {row.priceVarianceBp === null
                                 ? "—"
                                 : t("inventoryReceiving.invoices.varianceBp", {
-                                    bp: row.priceVarianceBp,
+                                    // Explicit sign: over/under PO price must
+                                    // read without relying on color.
+                                    bp:
+                                      row.priceVarianceBp > 0
+                                        ? `+${row.priceVarianceBp}`
+                                        : row.priceVarianceBp < 0
+                                          ? `−${-row.priceVarianceBp}`
+                                          : "0",
                                   })}
                             </span>
                             <Money amount={row.priceVarianceIdr} />

@@ -118,6 +118,8 @@ export const inventoryReceivingMessages = {
       qcNotes: "Catatan QC",
       note: "Catatan penerimaan",
       photoSection: "Foto bukti penerimaan",
+      photoHint:
+        "Opsional. JPEG, PNG, atau WebP maksimal 5 MB, misalnya foto surat jalan atau barang yang ditolak.",
       photoInvalid: "Berkas harus berupa gambar JPEG, PNG, atau WebP.",
       photoTooLarge: "Foto lebih dari 5 MB. Pilih berkas yang lebih kecil.",
       summary: "Ringkasan penerimaan",
@@ -131,7 +133,7 @@ export const inventoryReceivingMessages = {
       errorQuantity: "Isi jumlah yang valid (maksimal 4 desimal).",
       errorRejectedOverReceived:
         "Jumlah ditolak tidak boleh melebihi jumlah diterima.",
-      errorOverRemaining: "Jumlah diterima melebihi sisa pesanan.",
+      errorOverRemaining: "Jumlah diterima baik melebihi sisa pesanan.",
       errorReason: "Isi alasan penolakan untuk baris yang ditolak.",
       errorQcNotes:
         "Catatan QC melebihi 500 karakter. Ringkas alasan penolakan.",
@@ -319,6 +321,8 @@ export const inventoryReceivingMessages = {
     formSubtitle:
       "Catat belanja tunai. Foto bukti wajib dan nominal tidak boleh melebihi batas per transaksi.",
     photoSection: "Foto bukti belanja",
+    photoHint:
+      "Wajib. JPEG, PNG, atau WebP maksimal 5 MB sebagai bukti belanja.",
     vendorName: "Vendor / pasar",
     vendorHint: "Nama toko atau pasar tempat belanja.",
     description: "Deskripsi belanja",
@@ -332,6 +336,7 @@ export const inventoryReceivingMessages = {
     errorDescription: "Isi deskripsi belanja.",
     errorAmount: "Isi nominal lebih dari nol.",
     errorOverLimit: "Nominal melebihi batas {limit} per transaksi.",
-    todayTotalHint: "Total hari ini {total} dari batas per transaksi {limit}.",
+    todayTotalHint:
+      "Total hari ini {total}. Batas {limit} berlaku per transaksi, bukan per hari.",
   },
 } as const;

@@ -252,7 +252,12 @@ export function ReceivingFormPage() {
       }
       const already = acceptedReceivedQuantity(prior.lines, line.id);
       const remaining = remainingQuantity(line.quantity, already);
-      if (parseDecimal4(received) > parseDecimal4(remaining)) {
+      // INV-05 (`assertGoodsReceiptMatchesOrder`): the cap is on the accepted
+      // quantity (received − QC-rejected), not on what arrived at the door.
+      if (
+        parseDecimal4(received) - parseDecimal4(rejected) >
+        parseDecimal4(remaining)
+      ) {
         errors[line.id] = t(
           "inventoryReceiving.receiving.form.errorOverRemaining",
         );
@@ -706,6 +711,8 @@ export function ReceivingFormPage() {
 
           <Card className="gap-4">
             <PhotoField
+              label={t("inventoryReceiving.receiving.form.photoSection")}
+              hint={t("inventoryReceiving.receiving.form.photoHint")}
               previewUrl={photo?.previewUrl ?? null}
               error={photoError}
               onSelect={selectPhoto}
