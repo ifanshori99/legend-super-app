@@ -41,7 +41,9 @@ import {
   z,
   type CursorKey,
   type CursorPage,
+  type OutletId,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import {
@@ -230,9 +232,9 @@ function toChecklistItem(
 
 async function loadTemplateRow(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   templateId: string,
-  outletId?: string,
+  outletId?: OutletId,
   lock = false,
 ): Promise<TemplateRow> {
   const query = tx
@@ -255,7 +257,7 @@ async function loadTemplateRow(
 
 async function loadRunRow(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   runId: string,
   lock: boolean,
 ): Promise<RunRow> {
