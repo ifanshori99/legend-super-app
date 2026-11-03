@@ -68,7 +68,9 @@ export function businessDayWindow(
 }
 
 /** A facility-access reward gated by a minimum spend (PRD §3.25). */
-export function isSameDayMinSpendReward(promotion: Promotion): boolean {
+export function isSameDayMinSpendReward(
+  promotion: Pick<Promotion, "benefit" | "conditions">,
+): boolean {
   return (
     promotion.benefit.kind === "facility_entitlement" &&
     promotion.conditions.some((condition) => condition.kind === "min_spend")
@@ -147,12 +149,12 @@ const UNREACHABLE_MIN_SPEND = idr(Number.MAX_SAFE_INTEGER);
 /**
  * Rewrites a reward's minimum spend for the spend already made today (by
  * other bills), so the evaluator's per-bill check means "today's total".
+ * Generic over the rule shape: the refund recheck passes a snapshot rule
+ * (conditions + benefit) instead of a full `Promotion` row.
  */
-export function withSameDaySpend(
-  promotion: Promotion,
-  earlierSpendIdr: number,
-  rewardedToday: boolean,
-): Promotion {
+export function withSameDaySpend<
+  T extends { conditions: Promotion["conditions"] },
+>(promotion: T, earlierSpendIdr: number, rewardedToday: boolean): T {
   return {
     ...promotion,
     conditions: promotion.conditions.map((condition) => {

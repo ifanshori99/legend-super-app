@@ -939,11 +939,12 @@ export async function listVouchers(
 /**
  * ROI Promo (PRD §3.21): transactions = orders that kept the promotion,
  * discount cost = the discount it gave, revenue = those orders' net sales
- * (server-priced subtotal minus every promo discount on the order, before tax
- * and service charge), net margin = revenue - discount cost (contract
- * definition; COGS-based margin belongs to WS-11 reporting), ROI = net margin
- * / discount cost in basis points, rounded half up, null without a cost.
- * Released (voided) applications are excluded.
+ * (server-priced subtotal minus refunded value minus every promo discount on
+ * the order, before tax and service charge), net margin = revenue - discount
+ * cost (contract definition; COGS-based margin belongs to WS-11 reporting),
+ * ROI = net margin / discount cost in basis points, rounded half up, null
+ * without a cost. Released (voided) applications are excluded, and a partial
+ * refund removes the refunded goods from revenue (owner Q41).
  */
 export async function getPromotionRoi(
   context: ScopedTenantContext,
@@ -970,7 +971,7 @@ export async function getPromotionRoi(
       .select({
         transactions: sql<string>`count(distinct ${promotionRedemptions.orderId})`,
         discount: sql<string>`coalesce(sum(${promotionRedemptions.discountIdr}), 0)`,
-        revenue: sql<string>`coalesce(sum(${promotionOrderApplications.subtotalIdr} - ${promotionOrderApplications.totalDiscountIdr}), 0)`,
+        revenue: sql<string>`coalesce(sum(${promotionOrderApplications.subtotalIdr} - ${promotionOrderApplications.refundedSubtotalIdr} - ${promotionOrderApplications.totalDiscountIdr}), 0)`,
       })
       .from(promotionRedemptions)
       .innerJoin(

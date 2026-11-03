@@ -18,22 +18,31 @@
 // - Only conditions that read the bill content are re-checked (min_spend,
 //   item_quantity, bundle); channel, member, time window and validity were
 //   true when the order was paid and do not change with a refund.
-// - The promotion's CURRENT conditions are used (no rule snapshot is stored
-//   at redeem time).
+// - The rules stored on the application row at redeem time are used (owner
+//   Q41 snapshot decision), so editing a promotion after the sale never
+//   changes what an already-paid bill earned. Rows from before migration 0042
+//   have no snapshot and fall back to the current rule.
 // - A promotion that still applies keeps its recorded discount; spreading it
-//   over the refunded items is the refund module's job (pro-rata).
+//   over the refunded items is the refund module's job (pro-rata). The order's
+//   discount is capped at the kept bill value, so the remaining bill can never
+//   go negative.
 // - A same-day minimum-spend facility reward (Q40) is re-checked against the
 //   customer's day total at that outlet with this bill reduced.
+// - The payout is capped at what the guest actually paid for the goods
+//   (cumulative across refunds): `refundDueIdr` is never negative and never
+//   exceeds `paid_idr - refunded_paid_idr`.
 // - When the withdrawn discount is larger than the refunded bill value, the
 //   payout is Rp0 and `uncoveredIdr` reports the difference (owner question).
 //
-// Lock order matches redeem/release (legend-9w77): per-order advisory lock,
-// voucher row, customer-day advisory lock (Q40), promotion rows by id.
+// Lock order matches redeem/release (legend-9w77 + legend-e5it): per-order
+// advisory lock, the application row, the voucher row, the customer-day
+// advisory lock (Q40), promotion rows by id, then the customer usage rows.
 
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   evaluatePromotion,
   promotionApplicationResultSchema,
+  promotionRuleSnapshotSchema,
   type PromoEvaluationInput,
   type PromoLine,
   type PromoRejectionReason,
@@ -125,7 +134,11 @@ export type PartialRefundResult =
       readonly refundedSubtotalIdr: Idr;
       /** Discount the reduced bill no longer earns. */
       readonly withdrawnDiscountIdr: Idr;
-      /** Payout before tax/service recomputation: refunded - withdrawn, >= 0. */
+      /**
+       * Payout before tax/service recomputation: refunded value minus the
+       * withdrawn discount, floored at 0 and capped by the goods value the
+       * guest actually paid (cumulative across refunds).
+       */
       readonly refundDueIdr: Idr;
       /** Withdrawn discount the refunded value does not cover (>= 0). */
       readonly uncoveredIdr: Idr;
@@ -284,6 +297,24 @@ export async function recomputeAfterPartialRefund(
     ),
   ].sort();
 
+  // Owner Q41 snapshot: recheck against the rules the order redeemed, not the
+  // promotion as it is today. Rows from before the snapshot column fall back to
+  // the current rule (best effort, documented).
+  const parsedSnapshot = application.rulesSnapshot
+    ? promotionRuleSnapshotSchema.safeParse(application.rulesSnapshot)
+    : null;
+  const snapshot = parsedSnapshot?.success ? parsedSnapshot.data : null;
+  const withSnapshot = (promotion: Promotion): Promotion => {
+    const stored = snapshot?.[promotion.id];
+    return stored
+      ? {
+          ...promotion,
+          conditions: stored.conditions,
+          benefit: stored.benefit,
+        }
+      : promotion;
+  };
+
   // Rules first without a lock, to know whether the customer-day lock (Q40)
   // is needed before the promotion rows are locked.
   const rulesOf = async (lockRows: boolean) => {
@@ -304,31 +335,34 @@ export async function recomputeAfterPartialRefund(
   const customerId = application.customerProfileId;
   let earlierSpend: number | null = null;
   if (customerId !== null) {
+    // A refund always changes the customer's same-day total, so it takes the
+    // Q40 lock even when this bill itself carries no facility reward: a
+    // concurrent checkout of the same customer must not read a stale total.
+    const outlet = await requirePromoOutlet(tx, context, application.outletId);
+    const window = businessDayWindow(
+      application.redeemedAt,
+      outletBusinessDayClock(outlet),
+    );
+    await lockCustomerDay(
+      tx,
+      context,
+      application.outletId,
+      customerId,
+      window.businessDate,
+    );
     const unlocked = await rulesOf(false);
-    if ([...unlocked.values()].some(isSameDayMinSpendReward)) {
-      const outlet = await requirePromoOutlet(
-        tx,
-        context,
-        application.outletId,
-      );
-      const window = businessDayWindow(
-        application.redeemedAt,
-        outletBusinessDayClock(outlet),
-      );
-      await lockCustomerDay(
-        tx,
-        context,
-        application.outletId,
-        customerId,
-        window.businessDate,
-      );
+    const earnsReward = lines.some((line) => {
+      if (line.promotionId === null) return false;
+      const rule = unlocked.get(line.promotionId);
+      return rule !== undefined && isSameDayMinSpendReward(withSnapshot(rule));
+    });
+    if (earnsReward)
       earlierSpend = await sameDaySpendIdr(tx, context, {
         outletId: application.outletId,
         customerProfileId: customerId,
         window,
         excludeOrderId: orderId,
       });
-    }
   }
   const rules = await rulesOf(true);
 
@@ -349,8 +383,9 @@ export async function recomputeAfterPartialRefund(
   const withdrawn: WithdrawnPromotion[] = [];
   for (const line of lines) {
     if (line.promotionId === null) continue; // value voucher: no condition
-    const rule = rules.get(line.promotionId);
-    if (!rule) continue;
+    const current = rules.get(line.promotionId);
+    if (!current) continue;
+    const rule = withSnapshot(current);
     const promotion =
       earlierSpend !== null && isSameDayMinSpendReward(rule)
         ? withSameDaySpend(rule, earlierSpend, false)
@@ -445,7 +480,19 @@ export async function recomputeAfterPartialRefund(
     (sum, entry) => sum + entry.discountIdr,
     0,
   );
-  const totalDiscount = application.totalDiscountIdr - withdrawnDiscount;
+  // Owner Q41: the remaining bill's discount can never exceed the kept bill
+  // value (it would make the payable negative), and the payout can never
+  // exceed what the guest paid for the goods, cumulatively over all refunds.
+  const totalDiscount = Math.max(
+    0,
+    Math.min(application.totalDiscountIdr - withdrawnDiscount, keptSubtotal),
+  );
+  const paidIdr =
+    application.paidIdr ??
+    idr(Math.max(0, application.subtotalIdr - application.totalDiscountIdr));
+  const remainingPaidIdr = Math.max(0, paidIdr - application.refundedPaidIdr);
+  const grossRefundIdr = Math.max(0, refundedNow - withdrawnDiscount);
+  const refundDueIdr = Math.min(grossRefundIdr, remainingPaidIdr);
   const previous = promotionApplicationResultSchema.parse(application.result);
   const withdrawnReason = new Map(
     withdrawn.map((entry) => [entry.promotionId, entry.reason]),
@@ -469,6 +516,7 @@ export async function recomputeAfterPartialRefund(
     .update(promotionOrderApplications)
     .set({
       refundedSubtotalIdr: idr(refundedTotal),
+      refundedPaidIdr: idr(application.refundedPaidIdr + refundDueIdr),
       totalDiscountIdr: idr(totalDiscount),
       result,
     })
@@ -544,7 +592,7 @@ export async function recomputeAfterPartialRefund(
     adjusted: true,
     refundedSubtotalIdr: idr(refundedNow),
     withdrawnDiscountIdr: idr(withdrawnDiscount),
-    refundDueIdr: idr(Math.max(0, refundedNow - withdrawnDiscount)),
+    refundDueIdr: idr(refundDueIdr),
     uncoveredIdr: idr(Math.max(0, withdrawnDiscount - refundedNow)),
     totalDiscountIdr: idr(totalDiscount),
     withdrawn,

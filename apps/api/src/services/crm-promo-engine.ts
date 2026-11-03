@@ -42,6 +42,7 @@ import {
   promotionApplicationResultSchema,
   promotionBenefitSchema,
   promotionConditionSchema,
+  promotionRuleSnapshotSchema,
   promotionSchema,
   voucherCodeInputSchema,
   voucherUsability,
@@ -57,6 +58,7 @@ import {
   type Promotion,
   type PromotionApplicationResult,
   type PromotionEvaluation,
+  type PromotionRuleSnapshot,
   type Voucher,
 } from "@starter/shared/crm";
 import {
@@ -100,7 +102,12 @@ import {
   promotionDisabledAtOutlet,
   promotionEnabledAtOutlet,
 } from "./crm-promo-outlets";
-import { loadSameDayMinSpend, sameDayRewardDate } from "./crm-promo-minspend";
+import {
+  businessDayWindow,
+  loadSameDayMinSpend,
+  lockCustomerDay,
+  sameDayRewardDate,
+} from "./crm-promo-minspend";
 
 export type PromotionRow = typeof promotions.$inferSelect;
 export type VoucherRow = typeof vouchers.$inferSelect;
@@ -490,6 +497,11 @@ type Prepared = {
    * null for a quote). Every promotion redeem counts must be in it.
    */
   lockedPromotionIds: ReadonlySet<string> | null;
+  /**
+   * Raw (not same-day-rewritten) locked rules by promotion id, for the
+   * redeem-time snapshot (owner Q41). Empty for a quote.
+   */
+  rawById: ReadonlyMap<string, Promotion>;
 };
 
 /**
@@ -547,6 +559,7 @@ async function lockCandidatePromotions(
   candidates: Promotion[];
   usage: PromoUsage[];
   lockedIds: ReadonlySet<string>;
+  rawById: Map<string, Promotion>;
 }> {
   const usageById = new Map(usage.map((entry) => [entry.promotionId, entry]));
   const lockIds = candidates
@@ -568,7 +581,12 @@ async function lockCandidatePromotions(
     .map((promotion) => promotion.id);
   const lockedIds = new Set<string>();
   if (lockIds.length === 0)
-    return { candidates: [...candidates], usage: [...usage], lockedIds };
+    return {
+      candidates: [...candidates],
+      usage: [...usage],
+      lockedIds,
+      rawById: new Map(),
+    };
 
   const tenantId = context.tenant.tenantId;
   // A value voucher's id is not a promotion row: it simply matches nothing
@@ -616,6 +634,8 @@ async function lockCandidatePromotions(
       };
     }),
     lockedIds,
+    // Contract form for the redeem-time rule snapshot (owner Q41).
+    rawById: new Map(rows.map((row) => [row.id, toPromotion(row)])),
   };
 }
 
@@ -759,6 +779,7 @@ async function prepare(
       voucher,
       voucherEvaluationId,
       lockedPromotionIds: null,
+      rawById: new Map(),
     };
   const locked = await lockCandidatePromotions(
     tx,
@@ -776,6 +797,7 @@ async function prepare(
     voucher,
     voucherEvaluationId,
     lockedPromotionIds: locked.lockedIds,
+    rawById: locked.rawById,
   };
 }
 
@@ -979,18 +1001,26 @@ export type RedeemPromotionsInput = PromoCheckoutInput & {
  * (LOY-03). Idempotent per order: a retry with the same request returns the
  * stored result; a different request for the same order is refused.
  *
- * Cross-module lock order (bead legend-9w77; every caller must follow it so
- * order and promo transactions never deadlock):
- *   1. the order row (the checkout inserts it / the void path locks it
- *      FOR UPDATE) — the caller does this BEFORE calling redeem/release;
- *   2. the per-order advisory lock (`lockOrder`);
- *   3. the presented voucher row;
- *   4. candidate promotion rows, `ORDER BY id` (only the promotions that can
+ * Cross-module promo lock order (beads legend-9w77 + legend-e5it; every caller
+ * follows it so checkout, void and refund transactions never deadlock):
+ *   1. the order row — the caller locks it (insert / FOR UPDATE) BEFORE
+ *      calling redeem or release;
+ *   2. the per-order advisory lock (`lockOrder`, `promo:<tenant>:<order>`);
+ *   3. the `promotion_order_applications` row (release/refund only; redeem
+ *      inserts it at the end);
+ *   4. the presented voucher row (`resolveCode` / `application.voucherId`);
+ *   5. the customer-day advisory lock, `promo-minspend:<tenant>:<outlet>:
+ *      <customer>:<business date>` (owner Q40), for an identified customer;
+ *   6. candidate promotion rows `ORDER BY id` (only the promotions that can
  *      apply to this bill — see lockCandidatePromotions);
- *   5. the customer's `promotion_customer_usage` rows, by promotion id.
- * `releasePromotions` (void/refund, legend-souz) takes the same order. Never
- * lock a promotion row before the order row, and never lock promotions out of
- * id order.
+ *   7. the customer's `promotion_customer_usage` rows, by promotion id.
+ * `releasePromotions`, `recomputeAfterPartialRefund` and the Q40 read in
+ * `prepare` take the same order. Never lock a promotion row before the voucher
+ * and customer-day steps, and never lock promotions out of id order.
+ *
+ * The application row also records the redeemed rule snapshot and what the
+ * guest paid for the goods (`paid_idr`), so a later partial refund rechecks
+ * the ORIGINAL rules and can never pay out more than was paid (owner Q41).
  */
 export async function redeemPromotions(
   tx: Tx,
@@ -1056,6 +1086,18 @@ export async function redeemPromotions(
   const promotionById = new Map(
     prepared.candidates.map((promotion) => [promotion.id, promotion]),
   );
+  // Owner Q41 snapshot: the rules this order redeemed, as stored at redeem
+  // time. A later partial refund rechecks against this, never an edited rule.
+  const rulesSnapshot: PromotionRuleSnapshot = {};
+  for (const evaluation of applied) {
+    // A value voucher has no promotion row (its id is the voucher id).
+    const raw = prepared.rawById.get(evaluation.promotionId);
+    if (!raw) continue;
+    rulesSnapshot[evaluation.promotionId] = {
+      conditions: raw.conditions,
+      benefit: raw.benefit,
+    };
+  }
 
   await tx.insert(promotionOrderApplications).values({
     tenantId,
@@ -1067,6 +1109,9 @@ export async function redeemPromotions(
     voucherId: voucherUsed?.id ?? null,
     subtotalIdr: prepared.input.subtotalIdr,
     totalDiscountIdr: result.totalDiscountIdr,
+    // Owner Q41: what the guest paid for the goods (payout ceiling).
+    paidIdr: idr(prepared.input.subtotalIdr - result.totalDiscountIdr),
+    rulesSnapshot: promotionRuleSnapshotSchema.parse(rulesSnapshot),
     result,
     redeemedAt: now,
     redeemedBy:
@@ -1330,6 +1375,23 @@ export async function releasePromotions(
         ),
       )
       .for("update");
+  // A void lowers the customer's same-day spend (Q40), so it serializes with
+  // that day's checkouts on the customer-day advisory lock (lock order step 5)
+  // before any promotion row is locked.
+  if (application.customerProfileId !== null) {
+    const outlet = await requirePromoOutlet(tx, context, application.outletId);
+    const window = businessDayWindow(
+      application.redeemedAt,
+      outletBusinessDayClock(outlet),
+    );
+    await lockCustomerDay(
+      tx,
+      context,
+      application.outletId,
+      application.customerProfileId,
+      window.businessDate,
+    );
+  }
   const promotionIds = lines
     .map((line) => line.promotionId)
     .filter((id): id is string => id !== null)

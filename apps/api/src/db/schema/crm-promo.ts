@@ -45,6 +45,7 @@ import type {
   PromotionBenefit,
   PromotionCondition,
   PromotionApplicationResult,
+  PromotionRuleSnapshot,
   PromotionStatus,
   VoucherSource,
   VoucherStatus,
@@ -268,6 +269,24 @@ export const promotionOrderApplications = pgTable(
       .notNull()
       .default(sql`0`),
     totalDiscountIdr: idrColumn("total_discount_idr").notNull(),
+    /**
+     * What the guest actually owed for the goods after promotions at redeem
+     * time (`subtotal_idr - total_discount_idr`). Partial refunds can never
+     * pay out more than this in total (owner Q41; `refunded_paid_idr` tracks
+     * the part already paid out). Null only on rows from before 0042; the
+     * refund falls back to the current amounts for those.
+     */
+    paidIdr: idrColumn("paid_idr"),
+    /** Payout already returned by partial refunds (owner Q41). */
+    refundedPaidIdr: idrColumn("refunded_paid_idr")
+      .notNull()
+      .default(sql`0`),
+    /**
+     * The promotion rules this order redeemed (conditions + benefit only), so
+     * a later partial refund rechecks the bill against what it actually
+     * bought, not against an edited promotion (owner Q41 snapshot decision).
+     */
+    rulesSnapshot: jsonb("rules_snapshot").$type<PromotionRuleSnapshot>(),
     result: jsonb("result").$type<PromotionApplicationResult>().notNull(),
     status: varchar("status", { length: 20 })
       .$type<"applied" | "released">()
@@ -310,6 +329,11 @@ export const promotionOrderApplications = pgTable(
     check(
       "promotion_order_applications_refund_check",
       sql`${table.refundedSubtotalIdr} >= 0 AND ${table.refundedSubtotalIdr} <= ${table.subtotalIdr}`,
+    ),
+    // Q41: payouts never exceed what the guest paid for the goods.
+    check(
+      "promotion_order_applications_refunded_paid_check",
+      sql`${table.refundedPaidIdr} >= 0 AND (${table.paidIdr} IS NULL OR ${table.refundedPaidIdr} <= ${table.paidIdr})`,
     ),
     // Same-day spend of one customer at one outlet (Q40, legend-e5it).
     index("promotion_order_applications_customer_day_idx")

@@ -456,6 +456,25 @@ describe("E5IT same-day cumulative minimum-spend facility reward (owner Q40, PRD
     expect(rewards[0]?.business_date).toBe(businessDateOf(at, clockA()));
   });
 
+  it("[E5IT-4] day totals are per outlet: 60k at outlet A plus 60k at outlet B reaches no 100k reward at either", async () => {
+    const item = randomUUID();
+    const promotionId = await facilityPromotion(item);
+    const customer = member();
+    const at = noon(8);
+    const atA = await redeem(
+      redeemInput([priced(item, 60_000)], { customer, at }),
+    );
+    const atB = await redeem(
+      redeemInput([priced(item, 60_000)], { customer, at, outletId: outletB }),
+      outletScope(outletB),
+    );
+    expect(applied(atA, promotionId)).toBeUndefined();
+    expect(applied(atB, promotionId)).toBeUndefined();
+    expect(
+      await liveRewards(promotionId, customer.customerProfileId),
+    ).toHaveLength(0);
+  });
+
   it("[E5IT-5] anonymous bills are not cumulated: an anonymous bill does not count toward a member's day total", async () => {
     const item = randomUUID();
     const promotionId = await facilityPromotion(item);
@@ -704,5 +723,99 @@ describe("E5IT partial refund withdraws a promotion the bill no longer earns (ow
     await expect(
       partialRefund(input.orderId, [priced(item, 50_000)]),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("[E5IT-11] the recheck uses the rule snapshot stored at redeem time, not an edited promotion", async () => {
+    const item = randomUUID();
+    const other = randomUUID();
+    const promotionId = await seedPromotion(item, {
+      benefit: { kind: "nominal_off", amountIdr: 20_000 },
+      conditions: [{ kind: "min_spend", amountIdr: 100_000 }],
+    });
+    const input = redeemInput([priced(item, 80_000), priced(other, 40_000)]);
+    expect((await redeem(input)).totalDiscountIdr).toBe(20_000);
+    // An admin lowers the minimum AFTER the sale: under the current rule the
+    // 80k kept bill would still earn it; the snapshot says it does not.
+    await asOwner(tenantId, (client) =>
+      client.query(
+        "UPDATE promotions SET conditions = $3 WHERE tenant_id = $1 AND id = $2",
+        [
+          tenantId,
+          promotionId,
+          JSON.stringify([
+            { kind: "item_quantity", menuItemIds: [item], minQuantity: 1 },
+            { kind: "min_spend", amountIdr: 50_000 },
+          ]),
+        ],
+      ),
+    );
+    expect(
+      await partialRefund(input.orderId, [priced(item, 80_000)]),
+    ).toMatchObject({
+      adjusted: true,
+      refundedSubtotalIdr: 40_000,
+      withdrawnDiscountIdr: 20_000,
+      refundDueIdr: 20_000,
+      totalDiscountIdr: 0,
+      withdrawn: [{ promotionId, reason: "min_spend_not_met" }],
+    });
+    const { rows } = await asOwner(tenantId, (client) =>
+      client.query(
+        `SELECT paid_idr, rules_snapshot->$3->'conditions' AS conditions
+           FROM promotion_order_applications
+          WHERE tenant_id = $1 AND order_id = $2`,
+        [tenantId, ulidToUuid(input.orderId), promotionId],
+      ),
+    );
+    expect(Number(rows[0].paid_idr)).toBe(100_000);
+    expect(rows[0].conditions).toEqual([
+      { kind: "item_quantity", menuItemIds: [item], minQuantity: 1 },
+      { kind: "min_spend", amountIdr: 100_000 },
+    ]);
+  });
+
+  it("[E5IT-12] a partial refund never pays out more than the goods value the guest paid", async () => {
+    const item = randomUUID();
+    const other = randomUUID();
+    await seedPromotion(item, {
+      // The item condition still holds for the kept line; the discount alone
+      // exceeds what the guest paid for the refunded goods.
+      benefit: { kind: "nominal_off", amountIdr: 60_000 },
+    });
+    const input = redeemInput([priced(item, 50_000), priced(other, 50_000)]);
+    expect((await redeem(input)).totalDiscountIdr).toBe(60_000); // paid 40k
+    const adjusted = await partialRefund(input.orderId, [priced(item, 50_000)]);
+    expect(adjusted).toMatchObject({
+      adjusted: true,
+      refundedSubtotalIdr: 50_000,
+      withdrawnDiscountIdr: 0,
+      // Paid 40.000 for the goods: the 50.000 refundable value is capped.
+      refundDueIdr: 40_000,
+      uncoveredIdr: 0,
+      // The kept 50.000 bill cannot carry a discount above its own value.
+      totalDiscountIdr: 50_000,
+    });
+    const { rows } = await asOwner(tenantId, (client) =>
+      client.query(
+        `SELECT paid_idr, refunded_paid_idr, total_discount_idr, refunded_subtotal_idr
+           FROM promotion_order_applications
+          WHERE tenant_id = $1 AND order_id = $2`,
+        [tenantId, ulidToUuid(input.orderId)],
+      ),
+    );
+    expect(rows[0]).toMatchObject({
+      paid_idr: "40000",
+      refunded_paid_idr: "40000",
+      total_discount_idr: "50000",
+      refunded_subtotal_idr: "50000",
+    });
+    // Idempotent: the same refund again pays nothing more.
+    expect(
+      await partialRefund(input.orderId, [priced(item, 50_000)]),
+    ).toMatchObject({
+      refundedSubtotalIdr: 0,
+      withdrawnDiscountIdr: 0,
+      refundDueIdr: 0,
+    });
   });
 });

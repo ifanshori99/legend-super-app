@@ -189,6 +189,22 @@ export const promotionSchema = promotionObjectSchema.superRefine(
 );
 export type Promotion = z.infer<typeof promotionSchema>;
 
+/**
+ * The rules a bill redeemed, as they were at redeem time, keyed by promotion
+ * id: conditions and benefit only (status, validity, quotas and budgets were
+ * already consumed). The partial-refund recheck (owner Q41) reads this
+ * snapshot, so editing a promotion later never changes what an already-paid
+ * bill earned.
+ */
+export const promotionRuleSnapshotSchema = z.record(
+  uuidSchema,
+  z.strictObject({
+    conditions: z.array(promotionConditionSchema),
+    benefit: promotionBenefitSchema,
+  }),
+);
+export type PromotionRuleSnapshot = z.infer<typeof promotionRuleSnapshotSchema>;
+
 // ---- Evaluation -----------------------------------------------------------
 
 export const promoLineSchema = z.strictObject({
@@ -403,6 +419,11 @@ function unitValueIdr(line: PromoLine): number {
  * names exactly what `discountIdr` paid for and never overstates it. Returns
  * an empty list when not even the cheapest unit fits, and null when the bill
  * has no matching units at all.
+ *
+ * Units already priced Rp0 (comped by an item-level discount) are skipped
+ * entirely: they are not a benefit, so they neither consume the free slot nor
+ * turn the promotion into a zero-discount redemption (coordinator decision,
+ * legend-w3zf follow-up).
  */
 function freeItemBenefit(
   promotion: Promotion,
@@ -438,7 +459,10 @@ function freeItemBenefit(
   if (multiples <= 0) return null;
   const eligible = input.lines
     .map((line, index) => ({ line, index, unitIdr: unitValueIdr(line) }))
-    .filter(({ line }) => benefit.menuItemIds.includes(line.menuItemId))
+    .filter(
+      ({ line, unitIdr }) =>
+        unitIdr > 0 && benefit.menuItemIds.includes(line.menuItemId),
+    )
     .sort(
       (left, right) =>
         left.unitIdr - right.unitIdr ||
@@ -458,9 +482,8 @@ function freeItemBenefit(
     if (allowance <= 0) break;
     const wanted = Math.min(line.quantity, allowance);
     // Units are visited cheapest first, so once one does not fit the cap no
-    // later (equal or dearer) unit fits either.
-    const fits =
-      unitIdr > 0 ? Math.floor((capIdr - discountIdr) / unitIdr) : wanted;
+    // later (equal or dearer) unit fits either. Every unit is priced above 0.
+    const fits = Math.floor((capIdr - discountIdr) / unitIdr);
     const quantity = Math.max(0, Math.min(wanted, fits));
     if (quantity > 0) {
       allowance -= quantity;

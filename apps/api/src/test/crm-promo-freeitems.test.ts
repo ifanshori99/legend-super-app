@@ -223,6 +223,46 @@ describe("legend-w3zf free-item promotions free the cheapest eligible units firs
   });
 });
 
+describe("legend-w3zf comped (Rp0) units never consume the free slot", () => {
+  const buyCoffeeGetCake = () =>
+    promo({
+      conditions: [
+        { kind: "item_quantity", menuItemIds: [ITEM_A], minQuantity: 1 },
+      ],
+      benefit: {
+        kind: "free_items",
+        menuItemIds: [ITEM_B],
+        quantityPerMultiple: 1,
+      },
+    });
+
+  it("[W3ZF-6] a comped free item is skipped, so the slot frees the paid unit instead", () => {
+    // Buy one coffee (A), get one cake (B). The guest has a comped cake
+    // (line total 0) and a paid cake: the paid one is the benefit.
+    const promotion = buyCoffeeGetCake();
+    const lines = [
+      line(ITEM_A, 1, 30_000),
+      line(ITEM_B, 1, 0),
+      line(ITEM_B, 1, 20_000),
+    ];
+    for (const order of [lines, [...lines].reverse()])
+      expect(evaluatePromotion(promotion, bill(order))).toMatchObject({
+        applied: true,
+        discountIdr: 20_000,
+        freeItems: [{ menuItemId: ITEM_B, quantity: 1 }],
+      });
+  });
+
+  it("[W3ZF-6] a bill whose only eligible unit is comped grants no phantom free item", () => {
+    const promotion = buyCoffeeGetCake();
+    const lines = [line(ITEM_A, 1, 30_000), line(ITEM_B, 1, 0)];
+    expect(evaluatePromotion(promotion, bill(lines))).toMatchObject({
+      applied: false,
+      reason: "no_matching_items",
+    });
+  });
+});
+
 describe("legend-w3zf a capped free-item discount names only the units it paid for", () => {
   it("[W3ZF-4] a direct cap frees the cheapest whole units that fit; freeItems matches the discount", () => {
     const promotion = buyGetFree([ITEM_A, ITEM_B], 1, 3);
