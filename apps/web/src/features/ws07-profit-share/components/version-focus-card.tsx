@@ -146,7 +146,9 @@ export function VersionFocusCard({
                           {formatShareBp(allocation.shareBp)}
                         </span>
                         <span className="ml-1.5 text-sm text-muted-foreground">
-                          ({formatShareBpInteger(allocation.shareBp)} bp)
+                          {t("accounting.share.bpUnit", {
+                            bp: formatShareBpInteger(allocation.shareBp),
+                          })}
                         </span>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

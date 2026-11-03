@@ -169,7 +169,7 @@ test.describe("profit share back office", () => {
 
     // The wizard switches to the new adjustment draft; its reversing journal
     // is part of the run's record.
-    await expect(wizard.getByText("Jurnal pembalik")).toBeVisible({
+    await expect(wizard.getByText("Jurnal pembalik").first()).toBeVisible({
       timeout: 15_000,
     });
     await expect(

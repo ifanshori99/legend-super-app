@@ -120,7 +120,9 @@ export function VersionsTable({
                     {formatShareBp(totalBp)}
                   </span>
                   <span className="ml-1.5 text-sm text-muted-foreground">
-                    ({formatShareBpInteger(totalBp)} bp)
+                    {t("accounting.share.bpUnit", {
+                      bp: formatShareBpInteger(totalBp),
+                    })}
                   </span>
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
