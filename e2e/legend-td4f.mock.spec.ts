@@ -147,6 +147,81 @@ test("OPS-01 template builder creates a template with evidence requirements", as
   ).toBeChecked();
 });
 
+test("OPS-01 offline blocks checklist writes instead of claiming they saved", async ({
+  page,
+  context,
+}) => {
+  await page.goto(`/operasional/checklist/${CLEANING_RUN_ID}?mock=normal`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Checklist Kebersihan Toilet Umum",
+      level: 1,
+    }),
+  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+  const done = page.getByRole("button", { name: "Tandai selesai" }).first();
+  await expect(done).toBeEnabled();
+
+  await context.setOffline(true);
+  // No offline queue in the contract: the notice says so and writes are off.
+  await expect(page.locator('[data-slot="offline-notice"]')).toContainText(
+    "tidak diantrekan",
+  );
+  await expect(done).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Tandai gagal" }).first(),
+  ).toBeDisabled();
+
+  await context.setOffline(false);
+  await expect(page.locator('[data-slot="offline-notice"]')).toHaveCount(0);
+  await expect(done).toBeEnabled();
+});
+
+test("OPS-01 template builder reorders items with buttons and keeps focus", async ({
+  page,
+}) => {
+  await page.goto(
+    `/operasional/checklist/template/${OPENING_TEMPLATE_ID}?mock=normal`,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Ubah template checklist", level: 1 }),
+  ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+
+  const editors = page.locator('[data-slot="checklist-item-editor"]');
+  const firstLabel = await editors
+    .nth(0)
+    .getByLabel("Label butir")
+    .inputValue();
+  const secondLabel = await editors
+    .nth(1)
+    .getByLabel("Label butir")
+    .inputValue();
+
+  // Each arrow names its item position, so a screen reader can tell them apart.
+  await expect(
+    page.getByRole("button", { name: "Naikkan butir 1", exact: true }),
+  ).toBeDisabled();
+  const moveDown = page.getByRole("button", {
+    name: "Turunkan butir 1",
+    exact: true,
+  });
+  await moveDown.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(editors.nth(0).getByLabel("Label butir")).toHaveValue(
+    secondLabel,
+  );
+  await expect(editors.nth(1).getByLabel("Label butir")).toHaveValue(
+    firstLabel,
+  );
+  await expect(
+    page.getByRole("status").filter({ hasText: "posisi 2" }),
+  ).toHaveText(/Butir dipindah ke posisi 2 dari \d+\./);
+  // Focus follows the moved item (now at position 2).
+  await expect(
+    page.getByRole("button", { name: "Turunkan butir 2", exact: true }),
+  ).toBeFocused();
+});
+
 test("OPS-01 board has empty and error states with a way forward", async ({
   page,
 }) => {

@@ -206,7 +206,11 @@ export function ChecklistBoardPage() {
             {t("opsChecklist.runs.subtitle")}
           </p>
         </div>
-        <Button type="button" onClick={() => setStartOpen(true)}>
+        <Button
+          type="button"
+          disabled={!online}
+          onClick={() => setStartOpen(true)}
+        >
           {t("opsChecklist.runs.newRun")}
         </Button>
       </header>
@@ -227,32 +231,34 @@ export function ChecklistBoardPage() {
               <span className="type-eyebrow min-w-16 text-muted-foreground">
                 {t("opsChecklist.runs.filter.shift")}
               </span>
-              <SegmentedControl
-                label={t("opsChecklist.runs.filter.shift")}
-                value={filter.shiftTemplateId}
-                onValueChange={(value) =>
-                  setFilter((current) => ({
-                    ...current,
-                    shiftTemplateId: value,
-                  }))
-                }
-                options={[
-                  {
-                    value: ALL,
-                    label: optionLabel(
-                      t("opsChecklist.runs.filter.allShifts"),
-                      rows.length,
-                    ),
-                  },
-                  ...shiftIds.map((id) => ({
-                    value: id,
-                    label: optionLabel(
-                      shiftName(id) ?? id,
-                      shiftCounts.get(id) ?? 0,
-                    ),
-                  })),
-                ]}
-              />
+              <div className="max-w-full min-w-0">
+                <SegmentedControl
+                  label={t("opsChecklist.runs.filter.shift")}
+                  value={filter.shiftTemplateId}
+                  onValueChange={(value) =>
+                    setFilter((current) => ({
+                      ...current,
+                      shiftTemplateId: value,
+                    }))
+                  }
+                  options={[
+                    {
+                      value: ALL,
+                      label: optionLabel(
+                        t("opsChecklist.runs.filter.allShifts"),
+                        rows.length,
+                      ),
+                    },
+                    ...shiftIds.map((id) => ({
+                      value: id,
+                      label: optionLabel(
+                        shiftName(id) ?? id,
+                        shiftCounts.get(id) ?? 0,
+                      ),
+                    })),
+                  ]}
+                />
+              </div>
             </div>
           )}
           {stationIds.length > 0 && (
@@ -260,29 +266,31 @@ export function ChecklistBoardPage() {
               <span className="type-eyebrow min-w-16 text-muted-foreground">
                 {t("opsChecklist.runs.filter.station")}
               </span>
-              <SegmentedControl
-                label={t("opsChecklist.runs.filter.station")}
-                value={filter.stationId}
-                onValueChange={(value) =>
-                  setFilter((current) => ({ ...current, stationId: value }))
-                }
-                options={[
-                  {
-                    value: ALL,
-                    label: optionLabel(
-                      t("opsChecklist.runs.filter.allStations"),
-                      rows.length,
-                    ),
-                  },
-                  ...stationIds.map((id) => ({
-                    value: id,
-                    label: optionLabel(
-                      stationName(id) ?? id,
-                      stationCounts.get(id) ?? 0,
-                    ),
-                  })),
-                ]}
-              />
+              <div className="max-w-full min-w-0">
+                <SegmentedControl
+                  label={t("opsChecklist.runs.filter.station")}
+                  value={filter.stationId}
+                  onValueChange={(value) =>
+                    setFilter((current) => ({ ...current, stationId: value }))
+                  }
+                  options={[
+                    {
+                      value: ALL,
+                      label: optionLabel(
+                        t("opsChecklist.runs.filter.allStations"),
+                        rows.length,
+                      ),
+                    },
+                    ...stationIds.map((id) => ({
+                      value: id,
+                      label: optionLabel(
+                        stationName(id) ?? id,
+                        stationCounts.get(id) ?? 0,
+                      ),
+                    })),
+                  ]}
+                />
+              </div>
             </div>
           )}
           {zoneIds.length > 0 && (
@@ -290,29 +298,31 @@ export function ChecklistBoardPage() {
               <span className="type-eyebrow min-w-16 text-muted-foreground">
                 {t("opsChecklist.runs.filter.zone")}
               </span>
-              <SegmentedControl
-                label={t("opsChecklist.runs.filter.zone")}
-                value={filter.zoneId}
-                onValueChange={(value) =>
-                  setFilter((current) => ({ ...current, zoneId: value }))
-                }
-                options={[
-                  {
-                    value: ALL,
-                    label: optionLabel(
-                      t("opsChecklist.runs.filter.allZones"),
-                      rows.length,
-                    ),
-                  },
-                  ...zoneIds.map((id) => ({
-                    value: id,
-                    label: optionLabel(
-                      zoneById.get(id) ?? id,
-                      zoneCounts.get(id) ?? 0,
-                    ),
-                  })),
-                ]}
-              />
+              <div className="max-w-full min-w-0">
+                <SegmentedControl
+                  label={t("opsChecklist.runs.filter.zone")}
+                  value={filter.zoneId}
+                  onValueChange={(value) =>
+                    setFilter((current) => ({ ...current, zoneId: value }))
+                  }
+                  options={[
+                    {
+                      value: ALL,
+                      label: optionLabel(
+                        t("opsChecklist.runs.filter.allZones"),
+                        rows.length,
+                      ),
+                    },
+                    ...zoneIds.map((id) => ({
+                      value: id,
+                      label: optionLabel(
+                        zoneById.get(id) ?? id,
+                        zoneCounts.get(id) ?? 0,
+                      ),
+                    })),
+                  ]}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -327,6 +337,7 @@ export function ChecklistBoardPage() {
             <Button
               type="button"
               variant="outline"
+              disabled={!online}
               onClick={() => setStartOpen(true)}
             >
               {t("opsChecklist.runs.newRun")}

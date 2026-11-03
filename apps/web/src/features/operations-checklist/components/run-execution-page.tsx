@@ -133,6 +133,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
       : Math.round((progress.done / progress.total) * 100);
 
   function startRun() {
+    if (!online) return;
     transition.mutate("start", {
       onSuccess: () =>
         toast({ title: t("opsChecklist.run.started"), tone: "success" }),
@@ -142,7 +143,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
   }
 
   function closeRun() {
-    if (!outcome.ready || outcome.outcome === null) return;
+    if (!outcome.ready || outcome.outcome === null || !online) return;
     const failed = outcome.outcome === "failed";
     transition.mutate(failed ? "fail" : "complete", {
       onSuccess: () =>
@@ -220,22 +221,18 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
             style={{ width: `${percent}%` }}
           />
         </div>
-        <dl className="grid gap-1 text-sm leading-5 text-muted-foreground">
+        <div className="grid gap-1 text-sm leading-5 text-muted-foreground">
           <div className="flex items-center gap-1.5 tabular">
             <CalendarClock className="size-4 shrink-0" aria-hidden="true" />
-            <dt className="sr-only">{t("opsChecklist.runs.dueLabel")}</dt>
-            <dd>
+            <span>
               {t("opsChecklist.runs.dueAt", {
                 time: formatDateTime(run.dueAt, clock.timeZone),
               })}
-            </dd>
+            </span>
           </div>
           {clientNowMs !== null && (
             <div className="flex items-center gap-1.5 tabular">
-              <dt className="sr-only">
-                {t("opsChecklist.runs.remainingLabel")}
-              </dt>
-              <dd
+              <span
                 className={
                   escalation === "none"
                     ? undefined
@@ -255,18 +252,20 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
                         t,
                       ),
                     })}
-              </dd>
+              </span>
             </div>
           )}
           <div className="flex items-center gap-1.5">
             <UserRound className="size-4 shrink-0" aria-hidden="true" />
-            <dd>{t("opsChecklist.runs.assignee", { name: assignee })}</dd>
+            <span>{t("opsChecklist.runs.assignee", { name: assignee })}</span>
           </div>
           <div className="flex items-start gap-1.5">
             <MapPin className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <dd>{t("opsChecklist.runs.scope", { shift, station, zone })}</dd>
+            <span>
+              {t("opsChecklist.runs.scope", { shift, station, zone })}
+            </span>
           </div>
-        </dl>
+        </div>
       </Card>
 
       {run.status === "pending" && (
@@ -277,6 +276,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
           <Button
             type="button"
             loading={transition.isPending && transition.variables === "start"}
+            disabled={!online}
             onClick={startRun}
           >
             <Play aria-hidden="true" />
@@ -354,7 +354,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
           <Button
             type="button"
             variant={outcome.outcome === "failed" ? "destructive" : "default"}
-            disabled={!outcome.ready}
+            disabled={!outcome.ready || !online}
             loading={
               transition.isPending &&
               (transition.variables === "complete" ||

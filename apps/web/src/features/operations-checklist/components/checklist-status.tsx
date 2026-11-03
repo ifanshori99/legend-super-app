@@ -42,7 +42,9 @@ export function EscalationBadge({
   if (escalation === "none") return null;
   if (escalation === "grace")
     return (
-      <StatusPill status="warning" icon={Clock} className={className}>
+      // Overdue is already urgent (DESIGN.md Q25: solid pill + thick rule);
+      // the grace only decides whether the supervisor report is due yet.
+      <StatusPill status="danger" solid icon={Clock} className={className}>
         {t("opsChecklist.runs.escalationGrace")}
       </StatusPill>
     );

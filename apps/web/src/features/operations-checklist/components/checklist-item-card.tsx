@@ -18,6 +18,7 @@ import type {
   ChecklistItemResult,
 } from "@starter/shared/operations";
 import { newIdempotencyKey } from "@/lib/idempotency";
+import { useOnline } from "@/lib/use-online";
 import {
   evidenceSummary,
   formatDateTime,
@@ -50,6 +51,9 @@ export function ChecklistItemCard({
 }) {
   const t = useT();
   const record = useRecordChecklistItemResult(runId);
+  // The contract has no offline queue: TanStack Query would park the write in
+  // memory with a spinner, so answers are blocked (not "saved") while offline.
+  const online = useOnline();
   const headingId = React.useId();
   const fileInput = React.useRef<HTMLInputElement>(null);
 
@@ -111,7 +115,7 @@ export function ChecklistItemCard({
       nextErrors.note = t("opsChecklist.run.item.noteRequired");
     setErrors(nextErrors);
     setSaveErrorKey(null);
-    if (Object.values(nextErrors).some(Boolean)) return;
+    if (Object.values(nextErrors).some(Boolean) || !online) return;
 
     setPendingStatus(status);
     record.mutate(
@@ -354,7 +358,7 @@ export function ChecklistItemCard({
               type="button"
               variant="secondary"
               loading={pendingStatus === "done"}
-              disabled={pendingStatus !== null}
+              disabled={pendingStatus !== null || !online}
               onClick={() => save("done")}
             >
               <Check aria-hidden="true" />
@@ -365,7 +369,7 @@ export function ChecklistItemCard({
               variant="outline"
               className="text-danger"
               loading={pendingStatus === "failed"}
-              disabled={pendingStatus !== null}
+              disabled={pendingStatus !== null || !online}
               onClick={() => save("failed")}
             >
               <AlertTriangle aria-hidden="true" />
