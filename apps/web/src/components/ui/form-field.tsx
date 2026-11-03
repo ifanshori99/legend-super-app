@@ -8,6 +8,11 @@ import { Slot } from "radix-ui";
 import type { z } from "zod";
 import { useT } from "@/components/i18n";
 import { Label } from "@/components/ui/label";
+import {
+  FormFieldSelectContext,
+  Select,
+  type FormFieldSelectContextValue,
+} from "@/components/ui/select";
 
 /**
  * First message per field from a Zod error, keyed by top-level field name:
@@ -48,14 +53,38 @@ function FormField({
   const t = useT();
   const autoId = React.useId();
   const controlId = id ?? autoId;
+  const labelId = `${controlId}-label`;
   const hintId = `${controlId}-hint`;
   const errorId = `${controlId}-error`;
   const describedBy =
     [hint && hintId, error && errorId].filter(Boolean).join(" ") || undefined;
+  // A Radix Select renders no DOM node at its root, so the id/aria props the
+  // Slot clones onto the child are dropped before they reach the trigger. Give
+  // the trigger the same wiring through context instead; every other control
+  // keeps the Slot path unchanged (legend-n138).
+  const selectChild =
+    React.isValidElement(children) && children.type === Select;
+  const selectField: FormFieldSelectContextValue = {
+    controlId,
+    labelId,
+    describedBy,
+    invalid: Boolean(error),
+    required,
+  };
+  const control = (
+    <Slot.Root
+      id={controlId}
+      aria-describedby={describedBy}
+      aria-invalid={error ? true : undefined}
+      aria-required={required || undefined}
+    >
+      {children}
+    </Slot.Root>
+  );
 
   return (
     <div data-slot="form-field" className={cn("grid gap-1.5", className)}>
-      <Label htmlFor={controlId}>
+      <Label id={selectChild ? labelId : undefined} htmlFor={controlId}>
         {label}
         {!required && (
           <span className="font-normal text-muted-foreground">
@@ -63,14 +92,13 @@ function FormField({
           </span>
         )}
       </Label>
-      <Slot.Root
-        id={controlId}
-        aria-describedby={describedBy}
-        aria-invalid={error ? true : undefined}
-        aria-required={required || undefined}
-      >
-        {children}
-      </Slot.Root>
+      {selectChild ? (
+        <FormFieldSelectContext.Provider value={selectField}>
+          {control}
+        </FormFieldSelectContext.Provider>
+      ) : (
+        control
+      )}
       {hint && (
         <p id={hintId} className="text-sm leading-5 text-muted-foreground">
           {hint}

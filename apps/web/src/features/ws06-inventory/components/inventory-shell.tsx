@@ -64,6 +64,23 @@ const TABS = [
     labelKey: "inventory.tabs.waste",
     to: "/kelola/inventori/waste",
   },
+  // Recipes, production batches and HPP reports (squad invfe: legend-w0v,
+  // legend-5pe). Labels live in the squad's own `invfeNav` catalog module.
+  {
+    key: "recipes",
+    labelKey: "invfeNav.inventory.recipes",
+    to: "/kelola/inventori/resep",
+  },
+  {
+    key: "production",
+    labelKey: "invfeNav.inventory.production",
+    to: "/kelola/inventori/produksi",
+  },
+  {
+    key: "hpp",
+    labelKey: "invfeNav.inventory.hpp",
+    to: "/kelola/inventori/hpp",
+  },
 ] as const;
 
 export type InventorySection = (typeof TABS)[number]["key"];
@@ -117,7 +134,7 @@ export function InventoryPage({
   return (
     // The management topbar owns the page title (DESIGN.md v3 §5): no second
     // h1 and no extra gutter here.
-    <div className="grid min-w-0 gap-5">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <p className="max-w-3xl text-sm leading-5 text-muted-foreground">
           {t("inventory.subtitle")}
@@ -125,7 +142,9 @@ export function InventoryPage({
         {API_MOCK && <Badge tone="neutral">{t("common.sampleData")}</Badge>}
       </div>
       <InventoryTabs active={active} />
-      <div className="grid min-w-0 gap-5">{children}</div>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
+        {children}
+      </div>
     </div>
   );
 }

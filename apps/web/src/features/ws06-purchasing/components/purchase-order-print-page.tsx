@@ -18,7 +18,7 @@ const PRINT_STYLE = `@media print {
   body * { visibility: hidden; }
   .purchase-print-sheet, .purchase-print-sheet * { visibility: visible; }
   .purchase-print-sheet { position: absolute; inset: 0; width: 100%; max-width: none; margin: 0; padding: 12mm; }
-  .dark .purchase-print-sheet { --foreground: var(--primary-foreground); --muted-foreground: var(--primary-foreground); --border: var(--primary-foreground); --background: var(--primary); color: var(--foreground); background: var(--background); }
+  .dark .purchase-print-sheet { --foreground: var(--primary-foreground); --muted-foreground: var(--primary-foreground); --border: var(--primary-foreground); --background: transparent; color: var(--foreground); background: var(--background); }
   .purchase-print-sheet .print-controls { display: none; }
 }`;
 
