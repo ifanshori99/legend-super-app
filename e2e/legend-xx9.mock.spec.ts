@@ -3,9 +3,9 @@ import { expect, test } from "@playwright/test";
 // Menu back office happy path (legend-xx9, legend-dpe) against mock mode.
 // Mock mode is a web-app-only build flag (VITE_API_MOCK=true) with the role
 // cookie `legend-mock-role=all` as the default, so no API or database is
-// needed. Run with a web server started as:
-//   VITE_API_MOCK=true pnpm --filter @starter/web dev --port 3315
-// and WEB_URL=http://localhost:3315 pnpm exec playwright test e2e/legend-xx9.spec.ts
+// needed.
+//
+// Run: pnpm test:e2e:mock e2e/legend-xx9.mock.spec.ts — mock mode only, no API and no DB.
 
 const ITEM_ID = "00000000-0000-4000-8000-000000001000"; // Espresso, fixtures
 const NAV = { waitUntil: "networkidle" as const };

@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 
 // This exercises the UI against synthetic kitchen fixtures; timing, durable
 // reconnect delivery and the server audit trail require the integration bead.
+//
+// Run: pnpm test:e2e:mock e2e/legend-10n-board.mock.spec.ts — mock mode only, no API and no DB.
 const mockWebUrl = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(!mockWebUrl, "Requires the mock-mode web server");
 test.use({ baseURL: mockWebUrl ?? "http://localhost:3225" });

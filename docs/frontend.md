@@ -353,33 +353,33 @@ Two CI shards therefore spend about half the test time plus the repeated warm-up
 
 Ten slowest tests in the shard 1/4 run (a whole-file sample, not a random one):
 
-| Time  | Spec                      | Test                                                                               |
-| ----- | ------------------------- | ---------------------------------------------------------------------------------- |
-| 8.8 s | `legend-10n.mock.spec.ts` | KDS mock shows empty, error and offline states                                     |
-| 7.6 s | `legend-2m4.mock.spec.ts` | ORD-01 ORD-02 ORD-03 ORD-11 order from the menu, pay first, see status             |
-| 4.9 s | `legend-1j7.mock.spec.ts` | PRD §3.18 / Alur I: empty and error states offer a way forward                     |
-| 4.8 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed refresh keeps the idle warning open with retry text              |
-| 4.7 s | `legend-azt.mock.spec.ts` | F11 customer display: offline is its own state                                     |
-| 4.5 s | `legend-9bh.mock.spec.ts` | AUTH-05: a failed load offers a retry instead of a blank page                      |
-| 4.5 s | `legend-azt.mock.spec.ts` | F11 customer display: an error says how to fix it                                  |
-| 4.4 s | `legend-1j7.spec.ts`      | PRD §3.18 / Alur I: request, approve, create a PO and generate a sample share link |
-| 3.2 s | `legend-2m4.mock.spec.ts` | ORD-01 ORD-03 a reload keeps the joined table and the shared cart                  |
-| 2.9 s | `legend-7ko.mock.spec.ts` | ORD-10 merging two unpaid open-bill tables puts them on one bill                   |
+| Time  | Spec                                 | Test                                                                               |
+| ----- | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| 8.8 s | `legend-10n.mock.spec.ts`            | KDS mock shows empty, error and offline states                                     |
+| 7.6 s | `legend-2m4.mock.spec.ts`            | ORD-01 ORD-02 ORD-03 ORD-11 order from the menu, pay first, see status             |
+| 4.9 s | `legend-1j7.mock.spec.ts`            | PRD §3.18 / Alur I: empty and error states offer a way forward                     |
+| 4.8 s | `legend-9bh.mock.spec.ts`            | AUTH-05: a failed refresh keeps the idle warning open with retry text              |
+| 4.7 s | `legend-azt.mock.spec.ts`            | F11 customer display: offline is its own state                                     |
+| 4.5 s | `legend-9bh.mock.spec.ts`            | AUTH-05: a failed load offers a retry instead of a blank page                      |
+| 4.5 s | `legend-azt.mock.spec.ts`            | F11 customer display: an error says how to fix it                                  |
+| 4.4 s | `legend-1j7-purchasing.mock.spec.ts` | PRD §3.18 / Alur I: request, approve, create a PO and generate a sample share link |
+| 3.2 s | `legend-2m4.mock.spec.ts`            | ORD-01 ORD-03 a reload keeps the joined table and the shared cart                  |
+| 2.9 s | `legend-7ko.mock.spec.ts`            | ORD-10 merging two unpaid open-bill tables puts them on one bill                   |
 
 Ten slowest spec files in the same sample (sum of test time):
 
-| Time   | Tests | Spec                       |
-| ------ | ----- | -------------------------- |
-| 21.0 s | 10    | `legend-7ko.mock.spec.ts`  |
-| 20.8 s | 9     | `legend-9bh.mock.spec.ts`  |
-| 19.7 s | 8     | `legend-azt.mock.spec.ts`  |
-| 15.8 s | 5     | `legend-2m4.mock.spec.ts`  |
-| 11.7 s | 7     | `legend-2w5.spec.ts`       |
-| 10.8 s | 7     | `legend-8tv6.mock.spec.ts` |
-| 8.8 s  | 1     | `legend-10n.mock.spec.ts`  |
-| 6.8 s  | 5     | `legend-6irt.mock.spec.ts` |
-| 6.1 s  | 2     | `legend-1j7.spec.ts`       |
-| 5.4 s  | 4     | `legend-10n.spec.ts`       |
+| Time   | Tests | Spec                                 |
+| ------ | ----- | ------------------------------------ |
+| 21.0 s | 10    | `legend-7ko.mock.spec.ts`            |
+| 20.8 s | 9     | `legend-9bh.mock.spec.ts`            |
+| 19.7 s | 8     | `legend-azt.mock.spec.ts`            |
+| 15.8 s | 5     | `legend-2m4.mock.spec.ts`            |
+| 11.7 s | 7     | `legend-2w5-payment.mock.spec.ts`    |
+| 10.8 s | 7     | `legend-8tv6.mock.spec.ts`           |
+| 8.8 s  | 1     | `legend-10n.mock.spec.ts`            |
+| 6.8 s  | 5     | `legend-6irt.mock.spec.ts`           |
+| 6.1 s  | 2     | `legend-1j7-purchasing.mock.spec.ts` |
+| 5.4 s  | 4     | `legend-10n-board.mock.spec.ts`      |
 
 Obvious waste, biggest first:
 
