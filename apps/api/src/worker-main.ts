@@ -25,6 +25,12 @@ import {
 } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
+import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
+import { setReservationDepositPort } from "./services/reservation-ports.ts";
+import { retryPendingRefunds } from "./services/reservation-refunds.ts";
+import { sweepStaleDepositHolds } from "./services/reservation-sweeps.ts";
 import {
   createPgBoss,
   createWorkerRuntime,
@@ -85,6 +91,9 @@ if (!process.env.WORKER_DATABASE_URL)
     "WORKER_DATABASE_URL is required for the isolated queue role",
   );
 const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
+// RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
+// payment gateway is installed.
+setReservationDepositPort(createPaymentReservationDepositPort());
 const registry = new Pool({ connectionString: workerUrl, max: 1 });
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
@@ -125,6 +134,10 @@ const runtime = createWorkerRuntime({
             handlers.resolveNotificationRecipients,
           )(event, key, tx);
         } else {
+          // RSV-02 (legend-t8bz): a paid DP confirms its reservation first
+          // (idempotent, replay safe), then the deployment consumer runs.
+          if (event.name === "payment.paid")
+            await handlePaymentPaid(context, event);
           await handlers.deliverEvent(context, event, key, tx);
         }
       },
@@ -155,6 +168,30 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // FAC-02 (legend-nm4f): cancel facility slot holds whose payment TTL
+    // lapsed so the unit frees up. Same fail-closed rule as above.
+    try {
+      await withTenant(db, context, (tx) =>
+        releaseExpiredSlotHolds(tx, context),
+      );
+    } catch {
+      console.error("Facility hold expiry sweep failed");
+    }
+    // RSV-01/RSV-02 (legend-t8bz): release DP holds whose link expired unpaid
+    // or was never attached, and retry pending DP refund requests. Same
+    // fail-closed rule: an error never blocks the relay.
+    try {
+      await withTenant(db, context, (tx) =>
+        sweepStaleDepositHolds(tx, context, new Date()),
+      );
+    } catch {
+      console.error("Reservation deposit hold sweep failed");
+    }
+    try {
+      await retryPendingRefunds(context, new Date());
+    } catch {
+      console.error("Reservation refund retry sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
     // Providers and recipient lookup are deployment-owned and absent by default.
