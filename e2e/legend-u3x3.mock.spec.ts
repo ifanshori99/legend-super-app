@@ -19,6 +19,14 @@ test.skip(
 /** Vite's first compile of a route outlasts the 5 s assertion default. */
 const COLD_START_TIMEOUT_MS = 30_000;
 
+/** The router global appears just before React hydrates; a click in that window is lost. */
+async function waitForApp(page: import("@playwright/test").Page) {
+  await page.waitForFunction(() =>
+    Boolean((window as unknown as { __TSR_ROUTER__?: unknown }).__TSR_ROUTER__),
+  );
+  await page.waitForTimeout(300);
+}
+
 /** The two onboarding fixtures: CL-1019 (manager) and CL-1020 (barista). */
 const SRI_RAHAYU = "00000000-0000-4000-8000-000000001020";
 /** The terminated fixture with an offboarding checklist. */
@@ -60,6 +68,7 @@ test("F26 Alur M: completing a task on the onboarding detail moves the progress"
   page,
 }) => {
   await page.goto(`/kelola/onboarding/${SRI_RAHAYU}?mock=normal`);
+  await waitForApp(page);
 
   // The barista fixture has one done and one open task.
   await expect(page.getByRole("heading", { name: "Sri Rahayu" })).toBeVisible({
@@ -70,7 +79,12 @@ test("F26 Alur M: completing a task on the onboarding detail moves the progress"
   const complete = page.getByRole("button", {
     name: "Selesaikan tugas Pelatihan Dasar Barista",
   });
-  await complete.click();
+  // A click before hydration is lost; retry until the row leaves the list.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if ((await complete.count()) === 0) break;
+    await complete.click();
+    await page.waitForTimeout(400);
+  }
 
   // The task action runs through the contract's transition and the mock store,
   // then the checklist refetches: 2 of 2 tasks are done.
@@ -84,6 +98,7 @@ test("F26 Alur M: the offboarding detail shows clearance, the settlement summary
   await page.setViewportSize({ width: 1440, height: 900 });
   await openTheme(page, "light");
   await page.goto(`/kelola/offboarding/${NADIA_SAFITRI}?mock=normal`);
+  await waitForApp(page);
 
   await expect(
     page.getByRole("heading", { name: "Nadia Safitri" }),
@@ -122,7 +137,12 @@ test("F26 Alur M: the offboarding detail shows clearance, the settlement summary
   // The card and the sheet both name the number.
   await expect(page.getByText("Nomor: SK-1018").first()).toBeVisible();
   await page.getByRole("button", { name: "Lihat surat" }).click();
-  await expect(page.getByText("SURAT KETERANGAN KERJA")).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "SURAT KETERANGAN KERJA",
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(page.getByText("Dimas Saputra").first()).toBeVisible();
   await expect(
     page.getByText("PT Sultan Solusi Nusantara").first(),

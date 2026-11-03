@@ -5,7 +5,7 @@ import { useT } from "@/components/i18n";
 import { NumberDisplay } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 
-export type MetricsState = "loading" | "error" | "ready";
+export type MetricsState = "loading" | "error" | "ready" | "empty";
 
 export function MetricValue({
   state,
