@@ -134,6 +134,7 @@ export async function appendPaymentEvent(
       | "payment_intent.created"
       | "payment.paid"
       | "payment.refund_requested"
+      | "payment.refunded"
       | "payment.expired"
       | "payment.failed"
       | "payment_route.updated"
