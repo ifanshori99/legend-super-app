@@ -1569,6 +1569,25 @@ export const createShareholderDocumentInputSchema = z.strictObject({
   visibility: shareholderDocumentVisibilitySchema,
 });
 
+/**
+ * An uploaded, not yet attached PDF. The server picks the key
+ * (`shareholder-documents/<uuid>.pdf`); `createShareholderDocument` then
+ * attaches it to one document.
+ */
+export const shareholderDocumentFileSchema = z.strictObject({
+  fileKey: storageKeySchema,
+  contentType: z.literal("application/pdf"),
+  sizeBytes: z.number().int().positive(),
+});
+export type ShareholderDocumentFile = z.infer<
+  typeof shareholderDocumentFileSchema
+>;
+
+/** Multipart text field next to the binary field `file`. */
+export const uploadShareholderDocumentFileMetadataSchema = z.strictObject({
+  profitEntityId: profitEntityIdSchema,
+});
+
 /** A shareholder-visible document only after management publishes it. */
 export function assertDocumentVisibleToShareholders(
   doc: Pick<ShareholderDocument, "visibility" | "publishedAt">,

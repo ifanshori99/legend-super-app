@@ -51,6 +51,8 @@ import {
   stockCountLineIdSchema,
   stockCountLineSchema,
   stockCountSchema,
+  stockCountSheetLineSchema,
+  stockCountSheetSchema,
   stockCountStatusSchema,
   stockCountTypeSchema,
   stockLedgerEntrySchema,
@@ -669,6 +671,24 @@ export const updateStockCountLine = defineEndpoint({
   response: dataResponseSchema(stockCountLineSchema),
 });
 
+export const getStockCountSheet = defineEndpoint({
+  method: "GET",
+  path: "/api/inventory/stock-counts/:stockCountId/sheet",
+  params: z.strictObject({ stockCountId: stockCountIdSchema }),
+  response: dataResponseSchema(stockCountSheetSchema),
+});
+
+export const updateStockCountSheetLine = defineEndpoint({
+  method: "PATCH",
+  path: "/api/inventory/stock-counts/:stockCountId/sheet/lines/:lineId",
+  params: z.strictObject({
+    stockCountId: stockCountIdSchema,
+    lineId: stockCountLineIdSchema,
+  }),
+  body: updateStockCountLineInputSchema,
+  response: dataResponseSchema(stockCountSheetLineSchema),
+});
+
 export const postStockCountTransition = defineEndpoint({
   method: "POST",
   path: "/api/inventory/stock-counts/:stockCountId/transitions",
@@ -759,6 +779,8 @@ export const inventoryEndpoints = [
   createStockTransfer,
   createStockCount,
   updateStockCountLine,
+  getStockCountSheet,
+  updateStockCountSheetLine,
   postStockCountTransition,
   createWasteLog,
   createProductionOrder,
