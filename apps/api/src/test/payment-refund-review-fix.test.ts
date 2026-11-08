@@ -230,7 +230,15 @@ async function insertPendingRefund(
   await owner.query(
     `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by, unallocated_fund_id)
      VALUES ($1, $2, $3, $4, $5, 'Pengembalian uji', 'pending', $6, $7)`,
-    [refundId, tenantId, outletA, intentId, amountIdr, requestedBy, unallocatedFundId],
+    [
+      refundId,
+      tenantId,
+      outletA,
+      intentId,
+      amountIdr,
+      requestedBy,
+      unallocatedFundId,
+    ],
   );
   return refundId;
 }
@@ -319,7 +327,15 @@ async function seedApprovedRefund(age = "2 hours") {
     `INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
                                   requested_by, approved_by, decided_at, payout_attempts, updated_at)
      VALUES ($1, $2, $3, $4, 30000, 'Pengembalian tertunda', 'approved', $5, $6, now(), 0, now() - $7::interval)`,
-    [refundId, tenantId, outletA, intent.intentId, requesterId, financeAId, age],
+    [
+      refundId,
+      tenantId,
+      outletA,
+      intent.intentId,
+      requesterId,
+      financeAId,
+      age,
+    ],
   );
   return { intent, refundId };
 }
