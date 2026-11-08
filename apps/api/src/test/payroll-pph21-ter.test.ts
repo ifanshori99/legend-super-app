@@ -49,7 +49,7 @@ import {
   PayrollError,
 } from "@starter/shared/hris/payroll";
 import type { Pph21PolicyParameters } from "@starter/shared/hris/payroll";
-import { computePph21Period } from "../services/payroll-pph21.ts";
+import { computePph21Period } from "@starter/shared/hris/payroll";
 import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
 
 type Scheme = "gross" | "gross_up" | "net";

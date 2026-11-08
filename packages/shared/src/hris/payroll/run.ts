@@ -48,6 +48,15 @@ import { payrollRunTotalsSchema } from "./payslips.ts";
 import type { PayrollRunTotals } from "./payslips.ts";
 import { payDateAdjustmentSchema, payrollCycleSchema } from "./policies.ts";
 import {
+  DEFAULT_PPH21_POLICY,
+  pph21PolicyVersionIdSchema,
+  resolvePph21Policy,
+} from "./pph21-policy.ts";
+import type {
+  Pph21PolicyParameters,
+  Pph21PolicyVersion,
+} from "./pph21-policy.ts";
+import {
   BPJS_TABLE_TYPES,
   jkkRiskClassSchema,
   resolveStatutoryTable,
@@ -183,6 +192,17 @@ export const statutoryVersionRefSchema = z.strictObject({
 });
 export type StatutoryVersionRef = z.infer<typeof statutoryVersionRefSchema>;
 
+/**
+ * The tenant PPh 21 policy version a run pinned (bead legend-y4wp). Same
+ * four fields as a statutory ref minus the table type.
+ */
+export const pph21PolicyRefSchema = z.strictObject({
+  versionId: pph21PolicyVersionIdSchema,
+  version: z.number().int().min(1).safe(),
+  effectiveFrom: businessDateSchema,
+});
+export type Pph21PolicyRef = z.infer<typeof pph21PolicyRefSchema>;
+
 /** PRD §6 H `payroll_runs.config_snapshot`: tariff and rule versions used. */
 export const payrollConfigSnapshotSchema = z
   .strictObject({
@@ -210,6 +230,12 @@ export const payrollConfigSnapshotSchema = z
       .min(1)
       .max(200),
     loanMaxDeductionOfNetPayBp: basisPointsSchema,
+    /**
+     * Tenant PPh 21 policy version in force on the pay date at lock. `null` =
+     * the tenant had published none, so the default policy applies and keeps
+     * applying after lock, whatever the tenant publishes later.
+     */
+    pph21Policy: pph21PolicyRefSchema.nullable(),
     capturedAt: isoDateTimeSchema,
   })
   .refine(
@@ -273,6 +299,53 @@ export function statutoryVersionsForRun(
     result.set(type, version);
   }
   return result;
+}
+
+export function pph21PolicyRef(
+  version: Pick<Pph21PolicyVersion, "id" | "version" | "effectiveFrom">,
+): Pph21PolicyRef {
+  return {
+    versionId: version.id,
+    version: version.version,
+    effectiveFrom: version.effectiveFrom,
+  };
+}
+
+/**
+ * The tenant PPh 21 policy a run computes with. Before lock: the version in
+ * force on the pay date (the default when the tenant published none), like
+ * the statutory tables. From lock on: exactly the version pinned in the
+ * snapshot, by id, whatever was published since (PAYR-02); a pinned `null`
+ * keeps the default. A pinned version that is missing or changed, or a
+ * frozen run without a snapshot -> PAYROLL_SNAPSHOT_MISMATCH. `ref` is what
+ * the snapshot stores at lock (null = default).
+ */
+export function pph21PolicyForRun(
+  run: {
+    status: PayrollRunStatus;
+    payDate: BusinessDate;
+    configSnapshot: Pick<PayrollConfigSnapshot, "pph21Policy"> | null;
+  },
+  versions: readonly Pph21PolicyVersion[],
+): { parameters: Pph21PolicyParameters; ref: Pph21PolicyRef | null } {
+  if (!isPayrollRunFrozen(run.status)) {
+    const parameters = resolvePph21Policy(versions, run.payDate);
+    // resolvePph21Policy returns the stored object itself, or the default.
+    const match = versions.find((v) => v.parameters === parameters);
+    return { parameters, ref: match ? pph21PolicyRef(match) : null };
+  }
+  if (run.configSnapshot === null)
+    throw new PayrollError("PAYROLL_SNAPSHOT_MISMATCH");
+  const ref = run.configSnapshot.pph21Policy;
+  if (ref === null) return { parameters: DEFAULT_PPH21_POLICY, ref: null };
+  const version = versions.find((v) => v.id === ref.versionId);
+  if (
+    !version ||
+    version.version !== ref.version ||
+    version.effectiveFrom !== ref.effectiveFrom
+  )
+    throw new PayrollError("PAYROLL_SNAPSHOT_MISMATCH");
+  return { parameters: version.parameters, ref };
 }
 
 // ---- Run row --------------------------------------------------------------

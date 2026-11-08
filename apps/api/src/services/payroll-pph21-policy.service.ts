@@ -185,6 +185,18 @@ export async function resolvePph21PolicyFor(
   );
 }
 
+/**
+ * Every policy version of the tenant, oldest first, for a payroll run that
+ * resolves or verifies the pinned version itself (`pph21PolicyForRun`). No
+ * permission check, like `resolvePph21PolicyFor`: the run authorises its
+ * caller.
+ */
+export async function loadPph21PolicyVersionsForRun(
+  context: ScopedTenantContext,
+): Promise<Pph21PolicyVersion[]> {
+  return withTenant(db, context, (tx) => loadVersions(tx, context));
+}
+
 /** Same resolution with the version it came from, behind `payroll.view`. */
 export async function getPph21PolicyInForce(
   context: ScopedTenantContext,

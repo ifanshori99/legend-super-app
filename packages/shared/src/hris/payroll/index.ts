@@ -7,6 +7,8 @@ export * from "./ids.ts";
 export * from "./errors.ts";
 export * from "./statutory.ts";
 export * from "./pph21-policy.ts";
+export * from "./pph21.ts";
+export * from "./payslip-tax.ts";
 export * from "./components.ts";
 export * from "./policies.ts";
 export * from "./loans.ts";

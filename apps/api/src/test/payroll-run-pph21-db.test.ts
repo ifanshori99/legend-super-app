@@ -1,0 +1,611 @@
+// One payroll run's PPh 21 end to end against PostgreSQL with the restricted
+// app role (beads legend-iwgb, legend-oo3q, legend-y4wp; PRD v1.7 §3 D.30
+// "PPh 21", PAYR-02, PAYR-03, R15, R20): tenant policy versions published by
+// a payroll admin, a draft run priced with the version in force on the pay
+// date, the version captured into the config snapshot at lock, a newer
+// version published afterwards, the LOCKED run still priced with the pinned
+// version, a DRAFT copy priced with the newer one, a tampered snapshot, tenant
+// isolation, and a December annual recalculation through the same service.
+//
+// Every expected value was computed BY HAND (python3, exact integer
+// arithmetic) from the PP 58/2023 Lampiran and the rules documented in
+// payroll-pph21-ter.test.ts; none is copied from the engine. Integer IDR.
+//
+// Pay date 2026-11-28; policy v1 = rounding `down`, effective 2026-11-10;
+// policy v2 = rounding `half_up`, effective 2026-11-20. Both are published on
+// 2026-11-08 (`now` below), so the pay date falls under v2 once it exists.
+// TER month (no December): tax = R(X x rate x (10000 + s) / 10^8) with ONE
+// rounding R, s = 2000 bp only without NPWP. Brackets are the "s.d." bounds
+// of the PP 58/2023 Lampiran (inclusive).
+//
+//   E1 TK/0 (A), NPWP, gross: lines 8.000.000 (taxable) + 500.000 (not
+//      taxable, excluded) + employer BPJS benefit 155.567 -> X = 8.155.567,
+//      bracket (7.500.000, 8.550.000] = 150 bp (1,5%),
+//      X x 150 / 10^4 = 122.333,505 -> down 122.333, half up 122.334.
+//   E2 K/1 (B), NPWP, gross 12.000.000 + gross_up 2.000.000. Tax allowance S =
+//      least fixed point of S -> T(12.000.000 + 2.000.000 + S) - floor(T x
+//      12.000.000 / X): S0 = 0, X = 14.000.000 (500 bp) T = 700.000
+//      W = 600.000 -> S1 = 100.000; X = 14.100.000 T = 705.000 W = 600.000 ->
+//      105.000; X = 14.105.000 T = 705.250 W = 600.000 -> 105.250;
+//      X = 14.105.250 T = 705.262,5 (down 705.262, half up 705.263), W
+//      599.999 (down) / 600.000 (half up) -> 105.263; X = 14.105.263
+//      T = 705.263,15 -> 705.263, W = 599.999 -> 105.264; X = 14.105.264
+//      T = 705.263,2 -> 705.263, W = 599.999 -> 105.264 (no increase: stop).
+//      Final X = 14.105.264, T = 705.263, W = floor(705.263 x 12.000.000 /
+//      14.105.264) = 599.999, A = 105.264 (all gross_up), borne 0,
+//      withheld = W + A = 705.263. Same in both rounding modes.
+//   E3 K/0 (A), NPWP, gross 6.000.000 + net 4.000.000. S0 = 0: X = 10.000.000
+//      (200 bp) T = 200.000 W = 120.000 -> S = 80.000; X = 10.080.000 (225 bp)
+//      T = 226.800 W = floor(226.800 x 6.000.000 / 10.080.000) = 135.000 ->
+//      S = 91.800; then rounding decides the tail:
+//      down:    X = 10.091.800 T = 227.065,5 -> 227.065 W 134.999 -> 92.066;
+//               X = 10.092.066 T = 227.071,5 -> 227.071 W 134.999 -> 92.072;
+//               X = 10.092.072 T = 227.071,62 -> 227.071 W 134.999 -> 92.072
+//               stop. T = 227.071, W = 134.999, borne B = 92.072.
+//      half_up: X = 10.091.800 T = 227.065,5 -> 227.066 W 135.000 -> 92.066;
+//               X = 10.092.066 T = 227.071,485 -> 227.071 W 134.999 -> 92.072;
+//               X = 10.092.072 T = 227.071,62 -> 227.072 W 135.000 -> 92.072
+//               stop. T = 227.072, W = 135.000, borne B = 92.072.
+//      allowance 0 (no gross_up line), withheld = W.
+//   E4 TK/1 (A), NO NPWP, gross 9.000.333, bracket (8.550.000, 9.650.000] =
+//      175 bp, s = 2000: 9.000.333 x 175 x 12.000 / 10^8 = 189.006,993 ->
+//      down 189.006, half up 189.007.
+//   E5 K/I/2 (normalised to K/2, category B), NPWP, gross 20.000.007,
+//      bracket 800 bp: 20.000.007 x 800 / 10^4 = 1.600.000,56 -> down
+//      1.600.000, half up 1.600.001.
+//
+// December (E6, TK/0, NPWP, pay date 2026-12-28, policy v2): annual
+// recalculation. Prior 11 months: taxable gross 11 x 8.000.000 = 88.000.000,
+// employee JHT/JP 11 x 120.000 = 1.320.000, PPh 21 withheld 1.320.000. Year:
+// bruto 88.000.000 + 8.000.000 = 96.000.000; biaya jabatan min(5% =
+// 4.800.000, 500.000 x 12 = 6.000.000) = 4.800.000; JHT/JP 1.320.000 + 120.000
+// = 1.440.000; neto = 96.000.000 - 4.800.000 - 1.440.000 = 89.760.000; PTKP
+// TK/0 54.000.000; PKP = 35.760.000 (already a whole thousand); tax 5% =
+// 1.788.000; period tax = 1.788.000 - 1.320.000 = 468.000.
+import { randomUUID } from "node:crypto";
+import { Pool, type PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { businessDateSchema } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import {
+  DEFAULT_PPH21_POLICY,
+  type PayslipTax,
+  type Pph21PolicyRef,
+} from "@starter/shared/hris/payroll";
+import {
+  calculatePayrollRunTax,
+  capturePph21PolicyForLock,
+  type PayrollRunTaxEmployee,
+  type PayrollRunTaxRun,
+} from "../services/payroll-run-pph21.service.ts";
+import { createPph21PolicyVersion } from "../services/payroll-pph21-policy.service.ts";
+import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
+
+const tenantId = cafeLegendPlatformFixtures.tenant.id;
+const otherTenant = randomUUID();
+
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const createdUsers: string[] = [];
+const createdRoles: string[] = [];
+
+const base = (tenant: string = tenantId) =>
+  establishTenantContext({
+    tenantId: tenant,
+    brandId: null,
+    source: "session",
+  });
+const tenantScope = (tenant: string = tenantId) =>
+  establishScopedTenantContext(base(tenant), { kind: "tenant" });
+
+async function asOwner<T>(
+  tenant: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenant],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** A user holding a custom role with exactly `permissions` tenant-wide. */
+async function actor(permissions: string[]): Promise<string> {
+  const userId = randomUUID();
+  createdUsers.push(userId);
+  await owner.query(
+    `INSERT INTO "user" (id, name, email) VALUES ($1, 'PPh21 run DB', $2)`,
+    [userId, `${userId}@example.test`],
+  );
+  const roleId = randomUUID();
+  createdRoles.push(roleId);
+  await asOwner(tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenantId,
+        `PPh21 run test ${roleId.slice(0, 8)}`,
+        JSON.stringify(permissions),
+        JSON.stringify(["tenant"]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+      [tenantId, userId, roleId],
+    );
+  });
+  return userId;
+}
+
+async function clearPolicies() {
+  for (const tenant of [tenantId, otherTenant])
+    await asOwner(tenant, (client) =>
+      client.query("DELETE FROM payroll_pph21_policies WHERE tenant_id = $1", [
+        tenant,
+      ]),
+    );
+}
+
+const codeOf = (error: unknown) => (error as { code?: string }).code;
+async function failureCode(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return codeOf(error);
+  }
+  throw new Error("Expected the call to fail");
+}
+
+const date = (value: string) => businessDateSchema.parse(value);
+const PAY_DATE = date("2026-11-28");
+const DECEMBER_PAY_DATE = date("2026-12-28");
+/** Policies are published on this day, before both effective dates. */
+const NOW = new Date("2026-11-08T03:00:00Z");
+
+const ZERO_PRIOR = {
+  taxableGrossIdr: 0,
+  employeeDeductibleIdr: 0,
+  pph21WithheldIdr: 0,
+  pph21EmployerBorneIdr: 0,
+};
+
+const employee = (
+  employeeId: string,
+  fields: Omit<
+    PayrollRunTaxEmployee,
+    "employeeId" | "lastTaxPeriod" | "monthsWorked" | "prior"
+  > &
+    Partial<
+      Pick<PayrollRunTaxEmployee, "lastTaxPeriod" | "monthsWorked" | "prior">
+    >,
+): PayrollRunTaxEmployee => ({
+  employeeId,
+  lastTaxPeriod: false,
+  monthsWorked: 11,
+  prior: ZERO_PRIOR,
+  ...fields,
+});
+
+const EMPLOYEES: PayrollRunTaxEmployee[] = [
+  employee("E1", {
+    ptkpStatus: "TK/0",
+    hasTaxId: true,
+    earnings: [
+      { amountIdr: 8_000_000, taxable: true, taxScheme: "gross" },
+      { amountIdr: 500_000, taxable: false, taxScheme: "gross" },
+    ],
+    employerBenefitIdr: 155_567,
+    employeeDeductibleIdr: 100_000,
+  }),
+  employee("E2", {
+    ptkpStatus: "K/1",
+    hasTaxId: true,
+    earnings: [
+      { amountIdr: 12_000_000, taxable: true, taxScheme: "gross" },
+      { amountIdr: 2_000_000, taxable: true, taxScheme: "gross_up" },
+    ],
+    employerBenefitIdr: 0,
+    employeeDeductibleIdr: 0,
+  }),
+  employee("E3", {
+    ptkpStatus: "K/0",
+    hasTaxId: true,
+    earnings: [
+      { amountIdr: 6_000_000, taxable: true, taxScheme: "gross" },
+      { amountIdr: 4_000_000, taxable: true, taxScheme: "net" },
+    ],
+    employerBenefitIdr: 0,
+    employeeDeductibleIdr: 0,
+  }),
+  employee("E4", {
+    ptkpStatus: "TK/1",
+    hasTaxId: false,
+    earnings: [{ amountIdr: 9_000_333, taxable: true, taxScheme: "gross" }],
+    employerBenefitIdr: 0,
+    employeeDeductibleIdr: 0,
+  }),
+  employee("E5", {
+    ptkpStatus: "K/I/2",
+    hasTaxId: true,
+    earnings: [{ amountIdr: 20_000_007, taxable: true, taxScheme: "gross" }],
+    employerBenefitIdr: 0,
+    employeeDeductibleIdr: 0,
+  }),
+];
+
+/** PayslipTax with plain numbers (the Idr brand is irrelevant to toEqual). */
+type PlainTax = {
+  [K in keyof PayslipTax]: PayslipTax[K] extends number
+    ? number
+    : PayslipTax[K];
+};
+
+const NO_REFUND = {
+  pph21RefundIdr: 0,
+  pph21EmployerRefundIdr: 0,
+  method: "ter",
+} as const;
+
+/** Expected TER payslip tax, written out field by field. */
+const expectedTax = (
+  fields: Pick<
+    PlainTax,
+    | "ptkpStatus"
+    | "terCategory"
+    | "terRateBp"
+    | "taxableGrossIdr"
+    | "pph21Idr"
+    | "pph21WithheldIdr"
+    | "taxAllowanceIdr"
+    | "pph21EmployerBorneIdr"
+    | "noTaxIdSurchargeApplied"
+  >,
+): PlainTax => ({ ...NO_REFUND, ...fields });
+
+// Policy v1 (rounding down).
+const EXPECTED_V1: Record<string, PlainTax> = {
+  E1: expectedTax({
+    ptkpStatus: "TK/0",
+    terCategory: "A",
+    terRateBp: 150,
+    taxableGrossIdr: 8_155_567,
+    pph21Idr: 122_333,
+    pph21WithheldIdr: 122_333,
+    taxAllowanceIdr: 0,
+    pph21EmployerBorneIdr: 0,
+    noTaxIdSurchargeApplied: false,
+  }),
+  E2: expectedTax({
+    ptkpStatus: "K/1",
+    terCategory: "B",
+    terRateBp: 500,
+    taxableGrossIdr: 14_105_264,
+    pph21Idr: 705_263,
+    pph21WithheldIdr: 705_263,
+    taxAllowanceIdr: 105_264,
+    pph21EmployerBorneIdr: 0,
+    noTaxIdSurchargeApplied: false,
+  }),
+  E3: expectedTax({
+    ptkpStatus: "K/0",
+    terCategory: "A",
+    terRateBp: 225,
+    taxableGrossIdr: 10_092_072,
+    pph21Idr: 227_071,
+    pph21WithheldIdr: 134_999,
+    taxAllowanceIdr: 0,
+    pph21EmployerBorneIdr: 92_072,
+    noTaxIdSurchargeApplied: false,
+  }),
+  E4: expectedTax({
+    ptkpStatus: "TK/1",
+    terCategory: "A",
+    terRateBp: 175,
+    taxableGrossIdr: 9_000_333,
+    pph21Idr: 189_006,
+    pph21WithheldIdr: 189_006,
+    taxAllowanceIdr: 0,
+    pph21EmployerBorneIdr: 0,
+    noTaxIdSurchargeApplied: true,
+  }),
+  E5: expectedTax({
+    ptkpStatus: "K/I/2",
+    terCategory: "B",
+    terRateBp: 800,
+    taxableGrossIdr: 20_000_007,
+    pph21Idr: 1_600_000,
+    pph21WithheldIdr: 1_600_000,
+    taxAllowanceIdr: 0,
+    pph21EmployerBorneIdr: 0,
+    noTaxIdSurchargeApplied: false,
+  }),
+};
+
+// Policy v2 (rounding half up): only the amounts the rounding moves differ.
+const EXPECTED_V2: Record<string, PlainTax> = {
+  ...EXPECTED_V1,
+  E1: { ...EXPECTED_V1.E1!, pph21Idr: 122_334, pph21WithheldIdr: 122_334 },
+  E3: { ...EXPECTED_V1.E3!, pph21Idr: 227_072, pph21WithheldIdr: 135_000 },
+  E4: { ...EXPECTED_V1.E4!, pph21Idr: 189_007, pph21WithheldIdr: 189_007 },
+  E5: { ...EXPECTED_V1.E5!, pph21Idr: 1_600_001, pph21WithheldIdr: 1_600_001 },
+};
+
+const taxesOf = (result: {
+  payslips: { employeeId: string; tax: PayslipTax }[];
+}) => Object.fromEntries(result.payslips.map((p) => [p.employeeId, p.tax]));
+
+let admin: string;
+let v1Ref: Pph21PolicyRef;
+let v2Ref: Pph21PolicyRef;
+let lockedRun: PayrollRunTaxRun;
+
+beforeAll(async () => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+  await owner.query(
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'PPh21 run RLS tenant', plan, status, deployment_mode, feature_flags, limits, created_by
+       FROM tenants WHERE id = $3`,
+    [otherTenant, `pph21-run-${otherTenant.slice(0, 8)}`, tenantId],
+  );
+  await clearPolicies();
+  admin = await actor(["payroll.view", "payroll.run"]);
+});
+
+afterAll(async () => {
+  await clearPolicies();
+  await asOwner(tenantId, async (client) => {
+    await client.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
+      [tenantId, createdUsers],
+    );
+    await client.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenantId, createdRoles],
+    );
+  });
+  // Audit rows are append-only: a tenant that was audited cannot be deleted
+  // any more. Leave that fixture tenant in place (the database is disposable).
+  const audited = await owner.query(
+    "SELECT 1 FROM audit_logs WHERE tenant_id = $1 LIMIT 1",
+    [otherTenant],
+  );
+  if ((audited.rowCount ?? 0) === 0)
+    await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
+  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
+  await owner.end();
+});
+
+const draftRun = (payDate = PAY_DATE): PayrollRunTaxRun => ({
+  status: "draft",
+  payDate,
+  configSnapshot: null,
+});
+const calculate = (
+  run: PayrollRunTaxRun,
+  employees: PayrollRunTaxEmployee[] = EMPLOYEES,
+  tenant: string = tenantId,
+) =>
+  calculatePayrollRunTax(tenantScope(tenant), {
+    run,
+    tables: REFERENCE_TABLES,
+    employees,
+  });
+
+describe("payroll run PPh 21: one run from draft to lock to a newer policy", () => {
+  it("prices a draft run with the default policy while the tenant has no version", async () => {
+    const result = await calculate(draftRun());
+    expect(result.pph21Policy).toBeNull();
+    expect(result.parameters).toEqual(DEFAULT_PPH21_POLICY);
+    // Default is half up: the same amounts as policy v2 below.
+    expect(taxesOf(result)).toEqual(EXPECTED_V2);
+    expect(await capturePph21PolicyForLock(tenantScope(), PAY_DATE)).toBeNull();
+  });
+
+  it("publishes v1 (down) and prices the draft run with it", async () => {
+    const v1 = await createPph21PolicyVersion(
+      tenantScope(),
+      admin,
+      {
+        effectiveFrom: date("2026-11-10"),
+        parameters: { ...DEFAULT_PPH21_POLICY, roundingMode: "down" },
+        reason: "Saran konsultan pajak 2026",
+      },
+      NOW,
+    );
+    v1Ref = {
+      versionId: v1.id,
+      version: 1,
+      effectiveFrom: date("2026-11-10"),
+    };
+    const result = await calculate(draftRun());
+    expect(result.pph21Policy).toEqual(v1Ref);
+    expect(result.parameters.roundingMode).toBe("down");
+    expect(taxesOf(result)).toEqual(EXPECTED_V1);
+    // A pay date before v1 still gets the default (half up).
+    const early = await calculate(draftRun(date("2026-11-09")));
+    expect(early.pph21Policy).toBeNull();
+    expect(taxesOf(early)).toEqual(EXPECTED_V2);
+  });
+
+  it("locks: the snapshot captures v1", async () => {
+    const captured = await capturePph21PolicyForLock(tenantScope(), PAY_DATE);
+    expect(captured).toEqual(v1Ref);
+    lockedRun = {
+      status: "locked",
+      payDate: PAY_DATE,
+      configSnapshot: { pph21Policy: captured },
+    };
+    const locked = await calculate(lockedRun);
+    expect(locked.pph21Policy).toEqual(v1Ref);
+    expect(taxesOf(locked)).toEqual(EXPECTED_V1);
+  });
+
+  it("keeps the locked run on v1 after v2 is published, and prices a draft copy with v2", async () => {
+    const v2 = await createPph21PolicyVersion(
+      tenantScope(),
+      admin,
+      {
+        effectiveFrom: date("2026-11-20"),
+        parameters: { ...DEFAULT_PPH21_POLICY, roundingMode: "half_up" },
+        reason: "Coretax mulai berlaku",
+      },
+      NOW,
+    );
+    expect(v2.version).toBe(2);
+    v2Ref = {
+      versionId: v2.id,
+      version: 2,
+      effectiveFrom: date("2026-11-20"),
+    };
+
+    // The locked run is identical to before: v1 is pinned.
+    const locked = await calculate(lockedRun);
+    expect(locked.pph21Policy).toEqual(v1Ref);
+    expect(taxesOf(locked)).toEqual(EXPECTED_V1);
+    // Same for a paid run with that snapshot.
+    const paid = await calculate({ ...lockedRun, status: "paid" });
+    expect(taxesOf(paid)).toEqual(EXPECTED_V1);
+
+    // A draft copy of the same run (same pay date) uses v2.
+    const draft = await calculate(draftRun());
+    expect(draft.pph21Policy).toEqual(v2Ref);
+    expect(draft.parameters.roundingMode).toBe("half_up");
+    expect(taxesOf(draft)).toEqual(EXPECTED_V2);
+    // The amounts the rounding moves: E1, E3, E4, E5; E2 does not move.
+    const moved = Object.keys(EXPECTED_V1).filter(
+      (id) => EXPECTED_V1[id]!.pph21Idr !== EXPECTED_V2[id]!.pph21Idr,
+    );
+    expect(moved).toEqual(["E1", "E3", "E4", "E5"]);
+
+    expect(await capturePph21PolicyForLock(tenantScope(), PAY_DATE)).toEqual(
+      v2Ref,
+    );
+  });
+
+  it("refuses a tampered snapshot with PAYROLL_SNAPSHOT_MISMATCH", async () => {
+    const tampered = (pph21Policy: Pph21PolicyRef): PayrollRunTaxRun => ({
+      ...lockedRun,
+      configSnapshot: { pph21Policy },
+    });
+    // Wrong version number, wrong effective date, unknown version id.
+    expect(
+      await failureCode(calculate(tampered({ ...v1Ref, version: 2 }))),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    expect(
+      await failureCode(
+        calculate(tampered({ ...v1Ref, effectiveFrom: date("2026-11-11") })),
+      ),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    expect(
+      await failureCode(
+        calculate(tampered({ ...v1Ref, versionId: randomUUID() as never })),
+      ),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // A frozen run without a snapshot.
+    expect(
+      await failureCode(calculate({ ...lockedRun, configSnapshot: null })),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+  });
+
+  it("does not show tenant A's policy to tenant B", async () => {
+    // A draft run of tenant B gets the default policy (half up).
+    const draft = await calculate(draftRun(), EMPLOYEES, otherTenant);
+    expect(draft.pph21Policy).toBeNull();
+    expect(draft.parameters).toEqual(DEFAULT_PPH21_POLICY);
+    expect(taxesOf(draft)).toEqual(EXPECTED_V2);
+    expect(
+      await capturePph21PolicyForLock(tenantScope(otherTenant), PAY_DATE),
+    ).toBeNull();
+    // Tenant A's pinned version does not exist for tenant B.
+    expect(
+      await failureCode(calculate(lockedRun, EMPLOYEES, otherTenant)),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // A tenant B run locked with "no version" stays on the default policy.
+    const lockedDefault = await calculate(
+      {
+        status: "locked",
+        payDate: PAY_DATE,
+        configSnapshot: { pph21Policy: null },
+      },
+      EMPLOYEES,
+      otherTenant,
+    );
+    expect(lockedDefault.pph21Policy).toBeNull();
+    expect(taxesOf(lockedDefault)).toEqual(EXPECTED_V2);
+  });
+
+  it("keeps a run locked with 'no version' on the default after a version is published", async () => {
+    // Tenant A has v1 and v2 now; a snapshot that pinned null still means the
+    // default policy (half up), not v1 (down).
+    const pinnedDefault = await calculate({
+      status: "locked",
+      payDate: PAY_DATE,
+      configSnapshot: { pph21Policy: null },
+    });
+    expect(pinnedDefault.pph21Policy).toBeNull();
+    expect(pinnedDefault.parameters).toEqual(DEFAULT_PPH21_POLICY);
+    expect(taxesOf(pinnedDefault)).toEqual(EXPECTED_V2);
+  });
+
+  it("recalculates December for one employee with prior year-to-date amounts", async () => {
+    const december = employee("E6", {
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: true,
+      monthsWorked: 12,
+      earnings: [{ amountIdr: 8_000_000, taxable: true, taxScheme: "gross" }],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 120_000,
+      prior: {
+        taxableGrossIdr: 88_000_000,
+        employeeDeductibleIdr: 1_320_000,
+        pph21WithheldIdr: 1_320_000,
+        pph21EmployerBorneIdr: 0,
+      },
+    });
+    const result = await calculate(draftRun(DECEMBER_PAY_DATE), [december]);
+    // v2 is in force on 2026-12-28.
+    expect(result.pph21Policy).toEqual(v2Ref);
+    expect(result.payslips).toEqual([
+      {
+        employeeId: "E6",
+        tax: {
+          ptkpStatus: "TK/0",
+          method: "annual_recalculation",
+          terCategory: null,
+          terRateBp: null,
+          taxableGrossIdr: 8_000_000,
+          pph21Idr: 468_000,
+          pph21WithheldIdr: 468_000,
+          taxAllowanceIdr: 0,
+          pph21EmployerBorneIdr: 0,
+          pph21RefundIdr: 0,
+          pph21EmployerRefundIdr: 0,
+          noTaxIdSurchargeApplied: false,
+        },
+      },
+    ]);
+  });
+});

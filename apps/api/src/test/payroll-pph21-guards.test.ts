@@ -4,8 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PPH21_POLICY } from "@starter/shared/hris/payroll";
 import type { TaxScheme } from "@starter/shared/hris/payroll";
-import { computePph21Period } from "../services/payroll-pph21.ts";
-import type { Pph21PeriodInput } from "../services/payroll-pph21.ts";
+import { computePph21Period } from "@starter/shared/hris/payroll";
+import type { Pph21PeriodInput } from "@starter/shared/hris/payroll";
 import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
 
 const base: Pph21PeriodInput = {

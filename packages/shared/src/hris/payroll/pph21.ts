@@ -43,18 +43,18 @@
 // employer-borne), never by this month's mix, so tax withheld from the
 // employee always goes back to the employee.
 
-import { divideRounded, idr } from "@starter/shared/core";
-import type { Idr, RoundingMode } from "@starter/shared/core";
-import { PayrollError } from "@starter/shared/hris/payroll";
+import { divideRounded, idr } from "../../core/index.ts";
+import type { Idr, RoundingMode } from "../../core/index.ts";
+import type { PtkpStatus } from "../organization.ts";
+import type { TaxScheme } from "./components.ts";
+import { PayrollError } from "./errors.ts";
+import type { Pph21PolicyParameters } from "./pph21-policy.ts";
 import type {
   PtkpParameters,
   TerParameters,
   Pph21AnnualParameters,
-  Pph21PolicyParameters,
-  TaxScheme,
   TerCategory,
-} from "@starter/shared/hris/payroll";
-import type { PtkpStatus } from "@starter/shared/hris";
+} from "./statutory.ts";
 
 export type Pph21Tables = {
   ptkp: PtkpParameters;
