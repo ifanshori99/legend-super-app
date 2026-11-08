@@ -1,8 +1,3 @@
--- legend-7df1: foreign keys into tables that already FORCE row level security
--- (employees, positions, stations, outlets) are added NOT VALID. The new tables
--- are empty, so the skipped initial scan proves nothing, and that scan runs
--- under the referenced table's tenant policy and fails for the non-superuser
--- migration owner (no tenant context). New rows are still checked.
 CREATE TABLE "sop_acknowledgements" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -153,40 +148,55 @@ CREATE TABLE "announcements" (
 	CONSTRAINT "announcements_audience_kind_check" CHECK ("announcements"."audience_kind" IN ('all', 'outlets'))
 );
 --> statement-breakpoint
+-- legend-7df1: foreign keys into tables that already FORCE row level security
+-- (employees, positions, stations, outlets). The migrator may be a plain table
+-- owner (no SUPERUSER, no BYPASSRLS): FORCE would apply the tenant policies to
+-- it, and with no app.tenant_id set they raise 42501 while the foreign keys
+-- below are validated. Lift FORCE for this transaction only and restore it
+-- before commit (drizzle applies pending migrations in one transaction; same
+-- pattern as 0065 and 0075).
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.positions NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.stations NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "sop_acknowledgements" ADD CONSTRAINT "sop_acknowledgements_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sop_acknowledgements" ADD CONSTRAINT "sop_acknowledgements_document_fk" FOREIGN KEY ("tenant_id","sop_document_id","document_version") REFERENCES "public"."sop_documents"("tenant_id","id","version") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sop_acknowledgements" ADD CONSTRAINT "sop_acknowledgements_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "sop_acknowledgements" ADD CONSTRAINT "sop_acknowledgements_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_published_by_user_id_fk" FOREIGN KEY ("published_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_supersedes_fk" FOREIGN KEY ("tenant_id","supersedes_id") REFERENCES "public"."sop_documents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE restrict ON UPDATE no action NOT VALID;--> statement-breakpoint
-ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE restrict ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "sop_documents" ADD CONSTRAINT "sop_documents_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_certificates" ADD CONSTRAINT "training_certificates_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_certificates" ADD CONSTRAINT "training_certificates_training_fk" FOREIGN KEY ("tenant_id","training_id") REFERENCES "public"."trainings"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "training_certificates" ADD CONSTRAINT "training_certificates_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "training_certificates" ADD CONSTRAINT "training_certificates_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_certificates" ADD CONSTRAINT "training_certificates_completion_fk" FOREIGN KEY ("tenant_id","completion_id") REFERENCES "public"."training_completions"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_completions" ADD CONSTRAINT "training_completions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_completions" ADD CONSTRAINT "training_completions_training_fk" FOREIGN KEY ("tenant_id","training_id") REFERENCES "public"."trainings"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "training_completions" ADD CONSTRAINT "training_completions_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "training_completions" ADD CONSTRAINT "training_completions_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_enrollments" ADD CONSTRAINT "training_enrollments_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_enrollments" ADD CONSTRAINT "training_enrollments_enrolled_by_user_id_fk" FOREIGN KEY ("enrolled_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_enrollments" ADD CONSTRAINT "training_enrollments_training_fk" FOREIGN KEY ("tenant_id","training_id") REFERENCES "public"."trainings"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "training_enrollments" ADD CONSTRAINT "training_enrollments_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "training_enrollments" ADD CONSTRAINT "training_enrollments_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_questions" ADD CONSTRAINT "training_questions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "training_questions" ADD CONSTRAINT "training_questions_training_fk" FOREIGN KEY ("tenant_id","training_id") REFERENCES "public"."trainings"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "trainings" ADD CONSTRAINT "trainings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "trainings" ADD CONSTRAINT "trainings_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "trainings" ADD CONSTRAINT "trainings_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE restrict ON UPDATE no action NOT VALID;--> statement-breakpoint
-ALTER TABLE "trainings" ADD CONSTRAINT "trainings_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE restrict ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "trainings" ADD CONSTRAINT "trainings_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "trainings" ADD CONSTRAINT "trainings_position_fk" FOREIGN KEY ("tenant_id","position_id") REFERENCES "public"."positions"("tenant_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_announcement_fk" FOREIGN KEY ("tenant_id","announcement_id") REFERENCES "public"."announcements"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "hris_announcement_outlets" ADD CONSTRAINT "hris_announcement_outlets_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "announcement_receipts" ADD CONSTRAINT "announcement_receipts_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "announcement_receipts" ADD CONSTRAINT "announcement_receipts_announcement_fk" FOREIGN KEY ("tenant_id","announcement_id") REFERENCES "public"."announcements"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "announcement_receipts" ADD CONSTRAINT "announcement_receipts_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action NOT VALID;--> statement-breakpoint
+ALTER TABLE "announcement_receipts" ADD CONSTRAINT "announcement_receipts_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "announcements" ADD CONSTRAINT "announcements_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "announcements" ADD CONSTRAINT "announcements_published_by_user_id_fk" FOREIGN KEY ("published_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.stations FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.positions FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "sop_acknowledgements_tenant_employee_idx" ON "sop_acknowledgements" USING btree ("tenant_id","employee_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "sop_documents_tenant_supersedes_key" ON "sop_documents" USING btree ("tenant_id","supersedes_id") WHERE "sop_documents"."supersedes_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "sop_documents_tenant_station_idx" ON "sop_documents" USING btree ("tenant_id","station_id");--> statement-breakpoint
