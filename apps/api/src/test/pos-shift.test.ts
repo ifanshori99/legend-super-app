@@ -2649,9 +2649,11 @@ describe("POS-03 close names the PIN override by its own ULID (legend-6c0)", () 
   it("refuses the ULID of another count's override and the shift stays open", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
+    // The override service only approves the latest count of an open shift,
+    // so the first approval is made before the recount supersedes it.
     const first = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
-    const second = await countDrawer(cashier, shift.id, FLOAT_IDR - 6_000);
     const firstOverride = await pinOverride(cashier, first.id, 0);
+    const second = await countDrawer(cashier, shift.id, FLOAT_IDR - 6_000);
     await pinOverride(cashier, second.id, 0);
     const refused = await close(cashier, shift.id, {
       countId: second.id,
@@ -2668,6 +2670,21 @@ describe("POS-03 close names the PIN override by its own ULID (legend-6c0)", () 
     const shift = await openShift(cashier);
     const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
     await pinOverride(cashier, count.id, 0);
+    // A real void approval needs an approver holding pos.void.approve, with a
+    // PIN of their own; the shift close still names the shift's supervisor.
+    const voidRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Penyetuju Void Uji', false, NULL, $3, false, '["tenant"]')`,
+      [voidRole, tenant.tenantId, JSON.stringify(["pos.void.approve"])],
+    );
+    const voidApprover = await member(tenant, voidRole, "Penyetuju Void");
+    await setStaffPin(
+      tenantContextOf(tenant.tenantId).tenant,
+      voidApprover.userId,
+      { outletId: tenant.outletId, userId: voidApprover.userId },
+      { pin: PIN },
+    );
     const { override: voidOverride } = await createPosOverride(
       establishTenantContext({
         tenantId: tenantIdSchema.parse(tenant.tenantId),
@@ -2684,7 +2701,7 @@ describe("POS-03 close names the PIN override by its own ULID (legend-6c0)", () 
         objectId: randomUUID(),
         approval: {
           method: "supervisor_pin",
-          approverUserId: userIdSchema.parse(supervisor.userId),
+          approverUserId: userIdSchema.parse(voidApprover.userId),
           pin: PIN,
         },
       } as Parameters<typeof createPosOverride>[2],
