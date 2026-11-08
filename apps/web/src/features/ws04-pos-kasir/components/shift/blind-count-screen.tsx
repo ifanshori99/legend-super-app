@@ -23,12 +23,27 @@ function CountForm({ shift }: { shift: ActiveShift }) {
   const submit = useSubmitBlindCount();
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [otherIdr, setOtherIdr] = useState(0);
+  // An empty drawer is valid: a zero count needs one explicit confirmation.
+  const [zeroArmed, setZeroArmed] = useState(false);
 
   const lines = CASH_DENOMINATIONS_IDR.map((denominationIdr) => ({
     denominationIdr,
     quantity: quantities[denominationIdr] ?? 0,
   }));
   const counted = denominationTotal(lines, otherIdr);
+  const confirmingZero = counted === 0 && zeroArmed;
+
+  function send() {
+    if (counted === 0 && !zeroArmed) {
+      setZeroArmed(true);
+      return;
+    }
+    submit.mutate({
+      shiftId: shift.id,
+      counts: lines,
+      otherAmountIdr: otherIdr,
+    });
+  }
 
   return (
     <div className="grid gap-4">
@@ -71,6 +86,7 @@ function CountForm({ shift }: { shift: ActiveShift }) {
                   <ActionError
                     title={t("posKasirShift.count.errorTitle")}
                     error={submit.error}
+                    onRetry={send}
                   />
                 )}
                 {counted === 0 && (
@@ -78,27 +94,24 @@ function CountForm({ shift }: { shift: ActiveShift }) {
                     id="count-empty-hint"
                     className="text-base text-muted-foreground"
                   >
-                    {t("posKasirShift.count.emptyHint")}
+                    {confirmingZero
+                      ? t("posKasirShift.count.zeroConfirm")
+                      : t("posKasirShift.count.emptyHint")}
                   </p>
                 )}
                 <Button
                   className="w-full"
                   loading={submit.isPending}
-                  disabled={counted === 0}
                   aria-describedby={
                     counted === 0 ? "count-empty-hint" : undefined
                   }
-                  onClick={() =>
-                    submit.mutate({
-                      shiftId: shift.id,
-                      counts: lines,
-                      otherAmountIdr: otherIdr,
-                    })
-                  }
+                  onClick={send}
                 >
                   {submit.isPending
                     ? t("posKasirShift.count.submitting")
-                    : t("posKasirShift.count.submit")}
+                    : confirmingZero
+                      ? t("posKasirShift.count.zeroSubmit")
+                      : t("posKasirShift.count.submit")}
                 </Button>
                 <Button variant="outline" className="w-full" asChild>
                   <Link to="/pos/shift">{t("posKasirShift.count.back")}</Link>
@@ -116,14 +129,18 @@ function CountForm({ shift }: { shift: ActiveShift }) {
             <DenominationCounter
               denominations={CASH_DENOMINATIONS_IDR}
               quantities={quantities}
-              onQuantityChange={(denominationIdr, quantity) =>
+              onQuantityChange={(denominationIdr, quantity) => {
+                setZeroArmed(false);
                 setQuantities((current) => ({
                   ...current,
                   [denominationIdr]: quantity,
-                }))
-              }
+                }));
+              }}
               otherIdr={otherIdr}
-              onOtherChange={setOtherIdr}
+              onOtherChange={(value) => {
+                setZeroArmed(false);
+                setOtherIdr(value);
+              }}
             />
             <Notice tone="info" title={t("posKasirShift.count.hiddenTitle")}>
               {t("posKasirShift.count.hiddenBody")}

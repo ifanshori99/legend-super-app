@@ -26,12 +26,18 @@ export const posKasirGatewayMessages = {
       "Tagihan belum lunas. Status berubah otomatis setelah pembayaran terkonfirmasi.",
     unpaidTitle: "Tagihan belum lunas",
   },
+  grid: {
+    loadError: "Metode pembayaran tidak bisa dimuat",
+    loadErrorHint: "Periksa koneksi, lalu coba lagi.",
+  },
+  receipt: {
+    skipPrint: "Lewati cetak, transaksi baru",
+  },
   qris: {
     panelTitle: "QRIS · Customer display",
     startHeading: "Tampilkan QRIS di layar pelanggan",
     startBody:
       "Kode QR dibuat untuk nominal ini dan hanya tampil di customer display.",
-    start: "Buat QRIS",
     starting: "Membuat QRIS…",
     readyHeading: "QRIS siap dipindai",
     readyBodyOutlet: "QRIS {outlet} sudah tampil di layar pelanggan.",
@@ -90,7 +96,6 @@ export const posKasirGatewayMessages = {
     startHeading: "Pembayaran kartu online",
     startBody:
       "Pelanggan memasukkan data kartu di layar pelanggan. Kasir tidak melihat nomor kartu.",
-    start: "Mulai pembayaran kartu",
     starting: "Memulai pembayaran…",
     readyHeading: "Menunggu pembayaran kartu",
     readyBody:

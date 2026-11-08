@@ -55,8 +55,8 @@ export function CashierCodeScreen() {
   const edit = (next: string) => {
     setDigits(next.replace(/\D/g, "").slice(0, MAX_DIGITS));
     setMissing(false);
-    // A found order belongs to the code that found it: editing drops it.
-    if (lookup.isSuccess) lookup.reset();
+    // A result or failure belongs to the code that produced it: editing drops it.
+    if (!lookup.isIdle) lookup.reset();
   };
 
   const search = (event?: FormEvent) => {
@@ -115,7 +115,7 @@ export function CashierCodeScreen() {
                 autoComplete="off"
                 value={digits}
                 onChange={(event) => edit(event.target.value)}
-                aria-label={t("posKasirCode.input.ariaLabel")}
+                disabled={lookup.isPending}
                 aria-invalid={message ? true : undefined}
                 aria-describedby={messageId}
                 className="h-full min-w-0 flex-1 bg-transparent text-3xl font-bold tracking-wide text-foreground tabular focus-visible:outline-none"
@@ -131,6 +131,7 @@ export function CashierCodeScreen() {
               {message ?? t("posKasirCode.input.hint")}
             </p>
             <CodeKeypad
+              disabled={lookup.isPending}
               onDigit={(digit) => edit(`${digits}${digit}`)}
               onBackspace={() => edit(digits.slice(0, -1))}
               onClear={() => edit("")}

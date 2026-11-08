@@ -101,6 +101,21 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
 
   const { bill, activeAttempt } = session;
 
+  // A payment was just confirmed but the bill is not settled: the old step
+  // (its method and amount) is stale and would charge again. Back to the
+  // method choice; set during render so no stale panel paints first.
+  const confirmedIdr = bill
+    ? bill.allocations
+        .filter((a) => a.status === "confirmed")
+        .reduce((sum, a) => sum + a.amountIdr, 0)
+    : 0;
+  const [seenConfirmedIdr, setSeenConfirmedIdr] = useState(confirmedIdr);
+  if (confirmedIdr !== seenConfirmedIdr) {
+    setSeenConfirmedIdr(confirmedIdr);
+    if (confirmedIdr > seenConfirmedIdr && bill && !bill.paid)
+      setStep({ kind: "methods", selected: null });
+  }
+
   if (session.isLoading) return <LoadingShape />;
 
   if (session.error) {
@@ -151,7 +166,8 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       <EdcPanel
         orderId={orderId}
         amountIdr={
-          attempt?.amountIdr ?? edcStep?.amountIdr ?? bill.remainingIdr
+          attempt?.amountIdr ??
+          Math.min(edcStep?.amountIdr ?? bill.remainingIdr, bill.remainingIdr)
         }
         onChangeMethod={toMethods}
       />
@@ -223,7 +239,10 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
       />
     );
   } else {
-    const props = { ...attemptProps, amountIdr: step.amountIdr };
+    const props = {
+      ...attemptProps,
+      amountIdr: Math.min(step.amountIdr, bill.remainingIdr),
+    };
     if (step.method === "cash") panel = <CashPanel {...props} />;
     else if (step.method !== "edc") {
       const Gateway = GATEWAY_PANELS[step.method];

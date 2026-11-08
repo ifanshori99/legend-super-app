@@ -112,8 +112,8 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
   const [saved, setSaved] = useState<string | null>(null);
   const out = type === "cash_out";
 
-  function submit(event: React.FormEvent) {
-    event.preventDefault();
+  function submit(event?: React.FormEvent) {
+    event?.preventDefault();
     const next = {
       amount:
         amountIdr > 0 ? undefined : t("posKasirShift.movement.amountError"),
@@ -125,6 +125,7 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
     setErrors(next);
     setSaved(null);
     if (next.amount || next.reason) return;
+    record.reset();
     record.mutate(
       { shiftId, type, amountIdr, reasonNote: reason.trim() },
       {
@@ -163,6 +164,7 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
             value={type}
             onValueChange={(next) => {
               setType(next);
+              record.reset();
               setErrors({});
               setSaved(null);
             }}
@@ -213,6 +215,7 @@ export function CashMovementPanel({ shiftId }: { shiftId: string }) {
             <ActionError
               title={t("posKasirShift.movement.errorTitle")}
               error={record.error}
+              onRetry={() => submit()}
             />
           )}
           <div className="flex flex-wrap items-center justify-end gap-3">

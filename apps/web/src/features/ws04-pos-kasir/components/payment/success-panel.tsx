@@ -127,13 +127,18 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           )}
         </dl>
         {print.isError && (
-          <Notice
-            tone="danger"
-            title={t("posKasirPayment.success.printFailedTitle")}
-            className="w-full max-w-2xl text-left"
-          >
-            {t("posKasirPayment.success.printFailedHint")}
-          </Notice>
+          <div className="grid w-full max-w-2xl justify-items-start gap-3">
+            <Notice
+              tone="danger"
+              title={t("posKasirPayment.success.printFailedTitle")}
+              className="w-full text-left"
+            >
+              {t("posKasirPayment.success.printFailedHint")}
+            </Notice>
+            <Button type="button" variant="outline" onClick={toNewTransaction}>
+              {t("posKasirGateway.receipt.skipPrint")}
+            </Button>
+          </div>
         )}
       </StateBlock>
     </PosPanel>

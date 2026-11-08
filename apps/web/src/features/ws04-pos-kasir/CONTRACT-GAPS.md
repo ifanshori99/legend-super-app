@@ -28,3 +28,8 @@ Semua hal di bawah memakai tipe lokal di `types.ts`, fungsi di `api.ts` yang di 
 - Pesanan bertipe ULID di kontrak (`orderIdSchema`), sedangkan `DEMO_ORDER_ID` dan `DEMO_CODE_ORDER_ID` berbentuk UUID. Mock membaca sesi lewat engine, dan menjawab `getPosOrder` untuk id UUID maupun alias ULID (`DEMO_ORDER_ULID`).
 - Nomor struk dan referensi bertanda hubung ASCII (`POS01-000048`, `RSV-0018`, `LG-0044`) karena itu bentuk kontrak. Mockup memakai tanda pisah panjang: tampilkan lewat `formatReference` dari `types.ts`.
 - `addPosTender` di mock hanya menerima tunai; tender gateway dan EDC datang dari WS-05.
+
+## Aturan untuk server (dari tinjauan)
+
+- Kas keluar, kas masuk, dan setoran (`recordPosCashMovement`) tidak boleh ditolak dengan pesan yang memuat saldo laci atau angka sistem. Kasir mengisi hitungan buta, jadi penolakan karena "melebihi uang di laci" membocorkan saldo. Server memakai pesan generik tanpa angka (atau tidak menolak) dan menandai selisih saat tutup shift. Mock tidak punya cek saldo.
+- Kunci idempotensi dibuat sekali per niat di hook (`useConfirmCash`, `usePrintReceipt`, `useOpenShift`, `useRecordCashMovement`, `useCloseDay`) dan dipakai ulang saat percobaan diulang dengan input sama. Server wajib memperlakukan kunci yang sama sebagai satu permintaan.

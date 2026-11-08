@@ -55,7 +55,8 @@ const rp = (amount: string) => `Rp\\s*${amount.replace(/\./g, "\\.")}`;
 /** Rupiah minus sign: U+2212, en dash or hyphen. */
 const MINUS = "[\\u2212\\u2013-]";
 const DASH = "[\\u2013\\u2212-]";
-const BACKSPACE = /^(⌫|Hapus (satu )?digit)$/;
+// The shared keypad names its delete key "Hapus angka terakhir".
+const BACKSPACE = /^Hapus angka terakhir$/;
 
 const payUrl = (seed?: string, orderId = DEMO_ORDER_ID) =>
   `/pos/bayar/${orderId}${seed ? `?demo=${seed}` : ""}`;
@@ -86,8 +87,11 @@ async function shot(page: Page, mockupName: string): Promise<void> {
   });
 }
 
+// The payment screens repeat a state title as page h1 and panel h2 (for example
+// "Pembayaran gabungan"), so a bare heading query breaks strict mode. `.first()`
+// keeps the assertion on the visible title without relaxing its text.
 const heading = (page: Page, name: string | RegExp) =>
-  page.getByRole("heading", { name });
+  page.getByRole("heading", { name }).first();
 
 /** A payment method tile: button or radio named "<Metode> <hint>". */
 function methodOption(page: Page, name: string): Locator {
@@ -312,8 +316,9 @@ test("legend-mjmm PAY-02 active QRIS waits for confirmation and shows no QR on t
   await expect(area).toContainText("Belum lunas");
   // The QR belongs on the customer display, never on the cashier screen.
   await expect(page.getByRole("img", { name: /qr|pindai/i })).toHaveCount(0);
+  // Brief R4: "Lihat customer display →" is a link to /pos/customer-display.
   await expect(
-    page.getByRole("button", { name: /Lihat customer display/ }),
+    page.getByRole("link", { name: /Lihat customer display/ }),
   ).toBeVisible();
   await shot(page, "payment-qris-active");
 
@@ -546,7 +551,7 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
   // Empty state: nothing found yet and no way to pay.
   await expect(main(page)).not.toContainText("Pesanan ditemukan");
   await expect(
-    page.getByRole("button", { name: /Lanjut ke pembayaran/ }),
+    page.getByRole("link", { name: /Lanjut ke pembayaran/ }),
   ).toHaveCount(0);
 
   await code.fill("0044");
@@ -564,8 +569,9 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
   );
   await shot(page, "cashier-code-found");
 
+  // "Lanjut ke pembayaran" is a link to /pos/bayar/<id>, not a button.
   await page
-    .getByRole("button", {
+    .getByRole("link", {
       name: new RegExp(`Lanjut ke pembayaran\\s*${rp("26.600")}`),
     })
     .click();
@@ -591,7 +597,7 @@ test("legend-mjmm CODE-02 a wrong code keeps the input, starts no payment and ca
   await expect(area).toContainText("Belum ada pembayaran diproses");
   await expect(code).toHaveValue(/0049/);
   await expect(
-    page.getByRole("button", { name: /Lanjut ke pembayaran/ }),
+    page.getByRole("link", { name: /Lanjut ke pembayaran/ }),
   ).toHaveCount(0);
   await shot(page, "cashier-code-invalid");
 
@@ -709,14 +715,19 @@ test("legend-mjmm SHIFT-03 blind count by denomination hides the system balance 
   ).toHaveCount(0);
 
   const counts: Array<[string, string]> = [
-    ["Rp100.000", "18"],
-    ["Rp50.000", "6"],
-    ["Rp20.000", "5"],
-    ["Rp10.000", "2"],
-    ["Rp5.000", "2"],
+    ["100.000", "18"],
+    ["50.000", "6"],
+    ["20.000", "5"],
+    ["10.000", "2"],
+    ["5.000", "2"],
   ];
-  for (const [label, qty] of counts) {
-    await page.getByLabel(label, { exact: true }).fill(qty);
+  // Denomination labels render as "Rp 100.000" (space or NBSP): tolerate both.
+  for (const [value, qty] of counts) {
+    await page
+      .getByRole("textbox", {
+        name: new RegExp(`^Rp\\s?${value.replace(/\./g, "\\.")}$`),
+      })
+      .fill(qty);
   }
   await expect(area).toContainText(/Rp\s*1\.800\.000/);
   await expect(area).toContainText(
@@ -860,8 +871,9 @@ test("legend-mjmm DAY-01 day close shows the 04.00 cutoff, recap and per-bank se
   await expect(
     page.getByRole("button", { name: "Cetak rekap harian" }),
   ).toBeVisible();
+  // Brief R6: "Kembali ke kasir" is a link to /pos.
   await expect(
-    page.getByRole("button", { name: "Kembali ke kasir" }),
+    page.getByRole("link", { name: "Kembali ke kasir" }),
   ).toBeVisible();
 });
 

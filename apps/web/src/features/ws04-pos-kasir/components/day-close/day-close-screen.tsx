@@ -176,11 +176,7 @@ function ErrorState({
         role="alert"
       >
         <div className="flex flex-wrap justify-center gap-3">
-          {!pending && (
-            <Button onClick={onRetry}>
-              {t("posKasirDayclose.error.retry")}
-            </Button>
-          )}
+          <Button onClick={onRetry}>{t("posKasirDayclose.error.retry")}</Button>
           <BackToCashier />
         </div>
       </StateBlock>

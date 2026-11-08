@@ -6,7 +6,6 @@ export const posKasirCodeMessages = {
   back: "Kembali ke pesanan",
   input: {
     label: "Kode “Bayar di kasir”",
-    ariaLabel: "Nomor kode pesanan",
     prefix: "LG–",
     hint: "Sama seperti kode di ponsel pelanggan.",
     required: "Masukkan nomor kode pelanggan.",

@@ -73,13 +73,15 @@ export function contractPending(feature: string): ApiError {
 function local<T>(
   feature: string,
   call: (engine: PosKasirEngine) => T,
+  extraLatencyMs = 0,
 ): Promise<T> {
   if (!API_MOCK) return Promise.reject(contractPending(feature));
-  return runPosKasirMock(call);
+  return runPosKasirMock(call, extraLatencyMs);
 }
 
-const idempotencyKey = (prefix: string) =>
-  `${prefix}:${globalThis.crypto.randomUUID()}`;
+// Idempotency keys are made once per intent by the hooks (./hooks.ts) and sent
+// in as an argument, so a retry of the same action repeats the same key and the
+// server charges or records it once.
 
 const METHOD_LABELS: Record<string, string> = {
   cash: "Tunai",
@@ -308,8 +310,11 @@ export const startPayment = (
 export const checkPaymentStatus = (ref: AttemptRef): Promise<PaymentSession> =>
   local("cek status pembayaran", (engine) => engine.checkStatus(ref));
 
+// The mock waits ~2.5 s like a bank would, so the "memeriksa status dan
+// memperbarui QRIS" state is visible before the new QRIS arrives.
+export const MOCK_QRIS_REFRESH_MS = 2500;
 export const refreshQris = (ref: AttemptRef): Promise<PaymentSession> =>
-  local("QRIS baru", (engine) => engine.refreshQris(ref));
+  local("QRIS baru", (engine) => engine.refreshQris(ref), MOCK_QRIS_REFRESH_MS);
 
 export const cancelAttempt = (ref: AttemptRef): Promise<PaymentSession> =>
   local("batal pembayaran", (engine) => engine.cancelAttempt(ref));
@@ -322,6 +327,7 @@ export const recordEdcStandalone = (
 export async function confirmCash(
   outletId: string,
   input: ConfirmCashInput,
+  idempotencyKey: string,
 ): Promise<PaymentSession> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.confirmCash(input));
   const before = await fetchPosOrder(outletId, input.orderId);
@@ -335,7 +341,7 @@ export async function confirmCash(
       method: "cash",
       receivedIdr: input.receivedIdr,
       expectedStatus: before.status,
-      idempotencyKey: idempotencyKey("cash"),
+      idempotencyKey: `${idempotencyKey}:tender`,
     },
   });
   const after = await fetchPosOrder(outletId, input.orderId);
@@ -344,7 +350,7 @@ export async function confirmCash(
       params: { outletId, orderId: input.orderId },
       body: {
         expectedStatus: after.status,
-        idempotencyKey: idempotencyKey("complete"),
+        idempotencyKey: `${idempotencyKey}:complete`,
       },
     });
   return sessionFromOrder(await fetchPosOrder(outletId, input.orderId));
@@ -353,6 +359,7 @@ export async function confirmCash(
 export async function printReceipt(
   outletId: string,
   orderId: string,
+  idempotencyKey: string,
 ): Promise<ReceiptResult> {
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.printReceipt(orderId));
@@ -360,7 +367,7 @@ export async function printReceipt(
     params: { outletId, orderId },
     body: {
       deliveries: ["print"],
-      idempotencyKey: idempotencyKey("receipt"),
+      idempotencyKey,
     },
   });
   return {
@@ -388,13 +395,14 @@ export async function fetchActiveShift(
 export async function openShift(
   outletId: string,
   input: OpenShiftInput,
+  idempotencyKey: string,
 ): Promise<ActiveShift> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.openShift(input));
   const { data } = await callEndpoint(openPosShift, {
     params: { outletId },
     body: {
       openingFloatIdr: input.openingFloatIdr,
-      idempotencyKey: idempotencyKey("shift"),
+      idempotencyKey,
     },
   });
   return activeShiftFrom(data);
@@ -424,6 +432,7 @@ export async function fetchCashMovements(
 export async function recordCashMovement(
   outletId: string,
   input: RecordCashMovementInput,
+  idempotencyKey: string,
 ): Promise<CashMovement> {
   if (API_MOCK)
     return runPosKasirMock((engine) => engine.recordCashMovement(input));
@@ -433,7 +442,7 @@ export async function recordCashMovement(
       type: input.type,
       amountIdr: input.amountIdr,
       reasonNote: input.reasonNote,
-      idempotencyKey: idempotencyKey("cash-move"),
+      idempotencyKey,
     },
   });
   return {
@@ -527,6 +536,7 @@ export async function closeDay(
   businessDate: string,
   cutoff: string,
   input: CloseDayInput,
+  idempotencyKey: string,
 ): Promise<DayCloseRecap> {
   if (API_MOCK) return runPosKasirMock((engine) => engine.closeDay(input));
   const { data } = await callEndpoint(closePosDay, {
@@ -534,7 +544,7 @@ export async function closeDay(
     body: {
       businessDate,
       inventoryDeduction: input.inventoryDeduction,
-      idempotencyKey: idempotencyKey("day"),
+      idempotencyKey,
     },
   });
   return dayRecapFrom(data, cutoff);

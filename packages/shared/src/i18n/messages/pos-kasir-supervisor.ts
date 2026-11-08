@@ -64,6 +64,8 @@ export const posKasirSupervisorMessages = {
       "Persetujuan tutup shift belum tersedia di server ini. Hubungi tim teknis.",
     errorTitle: "Hasil hitung kas tidak bisa dimuat",
     errorHint: "Periksa koneksi, lalu coba lagi.",
+    supervisorsErrorTitle: "Daftar supervisor tidak bisa dimuat",
+    supervisorsErrorHint: "Periksa koneksi, lalu coba lagi.",
     noSupervisorTitle: "Belum ada supervisor yang bisa menyetujui",
     noSupervisorHint:
       "Minta manajer outlet menambahkan akses supervisor, lalu muat ulang halaman ini.",

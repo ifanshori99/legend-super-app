@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { useT } from "@/components/i18n";
 import { useStartPayment } from "../../hooks";
 import { FailedPanel } from "./failed-panel";
@@ -9,6 +10,7 @@ import {
   StartPanel,
   WaitingPanel,
   remainingMsOf,
+  useAutoStart,
   useGatewayAttempt,
   useNow,
 } from "./gateway-parts";
@@ -27,6 +29,13 @@ export function CardOnlinePanel(props: PaymentPanelProps) {
   const start = useStartPayment();
   const now = useNow(attempt?.status === "waiting");
   const remainingMs = remainingMsOf(attempt?.expiresAt, now);
+
+  const { mutate: startCard } = start;
+  const startNow = useCallback(
+    () => startCard({ orderId, method: "card", amountIdr }),
+    [startCard, orderId, amountIdr],
+  );
+  useAutoStart(!isLoading && !error && attempt === null, orderId, startNow);
 
   const title = t("posKasirGateway.card.panelTitle");
   if (isLoading) return <LoadingPanel title={title} />;
@@ -48,10 +57,10 @@ export function CardOnlinePanel(props: PaymentPanelProps) {
           heading={t("posKasirGateway.card.startHeading")}
           body={t("posKasirGateway.card.startBody")}
           amountIdr={amountIdr}
-          startLabel={t("posKasirGateway.card.start")}
+          startLabel={t("posKasirGateway.common.retry")}
           startingLabel={t("posKasirGateway.card.starting")}
-          starting={start.isPending}
-          onStart={() => start.mutate({ orderId, method: "card", amountIdr })}
+          starting={!start.isError}
+          onStart={startNow}
           error={start.error}
           onChangeMethod={onChangeMethod}
         />

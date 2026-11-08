@@ -12,8 +12,12 @@ import {
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PosPanel, StatusPill } from "../shared";
-import { usePaymentMethods, usePaymentSession } from "../../hooks";
+import { Notice, PosPanel, StatusPill } from "../shared";
+import {
+  isContractPending,
+  usePaymentMethods,
+  usePaymentSession,
+} from "../../hooks";
 import type { PaymentMethodCode } from "../../types";
 import { confirmedAllocations } from "./payment-helpers";
 
@@ -96,6 +100,30 @@ export function MethodGrid({
           {Array.from({ length: 6 }, (_, index) => (
             <Skeleton key={index} className="h-24 rounded-control" />
           ))}
+        </div>
+      ) : methods.isError ? (
+        <div className="mt-4 grid justify-items-start gap-3">
+          {isContractPending(methods.error) ? (
+            <Notice
+              tone="warning"
+              title={t("posKasirGateway.common.contractPending")}
+            >
+              {t("posKasirGateway.common.contractPendingHint")}
+            </Notice>
+          ) : (
+            <>
+              <Notice tone="danger" title={t("posKasirGateway.grid.loadError")}>
+                {t("posKasirGateway.grid.loadErrorHint")}
+              </Notice>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void methods.refetch()}
+              >
+                {t("posKasirGateway.common.retry")}
+              </Button>
+            </>
+          )}
         </div>
       ) : options.length === 0 ? (
         <p className="mt-4 rounded-control bg-muted p-4 text-(length:--density-text)">

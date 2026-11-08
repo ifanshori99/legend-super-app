@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
@@ -186,16 +186,30 @@ function ResultPanel({ review }: { review: ShiftReview }) {
 /** Where a failed approval shows: on the PIN field, or as a notice for the rest. */
 type SubmitProblem = { field: "pin" | "form"; message: string };
 
-function toProblem(error: unknown): SubmitProblem {
+// Only the PIN step can blame the PIN. A FORBIDDEN from the approve step means
+// the approver may not close this shift, which the PIN field cannot fix.
+function toProblem(
+  error: unknown,
+  stage: "override" | "approve",
+): SubmitProblem {
   if (error instanceof ApiError) {
     const onPin =
-      error.code === "PIN_INVALID" ||
-      error.code === "PIN_LOCKED" ||
-      error.code === "FORBIDDEN";
+      stage === "override" &&
+      (error.code === "PIN_INVALID" ||
+        error.code === "PIN_LOCKED" ||
+        error.code === "FORBIDDEN");
     return { field: onPin ? "pin" : "form", message: error.message };
   }
   return { field: "form", message: "" };
 }
+
+// An approval already granted for this approver and reason. Kept so a retried
+// approve does not ask the supervisor for the PIN again.
+type GrantedOverride = {
+  overrideId: string;
+  approverUserId: string;
+  reason: string;
+};
 
 function ReviewForm({
   review,
@@ -217,6 +231,7 @@ function ReviewForm({
   const [noteError, setNoteError] = useState<string>();
   const [pinError, setPinError] = useState<string>();
   const [formError, setFormError] = useState<string>();
+  const granted = useRef<GrantedOverride | null>(null);
 
   const hasVariance = review.varianceIdr !== 0;
   const options = supervisors.data ?? [];
@@ -237,24 +252,47 @@ function ReviewForm({
     setPinError(pinProblem);
     setFormError(undefined);
     if (noteProblem || pinProblem || approverUserId === "") return;
+    let stage: "override" | "approve" = "override";
     try {
       // Supervisor PIN in, `overrideId` out; the close consumes that id.
-      const override = await requestOverride.mutateAsync({
-        action: "cash_shift_close",
-        valueIdr: Math.abs(review.varianceIdr),
-        reason: trimmed,
-        objectType: "cash_shift",
-        objectId: review.shiftId,
-        approverUserId,
-        pin,
-      });
+      const reusable =
+        granted.current?.approverUserId === approverUserId &&
+        granted.current.reason === trimmed
+          ? granted.current
+          : null;
+      let overrideId = reusable?.overrideId;
+      if (overrideId === undefined) {
+        const override = await requestOverride.mutateAsync({
+          action: "cash_shift_close",
+          valueIdr: Math.abs(review.varianceIdr),
+          reason: trimmed,
+          objectType: "cash_shift",
+          objectId: review.shiftId,
+          approverUserId,
+          pin,
+        });
+        overrideId = override.overrideId;
+        granted.current = {
+          overrideId,
+          approverUserId,
+          reason: trimmed,
+        };
+      }
+      stage = "approve";
       await approve.mutateAsync({
         shiftId: review.shiftId,
-        overrideId: override.overrideId,
+        overrideId,
         reason: trimmed,
       });
     } catch (error) {
-      const problem = toProblem(error);
+      // A spent or rejected override cannot be reused: ask for the PIN again.
+      if (
+        error instanceof ApiError &&
+        (error.code === "OVERRIDE_INVALID" || error.code === "OVERRIDE_USED")
+      ) {
+        granted.current = null;
+      }
+      const problem = toProblem(error, stage);
       if (problem.field === "pin") {
         setPin("");
         setPinError(problem.message);
@@ -272,6 +310,18 @@ function ReviewForm({
       </span>
     </>
   );
+
+  if (supervisors.isError) {
+    return (
+      <PosPanel title={t("posKasirSupervisor.review.title")}>
+        <ErrorState
+          title={t("posKasirSupervisor.state.supervisorsErrorTitle")}
+          description={t("posKasirSupervisor.state.supervisorsErrorHint")}
+          onRetry={() => void supervisors.refetch()}
+        />
+      </PosPanel>
+    );
+  }
 
   if (supervisors.isSuccess && options.length === 0) {
     return (

@@ -23,6 +23,7 @@ export function CashPanel({
   const [received, setReceived] = useState(amountIdr);
 
   const short = received < amountIdr;
+  const overRemaining = bill !== undefined && amountIdr > bill.remainingIdr;
   const change = Math.max(0, received - amountIdr);
   const sequence = bill ? nextSequence(bill) : "01";
   const roundUp = roundUpIdr(amountIdr);
@@ -48,7 +49,9 @@ export function CashPanel({
           </Button>
           <Button
             type="button"
-            disabled={short || amountIdr <= 0 || confirm.isPending}
+            disabled={
+              short || overRemaining || amountIdr <= 0 || confirm.isPending
+            }
             aria-busy={confirm.isPending}
             onClick={() =>
               confirm.mutate({ orderId, amountIdr, receivedIdr: received })

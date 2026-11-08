@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isContractPending } from "../../hooks";
 import { Notice, PosTwoPane } from "../shared";
@@ -46,9 +47,11 @@ export function ShiftScreenSkeleton({ label }: { label: string }) {
 export function ActionError({
   title,
   error,
+  onRetry,
 }: {
   title: string;
   error: unknown;
+  onRetry?: () => void;
 }) {
   const t = useT();
   const pending = isContractPending(error);
@@ -62,6 +65,13 @@ export function ActionError({
       {pending
         ? t("posKasirShift.error.pendingHint")
         : (message ?? t("posKasirShift.error.hint"))}
+      {onRetry && (
+        <div className="mt-3">
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t("common.retry")}
+          </Button>
+        </div>
+      )}
     </Notice>
   );
 }

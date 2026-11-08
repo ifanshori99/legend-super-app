@@ -103,7 +103,11 @@ export const posKasirShiftMessages = {
     summaryNote: "Ini adalah jumlah dari pecahan yang Anda masukkan.",
     recheckTitle: "Periksa sekali lagi",
     recheckBody: "Selisih setelah hitungan dikirim perlu ditinjau supervisor.",
-    emptyHint: "Isi jumlah uang sebelum mengirim hitungan.",
+    emptyHint:
+      "Total Rp 0. Bila laci memang kosong, tekan kirim lalu konfirmasi.",
+    zeroConfirm:
+      "Laci kosong? Hitungan Rp 0 akan dikirim ke supervisor. Kirim hanya bila tidak ada uang tunai di laci.",
+    zeroSubmit: "Ya, laci kosong, kirim hitungan",
     submit: "Kirim hitungan kas",
     submitting: "Mengirim hitungan…",
     back: "Kembali ke shift",

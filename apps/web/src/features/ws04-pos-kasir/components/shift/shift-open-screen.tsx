@@ -114,6 +114,7 @@ export function ShiftOpenScreen() {
               <ActionError
                 title={t("posKasirShift.open.errorTitle")}
                 error={openShift.error}
+                onRetry={() => openShift.mutate({ openingFloatIdr: floatIdr })}
               />
             )}
           </div>

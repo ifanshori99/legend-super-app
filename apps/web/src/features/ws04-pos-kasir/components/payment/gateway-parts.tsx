@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { ArrowRight, Clock } from "lucide-react";
@@ -10,7 +10,11 @@ import {
   useCheckPaymentStatus,
   usePaymentSession,
 } from "../../hooks";
-import type { PaymentAttempt, PaymentMethodCode } from "../../types";
+import type {
+  PaymentAttempt,
+  PaymentMethodCode,
+  PaymentSession,
+} from "../../types";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 
 // Pieces shared by the gateway panels (QRIS, VA, e-wallet, online card, failed;
@@ -28,6 +32,25 @@ export function useGatewayAttempt(orderId: string, method: PaymentMethodCode) {
     error: session.error,
     refetch: session.refetch,
   };
+}
+
+/**
+ * Run `start` once per bill when the panel opens with nothing to show yet (QRIS,
+ * online card: no choice to make, so no extra click). The ref survives the
+ * StrictMode effect replay and re-renders, so the payment is never made twice;
+ * a retry after an error is the cashier's own click.
+ */
+export function useAutoStart(
+  ready: boolean,
+  orderId: string,
+  start: () => void,
+) {
+  const startedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || startedFor.current === orderId) return;
+    startedFor.current = orderId;
+    start();
+  }, [ready, orderId, start]);
 }
 
 /** The clock in ms, ticking every second while `active`; null before mount. */
@@ -53,6 +76,20 @@ export function remainingMsOf(
 ): number | null {
   if (expiresAt === undefined || now === null) return null;
   return Math.max(0, Date.parse(expiresAt) - now);
+}
+
+/**
+ * True when a fresh status read shows the old payment is still not paid, so the
+ * cashier may leave it for another method. A paid bill, a confirmed payment, or
+ * a session that no longer holds this attempt means the screen is about to
+ * change by itself: stay.
+ */
+export function safeToLeave(next: PaymentSession, attemptId: string): boolean {
+  return (
+    !next.bill.paid &&
+    next.activeAttempt?.id === attemptId &&
+    next.activeAttempt.status !== "confirmed"
+  );
 }
 
 /** 522000 ms -> "08:42". */
@@ -397,7 +434,16 @@ export function ExpiredPanel({
   children?: ReactNode;
 }) {
   const t = useT();
-  const check = useCheckPaymentStatus();
+  const { mutateAsync: checkStatus, ...check } = useCheckPaymentStatus();
+  // Another method only after the old payment's status is re-read: a customer
+  // may have paid just as the deadline passed, and a second charge is worse
+  // than a second of waiting.
+  const switchMethod = () =>
+    void checkStatus({ orderId, attemptId: attempt.id })
+      .then((next) => {
+        if (safeToLeave(next, attempt.id)) onChangeMethod();
+      })
+      .catch(() => undefined); // The mutation state shows the error below.
   return (
     <PosPanel
       title={title}
@@ -412,14 +458,18 @@ export function ExpiredPanel({
             <Button
               variant="outline"
               loading={check.isPending}
-              onClick={() => check.mutate({ orderId, attemptId: attempt.id })}
+              onClick={() =>
+                void checkStatus({ orderId, attemptId: attempt.id }).catch(
+                  () => undefined,
+                )
+              }
             >
               {check.isPending
                 ? t("posKasirGateway.common.checking")
                 : t("posKasirGateway.common.checkStatus")}
             </Button>
           )}
-          <Button onClick={onChangeMethod}>
+          <Button onClick={switchMethod} disabled={check.isPending}>
             {t("posKasirGateway.common.otherMethod")}
           </Button>
         </>

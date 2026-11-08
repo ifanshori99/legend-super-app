@@ -11,7 +11,13 @@
 // mockup screens; only this file reads it. Relative imports only: Node tests
 // load it directly.
 import { ApiError, NETWORK_ERROR_MESSAGE } from "../../lib/api/errors.ts";
-import { getLatencyMs, getScenario } from "../../lib/mock/control.ts";
+import {
+  SCENARIO_STORAGE_KEY,
+  getLatencyMs,
+  getScenario,
+  isMockScenario,
+  setScenario,
+} from "../../lib/mock/control.ts";
 import {
   DEMO_CODE_ORDER_ID,
   DEMO_ORDER_ID,
@@ -1058,8 +1064,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       const reasonNote = input.reasonNote.trim();
       if (reasonNote.length < 4)
         validation("Alasan wajib diisi, minimal 4 karakter.");
-      if (input.type !== "cash_in" && input.amountIdr > expectedCashIdr(shift))
-        conflict("INSUFFICIENT_CASH", "Nominal melebihi uang tunai di laci.");
+      // No drawer-balance check on purpose: the cashier must not learn the
+      // system balance from a refusal (blind count). The server reconciles at
+      // close. See CONTRACT-GAPS.md.
       if (input.type === "cash_in") shift.cashInIdr += input.amountIdr;
       else if (input.type === "cash_out") shift.cashOutIdr += input.amountIdr;
       else shift.cashDropIdr += input.amountIdr;
@@ -1349,6 +1356,27 @@ export function callPosKasirEngine<T>(call: (engine: PosKasirEngine) => T): T {
   return clone(result);
 }
 
+let scenarioAdopted = false;
+
+/**
+ * `?mock=` and the remembered scenario are normally read when the first typed
+ * mock call runs (lib/mock/transport.ts). The local contracts here can run
+ * first, so read them once ourselves; setScenario is idempotent with the
+ * transport's own read.
+ */
+function adoptScenarioFromBrowser() {
+  if (scenarioAdopted || typeof window === "undefined") return;
+  scenarioAdopted = true;
+  try {
+    const raw =
+      new URLSearchParams(window.location.search).get("mock") ??
+      window.localStorage.getItem(SCENARIO_STORAGE_KEY);
+    if (isMockScenario(raw)) setScenario(raw);
+  } catch {
+    // Storage blocked or no location: keep the current scenario.
+  }
+}
+
 /**
  * Runs one engine call like a request: the active scenario (offline, error)
  * and the mock latency first. Used by the local contracts in ./api.ts, so they
@@ -1356,9 +1384,11 @@ export function callPosKasirEngine<T>(call: (engine: PosKasirEngine) => T): T {
  */
 export async function runPosKasirMock<T>(
   call: (engine: PosKasirEngine) => T,
+  extraLatencyMs = 0,
 ): Promise<T> {
+  adoptScenarioFromBrowser();
   const scenario = getScenario();
-  const latency = getLatencyMs();
+  const latency = getLatencyMs() + extraLatencyMs;
   if (latency > 0) await new Promise((done) => setTimeout(done, latency));
   if (scenario === "offline")
     throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);

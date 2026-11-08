@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
   StartPanel,
   WaitingPanel,
   remainingMsOf,
+  useAutoStart,
   useGatewayAttempt,
   useNow,
 } from "./gateway-parts";
@@ -49,6 +50,13 @@ export function QrisPanel(props: PaymentPanelProps) {
     (attempt.status === "expired" ||
       (attempt.status === "waiting" && remainingMs === 0));
   const attemptId = attempt?.id;
+
+  const { mutate: startQris } = start;
+  const startNow = useCallback(
+    () => startQris({ orderId, method: "qris", amountIdr }),
+    [startQris, orderId, amountIdr],
+  );
+  useAutoStart(!isLoading && !error && attempt === null, orderId, startNow);
 
   useEffect(() => {
     if (!expired || attemptId === undefined) return;
@@ -86,10 +94,10 @@ export function QrisPanel(props: PaymentPanelProps) {
           heading={t("posKasirGateway.qris.startHeading")}
           body={t("posKasirGateway.qris.startBody")}
           amountIdr={amountIdr}
-          startLabel={t("posKasirGateway.qris.start")}
+          startLabel={t("posKasirGateway.common.retry")}
           startingLabel={t("posKasirGateway.qris.starting")}
-          starting={start.isPending}
-          onStart={() => start.mutate({ orderId, method: "qris", amountIdr })}
+          starting={!start.isError}
+          onStart={startNow}
           error={start.error}
           onChangeMethod={onChangeMethod}
         />

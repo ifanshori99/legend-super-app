@@ -51,7 +51,9 @@ export function VaPanel(props: PaymentPanelProps) {
   const start = useStartPayment();
   const [bankCode, setBankCode] = useState<string | null>(null);
   const now = useNow(attempt?.status === "waiting");
-  const remainingMs = remainingMsOf(attempt?.expiresAt, now);
+  // One deadline for both the expiry and the printed "batas pembayaran".
+  const deadline = attempt?.va?.deadline ?? attempt?.expiresAt;
+  const remainingMs = remainingMsOf(deadline, now);
 
   const title = t("posKasirGateway.va.panelTitle");
   if (isLoading) return <LoadingPanel title={title} />;
@@ -159,7 +161,7 @@ export function VaPanel(props: PaymentPanelProps) {
         noticeTitle={t("posKasirGateway.va.noticeTitle")}
         noticeBody={t("posKasirGateway.va.noticeBody")}
       >
-        {attempt.va && (
+        {attempt.va && deadline !== undefined && (
           <div className="w-full max-w-3xl rounded-container bg-muted p-5 text-center">
             <p className="text-base text-muted-foreground">
               {t("posKasirGateway.va.numberLabel")}
@@ -170,7 +172,7 @@ export function VaPanel(props: PaymentPanelProps) {
             <div className="mt-3 flex items-baseline justify-between gap-3 text-(length:--density-text)">
               <span>{t("posKasirGateway.va.deadline")}</span>
               <strong className="tabular">
-                {formatDeadline(attempt.va.deadline, timeZone)}
+                {formatDeadline(deadline, timeZone)}
               </strong>
             </div>
           </div>

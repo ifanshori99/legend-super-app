@@ -16,19 +16,29 @@ import {
   fetchVaBanks,
 } from "./api";
 
+// Every key carries the outlet: a cashier who switches outlet must never see
+// another outlet's session, shift or recap from the cache.
 export const posKasirKeys = {
   all: ["pos-kasir"] as const,
-  session: (orderId: string) => ["pos-kasir", "session", orderId] as const,
-  methods: (orderId: string) => ["pos-kasir", "methods", orderId] as const,
-  edcTerminals: ["pos-kasir", "edc-terminals"] as const,
-  vaBanks: ["pos-kasir", "va-banks"] as const,
-  ewallets: ["pos-kasir", "ewallets"] as const,
-  shift: ["pos-kasir", "shift"] as const,
-  movements: (shiftId: string) => ["pos-kasir", "movements", shiftId] as const,
-  terminals: ["pos-kasir", "terminals"] as const,
-  supervisors: ["pos-kasir", "supervisors"] as const,
-  review: (shiftId: string) => ["pos-kasir", "review", shiftId] as const,
-  day: ["pos-kasir", "day"] as const,
+  session: (outletId: string, orderId: string) =>
+    ["pos-kasir", outletId, "session", orderId] as const,
+  methods: (outletId: string, orderId: string) =>
+    ["pos-kasir", outletId, "methods", orderId] as const,
+  edcTerminals: (outletId: string) =>
+    ["pos-kasir", outletId, "edc-terminals"] as const,
+  vaBanks: (outletId: string) => ["pos-kasir", outletId, "va-banks"] as const,
+  ewallets: (outletId: string) => ["pos-kasir", outletId, "ewallets"] as const,
+  shift: (outletId: string) => ["pos-kasir", outletId, "shift"] as const,
+  movements: (outletId: string, shiftId: string) =>
+    ["pos-kasir", outletId, "movements", shiftId] as const,
+  terminals: (outletId: string) =>
+    ["pos-kasir", outletId, "terminals"] as const,
+  supervisors: (outletId: string) =>
+    ["pos-kasir", outletId, "supervisors"] as const,
+  review: (outletId: string, shiftId: string) =>
+    ["pos-kasir", outletId, "review", shiftId] as const,
+  day: (outletId: string, businessDate: string) =>
+    ["pos-kasir", outletId, "day", businessDate] as const,
 };
 
 /** Poll gaps while a payment waits: EDC answers fast, gateways slower. */
@@ -37,7 +47,7 @@ export const GATEWAY_POLL_MS = 3000;
 
 export function paymentSessionQuery(outletId: string, orderId: string) {
   return queryOptions({
-    queryKey: posKasirKeys.session(orderId),
+    queryKey: posKasirKeys.session(outletId, orderId),
     queryFn: ({ signal }) => fetchPaymentSession(outletId, orderId, signal),
     refetchInterval: (query) => {
       const attempt = query.state.data?.activeAttempt;
@@ -49,65 +59,65 @@ export function paymentSessionQuery(outletId: string, orderId: string) {
   });
 }
 
-export const paymentMethodsQuery = (orderId: string) =>
+export const paymentMethodsQuery = (outletId: string, orderId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.methods(orderId),
+    queryKey: posKasirKeys.methods(outletId, orderId),
     queryFn: () => fetchPaymentMethods(),
     retry: false,
   });
 
-export const edcTerminalsQuery = () =>
+export const edcTerminalsQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.edcTerminals,
+    queryKey: posKasirKeys.edcTerminals(outletId),
     queryFn: () => fetchEdcTerminals(),
     retry: false,
   });
 
-export const vaBanksQuery = () =>
+export const vaBanksQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.vaBanks,
+    queryKey: posKasirKeys.vaBanks(outletId),
     queryFn: () => fetchVaBanks(),
     retry: false,
   });
 
-export const ewalletsQuery = () =>
+export const ewalletsQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.ewallets,
+    queryKey: posKasirKeys.ewallets(outletId),
     queryFn: () => fetchEwallets(),
     retry: false,
   });
 
 export const activeShiftQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.shift,
+    queryKey: posKasirKeys.shift(outletId),
     queryFn: ({ signal }) => fetchActiveShift(outletId, signal),
     retry: false,
   });
 
 export const cashMovementsQuery = (outletId: string, shiftId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.movements(shiftId),
+    queryKey: posKasirKeys.movements(outletId, shiftId),
     queryFn: ({ signal }) => fetchCashMovements(outletId, shiftId, signal),
     retry: false,
   });
 
-export const registeredTerminalsQuery = () =>
+export const registeredTerminalsQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.terminals,
+    queryKey: posKasirKeys.terminals(outletId),
     queryFn: () => fetchRegisteredTerminals(),
     retry: false,
   });
 
-export const supervisorsQuery = () =>
+export const supervisorsQuery = (outletId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.supervisors,
+    queryKey: posKasirKeys.supervisors(outletId),
     queryFn: () => fetchSupervisors(),
     retry: false,
   });
 
-export const shiftReviewQuery = (shiftId: string) =>
+export const shiftReviewQuery = (outletId: string, shiftId: string) =>
   queryOptions({
-    queryKey: posKasirKeys.review(shiftId),
+    queryKey: posKasirKeys.review(outletId, shiftId),
     queryFn: () => fetchShiftReview(shiftId),
     retry: false,
   });
@@ -118,7 +128,7 @@ export const dayCloseRecapQuery = (
   cutoff: string,
 ) =>
   queryOptions({
-    queryKey: [...posKasirKeys.day, businessDate] as const,
+    queryKey: posKasirKeys.day(outletId, businessDate),
     queryFn: ({ signal }) =>
       fetchDayCloseRecap(outletId, businessDate, cutoff, signal),
     retry: false,
