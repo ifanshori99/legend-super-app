@@ -23,6 +23,9 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 
 - Founder Q10: second opinion campuran. Codex: uang/auth/migration/data pribadi (59 shift, 65 refund, 68 struk, 70 jurnal, PPh21, 62 DOIT, 60 EDC). Architect Claude subagent: 63 KDS, 61 procurement, stok opname, cuti HRIS, SOP. Founder Q4 struk tanpa pajak boleh; Q5/Q6 jurnal; Q7 cuti bersama memotong saldo (per tenant).
 
+- MERGE SELESAI: `main` = 1f0b6d2 (db-role 12f7fe3, fiscal e24813f, edge-hardening b765f1a, pos-payment-fixes fd1550f, ui/pos-kasir cbb03d4). Migration renumber: 0063_edge_received_events→0065, 0063_known_gladiator→0066, 0064_smiling_gravity→0067. Gerbang: vitest 1305, node 1414, build hijau. Belum: fresh-DB migrate + mock e2e (test-runner jalan). Tidak di-push. Bead ditutup: zoqc, 72we, wg5t, zinn, b0au, 94qt, 0gy1, dahl, mjmm.
+- Architect second-opinion: procurement 2 Sedang (brief 73), stok opname 2 Tinggi (dikirim ke G8zyp), KDS 4 Sedang (brief 74).
+
 ### Thread berjalan
 | Thread | Kerja | Cabang |
 |---|---|---|
