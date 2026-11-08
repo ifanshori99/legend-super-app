@@ -11,7 +11,11 @@ Peran: `~/.agents/team/roles/engineer.md`. Worktree `.worktrees/doit-provider`, 
 6. Migration bentrok dengan main (0063–0067): merge `main`, renumber via drizzle-kit.
 
 ## Temuan architect
-(menyusul)
+- Sedang — sama dengan temuan 2 reviewer (polling `payment.service.ts:836`, error 409 ditelan di `:1481`): pindahkan `recordUnsettledFunds` ke `payment.service.ts`, panggil di catch 409 sebelum `expireIntent`. Test polling kurang bayar + webhook hilang.
+- Rendah — `payment-webhook.service.ts:148-164`: cache secret webhook 60 dtk tak dikosongkan saat integrasi diubah → secret dicabut masih berlaku / secret baru ditolak 401. Fix: `clearDoitWebhookSecretCache` per tenant dari `upsertIntegration` dan `setIntegrationStatus`.
+- Rendah — `routes/payment-webhook.routes.ts:88-89`: batas per IP dicek sebelum verifikasi; komentar `:26-28` salah. Fix: perbaiki komentar; pertimbangkan verifikasi dulu sebelum tolak IP yang kuotanya habis.
+- Rendah — `payment-webhook.service.ts:656-672`: kiriman tanpa tanda tangan sah menulis satu baris `rejected` per body → tabel bisa membengkak. Fix: cukup log hash, atau satu baris penghitung per tenant per menit.
+- Belum diperiksa: `supersedePending` untuk kode lama yang masih bisa dibayar di DOIT. Telusuri dan tulis test.
 
 ## Bukti selesai
 Test regresi per temuan; gerbang penuh; reviewer subagent konteks segar; commit lokal. Laporan: SHA, test, migration lama→baru.
