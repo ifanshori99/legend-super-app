@@ -967,15 +967,19 @@ export async function setKitchenTicketPriority(
 ): Promise<KitchenTicketDetail> {
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
-    const ticket = await readTicket(tx, context, outletId, ticketId, true);
+    // Permission on an unlocked read first: a caller without access never
+    // takes or waits on the ticket row lock.
+    const unlocked = await readTicket(tx, context, outletId, ticketId, false);
     await assertStationPermission(
       tx,
       context,
       actor.userId,
       PROCESS,
-      ticket.stationId,
+      unlocked.stationId,
       now,
     );
+    const ticket = await readTicket(tx, context, outletId, ticketId, true);
+    if (ticket.stationId !== unlocked.stationId) throw ticketMoved();
     if (ticketStatusOf(ticket) === "cancelled") throw ticketCancelled();
     await tx
       .update(kitchenTickets)
@@ -1365,6 +1369,16 @@ export async function readStationFeed(
       .groupBy(kitchenStationFeed.ticketId)
       .orderBy(asc(latest))
       .limit(KITCHEN_FEED_PAGE_LIMIT + 1);
+    // READ COMMITTED: a prune can commit between the check above and this
+    // read and remove rows right after `afterSequence`. Re-check so a hole is
+    // a resync, never a silently skipped change (KDS-02).
+    await assertFeedResumable(
+      tx,
+      context,
+      stationId,
+      afterSequence,
+      options.maxLag,
+    );
     const hasMore = rows.length > KITCHEN_FEED_PAGE_LIMIT;
     const page = rows.slice(0, KITCHEN_FEED_PAGE_LIMIT);
     const toSequence = page.at(-1)?.sequence ?? afterSequence;

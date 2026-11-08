@@ -21,14 +21,20 @@ CREATE TRIGGER "kitchen_ticket_status_changes_append_only_trg"
 --> statement-breakpoint
 
 -- 1b. The station feed is never updated. The only delete allowed is pruning
---     of rows older than 24 hours (the app also keeps the newest
---     KITCHEN_FEED_MAX_LAG sequences of a station, see kds-support.ts). The
---     age is judged by the database clock, so no session can delete recent
---     rows. Keep 24 hours in step with KITCHEN_FEED_RETENTION_HOURS.
+--     from the bottom: a row older than 24 hours (by occurred_at against the
+--     database clock) AND more than KITCHEN_FEED_MAX_LAG (2000) sequences
+--     behind the station cursor, so a cursor that may still resume never sees
+--     a hole (KDS-02). Keep 24 hours / 2000 in step with
+--     KITCHEN_FEED_RETENTION_HOURS / KITCHEN_FEED_MAX_LAG (kitchen/realtime.ts).
 CREATE OR REPLACE FUNCTION app.kds_feed_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
-  IF TG_OP = 'DELETE' AND OLD.occurred_at < now() - interval '24 hours' THEN
+  IF TG_OP = 'DELETE'
+     AND OLD.occurred_at < now() - interval '24 hours'
+     AND OLD.sequence < (
+       SELECT c.last_sequence - 2000 FROM public.kitchen_station_cursors c
+       WHERE c.tenant_id = OLD.tenant_id AND c.station_id = OLD.station_id
+     ) THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME USING ERRCODE = '23514';

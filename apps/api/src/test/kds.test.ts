@@ -614,14 +614,6 @@ async function cursorOf(stationId: string): Promise<number> {
   return (await snapshot(stationId)).sequence;
 }
 
-async function ticketCount(): Promise<number> {
-  const [row] = await rows<{ count: string }>(
-    "SELECT count(*)::text AS count FROM kitchen_tickets WHERE tenant_id = $1",
-    [tenant.tenantId],
-  );
-  return Number(row?.count ?? 0);
-}
-
 type ChangeRow = {
   from_status: string | null;
   to_status: string;
@@ -1737,12 +1729,15 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
       ).rejects.toThrow(/append-only/i);
     expect((await changesOf(ticketId)).length).toBeGreaterThan(0);
 
-    // Pruning is the one exception: a feed row older than 24 hours may be
-    // deleted, never updated; a recent one (above) and the status changes stay.
+    // Pruning is the one exception: a feed row older than 24 hours AND more
+    // than KITCHEN_FEED_MAX_LAG behind the cursor may be deleted, never
+    // updated; a recent row, an old row a cursor may still resume from, and
+    // the status changes stay.
     const station = await extraStation("cold_kitchen");
-    await seedFeed(station, 2, [
+    await seedFeed(station, 2003, [
       { sequence: 1, ticketId, ageHours: 25 },
       { sequence: 2, ticketId, ageHours: 1 },
+      { sequence: 3, ticketId, ageHours: 25 },
     ]);
     await expect(
       asOwnerTenant(tenant.tenantId, (client) =>
@@ -1760,13 +1755,21 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
         ),
       ),
     ).rejects.toThrow(/append-only/i);
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "DELETE FROM kitchen_station_feed WHERE station_id = $1 AND sequence = 3",
+          [station],
+        ),
+      ),
+    ).rejects.toThrow(/append-only/i);
     await asOwnerTenant(tenant.tenantId, (client) =>
       client.query(
         "DELETE FROM kitchen_station_feed WHERE station_id = $1 AND sequence = 1",
         [station],
       ),
     );
-    expect(await feedSequences(station)).toEqual([2]);
+    expect(await feedSequences(station)).toEqual([2, 3]);
   });
 });
 
