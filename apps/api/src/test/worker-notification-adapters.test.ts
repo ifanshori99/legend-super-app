@@ -525,7 +525,7 @@ describe("legend-18qw notification recipient resolver", () => {
     // A second tenant holding a role and user the first tenant must never see.
     await owner.query(
       `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Adapter test tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+     VALUES ($1, $2, 'Adapter test tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":1,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
       [tenantB, `adapters-${tenantB}`, tenantBUser],
     );
     await owner.query(
@@ -896,7 +896,7 @@ describe("legend-18qw notification recipient resolver", () => {
     const ownerC = randomUUID();
     await owner.query(
       `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Fallback test tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+     VALUES ($1, $2, 'Fallback test tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":1,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
       [tenantC, `adapters-c-${tenantC}`, ownerC],
     );
     await owner.query(

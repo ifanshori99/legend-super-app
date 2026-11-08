@@ -580,7 +580,7 @@ describe("§3.7 Pemberian Role", () => {
     const foreignRole = randomUUID();
     await owner.query(
       `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-       VALUES ($1, $2, 'RBAC other tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+       VALUES ($1, $2, 'RBAC other tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":1,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
       [otherTenant, `rbac-other-${otherTenant}`, grantor.userId],
     );
     await owner.query(

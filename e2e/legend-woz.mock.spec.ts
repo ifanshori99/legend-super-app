@@ -10,9 +10,17 @@ const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01, pay-first, n
 
 async function joinTable(page: Page, token: string) {
   await page.goto(`/t/${token}`);
-  // The guest-count dialog opens on the first visit (PRD §3 "Scan & Sesi Meja").
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu (PRD §3 "Scan & Sesi Meja").
+  // A click before hydration is lost, so retry it until the panel is open.
+  const save = page.getByRole("button", { name: "Simpan" });
+  await expect(async () => {
+    await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+    await expect(save).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 30_000 });
+  await save.click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 }
 
 test.describe("Order status, waiter, bill and points (mock)", () => {
@@ -34,14 +42,22 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     page,
   }) => {
     await joinTable(page, privateRoom);
-    await page.getByRole("link", { name: "Pesanan", exact: true }).click();
+    await page
+      .getByRole("navigation", { name: "Bagian meja" })
+      .getByRole("link", { name: "Pesanan meja", exact: true })
+      .click();
     await expect(
       page.getByRole("heading", { name: "Pesanan", level: 1 }),
     ).toBeVisible();
     await expect(page.getByText("Kopi Susu Aren")).toBeVisible();
     await expect(page.getByText("Diterima").first()).toBeVisible();
 
-    await page.getByRole("button", { name: "Panggil waiter" }).click();
+    // The frame header (desktop) carries its own "Panggil waiter"; this test
+    // drives the one on the orders page.
+    await page
+      .getByRole("main")
+      .getByRole("button", { name: "Panggil waiter" })
+      .click();
     await page.getByRole("radio", { name: "Minta alat makan" }).click();
     await page
       .getByRole("button", { name: /^Panggil waiter$|^Kirim/ })
@@ -54,7 +70,10 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     page,
   }) => {
     await joinTable(page, privateRoom);
-    await page.getByRole("link", { name: "Tagihan", exact: true }).click();
+    await page
+      .getByRole("navigation", { name: "Bagian meja" })
+      .getByRole("link", { name: "Tagihan", exact: true })
+      .click();
     await expect(
       page.getByRole("heading", { name: "Tagihan", level: 1 }),
     ).toBeVisible();
@@ -76,11 +95,10 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     const sheet = page.getByRole("dialog");
     await sheet.getByRole("radio", { name: /Dingin/ }).click();
     await sheet.getByRole("radio", { name: "Normal" }).click();
-    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+    await sheet.getByRole("button", { name: /^Tambah · / }).click();
     await expect(sheet).toBeHidden();
 
-    await page.getByRole("link", { name: /Keranjang/ }).click();
-    await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
+    await page.getByRole("link", { name: "Lihat keranjang" }).click();
     // Checkout holds the order for payment and hands it to the split screen.
     await page.getByRole("button", { name: "Bagi tagihan" }).click();
     await expect(
@@ -131,7 +149,10 @@ test.describe("Order status, waiter, bill and points (mock)", () => {
     page,
   }) => {
     await joinTable(page, privateRoom);
-    await page.getByRole("link", { name: "Tagihan", exact: true }).click();
+    await page
+      .getByRole("navigation", { name: "Bagian meja" })
+      .getByRole("link", { name: "Tagihan", exact: true })
+      .click();
     await page.getByRole("button", { name: /^Klaim \d+ poin$/ }).click();
     await expect(page.getByText(/poin sudah masuk ke akun Anda/)).toBeVisible();
   });

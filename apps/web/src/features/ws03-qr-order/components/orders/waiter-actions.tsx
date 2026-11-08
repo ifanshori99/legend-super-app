@@ -3,6 +3,7 @@
 // closed or voided session cannot send, ORD-04).
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
+import { cn } from "cn";
 import { Clock, Receipt } from "lucide-react";
 import type {
   ServiceRequest,
@@ -12,7 +13,7 @@ import type { MessageKey } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { qrTextLink } from "../glass/qr-primitives";
 import { CallWaiterSheet } from "./call-waiter-sheet";
 import { RequestBillDialog } from "./request-bill-dialog";
 
@@ -75,10 +76,9 @@ export function WaiterActions({
     requests.some((request) => request.type === "request_bill");
 
   return (
-    <Card
-      role="region"
+    <section
       aria-labelledby="waiter-actions-heading"
-      className="grid gap-3"
+      className="qr-paper grid gap-3 p-4"
     >
       <h2 id="waiter-actions-heading" className="type-title">
         {t("qrOrders.status.waiter.heading")}
@@ -99,11 +99,13 @@ export function WaiterActions({
         )}
       </div>
       {billRequested && !closed && (
-        <Button asChild variant="link" className="w-fit">
-          <Link to="/t/$token/bill" params={{ token: qrToken }}>
-            {t("qrOrders.status.waiter.viewBill")}
-          </Link>
-        </Button>
+        <Link
+          to="/t/$token/bill"
+          params={{ token: qrToken }}
+          className={cn(qrTextLink, "w-fit")}
+        >
+          {t("qrOrders.status.waiter.viewBill")}
+        </Link>
       )}
       {closed && (
         <p className="text-sm leading-5 text-muted-foreground">
@@ -113,13 +115,13 @@ export function WaiterActions({
       {requests.length > 0 && (
         <ul
           aria-label={t("qrOrders.status.waiter.requestsLabel")}
-          className="divide-y border-t pt-3"
+          className="divide-y divide-border border-t border-border pt-3"
         >
           {requests.map((request) => (
             <RequestRow key={request.id} request={request} />
           ))}
         </ul>
       )}
-    </Card>
+    </section>
   );
 }

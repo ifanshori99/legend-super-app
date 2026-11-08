@@ -11,17 +11,19 @@ export function CodeField({
   applied,
   invalid,
   checking,
+  open,
   onApply,
   onRemove,
 }: {
   applied: string | null;
   invalid: boolean;
   checking: boolean;
+  /** The form shows when opened from the "Kode promo / voucher" link. */
+  open: boolean;
   onApply: (code: string) => void;
   onRemove: () => void;
 }) {
   const t = useT();
-  const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
   if (applied && !invalid)
     return (
@@ -36,21 +38,10 @@ export function CodeField({
         </Button>
       </div>
     );
-  if (!open && !invalid)
-    return (
-      <Button
-        type="button"
-        variant="link"
-        className="w-fit"
-        onClick={() => setOpen(true)}
-      >
-        <Tag aria-hidden="true" />
-        {t("qrCart.checkout.code.toggle")}
-      </Button>
-    );
+  if (!open && !invalid) return null;
   return (
     <form
-      className="grid gap-2"
+      className="grid gap-2 rounded-qr-media bg-card p-3"
       onSubmit={(event) => {
         event.preventDefault();
         const code = value.trim().toUpperCase();

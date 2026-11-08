@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Money } from "@/components/ui/money";
 import { ApiError } from "@/lib/api/errors";
+import { QrFooter } from "../glass/qr-primitives";
 import type { GuestOrderIssue } from "@starter/shared/qr-order";
 
 type Choice = "swap" | "voucher";
@@ -56,7 +57,7 @@ function Indicator() {
   return (
     <span
       aria-hidden="true"
-      className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-(length:--border-w) border-input bg-background group-data-[state=checked]:border-primary"
+      className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-(length:--border-w) border-input bg-card group-data-[state=checked]:border-primary"
     >
       <RadioGroup.Indicator className="size-2.5 rounded-full bg-primary" />
     </span>
@@ -116,8 +117,10 @@ export function IssueChoices({
 
   const errorKey = error ? errorMessageKey(error) : null;
 
+  // A fragment: the page grid spaces the parts and QrFooter stays its last
+  // child, so the sticky footer is not clipped by a wrapper.
   return (
-    <div className="grid gap-4">
+    <>
       <RadioGroup.Root
         value={choice}
         onValueChange={pickChoice}
@@ -127,17 +130,17 @@ export function IssueChoices({
       >
         <div
           className={cn(
-            "rounded-container border-(length:--border-w)",
+            "rounded-qr-media border-(length:--border-w)",
             choice === "swap"
-              ? "border-primary bg-primary-tint"
-              : "border-input",
+              ? "border-primary bg-qr-selection"
+              : "border-border bg-card",
           )}
         >
           <RadioGroup.Item
             value="swap"
             disabled={!swapAvailable}
             aria-describedby="issue-swap-hint"
-            className={cn(ITEM_CLASS, "rounded-container")}
+            className={cn(ITEM_CLASS, "rounded-qr-media")}
           >
             <Indicator />
             <span className="grid gap-0.5">
@@ -156,7 +159,7 @@ export function IssueChoices({
           </RadioGroup.Item>
 
           {choice === "swap" && swapAvailable && (
-            <div className="border-t-(length:--border-w) px-4 pt-3 pb-2">
+            <div className="border-t-(length:--border-w) border-border px-4 pt-3 pb-2">
               <RadioGroup.Root
                 value={replacementId}
                 onValueChange={(next) => {
@@ -165,7 +168,7 @@ export function IssueChoices({
                 }}
                 aria-label={t("qrRecovery.issue.choices.swap.listLabel")}
                 disabled={pending || saved}
-                className="divide-y-(length:--border-w)"
+                className="divide-y-(length:--border-w) divide-border"
               >
                 {swap.items.map((item) => (
                   <RadioGroup.Item
@@ -192,17 +195,17 @@ export function IssueChoices({
 
         <div
           className={cn(
-            "rounded-container border-(length:--border-w)",
+            "rounded-qr-media border-(length:--border-w)",
             choice === "voucher"
-              ? "border-primary bg-primary-tint"
-              : "border-input",
+              ? "border-primary bg-qr-selection"
+              : "border-border bg-card",
           )}
         >
           <RadioGroup.Item
             value="voucher"
             disabled={!voucher.allowed}
             aria-describedby="issue-voucher-hint"
-            className={cn(ITEM_CLASS, "rounded-container")}
+            className={cn(ITEM_CLASS, "rounded-qr-media")}
           >
             <Indicator />
             <span className="grid gap-0.5">
@@ -234,7 +237,7 @@ export function IssueChoices({
       {errorKey && (
         <div
           role="alert"
-          className="flex flex-wrap items-start gap-2 rounded-container border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
+          className="flex flex-wrap items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm text-foreground"
         >
           <CircleAlert
             className="mt-0.5 size-4 shrink-0 text-danger"
@@ -255,23 +258,6 @@ export function IssueChoices({
           )}
         </div>
       )}
-
-      <div className="grid gap-2">
-        <Button
-          type="button"
-          size="lg"
-          disabled={!valid || offline || saved}
-          loading={pending}
-          onClick={() => (needsConfirm ? setConfirmOpen(true) : submit())}
-        >
-          {t("qrRecovery.issue.choices.confirm")}
-        </Button>
-        {!valid && (
-          <p className="text-sm text-muted-foreground">
-            {t("qrRecovery.issue.choices.pickHint")}
-          </p>
-        )}
-      </div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
@@ -300,6 +286,22 @@ export function IssueChoices({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+      <QrFooter className="gap-2">
+        <Button
+          type="button"
+          size="lg"
+          disabled={!valid || offline || saved}
+          loading={pending}
+          onClick={() => (needsConfirm ? setConfirmOpen(true) : submit())}
+        >
+          {t("qrRecovery.issue.choices.confirm")}
+        </Button>
+        {!valid && (
+          <p className="text-center text-sm text-muted-foreground">
+            {t("qrRecovery.issue.choices.pickHint")}
+          </p>
+        )}
+      </QrFooter>
+    </>
   );
 }
