@@ -1,16 +1,13 @@
 import "./load-env";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { assertDeploymentEnv } from "@starter/shared/env";
-import { createProductionWorkerConfig } from "./worker/production-config.ts";
+import { loadWorkerConfig } from "./worker/production-config.ts";
 import { sql } from "drizzle-orm";
 import {
   assertTrustedScopedContext,
   tenantIdSchema,
   ulidToUuid,
   uuidToUlid,
-  type ScopedTenantContext,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
 import { withTenant } from "./db/tenant.ts";
@@ -19,12 +16,9 @@ import {
   consumeOutbox,
   markOutboxDead,
   relayOutbox,
-  type GapRequest,
 } from "./services/core-outbox";
-import {
-  createNotificationConsumer,
-  type NotificationRecipientResolver,
-} from "./services/notification-consumer.ts";
+import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
+import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
@@ -40,11 +34,7 @@ import { sweepOverdueServiceRequests } from "./services/service-request.service.
 import { expireDueSupportAccessGrants } from "./services/platform-support.service.ts";
 import { sweepMissedChecklistRuns } from "./services/operations-escalation.service.ts";
 import { sweepExpiredPrepLabels } from "./services/operations-food-safety.service.ts";
-import {
-  createPgBoss,
-  createWorkerRuntime,
-  type OutboxJob,
-} from "./worker/runtime";
+import { createPgBoss, createWorkerRuntime } from "./worker/runtime";
 import {
   createRelayRuntime,
   createRelayScheduler,
@@ -56,55 +46,9 @@ import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 
 assertDeploymentEnv(process.env);
 
-// This module belongs to the deployment, never to the incoming request.
-const modulePath = process.env.WORKER_CONFIG_MODULE;
-const transportPath = process.env.WORKER_TRANSPORT_MODULE;
-if (!modulePath && !transportPath)
-  throw new Error(
-    "WORKER_TRANSPORT_MODULE is required; no durable sync transport is configured",
-  );
-const config: unknown = modulePath
-  ? await import(pathToFileURL(resolve(modulePath)).href)
-  : createProductionWorkerConfig(
-      await import(pathToFileURL(resolve(transportPath!)).href),
-    );
-if (
-  typeof config !== "object" ||
-  config === null ||
-  !("resolveContext" in config) ||
-  typeof config.resolveContext !== "function" ||
-  !("authorize" in config) ||
-  typeof config.authorize !== "function" ||
-  !("deliverEvent" in config) ||
-  typeof config.deliverEvent !== "function" ||
-  !("authorizeEvent" in config) ||
-  typeof config.authorizeEvent !== "function" ||
-  !("requestMissing" in config) ||
-  typeof config.requestMissing !== "function"
-)
-  throw new Error(
-    "Worker configuration requires resolveContext, authorize, authorizeEvent, deliverEvent, and requestMissing functions",
-  );
-const handlers = config as {
-  resolveNotificationRecipients?: NotificationRecipientResolver;
-  notificationDelivery?: Parameters<typeof deliverNotificationAttempt>[3];
-  resolveContext: (
-    tenantId: OutboxJob["tenantId"],
-  ) => Promise<ScopedTenantContext>;
-  authorize: (context: ScopedTenantContext, job: OutboxJob) => Promise<boolean>;
-  authorizeEvent: (
-    context: ScopedTenantContext,
-    event: Parameters<Parameters<typeof consumeOutbox>[2]["authorize"]>[0],
-  ) => Promise<boolean>;
-  requestMissing: (
-    context: ScopedTenantContext,
-    gap: GapRequest,
-  ) => Promise<void>;
-  deliverEvent: (
-    context: ScopedTenantContext,
-    ...args: Parameters<Parameters<typeof consumeOutbox>[2]["deliver"]>
-  ) => Promise<void>;
-};
+// The configuration belongs to the deployment, never to the incoming request.
+// Missing transport or notification adapters are startup errors (legend-18qw).
+const handlers = await loadWorkerConfig({ env: process.env, database: db });
 if (!process.env.WORKER_DATABASE_URL)
   throw new Error(
     "WORKER_DATABASE_URL is required for the isolated queue role",
@@ -141,13 +85,16 @@ const runtime = createWorkerRuntime({
       authorize: (event) => handlers.authorizeEvent(context, event),
       deliver: async (event, key, tx) => {
         const result = await tx.execute(
-          sql`SELECT destination FROM domain_event_outbox WHERE id = ${ulidToUuid(job.outboxId)}::uuid`,
+          sql`SELECT destination, direction, peer_id FROM domain_event_outbox WHERE id = ${ulidToUuid(job.outboxId)}::uuid`,
         );
-        if (result.rows[0]?.destination === "notification") {
-          if (!handlers.resolveNotificationRecipients)
-            throw new Error(
-              "Notification recipient resolver is not configured",
-            );
+        const row = result.rows[0];
+        if (!row) throw new Error("Outbox row not found");
+        const route = {
+          destination: String(row.destination),
+          direction: row.direction === null ? null : String(row.direction),
+          peerId: row.peer_id === null ? null : String(row.peer_id),
+        };
+        if (route.destination === "notification") {
           await createNotificationConsumer(
             context,
             handlers.resolveNotificationRecipients,
@@ -165,7 +112,7 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
-          await handlers.deliverEvent(context, event, key, tx);
+          await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
     });
@@ -185,9 +132,21 @@ const relay = createRelayRuntime({
     ).rows.map((row) => row.id),
   resolveContext,
   relay: async (context) => {
-    await relayOutbox(db, context, runtime.enqueue, (gap) =>
-      handlers.requestMissing(context, gap),
-    );
+    // A failing gap record is an alerting problem, not a delivery one: it
+    // must not abort the relay (claimed rows unenqueued) or the sweeps below.
+    await relayOutbox(db, context, runtime.enqueue, async (gap) => {
+      try {
+        await handlers.requestMissing(context, gap);
+      } catch {
+        console.error("Outbox gap request could not be recorded");
+      }
+    });
+    // legend-18qw: close gap records whose missing sequence was consumed.
+    try {
+      await resolveFilledOutboxGaps(db, context);
+    } catch {
+      console.error("Outbox gap resolution sweep failed");
+    }
     // §3 F7 approval deadlines (legend-y5q): expire overdue levels and append
     // approval.resolved for the source module + notifications. Fail closed: a
     // sweep error never blocks the relay, the next tick retries.
@@ -280,8 +239,8 @@ const relay = createRelayRuntime({
       console.error("Service request overdue sweep failed");
     }
     // The relay's periodic sweep also recovers due notification attempts.
-    // Providers and recipient lookup are deployment-owned and absent by default.
-    if (!handlers.notificationDelivery) return;
+    // Providers and recipient lookup are required at startup (legend-18qw); a
+    // disabled channel is never planned, so its attempts are skipped, not lost.
     const due = await withTenant(db, context, async (tx) =>
       tx.execute(
         sql`SELECT a.id FROM delivery_attempts a WHERE ((a.status IN ('queued','failed','sending') AND (a.next_attempt_at IS NULL OR a.next_attempt_at <= now())) OR (a.channel = 'whatsapp' AND a.status = 'skipped' AND a.skip_reason = 'free_channel_available')) AND (a.channel <> 'whatsapp' OR ${Boolean(handlers.notificationDelivery?.whatsapp)}::boolean) AND (a.channel <> 'whatsapp' OR NOT EXISTS (SELECT 1 FROM delivery_attempts f WHERE f.tenant_id = a.tenant_id AND f.notification_id = a.notification_id AND f.channel IN ('email','web_push') AND f.status IN ('queued','failed','sending','sent','delivered'))) ORDER BY a.created_at, a.id LIMIT 100`,
