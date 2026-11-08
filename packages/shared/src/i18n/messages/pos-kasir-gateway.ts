@@ -1,0 +1,122 @@
+// POS cashier texts for QRIS, virtual account, e-wallet and online card (bead legend-mjmm, P2). Filled by its screen
+// bead; id.ts imports it as `posKasirGateway`.
+export const posKasirGatewayMessages = {
+  common: {
+    paymentNo: "Pembayaran {no}",
+    validFor: "Berlaku {time} lagi",
+    checkStatus: "Cek status pembayaran",
+    checking: "Memeriksa status…",
+    viewDisplay: "Lihat customer display",
+    otherMethod: "Pilih metode lain",
+    retry: "Coba lagi",
+    loading: "Memuat pembayaran…",
+    loadError: "Pembayaran tidak bisa dimuat",
+    loadErrorHint: "Periksa koneksi, lalu muat ulang.",
+    contractPending: "Fitur ini belum tersambung ke server",
+    contractPendingHint:
+      "Metode ini belum bisa dipakai. Pilih metode pembayaran lain.",
+    actionError: "Aksi belum berhasil",
+    statusCheckError: "Status belum bisa diperiksa",
+    startError: "Pembayaran belum bisa dimulai",
+    statusWaiting: "Menunggu",
+    statusExpired: "Kedaluwarsa",
+    statusFailed: "Gagal",
+    waitingNoticeTitle: "Menunggu konfirmasi pembayaran",
+    waitingNoticeBody:
+      "Tagihan belum lunas. Status berubah otomatis setelah pembayaran terkonfirmasi.",
+    unpaidTitle: "Tagihan belum lunas",
+  },
+  qris: {
+    panelTitle: "QRIS · Customer display",
+    startHeading: "Tampilkan QRIS di layar pelanggan",
+    startBody:
+      "Kode QR dibuat untuk nominal ini dan hanya tampil di customer display.",
+    start: "Buat QRIS",
+    starting: "Membuat QRIS…",
+    readyHeading: "QRIS siap dipindai",
+    readyBodyOutlet: "QRIS {outlet} sudah tampil di layar pelanggan.",
+    readyBody: "QRIS sudah tampil di layar pelanggan.",
+    readyAction: "Minta pelanggan memindai dan menyelesaikan pembayaran.",
+    expiredHeading: "QRIS kedaluwarsa",
+    expiredBody: "Pelanggan belum menyelesaikan pembayaran.",
+    expiredWarn: "Jangan gunakan kode QR sebelumnya.",
+    expiredNoticeBody:
+      "QRIS baru akan muncul setelah status pembayaran lama diperiksa.",
+    renewing: "Memeriksa status dan memperbarui QRIS…",
+  },
+  va: {
+    panelTitle: "Virtual Account",
+    pickHeading: "Pilih bank Virtual Account",
+    pickBody: "Pelanggan membayar lewat transfer ke nomor VA bank ini.",
+    bankGroup: "Bank Virtual Account",
+    noBanks: "Belum ada bank VA aktif",
+    noBanksHint: "Pilih metode pembayaran lain.",
+    start: "Buat nomor VA",
+    starting: "Membuat nomor VA…",
+    statusWaiting: "Menunggu transfer",
+    readyHeading: "Nomor VA sudah tersedia",
+    readyBody: "Nomor dan petunjuk transfer tampil di customer display.",
+    numberLabel: "Nomor Virtual Account",
+    deadline: "Batas pembayaran",
+    noticeTitle: "Belum lunas",
+    noticeBody:
+      "Jangan konfirmasi dari bukti transfer. Tunggu status terverifikasi.",
+    expiredHeading: "Nomor VA kedaluwarsa",
+    expiredBody:
+      "Batas pembayaran sudah lewat. Periksa status sebelum pindah metode.",
+    expiredNoticeBody:
+      "Bila pelanggan sudah transfer, cek status dulu agar pembayaran tidak ganda.",
+  },
+  ewallet: {
+    panelTitle: "E-wallet",
+    pickHeading: "Pilih e-wallet pelanggan",
+    pickBody: "Permintaan pembayaran dikirim ke aplikasi e-wallet pelanggan.",
+    walletGroup: "E-wallet",
+    noWallets: "Belum ada e-wallet aktif",
+    noWalletsHint: "Pilih metode pembayaran lain.",
+    start: "Kirim permintaan",
+    starting: "Mengirim permintaan…",
+    panelTitleNamed: "E-wallet · {wallet}",
+    readyHeading: "Menunggu pembayaran {wallet}",
+    readyBody:
+      "Permintaan sudah dikirim. Minta pelanggan membuka aplikasi {wallet} dan menyetujui pembayaran.",
+    expiredHeading: "Permintaan e-wallet kedaluwarsa",
+    expiredBody: "Pelanggan belum menyetujui pembayaran.",
+    expiredNoticeBody:
+      "Cek status dulu. Bila belum terbayar, pilih metode lain.",
+  },
+  card: {
+    panelTitle: "Kartu kredit/debit (online)",
+    startHeading: "Pembayaran kartu online",
+    startBody:
+      "Pelanggan memasukkan data kartu di layar pelanggan. Kasir tidak melihat nomor kartu.",
+    start: "Mulai pembayaran kartu",
+    starting: "Memulai pembayaran…",
+    readyHeading: "Menunggu pembayaran kartu",
+    readyBody:
+      "Halaman pembayaran kartu sudah tampil di layar pelanggan. Minta pelanggan menyelesaikannya.",
+    expiredHeading: "Pembayaran kartu kedaluwarsa",
+    expiredBody: "Pelanggan belum menyelesaikan pembayaran.",
+    expiredNoticeBody:
+      "Cek status dulu. Bila belum terbayar, pilih metode lain.",
+  },
+  failed: {
+    heading: "Pembayaran gagal",
+    body: "Penyedia pembayaran mengonfirmasi pembayaran gagal. Tagihan belum lunas dan pesanan tetap tersimpan.",
+    noticeTitle: "{method} ini belum menerima pembayaran",
+    noticeBodyDeposit:
+      "DP {amount} tetap terpakai. Lanjutkan dengan metode lain atau buat pembayaran baru.",
+    noticeBody: "Lanjutkan dengan metode lain atau buat pembayaran baru.",
+    retry: "Coba {method} lagi",
+    retrying: "Membuat pembayaran baru…",
+    otherMethod: "Pilih metode lain",
+  },
+  method: {
+    qris: "QRIS",
+    va: "Virtual Account",
+    ewallet: "E-wallet",
+    card: "Kartu kredit/debit",
+    edc: "EDC",
+    cash: "Tunai",
+  },
+};
