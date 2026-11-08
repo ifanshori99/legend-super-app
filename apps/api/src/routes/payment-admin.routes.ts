@@ -14,10 +14,12 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import * as service from "../services/payment-admin.service.ts";
 import * as config from "../services/payment-admin-config.service.ts";
 import * as funds from "../services/payment-admin-funds.service.ts";
 import * as reconciliation from "../services/payment-admin-reconciliation.service.ts";
+import * as refunds from "../services/payment-refund.service.ts";
 
 export const paymentAdminRouter = Router();
 paymentAdminRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
@@ -220,6 +222,41 @@ paymentAdminRouter.post(
         actor(req),
         contract.approveRefund.params.parse(req.params),
         input,
+        input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.rejectRefund.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.rejectRefund.body.parse(req.body);
+    res.json({
+      data: await refunds.rejectRefund(
+        scope(req),
+        actor(req),
+        contract.rejectRefund.params.parse(req.params),
+        input,
+        input.idempotencyKey,
+        { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
+      ),
+    });
+  },
+);
+paymentAdminRouter.post(
+  route(contract.retryRefundPayout.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.retryRefundPayout.body.parse(req.body);
+    res.json({
+      data: await refunds.retryRefundPayout(
+        scope(req),
+        actor(req),
+        contract.retryRefundPayout.params.parse(req.params),
         input.idempotencyKey,
       ),
     });
