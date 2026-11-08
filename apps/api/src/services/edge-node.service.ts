@@ -10,7 +10,8 @@
 //   listeners (link server), with the periodic re-check covering other API
 //   instances.
 // - authenticate: the cloud link's credential check. The tenant must be
-//   active, the node active, the credential digest equal (constant time).
+//   active, the outlet not closed, the node active, the credential digest
+//   equal (constant time).
 // - ensureLocalEdgeNode: on the edge itself, the node's own row (needed by
 //   the link tables' foreign keys), created from its credential at boot.
 //
@@ -34,7 +35,7 @@ import {
 import { edgeNodeSchema, type EdgeNode } from "@starter/shared/edge";
 import { db } from "../db/index.ts";
 import { edgeNodes, type EdgeNodeRole } from "../db/schema/edge-node.ts";
-import { tenants } from "../db/schema/platform-org.ts";
+import { outlets, tenants } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   edgeCredentialMatches,
@@ -280,8 +281,8 @@ export type EdgeCredentialVerifier = (
 
 /**
  * Cloud link credential check. Every refusal is the same null (no oracle):
- * malformed token, unknown/inactive tenant, unknown node, other outlet,
- * revoked node, digest mismatch.
+ * malformed token, unknown/inactive tenant, closed outlet, unknown node,
+ * other outlet, revoked node, digest mismatch.
  */
 export async function authenticateEdgeCredential(
   token: string,
@@ -306,6 +307,9 @@ export async function authenticateEdgeCredential(
       .where(eq(edgeNodes.id, claims.edgeNodeId))
       .limit(1),
   );
+  // Same outlet rule as the re-check (isEdgeNodeActive), so connect and
+  // re-check agree (legend-wg5t): a closed outlet cannot open a link.
+  if (row && (await isOutletClosed(context, claims.outletId))) return null;
   if (
     !row ||
     row.outletId !== claims.outletId ||
@@ -345,10 +349,37 @@ export async function verifyEdgeNodeCredential(input: {
   };
 }
 
-/** Re-check for an open link: still active with the same credential. */
+async function isOutletClosed(
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<boolean> {
+  const [outlet] = await withTenant(db, context, (tx) =>
+    tx
+      .select({ status: outlets.status })
+      .from(outlets)
+      .where(eq(outlets.id, outletId))
+      .limit(1),
+  );
+  // A missing outlet row is treated as closed: fail closed.
+  return !outlet || outlet.status === "closed";
+}
+
+/**
+ * Re-check for an open link: still active with the same credential, and
+ * (legend-wg5t) the tenant still `active` and the outlet not `closed`, so a
+ * suspended tenant or closed outlet drops an already-open link at the next
+ * periodic check, not only at the next connect.
+ */
 export async function isEdgeNodeActive(
   node: AuthenticatedEdgeNode,
 ): Promise<boolean> {
+  const [tenant] = await db
+    .select({ status: tenants.status })
+    .from(tenants)
+    .where(eq(tenants.id, node.scope.tenantId))
+    .limit(1);
+  if (tenant?.status !== "active") return false;
+  if (await isOutletClosed(node.context, node.scope.outletId)) return false;
   const [row] = await withTenant(db, node.context, (tx) =>
     tx
       .select({

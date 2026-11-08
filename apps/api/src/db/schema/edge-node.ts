@@ -281,6 +281,12 @@ export const edgeInboundEvents = pgTable(
         table.eventId,
       ],
     }),
+    // Cross-node dedupe on the cloud (legend-wg5t): primary and standby of one
+    // outlet may send the same event id. Partial, so cloud_to_edge stays per
+    // node. Backs the tenant-wide "already received" check in db-link-store.
+    uniqueIndex("edge_inbound_events_edge_to_cloud_event_key")
+      .on(table.tenantId, table.direction, table.eventId)
+      .where(sql`${table.direction} = 'edge_to_cloud'`),
     index("edge_inbound_events_aggregate_idx").on(
       table.tenantId,
       table.edgeNodeId,
