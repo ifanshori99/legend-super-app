@@ -33,6 +33,37 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - zoqc: second-opinion putaran 2 = 3 Tinggi + 2 Sedang baru (PUBLIC baseline katalog, BOM/NBSP env, RLS tabel tenant tak diaudit, sequence ACL, docs ganti login queue). Fix: brief 18.
 - Berikutnya saat slot Claude kosong: ui-engineer POS kasir dari `design/mockups/pos/`, engineer KDS legend-4d5, engineer EDC legend-m0k.
 
+## legend-hggk cuti, saldo, libur, lembur (engineer, cabang `ws/hris-leave`)
+
+- Selesai (BE, PRD §3 "29. Cuti, Izin & Lembur", F27): 7 tabel baru (`leave_types`, `leave_balances`, `leave_accruals`, `leave_requests`, `holidays`, `overtime_formulas`, `overtime_requests`), migrasi `0063`/`0064` (RLS tenant semua tabel, RLS outlet untuk `leave_requests`/`overtime_requests`). Service + route `/api/hris/leave/*`, `/api/hris/holidays*`, `/api/hris/overtime-*`.
+- Keputusan: saldo dikunci per baris (`FOR UPDATE`) + advisory lock per karyawan, saldo minus hanya sampai `policy.negativeAllowanceDays`; akrual/carry-over/kedaluwarsa idempoten lewat buku `leave_accruals`; persetujuan lewat matriks (`openApprovalRequest`, consumer `approval.resolved` di worker, settle idempoten); hari libur tidak memotong saldo; rumus lembur berversi (`overtime_formulas`, dipin per pengajuan), upah lembur integer IDR via `computeOvertimePay`, batas 720 menit/hari; kontrak saldo boleh minus, keputusan sistem (kedaluwarsa) `decidedBy` null.
+- Bukti: `heavy pnpm check` 1284 lulus / 1 skip (138 berkas), `heavy pnpm build`, `pnpm format:check`, color, tenant-hardcode lulus. 3 putaran reviewer subagent, temuan nyata dibetulkan (urutan lock, idempotensi, batas lembur 720 menit/hari, tarif hari dipilih karyawan tampil di inbox, tanggal WIB, keputusan sistem tanpa pemutus).
+- Biaya sesi engineer (d11154ca, 12:23–13:07 UTC, 0 compact, 22 subagent): Opus utama 2016k, Sonnet 5084k, Haiku 106k; total 7205k unit biaya. Vendor: Claude saja (8 implementer/test-writer paralel di gelombang 1).
+- Lanjutan: `legend-arj.1` (jadwal job akrual), `legend-arj.2` (jenis hari lembur dari jadwal), `legend-arj.3` (batal cuti setelah carry-over kedaluwarsa), `legend-arj.4` (URL lampiran + event `leave.approved`).
+
+### legend-arj.1 / .3 / .4 + keputusan founder Q7 cuti bersama (engineer, `ws/hris-leave`)
+
+- arj.1: `services/hris-leave-jobs.ts` `runScheduledLeaveJobs` dipanggil dari sweep worker tiap tenant. Urutan: potong cuti bersama, akrual bulan berjalan, carry-over tahun lalu, kedaluwarsa carry-over, semua tanggal WIB. Penanda harian `hris_idempotency` `leave-jobs/YYYY-MM-DD` (tanda `/` agar tidak bisa dipalsukan lewat Idempotency-Key pengguna), ditulis hanya bila semua langkah sukses. Aktor sistem (audit `system`, ledger `createdBy` null); jalur HTTP tetap sama.
+- arj.3: melepas hari (tolak/batal/kedaluwarsa) setelah tanggal kedaluwarsa carry-over memotong carry-over ke sisa terpakai, audit `hris.leave_carry_over.forfeited`.
+- arj.4: event `leave.approved` ke outbox `cloud-sync` saja (adapter notifikasi menolak nama tak dikenal), dalam transaksi yang sama, sekali per pengajuan, tanpa alasan/lampiran. Lampiran: `attachmentUploadRef` = objek `core_storage_objects` purpose `document`, outlet rumah pemohon, umur ≤ 24 jam, belum dipakai dokumen karyawan atau pengajuan lain (indeks unik `leave_requests_tenant_attachment_key`). URL bertanda tangan lewat `HrisFileSigner` (`createHrisLeaveRouter({ fileSigner })`), hanya untuk pemohon/HR/penyetuju, audit `hris.leave_request.attachment_url_issued`.
+- Q7 (founder): tabel `hris_leave_settings` per tenant (`collective_leave_deducts_annual` default true, `annual_leave_type_id`, `collective_leave_effective_from`), `GET/PUT /api/hris/leave/settings`. Cuti bersama memotong 1 hari saldo cuti tahunan (ledger `collective_leave`, unik per karyawan+tanggal, tidak dipotong ulang bila jenis cuti tahunan diganti), dilewati bila tanggal itu juga libur nasional/perusahaan. Lembur di hari cuti bersama = tarif hari kerja; libur nasional/perusahaan tetap tarif hari istirahat.
+- Default aman, menunggu founder: potongan cuti bersama berlaku untuk tanggal ≥ 2027-01-01 (tidak mundur ke 2026). HR bisa mengubah lewat setelan.
+- Migrasi putaran ini sudah diganti di brief 85 (lihat bawah).
+- Review: reviewer (4 temuan) + architect (2 temuan + 1 keputusan founder) dibetulkan; review ulang bersih.
+- Bead baru: `legend-fgob` (migrasi vs main), `legend-ei32` (balik potongan cuti bersama), `legend-2ect` (signer storage produksi), `legend-0pth` (pengunggah objek storage), `legend-qmte` (cuti bersama vs absensi).
+- Biaya putaran ini (d11154ca, 13:07–14:14 UTC, 1 compact, 14 subagent): sekitar 5951k unit biaya (total sesi 13156k). Vendor: Claude saja.
+
+### Brief 85: perbaikan review Opus (engineer, `ws/hris-leave`)
+
+- Item 1: job cuti bersama melewati pasangan karyawan+tanggal yang sudah dihitung pengajuan cuti pending/disetujui (jenis apa pun). Pengajuan menyimpan `excluded_holiday_dates` saat diajukan, sehingga job tahu hari mana yang sudah dihitung walau kalender berubah sesudahnya.
+- Item 2: lewat tanggal kedaluwarsa, carry-over yang tidak dipegang hari terpakai/pending tidak bisa dipakai (`usableCarriedOverDays`), job kedaluwarsa menghanguskan `carried − (used+pending)` walau ada pending. Pengajuan baru menghanguskan carry kedaluwarsa di saldo terkunci sebelum cek sisa. Job cuti bersama menghanguskan carry dulu untuk hari pada/sesudah tanggal kedaluwarsa, lalu menambah hari terpakai. Test skenario 30 Mar / 1 Apr / 2 Apr.
+- Item 3: hapus/pindah/ubah jenis libur cuti bersama membalik potongan (idempoten, diaudit, kunci per tanggal). Lewat tanggal kedaluwarsa, pembalikan memotong carry ke yang masih terpakai dan mengaudit `hris.leave_carry_over.forfeited`. Bead `legend-ei32` ditutup.
+- Item 4: membuat/memindah cuti bersama ke tahun yang carry-over-nya sudah jalan ditolak 422 `LEAVE_YEAR_CARRIED_OVER`.
+- Item 5: `milestone/m1` digabung. Migrasi cabang lama dibuang (`0063_workable_shard` 1794141116246, `0064_hris_leave_rls` 1794141117464, `0065_hris_leave_settings` 1794143913551, `0066_hris_leave_settings_rls` 1794143923628, `0067_hris_leave_attachment_unique` 1794145347324, `0068_pink_bug` 1794145819981) dan dibuat ulang lewat drizzle-kit: `0072_hris_leave` 1794151260820, `0073_hris_leave_rls` (custom) 1794151270783, `0074_hris_leave_excluded_holidays` 1794151613858. Semua di atas kepala milestone `0071_stock_count_rls` 1794149399815. `0072` memasang cakupan tenant kosong + outlet `*` lokal transaksi di sekitar foreign key, karena pemeriksaan FK menjalankan kebijakan RLS saat pemilik tabel NOBYPASSRLS (test edge non-superuser). Bead `legend-fgob` ditutup.
+- Bukti: migrasi lulus di DB kosong (75 migrasi) dan DB di kepala milestone (72 → 75), RLS aktif+paksa di 8 tabel HRIS. Gerbang penuh di `dbab69a2`: format, color, tenant-hardcode, `heavy pnpm check` 162 berkas / 1645 lulus / 1 skip, `heavy pnpm build` lulus. Reviewer konteks segar 2 putaran (3 temuan dibetulkan, review ulang bersih).
+- Masih menunggu founder: potongan cuti bersama mundur ke 2026 atau mulai 2027-01-01 (default sekarang 2027-01-01, bisa diubah HR).
+- Biaya putaran ini (d11154ca, 14:14–15:52 UTC, 2 compact, 45 subagent total sesi): sekitar 5239k unit biaya (total sesi 18395k). Vendor: Claude saja.
+
 ## legend-2re1 UI order pelanggan (ui-engineer, cabang `ui/customer-order`)
 
 - Selesai di worktree `.worktrees/customer-order-ui`: semua layar `/t/$token/*` dibangun ulang ke tema QR (`[data-surface="qr"]`, palet Q6, kaca hanya di lapisan mengambang, maks 2 blur), jumlah tamu inline (Q5), "Bayar di kasir" (Q3) via route `/t/$token/kasir/$orderId`, satu saran pendamping. `DESIGN.md` §9 baru.
@@ -83,6 +114,15 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-hvvn + legend-rbjw persetujuan refund dan refund ke provider (engineer, cabang `ws/refund-approval`)
+
+- Refund (biasa, dana tak teralokasi, refund sistem reservasi/POS) disetujui atau ditolak lewat `approval_requests` (matriks approval, dibuka saat keputusan pertama). Approver bukan peminta, rantai sekali pakai dan terikat ke refund + nominal. Refund sistem: orang pertama mengajukan, orang lain menyetujui; tolak langsung oleh pemegang `payment.reconcile`.
+- Status: `pending` → `approved` → `completed` | `failed` (`failure_reason`: rejected, approval_expired, provider_declined, cap_exceeded, source_document, approver_unauthorized). Enum status tidak diubah (web memakai Record lengkap).
+- Port baru `PaymentRefundPort` (`payment-refund-gateway.ts`), terpisah dari `PaymentGatewayPort` supaya fake lama dan cabang DOIT tidak rusak. Kunci idempotensi `refund:<id>`, klaim berlease + token, timeout 30 detik, cek status sebelum kirim ulang, sweep worker `sweepApprovedRefundPayouts` (backoff, berhenti di 8 percobaan → `MANUAL_RECONCILIATION`). `applyRefundProviderUpdate` siap untuk webhook DOIT.
+- Migrasi `0068_refund_approval_payout` (dulu 0063, digenerate ulang setelah merge main 0063–0067).
+- Bead lanjutan: `legend-0ogy` (adapter + webhook DOIT), `legend-kfkt` (UI tolak/ulangi + alasan gagal), `legend-n9kn` (refund pending yang tak pernah diputuskan).
+- Perbaikan review K (8 Nov 2026): main digabung, migration lama 0063 dihapus dan digenerate ulang jadi `0068_refund_approval_payout`. Refund admin atas pembayaran yang terikat dokumen penjualan (`orderId`, `accessTicketId`, `subscriptionInvoiceId`) ditolak 409 `REFUND_SOURCE_DOCUMENT`; refund penjualan lewat modul pemilik (`order.refunded`, yang memposting jurnal). Pengecualian: peminta `system:*` (dana telat/DP yang tidak pernah dijurnal) dan dana tak teralokasi. Refund lama yang terlanjur pending gagal `source_document`. Approve/tolak idempoten per kunci di transaksi langkah pertama (`refund.approved` / `refund.rejected` di `payment_admin_idempotency`). Approver rantai tanpa `payment.reconcile` di outlet → refund `failed` `approver_unauthorized`, tidak dibayar. Sweep payout keluar dari tick relay ke loop sendiri (30 detik, anggaran 20 detik per tenant, berhenti saat shutdown). Jawaban provider `pending` tidak menghabiskan 8 percobaan (`payout_pending_polls`); tandai manual hanya bila pending lebih dari 72 jam. Refund dana memakai evidence milik dana (`payment_unallocated_funds.evidence_id`, baris lama memakai perilaku lama).
 
 ## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
 
