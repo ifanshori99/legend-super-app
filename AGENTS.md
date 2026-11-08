@@ -94,6 +94,8 @@ Use PostgreSQL `pgTable`/boolean/timestamp-with-time-zone columns and asynchrono
 
 Run `pnpm check` (lint, typecheck, API + root tests on disposable PostgreSQL) and `pnpm build` for substantive changes. For auth/routing/session/CORS changes also run `pnpm test:e2e` (production builds + Playwright). For setup or Compose changes run `pnpm test:setup`. Add tests for real behavior and data isolation. Review the UI at narrow and wide widths when changing layout. The starter placeholder page and `e2e/starter.spec.ts` are gone (bead legend-fbu); new screens go in a route area, see `docs/frontend.md` "Where to put a new screen".
 
+In a git worktree (`.worktrees/<name>`), run `pnpm worktree:setup` (or `node scripts/worktree-setup.mjs` before any install) once after creating it. It runs an offline `pnpm install`, replaces a `node_modules` symlink to the main checkout, copies `.claude/settings.local.json`, and checks that `@starter/shared` resolves to this worktree's `packages/shared`. Never symlink `node_modules` from another checkout: `pnpm check` and `pnpm build` refuse to run when links leave the checkout (`scripts/check-workspace-links.mjs`, bead legend-meki).
+
 Report the result, how to use it, checks run, and any remaining limitation. Keep dashboard-specific, chatbot-specific, billing, and provider-specific features in derivatives unless the user asks to add them to this base. Do not deploy, purchase services, or choose an AI provider just because this is an AI-friendly starter.
 
 <!-- BEGIN:turborepo-agent-rules -->

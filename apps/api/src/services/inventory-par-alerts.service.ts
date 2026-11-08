@@ -67,6 +67,7 @@ import {
   type CursorPage,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { blindCountHiddenFilter } from "./inventory-count.visibility.ts";
 import type { AlertEvaluationResult } from "./inventory-expiry.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -397,9 +398,11 @@ export async function listStockAlerts(
       "inventory.stock.view",
       query.outletId,
     );
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(inventoryStockAlerts.outletId, query.outletId),
       isNull(inventoryStockAlerts.resolvedAt),
+      blindCountHiddenFilter(inventoryStockAlerts),
     ];
     if (query.kind) filters.push(eq(inventoryStockAlerts.kind, query.kind));
     if (query.locationId)
