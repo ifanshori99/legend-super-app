@@ -456,6 +456,34 @@
       "when": 1794141117464,
       "tag": "0064_hris_leave_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1794143913551,
+      "tag": "0065_hris_leave_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1794143923628,
+      "tag": "0066_hris_leave_settings_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1794145347324,
+      "tag": "0067_hris_leave_attachment_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794145819981,
+      "tag": "0068_pink_bug",
+      "breakpoints": true
     }
   ]
 }

@@ -76,6 +76,8 @@ import {
   leaveBalanceSchema,
   leaveRequestSchema,
   leaveRequestStatusSchema,
+  leaveSettingsInputSchema,
+  leaveSettingsSchema,
   leaveTypeInputSchema,
   leaveTypeSchema,
   overtimeFormulaSchema,
@@ -452,6 +454,23 @@ export const expireLeaveCarryOver = defineEndpoint({
   response: dataResponseSchema(leaveAccrualRunResultSchema),
 });
 
+/** Collective-leave policy (founder decision Q7); HR manage, tenant-wide. */
+export const getLeaveSettings = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/leave/settings",
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
+export const updateLeaveSettings = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/leave/settings",
+  body: clientInputSchema({
+    ...leaveSettingsInputSchema.shape,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
 export const listHolidays = defineEndpoint({
   method: "GET",
   path: "/api/hris/holidays",
@@ -673,6 +692,8 @@ export const hrisEndpoints = [
   runLeaveAccrual,
   runLeaveCarryOver,
   expireLeaveCarryOver,
+  getLeaveSettings,
+  updateLeaveSettings,
   listHolidays,
   createHoliday,
   updateHoliday,

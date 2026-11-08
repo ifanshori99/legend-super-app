@@ -22,3 +22,7 @@ SELECT app.enforce_tenant_rls('public.overtime_formulas'::regclass);
 SELECT app.enforce_tenant_rls('public.overtime_requests'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.overtime_requests'::regclass);
+--> statement-breakpoint
+-- Leave settings (founder decision Q7 "cuti bersama"; migration 0066): tenant
+-- RLS only, the row is tenant-wide policy with no outlet.
+SELECT app.enforce_tenant_rls('public.hris_leave_settings'::regclass);

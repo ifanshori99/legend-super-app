@@ -784,6 +784,63 @@ test("HRIS endpoints are unique, GET-safe and reject client tenant ids", () => {
     false,
   );
 
+  // Founder decision Q7 (cuti bersama): tenant leave settings.
+  assert.ok(ids.includes("GET /api/hris/leave/settings"));
+  const putSettings = hris.hrisEndpoints.find(
+    (endpoint) => endpoint.id === "PUT /api/hris/leave/settings",
+  );
+  const settingsBody = {
+    collectiveLeaveDeductsAnnual: true,
+    annualLeaveTypeId: null,
+    idempotencyKey: "leave-settings-001",
+  };
+  assert.equal(putSettings.body.safeParse(settingsBody).success, true);
+  assert.equal(
+    putSettings.body.safeParse({ ...settingsBody, tenantId }).success,
+    false,
+  );
+  assert.equal(
+    putSettings.body.safeParse({
+      ...settingsBody,
+      annualLeaveTypeId: uuid(8101),
+    }).success,
+    true,
+  );
+  // Effective-from: optional (null = server default), a valid date >= 2000.
+  assert.equal(
+    putSettings.body.parse(settingsBody).collectiveLeaveEffectiveFrom,
+    null,
+  );
+  for (const [value, ok] of [
+    ["2027-01-01", true],
+    ["2000-01-01", true],
+    [null, true],
+    ["1999-12-31", false],
+    ["2027-13-01", false],
+    ["01/01/2027", false],
+  ]) {
+    assert.equal(
+      putSettings.body.safeParse({
+        ...settingsBody,
+        collectiveLeaveEffectiveFrom: value,
+      }).success,
+      ok,
+      String(value),
+    );
+  }
+  assert.equal(
+    hris.leaveSettingsSchema.safeParse({
+      tenantId,
+      collectiveLeaveDeductsAnnual: true,
+      annualLeaveTypeId: null,
+      effectiveAnnualLeaveTypeId: uuid(8101),
+      collectiveLeaveEffectiveFrom: "2027-01-01",
+      updatedBy: null,
+      updatedAt: null,
+    }).success,
+    true,
+  );
+
   const updatePii = hris.hrisEndpoints.find(
     (endpoint) => endpoint.id === "PUT /api/hris/employees/:employeeId/pii",
   );

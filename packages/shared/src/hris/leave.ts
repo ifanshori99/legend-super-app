@@ -145,6 +145,43 @@ export const leaveAccrualRunResultSchema = z.strictObject({
 });
 export type LeaveAccrualRunResult = z.infer<typeof leaveAccrualRunResultSchema>;
 
+/**
+ * Tenant leave settings (founder decision Q7 "cuti bersama"). Collective leave
+ * (`holidays.type = 'collective'`) deducts one day of the annual balance per
+ * collective date by default; national and company holidays never deduct.
+ * `annualLeaveTypeId` null = the active leave type coded `ANNUAL`;
+ * `effectiveAnnualLeaveTypeId` is the type the deduction actually uses (null =
+ * none, nothing is deducted). `collectiveLeaveEffectiveFrom` is the business
+ * date from which collective days are deducted (no retroactive deduction; the
+ * server default applies until one is saved). `updatedBy`/`updatedAt` are null
+ * until saved.
+ */
+const collectiveLeaveEffectiveFromSchema = businessDateSchema.refine(
+  (date) => date >= "2000-01-01",
+  "Tanggal berlaku cuti bersama tidak boleh sebelum tahun 2000.",
+);
+export const leaveSettingsSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  collectiveLeaveDeductsAnnual: z.boolean(),
+  annualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  effectiveAnnualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  collectiveLeaveEffectiveFrom: collectiveLeaveEffectiveFromSchema,
+  updatedBy: userIdSchema.nullable(),
+  updatedAt: isoDateTimeSchema.nullable(),
+});
+export type LeaveSettings = z.infer<typeof leaveSettingsSchema>;
+
+/** PUT payload: the whole setting (the server owns tenant and audit fields). */
+export const leaveSettingsInputSchema = z.strictObject({
+  collectiveLeaveDeductsAnnual: z.boolean(),
+  annualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  /** Omitted or null = the server default. */
+  collectiveLeaveEffectiveFrom: collectiveLeaveEffectiveFromSchema
+    .nullable()
+    .default(null),
+});
+export type LeaveSettingsInput = z.input<typeof leaveSettingsInputSchema>;
+
 /** PRD §6 H `leave_balances` row for one employee, type and period year. */
 export const leaveBalanceSchema = z.strictObject({
   id: leaveBalanceIdSchema,

@@ -30,6 +30,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -131,8 +132,10 @@ export const leaveBalances = pgTable(
 // ----------------------------------------------------------- leave accruals
 
 /**
- * Idempotency ledger for accrual, carry-over and carry-over expiry. `period`
- * is `YYYY` or `YYYY-MM`; `days` is signed (expiry is negative).
+ * Idempotency ledger for accrual, carry-over, carry-over expiry and the
+ * collective-leave ("cuti bersama") deduction. `period` is `YYYY` or `YYYY-MM`,
+ * or the holiday date `YYYY-MM-DD` for `collective_leave`; `days` is signed
+ * (expiry and collective leave are negative).
  */
 export const leaveAccruals = pgTable(
   "leave_accruals",
@@ -142,9 +145,11 @@ export const leaveAccruals = pgTable(
     employeeId: uuid("employee_id").notNull(),
     leaveTypeId: uuid("leave_type_id").notNull(),
     kind: varchar("kind", { length: 20 })
-      .$type<"grant" | "carry_over" | "carry_over_expiry">()
+      .$type<
+        "grant" | "carry_over" | "carry_over_expiry" | "collective_leave"
+      >()
       .notNull(),
-    period: varchar("period", { length: 7 }).notNull(),
+    period: varchar("period", { length: 10 }).notNull(),
     days: days("days").notNull(),
     createdAt,
     createdBy: text("created_by").$type<UserId>(),
@@ -157,6 +162,11 @@ export const leaveAccruals = pgTable(
       table.kind,
       table.period,
     ),
+    // One collective deduction per employee and date whatever the leave type:
+    // switching `annualLeaveTypeId` must not deduct the same day again.
+    uniqueIndex("leave_accruals_collective_leave_key")
+      .on(table.tenantId, table.employeeId, table.period)
+      .where(sql`${table.kind} = 'collective_leave'`),
     foreignKey({
       name: "leave_accruals_employee_fk",
       columns: [table.tenantId, table.employeeId],
@@ -169,12 +179,45 @@ export const leaveAccruals = pgTable(
     }),
     check(
       "leave_accruals_kind_check",
-      sql`${table.kind} IN ('grant', 'carry_over', 'carry_over_expiry')`,
+      sql`${table.kind} IN ('grant', 'carry_over', 'carry_over_expiry', 'collective_leave')`,
     ),
     check(
       "leave_accruals_period_check",
-      sql`${table.period} ~ '^[0-9]{4}(-[0-9]{2})?$'`,
+      sql`${table.period} ~ '^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$'`,
     ),
+  ],
+);
+
+// ----------------------------------------------------------- leave settings
+
+/**
+ * Tenant leave policy settings (founder decision Q7, "cuti bersama"). No row =
+ * the defaults: collective leave deducts the annual balance, and the annual
+ * type is the active leave type coded `ANNUAL` (none = nothing to deduct).
+ */
+export const hrisLeaveSettings = pgTable(
+  "hris_leave_settings",
+  {
+    tenantId: tenantIdColumn(() => tenants.id)
+      .notNull()
+      .primaryKey(),
+    collectiveLeaveDeductsAnnual: boolean("collective_leave_deducts_annual")
+      .notNull()
+      .default(true),
+    annualLeaveTypeId: uuid("annual_leave_type_id"),
+    /** Collective days dated before this are not deducted; null = the default. */
+    collectiveLeaveEffectiveFrom: businessDate(
+      "collective_leave_effective_from",
+    ),
+    updatedBy: text("updated_by").$type<UserId>(),
+    updatedAt,
+  },
+  (table) => [
+    foreignKey({
+      name: "hris_leave_settings_annual_leave_type_fk",
+      columns: [table.tenantId, table.annualLeaveTypeId],
+      foreignColumns: [leaveTypes.tenantId, leaveTypes.id],
+    }),
   ],
 );
 
@@ -220,6 +263,12 @@ export const leaveRequests = pgTable(
       table.tenantId,
       table.employeeId,
       table.startDate,
+    ),
+    // One upload backs at most one request (NULLs stay distinct): a private
+    // file cannot be re-attached to read it back through someone else's request.
+    uniqueIndex("leave_requests_tenant_attachment_key").on(
+      table.tenantId,
+      table.attachmentKey,
     ),
     foreignKey({
       name: "leave_requests_outlet_fk",

@@ -30,6 +30,7 @@ import {
 } from "drizzle-orm";
 import {
   CoreError,
+  createUlid,
   encodeCursor,
   formatDecimal4,
   localDateOf,
@@ -42,6 +43,7 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   createLeaveRequest as createLeaveRequestEndpoint,
   decideLeaveRequest as decideLeaveRequestEndpoint,
+  leaveApproved,
   leavePolicySchema,
   leaveRequestSchema,
   listLeaveRequests as listLeaveRequestsEndpoint,
@@ -51,17 +53,21 @@ import {
   type LeaveRequestStatus,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
+import { storagePurposePolicy } from "@starter/shared/storage";
 import { db } from "../db/index.ts";
-import { employees } from "../db/schema/hris.ts";
+import { employeeDocuments, employees } from "../db/schema/hris.ts";
 import {
   leaveBalances,
   leaveRequests,
   leaveTypes,
 } from "../db/schema/hris-leave.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
+import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
@@ -74,6 +80,10 @@ import {
   type HrisAccess,
   type Tx,
 } from "./hris-access.ts";
+import {
+  noHrisFileSigner,
+  type HrisFileSigner,
+} from "./hris-contract.service.ts";
 import { countLeaveDays, lockBalanceForUpdate } from "./hris-leave.service.ts";
 import {
   cancelApprovalRequest,
@@ -100,6 +110,18 @@ const REQUEST_REASON = "Pengajuan cuti";
 
 const lower = (value: string) => value.toLowerCase();
 
+/**
+ * `leave.approved` goes to cloud sync only: the notification adapter has no
+ * rule for it (worker/notification-adapters.ts throws on unknown names).
+ */
+const LEAVE_EVENT_DESTINATIONS = ["cloud-sync"] as const;
+const LEAVE_BALANCE_AUDIT_SAFE_FIELDS = [
+  ...HRIS_AUDIT_SAFE_FIELDS,
+  "periodYear",
+  "forfeitedDays",
+  "carriedOverDays",
+] as const;
+
 /** RLS scope of exactly one outlet: approval rows are outlet-owned (TEN-03). */
 function outletScoped(
   context: ScopedTenantContext,
@@ -112,10 +134,13 @@ function outletScoped(
 }
 
 /**
- * TODO(storage): `attachmentUrl` stays null until a core-storage signer port
- * (like hris-contract.service `HrisFileSigner`) is wired for leave files.
+ * `attachmentUrl` is the short-lived signed URL minted by the injected signer
+ * (presentRequest); it is null whenever the viewer may not open the file.
  */
-export function toLeaveRequest(row: LeaveRequestRow): LeaveRequest {
+export function toLeaveRequest(
+  row: LeaveRequestRow,
+  attachmentUrl: string | null = null,
+): LeaveRequest {
   return leaveRequestSchema.parse({
     id: row.id,
     tenantId: row.tenantId,
@@ -125,7 +150,7 @@ export function toLeaveRequest(row: LeaveRequestRow): LeaveRequest {
     endDate: row.endDate,
     days: row.days,
     reason: row.reason,
-    attachmentUrl: null,
+    attachmentUrl,
     status: row.status,
     requestedAt: row.requestedAt.toISOString(),
     decidedBy: row.decidedBy,
@@ -182,9 +207,20 @@ async function adjustBalance(
     );
 }
 
-/** Applies a delta only when the leave type tracks a balance (else no-op). */
+/**
+ * Applies a delta only when the leave type tracks a balance (else no-op).
+ *
+ * Releasing days (reject, cancel, expiry of a pending or approved leave) after
+ * the carry-over expiry date must not bring forfeited carry-over back: days
+ * taken consume the carried-over part first (same rule as
+ * `expireLeaveCarryOver`), so the carried-over days are clamped to what is
+ * still used or pending and the difference is forfeited (bead legend-arj.3).
+ * `actor` null means the system (settle of a matrix outcome).
+ */
 async function moveBalance(
   tx: Tx,
+  context: ScopedTenantContext,
+  actor: string | null,
   row: LeaveRequestRow,
   delta: { readonly pending: bigint; readonly used: bigint },
   now: Date,
@@ -200,6 +236,132 @@ async function moveBalance(
   );
   if (!balance) return;
   await adjustBalance(tx, row, delta, now);
+
+  const released = delta.pending < 0n || delta.used < 0n;
+  if (
+    !released ||
+    balance.carryOverExpiresOn === null ||
+    balance.carryOverExpiresOn > localDateOf(now)
+  )
+    return;
+  const carried = parseDecimal4(balance.carriedOverDays);
+  const stillTaken =
+    parseDecimal4(balance.usedDays) +
+    delta.used +
+    parseDecimal4(balance.pendingDays) +
+    delta.pending;
+  const keep = stillTaken > 0n ? stillTaken : 0n;
+  if (carried <= keep) return;
+  const forfeited = carried - keep;
+  await tx
+    .update(leaveBalances)
+    .set({ carriedOverDays: formatDecimal4(keep), updatedAt: now })
+    .where(
+      and(
+        eq(leaveBalances.tenantId, balance.tenantId),
+        eq(leaveBalances.id, balance.id),
+      ),
+    );
+  await recordAudit(
+    tx,
+    context,
+    {
+      ...hrisAuditEntry(context, actor ?? row.requestedBy, now, {
+        outletId: row.outletId,
+        action: "hris.leave_carry_over.forfeited",
+        objectType: "leave_balance",
+        objectId: balance.id,
+        after: {
+          periodYear: balance.periodYear,
+          forfeitedDays: formatDecimal4(forfeited),
+          carriedOverDays: formatDecimal4(keep),
+        },
+      }),
+      ...(actor === null
+        ? { actorType: "system" as const, actorId: null }
+        : {}),
+    },
+    LEAVE_BALANCE_AUDIT_SAFE_FIELDS,
+  );
+}
+
+async function nextLeaveEventSequence(
+  tx: Tx,
+  tenantId: string,
+  destination: string,
+  leaveRequestId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, destination),
+        eq(domainEventOutbox.aggregateType, leaveApproved.entry.aggregateType),
+        eq(domainEventOutbox.aggregateId, leaveRequestId),
+      ),
+    );
+  return Number(row?.last ?? 0) + 1;
+}
+
+/**
+ * Appends `leave.approved` in the caller's transaction (transactional outbox),
+ * right where the request becomes approved. The aggregate is the request; the
+ * request row lock (or the per-employee filing lock) serialises the sequence.
+ * No reason or attachment in the payload (personal data).
+ */
+async function appendLeaveApproved(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: LeaveRequestRow,
+  now: Date,
+): Promise<void> {
+  if (row.status !== "approved" || !row.decidedBy || !row.decidedAt)
+    throw new Error("leave.approved needs an approved request with a decider");
+  const decidedBy = userIdSchema.parse(row.decidedBy);
+  for (const destination of LEAVE_EVENT_DESTINATIONS) {
+    const sequence = await nextLeaveEventSequence(
+      tx,
+      row.tenantId,
+      destination,
+      row.id,
+    );
+    const event = leaveApproved.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId: row.tenantId,
+      outletId: row.outletId,
+      name: leaveApproved.name,
+      version: leaveApproved.version,
+      aggregateType: leaveApproved.entry.aggregateType,
+      aggregateId: row.id,
+      sequence,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: decidedBy },
+      deviceId: null,
+      idempotencyKey: `${leaveApproved.name}:${row.id}:${sequence}`,
+      payloadSchemaRef: leaveApproved.payloadSchemaRef,
+      payload: {
+        leaveRequestId: row.id,
+        employeeId: row.employeeId,
+        leaveTypeId: row.leaveTypeId,
+        startDate: row.startDate,
+        endDate: row.endDate,
+        days: row.days,
+        decidedBy,
+        decidedAt: row.decidedAt.toISOString(),
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination,
+      direction: null,
+      peerId: null,
+    });
+  }
 }
 
 async function auditLeave(
@@ -247,11 +409,122 @@ function canSee(access: HrisAccess, row: LeaveRequestRow): boolean {
   );
 }
 
+/**
+ * The DTO with the signed attachment URL. Only a viewer who can see the
+ * request (the requester, HR manage reach or approve reach at its outlet) gets
+ * one; each URL issued is audited with a sensitive-access reason.
+ */
+async function presentRequest(
+  tx: Tx,
+  context: ScopedTenantContext,
+  access: HrisAccess,
+  row: LeaveRequestRow,
+  signer: HrisFileSigner,
+  now: Date,
+): Promise<LeaveRequest> {
+  if (row.attachmentKey === null || !canSee(access, row))
+    return toLeaveRequest(row);
+  const url = await signer(context, row.attachmentKey);
+  if (url !== null)
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, access.actorUserId, now, {
+        outletId: row.outletId,
+        action: "hris.leave_request.attachment_url_issued",
+        objectType: HRIS_LEAVE_OBJECT_TYPE,
+        objectId: row.id,
+        after: { status: row.status },
+        sensitiveReason: "Membuka lampiran pengajuan cuti.",
+      }),
+      HRIS_AUDIT_SAFE_FIELDS,
+    );
+  return toLeaveRequest(row, url);
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The upload must be a fresh `document` object at the requester's home outlet
+ * that nothing else references. `core_storage_objects` records no uploader, so
+ * freshness plus single use is what stops attaching someone else's private
+ * file (an HR employee document, another request's proof) to read it back.
+ */
+async function assertAttachmentUsable(
+  tx: Tx,
+  tenantId: TenantId,
+  homeOutletId: string,
+  uploadRef: string,
+  now: Date,
+) {
+  const [object] = UUID_PATTERN.test(uploadRef)
+    ? await tx
+        .select({
+          outletId: coreStorageObjects.outletId,
+          purpose: coreStorageObjects.purpose,
+          createdAt: coreStorageObjects.createdAt,
+        })
+        .from(coreStorageObjects)
+        .where(
+          and(
+            eq(coreStorageObjects.tenantId, tenantId),
+            eq(coreStorageObjects.id, uploadRef),
+          ),
+        )
+        .limit(1)
+    : [];
+  const policy = object
+    ? (storagePurposePolicy as Record<string, { visibility: string }>)[
+        object.purpose
+      ]
+    : undefined;
+  const invalid = () =>
+    new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "Lampiran tidak ditemukan atau tidak valid.",
+    );
+  if (
+    !object ||
+    object.purpose !== "document" ||
+    policy?.visibility !== "private" ||
+    lower(object.outletId) !== lower(homeOutletId) ||
+    object.createdAt.getTime() < now.getTime() - ATTACHMENT_MAX_AGE_MS
+  )
+    throw invalid();
+  const [document] = await tx
+    .select({ id: employeeDocuments.id })
+    .from(employeeDocuments)
+    .where(
+      and(
+        eq(employeeDocuments.tenantId, tenantId),
+        eq(employeeDocuments.storageObjectId, uploadRef),
+      ),
+    )
+    .limit(1);
+  const [used] = await tx
+    .select({ id: leaveRequests.id })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.tenantId, tenantId),
+        eq(leaveRequests.attachmentKey, uploadRef),
+      ),
+    )
+    .limit(1);
+  if (document || used) throw invalid();
+}
+
 /** GET /api/hris/leave/requests — HR/approver reach by outlet, else own rows. */
 export async function listLeaveRequests(
   context: ScopedTenantContext,
   actorUserId: string,
   query: ListQuery,
+  signer: HrisFileSigner = noHrisFileSigner,
+  now = new Date(),
 ): Promise<Page<LeaveRequest>> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
@@ -284,8 +557,11 @@ export async function listLeaveRequests(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const data: LeaveRequest[] = [];
+    for (const row of page)
+      data.push(await presentRequest(tx, context, access, row, signer, now));
     return {
-      data: page.map(toLeaveRequest),
+      data,
       meta: {
         limit: query.limit,
         nextCursor:
@@ -302,12 +578,14 @@ export async function getLeaveRequest(
   context: ScopedTenantContext,
   actorUserId: string,
   leaveRequestId: string,
+  signer: HrisFileSigner = noHrisFileSigner,
+  now = new Date(),
 ): Promise<LeaveRequest> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
     const row = await findRequest(tx, context.tenant.tenantId, leaveRequestId);
     if (!row || !canSee(access, row)) throw notFound("Pengajuan cuti");
-    return toLeaveRequest(row);
+    return presentRequest(tx, context, access, row, signer, now);
   });
 }
 
@@ -342,6 +620,7 @@ export async function createLeaveRequest(
   actorUserId: string,
   input: CreateBody,
   now = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<LeaveRequest> {
   if (input.endDate < input.startDate)
     throw new HttpError(
@@ -420,7 +699,7 @@ export async function createLeaveRequest(
           "IDEMPOTENCY_KEY_REUSED",
           "Idempotency key already used for a different request.",
         );
-      return toLeaveRequest(replayed);
+      return presentRequest(tx, scoped, access, replayed, signer, now);
     }
 
     const type = await loadLeaveType(tx, tenantId, input.leaveTypeId, true);
@@ -435,6 +714,14 @@ export async function createLeaveRequest(
         422,
         "VALIDATION_ERROR",
         "Jenis cuti ini wajib melampirkan dokumen pendukung.",
+      );
+    if (input.attachmentUploadRef !== null)
+      await assertAttachmentUsable(
+        tx,
+        tenantId,
+        own.homeOutletId,
+        input.attachmentUploadRef,
+        now,
       );
 
     const [overlap] = await tx
@@ -537,6 +824,16 @@ export async function createLeaveRequest(
             "IDEMPOTENCY_KEY_REUSED",
             "Idempotency key already used for a different request.",
           );
+        // Two requests racing to attach the same upload.
+        if (
+          uniqueViolation(error)?.constraint ===
+          "leave_requests_tenant_attachment_key"
+        )
+          throw new HttpError(
+            422,
+            "VALIDATION_ERROR",
+            "Lampiran tidak ditemukan atau tidak valid.",
+          );
         throw error;
       });
     if (!inserted) throw new Error("Leave request insert returned no row");
@@ -587,6 +884,7 @@ export async function createLeaveRequest(
         })
         .where(eq(leaveRequests.id, inserted.id))
         .returning()) as [LeaveRequestRow];
+      await appendLeaveApproved(tx, scoped, row, now);
     }
     await auditLeave(
       tx,
@@ -596,7 +894,7 @@ export async function createLeaveRequest(
       row,
       "hris.leave_request.created",
     );
-    return toLeaveRequest(row);
+    return presentRequest(tx, scoped, access, row, signer, now);
   });
 }
 
@@ -615,6 +913,7 @@ export async function decideLeaveRequest(
   input: DecideBody,
   options: { readonly mfaVerified: boolean },
   now = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<LeaveRequest> {
   const gate = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
@@ -656,7 +955,8 @@ export async function decideLeaveRequest(
     return { row, openId, replay: false };
   });
 
-  if (gate.replay) return toLeaveRequest(gate.row);
+  if (gate.replay)
+    return getLeaveRequest(context, actorUserId, gate.row.id, signer, now);
 
   if (input.action === "cancel") {
     await cancelLeaveRequest(context, actorUserId, gate.row, now);
@@ -678,7 +978,7 @@ export async function decideLeaveRequest(
       );
     await settleLeaveRequest(context, gate.row.id, now);
   }
-  return getLeaveRequest(context, actorUserId, gate.row.id);
+  return getLeaveRequest(context, actorUserId, gate.row.id, signer, now);
 }
 
 /** Pending: withdraw the chain and release the days. Approved + not started: release used. */
@@ -705,11 +1005,18 @@ async function cancelLeaveRequest(
         });
         // The chain finished first (approved/rejected): settle decides, not us.
         if (outcome !== "cancelled" && outcome !== "pending") {
-          await applyOutcome(tx, row, outcome, now);
+          await applyOutcome(tx, scoped, row, outcome, now);
           return;
         }
       }
-      await moveBalance(tx, row, { pending: -scaledDays, used: 0n }, now);
+      await moveBalance(
+        tx,
+        scoped,
+        actorUserId,
+        row,
+        { pending: -scaledDays, used: 0n },
+        now,
+      );
     } else {
       // approved: only before the first day of leave.
       if (row.startDate <= localDateOf(now))
@@ -718,7 +1025,14 @@ async function cancelLeaveRequest(
           "CONFLICT",
           "Cuti yang sudah berjalan tidak dapat dibatalkan.",
         );
-      await moveBalance(tx, row, { pending: 0n, used: -scaledDays }, now);
+      await moveBalance(
+        tx,
+        scoped,
+        actorUserId,
+        row,
+        { pending: 0n, used: -scaledDays },
+        now,
+      );
     }
     const [updated] = await tx
       .update(leaveRequests)
@@ -742,6 +1056,7 @@ async function cancelLeaveRequest(
 /** Chain outcome (not pending) → request + balance. Caller holds the row lock. */
 async function applyOutcome(
   tx: Tx,
+  context: ScopedTenantContext,
   row: LeaveRequestRow,
   outcome: "approved" | "rejected" | "expired" | "cancelled",
   now: Date,
@@ -757,8 +1072,15 @@ async function applyOutcome(
       .where(eq(approvalRequests.chainId, row.approvalChainId!))
       .orderBy(desc(approvalRequests.level))
       .limit(1);
-    await moveBalance(tx, row, { pending: -scaledDays, used: scaledDays }, now);
-    await tx
+    await moveBalance(
+      tx,
+      context,
+      null,
+      row,
+      { pending: -scaledDays, used: scaledDays },
+      now,
+    );
+    const [approved] = await tx
       .update(leaveRequests)
       .set({
         status: "approved",
@@ -768,7 +1090,10 @@ async function applyOutcome(
         decidedAt: final?.decidedAt ?? now,
         updatedAt: now,
       })
-      .where(eq(leaveRequests.id, row.id));
+      .where(eq(leaveRequests.id, row.id))
+      .returning();
+    if (!approved) throw new Error("Leave request update returned no row");
+    await appendLeaveApproved(tx, context, approved, now);
     return "approved";
   }
   // A human rejection keeps the chain's last decision. A matrix expiry or a
@@ -789,7 +1114,14 @@ async function applyOutcome(
     )
     .orderBy(desc(approvalRequests.level))
     .limit(1);
-  await moveBalance(tx, row, { pending: -scaledDays, used: 0n }, now);
+  await moveBalance(
+    tx,
+    context,
+    null,
+    row,
+    { pending: -scaledDays, used: 0n },
+    now,
+  );
   await tx
     .update(leaveRequests)
     .set({
@@ -837,7 +1169,7 @@ export async function settleLeaveRequest(
       sourceModule: HRIS_LEAVE_SOURCE_MODULE,
     });
     if (outcome === "pending") return "pending";
-    const status = await applyOutcome(tx, row, outcome, now);
+    const status = await applyOutcome(tx, scoped, row, outcome, now);
     const [updated] = await tx
       .select()
       .from(leaveRequests)

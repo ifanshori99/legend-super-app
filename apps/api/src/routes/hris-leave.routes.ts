@@ -56,6 +56,7 @@ import {
   runLeaveAccrual as runLeaveAccrualEndpoint,
   runLeaveCarryOver as runLeaveCarryOverEndpoint,
   updateHoliday as updateHolidayEndpoint,
+  updateLeaveSettings as updateLeaveSettingsEndpoint,
   updateLeaveType as updateLeaveTypeEndpoint,
 } from "@starter/shared/hris";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -71,7 +72,12 @@ import {
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
 import { loadTenantAccess } from "../services/permission-resolver.ts";
 import { loadSurfaceAccessFacts } from "../services/surface-access.service.ts";
+import {
+  noHrisFileSigner,
+  type HrisFileSigner,
+} from "../services/hris-contract.service.ts";
 import * as holidayService from "../services/hris-holiday.service.ts";
+import * as collectiveService from "../services/hris-leave-collective.service.ts";
 import * as leaveService from "../services/hris-leave.service.ts";
 import * as leaveRequestService from "../services/hris-leave-request.service.ts";
 import * as overtimeService from "../services/hris-overtime.service.ts";
@@ -226,7 +232,13 @@ const HOLIDAY_READ: PermissionCode[] = [
   "self.leave.request",
 ];
 
-export function createHrisLeaveRouter(): Router {
+export type HrisLeaveRouterDeps = {
+  /** Private-bucket URL signer (core-storage); default mints no URL. */
+  readonly fileSigner?: HrisFileSigner;
+};
+
+export function createHrisLeaveRouter(deps: HrisLeaveRouterDeps = {}): Router {
+  const signer = deps.fileSigner ?? noHrisFileSigner;
   const router = Router();
   router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
@@ -356,6 +368,39 @@ export function createHrisLeaveRouter(): Router {
     },
   );
 
+  // ---- Leave settings (collective leave, founder decision Q7) ------------
+
+  router.get(
+    "/leave/settings",
+    backOffice,
+    requireHris(MANAGE),
+    async (req, res) => {
+      res.json({
+        data: await collectiveService.getLeaveSettings(
+          hrisContext(req),
+          actor(req),
+        ),
+      });
+    },
+  );
+
+  router.put(
+    "/leave/settings",
+    backOffice,
+    jsonBody,
+    requireHris(MANAGE),
+    async (req, res) => {
+      const body = updateLeaveSettingsEndpoint.body.parse(req.body);
+      res.json({
+        data: await collectiveService.updateLeaveSettings(
+          hrisContext(req),
+          actor(req),
+          body,
+        ),
+      });
+    },
+  );
+
   // ---- Leave requests ----------------------------------------------------
 
   router.get(
@@ -369,6 +414,7 @@ export function createHrisLeaveRouter(): Router {
           hrisContext(req),
           actor(req),
           query,
+          signer,
         ),
       );
     },
@@ -386,6 +432,8 @@ export function createHrisLeaveRouter(): Router {
           hrisContext(req),
           actor(req),
           body,
+          new Date(),
+          signer,
         ),
       });
     },
@@ -408,6 +456,8 @@ export function createHrisLeaveRouter(): Router {
           leaveRequestId,
           body,
           await mfa(req),
+          new Date(),
+          signer,
         ),
       });
     },

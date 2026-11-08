@@ -30,6 +30,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -410,7 +411,12 @@ function requestReasonFor(
   );
 }
 
-/** Holiday on `date` for the tenant or that outlet (forces the rest-day type). */
+/**
+ * National or company holiday on `date` for the tenant or that outlet (forces
+ * the rest-day type). Collective leave ("cuti bersama", founder decision Q7) is
+ * not one: working that day is paid at the normal workday tiers. When a
+ * national/company holiday falls on the same date, the rest-day type wins.
+ */
 async function holidayOn(
   tx: Tx,
   tenantId: TenantId,
@@ -424,6 +430,7 @@ async function holidayOn(
       and(
         eq(holidays.tenantId, tenantId),
         eq(holidays.date, date),
+        ne(holidays.type, "collective"),
         or(isNull(holidays.outletId), eq(holidays.outletId, outletId)),
       ),
     )

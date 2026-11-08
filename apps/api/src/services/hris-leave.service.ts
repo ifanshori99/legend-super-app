@@ -186,10 +186,36 @@ async function assertCanManage(
   return access.actorUserId;
 }
 
+/**
+ * Who runs a batch job: an HR user (HTTP, permission-checked) or the system
+ * (scheduled worker job, hris-leave-jobs.ts; audit actorType system, no user).
+ */
+export type LeaveJobActor = { type: "user"; id: string } | { type: "system" };
+
+/**
+ * HTTP actors need tenant-wide manage rights; the system actor only needs a
+ * tenant-wide context (the worker mints one per tenant).
+ */
+async function authorizeJobActor(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: LeaveJobActor,
+  now: Date,
+): Promise<LeaveJobActor> {
+  if (actor.type === "system") {
+    if (context.outletScope.kind !== "tenant") throw forbidden();
+    return actor;
+  }
+  return {
+    type: "user",
+    id: await assertCanManage(tx, context, actor.id, now),
+  };
+}
+
 async function auditTenantWide(
   tx: Tx,
   context: ScopedTenantContext,
-  actor: string,
+  actor: LeaveJobActor,
   now: Date,
   entry: {
     action: string;
@@ -205,8 +231,8 @@ async function auditTenantWide(
       id: createUlid(now.getTime()),
       tenantId: context.tenant.tenantId,
       outletId: null,
-      actorType: "user",
-      actorId: actor,
+      actorType: actor.type,
+      actorId: actor.type === "user" ? actor.id : null,
       deviceId: null,
       action: entry.action,
       objectType: entry.objectType,
@@ -345,7 +371,7 @@ export async function createLeaveType(
             throw error;
           });
         if (!row) throw new Error("Leave type insert returned no row");
-        await auditTenantWide(tx, context, actor, now, {
+        await auditTenantWide(tx, context, { type: "user", id: actor }, now, {
           action: "hris.leave_type.created",
           objectType: "leave_type",
           objectId: row.id,
@@ -439,7 +465,7 @@ export async function updateLeaveType(
           )
           .returning();
         if (!row) throw new Error("Leave type update returned no row");
-        await auditTenantWide(tx, context, actor, now, {
+        await auditTenantWide(tx, context, { type: "user", id: actor }, now, {
           action: "hris.leave_type.updated",
           objectType: "leave_type",
           objectId: row.id,
@@ -723,6 +749,16 @@ export async function runLeaveAccrual(
   input: { period: string },
   now = new Date(),
 ): Promise<LeaveAccrualRunResult> {
+  return accrueLeave(context, { type: "user", id: actorUserId }, input, now);
+}
+
+/** Accrual body shared by the HTTP path and the scheduled job. */
+export async function accrueLeave(
+  context: ScopedTenantContext,
+  jobActor: LeaveJobActor,
+  input: { period: string },
+  now = new Date(),
+): Promise<LeaveAccrualRunResult> {
   const match = PERIOD_PATTERN.exec(input.period);
   if (!match)
     throw new HttpError(
@@ -737,7 +773,7 @@ export async function runLeaveAccrual(
     .toISOString()
     .slice(0, 10);
   return withTenant(db, context, async (tx) => {
-    const actor = await assertCanManage(tx, context, actorUserId, now);
+    const actor = await authorizeJobActor(tx, context, jobActor, now);
     const types = await activeTrackedTypes(tx, context);
     const staff = await tx
       .select({
@@ -809,6 +845,16 @@ export async function runLeaveCarryOver(
   input: { fromYear: number },
   now = new Date(),
 ): Promise<LeaveAccrualRunResult> {
+  return carryOverLeave(context, { type: "user", id: actorUserId }, input, now);
+}
+
+/** Carry-over body shared by the HTTP path and the scheduled job. */
+export async function carryOverLeave(
+  context: ScopedTenantContext,
+  jobActor: LeaveJobActor,
+  input: { fromYear: number },
+  now = new Date(),
+): Promise<LeaveAccrualRunResult> {
   const { fromYear } = input;
   if (!Number.isInteger(fromYear) || fromYear < 2000 || fromYear > 2099)
     throw new HttpError(422, "VALIDATION_ERROR", "Tahun asal tidak valid.");
@@ -820,7 +866,7 @@ export async function runLeaveCarryOver(
     );
   const toYear = fromYear + 1;
   return withTenant(db, context, async (tx) => {
-    const actor = await assertCanManage(tx, context, actorUserId, now);
+    const actor = await authorizeJobActor(tx, context, jobActor, now);
     const types = new Map(
       (await activeTrackedTypes(tx, context)).map((type) => [
         type.row.id,
@@ -903,6 +949,21 @@ export async function expireLeaveCarryOver(
   input: { asOf: string },
   now = new Date(),
 ): Promise<LeaveAccrualRunResult> {
+  return expireCarryOverLeave(
+    context,
+    { type: "user", id: actorUserId },
+    input,
+    now,
+  );
+}
+
+/** Expiry body shared by the HTTP path and the scheduled job. */
+export async function expireCarryOverLeave(
+  context: ScopedTenantContext,
+  jobActor: LeaveJobActor,
+  input: { asOf: string },
+  now = new Date(),
+): Promise<LeaveAccrualRunResult> {
   if (!BUSINESS_DATE_PATTERN.test(input.asOf))
     throw new HttpError(422, "VALIDATION_ERROR", "Tanggal tidak valid.");
   if (input.asOf > localDateOf(now))
@@ -912,7 +973,7 @@ export async function expireLeaveCarryOver(
       "Tanggal tidak boleh di masa depan.",
     );
   return withTenant(db, context, async (tx) => {
-    const actor = await assertCanManage(tx, context, actorUserId, now);
+    const actor = await authorizeJobActor(tx, context, jobActor, now);
     const balances = await tx
       .select()
       .from(leaveBalances)

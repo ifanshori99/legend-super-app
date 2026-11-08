@@ -26,6 +26,7 @@ import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -158,6 +159,14 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
