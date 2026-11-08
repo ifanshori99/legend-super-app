@@ -3,21 +3,26 @@
 Lanjutan brief 10, worktree dan cabang yang sama (`.worktrees/db-role-provisioning`, `ws/db-role-provisioning`, HEAD `4d5f34f`).
 
 ## Urutan
+
 1. Semua temuan **Tinggi** dari second-opinion (blocker). Tiap fix wajib punya test regresi yang gagal sebelum fix (buktikan dengan revert sesaat, seperti yang sudah kamu lakukan).
 2. Temuan **Sedang** dari kedua reviewer.
 3. Temuan **Rendah**: kerjakan yang murah (docs, pesan error, `deploy.sh` peringatan / audit setelah migrate, PG16+ wajib). Sisanya jadi bead lanjutan.
-Temuan yang menurutmu bukan masalah nyata: tulis alasan teknisnya di laporan, jangan diam-diam dilewati.
+   Temuan yang menurutmu bukan masalah nyata: tulis alasan teknisnya di laporan, jangan diam-diam dilewati.
 
 ## Bukti selesai
+
 Sama dengan brief 10 (check, build, test:setup, format, color, tenant-hardcode, git bersih), plus subagent reviewer konteks segar atas diff fix. Commit lokal merujuk `legend-zoqc`.
 
 ## Laporan
+
 Tabel temuan → fix/commit/test, atau alasan ditolak; bead baru; bukti perintah.
 
 ---
 
 ## Temuan second-opinion (Codex, gpt-6.1-sol, direproduksi di PG16)
+
 ⚠️ **Temuan — ada blocker keamanan:**
+
 - **Tinggi — [apps/api/src/db/provision-roles.ts:52](</Users/ifanshori99/Projects/legend super app/legend/.worktrees/db-role-provisioning/apps/api/src/db/provision-roles.ts:52>):** Validasi memakai username/password authority URL, sementara `pg` mendahulukan query parameter. URL worker dengan authority terbatas dan `?user=<admin>&password=<admin>` lolos job; koneksi worker terbukti menjadi superuser. **Fix:** Validasi konfigurasi efektif parser `pg` atau tolak parameter pengganti identitas/endpoint; tambahkan tes identitas koneksi aktual.
 
 - **Tinggi — [deploy/single-vm/provision-roles.sh:38](</Users/ifanshori99/Projects/legend super app/legend/.worktrees/db-role-provisioning/deploy/single-vm/provision-roles.sh:38>):** Wrapper memeriksa path dari `compose.env`, tetapi Compose mendahulukan variabel shell. Mengekspor `API_ENV_FILE` ke file lain berisi `MIGRATION_DATABASE_URL` membuat dry-run sukses sementara konfigurasi API menerima kredensial admin. **Fix:** Pin path yang sudah diperiksa untuk seluruh pemanggilan Compose atau validasi konfigurasi efektif secara aman; tes override shell.
@@ -33,7 +38,9 @@ Tabel temuan → fix/commit/test, atau alasan ditolak; bead baru; bukti perintah
 - **Sedang — [apps/api/src/db/provision-roles.ts:295](</Users/ifanshori99/Projects/legend super app/legend/.worktrees/db-role-provisioning/apps/api/src/db/provision-roles.ts:295>):** Daftar hak mengabaikan `MAINTAIN` pada PostgreSQL 17 yang digunakan Compose tes. Drift grant ini lolos audit dan mengizinkan REINDEX, CLUSTER, serta REFRESH MATERIALIZED VIEW. **Fix:** Tambahkan pemeriksaan sesuai versi server dan regresi PostgreSQL 17. [Dokumentasi PostgreSQL](https://www.postgresql.org/docs/17/ddl-priv.html#DDL-PRIV-MAINTAIN).
 
 ## Temuan reviewer (Claude Opus, baca kode; tidak ada blocker menurutnya)
+
 ⚠️ **Temuan (urut dari paling berat):**
+
 - **Sedang: default privileges tidak dicek, dan audit tidak diulang tiap rilis.** Lokasi: `apps/api/src/db/provision-roles.ts:284-325` dan `deploy/single-vm/deploy.sh:21`.
   - Masalah: `pg_default_acl` tidak pernah diperiksa. `assertTableRights` hanya melihat tabel yang sudah ada saat job jalan, dan `deploy.sh` menjalankan migrasi tanpa menjalankan ulang job.
   - Skenario: seseorang menjalankan `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO legend_app`. Tabel dari migrasi berikutnya otomatis memberi app TRUNCATE (mengabaikan RLS) dan TRIGGER, dan tidak ada yang mendeteksinya.
