@@ -1,0 +1,147 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`templates > matches the receipt snapshot (32 and 48 wide) > 32 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01>Cafe Legend Kemang
+<1b 45 00>Jl. Kemang Raya No. 12, Jakarta
+Selatan
+<1b 61 00>--------------------------------
+No               R-20261108-0042
+Kasir                       Siti
+Waktu           08/11/2026 14:05
+--------------------------------
+Nasi Goreng Spesial
+  2 x Rp 25.000        Rp 50.000
+Es Teh Manis Jumbo Dengan Gula
+Aren Premium
+  1 x Rp 12.000        Rp 12.000
+  ! tanpa es
+--------------------------------
+Subtotal               Rp 62.000
+Diskon                 -Rp 5.000
+Service                 Rp 2.850
+Pajak                   Rp 6.000
+<1b 45 01>TOTAL                  Rp 65.850
+<1b 45 00>--------------------------------
+Tunai                  Rp 70.000
+Kembali                 Rp 4.150
+--------------------------------
+<1b 61 01>Terima kasih, sampai jumpa lagi!
+<1b 61 00><1b 64 03><1d 56 42 03>"
+`;
+
+exports[`templates > matches the receipt snapshot (32 and 48 wide) > 48 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01>Cafe Legend Kemang
+<1b 45 00>Jl. Kemang Raya No. 12, Jakarta Selatan
+<1b 61 00>------------------------------------------------
+No                               R-20261108-0042
+Kasir                                       Siti
+Waktu                           08/11/2026 14:05
+------------------------------------------------
+Nasi Goreng Spesial
+  2 x Rp 25.000                        Rp 50.000
+Es Teh Manis Jumbo Dengan Gula Aren Premium
+  1 x Rp 12.000                        Rp 12.000
+  ! tanpa es
+------------------------------------------------
+Subtotal                               Rp 62.000
+Diskon                                 -Rp 5.000
+Service                                 Rp 2.850
+Pajak                                   Rp 6.000
+<1b 45 01>TOTAL                                  Rp 65.850
+<1b 45 00>------------------------------------------------
+Tunai                                  Rp 70.000
+Kembali                                 Rp 4.150
+------------------------------------------------
+<1b 61 01>Terima kasih, sampai jumpa lagi!
+<1b 61 00><1b 64 03><1d 56 42 03>"
+`;
+
+exports[`templates > matches the shift report snapshot (32 and 48 wide) > 32 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01>LAPORAN TUTUP SHIFT
+<1b 45 00>Cafe Legend Kemang
+<1b 61 00>--------------------------------
+Kasir                       Siti
+Buka            08/11/2026 08:00
+Tutup           08/11/2026 16:30
+--------------------------------
+<1b 45 01>PENJUALAN
+<1b 45 00>Tunai (20)            Rp 750.000
+QRIS (12)             Rp 480.000
+<1b 45 01>Total penjualan     Rp 1.230.000
+<1b 45 00>Refund                 Rp 25.000
+Void                   Rp 12.000
+--------------------------------
+<1b 45 01>KAS
+<1b 45 00>Kas awal              Rp 500.000
+Kas seharusnya      Rp 1.250.000
+Kas dihitung        Rp 1.245.000
+<1b 45 01>Selisih                -Rp 5.000
+<1b 45 00>--------------------------------
+<1b 45 01>PECAHAN
+<1b 45 00>100.000 x 10        Rp 1.000.000
+50.000 x 4            Rp 200.000
+5.000 x 9              Rp 45.000
+<1b 64 03><1d 56 42 03>"
+`;
+
+exports[`templates > matches the shift report snapshot (32 and 48 wide) > 48 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01>LAPORAN TUTUP SHIFT
+<1b 45 00>Cafe Legend Kemang
+<1b 61 00>------------------------------------------------
+Kasir                                       Siti
+Buka                            08/11/2026 08:00
+Tutup                           08/11/2026 16:30
+------------------------------------------------
+<1b 45 01>PENJUALAN
+<1b 45 00>Tunai (20)                            Rp 750.000
+QRIS (12)                             Rp 480.000
+<1b 45 01>Total penjualan                     Rp 1.230.000
+<1b 45 00>Refund                                 Rp 25.000
+Void                                   Rp 12.000
+------------------------------------------------
+<1b 45 01>KAS
+<1b 45 00>Kas awal                              Rp 500.000
+Kas seharusnya                      Rp 1.250.000
+Kas dihitung                        Rp 1.245.000
+<1b 45 01>Selisih                                -Rp 5.000
+<1b 45 00>------------------------------------------------
+<1b 45 01>PECAHAN
+<1b 45 00>100.000 x 10                        Rp 1.000.000
+50.000 x 4                            Rp 200.000
+5.000 x 9                              Rp 45.000
+<1b 64 03><1d 56 42 03>"
+`;
+
+exports[`templates > matches the station ticket snapshot (normal and fallback) > fallback 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01>** KDS MATI - TIKET CADANGAN **
+<1b 45 00><1b 61 00>================================
+<1b 61 01><1b 45 01><1d 21 11>Dapur Panas
+Meja 12
+<1d 21 00><1b 45 00><1b 61 00>--------------------------------
+Tiket T-17      08/11/2026 14:05
+Dine in
+--------------------------------
+<1b 45 01>2x Nasi Goreng
+<1b 45 00>  + Pedas
+  + Telur mata sapi
+  ! jangan pakai kecap
+<1b 45 01>1x Mie Ayam
+<1b 45 00>--------------------------------
+<1b 64 03><1d 56 42 03>"
+`;
+
+exports[`templates > matches the station ticket snapshot (normal and fallback) > normal 1`] = `
+"<1b 40><1b 74 00><1b 61 01><1b 45 01><1d 21 11>Dapur Panas
+Meja 12
+<1d 21 00><1b 45 00><1b 61 00>--------------------------------
+Tiket T-17      08/11/2026 14:05
+Dine in
+--------------------------------
+<1b 45 01>2x Nasi Goreng
+<1b 45 00>  + Pedas
+  + Telur mata sapi
+  ! jangan pakai kecap
+<1b 45 01>1x Mie Ayam
+<1b 45 00>--------------------------------
+<1b 64 03><1d 56 42 03>"
+`;

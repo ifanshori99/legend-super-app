@@ -169,6 +169,20 @@ export function transitionPrintJob(
 }
 export type PrintJob = z.infer<typeof printJobSchema>;
 
+/** Printer + heartbeat status as the supervisor sees it (F5 Print Agent, EDG-05). */
+export const printerStatusViewSchema = z.strictObject({
+  ...scope,
+  id: uuidSchema,
+  label: text,
+  role: z.enum(["receipt", "station"]),
+  stationId: uuidSchema.nullable(),
+  status: z.enum(["unknown", "online", "offline"]),
+  lastSeenAt: isoDateTimeSchema.nullable(),
+  offlineSince: isoDateTimeSchema.nullable(),
+  fallbackPrinterId: uuidSchema.nullable(),
+});
+export type PrinterStatusView = z.infer<typeof printerStatusViewSchema>;
+
 export const agentRpcRequestSchema = z.strictObject({
   ...scope,
   id: ulidSchema,

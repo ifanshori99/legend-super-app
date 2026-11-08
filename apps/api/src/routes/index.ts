@@ -43,6 +43,7 @@ import { hrisRouter } from "./hris.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
+import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
@@ -143,6 +144,7 @@ apiRouter.use("/operations", operationsEquipmentRouter);
 // WS-02 edge mode (legend-2pi): /edge is served only by an edge node and
 // /edge-nodes (registry) only by the cloud; app.ts edgeRouteGuard enforces
 // the split before any router runs.
+apiRouter.use("/edge", edgePrintRouter);
 apiRouter.use("/edge", edgeRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
