@@ -6,25 +6,28 @@
 // accounting-period-close.service.ts. Lock order everywhere: legal entity row,
 // then period row, then reopen-request row; never the reverse.
 //
-//   post:         SELECT … FROM legal_entities … FOR KEY SHARE
+//   post:         SELECT … FROM legal_entities … FOR SHARE
 //                 → SELECT … FROM fiscal_periods … FOR SHARE
 //                 → assertPostingAllowed(period, entryDate)
 //                 → no later period of the entity is closed
 //                 → INSERT entry + lines
-//   close/reopen: SELECT … FROM legal_entities … FOR UPDATE
-//                 → period row FOR UPDATE → read all periods of the entity
+//   close/reopen: SET LOCAL lock_timeout → SELECT … FROM legal_entities …
+//                 FOR NO KEY UPDATE → period row FOR UPDATE → read all
+//                 periods of the entity
 //
-// FOR KEY SHARE on the entity conflicts with the close/reopen FOR UPDATE, so a
+// FOR SHARE on the entity conflicts with the close/reopen FOR NO KEY UPDATE, so a
 // close waits for in-flight posts of that entity and a post waits for a close
 // that is running; posts never block each other, and other entities or tenants
-// are unaffected. A post that starts after the close commits reads `closed`
+// are unaffected. NO KEY UPDATE does not conflict with the KEY SHARE that FK
+// checks take, so inserts into the many tables referencing legal_entities
+// (outlets, employees, chart_of_accounts, …) never wait for a close. A post that starts after the close commits reads `closed`
 // and fails PERIOD_CLOSED (contract/period.ts). A lazily created earlier
 // period must not accept posts behind a closed later one (the cumulative
 // close snapshot would go stale), so that also fails PERIOD_CLOSED. A period
 // row is created lazily on first use inside the same transaction, protected
 // by the (tenant, legal entity, period) unique key.
 
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import {
   AccountingError,
   assertPeriodVersion,
@@ -36,6 +39,7 @@ import {
 import type { BusinessDate } from "@starter/shared/core";
 import {
   assertTrustedScopedContext,
+  CoreError,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { db } from "../db";
@@ -69,7 +73,7 @@ async function lockLegalEntity(
   tx: TenantTransaction,
   tenantId: string,
   legalEntityId: string,
-  strength: "update" | "key share",
+  strength: "no key update" | "share",
 ): Promise<void> {
   const [row] = await tx
     .select({ id: legalEntities.id })
@@ -86,7 +90,7 @@ async function lockLegalEntity(
 }
 
 /**
- * Shared entity lock (KEY SHARE) for writers that must not race a close or
+ * Shared entity lock (FOR SHARE) for writers that must not race a close or
  * reopen of the entity but may run alongside each other (posts, reopen
  * requests). Taken before any period row to keep the entity → period order.
  */
@@ -95,19 +99,50 @@ export function lockLegalEntityShared(
   tenantId: string,
   legalEntityId: string,
 ): Promise<void> {
-  return lockLegalEntity(tx, tenantId, legalEntityId, "key share");
+  return lockLegalEntity(tx, tenantId, legalEntityId, "share");
 }
 
 /**
- * Close/reopen entry lock: legal entity row FOR UPDATE, always taken before
- * any period row. Waits for in-flight posts of the entity (KEY SHARE).
+ * Close/reopen entry lock: legal entity row FOR NO KEY UPDATE, always taken
+ * before any period row. Waits for in-flight posts of the entity (FOR SHARE)
+ * but not for FK inserts elsewhere (KEY SHARE). Callers set lock_timeout.
  */
-export function lockLegalEntityForPeriodChange(
+export async function lockLegalEntityForPeriodChange(
   tx: TenantTransaction,
   tenantId: string,
   legalEntityId: string,
 ): Promise<void> {
-  return lockLegalEntity(tx, tenantId, legalEntityId, "update");
+  // A steady stream of posts keeps FOR SHARE on the entity; bound the wait so
+  // a close fails fast with a retryable 409 instead of hanging (see
+  // periodLockTimeoutError). SET LOCAL ends with the transaction.
+  await tx.execute(
+    sql.raw(`SET LOCAL lock_timeout = '${PERIOD_CHANGE_LOCK_TIMEOUT_MS}ms'`),
+  );
+  await lockLegalEntity(tx, tenantId, legalEntityId, "no key update");
+}
+
+/** Lock wait bound for close and approve-reopen transactions. */
+export const PERIOD_CHANGE_LOCK_TIMEOUT_MS = 3000;
+
+function lockNotAvailable(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "55P03" || lockNotAvailable(candidate.cause, depth + 1)
+  );
+}
+
+/**
+ * Maps a lock_timeout (55P03) raised inside a close/approve transaction to a
+ * retryable 409 CONFLICT; nothing was written because the transaction rolled
+ * back. Any other error is returned unchanged.
+ */
+export function periodLockTimeoutError(error: unknown): unknown {
+  if (!lockNotAvailable(error)) return error;
+  return new CoreError(
+    "CONFLICT",
+    "Periode sedang dipakai transaksi lain. Coba lagi sebentar lagi.",
+  );
 }
 
 /**
@@ -163,7 +198,7 @@ export async function assertPeriodOpenForPosting(
 ): Promise<FiscalPeriodRow> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  await lockLegalEntity(tx, tenantId, input.legalEntityId, "key share");
+  await lockLegalEntity(tx, tenantId, input.legalEntityId, "share");
   const row = await lockFiscalPeriod(
     tx,
     tenantId,
@@ -171,7 +206,7 @@ export async function assertPeriodOpenForPosting(
     input.entryDate,
   );
   assertPostingAllowed(row, input.entryDate);
-  // The entity KEY SHARE lock keeps close/reopen out, so this read is stable.
+  // The entity FOR SHARE lock keeps close/reopen out, so this read is stable.
   const [laterClosed] = await tx
     .select({ id: fiscalPeriods.id })
     .from(fiscalPeriods)

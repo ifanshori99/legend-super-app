@@ -793,3 +793,161 @@ describe("legend-72we close and reopen lifecycle", () => {
     await expectCode(postEntry(fx, "2025-01-28", 500), "PERIOD_CLOSED");
   });
 });
+
+// ---- legend-72we architect fixes ---------------------------------------------
+// Assumptions: the unrelated FK insert is a chart_of_accounts row (FK to
+// legal_entities, same table family as outlets/employees/budgets, no extra
+// fixtures needed). "Promptly" means under 1 s; the lock timeout is 3 s, so the
+// CONFLICT must arrive between 2.5 s and 8 s after the close starts.
+
+describe("legend-72we close lock strength", () => {
+  it("ACC-02 a close holding the entity lock does not block an unrelated FK insert, but does block posts", async () => {
+    const fx = await makeEntity();
+    await makePeriod(fx, "2025-01");
+
+    // FOR NO KEY UPDATE is what a running close holds on the entity row.
+    const holder = await openLockHolder(tenantA);
+    let postDone = false;
+    let posting: Promise<unknown> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM legal_entities WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE",
+        [tenantA, fx.entity],
+      );
+
+      const started = Date.now();
+      await owner.query(
+        `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+         VALUES ($1, $2, $3, '1102', 'Bank', 'asset', 'cash_and_equivalents')`,
+        [randomUUID(), fx.tenant, fx.entity],
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+
+      posting = postEntry(fx, "2025-01-12", 9_000).then((entry) => {
+        postDone = true;
+        return entry;
+      });
+      await sleep(400);
+      expect(postDone).toBe(false);
+      await holder.query("COMMIT");
+      await posting;
+      expect(postDone).toBe(true);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await Promise.allSettled([posting]);
+    }
+  });
+
+  it("ACC-02 a close that cannot get the entity lock within 3 s fails with CONFLICT, writes nothing, and succeeds on retry", async () => {
+    const fx = await makeEntity();
+    const p1 = await makePeriod(fx, "2025-01");
+    await postEntry(fx, "2025-01-10", 4_000);
+
+    // FOR SHARE is what in-flight posts hold on the entity row.
+    const holder = await openLockHolder(tenantA);
+    try {
+      await holder.query(
+        "SELECT id FROM legal_entities WHERE tenant_id = $1 AND id = $2 FOR SHARE",
+        [tenantA, fx.entity],
+      );
+      const started = Date.now();
+      await expectCode(close(p1, closer), "CONFLICT");
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(2_500);
+      expect(elapsed).toBeLessThan(8_000);
+
+      expect((await periodStates(fx)).get("2025-01")).toBe("open");
+      expect(await snapshotCount(p1.id)).toBe(0);
+      await holder.query("COMMIT");
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
+
+    const closed = await close(p1, closer);
+    expect(closed.status).toBe("closed");
+    expect(await snapshotCount(p1.id)).toBe(1);
+  }, 30_000);
+});
+
+describe("legend-72we reopen order and snapshot state", () => {
+  it("ACC-02 a reopen request is refused for a closed period that has a later closed period, and accepted for the latest", async () => {
+    const fx = await makeEntity();
+    const p1 = await makePeriod(fx, "2025-01");
+    const p2 = await makePeriod(fx, "2025-02");
+    await close(p1, closer);
+    await close(p2, closer);
+
+    await expectCode(
+      requestReopen(p1, requester, "Koreksi biaya"),
+      "PERIOD_REOPEN_OUT_OF_ORDER",
+    );
+    const request = await requestReopen(p2, requester, "Koreksi biaya");
+    expect(request.status).toBe("pending");
+    expect(request.period).toBe("2025-02");
+    expect((await periodStates(fx)).get("2025-01")).toBe("closed");
+  });
+
+  it("ACC-02 the snapshot reports the period status and version: closed and equal, then open and one ahead after an approved reopen", async () => {
+    const fx = await makeEntity();
+    const p1 = await makePeriod(fx, "2025-01");
+    await postEntry(fx, "2025-01-10", 3_000);
+    await close(p1, closer);
+
+    const closedSnapshot = await snapshotOf(p1);
+    expect(closedSnapshot.periodStatus).toBe("closed");
+    expect(closedSnapshot.periodVersion).toBe(closedSnapshot.version);
+
+    const request = await requestReopen(p1, requester, "Koreksi biaya");
+    await approveReopen(request.id, approver);
+
+    const reopenedSnapshot = await snapshotOf(p1);
+    expect(reopenedSnapshot.version).toBe(closedSnapshot.version);
+    expect(reopenedSnapshot.periodStatus).toBe("open");
+    expect(reopenedSnapshot.periodVersion).toBe(closedSnapshot.version + 1);
+  });
+});
+
+describe("legend-72we incremental snapshot", () => {
+  it("ACC-02 every snapshot equals the full journal sum across close, close, reopen, post, re-close", async () => {
+    const fx = await makeEntity();
+    const p1 = await makePeriod(fx, "2025-01");
+    const p2 = await makePeriod(fx, "2025-02");
+    await postEntry(fx, "2025-01-10", 10_000);
+    await postEntry(fx, "2025-02-10", 2_000);
+
+    await close(p1, closer);
+    const s1 = await snapshotOf(p1);
+    expect(snapshotBalances(s1)).toEqual(await journalBalances(fx, "2025-01"));
+
+    await close(p2, closer);
+    const s2 = await snapshotOf(p2);
+    expect(snapshotBalances(s2)).toEqual(
+      balances(`${fx.cash}:12000/0`, `${fx.revenue}:0/12000`),
+    );
+    expect(snapshotBalances(s2)).toEqual(await journalBalances(fx, "2025-02"));
+
+    const request = await requestReopen(p2, requester, "Koreksi pendapatan");
+    const approved = await approveReopen(request.id, approver);
+    expect(approved.period.status).toBe("open");
+    await postEntry(fx, "2025-02-20", 500);
+
+    const reclosed = await close(p2, closer, {
+      expectedVersion: approved.period.version,
+    });
+    expect(reclosed.status).toBe("closed");
+    const s2b = await snapshotOf(p2);
+    expect(s2b.version).toBe(reclosed.version);
+    expect(snapshotBalances(s2b)).toEqual(
+      balances(`${fx.cash}:12500/0`, `${fx.revenue}:0/12500`),
+    );
+    expect(snapshotBalances(s2b)).toEqual(await journalBalances(fx, "2025-02"));
+
+    // The earlier period's snapshot is untouched by the later activity.
+    expect(snapshotBalances(await snapshotOf(p1))).toEqual(
+      snapshotBalances(s1),
+    );
+    expect(await snapshotCount(p2.id)).toBe(2);
+  });
+});

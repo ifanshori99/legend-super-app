@@ -6,11 +6,14 @@
 // Lock order everywhere: legal entity row, then period row, then reopen
 // request row; never the reverse.
 //   close / approve reopen:
-//     legal_entities … FOR UPDATE → fiscal_periods … FOR UPDATE
+//     SET LOCAL lock_timeout → legal_entities … FOR NO KEY UPDATE
+//     → fiscal_periods … FOR UPDATE
 //     → read ALL periods of the entity → decide → (close: snapshot) → update.
-//   posting (accounting-period.service.ts) takes FOR KEY SHARE on the same
-//   entity row, so a post and a close/reopen of one entity wait for each other
-//   while other entities and tenants are unaffected.
+//   posting and reopen requests take FOR SHARE on the same entity row, so a
+//   post and a close/reopen of one entity wait for each other while other
+//   entities and tenants are unaffected. NO KEY UPDATE leaves FK checks
+//   (KEY SHARE) from other tables referencing legal_entities unblocked. A lock
+//   wait over PERIOD_CHANGE_LOCK_TIMEOUT_MS becomes a retryable 409 CONFLICT.
 // The snapshot is taken after the locks and before the status/version change,
 // so it contains exactly the entries committed before the close.
 //
@@ -58,6 +61,7 @@ import { HttpError } from "../lib/http-error";
 import {
   lockLegalEntityForPeriodChange,
   lockLegalEntityShared,
+  periodLockTimeoutError,
   toFiscalPeriod,
 } from "./accounting-period.service";
 import {
@@ -154,16 +158,16 @@ function readEntityPeriods(
     .orderBy(asc(fiscalPeriods.period));
 }
 
-/**
- * Cumulative debit/credit per account of every journal line of the entity whose
- * entry belongs to a period up to and including `period`.
- */
-async function cumulativeBalances(
+type BalanceRow = { accountId: string; debitIdr: Idr; creditIdr: Idr };
+type BalanceSums = Map<string, { debit: bigint; credit: bigint }>;
+
+/** Debit/credit sums per account of the entity's lines matching `where`. */
+async function sumLines(
   tx: TenantTransaction,
   tenantId: string,
   legalEntityId: string,
-  period: string,
-): Promise<{ accountId: string; debitIdr: Idr; creditIdr: Idr }[]> {
+  scope: { fiscalPeriodId: string } | { upToPeriod: string },
+): Promise<BalanceSums> {
   const rows = await tx
     .select({
       accountId: journalLines.accountId,
@@ -189,16 +193,105 @@ async function cumulativeBalances(
       and(
         eq(journalLines.tenantId, tenantId),
         eq(journalEntries.legalEntityId, legalEntityId),
-        lte(fiscalPeriods.period, period),
+        "fiscalPeriodId" in scope
+          ? eq(journalEntries.fiscalPeriodId, scope.fiscalPeriodId)
+          : lte(fiscalPeriods.period, scope.upToPeriod),
       ),
     )
-    .groupBy(journalLines.accountId)
-    .orderBy(asc(journalLines.accountId));
-  return rows.map((row) => ({
-    accountId: row.accountId,
-    debitIdr: idr(Number(row.debit)),
-    creditIdr: idr(Number(row.credit)),
-  }));
+    .groupBy(journalLines.accountId);
+  return new Map(
+    rows.map((row) => [
+      row.accountId,
+      { debit: BigInt(row.debit), credit: BigInt(row.credit) },
+    ]),
+  );
+}
+
+/** Lines of the latest snapshot of a period, or null when it has none. */
+async function latestSnapshotSums(
+  tx: TenantTransaction,
+  tenantId: string,
+  fiscalPeriodId: string,
+): Promise<BalanceSums | null> {
+  const [snapshot] = await tx
+    .select({ id: fiscalPeriodSnapshots.id })
+    .from(fiscalPeriodSnapshots)
+    .where(
+      and(
+        eq(fiscalPeriodSnapshots.tenantId, tenantId),
+        eq(fiscalPeriodSnapshots.fiscalPeriodId, fiscalPeriodId),
+      ),
+    )
+    .orderBy(desc(fiscalPeriodSnapshots.version))
+    .limit(1);
+  if (!snapshot) return null;
+  const lines = await tx
+    .select({
+      accountId: fiscalPeriodSnapshotLines.accountId,
+      debit: fiscalPeriodSnapshotLines.debitIdr,
+      credit: fiscalPeriodSnapshotLines.creditIdr,
+    })
+    .from(fiscalPeriodSnapshotLines)
+    .where(
+      and(
+        eq(fiscalPeriodSnapshotLines.tenantId, tenantId),
+        eq(fiscalPeriodSnapshotLines.snapshotId, snapshot.id),
+      ),
+    );
+  return new Map(
+    lines.map((line) => [
+      line.accountId,
+      { debit: BigInt(line.debit), credit: BigInt(line.credit) },
+    ]),
+  );
+}
+
+/**
+ * Cumulative debit/credit per account of every journal line of the entity up
+ * to and including `period`, computed incrementally: the latest snapshot of
+ * the previous closed period plus this period's own lines. That is exact
+ * because, under the entity lock, every earlier period is closed (close goes
+ * in order) and nothing posts into a closed period or behind one, so the
+ * previous snapshot still equals the journal up to that period. Only the
+ * first close of an entity, or a previous period without a snapshot, sums
+ * the full history.
+ */
+async function cumulativeBalances(
+  tx: TenantTransaction,
+  tenantId: string,
+  period: FiscalPeriodRow,
+  entityPeriods: readonly FiscalPeriodRow[],
+): Promise<BalanceRow[]> {
+  const previous = entityPeriods
+    .filter((row) => row.period < period.period && row.status === "closed")
+    .at(-1);
+  const base = previous
+    ? await latestSnapshotSums(tx, tenantId, previous.id)
+    : null;
+  const sums =
+    base ??
+    (await sumLines(tx, tenantId, period.legalEntityId, {
+      upToPeriod: period.period,
+    }));
+  if (base) {
+    const own = await sumLines(tx, tenantId, period.legalEntityId, {
+      fiscalPeriodId: period.id,
+    });
+    for (const [accountId, add] of own) {
+      const current = sums.get(accountId) ?? { debit: 0n, credit: 0n };
+      sums.set(accountId, {
+        debit: current.debit + add.debit,
+        credit: current.credit + add.credit,
+      });
+    }
+  }
+  return [...sums.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([accountId, sum]) => ({
+      accountId,
+      debitIdr: idr(Number(sum.debit)),
+      creditIdr: idr(Number(sum.credit)),
+    }));
 }
 
 /**
@@ -261,12 +354,7 @@ export async function closeFiscalPeriod(
       now: now.toISOString(),
     });
 
-    const balances = await cumulativeBalances(
-      tx,
-      tenantId,
-      row.legalEntityId,
-      row.period,
-    );
+    const balances = await cumulativeBalances(tx, tenantId, row, entityPeriods);
     let snapshot: { id: string } | undefined;
     try {
       [snapshot] = await tx
@@ -328,10 +416,16 @@ export async function closeFiscalPeriod(
       after: { status: "closed", version: closed.version },
     });
     return toFiscalPeriod(updated);
+  }).catch((error: unknown) => {
+    throw periodLockTimeoutError(error);
   });
 }
 
-/** The snapshot of the latest close of the period (404 when never closed). */
+/**
+ * The snapshot of the latest close of the period (404 when never closed),
+ * with the period's current status and version: after an approved reopen the
+ * snapshot is history (periodStatus "open", periodVersion > version).
+ */
 export async function getPeriodSnapshot(
   context: ScopedTenantContext,
   fiscalPeriodId: string,
@@ -352,6 +446,7 @@ export async function getPeriodSnapshot(
       .limit(1);
     if (!snapshot)
       throw new HttpError(404, "NOT_FOUND", "Period snapshot not found.");
+    const period = await readPeriod(tx, tenantId, fiscalPeriodId);
     const lines = await tx
       .select()
       .from(fiscalPeriodSnapshotLines)
@@ -369,6 +464,8 @@ export async function getPeriodSnapshot(
       version: snapshot.version,
       takenAt: snapshot.takenAt.toISOString(),
       takenBy: snapshot.takenBy,
+      periodStatus: period.status,
+      periodVersion: period.version,
       balances: lines.map((line) => ({
         accountId: line.accountId,
         debitIdr: line.debitIdr,
@@ -390,11 +487,10 @@ export async function requestPeriodReopen(
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
-    // Entity KEY SHARE first (the request insert's FK check would take it
-    // anyway, after the period lock, and deadlock against a close holding the
-    // entity FOR UPDATE). Then FOR SHARE on the period conflicts with a
-    // close/reopen FOR UPDATE, so the status checked here cannot change before
-    // the request row is written.
+    // Entity FOR SHARE first: it conflicts with a close/reopen holding the
+    // entity FOR NO KEY UPDATE, so the period statuses read below cannot change
+    // before the request row is written, and taking it before the period lock
+    // keeps the entity → period order (no deadlock with a close).
     const unlocked = await readPeriod(tx, tenantId, fiscalPeriodId);
     await lockLegalEntityShared(tx, tenantId, unlocked.legalEntityId);
     const [period] = await tx
@@ -409,7 +505,15 @@ export async function requestPeriodReopen(
       .limit(1)
       .for("share");
     if (!period) throw periodNotFound();
-    assertReopenRequestable(period, request.reason);
+    // Only the latest closed period can ever be approved; refuse the others
+    // now instead of leaving a request that can neither pass nor be withdrawn.
+    assertReopenRequestable(
+      toFiscalPeriod(period),
+      request.reason,
+      (await readEntityPeriods(tx, tenantId, period.legalEntityId)).map(
+        toFiscalPeriod,
+      ),
+    );
     let row: ReopenRequestRow | undefined;
     try {
       [row] = await tx
@@ -581,6 +685,8 @@ export async function approvePeriodReopen(
       request: toReopenRequest(updatedRequest),
       period: toFiscalPeriod(updatedPeriod),
     };
+  }).catch((error: unknown) => {
+    throw periodLockTimeoutError(error);
   });
 }
 
