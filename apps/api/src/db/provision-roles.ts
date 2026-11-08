@@ -203,7 +203,7 @@ async function assertRestricted(
   const inherit =
     (await serverVersion(client)) >= 160000 ? "m.inherit_option" : "true";
   const groups = await client.query(
-    `SELECT g.rolname, m.admin_option, ${inherit} AS inherit
+    `SELECT g.rolname, pg_get_userbyid(m.grantor) AS grantor, m.admin_option, ${inherit} AS inherit
      FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member
      WHERE u.rolname = $1`,
     [user],
@@ -213,10 +213,13 @@ async function assertRestricted(
       (row: { admin_option: boolean; inherit: boolean }) =>
         row.admin_option || !row.inherit,
     )
-    .map((row: { rolname: string }) => row.rolname);
+    .map(
+      (row: { rolname: string; grantor: string }) =>
+        `${row.rolname} (granted by ${row.grantor})`,
+    );
   if (flawed.length)
     throw new ProvisionError(
-      `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION.`,
+      `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION; a superuser can remove it with REVOKE <group> FROM <login> GRANTED BY <grantor>, then re-run.`,
     );
   const extra = groups.rows
     .map((row: { rolname: string }) => row.rolname)
@@ -371,17 +374,38 @@ async function provisionApp(client: ClientBase, login: Login) {
   // no-op on newer servers and is verified below either way.
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
   const outcome = await upsertLogin(client, login, "application");
-  // Normalise an existing membership: no ADMIN OPTION, and INHERIT on 16+.
-  const member = await client.query(
-    "SELECT 1 FROM pg_auth_members m WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1) AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)",
+  // Normalise existing memberships: drop any grant without INHERIT (16+) or
+  // with ADMIN OPTION, then grant cleanly. PostgreSQL 16+ keeps one row per
+  // grantor; a superuser can revoke each by name, anyone can revoke their own
+  // (or, before 16, the single row). Rows it cannot revoke stay and make
+  // assertRestricted refuse with the grantor named.
+  const version = await serverVersion(client);
+  const admin = await client.query(
+    "SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user",
+  );
+  const rows = await client.query(
+    `SELECT pg_get_userbyid(m.grantor) AS grantor, m.admin_option,
+            ${version >= 160000 ? "m.inherit_option" : "true"} AS inherit
+     FROM pg_auth_members m
+     WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
+       AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)`,
     [APP_GROUP, login.user],
   );
-  if (member.rows.length)
-    await client.query(
-      `REVOKE ADMIN OPTION FOR ${APP_GROUP} FROM "${login.user}"`,
-    );
+  for (const row of rows.rows as {
+    grantor: string;
+    admin_option: boolean;
+    inherit: boolean;
+  }[]) {
+    if (!row.admin_option && row.inherit) continue;
+    if (version < 160000 || row.grantor === admin.rows[0].name)
+      await client.query(`REVOKE ${APP_GROUP} FROM "${login.user}"`);
+    else if (admin.rows[0].rolsuper && !row.grantor.includes('"'))
+      await client.query(
+        `REVOKE ${APP_GROUP} FROM "${login.user}" GRANTED BY "${row.grantor}"`,
+      );
+  }
   await client.query(
-    (await serverVersion(client)) >= 160000
+    version >= 160000
       ? `GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`
       : `GRANT ${APP_GROUP} TO "${login.user}"`,
   );

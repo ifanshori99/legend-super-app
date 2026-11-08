@@ -71,6 +71,7 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
   const appUrl = login(adminUrl, `legend_runtime_${hex(8)}`);
   const workerUrl = login(adminUrl, `legend_worker_${hex(8)}`);
   const unsafeUser = `legend_runtime_${hex(8)}`;
+  const grantor = `zoqc_grantor_${hex(6)}`;
   const roles = [appUrl, workerUrl].map((url) =>
     decodeURIComponent(new URL(url).username),
   );
@@ -87,7 +88,7 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
     for (const pool of pools) await pool.end();
     await admin.end();
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    for (const role of [...roles, unsafeUser])
+    for (const role of [...roles, unsafeUser, grantor])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
     await cluster.end();
   });
@@ -384,6 +385,24 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
         )
       ).rows;
       assert.deepEqual(grant, [{ inherit_option: true, admin_option: false }]);
+      // A flawed grant recorded under another grantor is revoked by name.
+      await admin.query(`CREATE ROLE ${grantor} NOLOGIN`);
+      await admin.query(`GRANT legend_app TO ${grantor} WITH ADMIN OPTION`);
+      await admin.query(
+        `GRANT legend_app TO "${roles[0]}" WITH INHERIT FALSE, ADMIN TRUE GRANTED BY ${grantor}`,
+      );
+      const otherGrantor = job({});
+      assert.equal(otherGrantor.status, 0, otherGrantor.stderr);
+      const grants = (
+        await admin.query(
+          "SELECT pg_get_userbyid(m.grantor) AS grantor, m.inherit_option, m.admin_option FROM pg_auth_members m WHERE m.roleid = 'legend_app'::regrole AND m.member = $1::regrole",
+          [roles[0]],
+        )
+      ).rows;
+      assert.equal(grants.length, 1);
+      assert.notEqual(grants[0].grantor, grantor);
+      assert.equal(grants[0].inherit_option, true);
+      assert.equal(grants[0].admin_option, false);
       // Drift that only breaks or bends the login is normalised on re-run.
       await admin.query(
         `ALTER ROLE "${roles[0]}" NOINHERIT VALID UNTIL '2000-01-01' CONNECTION LIMIT 0`,
@@ -467,6 +486,25 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(`${roles[1]} ${outcome}`));
   }
+  // A flawed grant made by another grantor cannot be revoked by this owner:
+  // the job refuses and names the grantor instead of reporting success.
+  const superuser = decodeURIComponent(new URL(shared).username);
+  await cluster.query(
+    `GRANT legend_app TO "${roles[0]}" WITH ADMIN TRUE GRANTED BY "${superuser}"`,
+  );
+  const foreign = runJob({
+    MIGRATION_DATABASE_URL: adminUrl,
+    APP_DATABASE_URL: appUrl,
+    WORKER_DATABASE_URL: workerUrl,
+  });
+  assert.equal(foreign.status, 1);
+  assert.match(
+    foreign.stderr,
+    new RegExp(`legend_app \\(granted by ${superuser}\\) must have INHERIT`),
+  );
+  await cluster.query(
+    `REVOKE legend_app FROM "${roles[0]}" GRANTED BY "${superuser}"`,
+  );
   // Superuser-only role settings survive a non-superuser RESET ALL; the job
   // must refuse rather than report the login as clean.
   await cluster.query(

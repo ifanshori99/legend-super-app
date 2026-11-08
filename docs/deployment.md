@@ -405,7 +405,9 @@ existing one to the password in the env file (so changing the password there
 and re-running is how to rotate it; restart the API and worker afterwards). It
 also resets drift that would only break or bend a login (`NOINHERIT`, an
 expiry, a connection limit, role-level settings such as `search_path`, a
-`legend_app` membership without `INHERIT` or with `ADMIN OPTION`). Settings a
+`legend_app` membership without `INHERIT` or with `ADMIN OPTION`; a superuser
+migration login revokes such a grant whoever made it, a non-superuser only its
+own, and the job otherwise refuses and names the grantor). Settings a
 non-superuser owner cannot reset (for example `session_replication_role`) make
 the job fail until a superuser runs `ALTER ROLE ... RESET ALL`. It then
 fails, changing nothing, if `legend_app` can log in or has elevated attributes,
