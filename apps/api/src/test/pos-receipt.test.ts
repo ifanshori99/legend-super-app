@@ -2732,6 +2732,106 @@ describe("Q4 a tax-free order prints with no tax rows (legend-93a)", () => {
     expect(invoice.status, JSON.stringify(invoice.body)).toBe(201);
     expect(invoice.body.data.taxLines).toEqual([]);
   });
+
+  it("Q4 a partly exempt sale (one item taxed, one exempt) prints only the nonzero tax row", async () => {
+    // Teh Tawar is exempt at this outlet (0% outlet rule naming it); Kopi Susu
+    // keeps the tenant-wide PBJT 10%. 1 x Rp25.000 + 1 x Rp10.000, tax Rp2.500.
+    const outletId = await freshOutlet();
+    const teh = randomUUID();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
+         VALUES ($1, $2, $3, $4, 'Teh Tawar', true, $5)`,
+        [teh, tenant.tenantId, tenant.brandId, ids.category, randomUUID()],
+      );
+      await client.query(
+        `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
+         SELECT $1, $2, id, $3, 10000 FROM price_lists
+         WHERE tenant_id = $2 AND outlet_id = $4`,
+        [randomUUID(), tenant.tenantId, teh, outletId],
+      );
+      await client.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+            price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, $3, 'EXEMPT-TEH', 'Bebas pajak', 'other', 0, NULL, '[]',
+                 $4, false, true, true, 1, '2026-01-01', 'published', now(), $5)`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          outletId,
+          JSON.stringify({ itemClasses: [], categoryIds: [], itemIds: [teh] }),
+          cashier.userId,
+        ],
+      );
+    });
+
+    const created = await api(outletId).post("/orders", {
+      channel: "pos",
+      serviceType: "takeaway",
+      items: [
+        { menuItemId: ids.kopi, quantity: 1, modifierIds: [] },
+        { menuItemId: teh, quantity: 1, modifierIds: [] },
+      ],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const orderId = created.body.data.id as string;
+    let status = created.body.data.status as string;
+    if (status === "draft") {
+      const submitted = await api(outletId).post(`/orders/${orderId}/submit`, {
+        expectedStatus: status,
+      });
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      status = submitted.body.data.status as string;
+    }
+    const totalIdr = created.body.data.totalIdr as number;
+    const paid = await api(outletId).post(`/orders/${orderId}/tenders`, {
+      method: "cash",
+      receivedIdr: totalIdr,
+      expectedStatus: status,
+    });
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const completed = await api(outletId).post(`/orders/${orderId}/complete`, {
+      expectedStatus: paid.body.data.order.status,
+    });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+
+    const issued = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print"],
+    });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(200);
+    const { document, receipt } = issued.body.data;
+    expect(document.subtotalIdr).toBe(35_000);
+    expect(document.taxIdr).toBe(2_500);
+    expect(document.totalIdr).toBe(totalIdr);
+    expect(document.taxLines).toHaveLength(1);
+    expect(document.taxLines[0]).toMatchObject({
+      name: "PBJT 10%",
+      rateBp: 1000,
+      amountIdr: 2_500,
+    });
+
+    const pdf = await api(outletId)
+      .get(`/receipts/${receipt.id}/pdf`)
+      .buffer(true)
+      .parse(binary as never);
+    expect(pdf.status).toBe(200);
+    const text = (pdf.body as Buffer).toString("latin1");
+    expect(text).toContain("PBJT 10%");
+    expect(text).not.toContain("Bebas pajak");
+
+    const invoice = await api(outletId).post(`/orders/${orderId}/invoices`, {
+      billedTo: {
+        name: "PT Kopi Nusantara",
+        address: "Jl. Sudirman No. 1, Jakarta Pusat",
+        npwp: "01.234.567.8-901.234",
+      },
+      dueDate: "2026-12-31",
+    });
+    expect(invoice.status, JSON.stringify(invoice.body)).toBe(201);
+    expect(invoice.body.data.taxLines).toEqual(document.taxLines);
+  });
 });
 
 /** A sale rung up by a specific member (the limited-outlet cashier). */
