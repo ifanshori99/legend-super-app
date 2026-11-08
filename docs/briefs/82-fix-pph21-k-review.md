@@ -11,7 +11,7 @@ Reviewer Opus: LOLOS (72.800 kombinasi engine lolos invariant). Architect: PERLU
 4. Rendah — `packages/shared/src/hris/payroll/run.ts:341-347`: `pph21PolicyForRun` tidak membandingkan `parameters`. Fix: simpan hash `parameters` di `Pph21PolicyRef` dan bandingkan.
 
 ## Catatan (jangan diubah tanpa keputusan founder)
-Iuran BPJS pemberi kerja masuk gross (`pph21.ts:34`, `:215`) → karyawan gross-up/net tetap terpotong pajak atas bagian itu. Tunggu konfirmasi founder/konsultan pajak.
+Iuran BPJS pemberi kerja masuk gross (`pph21.ts:34`, `:215`). **Keputusan founder 2026-11-08: untuk karyawan net/gross-up, pajak atas bagian ini DITANGGUNG PERUSAHAAN** → masuk tunjangan pajak (gross-up), tidak memotong take-home. Wajib dikerjakan di fix ini + test.
 
 ## Bukti selesai
 Test regresi per temuan; gerbang penuh (`heavy pnpm check`, `heavy pnpm build`, `pnpm format:check`, `node scripts/ci/color.mjs`, `node scripts/ci/tenant-hardcode.mjs`); reviewer subagent konteks segar; commit lokal. Laporan: SHA, test, migration lama→baru.
