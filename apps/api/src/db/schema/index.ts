@@ -60,3 +60,7 @@ export * from "./edge-node";
 export * from "./pos-order";
 // WS-07 shareholder documents (legend-69yq).
 export * from "./shareholder-documents";
+// WS-06 stock count / stok opname (legend-j5x).
+export * from "./inventory-count";
+// WS-02 device registry + training periods (legend-165).
+export * from "./device";

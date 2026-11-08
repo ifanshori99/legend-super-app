@@ -1,5 +1,5 @@
 {
-  "id": "2d6a1021-eafc-43e1-9d64-004637a80a2b",
+  "id": "1f32d9ee-baef-49bc-bddc-961f5dc6fb43",
   "prevId": "9f3025cb-6511-4980-ba17-9fcb38761c7f",
   "version": "7",
   "dialect": "postgresql",
@@ -32919,66 +32919,115 @@
       },
       "isRLSEnabled": false
     },
-    "public.shareholder_document_files": {
-      "name": "shareholder_document_files",
+    "public.device_training_periods": {
+      "name": "device_training_periods",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "profit_entity_id": {
-          "name": "profit_entity_id",
+        "outlet_id": {
+          "name": "outlet_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "file_key": {
-          "name": "file_key",
-          "type": "text",
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "content_type": {
-          "name": "content_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "size_bytes": {
-          "name": "size_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "uploaded_by": {
-          "name": "uploaded_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by": {
+          "name": "started_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "device_training_periods_open_key": {
+          "name": "device_training_periods_open_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"device_training_periods\".\"ended_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "device_training_periods_device_idx": {
+          "name": "device_training_periods_device_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
-        "shareholder_document_files_tenant_id_tenants_id_fk": {
-          "name": "shareholder_document_files_tenant_id_tenants_id_fk",
-          "tableFrom": "shareholder_document_files",
+        "device_training_periods_tenant_id_tenants_id_fk": {
+          "name": "device_training_periods_tenant_id_tenants_id_fk",
+          "tableFrom": "device_training_periods",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -32988,113 +33037,153 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "shareholder_document_files_tenant_id_id_pk": {
-          "name": "shareholder_document_files_tenant_id_id_pk",
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
-      "uniqueConstraints": {
-        "shareholder_document_files_tenant_file_key": {
-          "name": "shareholder_document_files_tenant_file_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "file_key"
-          ]
         },
-        "shareholder_document_files_tenant_entity_file_key": {
-          "name": "shareholder_document_files_tenant_entity_file_key",
-          "nullsNotDistinct": false,
-          "columns": [
+        "device_training_periods_outlet_id_outlets_id_fk": {
+          "name": "device_training_periods_outlet_id_outlets_id_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "device_training_periods_device_fk": {
+          "name": "device_training_periods_device_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "devices",
+          "columnsFrom": [
             "tenant_id",
-            "profit_entity_id",
-            "file_key"
-          ]
+            "outlet_id",
+            "device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "shareholder_document_files_content_type_check": {
-          "name": "shareholder_document_files_content_type_check",
-          "value": "\"shareholder_document_files\".\"content_type\" = 'application/pdf'"
-        },
-        "shareholder_document_files_size_check": {
-          "name": "shareholder_document_files_size_check",
-          "value": "\"shareholder_document_files\".\"size_bytes\" > 0"
+        "device_training_periods_range_check": {
+          "name": "device_training_periods_range_check",
+          "value": "\"device_training_periods\".\"ended_at\" IS NULL OR \"device_training_periods\".\"ended_at\" > \"device_training_periods\".\"started_at\""
         }
       },
       "isRLSEnabled": false
     },
-    "public.shareholder_documents": {
-      "name": "shareholder_documents",
+    "public.devices": {
+      "name": "devices",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "id": {
-          "name": "id",
+        "outlet_id": {
+          "name": "outlet_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "station_id": {
+          "name": "station_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "label": {
+          "name": "label",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true,
-          "default": "gen_random_uuid()"
+          "default": "'unknown'"
         },
-        "profit_entity_id": {
-          "name": "profit_entity_id",
-          "type": "uuid",
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
+        "training_mode": {
+          "name": "training_mode",
+          "type": "boolean",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": false
         },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "file_key": {
-          "name": "file_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "visibility": {
-          "name": "visibility",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "published_at": {
-          "name": "published_at",
+        "last_seen_at": {
+          "name": "last_seen_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
-        "published_by": {
-          "name": "published_by",
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by": {
+          "name": "revoked_by",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "created_by": {
-          "name": "created_by",
+        "revoke_reason": {
+          "name": "revoke_reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enrolled_by": {
+          "name": "enrolled_by",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "token_issued_at": {
+          "name": "token_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -33102,11 +33191,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
-        "shareholder_documents_entity_created_idx": {
-          "name": "shareholder_documents_entity_created_idx",
+        "devices_sync_idx": {
+          "name": "devices_sync_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -33115,15 +33211,15 @@
               "nulls": "last"
             },
             {
-              "expression": "profit_entity_id",
+              "expression": "outlet_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "created_at",
+              "expression": "updated_at",
               "isExpression": false,
-              "asc": false,
+              "asc": true,
               "nulls": "last"
             },
             {
@@ -33140,9 +33236,9 @@
         }
       },
       "foreignKeys": {
-        "shareholder_documents_tenant_id_tenants_id_fk": {
-          "name": "shareholder_documents_tenant_id_tenants_id_fk",
-          "tableFrom": "shareholder_documents",
+        "devices_tenant_id_tenants_id_fk": {
+          "name": "devices_tenant_id_tenants_id_fk",
+          "tableFrom": "devices",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -33153,56 +33249,79 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "shareholder_documents_file_fk": {
-          "name": "shareholder_documents_file_fk",
-          "tableFrom": "shareholder_documents",
-          "tableTo": "shareholder_document_files",
+        "devices_outlet_id_outlets_id_fk": {
+          "name": "devices_outlet_id_outlets_id_fk",
+          "tableFrom": "devices",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "devices_outlet_fk": {
+          "name": "devices_outlet_fk",
+          "tableFrom": "devices",
+          "tableTo": "outlets",
           "columnsFrom": [
             "tenant_id",
-            "profit_entity_id",
-            "file_key"
+            "outlet_id"
           ],
           "columnsTo": [
             "tenant_id",
-            "profit_entity_id",
-            "file_key"
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "devices_station_fk": {
+          "name": "devices_station_fk",
+          "tableFrom": "devices",
+          "tableTo": "stations",
+          "columnsFrom": [
+            "tenant_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {
-        "shareholder_documents_tenant_id_id_pk": {
-          "name": "shareholder_documents_tenant_id_id_pk",
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "devices_tenant_id_id_key": {
+          "name": "devices_tenant_id_id_key",
+          "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
           ]
-        }
-      },
-      "uniqueConstraints": {
-        "shareholder_documents_tenant_file_key": {
-          "name": "shareholder_documents_tenant_file_key",
+        },
+        "devices_tenant_outlet_id_key": {
+          "name": "devices_tenant_outlet_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "file_key"
+            "outlet_id",
+            "id"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "shareholder_documents_kind_check": {
-          "name": "shareholder_documents_kind_check",
-          "value": "\"shareholder_documents\".\"kind\" IN ('monthly_report', 'general_meeting_minutes', 'other')"
+        "devices_type_check": {
+          "name": "devices_type_check",
+          "value": "\"devices\".\"type\" IN ('pos', 'kds', 'waiter_phone', 'printer', 'display', 'smart_lock', 'panic_button', 'edc')"
         },
-        "shareholder_documents_visibility_check": {
-          "name": "shareholder_documents_visibility_check",
-          "value": "\"shareholder_documents\".\"visibility\" IN ('shareholders', 'management')"
-        },
-        "shareholder_documents_published_check": {
-          "name": "shareholder_documents_published_check",
-          "value": "(\"shareholder_documents\".\"published_at\" IS NULL) = (\"shareholder_documents\".\"published_by\" IS NULL)"
+        "devices_status_check": {
+          "name": "devices_status_check",
+          "value": "(\"devices\".\"status\" = 'active' AND \"devices\".\"revoked_at\" IS NULL) OR (\"devices\".\"status\" = 'revoked' AND \"devices\".\"revoked_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
