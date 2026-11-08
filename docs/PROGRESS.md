@@ -27,7 +27,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
 | ws/hris-leave | fa4ff73f (prep 05a14884) | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp); regen 0077/0078 di atas m1 4e0bacd4 (FK outlets/employees pola NO FORCE); DIGABUNG milestone/m1 e4938167 (brief 89); gate hijau: API 1723, root 1420 | selesai |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
-| ws/hris-sop | 37aa5cd9 | S | SOP | Sonnet reviewer PERLU FIX → brief 86 selesai 37aa5cd9 (gate hijau); siap merge (regen) | gabung milestone |
+| ws/hris-sop | 37aa5cd9 | S | SOP | DIGABUNG m1 `fd2616f4` (prep 9b981051, migration diregen 0080/0081); gate prep hijau API 1858 / root 1420; kartu 7df1 ditutup | selesai |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
 | fix/worktree-shared | 4ab45cc | S | tooling | Sonnet: LOLOS | DIGABUNG milestone 4478360 |
 | ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
