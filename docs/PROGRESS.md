@@ -14,7 +14,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Review legend-18qw: reviewer Claude (tanpa blocker) + second-opinion Codex (2 major). Semua temuan: `docs/briefs/06-fix-review-worker-transport.md`.
 
 ## Sedang (dihentikan di tengah)
-- Fix temuan review legend-18qw: commit WIP `5a6070d` di `ws/worker-transport`, BELUM selesai dan BELUM dites. Lanjutkan dari brief 06, lalu `heavy pnpm check`, reviewer cek diff fix.
+- Fix temuan review legend-18qw: commit WIP `5a6070d` di `ws/worker-transport`. Kode untuk 9 fix (#1-#9 brief 06) sudah ditulis, test baru sudah ditambah, tapi BELUM dijalankan sama sekali (typecheck terakhir lulus sebelum test baru). Sisa urutan: `heavy pnpm check` via test-runner (rawan: insert `roles`/`tenants` test tenant C, regex `status (\d{3})`), subagent reviewer cek diff fix, buat 3 bead lanjutan (cloud-sync tenant-wide di edge, healthcheck worker, cek backfill sequence sebelum deploy pertama), tutup `legend-3a0y`, rapikan pesan commit WIP agar merujuk `legend-18qw`. Thread lama "engineer: worker event transport" (S30:P9mkl:G7rl2) bisa di-reopen untuk konteks.
 
 ## Menunggu founder
 - Q6: setujui mockup final (`design/mockups/final-a-*`) untuk dibangun, atau ubah dulu. Halaman review dibuat dari gambar itu.
