@@ -11,7 +11,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
 |---|---|---|---|---|---|
 | ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
-| ws/refund-approval | 5b6a707 | K | refund, approval | pasangan: PERLU FIX (brief 81) | fix, lalu Codex R2 |
+| ws/refund-approval | 09385266 | K | refund, approval, payout | fix brief 81 selesai (G7ftq, Opus reviewer 2 putaran bersih, gate hijau 1366); migration 0068 bentrok nomor milestone → regen | Codex R2 (SHA pasca-regen) |
 | ws/journals | b87a7d98 | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih, gate hijau 1348+1414); migration 0068/0069 bentrok nomor dgn edge di milestone → regen setelah shareholder | Codex R3 (SHA pasca-regen) |
 | ws/payroll-pph21-tests | a0bf212+ | K | pajak | setelah G70ms lapor | Codex R4 |
 | ws/edc-framework | 5f797fe | K | pembayaran | pasangan: PERLU FIX (brief 76) | fix, lalu Codex R5 |
@@ -34,7 +34,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
-Urutan merge (22:06): edge (sudah) → shareholder-docs → journals → stock-opname → hris-leave → lainnya. Tiap cabang regen migration di atas milestone/m1 terbaru, satu per satu (jangan paralel).
+Urutan merge (22:06): edge (sudah) → shareholder-docs → journals → refund-approval → stock-opname → hris-leave → lainnya. Tiap cabang regen migration di atas milestone/m1 terbaru, satu per satu (jangan paralel).
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
 
 Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya kuota tidak dipakai untuk temuan yang sudah diketahui. Jendela Codex yang datang sebelum ada fix siap: pakai untuk cabang K berikutnya yang belum direview (recipe/BOM, tenant config export, AI tool catalog).
