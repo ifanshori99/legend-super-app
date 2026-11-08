@@ -1162,6 +1162,35 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
 });
 
 describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round 2)", () => {
+  it("R62b proportional December, mixed gross 6 jt + net 4 jt + employer BPJS 500_000: T (Jan-Nov shortfall included) follows the per-scheme gross share", () => {
+    // CTO decision 2026-11-08: the employer benefit's tax splits by the month's
+    // line schemes, and under `proportional` the whole T (Jan-Nov shortfall
+    // included) follows that per-scheme gross share.
+    //   employee base G = 6_000_000 + floor(500_000 x 6_000_000 / 10_000_000) = 6_300_000;
+    //   the net line's 200_000 of the benefit is the company's.
+    //   W = floor(T x 6_300_000 / X). The old all-or-nothing rule used 6_500_000.
+    const lines = [
+      { amountIdr: 6_000_000, taxScheme: "gross" as const },
+      { amountIdr: 4_000_000, taxScheme: "net" as const },
+    ];
+    const r = run(
+      {
+        taxableLines: lines,
+        employerBenefitIdr: 500_000,
+        prior: prior(110_000_000, 2_200_000),
+      },
+      { mixedSchemeAllocation: "proportional" },
+    );
+    const x = BigInt(r.taxableGrossIdr);
+    const t = BigInt(r.pph21Idr);
+    expect(t).toBeGreaterThan(0n);
+    expect(BigInt(r.pph21WithheldIdr)).toBe((t * 6_300_000n) / x);
+    expect(BigInt(r.pph21WithheldIdr)).toBeLessThan((t * 6_500_000n) / x);
+    expect(r.taxAllowanceIdr).toBe(0);
+    expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
+    expect(r.pph21RefundIdr).toBe(0);
+  });
+
   it("R63 unpaid December: the shortfall is withheld from the employee, never booked as untaxed borne tax", () => {
     // Jan-Nov paid 132 jt in total with nothing withheld; December pays nothing.
     // gross = 132_000_000 + 0; cost = min(6_600_000, 6_000_000) = 6_000_000.

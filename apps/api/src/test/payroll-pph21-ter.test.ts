@@ -477,13 +477,24 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 
-  it("R17b mixed lines plus a taxable employer benefit (gross share)", () => {
-    // As R17 with employer benefit 300_000 (treated as gross): G = 9_300_000.
-    // S: 0 -> 250_000 -> 262_500 -> 263_125 -> 263_157 -> 263_158 (stable).
-    // X = 9_300_000 + 2_000_000 + 3_000_000 + 263_158 = 14_563_158 (500 bp);
-    // T = R(728_157.9) = 728_158; W = floor(728_158 * 9_300_000 / 14_563_158) = 465_000;
-    // A = floor(263_158 * 2M / 5M) = 105_263; B = 728_158 - 465_000 - 105_263 = 157_895;
-    // withheld = 465_000 + 105_263 = 570_263.
+  it("R17b mixed lines plus a taxable employer benefit (split by gross share of the lines)", () => {
+    // As R17 with employer benefit 300_000. The benefit's tax is split by the
+    // month's line schemes: lines gross 9M + gross_up 2M + net 3M = 14M, so the
+    // gross share is 9/14 (floor) and the rest is the company's:
+    //   employee benefit = floor(300_000 x 9_000_000 / 14_000_000) = 192_857;
+    //   employee base G = 9_000_000 + 192_857 = 9_192_857.
+    // X = 14_300_000 + S (all lines + benefit + employer-covered tax S), TER B
+    // (row 11 s.d. 14_950_000 = 500 bp, row 12 s.d. 16_400_000 = 600 bp), W = floor(T x G / X):
+    //   S=0       X=14_300_000 T=715_000 W=459_642 -> S=255_358
+    //   S=255_358 X=14_555_358 T=727_768 W=459_642 -> S=268_126
+    //   S=268_126 X=14_568_126 T=728_406 W=459_642 -> S=268_764
+    //   S=268_764 X=14_568_764 T=728_438 W=459_642 -> S=268_796
+    //   S=268_796 X=14_568_796 T=728_440 W=459_642 -> S=268_798
+    //   S=268_798 X=14_568_798 T=728_440 W=459_642 -> S=268_798 stop.
+    // T = R(14_568_798 x 5%) = R(728_439.9) = 728_440; W = 459_642;
+    // A = floor(268_798 x 2M / 5M) = 107_519; B = 728_440 - 459_642 - 107_519 = 161_279;
+    // withheld = W + A = 567_161. Take-home = 14_000_000 - 459_642.
+    // (Old rule, whole benefit in the gross share, gave W = 465_000, see git history.)
     // Src: PMK 168/2023 (premi dibayar pemberi kerja), FAQ DJP PMK-66 no. 40.
     const r = terMonth(
       "K/1",
@@ -494,14 +505,21 @@ describe("PPh 21 TER monthly reference cases", () => {
       method: "ter",
       terCategory: "B",
       terRateBp: 500,
-      taxableGrossIdr: 14_563_158,
-      taxAllowanceIdr: 105_263,
-      pph21Idr: 728_158,
-      pph21WithheldIdr: 570_263,
-      pph21EmployerBorneIdr: 157_895,
+      taxableGrossIdr: 14_568_798,
+      taxAllowanceIdr: 107_519,
+      pph21Idr: 728_440,
+      pph21WithheldIdr: 567_161,
+      pph21EmployerBorneIdr: 161_279,
       ...NO_REFUND,
       noTaxIdSurchargeApplied: false,
     });
+    expect(r.pph21WithheldIdr - r.taxAllowanceIdr).toBe(459_642);
+    expect(
+      r.pph21WithheldIdr -
+        r.taxAllowanceIdr +
+        r.taxAllowanceIdr +
+        r.pph21EmployerBorneIdr,
+    ).toBe(r.pph21Idr);
   });
 
   it("R18 nothing taxable (X = 0): every amount is 0", () => {
@@ -1017,4 +1035,132 @@ describe("PPh 21 employer BPJS tax belongs to the company for net / gross-up emp
       });
     });
   }
+});
+
+describe("PPh 21 employer BPJS tax split on mixed lines: boundaries (R77-R82)", () => {
+  // TK/0 (category A), benefit 400_000, lines in two schemes. The employee base
+  // is G = gross lines + floor(benefit x gross lines / all lines); the rest of
+  // the tax is the company's (borne for net, allowance for gross-up).
+  const benefit = { employerBenefitIdr: 400_000 };
+
+  it("R77 a Rp1 gross line moves only its proportional share (proportional)", () => {
+    // gross 1 + net 10_000_000: G = 1 + floor(400_000 x 1 / 10_000_001) = 1.
+    // X = 10_400_001 + S; TER A row 11 (s.d. 10_700_000) 250 bp, half up:
+    //   S=0       X=10_400_001 T=260_000 W=floor(260_000 x 1 / X)=0 -> S=260_000
+    //   S=260_000 X=10_660_001 T=266_500 W=0 -> S=266_500
+    //   S=266_500 X=10_666_501 T=266_663 -> S=266_663
+    //   S=266_663 X=10_666_664 T=266_667 -> S=266_667
+    //   S=266_667 X=10_666_668 T=266_667 (266_666.7) stop.
+    // W = 0, borne = 266_667: the whole tax is the company's; the old
+    // all-or-nothing rule put the benefit tax on the employee.
+    const r = terMonth("TK/0", [gross(1), net(10_000_000)], {
+      ...benefit,
+      policy: policyWith({ mixedSchemeAllocation: "proportional" }),
+    });
+    expect(r).toMatchObject({
+      taxableGrossIdr: 10_666_668,
+      taxAllowanceIdr: 0,
+      pph21Idr: 266_667,
+      pph21WithheldIdr: 0,
+      pph21EmployerBorneIdr: 266_667,
+      ...NO_REFUND,
+    });
+  });
+
+  it("R78 a Rp1 gross line (gross_first): TER 0% on the employee's own base, the company bears the rest", () => {
+    // gross_first W = min(T, tax of G alone) = tax(G = 1) = 0 (TER 0% row), so
+    // S = T at every step and the fixed point is R77's: X = 10_666_668,
+    // T = S = 266_667.
+    const r = terMonth("TK/0", [gross(1), net(10_000_000)], {
+      ...benefit,
+      policy: policyWith({ mixedSchemeAllocation: "gross_first" }),
+    });
+    expect(r).toMatchObject({
+      taxableGrossIdr: 10_666_668,
+      pph21Idr: 266_667,
+      pph21WithheldIdr: 0,
+      pph21EmployerBorneIdr: 266_667,
+      ...NO_REFUND,
+    });
+  });
+
+  it("R79 50/50 gross vs net (proportional): the employee carries tax on half the benefit", () => {
+    // gross 5_000_000 + net 5_000_000: G = 5_000_000 + 200_000 = 5_200_000.
+    // X = 10_400_000 + S, W = floor(T x 5_200_000 / X):
+    //   S=0       X=10_400_000 T=260_000 W=130_000 -> S=130_000
+    //   S=130_000 X=10_530_000 T=263_250 W=130_000 -> S=133_250
+    //   S=133_250 X=10_533_250 T=263_331 (263_331.25) W=129_999 -> S=133_332
+    //   S=133_332 X=10_533_332 T=263_333 W=129_999 -> S=133_334
+    //   S=133_334 X=10_533_334 T=263_333 (263_333.35) W=129_999 -> S=133_334 stop.
+    // withheld = W = 129_999, borne = 263_333 - 129_999 = 133_334.
+    const r = terMonth("TK/0", [gross(5_000_000), net(5_000_000)], {
+      ...benefit,
+      policy: policyWith({ mixedSchemeAllocation: "proportional" }),
+    });
+    expect(r).toMatchObject({
+      taxableGrossIdr: 10_533_334,
+      taxAllowanceIdr: 0,
+      pph21Idr: 263_333,
+      pph21WithheldIdr: 129_999,
+      pph21EmployerBorneIdr: 133_334,
+      ...NO_REFUND,
+    });
+    expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
+  });
+
+  it("R80 50/50 gross vs gross-up (proportional): the company's part is the tax allowance", () => {
+    // Same fixed point as R79 with gross_up instead of net: A = S x U/(U+N) = S.
+    // withheld = W + A = 129_999 + 133_334 = 263_333 = T, borne 0.
+    // Take-home = 10_000_000 + A - withheld = 10_000_000 - W = 9_870_001.
+    const r = terMonth("TK/0", [gross(5_000_000), grossUp(5_000_000)], {
+      ...benefit,
+      policy: policyWith({ mixedSchemeAllocation: "proportional" }),
+    });
+    expect(r).toMatchObject({
+      taxableGrossIdr: 10_533_334,
+      taxAllowanceIdr: 133_334,
+      pph21Idr: 263_333,
+      pph21WithheldIdr: 263_333,
+      pph21EmployerBorneIdr: 0,
+      ...NO_REFUND,
+    });
+    expect(10_000_000 + r.taxAllowanceIdr - r.pph21WithheldIdr).toBe(9_870_001);
+  });
+
+  it("R81 50/50 gross vs net (gross_first): the employee's own 5_200_000 is TER 0%, the company bears all", () => {
+    // W = min(T, tax(G = 5_200_000)) = 0 (0% row s.d. 5_400_000).
+    // Fixed point as R66 (TER file): X = 10_666_667, T = S = 266_667.
+    const r = terMonth("TK/0", [gross(5_000_000), net(5_000_000)], {
+      ...benefit,
+      policy: policyWith({ mixedSchemeAllocation: "gross_first" }),
+    });
+    expect(r).toMatchObject({
+      taxableGrossIdr: 10_666_667,
+      pph21Idr: 266_667,
+      pph21WithheldIdr: 0,
+      pph21EmployerBorneIdr: 266_667,
+      ...NO_REFUND,
+    });
+  });
+
+  it("R82 100% gross is unchanged by the split (both policies): same numbers as R12-style gross pay", () => {
+    // No net / gross-up line: G = 10_000_000 + 400_000, X = 10_400_000, 250 bp
+    // => 260_000, all withheld.
+    for (const mixedSchemeAllocation of [
+      "proportional",
+      "gross_first",
+    ] as const) {
+      const r = terMonth("TK/0", [gross(10_000_000)], {
+        ...benefit,
+        policy: policyWith({ mixedSchemeAllocation }),
+      });
+      expect(r).toMatchObject({
+        taxableGrossIdr: 10_400_000,
+        pph21Idr: 260_000,
+        pph21WithheldIdr: 260_000,
+        pph21EmployerBorneIdr: 0,
+        taxAllowanceIdr: 0,
+      });
+    }
+  });
 });

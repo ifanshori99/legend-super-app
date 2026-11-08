@@ -290,11 +290,15 @@ export function computePph21Period(
   else if (priorMix > 0n)
     priorEmployerTax = (priorTax * priorEmployerScheme) / priorMix;
   const priorEmployeeTax = priorTax - priorEmployerTax;
-  // Employer BPJS (in g) is taxable income, but for a net / gross-up employee
-  // (no gross line) the tax on it is the company's: it joins the employer-
-  // covered tax (allowance or borne) and never reduces take-home. With any
-  // gross line the benefit stays in the employee's gross share.
-  const employeeG = u + n > 0n && grossLines === 0n ? 0n : g;
+  // Employer BPJS (in g) is taxable income. Its tax follows the schemes of the
+  // month's lines: the gross lines' share (floor) is the employee's, the rest
+  // is the company's (it joins the employer-covered tax: allowance or borne,
+  // never take-home). Gross-only pay (no net / gross-up line) keeps all of it.
+  const lineBase = grossLines + u + n;
+  const employeeG =
+    u + n === 0n || lineBase === 0n
+      ? g
+      : grossLines + (benefit * grossLines) / lineBase;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
   const category = tables.ter.categoryByPtkpStatus[status];
@@ -391,6 +395,10 @@ export function computePph21Period(
       const alone = grossFirstShare > 0n ? grossFirstShare : 0n;
       return alone < tax ? alone : tax;
     }
+    // proportional: the whole tax T, Jan-Nov shortfall included, follows this
+    // month's gross share per scheme (employeeG: gross lines plus their share
+    // of the employer benefit), so the net / gross-up part is the company's and
+    // a net-only employee is never charged for it.
     return (tax * employeeG) / x;
   };
 

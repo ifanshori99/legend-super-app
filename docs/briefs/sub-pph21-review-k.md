@@ -33,3 +33,14 @@ Migrations were renumbered: old 0063/0064 (collided with main) now `apps/api/dri
 (scratch DB on test server, dropped in afterAll). Prove: (1) fresh DB migrates full folder → table exists, RLS enabled+forced,
 legend_app lacks UPDATE/DELETE/TRUNCATE; (2) DB migrated only up to 0067 (truncated journal copy), then full folder → same result.
 Check how existing test gets `STARTER_TEST_DATABASE_URL` / runs (see apps/api vitest config / package scripts).
+
+## D — mixed employees (CTO decision 2026-11-08, from founder decision)
+
+File: `packages/shared/src/hris/payroll/pph21.ts` + `apps/api/src/test/payroll-pph21-ter.test.ts` / `-annual.test.ts`.
+Mixed employee (gross line + net/gross-up lines): tax on the employer BPJS benefit is split by gross share per scheme
+(this month's base per scheme): net/gross-up part borne by company (allowance for gross-up, borne for net), gross part by employee.
+Same rule for the Jan–Nov shortfall under `proportional` (split by scheme mix, company-funded part never charged to employee).
+No all-or-nothing switch: a Rp1 gross line must move only its proportional share (`pph21.ts:275` today).
+Update R17b expected numbers to this rule (show arithmetic in comment). Add boundary tests: Rp1 gross line, 50/50 gross vs net,
+100% gross (= old behaviour, unchanged numbers), both allocation policies. Invariant withheld + borne = tax; integer rounding,
+leftover rupiah deterministic. Keep all other existing tests green (do not change them besides R17b).
