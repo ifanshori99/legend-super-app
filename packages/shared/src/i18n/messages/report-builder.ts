@@ -246,8 +246,10 @@ export const reportBuilderMessages = {
     formats: { csv: "CSV", xlsx: "Excel (XLSX)", pdf: "PDF" },
     recipients: "Penerima",
     recipientsHint:
-      "Alamat email pengguna Anda yang berhak melihat laporan ini. Pisahkan dengan koma atau baris baru, maksimal 20.",
-    recipientsPlaceholder: "nama@perusahaan.id",
+      "Pilih pengguna Anda yang berhak melihat laporan ini, maksimal 20. Email mereka diambil oleh sistem.",
+    recipientsLoading: "Memuat daftar pengguna...",
+    recipientsFailed: "Daftar pengguna gagal dimuat. Tutup dan buka lagi.",
+    recipientsEmpty: "Belum ada pengguna yang bisa dipilih.",
     submit: "Buat jadwal",
     created: "Jadwal pengiriman {name} dibuat.",
     personalTitle: "Butuh approval",
@@ -271,7 +273,7 @@ export const reportBuilderMessages = {
     errors: {
       form: "Periksa kembali isian jadwal.",
       recipients:
-        "Isi minimal satu alamat email yang valid, tanpa duplikat, maksimal 20.",
+        "Pilih minimal satu pengguna, tanpa duplikat, maksimal 20.",
       timeOfDay: "Isi jam dengan format JJ:MM.",
       dayOfMonth: "Pilih tanggal 1 sampai 28.",
     },

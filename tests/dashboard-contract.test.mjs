@@ -610,8 +610,14 @@ test("tenant scope: saved reports and schedules reject client tenant fields and 
     { dayOfWeek: null },
     { dayOfMonth: 1 },
     { frequency: "daily" },
-    { recipients: ["owner@cafelegend.id", "OWNER@cafelegend.id"] },
-    { recipients: ["not-an-email"] },
+    {
+      recipientUserIds: [
+        schedule.recipientUserIds[0],
+        schedule.recipientUserIds[0].toUpperCase(),
+      ],
+    },
+    { recipientUserIds: ["owner@cafelegend.id"] },
+    { recipientUserIds: [] },
     { timeOfDay: "7:30" },
   ])
     assert.equal(

@@ -241,7 +241,7 @@ const definitionInputs = [
     id: "51bef82a-99b3-4a0f-9191-71938e788f8d",
     code: "table_turnover",
     version: 1,
-    name: "Table turnover",
+    name: "Perputaran meja",
     description: "Rata-rata berapa kali satu meja dipakai ulang per hari.",
     ownerModule: "pos",
     formula: {
@@ -522,14 +522,18 @@ export const openDayPeriod = metricPeriodSchema.parse({
   accountingPeriodClosed: false,
 });
 
+// Figures per day are the report viewer's day model (net sales of one business
+// day, features/ws11-reports/mock-day-model.ts), so a metric point and the
+// report cell for the same outlet and day are one number (I4,
+// tests/ws11-fixture-reconcile.test.mjs).
 const netSalesDailyPoints = [
-  ["2026-10-25", 21_450_000],
-  ["2026-10-26", 13_780_000],
-  ["2026-10-27", 14_120_000],
-  ["2026-10-28", 15_930_000],
-  ["2026-10-29", 16_450_000],
-  ["2026-10-30", 18_720_000],
-  ["2026-10-31", 24_310_000],
+  ["2026-10-25", 7_420_000],
+  ["2026-10-26", 5_787_600],
+  ["2026-10-27", 6_084_400],
+  ["2026-10-28", 6_307_000],
+  ["2026-10-29", 6_678_000],
+  ["2026-10-30", 8_533_000],
+  ["2026-10-31", 9_646_000],
 ].map(([date, valueIdr]) =>
   metricPointSchema.parse({
     bucketStart: date,
@@ -555,7 +559,7 @@ export const metricDailyRows = [
     metricDate: "2026-10-31",
     metricCode: "net_sales",
     dimension: null,
-    value: { unit: "idr", valueIdr: 24_310_000 },
+    value: { unit: "idr", valueIdr: 9_646_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
     definitionVersion: 1,
@@ -566,8 +570,9 @@ export const metricDailyRows = [
     outletId: cafeLegendFixtures.outlets[0].id,
     metricDate: "2026-10-31",
     metricCode: "net_sales",
-    dimension: { key: "channel", value: "qr_order" },
-    value: { unit: "idr", valueIdr: 8_120_000 },
+    dimension: { key: "channel", value: "qr" },
+    // QR share of the same day: 4.150.000 / 7.420.000 of 9.646.000.
+    value: { unit: "idr", valueIdr: 5_395_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
     definitionVersion: 1,
@@ -584,29 +589,33 @@ export const metricQueryRequestFixture = metricQueryRequestSchema.parse({
   requireFinal: true,
 });
 
+// October is the closed month every WS-11 screen shows (report viewer,
+// shareholder board, owner income statement): net sales Rp412.800.000, 8.222
+// guests, food cost 33,7%. September is the owner insights' month (net sales
+// Rp476.000.000, food cost 32,8%).
 const netSalesOctober: MetricValue = metricValueSchema.parse({
   unit: "idr",
-  valueIdr: 124_760_000,
+  valueIdr: 412_800_000,
 });
 const netSalesSeptember: MetricValue = metricValueSchema.parse({
   unit: "idr",
-  valueIdr: 109_200_000,
+  valueIdr: 476_000_000,
 });
 const paxOctober: MetricValue = metricValueSchema.parse({
   unit: "count",
-  value: 1_306,
+  value: 8_222,
 });
 const paxSeptember: MetricValue = metricValueSchema.parse({
   unit: "count",
-  value: 1_184,
+  value: 9_480,
 });
 const foodCostOctober: MetricValue = metricValueSchema.parse({
   unit: "percent",
-  value: "31.4200",
+  value: "33.7000",
 });
 const foodCostSeptember: MetricValue = metricValueSchema.parse({
   unit: "percent",
-  value: "32.1500",
+  value: "32.8000",
 });
 
 export const queryResponseFixture = metricQueryResponseSchema.parse({

@@ -160,19 +160,26 @@ export function MetricStep({
 export function DimensionStep({
   draft,
   metrics,
+  hidePersonal = false,
   onChange,
-}: DraftProps & { metrics: readonly MetricDefinition[] }) {
+}: DraftProps & {
+  metrics: readonly MetricDefinition[];
+  /** SH-01: aggregate-only callers are not offered person splits. */
+  hidePersonal?: boolean;
+}) {
   const t = useT();
-  const shared = sharedDimensions(draft.metricCodes);
+  const shared = sharedDimensions(draft.metricCodes, hidePersonal);
   // Every dimension some selected metric offers; the ones not all share are
   // shown disabled with the reason instead of silently missing.
   const offered = useMemo(() => {
     const keys = new Set<string>();
     for (const metric of metrics)
       if (draft.metricCodes.includes(metric.code))
-        for (const key of metric.dimensions) keys.add(key);
+        for (const key of metric.dimensions)
+          if (!(hidePersonal && PERSONAL_DATA_DIMENSIONS.includes(key)))
+            keys.add(key);
     return [...keys];
-  }, [metrics, draft.metricCodes]);
+  }, [metrics, draft.metricCodes, hidePersonal]);
 
   if (draft.metricCodes.length === 0)
     return (
@@ -249,9 +256,13 @@ export function DimensionStep({
 
 // ---- Step 3: filters -------------------------------------------------------
 
-export function FilterStep({ draft, onChange }: DraftProps) {
+export function FilterStep({
+  draft,
+  hidePersonal = false,
+  onChange,
+}: DraftProps & { hidePersonal?: boolean }) {
   const t = useT();
-  const keys = filterableDimensions(draft.metricCodes);
+  const keys = filterableDimensions(draft.metricCodes, hidePersonal);
   const unused = keys.filter(
     (key) => !draft.filters.some((filter) => filter.key === key),
   );

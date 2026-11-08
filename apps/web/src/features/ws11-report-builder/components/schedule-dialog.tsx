@@ -1,6 +1,6 @@
 // Schedule an email delivery of a saved report (PRD v1.7 §3 F36 "jadwalkan
 // pengiriman via email"). The fields follow createReportScheduleInputSchema
-// (frequency, time, weekday or day of month, format, recipients), checked with
+// (frequency, time, weekday or day of month, format, recipient users), checked with
 // the contract itself before the call. DASH-04: a report that splits or
 // filters by a person is personal data, so it is never mailed on a schedule;
 // the dialog says why and points to the approval flow instead of offering a
@@ -19,7 +19,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { FormField } from "@/components/ui/form-field";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -27,7 +29,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import {
   REPORT_SCHEDULE_FORMATS,
@@ -40,10 +41,15 @@ import {
   queryHasPersonalData,
   reportErrorCodeOf,
   scheduleSettings,
+  toggleRecipient,
   type ScheduleDraft,
 } from "../builder";
 import { reportErrorText } from "../format";
-import { useAttemptKey, useCreateSchedule } from "../hooks";
+import {
+  useAttemptKey,
+  useCreateSchedule,
+  useScheduleRecipients,
+} from "../hooks";
 
 const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 
@@ -54,7 +60,7 @@ function fieldOf(path: readonly PropertyKey[]): string {
 
 function errorKeyFor(field: string): MessageKey {
   switch (field) {
-    case "recipients":
+    case "recipientUserIds":
       return "reportBuilder.schedule.errors.recipients";
     case "timeOfDay":
       return "reportBuilder.schedule.errors.timeOfDay";
@@ -83,6 +89,7 @@ export function ScheduleDialog({
   const [serverError, setServerError] = useState<string | null>(null);
 
   const personal = report !== null && queryHasPersonalData(report.query);
+  const recipients = useScheduleRecipients(open && !personal);
   const set = (patch: Partial<ScheduleDraft>) =>
     setDraft((current) => ({ ...current, ...patch }));
 
@@ -261,17 +268,54 @@ export function ScheduleDialog({
             <FormField
               label={t("reportBuilder.schedule.recipients")}
               hint={t("reportBuilder.schedule.recipientsHint")}
-              error={errors.recipients}
+              error={errors.recipientUserIds}
               required
             >
-              <Textarea
-                rows={3}
-                value={draft.recipientsText}
-                onChange={(event) =>
-                  set({ recipientsText: event.target.value })
-                }
-                placeholder={t("reportBuilder.schedule.recipientsPlaceholder")}
-              />
+              <div className="grid max-h-48 gap-1 overflow-y-auto">
+                {recipients.isPending && (
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {t("reportBuilder.schedule.recipientsLoading")}
+                  </p>
+                )}
+                {recipients.isError && (
+                  <p role="alert" className="text-sm leading-5 text-danger">
+                    {t("reportBuilder.schedule.recipientsFailed")}
+                  </p>
+                )}
+                {recipients.data?.length === 0 && (
+                  <p className="text-sm leading-5 text-muted-foreground">
+                    {t("reportBuilder.schedule.recipientsEmpty")}
+                  </p>
+                )}
+                {recipients.data?.map((user) => {
+                  const id = `schedule-recipient-${user.userId}`;
+                  return (
+                    <div
+                      key={user.userId}
+                      className="flex min-h-control items-center gap-3 px-1"
+                    >
+                      <Checkbox
+                        id={id}
+                        checked={draft.recipientUserIds.includes(user.userId)}
+                        onCheckedChange={() =>
+                          set({
+                            recipientUserIds: toggleRecipient(
+                              draft.recipientUserIds,
+                              user.userId,
+                            ),
+                          })
+                        }
+                      />
+                      <Label htmlFor={id} className="grid gap-0.5 font-normal">
+                        <span className="font-medium">{user.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {user.roleName}
+                        </span>
+                      </Label>
+                    </div>
+                  );
+                })}
+              </div>
             </FormField>
 
             {serverError && (

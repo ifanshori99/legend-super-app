@@ -11,6 +11,7 @@
 // definition, so the viewer, the PDF/CSV export and Tanya AI read the same
 // numbers (DASH-02).
 
+import { defineEndpoint } from "../api/endpoint.ts";
 import {
   clientInputSchema,
   cursorPageQuerySchema,
@@ -468,11 +469,11 @@ const scheduleSettingsShape = {
   dayOfMonth: z.number().int().min(1).max(28).nullable().default(null),
   format: reportExportFormatSchema,
   /**
-   * Recipients. PRD §3.36 says email; the server restricts them to tenant
-   * users holding the report's permissions before sending (never external
-   * addresses), so the contract only validates shape here.
+   * Recipients are tenant users, never typed addresses (PRD §3.36 says email:
+   * the server resolves each user's email and keeps only users holding the
+   * report's permissions, so no external address can receive a report).
    */
-  recipients: z.array(z.email().max(254)).min(1).max(20),
+  recipientUserIds: z.array(z.uuid()).min(1).max(20),
 };
 
 function refineScheduleSettings(
@@ -480,7 +481,7 @@ function refineScheduleSettings(
     frequency: ReportScheduleFrequency;
     dayOfWeek: number | null;
     dayOfMonth: number | null;
-    recipients: readonly string[];
+    recipientUserIds: readonly string[];
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -526,12 +527,12 @@ function refineScheduleSettings(
         path: ["dayOfWeek"],
       });
   }
-  const normalized = settings.recipients.map((email) => email.toLowerCase());
+  const normalized = settings.recipientUserIds.map((id) => id.toLowerCase());
   if (new Set(normalized).size !== normalized.length)
     ctx.addIssue({
       code: "custom",
-      message: "recipients repeat an address",
-      path: ["recipients"],
+      message: "recipientUserIds repeat a user",
+      path: ["recipientUserIds"],
     });
 }
 
@@ -589,3 +590,36 @@ export const REPORT_SCHEDULE_FORMATS = [
   "xlsx",
   "pdf",
 ] as const satisfies readonly ReportExportFormat[];
+
+/**
+ * A tenant user a schedule can be sent to. Name and role only: the email stays
+ * on the server, which resolves it from the user id (DASH-04 keeps addresses
+ * out of the client and out of saved schedules).
+ */
+export const reportScheduleRecipientSchema = z.strictObject({
+  userId: z.uuid(),
+  name: z.string().min(1).max(150),
+  roleName: z.string().min(1).max(100),
+});
+export type ReportScheduleRecipient = z.infer<
+  typeof reportScheduleRecipientSchema
+>;
+
+export const reportScheduleRecipientPageSchema = cursorPageSchema(
+  reportScheduleRecipientSchema,
+);
+export type ReportScheduleRecipientPage = z.infer<
+  typeof reportScheduleRecipientPageSchema
+>;
+
+/**
+ * GET /api/reports/schedule-recipients: the users the schedule form offers.
+ * The server lists only users of the caller's tenant who hold the permissions
+ * of reports they may schedule; never an external address.
+ */
+export const listReportScheduleRecipientsEndpoint = defineEndpoint({
+  method: "GET",
+  path: "/api/reports/schedule-recipients",
+  query: cursorPageQuerySchema,
+  response: reportScheduleRecipientPageSchema,
+});
