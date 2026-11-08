@@ -31,6 +31,7 @@ import {
 } from "@starter/shared/notification";
 import type * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { logger } from "../lib/logger.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Recipient = {
@@ -287,8 +288,21 @@ export async function deliverNotificationAttempt(
     accepted = parsed.accepted;
     rejected = !parsed.accepted;
     providerRef = parsed.reference;
-  } catch {
-    /* Adapter failures are persisted as machine codes only. */
+  } catch (error) {
+    /* Adapter failures are persisted as machine codes only. The log carries
+     * the channel and the provider's HTTP status (or the error class), never
+     * the message body, the recipient address or a key. */
+    const status =
+      error instanceof Error ? /status (\d{3})/.exec(error.message)?.[1] : null;
+    logger.warn(
+      {
+        deliveryAttemptId: id,
+        channel: claim.channel,
+        providerStatus: status ? Number(status) : null,
+        errorType: error instanceof Error ? error.name : typeof error,
+      },
+      "Notification provider send failed",
+    );
   }
   return withTenant(database, context, async (tx) => {
     assertOutlet(context, claim.notification.outletId);

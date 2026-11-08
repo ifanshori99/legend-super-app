@@ -9,6 +9,7 @@
 // Provider selection is explicit: every channel provider env var is required
 // (`disabled` is a deliberate value, not a default), so a deployment can never
 // silently run without a channel. Secrets are never logged or put in errors.
+import { createHash } from "node:crypto";
 import {
   and,
   eq,
@@ -155,6 +156,7 @@ async function loadRecipientState(
       email: user.email,
       emailVerified: user.emailVerified,
       banned: user.banned,
+      banExpires: user.banExpires,
     })
     .from(user)
     .where(inArray(user.id, userIds));
@@ -198,7 +200,11 @@ async function loadRecipientState(
   for (const userId of userIds) {
     const account = accounts.get(userId);
     users.set(userId, {
-      active: account !== undefined && account.banned !== true,
+      active:
+        account !== undefined &&
+        (account.banned !== true ||
+          (account.banExpires !== null &&
+            account.banExpires.getTime() <= now.getTime())),
       email: account?.email ?? "",
       emailVerified: account?.emailVerified === true,
       hasPushSubscription: subscribed.has(userId),
@@ -240,8 +246,20 @@ function required(condition: SQL | undefined): SQL {
   return condition;
 }
 
-/** Distinct users with an active assignment of a matching role whose scope
- * covers the audience. A tenant-wide event reaches tenant-scope holders only. */
+/** The account may be notified: not banned, or its ban has expired. */
+const accountActive = (): SQL =>
+  required(
+    or(
+      isNull(user.banned),
+      eq(user.banned, false),
+      lte(user.banExpires, sql`now()`),
+    ),
+  );
+
+/** Distinct active (not banned) users with an active assignment of a matching
+ * role whose scope covers the audience. A tenant-wide event reaches
+ * tenant-scope holders only. Filtering accounts here, before any fallback is
+ * chosen, keeps a banned holder from hiding the fallback audience. */
 async function activeAssignees(
   tx: Tx,
   tenantId: string,
@@ -274,11 +292,13 @@ async function activeAssignees(
         eq(roles.id, roleAssignments.roleId),
       ),
     )
+    .innerJoin(user, eq(user.id, roleAssignments.userId))
     .where(
       and(
         eq(roleAssignments.tenantId, tenantId),
         roleCondition,
         scope,
+        accountActive(),
         lte(roleAssignments.validFrom, sql`now()`),
         or(
           isNull(roleAssignments.validUntil),
@@ -404,8 +424,27 @@ async function approvalResolvedRule(input: RuleInput): Promise<Rule> {
     title: "Permintaan diproses",
     verb: "diproses",
   };
+  // A requester who left the tenant (no active assignment of any scope) or
+  // whose account is banned is not told about the outcome.
+  const stillMember = await input.tx
+    .select({ userId: roleAssignments.userId })
+    .from(roleAssignments)
+    .innerJoin(user, eq(user.id, roleAssignments.userId))
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        eq(roleAssignments.userId, row.requestedBy),
+        accountActive(),
+        lte(roleAssignments.validFrom, sql`now()`),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, sql`now()`),
+        ),
+      ),
+    )
+    .limit(1);
   return {
-    userIds: [row.requestedBy],
+    userIds: stillMember.length > 0 ? [row.requestedBy] : [],
     content: {
       category: "approval_request",
       title: text.title,
@@ -600,8 +639,39 @@ export type BrevoEmailConfig = {
   fetch?: FetchLike;
 };
 
-/** 2xx accepted; 4xx (not 429) declined for good; 429, 5xx and network errors
- * throw because the message may or may not have been sent (retried). */
+/** Brevo deduplicates on `headers.idempotencyKey` (a UUID) for 30 minutes.
+ * The key is derived from the delivery attempt's stable reference, so a retry
+ * of the same attempt (lost response, crash recovery) reuses it. */
+export function brevoIdempotencyKey(reference: string): string {
+  const bytes = createHash("sha256")
+    .update(`legend-notification:${reference}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4 layout
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Reads only Brevo's error `code`; the body is never logged or returned. */
+async function brevoErrorCode(response: Response): Promise<string | null> {
+  return response
+    .json()
+    .then((body: unknown) =>
+      typeof body === "object" &&
+      body !== null &&
+      "code" in body &&
+      typeof body.code === "string"
+        ? body.code
+        : null,
+    )
+    .catch(() => null);
+}
+
+/** 2xx accepted, as is a `duplicate_parameter` reuse of the idempotency key;
+ * other 400 and 422 are declined for good; everything else (401, 403, 404,
+ * 408, 429, 5xx, network) throws because the message may or may not have been
+ * sent (retried). */
 export function createBrevoEmailProvider(
   config: BrevoEmailConfig,
 ): EmailProvider {
@@ -633,7 +703,10 @@ export function createBrevoEmailProvider(
           to: [{ email: request.to }],
           subject: request.subject,
           textContent: request.body,
-          headers: { "X-Legend-Reference": request.reference },
+          headers: {
+            idempotencyKey: brevoIdempotencyKey(request.reference),
+            "X-Legend-Reference": request.reference,
+          },
           tags: ["legend-notification"],
         }),
         signal: AbortSignal.timeout(BREVO_TIMEOUT_MS),
@@ -657,18 +730,27 @@ export function createBrevoEmailProvider(
           accepted: true,
         });
       }
-      // 401/403 (bad or revoked key, unverified sender) and 408 are
-      // operator or transient problems, not a bad message: throw so the
-      // attempt is retried and the failure is visible instead of a silent drop.
+      // The same attempt was already accepted within Brevo's 30-minute
+      // window (its response was lost): that is the acknowledgement. Brevo
+      // does not document the status of a reused key, so any 4xx is checked.
       if (
         response.status >= 400 &&
         response.status < 500 &&
-        ![401, 403, 408, 429].includes(response.status)
+        (await brevoErrorCode(response)) === "duplicate_parameter"
       )
+        return operationResultSchema.parse({
+          reference: request.reference,
+          accepted: true,
+        });
+      if (response.status === 400 || response.status === 422) {
+        // Only a malformed or unprocessable message is declined for good.
         return operationResultSchema.parse({
           reference: request.reference,
           accepted: false,
         });
+      }
+      // Anything else (401/403 bad key or sender, 404, 408, 429, 5xx) is an
+      // operator or transient problem: throw so it is retried and visible.
       throw new Error(
         `Brevo email request failed with status ${response.status}`,
       );
@@ -722,13 +804,17 @@ export function parseNotificationProviderEnv(
       problems.push(
         "BREVO_API_KEY is required when the email provider is brevo",
       );
+    else if (!/^[\x21-\x7e]+$/.test(apiKey) || /replace_me/i.test(apiKey))
+      problems.push("BREVO_API_KEY is not a valid API key");
     if (from === undefined)
       problems.push(
         "NOTIFICATION_EMAIL_FROM is required when the email provider is brevo",
       );
     else if (!z.email().safeParse(from).success)
       problems.push("NOTIFICATION_EMAIL_FROM must be an email address");
-    if (apiKey !== undefined && from !== undefined)
+    else if (/\.invalid$/i.test(from) || /replace_me/i.test(from))
+      problems.push("NOTIFICATION_EMAIL_FROM must be a real sender address");
+    if (problems.length === 0 && apiKey !== undefined && from !== undefined)
       email = {
         provider: "brevo",
         apiKey,

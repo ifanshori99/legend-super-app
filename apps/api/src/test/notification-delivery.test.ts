@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, expect, it } from "vitest";
+import { afterAll, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { eq, sql } from "drizzle-orm";
@@ -17,6 +17,7 @@ import { FakeEmailProvider, FakePushProvider } from "@starter/shared/adapters";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { deliverNotificationAttempt } from "../services/notification-delivery.ts";
+import { logger } from "../lib/logger.ts";
 
 import { seedTenantOutlets } from "./floor-test-helpers";
 
@@ -130,6 +131,35 @@ it("PRD §3.15 delivers with durable status and idempotently skips replay", asyn
   );
   expect(rows[0].status).toBe("sent");
   expect(rows[0].attempts).toBe(1);
+});
+it("legend-18qw logs a provider failure with channel and status only, never the body or address", async () => {
+  const attemptId = await makeAttempt("email");
+  const failing = {
+    async send() {
+      throw new Error("Brevo email request failed with status 401");
+    },
+  };
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  try {
+    await deliverNotificationAttempt(db, context, attemptId, {
+      resolve,
+      push,
+      email: failing as unknown as typeof email,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      deliveryAttemptId: ulidToUuid(attemptId),
+      channel: "email",
+      providerStatus: 401,
+      errorType: "Error",
+    });
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain("staff@example.com");
+    expect(logged).not.toContain("Order ready");
+    expect(logged).not.toContain(`${attemptId}:email`);
+  } finally {
+    warn.mockRestore();
+  }
 });
 it("PRD §3.15 prevents cross-tenant attempt access", async () => {
   const attemptId = await makeAttempt("web_push");

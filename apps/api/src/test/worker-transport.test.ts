@@ -23,7 +23,9 @@ import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import { createBuiltinWorkerTransport } from "../worker/transport.ts";
 
-const gapRecorder = vi.hoisted(() => vi.fn(async () => ({ requestCount: 1 })));
+const gapRecorder = vi.hoisted(() =>
+  vi.fn(async () => ({ requestCount: 1, counted: true })),
+);
 vi.mock("../services/core-outbox-gaps.ts", () => ({
   recordOutboxGapRequest: gapRecorder,
 }));

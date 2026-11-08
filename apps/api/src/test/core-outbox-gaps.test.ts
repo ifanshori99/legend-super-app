@@ -73,7 +73,7 @@ const allow = async () => true;
 const noop = async () => {};
 
 describe("outbox gap requests", () => {
-  it("legend-18qw repeated gap request is one row with an incremented count", async () => {
+  it("legend-18qw repeated gap request is one row, counted at most once a minute", async () => {
     const tenant = randomUUID();
     const gap = {
       destination: "test",
@@ -81,23 +81,30 @@ describe("outbox gap requests", () => {
       aggregateId: createUlid(),
       missingSequence: 1,
     };
+    // Pretend the last request was two minutes ago.
+    const ageLastRequest = () =>
+      withTenant(database, context(tenant), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_gap_requests SET last_requested_at = now() - interval '2 minutes'`,
+        ),
+      );
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       expect(
         await recordOutboxGapRequest(database, context(tenant), gap),
-      ).toEqual({
-        requestCount: 1,
-      });
+      ).toEqual({ requestCount: 1, counted: true });
+      // The next tick within a minute neither counts nor rewrites the row.
       expect(
         await recordOutboxGapRequest(database, context(tenant), gap),
-      ).toEqual({
-        requestCount: 2,
-      });
+      ).toEqual({ requestCount: 1, counted: false });
+      await ageLastRequest();
       expect(
         await recordOutboxGapRequest(database, context(tenant), gap),
-      ).toEqual({
-        requestCount: 3,
-      });
+      ).toEqual({ requestCount: 2, counted: true });
+      await ageLastRequest();
+      expect(
+        await recordOutboxGapRequest(database, context(tenant), gap),
+      ).toEqual({ requestCount: 3, counted: true });
       // Logged for counts 1 and 2 (powers of two), throttled for 3.
       expect(error).toHaveBeenCalledTimes(2);
       expect(error.mock.calls[0]?.[0]).toBe(
@@ -118,6 +125,36 @@ describe("outbox gap requests", () => {
         aggregate_id: ulidToUuid(gap.aggregateId),
       });
     });
+  });
+
+  it("legend-18qw a resolved gap requested again within a minute is reopened and counted", async () => {
+    const tenant = randomUUID();
+    const gap = {
+      destination: "test",
+      aggregateType: "pos_order",
+      aggregateId: createUlid(),
+      missingSequence: 1,
+    };
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(
+        await recordOutboxGapRequest(database, context(tenant), gap),
+      ).toEqual({ requestCount: 1, counted: true });
+      // Resolved seconds later (e.g. the offset passed it), then missing again.
+      await withTenant(database, context(tenant), (tx) =>
+        tx.execute(
+          sql`UPDATE domain_event_gap_requests SET resolved_at = now()`,
+        ),
+      );
+      expect(
+        await recordOutboxGapRequest(database, context(tenant), gap),
+      ).toEqual({ requestCount: 2, counted: true });
+    } finally {
+      error.mockRestore();
+    }
+    const rows = await gapRows(tenant);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.resolved_at).toBeNull();
   });
 
   it("legend-18qw another tenant cannot see a gap request", async () => {

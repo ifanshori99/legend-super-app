@@ -38,8 +38,10 @@ Reviewed with an architect consult before implementation.
    gap in `domain_event_gap_requests` (unique per tenant, destination,
    aggregate and missing sequence; tenant RLS), counts repeats, logs
    `Outbox sequence gap` on the first request and each power of two, and the
-   relay marks it resolved once the consumer offset passes it. Nothing skips a
-   gap automatically; the aggregate stays held until the event arrives. An
+   relay marks it resolved once the consumer offset passes it. The relay asks
+   every tick, but a gap row is counted and rewritten at most once a minute
+   (a resolved gap requested again is always reopened). Nothing skips a gap
+   automatically; the aggregate stays held until the event arrives. An
    audited operator "skip gap" action would be a separate bead. A failure to
    write the gap record is logged and never aborts the relay tick.
 4. **Producer bug fixed.** `operations-events.ts` numbered checklist events
@@ -52,8 +54,12 @@ Reviewed with an architect consult before implementation.
    unreachable to the delivery planner, so it is skipped, never reported as
    sent; in-app notifications are always written. Email has a Brevo adapter
    (account and sender domain: legend-wwuc); web push and WhatsApp templates
-   stay `disabled` until legend-hyq. Brevo 401, 403, 408, 429 and 5xx throw
-   (retried, visible); other 4xx decline the message.
+   stay `disabled` until legend-hyq. Only Brevo 400 and 422 decline a
+   message for good; every other failure (401, 403, 404, 408, 429, 5xx,
+   network) throws, is retried and is logged with the channel and HTTP status
+   only (never the body, the address or the key). `BREVO_API_KEY` must be
+   printable ASCII without spaces and `NOTIFICATION_EMAIL_FROM` must not be a
+   placeholder (`.invalid`, `replace_me`); both are checked at startup.
 6. **Recipients come from server state only**, by event name:
    `approval.requested` goes to holders of the current level's approver roles
    whose assignment covers the outlet (requester excluded);
@@ -62,5 +68,20 @@ Reviewed with an architect consult before implementation.
    failed alerts to the outlet's `supervisor`/`outlet_manager` roles, falling
    back to the tenant owner. An event without a rule throws, so it is retried
    and dead-lettered instead of dropped silently. Banned (disabled) or missing
-   accounts are dropped from every audience and unreachable at send time; a
-   malformed stored preference falls back to the defaults for that user only.
+   accounts are dropped from every audience before a fallback is chosen (a
+   banned supervisor does not hide the owner fallback) and unreachable at send
+   time; an account whose `ban_expires` has passed counts as active again.
+   `approval.resolved` reaches the requester only while they still hold an
+   active assignment in the tenant. A malformed stored preference falls back
+   to the defaults for that user only.
+7. **Email is at-least-once, deduplicated within Brevo's window.** Every send
+   carries `headers.idempotencyKey`, a UUID derived from the delivery
+   attempt's stable reference, so a retry of the same attempt (lost response,
+   worker crash) reuses the key. Brevo processes a key once for 30 minutes and
+   answers a reuse with error code `duplicate_parameter` (status undocumented,
+   so any 4xx carrying it counts), which the adapter treats as the
+   acknowledgement. A retry later than 30 minutes after an accepted send whose
+   response was lost can still deliver a second copy; with the default retry
+   table (30 s, 2 min, 10 min, 1 h; tenant policy may change it) only the
+   last retry falls outside the window. A duplicate notification email is accepted as the lesser failure
+   compared with a lost one.

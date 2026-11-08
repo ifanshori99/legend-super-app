@@ -131,11 +131,11 @@ describe("legend-18qw production worker delivery", () => {
       relayOutbox(database, context, enqueue, (gap) =>
         handlers.requestMissing(context, gap),
       );
-    // Sequence 1 is missing: nothing is claimable, the gap is recorded once
-    // per sweep in one durable row.
+    // Sequence 1 is missing: nothing is claimable, the gap is recorded in one
+    // durable row (counted at most once a minute, so two quick sweeps = 1).
     expect(await relay()).toBe(0);
     expect(await relay()).toBe(0);
-    const gapRow = sql`SELECT count(*) AS total FROM domain_event_gap_requests WHERE missing_sequence = 1 AND request_count = 2 AND resolved_at IS NULL`;
+    const gapRow = sql`SELECT count(*) AS total FROM domain_event_gap_requests WHERE missing_sequence = 1 AND request_count = 1 AND resolved_at IS NULL`;
     expect(await count(gapRow)).toBe(1);
     await expect(deliver(second)).rejects.toThrow("Aggregate sequence gap");
 

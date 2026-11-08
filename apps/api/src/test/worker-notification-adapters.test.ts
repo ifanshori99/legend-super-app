@@ -19,6 +19,7 @@ import { eventEnvelopeSchema, eventFixture } from "@starter/shared/events";
 import * as schema from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  brevoIdempotencyKey,
   createBrevoEmailProvider,
   createNotificationRecipientResolver,
   createWorkerNotificationHandlers,
@@ -109,7 +110,10 @@ describe("legend-18qw brevo email adapter", () => {
       to: [{ email: "staf@example.test" }],
       subject: "Judul",
       textContent: "Isi pesan",
-      headers: { "X-Legend-Reference": "attempt-key-1" },
+      headers: {
+        idempotencyKey: brevoIdempotencyKey("attempt-key-1"),
+        "X-Legend-Reference": "attempt-key-1",
+      },
       tags: ["legend-notification"],
     });
     expect(init.signal).toBeInstanceOf(AbortSignal);
@@ -125,16 +129,30 @@ describe("legend-18qw brevo email adapter", () => {
     });
   });
 
-  it("legend-18qw declines on 4xx but throws on 401, 403, 408, 429, 5xx and network errors", async () => {
-    for (const status of [400, 404, 422]) {
+  it("legend-18qw declines only 400/422 and throws on every other failure", async () => {
+    for (const status of [400, 422]) {
       const { fetch } = fakeFetch(() => new Response("{}", { status }));
       await expect(brevo(fetch).send(context, emailRequest)).resolves.toEqual({
         reference: "attempt-key-1",
         accepted: false,
       });
     }
+    // A reused idempotency key is the acknowledgement whatever 4xx carries it
+    // (Brevo does not document the status).
+    for (const status of [400, 409, 422]) {
+      const { fetch } = fakeFetch(
+        () =>
+          new Response(JSON.stringify({ code: "duplicate_parameter" }), {
+            status,
+          }),
+      );
+      await expect(brevo(fetch).send(context, emailRequest)).resolves.toEqual({
+        reference: "attempt-key-1",
+        accepted: true,
+      });
+    }
     // A bad or revoked key, an unverified sender and timeouts retry visibly.
-    for (const status of [401, 403, 408, 429, 500, 503]) {
+    for (const status of [401, 403, 404, 408, 429, 500, 503]) {
       const { fetch } = fakeFetch(() => new Response("{}", { status }));
       await expect(brevo(fetch).send(context, emailRequest)).rejects.toThrow(
         String(status),
@@ -146,6 +164,54 @@ describe("legend-18qw brevo email adapter", () => {
     await expect(brevo(failing).send(context, emailRequest)).rejects.toThrow(
       "network down",
     );
+  });
+
+  it("legend-18qw a lost response is retried with the same idempotency key and the duplicate counts as sent", async () => {
+    // A fake Brevo that sends once per idempotency key (30-minute window) and
+    // answers a reused key with duplicate_parameter, like the real API.
+    const sentKeys: string[] = [];
+    const seen = new Set<string>();
+    let loseResponse = true;
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        headers: { idempotencyKey: string };
+      };
+      const key = body.headers.idempotencyKey;
+      if (seen.has(key))
+        return new Response(
+          JSON.stringify({
+            code: "duplicate_parameter",
+            message: "Duplicate idempotency key",
+          }),
+          { status: 400 },
+        );
+      seen.add(key);
+      sentKeys.push(key);
+      if (loseResponse) {
+        loseResponse = false;
+        // Accepted and sent, but the response never reaches the worker.
+        throw new TypeError("socket hang up");
+      }
+      return new Response(JSON.stringify({ messageId: "<m@brevo>" }), {
+        status: 201,
+      });
+    }) as typeof globalThis.fetch;
+    const provider = brevo(fetch);
+    await expect(provider.send(context, emailRequest)).rejects.toThrow(
+      "socket hang up",
+    );
+    // The retry of the same attempt is acknowledged, not sent again.
+    await expect(provider.send(context, emailRequest)).resolves.toEqual({
+      reference: emailRequest.reference,
+      accepted: true,
+    });
+    expect(sentKeys).toHaveLength(1);
+    expect(sentKeys[0]).toBe(brevoIdempotencyKey(emailRequest.reference));
+    expect(sentKeys[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    // Another attempt gets another key, so it is really sent.
+    expect(brevoIdempotencyKey("attempt-key-2")).not.toBe(sentKeys[0]);
   });
 
   it("legend-18qw validates the request and refuses another tenant before any I/O", async () => {
@@ -225,6 +291,30 @@ describe("legend-18qw notification provider env", () => {
     } catch (error) {
       expect(String(error)).not.toContain("xkeysib-test-secret-value");
     }
+  });
+
+  it("legend-18qw refuses a malformed api key and a placeholder sender at startup, naming only the key", () => {
+    for (const apiKey of [
+      "xkeysib with space",
+      "xkeysib-\u00e9",
+      "replace_me",
+    ]) {
+      let message = "";
+      try {
+        parseNotificationProviderEnv({ ...brevoEnv, BREVO_API_KEY: apiKey });
+      } catch (error) {
+        message = String(error);
+      }
+      expect(message).toContain("BREVO_API_KEY is not a valid API key");
+      expect(message).not.toContain(apiKey);
+    }
+    for (const from of ["noreply@legend.invalid", "replace_me@example.test"])
+      expect(() =>
+        parseNotificationProviderEnv({
+          ...brevoEnv,
+          NOTIFICATION_EMAIL_FROM: from,
+        }),
+      ).toThrow("NOTIFICATION_EMAIL_FROM must be a real sender address");
   });
 
   it("legend-18qw disabled providers refuse to send and brevo is wired through the handlers", async () => {
@@ -792,6 +882,122 @@ describe("legend-18qw notification recipient resolver", () => {
     expect(mine).not.toContain(users.otherOutletApprover);
     expect(mine).not.toContain(users.cashier);
     expect(mine).not.toContain(users.lapsedApprover);
+  });
+
+  it("legend-18qw a banned supervisor does not hide the owner fallback; an expired ban is active again", async () => {
+    // An isolated tenant: the fixture tenant has seeded supervisors.
+    const tenantC = randomUUID();
+    const brandC = randomUUID();
+    const legalC = randomUUID();
+    const outletC = randomUUID();
+    const supervisorRole = randomUUID();
+    const ownerRole = randomUUID();
+    const bannedSupervisor = randomUUID();
+    const ownerC = randomUUID();
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1, $2, 'Fallback test tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+      [tenantC, `adapters-c-${tenantC}`, ownerC],
+    );
+    await owner.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Brand C')",
+      [brandC, tenantC, `adapters-c-${tenantC.slice(0, 8)}`],
+    );
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT C', false)",
+      [legalC, tenantC],
+    );
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours)
+     VALUES ($1, $2, $3, $4, 'OUT-C', 'Outlet C', 'Jl. C', '{}')`,
+      [outletC, tenantC, brandC, legalC],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, allowed_scope_types)
+     VALUES ($1, $3, 'Supervisor', true, 'supervisor', '[]'::jsonb, '["tenant","brand","outlet"]'::jsonb),
+            ($2, $3, 'Owner', true, 'owner', '[]'::jsonb, '["tenant"]'::jsonb)`,
+      [supervisorRole, ownerRole, tenantC],
+    );
+    await owner.query(
+      `INSERT INTO "user" (id, name, email, email_verified, banned) VALUES
+       ($1, 'Supervisor diblokir', $3, true, true), ($2, 'Pemilik C', $4, true, false)`,
+      [
+        bannedSupervisor,
+        ownerC,
+        `${bannedSupervisor}@example.test`,
+        `${ownerC}@example.test`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, assigned_by, valid_from)
+     VALUES ($1, $2, $3, 'outlet', $5, $4, now() - interval '1 hour'),
+            ($1, $4, $6, 'tenant', NULL, $4, now() - interval '1 hour')`,
+      [tenantC, bannedSupervisor, supervisorRole, ownerC, outletC, ownerRole],
+    );
+    const contextC = tenantContext(tenantC);
+    const event = {
+      ...envelope("checklist.missed", bandung, {
+        runId: randomUUID(),
+        templateId: randomUUID(),
+        shiftDate: "2026-11-08",
+        assignedTo: randomUUID(),
+        dueAt: "2026-11-08T03:00:00.000Z",
+        detectedAt: "2026-11-08T03:05:00.000Z",
+      }),
+      tenantId: tenantC,
+      outletId: outletC,
+    } as ReturnType<typeof envelope>;
+    const resolveC = () =>
+      withTenant(database, contextC, (tx) =>
+        createNotificationRecipientResolver({ email: true, push: false })(
+          contextC,
+          event,
+          tx,
+        ),
+      );
+    try {
+      expect((await resolveC()).map((r) => r.userId)).toEqual([ownerC]);
+      // The ban has expired: the supervisor takes the alert again.
+      await owner.query(
+        `UPDATE "user" SET ban_expires = now() - interval '1 minute' WHERE id = $1`,
+        [bannedSupervisor],
+      );
+      expect((await resolveC()).map((r) => r.userId)).toEqual([
+        bannedSupervisor,
+      ]);
+    } finally {
+      await owner.query("DELETE FROM role_assignments WHERE tenant_id = $1", [
+        tenantC,
+      ]);
+      await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
+        [bannedSupervisor, ownerC],
+      ]);
+    }
+  });
+
+  it("legend-18qw approval.resolved skips a requester who no longer holds an active assignment", async () => {
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.lapsedApprover,
+      approverRoleIds: [await roleIdOf("supervisor")],
+      decided: { by: users.tenantApprover },
+    });
+    const event = envelope("approval.resolved", bandung, {
+      chainId: requestId,
+      requestId,
+      sourceModule: "payment",
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      outcome: "rejected",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.lapsedApprover,
+      decidedBy: users.tenantApprover,
+      amountIdr: null,
+    });
+    expect(await resolve({ email: true, push: true }, event)).toEqual([]);
   });
 
   it("legend-18qw an unknown event name throws so the outbox retries and dead-letters", async () => {
