@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794146405855,
+      "tag": "0068_closed_tiger_shark",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794146407007,
+      "tag": "0069_hesitant_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }
