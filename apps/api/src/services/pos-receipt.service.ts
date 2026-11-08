@@ -3,7 +3,9 @@
 // @starter/shared/pos receipts.ts).
 //
 // - One `receipt_sequences` row per (tenant, outlet, device); a sale without a
-//   device (cloud / back-office POS) uses the outlet id as its device key.
+//   device (cloud / back-office POS) uses the outlet id as its device key and
+//   the fixed prefix `C`. Device sequences are `P1, P2, ...`; an edge never
+//   creates one and refuses a sale without a verified device.
 // - Allocation is gapless because it runs inside the sale transaction: the
 //   UPDATE ... last_number + 1 row lock serialises devices and a rollback of
 //   the sale rolls the number back with it. Idempotent per order.
@@ -12,13 +14,15 @@
 //   missing ordinals (late/reversed batches too), is an idempotent replay and
 //   advances `lastNumber` only over a complete 1..n run (else
 //   RECEIPT_SEQUENCE_GAP, nothing written). It refuses the outlet-owned
-//   (cloud) sequence, receipts whose order is not in the same tenant and
-//   outlet, and an ordinal that is already taken by another receipt.
+//   (cloud) sequence and prefix `C`, receipts whose order is not completed on
+//   the same tenant, outlet and device, a device void with no
+//   matching cloud void row, and an ordinal that is already taken by another receipt.
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   CoreError,
+  userIdSchema,
   type OutletId,
   type ScopedTenantContext,
   type TenantId,
@@ -26,6 +30,7 @@ import {
 } from "@starter/shared/core";
 import {
   assertReceiptMatchesSequence,
+  CLOUD_RECEIPT_PREFIX,
   formatReceiptNumber,
   RECEIPT_MAX_ORDINAL,
   posReceiptSchema,
@@ -37,7 +42,9 @@ import {
   type PosReceipt,
   type ReceiptSequence,
 } from "@starter/shared/pos";
-import { posOrders } from "../db/schema/pos-order.ts";
+import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import { posOrders, posOrderVoids } from "../db/schema/pos-order.ts";
+import { orders } from "../db/schema/qr-order.ts";
 import { legalEntities, outlets } from "../db/schema/platform-org.ts";
 import {
   posReceipts,
@@ -158,7 +165,11 @@ async function insertSequence(
   return row;
 }
 
-/** Existing sequence of the device, or a new one with the next free prefix. */
+/**
+ * Existing sequence of the key. The outlet id key is the cloud-owned sequence
+ * (prefix `C`). A device key gets a new row with the next free `P<n>` prefix in
+ * the cloud; an edge never invents one (the cloud provisions it first).
+ */
 async function ensureSequence(
   tx: Tx,
   tenantId: TenantId,
@@ -167,10 +178,20 @@ async function ensureSequence(
 ): Promise<SequenceRow> {
   const existing = await findSequenceRow(tx, tenantId, outletId, deviceId);
   if (existing) return existing;
+  const cloudOwned = deviceId === outletId;
+  if (!cloudOwned && getEdgeRuntimeState().edgeMode)
+    throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
   await lockOutletSequences(tx, tenantId, outletId);
   // Another sale may have created it while this one waited for the lock.
   const created = await findSequenceRow(tx, tenantId, outletId, deviceId);
   if (created) return created;
+  if (cloudOwned)
+    return insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId,
+      prefix: CLOUD_RECEIPT_PREFIX,
+    });
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   return insertSequence(tx, {
     tenantId,
@@ -309,6 +330,9 @@ export async function allocateReceipt(
 ): Promise<PosReceipt> {
   const existing = await findReceiptForOrder(tx, context, input.orderId);
   if (existing) return existing;
+  // An edge sale without a verified device cannot take a cloud number.
+  if (input.deviceId === null && getEdgeRuntimeState().edgeMode)
+    throw new PosError("RECEIPT_DEVICE_REQUIRED");
   const tenantId = context.tenant.tenantId;
   const deviceKey = input.deviceId ?? input.outletId;
   const outletId = input.outletId as OutletId;
@@ -422,6 +446,9 @@ export async function provisionReceiptSequence(
   const prefix = receiptPrefixSchema.parse(input.prefix);
   const tenantId = context.tenant.tenantId;
   const outletId = input.outletId as OutletId;
+  // The outlet id key and prefix `C` belong to the cloud-owned sequence.
+  if (input.deviceId === outletId || prefix === CLOUD_RECEIPT_PREFIX)
+    throw new PosError("RECEIPT_PREFIX_MISMATCH");
   await lockOutletSequences(tx, tenantId, outletId);
   const used = await prefixesOfOutlet(tx, tenantId, outletId);
   const owner = used.get(prefix);
@@ -461,17 +488,42 @@ export async function provisionReceiptSequence(
   return toReceiptSequence(row);
 }
 
+/** Void columns of a merged receipt, taken from the cloud void row. */
+function voidFieldsOf(
+  receipt: PosReceipt,
+  voidRows: ReadonlyMap<string, typeof posOrderVoids.$inferSelect>,
+): {
+  voidedAt: Date | null;
+  voidReason: string | null;
+  voidedBy: UserId | null;
+} {
+  if (receipt.status !== "voided")
+    return { voidedAt: null, voidReason: null, voidedBy: null };
+  const row = voidRows.get(receipt.orderId);
+  if (!row) throw new PosError("RECEIPT_VOID_UNMATCHED");
+  return {
+    voidedAt: row.voidedAt,
+    voidReason: voidReasonSchema.parse(row.reason),
+    voidedBy: userIdSchema.parse(row.requestedBy),
+  };
+}
+
 /**
  * Cloud merge of an offline device run. The device's run is authoritative for
  * its ordinals. Incoming receipts missing in the cloud are inserted (above or
  * below the cloud `lastNumber`: late and reversed batches are fine), an
  * ordinal already present must be the very same receipt (replay is a no-op)
- * and a receipt voided offline is voided here too. The cloud `lastNumber`
+ * and a receipt marked voided by the device is voided here only when the cloud
+ * holds the matching `pos_order_voids` row (the approval path); the void
+ * time, reason and actor come from that row, never from the device (else
+ * RECEIPT_VOID_UNMATCHED). The cloud `lastNumber`
  * moves to max(cloud, device) only when every ordinal 1..newLast exists after
  * the batch; otherwise nothing is written and RECEIPT_SEQUENCE_GAP lists the
  * missing ordinals (the device resends the full range). A device cannot use
- * the cloud-owned (outlet id) sequence and can only reference orders of its
- * own outlet.
+ * the cloud-owned sequence (outlet id key, prefix `C`) and can only reference
+ * completed orders of its own outlet that carry its own device id, and only
+ * under the prefix the cloud gave the device (else
+ * RECEIPT_SEQUENCE_NOT_PROVISIONED / RECEIPT_PREFIX_MISMATCH).
  */
 export async function mergeDeviceReceiptRun(
   tx: Tx,
@@ -490,7 +542,8 @@ export async function mergeDeviceReceiptRun(
   const { deviceId, prefix } = input.sequence;
   const outletId = input.sequence.outletId as OutletId;
   // The outlet id is the key of the cloud-owned sequence; a device never owns it.
-  if (deviceId === outletId) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  if (deviceId === outletId || prefix === CLOUD_RECEIPT_PREFIX)
+    throw new PosError("RECEIPT_PREFIX_MISMATCH");
   // The sync boundary validates too; the service still refuses a last number
   // that is not a receipt ordinal so the completeness walk stays bounded.
   const lastNumber = input.sequence.lastNumber;
@@ -509,16 +562,30 @@ export async function mergeDeviceReceiptRun(
         "VALIDATION_ERROR",
         "Kepala struk dari perangkat tidak valid.",
       );
+  // A device may only claim a void with well-formed fields; the values that
+  // are written come from the cloud void row below.
+  for (const receipt of input.receipts)
+    if (
+      receipt.status === "voided" &&
+      !(
+        voidReasonSchema.safeParse(receipt.voidReason).success &&
+        userIdSchema.safeParse(receipt.voidedBy).success &&
+        typeof receipt.voidedAt === "string" &&
+        !Number.isNaN(new Date(receipt.voidedAt).getTime())
+      )
+    )
+      throw new CoreError(
+        "VALIDATION_ERROR",
+        "Data void struk dari perangkat tidak valid.",
+      );
   await lockOutletSequences(tx, tenantId, outletId);
+  // The device's prefix comes only from the cloud (provisionReceiptSequence or
+  // a cloud sale of the device); a run under a prefix the cloud never gave
+  // out is refused, so two devices can never pick the same one offline.
   const cloudRow = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (cloudRow) {
-    if (cloudRow.prefix !== prefix)
-      throw new PosError("RECEIPT_PREFIX_MISMATCH");
-  } else {
-    const used = await prefixesOfOutlet(tx, tenantId, outletId);
-    if (used.has(prefix)) throw new PosError("RECEIPT_PREFIX_MISMATCH");
-  }
-  const cloudLast = cloudRow?.lastNumber ?? 0;
+  if (!cloudRow) throw new PosError("RECEIPT_SEQUENCE_NOT_PROVISIONED");
+  if (cloudRow.prefix !== prefix) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  const cloudLast = cloudRow.lastNumber;
 
   // Validate the whole batch before anything is written.
   const ordinals = new Set<number>();
@@ -543,40 +610,72 @@ export async function mergeDeviceReceiptRun(
     ordinals.add(receipt.sequenceNumber);
     batchOrderIds.add(receipt.orderId);
   }
+  // A void correction leaves the order `completed` and writes a
+  // `pos_order_voids` row (voidPosOrderCorrection); that row is the proof.
+  const voidRows = new Map<string, typeof posOrderVoids.$inferSelect>();
   if (input.receipts.length > 0) {
     const orderIds = [...batchOrderIds];
     const orderRows = await tx
-      .select({ orderId: posOrders.orderId })
+      .select({ orderId: posOrders.orderId, status: orders.status })
       .from(posOrders)
+      .innerJoin(
+        orders,
+        and(
+          eq(orders.tenantId, posOrders.tenantId),
+          eq(orders.id, posOrders.orderId),
+        ),
+      )
       .where(
         and(
           eq(posOrders.tenantId, tenantId),
           eq(posOrders.outletId, outletId),
+          eq(posOrders.deviceId, deviceId),
+          // A voided-before-payment order never had a receipt.
+          eq(orders.status, "completed"),
           inArray(posOrders.orderId, orderIds),
         ),
       );
-    const known = new Set<string>(orderRows.map((row) => row.orderId));
+    const known = new Map<string, string>(
+      orderRows.map((row) => [row.orderId, row.status]),
+    );
     for (const orderId of orderIds)
       if (!known.has(orderId)) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+    const voidedIds = input.receipts
+      .filter((receipt) => receipt.status === "voided")
+      .map((receipt) => receipt.orderId);
+    if (voidedIds.length > 0) {
+      const found = await tx
+        .select()
+        .from(posOrderVoids)
+        .where(
+          and(
+            eq(posOrderVoids.tenantId, tenantId),
+            eq(posOrderVoids.outletId, outletId),
+            inArray(posOrderVoids.orderId, voidedIds),
+          ),
+        );
+      for (const row of found) voidRows.set(row.orderId, row);
+      for (const orderId of voidedIds)
+        if (!voidRows.has(orderId))
+          throw new PosError("RECEIPT_VOID_UNMATCHED");
+    }
   }
 
   // Compare the batch with what the cloud already holds.
   const byOrdinal = new Map<number, ReceiptRow>();
   const cloudOrdinals = new Set<number>();
-  if (cloudRow) {
-    const held = await tx
-      .select()
-      .from(posReceipts)
-      .where(
-        and(
-          eq(posReceipts.tenantId, tenantId),
-          eq(posReceipts.sequenceId, cloudRow.id),
-        ),
-      );
-    for (const row of held) {
-      byOrdinal.set(row.sequenceNumber, row);
-      cloudOrdinals.add(row.sequenceNumber);
-    }
+  const held = await tx
+    .select()
+    .from(posReceipts)
+    .where(
+      and(
+        eq(posReceipts.tenantId, tenantId),
+        eq(posReceipts.sequenceId, cloudRow.id),
+      ),
+    );
+  for (const row of held) {
+    byOrdinal.set(row.sequenceNumber, row);
+    cloudOrdinals.add(row.sequenceNumber);
   }
   const byOrder = new Map<string, ReceiptRow>();
   if (input.receipts.length > 0) {
@@ -607,13 +706,7 @@ export async function mergeDeviceReceiptRun(
       existing.number !== receipt.number
     )
       throw new PosError("RECEIPT_SEQUENCE_REGRESSION");
-    if (
-      receipt.status === "voided" &&
-      existing.status === "issued" &&
-      receipt.voidedAt &&
-      receipt.voidReason &&
-      receipt.voidedBy
-    )
+    if (receipt.status === "voided" && existing.status === "issued")
       toVoid.push({ existing, receipt });
   }
 
@@ -638,13 +731,6 @@ export async function mergeDeviceReceiptRun(
   // Writes: sequence first (the retained trigger needs sequence_number <=
   // last_number), then receipts, all in the caller's transaction.
   let sequenceRow = cloudRow;
-  if (!sequenceRow)
-    sequenceRow = await insertSequence(tx, {
-      tenantId,
-      outletId,
-      deviceId,
-      prefix,
-    });
   if (newLast !== sequenceRow.lastNumber) {
     const [row] = await tx
       .update(receiptSequences)
@@ -688,9 +774,7 @@ export async function mergeDeviceReceiptRun(
       sequenceNumber: receipt.sequenceNumber,
       status: receipt.status,
       issuedAt: new Date(receipt.issuedAt),
-      voidedAt: receipt.voidedAt ? new Date(receipt.voidedAt) : null,
-      voidReason: receipt.voidReason,
-      voidedBy: receipt.voidedBy,
+      ...voidFieldsOf(receipt, voidRows),
       reprintCount: receipt.reprintCount,
       outletSnapshot: snapshot,
     });
@@ -700,9 +784,7 @@ export async function mergeDeviceReceiptRun(
       .update(posReceipts)
       .set({
         status: "voided",
-        voidedAt: new Date(receipt.voidedAt as string),
-        voidReason: receipt.voidReason,
-        voidedBy: receipt.voidedBy,
+        ...voidFieldsOf(receipt, voidRows),
         updatedAt: sql`now()`,
       })
       .where(

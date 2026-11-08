@@ -1,7 +1,8 @@
 // Minimal PDF 1.4 renderer for receipts, kuitansi and invoices (POS-07, PRD
 // v1.7 §3 F11). No dependency: Helvetica (WinAnsi), one content stream per
 // page, a classic xref table. A pure function of the document, so a reprint of
-// the same document is byte-identical.
+// the same document is byte-identical (the "CETAK ULANG" mark is a document
+// field, not render state).
 
 import type { InvoiceDocument, ReceiptDocument } from "@starter/shared/pos";
 
@@ -154,6 +155,7 @@ function buildRows(doc: Document): Row[] {
 
   center(TITLES[doc.documentKind], true, true);
   if (doc.status === "voided") center("DIBATALKAN", false, true);
+  if (doc.reprint) center("CETAK ULANG", false, true);
   gap();
   center(doc.outletName, false, true);
   center(doc.outletAddress);

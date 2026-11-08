@@ -161,6 +161,22 @@ test("POS-06: an offline device continues its own gapless run without duplicates
   assert.equal(new Set([first.number, second.number, "CLB-P1-000001"]).size, 3);
 });
 
+test("POS-06: cloud receipt prefix is fixed and edge refusals have their own codes", () => {
+  assert.equal(pos.CLOUD_RECEIPT_PREFIX, "C");
+  assert.equal(
+    pos.formatReceiptNumber(pos.CLOUD_RECEIPT_PREFIX, 1),
+    "C-000001",
+  );
+  for (const code of [
+    "RECEIPT_DEVICE_REQUIRED",
+    "RECEIPT_SEQUENCE_NOT_PROVISIONED",
+    "RECEIPT_VOID_UNMATCHED",
+  ]) {
+    assert.equal(pos.POS_ERROR_CODES.includes(code), true);
+    assert.equal(new pos.PosError(code).code, code);
+  }
+});
+
 test("POS-04: final orders are immutable and corrections are linked records", () => {
   // The explicit status machine has no path out of completed or voided.
   assert.equal(pos.transitionPosOrder("draft", "submit"), "awaiting_payment");

@@ -8,13 +8,13 @@
 // Real Express app, Better Auth, RBAC and PostgreSQL with RLS (disposable
 // server from `pnpm test`) in a fresh isolated tenant. The REAL receipt port
 // is installed (no in-memory double). Each scenario uses its own outlet so
-// "first receipt is P1-000001" does not depend on test order.
+// "first receipt is C-000001" does not depend on test order.
 //
 // Run just this file (from the repo root):
 //   LEGEND_TEST_FILES="src/test/pos-receipt.test.ts" heavy pnpm test
 //
 // Assumptions (spec/brief ambiguous):
-//  - HTTP sales have deviceId null, so they use the outlet's own sequence
+//  - HTTP sales have deviceId null, so they use the outlet's cloud sequence (prefix C)
 //    (device key = outlet id); other devices are exercised through the service.
 //  - Cash tender lines on a document carry the amount applied to the bill
 //    (the contract requires tenders to sum to the total).
@@ -118,6 +118,7 @@ type Member = { client: ReturnType<typeof agent>; userId: string };
 let cashier: Member;
 let reader: Member;
 let viewer: Member;
+let approver: Member;
 
 /** A run clock past the email backoff window (2..16 min). */
 const hoursLater = (hours: number) => new Date(Date.now() + hours * 3_600_000);
@@ -323,6 +324,59 @@ async function drafts(outletId: string, count: number): Promise<string[]> {
   return out;
 }
 
+/**
+ * A merge-ready order: owned by `deviceId` and completed, with no receipt yet.
+ * Built from a draft (still editable) with owner SQL; a final order is immutable.
+ */
+async function deviceOrders(
+  outletId: string,
+  deviceId: string,
+  count: number,
+): Promise<string[]> {
+  const out = await drafts(outletId, count);
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    for (const orderId of out) {
+      await client.query(
+        `UPDATE pos_orders SET device_id = $3 WHERE tenant_id = $1 AND order_id = $2::uuid`,
+        [tenant.tenantId, ulidToUuid(orderId), deviceId],
+      );
+      await client.query(
+        `UPDATE orders SET status = 'completed' WHERE tenant_id = $1 AND id = $2::uuid`,
+        [tenant.tenantId, ulidToUuid(orderId)],
+      );
+    }
+  });
+  return out;
+}
+
+/** The cloud side of a void: the linked correction row (order stays completed). */
+async function cloudVoid(
+  outletId: string,
+  orderId: string,
+  receiptNumber: string,
+  reason = "wrong_order",
+): Promise<void> {
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO pos_order_voids
+         (tenant_id, outlet_id, order_id, receipt_number, amount_idr, reason, reason_note,
+          requested_by, approved_by, override_id, voided_at)
+       VALUES ($1, $2, $3::uuid, $4, $5, $6, 'Pelanggan batal', $7, $8, $9, now())`,
+      [
+        tenant.tenantId,
+        outletId,
+        ulidToUuid(orderId),
+        receiptNumber,
+        KOPI_IDR,
+        reason,
+        cashier.userId,
+        approver.userId,
+        randomUUID(),
+      ],
+    ),
+  );
+}
+
 // ---- Service access (inside a tenant transaction, like the order service) ---------
 
 type ServiceTx = Parameters<typeof allocateReceipt>[0];
@@ -425,6 +479,13 @@ function mergeRun(
   );
 }
 
+/** The cloud gives the device its prefix first; a merge needs that row. */
+function provision(outletId: string, deviceId: string, prefix: string) {
+  return inTx((tx, c) =>
+    provisionReceiptSequence(tx, c, { outletId, deviceId, prefix }),
+  );
+}
+
 // ---- Showcase: one finished sale with everything issued on it ------------------
 
 type Showcase = Awaited<ReturnType<typeof buildShowcase>>;
@@ -495,6 +556,7 @@ beforeAll(async () => {
   cashier = await member(ids.cashierRole, "Receipt Kasir");
   reader = await member(ids.readerRole, "Receipt Pembaca");
   viewer = await member(ids.viewerRole, "Receipt Tamu");
+  approver = await member(ids.cashierRole, "Receipt Supervisor");
   await asOwnerTenant(tenant.tenantId, async (client) => {
     await client.query(
       `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
@@ -553,23 +615,23 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
 
     const receipts = await receiptRows(outletId);
     expect(receipts.map((row) => row.number)).toEqual([
-      "P1-000001",
-      "P1-000002",
-      "P1-000003",
-      "P1-000004",
+      "C-000001",
+      "C-000002",
+      "C-000003",
+      "C-000004",
     ]);
     // A sale without a device (cloud / back-office POS) uses the outlet id as
     // its device key.
     for (const row of receipts) expect(row.device_id).toBe(outletId);
     const sequences = await sequenceRows(outletId);
     expect(sequences).toHaveLength(1);
-    expect(sequences[0]).toMatchObject({ prefix: "P1", last_number: 4 });
+    expect(sequences[0]).toMatchObject({ prefix: "C", last_number: 4 });
 
     // The cashier screen shows the number of each order, in sale order.
     const detail = await api(outletId).get(`/orders/${orderIds[2]}`);
     expect(detail.status).toBe(200);
     expect(detail.body.data.receipt).toMatchObject({
-      number: "P1-000003",
+      number: "C-000003",
       status: "issued",
     });
     expect(
@@ -655,8 +717,8 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
     const first = await allocate(outletId, one!, null);
     const second = await allocate(outletId, two!, null);
     expect(first.deviceId).toBe(outletId);
-    expect(first.number).toBe("P1-000001");
-    expect(second.number).toBe("P1-000002");
+    expect(first.number).toBe("C-000001");
+    expect(second.number).toBe("C-000002");
     const sequences = await sequenceRows(outletId);
     expect(sequences).toHaveLength(1);
     expect(sequences[0]).toMatchObject({ device_id: outletId, last_number: 2 });
@@ -799,11 +861,11 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
 
     // The number stays on record and the next sale does not take it over.
     const next = await allocate(outletId, two!, null);
-    expect(next.number).toBe("P1-000002");
+    expect(next.number).toBe("C-000002");
     const stored = await receiptRows(outletId);
     expect(stored.map((row) => [row.number, row.status])).toEqual([
-      ["P1-000001", "voided"],
-      ["P1-000002", "issued"],
+      ["C-000001", "voided"],
+      ["C-000002", "issued"],
     ]);
     // A void only touches that receipt.
     expect(
@@ -916,8 +978,9 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
 describe("POS-06 merge of an offline device run (legend-93a)", () => {
   it("POS-06 a device run merges once, replays idempotently and refuses regressions and prefix changes", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3, o4, o5, other] = await drafts(outletId, 6);
     const device = randomUUID();
+    const [o1, o2, o3, o4, o5, other] = await deviceOrders(outletId, device, 6);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     const run = (orderIds: string[], from = 1) =>
       orderIds.map((orderId, index) =>
@@ -1040,8 +1103,9 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
 
   it("POS-06 a device cannot claim a last number beyond the receipts it sends", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3, o4] = await drafts(outletId, 4);
     const device = randomUUID();
+    const [o1, o2, o3, o4] = await deviceOrders(outletId, device, 4);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     // Round 2: a claim beyond the sent receipts leaves ordinals missing, so it
     // is refused as RECEIPT_SEQUENCE_GAP (was VALIDATION_ERROR in round 1).
@@ -1055,7 +1119,7 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
       ]),
     ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
     expect(await receiptRows(outletId)).toHaveLength(0);
-    expect(await sequenceRows(outletId)).toHaveLength(0);
+    expect(await sequenceRows(outletId)).toMatchObject([{ last_number: 0 }]);
 
     // After a good run to 3, a later run sending only #4 cannot claim 6.
     await mergeRun(outletId, device, "OFF1", 3, [
@@ -1074,8 +1138,9 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
 
   it("POS-06 a stale replay of an earlier batch is a no-op and the sequence stays put", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3, o4] = await drafts(outletId, 4);
     const device = randomUUID();
+    const [o1, o2, o3, o4] = await deviceOrders(outletId, device, 4);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     const batch = (orderIds: string[], from: number) =>
       orderIds.map((orderId, index) =>
@@ -1110,6 +1175,7 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
     const elsewhere = await freshOutlet();
     const [foreignOrder] = await drafts(elsewhere, 1);
     const device = randomUUID();
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
 
     await expect(
@@ -1126,21 +1192,24 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
         }),
       ]),
     ).rejects.toMatchObject({ code: "RECEIPT_PREFIX_MISMATCH" });
-    for (const id of [outletId, elsewhere]) {
+    for (const id of [outletId, elsewhere])
       expect(await receiptRows(id)).toHaveLength(0);
-      expect(await sequenceRows(id)).toHaveLength(0);
-    }
+    expect(await sequenceRows(outletId)).toMatchObject([{ last_number: 0 }]);
+    expect(await sequenceRows(elsewhere)).toHaveLength(0);
   });
 
   it("POS-06 a receipt voided offline is voided in the cloud and keeps its number", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2] = await drafts(outletId, 2);
     const device = randomUUID();
+    const [o1, o2] = await deviceOrders(outletId, device, 2);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     await mergeRun(outletId, device, "OFF1", 2, [
       offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
       offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
     ]);
+    // The cloud void went through the approval path (pos_order_voids row).
+    await cloudVoid(outletId, o1!, "OFF1-000001");
     const replay = await mergeRun(outletId, device, "OFF1", 2, [
       offlineReceipt({ ...base, orderId: o1!, ordinal: 1, voided: true }),
       offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
@@ -1157,8 +1226,8 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
 
 // ---- POS-06: merge completeness (Round 2 P1) -------------------------------------
 // Assumptions: a batch that would leave ordinals 1..lastNumber incomplete is
-// refused as RECEIPT_SEQUENCE_GAP and writes nothing (not even the sequence
-// row); the exact shape of `details.missing` is not asserted.
+// refused as RECEIPT_SEQUENCE_GAP and writes nothing (the provisioned sequence
+// row stays at last_number 0); the exact shape of `details.missing` is not asserted.
 
 describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
   const gapsOf = async (outletId: string, device: string) =>
@@ -1190,8 +1259,9 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 a sparse batch is refused with RECEIPT_SEQUENCE_GAP and writes nothing; the missing numbers then merge in order", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o3] = await deviceOrders(outletId, device, 3);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
 
     // lastNumber 3 but only #3 sent, empty cloud: 1 and 2 are missing.
@@ -1201,7 +1271,7 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
       ]),
     ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
     expect(await receiptRows(outletId)).toHaveLength(0);
-    expect(await sequenceRows(outletId)).toHaveLength(0);
+    expect(await sequenceRows(outletId)).toMatchObject([{ last_number: 0 }]);
 
     const first = await mergeRun(outletId, device, "OFF1", 2, [
       offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
@@ -1225,8 +1295,9 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 a batch that skips ahead of the cloud is refused and the cloud sequence stays put", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o4] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o4] = await deviceOrders(outletId, device, 3);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     await mergeRun(outletId, device, "OFF1", 2, [
       offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
@@ -1244,8 +1315,9 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 a late replay of an earlier batch after a full run is a no-op without error", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o3] = await deviceOrders(outletId, device, 3);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     const receipt = (orderId: string, ordinal: number) =>
       offlineReceipt({ ...base, orderId, ordinal });
@@ -1270,8 +1342,8 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 a batch with the missing number below the cloud last number backfills it and closes the gap", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o3] = await deviceOrders(outletId, device, 3);
     const base = { outletId, deviceId: device, prefix: "BACK" };
     const sequenceId = randomUUID();
     // Owner-side seed that bypasses the service: last_number 3, receipts #1 and #3.
@@ -1318,8 +1390,8 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 a late batch #2,#1 with a lower lastNumber backfills a cloud that already holds only #3 (second-opinion P1)", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o3] = await deviceOrders(outletId, device, 3);
     const base = { outletId, deviceId: device, prefix: "LATE" };
     const sequenceId = randomUUID();
     // The state an earlier merge left behind: last_number 3, only #3 stored.
@@ -1363,8 +1435,9 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
 
   it("POS-06 an ordinal already stored for another order is RECEIPT_SEQUENCE_REGRESSION and the whole batch is refused", async () => {
     const outletId = await freshOutlet();
-    const [o1, o2, o3] = await drafts(outletId, 3);
     const device = randomUUID();
+    const [o1, o2, o3] = await deviceOrders(outletId, device, 3);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     await mergeRun(outletId, device, "OFF1", 1, [
       offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
@@ -1405,7 +1478,7 @@ describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
     ).rejects.toThrow(/POS-06/);
     await expect(
       attempt(
-        "UPDATE pos_receipts SET number = 'P1-000099' WHERE tenant_id = $1 AND id = $2",
+        "UPDATE pos_receipts SET number = 'C-000099' WHERE tenant_id = $1 AND id = $2",
         [tenant.tenantId, receipt.id],
       ),
     ).rejects.toThrow(/POS-06/);
@@ -1434,7 +1507,7 @@ describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
     // issued yet, is refused at insert.
     for (const [number, ordinal] of [
       ["ZZ-000001", 1],
-      ["P1-000099", 99],
+      ["C-000099", 99],
     ] as const)
       await expect(
         attempt(
@@ -1456,8 +1529,8 @@ describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
 
     // Nothing changed.
     expect((await receiptRows(outletId)).map((row) => row.number)).toEqual([
-      "P1-000001",
-      "P1-000002",
+      "C-000001",
+      "C-000002",
     ]);
     expect((await sequenceRows(outletId))[0]?.last_number).toBe(2);
   });
@@ -1516,7 +1589,7 @@ describe("POS-07 receipt document (legend-93a)", () => {
     expect(() => posReceiptIssueResultSchema.parse(s.issued)).not.toThrow();
     const { receipt, document } = s.issued;
     expect(receipt).toMatchObject({
-      number: "P1-000001",
+      number: "C-000001",
       status: "issued",
       orderId: s.orderId,
       outletId: s.outletId,
@@ -1659,7 +1732,7 @@ describe("POS-07 receipt document (legend-93a)", () => {
     const { orderId } = await completedSale(outletId);
     // The sale itself completed and has its number...
     const [stored] = await receiptRows(outletId);
-    expect(stored?.number).toBe("P1-000001");
+    expect(stored?.number).toBe("C-000001");
     // ...but no document is produced until the outlet has a real address.
     const refused = await api(outletId).post(`/orders/${orderId}/receipts`);
     expect(refused.status).toBe(409);
@@ -2609,8 +2682,9 @@ describe("POS-07 a receipt keeps the outlet name and address of the day it was i
       name: OLD_NAME,
       address: OLD_ADDRESS,
     });
-    const [o1, o2] = await drafts(outletId, 2);
     const device = randomUUID();
+    const [o1, o2] = await deviceOrders(outletId, device, 2);
+    await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
     const edgeCopy = {
       outletName: "Kopi Tepi Jalan",

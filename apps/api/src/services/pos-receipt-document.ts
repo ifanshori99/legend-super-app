@@ -165,6 +165,7 @@ export async function buildReceiptDocument(
     orderNumber: order.number,
     documentKind: kind,
     status: receipt.status,
+    reprint: receipt.reprintCount > 0,
     outletName: outlet.outletName,
     outletAddress: address,
     issuedAt: receipt.issuedAt,
@@ -231,6 +232,9 @@ export async function buildInvoiceDocument(
   return invoiceDocumentSchema.parse({
     ...base,
     documentKind: "invoice",
+    // A reprint of the receipt does not make the invoice a reprint; the
+    // invoice keeps no print counter of its own.
+    reprint: false,
     billedTo: {
       name: invoice.billedToName,
       address: invoice.billedToAddress,

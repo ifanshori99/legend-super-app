@@ -23,6 +23,7 @@ export function renderReceiptEmail(
   const lines = [
     "Halo,",
     "",
+    ...(doc.reprint ? ["CETAK ULANG", ""] : []),
     `Terima kasih sudah berkunjung ke ${doc.outletName}.`,
     `${title} nomor ${doc.receiptNumber} untuk pesanan ${doc.orderNumber} berjumlah ${formatRupiah(doc.totalIdr)}.`,
     "",

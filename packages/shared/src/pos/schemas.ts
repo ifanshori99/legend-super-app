@@ -1425,6 +1425,8 @@ export const receiptDocumentBaseShape = {
   orderNumber: orderNumber,
   documentKind: z.enum(["receipt", "kuitansi"]),
   status: z.enum(["issued", "voided"]),
+  /** POS-06: true once the receipt has been printed again ("CETAK ULANG"). */
+  reprint: z.boolean(),
   outletName: z.string().min(1).max(150),
   /** D40/POS-07: the address is printed on every receipt and kuitansi. */
   outletAddress: z.string().min(10).max(300),
