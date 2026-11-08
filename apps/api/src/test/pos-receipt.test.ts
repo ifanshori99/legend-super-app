@@ -1173,8 +1173,9 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
   it("POS-06 an offline receipt for an order of another outlet or an unknown order is refused", async () => {
     const outletId = await freshOutlet();
     const elsewhere = await freshOutlet();
-    const [foreignOrder] = await drafts(elsewhere, 1);
     const device = randomUUID();
+    // Completed and owned by the same device: only its outlet is wrong.
+    const [foreignOrder] = await deviceOrders(elsewhere, device, 1);
     await provision(outletId, device, "OFF1");
     const base = { outletId, deviceId: device, prefix: "OFF1" };
 
