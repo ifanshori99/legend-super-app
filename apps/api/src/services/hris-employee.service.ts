@@ -413,7 +413,7 @@ export async function getEmployeePii(
 // ----------------------------------------------------------------- writes
 
 /** Idempotent HRIS write bound to an HMAC fingerprint of the request. */
-async function idempotentHrisWrite<T>(
+export async function idempotentHrisWrite<T>(
   tx: Tx,
   context: ScopedTenantContext,
   key: string,

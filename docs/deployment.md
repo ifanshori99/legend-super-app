@@ -348,8 +348,10 @@ production sources and provider adapters before they can be treated as covered.
 ### First boot and backup schedule
 
 On a new VM, prepare the private pgBackRest configuration and transport module
-before starting application services. Start PostgreSQL and run the migration job
-separately using the same `--env-file` and Compose file as the deploy script.
+before starting application services. Start PostgreSQL, create the migrator login
+(next section, before any migration), run the pre-deploy check (see
+"Pre-deploy check" below), then run the migration job separately using the
+same `--env-file` and Compose file as the deploy script.
 Then initialize and check the pgBackRest stanza as the container's `postgres`
 user, provision the restricted application and queue roles (next section), and
 confirm a successful base backup to both repositories. Provisioning is a
@@ -358,11 +360,65 @@ first-boot prerequisite; the deploy script does not perform it. See
 restore-drill procedure. Once those prerequisites and the transport adapter are
 ready, use the deploy script for subsequent releases.
 
+#### Create the migrator login (legend-jtnd)
+
+Three database roles exist in production:
+
+| Role                                                                     | Attributes                                                                                                                                                    | Used by                                                                                                     |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Bootstrap superuser (`POSTGRES_USER` of the postgres image, compose.env) | SUPERUSER                                                                                                                                                     | Only `provision-roles.sh --migrator`, once at first boot, and break-glass. Never in any service env file.   |
+| Migrator `legend_migrator_<16 hex>`, password 48 hex                     | LOGIN NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB NOREPLICATION INHERIT, owner of the database (so it is `pg_database_owner` and owns every table it creates) | `MIGRATION_DATABASE_URL` in migrator.env only: migrate, pre-deploy check, provision/audit restricted logins |
+| `legend_runtime_*` / `legend_worker_*`                                   | unchanged: NOBYPASSRLS etc.                                                                                                                                   | api/worker                                                                                                  |
+
+The migrator needs `BYPASSRLS` because adding a foreign key to a table with
+`FORCE ROW LEVEL SECURITY` validates the existing rows under the tenant policy.
+Without it, migrations 0004 and 0063 fail on a fresh database with
+`tenant context is required` (legend-jtnd). A superuser in `MIGRATION_DATABASE_URL`
+is still accepted by the pre-deploy check, but the documented default is the
+dedicated migrator.
+
+Run this once, before the first migration, as the bootstrap superuser:
+
+```sh
+deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env --migrator
+```
+
+The script reads `POSTGRES_USER` and `POSTGRES_PASSWORD` from compose.env and
+passes them to the container through the environment, never on a command line.
+`MIGRATION_DATABASE_URL` must name a login that matches `legend_migrator_<16 hex>`
+with a 48 hex password. Success prints:
+
+```text
+Migrator login <name> <created|updated>: owns the database, BYPASSRLS, CREATEROLE, not superuser.
+```
+
+The job is idempotent. Re-running it re-keys the password and resets the
+attributes above. It refuses, changing nothing, if a relation or schema in
+`public`, `app` or `drizzle` is owned by another role. The message names that
+role. The database was then migrated by another login. As a superuser, run
+`REASSIGN OWNED BY <old> TO <migrator>` and re-run the job. `pgboss` is owned by
+the queue login and is not checked.
+
+If the old owner is the bootstrap superuser (oid 10), `REASSIGN OWNED` cannot
+move its objects. Run `ALTER ... OWNER TO <migrator>` for each object instead,
+or recreate the empty database. The job names the owner role in its refusal.
+
+The job also grants the migrator `ADMIN OPTION, INHERIT FALSE, SET FALSE` on
+`legend_app` and on the logins named in `APP_DATABASE_URL` and
+`WORKER_DATABASE_URL`, but only when those roles already exist. It does not
+grant anything on other roles, including roles that match `legend_runtime_<16 hex>`.
+
+`--migrator` refuses, before Docker starts, a `POSTGRES_USER` or
+`POSTGRES_PASSWORD` in compose.env that contains `$`, `\`, or a quote
+character. Compose would resolve such a value differently. The error names the
+key only, never the value. Use a value without these characters.
+
 ### First boot: restricted database roles (legend-zoqc)
 
 The API and worker never receive the migration (administrator) credentials.
 They log in with two restricted roles that a one-shot job creates after the
-migrations (PRD §3 F3, TEN-02):
+migrations (PRD §3 F3, TEN-02). The migration login is the `legend_migrator_<16 hex>`
+login created in the previous section, not the bootstrap superuser.
 
 | Login                     | Env key (file)                                                 | What it can do                                                                                                                                             |
 | ------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -537,7 +593,9 @@ read them.
 An existing role with unsafe attributes is never adopted; fix or drop it by
 hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
 plaintext never reaches the server or its logs. The migration login must be a
-superuser (the Compose `POSTGRES_USER`) or, on managed PostgreSQL, a
+`legend_migrator_<16 hex>` login created in "Create the migrator login"
+(`BYPASSRLS`, `CREATEROLE`, owner of the database), or a superuser (the Compose
+`POSTGRES_USER`, allowed but not the default). On managed PostgreSQL, use a
 `CREATEROLE` + `BYPASSRLS` owner holding `ADMIN` on `legend_app`; existing data
 migrations run under forced RLS. With a non-superuser owner the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
 hand it the `pgboss` schema.
@@ -549,3 +607,38 @@ the repository), run `node dist/provision-roles.js` or
 may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
 job does not read `.env` files. Local development keeps using
 `pnpm dev:prepare`, which provisions its own random login through the same code.
+
+### Pre-deploy check (legend-jtnd, legend-k1np)
+
+`predeploy-check.js` runs before any migration and changes nothing. It opens one
+read-only connection with `MIGRATION_DATABASE_URL` and checks two things:
+
+- Migrator: the login is a superuser, or has both `BYPASSRLS` and `CREATEROLE`.
+  Otherwise it fails with legend-jtnd.
+- Outbox: if `domain_event_outbox` exists, every
+  `(tenant_id, destination, aggregate_type, aggregate_id)` group must have
+  `min(sequence) = 1` and `max(sequence) = count(*)`. A group that breaks this is
+  an old-scheme stream (legend-k1np). The message gives the number of streams and
+  the destination names only, never tenant ids or payloads.
+
+Where it runs: `deploy.sh` runs it after `compose up -d --wait postgres` and before
+`migrate`. The default mode of `provision-roles.sh` runs it the same way on first
+boot. If it fails, `deploy.sh` prints `Pre-deploy check failed: nothing was migrated
+and services were not started.` and stops.
+
+Success prints:
+
+```text
+Pre-deploy check passed: migrator <user> (<superuser|BYPASSRLS>), outbox <absent|N rows, per-destination sequences intact>.
+```
+
+Failure prints `Pre-deploy check failed: <message>` and exits 1. Messages never
+contain a URL or password.
+
+What to do when it fails:
+
+- legend-jtnd: create the migrator login with `provision-roles.sh --migrator`
+  (see "Create the migrator login"), then re-run the deploy.
+- legend-k1np: either write and test a backfill, or confirm the consumers start
+  clean and empty the outbox. Do not enable the relay first. The relay must stay
+  off until the check passes.

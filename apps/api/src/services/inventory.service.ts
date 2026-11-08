@@ -194,11 +194,11 @@ function cursorKeys(
   return keys as string[];
 }
 
-function sourceIdFromDb(type: StockSourceType, value: string): string {
+export function sourceIdFromDb(type: StockSourceType, value: string): string {
   return ULID_SOURCE_TYPES.has(type) ? uuidToUlid(value) : value;
 }
 
-function sourceIdToDb(value: string): string {
+export function sourceIdToDb(value: string): string {
   return ulidSchema.safeParse(value).success ? ulidToUuid(value) : value;
 }
 

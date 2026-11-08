@@ -44,6 +44,10 @@ import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
+import { hrisAnnouncementRouter } from "./hris-announcement.routes";
+import { hrisSopRouter } from "./hris-sop.routes";
+import { hrisTrainingRouter } from "./hris-training.routes";
 import { hrisLeaveRouter } from "./hris-leave.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
@@ -152,8 +156,17 @@ apiRouter.use(reservationPublicRouter);
 apiRouter.use("/facility", facilityRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
+// whose router applies its own middleware to everything under its prefix.
+apiRouter.use("/hris/payroll/pph21-policies", payrollPph21PolicyRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
+apiRouter.use(
+  "/hris",
+  hrisSopRouter,
+  hrisTrainingRouter,
+  hrisAnnouncementRouter,
+);
 apiRouter.use("/hris", hrisLeaveRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;

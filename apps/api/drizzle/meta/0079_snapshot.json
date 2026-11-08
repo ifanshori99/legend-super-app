@@ -1,5 +1,5 @@
 {
-  "id": "70a22d3d-d7c6-40ac-a800-b77904167127",
+  "id": "f285063d-71c6-4234-b962-d30b0f69008e",
   "prevId": "c8f3cd0f-4373-4aae-a6d9-070e00e0b135",
   "version": "7",
   "dialect": "postgresql",
@@ -10523,6 +10523,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "evidence_id": {
+          "name": "evidence_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "amount_idr": {
           "name": "amount_idr",
           "type": "bigint",
@@ -14561,6 +14567,56 @@
           "primaryKey": false,
           "notNull": false
         },
+        "approval_chain_id": {
+          "name": "approval_chain_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_reason": {
+          "name": "failure_reason",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payout_attempts": {
+          "name": "payout_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "payout_pending_polls": {
+          "name": "payout_pending_polls",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "payout_claimed_until": {
+          "name": "payout_claimed_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payout_claim_token": {
+          "name": "payout_claim_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_payout_error": {
+          "name": "last_payout_error",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -14600,6 +14656,50 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payment_refunds_approval_chain_uq": {
+          "name": "payment_refunds_approval_chain_uq",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "approval_chain_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payment_refunds\".\"approval_chain_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payment_refunds_provider_ref_idx": {
+          "name": "payment_refunds_provider_ref_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payment_refunds\".\"provider_ref\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -14694,6 +14794,22 @@
         "payment_refunds_amount_check": {
           "name": "payment_refunds_amount_check",
           "value": "\"payment_refunds\".\"amount_idr\" > 0"
+        },
+        "payment_refunds_failure_reason_check": {
+          "name": "payment_refunds_failure_reason_check",
+          "value": "\"payment_refunds\".\"failure_reason\" IS NULL OR \"payment_refunds\".\"failure_reason\" IN ('rejected','approval_expired','provider_declined','cap_exceeded','source_document','approver_unauthorized')"
+        },
+        "payment_refunds_failure_reason_status_check": {
+          "name": "payment_refunds_failure_reason_status_check",
+          "value": "\"payment_refunds\".\"failure_reason\" IS NULL OR \"payment_refunds\".\"status\" = 'failed'"
+        },
+        "payment_refunds_payout_attempts_check": {
+          "name": "payment_refunds_payout_attempts_check",
+          "value": "\"payment_refunds\".\"payout_attempts\" >= 0"
+        },
+        "payment_refunds_payout_pending_polls_check": {
+          "name": "payment_refunds_payout_pending_polls_check",
+          "value": "\"payment_refunds\".\"payout_pending_polls\" >= 0"
         },
         "payment_refunds_status_check": {
           "name": "payment_refunds_status_check",
@@ -32541,18 +32657,6 @@
           "notNull": true,
           "default": "now()"
         },
-        "previous_credential_hash": {
-          "name": "previous_credential_hash",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "previous_credential_expires_at": {
-          "name": "previous_credential_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_heartbeat_at": {
           "name": "last_heartbeat_at",
           "type": "timestamp with time zone",
@@ -32710,10 +32814,6 @@
         "edge_nodes_credential_hash_check": {
           "name": "edge_nodes_credential_hash_check",
           "value": "\"edge_nodes\".\"credential_hash\" ~ '^[0-9a-f]{64}$'"
-        },
-        "edge_nodes_previous_credential_check": {
-          "name": "edge_nodes_previous_credential_check",
-          "value": "(\"edge_nodes\".\"previous_credential_hash\" IS NULL AND \"edge_nodes\".\"previous_credential_expires_at\" IS NULL) OR (\"edge_nodes\".\"previous_credential_hash\" ~ '^[0-9a-f]{64}$' AND \"edge_nodes\".\"previous_credential_expires_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -33247,12 +33347,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "detail": {
-          "name": "detail",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "event": {
           "name": "event",
           "type": "jsonb",
@@ -33486,171 +33580,6 @@
         "sync_cursors_seq_check": {
           "name": "sync_cursors_seq_check",
           "value": "\"sync_cursors\".\"acked_out_seq\" >= 0 AND \"sync_cursors\".\"acked_out_seq\" <= \"sync_cursors\".\"next_out_seq\" AND \"sync_cursors\".\"received_in_seq\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.edge_sync_conflict_resolutions": {
-      "name": "edge_sync_conflict_resolutions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "conflict_id": {
-          "name": "conflict_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "action": {
-          "name": "action",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "note": {
-          "name": "note",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resolved_by": {
-          "name": "resolved_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "edge_sync_conflict_resolutions_conflict_idx": {
-          "name": "edge_sync_conflict_resolutions_conflict_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "conflict_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "resolved_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "edge_sync_conflict_resolutions_tenant_id_tenants_id_fk": {
-          "name": "edge_sync_conflict_resolutions_tenant_id_tenants_id_fk",
-          "tableFrom": "edge_sync_conflict_resolutions",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edge_sync_conflict_resolutions_outlet_id_outlets_id_fk": {
-          "name": "edge_sync_conflict_resolutions_outlet_id_outlets_id_fk",
-          "tableFrom": "edge_sync_conflict_resolutions",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edge_sync_conflict_resolutions_conflict_fk": {
-          "name": "edge_sync_conflict_resolutions_conflict_fk",
-          "tableFrom": "edge_sync_conflict_resolutions",
-          "tableTo": "edge_sync_conflicts",
-          "columnsFrom": [
-            "tenant_id",
-            "conflict_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "edge_sync_conflict_resolutions_tenant_id_id_pk": {
-          "name": "edge_sync_conflict_resolutions_tenant_id_id_pk",
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "edge_sync_conflict_resolutions_action_check": {
-          "name": "edge_sync_conflict_resolutions_action_check",
-          "value": "\"edge_sync_conflict_resolutions\".\"action\" IN ('replayed', 'dismissed')"
-        },
-        "edge_sync_conflict_resolutions_outcome_check": {
-          "name": "edge_sync_conflict_resolutions_outcome_check",
-          "value": "(\"edge_sync_conflict_resolutions\".\"action\" = 'replayed' AND \"edge_sync_conflict_resolutions\".\"outcome\" IN ('applied', 'failed')) OR (\"edge_sync_conflict_resolutions\".\"action\" = 'dismissed' AND \"edge_sync_conflict_resolutions\".\"outcome\" = 'dismissed')"
-        },
-        "edge_sync_conflict_resolutions_error_check": {
-          "name": "edge_sync_conflict_resolutions_error_check",
-          "value": "(\"edge_sync_conflict_resolutions\".\"outcome\" = 'failed') = (\"edge_sync_conflict_resolutions\".\"error\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -35425,13 +35354,6 @@
         },
         "hold_items": {
           "name": "hold_items",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "is_training": {
-          "name": "is_training",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
