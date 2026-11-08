@@ -44,6 +44,8 @@ export * from "./reservation";
 export * from "./reservation-public";
 export * from "./facility";
 export * from "./hris";
+// WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
+export * from "./hris-leave";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
 export * from "./accounting-journal-requests";
@@ -62,6 +64,16 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
+export * from "./pos-shift";
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
+export * from "./payroll-pph21-policy";
+// EDC agent framework (legend-apt).
+export * from "./edc";
+// HRIS SOP library, training and announcements (legend-7df1).
+export * from "./hris-sop";
+export * from "./hris-training";
+export * from "./hris-announcement";
 // WS-07 shareholder documents (legend-69yq).
 export * from "./shareholder-documents";
 // WS-06 stock count / stok opname (legend-j5x).

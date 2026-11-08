@@ -14,7 +14,11 @@ import {
 } from "@starter/shared/payment/admin";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
-import { paymentRefunds, paymentUnallocatedFunds } from "../db/schema/index.ts";
+import {
+  paymentIntents,
+  paymentRefunds,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -152,6 +156,28 @@ export async function resolveUnallocatedFund(
   const { fundId } = resolveEndpoint.params.parse(params);
   const request = resolveEndpoint.body.parse(input);
   return withTenant(db, context, async (tx) => {
+    // Lock order: payment intent -> fund -> refund (same as lockRefundGraph).
+    const [probe] = await tx
+      .select({ paymentIntentId: paymentUnallocatedFunds.paymentIntentId })
+      .from(paymentUnallocatedFunds)
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
+          eq(paymentUnallocatedFunds.id, fundId),
+        ),
+      );
+    if (!probe)
+      throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, probe.paymentIntentId),
+        ),
+      )
+      .for("update");
     const [fund] = await tx
       .select()
       .from(paymentUnallocatedFunds)
