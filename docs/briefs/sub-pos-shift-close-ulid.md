@@ -4,6 +4,7 @@ Worktree `legend/.worktrees/pos-shift`. No `.env*` reads, no pkill/killall, no c
 Change already made: `closePosShiftInputSchema` / `forceClosePosShiftInputSchema` `approvalRequestId` = `closeApprovalIdSchema` (packages/shared/src/pos/schemas.ts): ULID override id OR any uuid-shaped id (RFC or `ulidToUuid` form). `verifyCloseApproval` (apps/api/src/services/pos-shift.service.ts ~:878) maps a ULID straight to the override id.
 
 Tests to write/adjust:
+
 1. `apps/api/src/test/pos-shift.test.ts`: new describe "POS-03 close names the PIN override by its own ULID (legend-6c0)":
    a. Real PIN approval via `createPosOverride` (see existing tests that use it), close with `approvalRequestId: override.id` (ULID, as returned) -> 200, closed; stored `pos_shifts.approval_request_id` = `ulidToUuid(override.id)`, `approval_override_id` matches. No retry loops.
    b. Same with `approvalRequestId: ulidToUuid(override.id)` (non-RFC uuid form) -> 200.
