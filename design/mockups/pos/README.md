@@ -81,3 +81,9 @@ Hasil render final, 8 November 2026:
 - Renderer selesai dengan exit code 0 melalui `heavy`; pemeriksaan mengharuskan satu layar aktif, konten terlihat, minimal 15 pemeriksaan teks per layar, serta tidak ada error JavaScript. Ini mencegah gambar kosong dianggap lulus.
 - Semua temuan review diperbaiki: nominal/DP tetap konsisten pada pesan gagal; EDC standalone tidak boleh mengulang transaksi berhasil/belum pasti; settlement dipicu dari tutup hari dengan hasil per bank; benturan nama variabel mockup pembayaran diselesaikan sebelum ekspor final.
 - Gambar statis tidak membuktikan interaksi keyboard, screen reader, integrasi bank, atau perilaku backend. Build dan tes aplikasi tidak dijalankan karena tidak ada kode aplikasi yang berubah.
+
+## Keputusan founder (8 Nov 2026)
+- Mockup POS kasir disetujui (Q10).
+- Q7: DP reservasi yang melebihi tagihan menjadi saldo pelanggan untuk kunjungan berikutnya.
+- Q8: Blind count tutup shift wajib per pecahan.
+- Q9: Tutup hari usaha oleh manajer outlet; batas hari usaha pukul 04.00.
