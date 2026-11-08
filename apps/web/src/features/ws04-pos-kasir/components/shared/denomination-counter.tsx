@@ -1,31 +1,41 @@
 import { useId } from "react";
 import { cn } from "cn";
 import { formatRupiah } from "@starter/shared/i18n";
-import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
 import { parseDigits } from "./keypad-logic";
 
 const FIELD_CLASS =
-  "h-16 w-full min-w-0 rounded-control border-(length:--border-w) border-input bg-background px-4 text-right text-2xl font-bold text-foreground tabular shadow-hairline focus-visible:border-primary focus-visible:shadow-focus focus-visible:outline-none";
+  "h-12 w-full min-w-0 rounded-control border-(length:--border-w) border-input bg-background px-3 text-right text-xl font-bold text-foreground tabular shadow-hairline focus-visible:border-primary focus-visible:shadow-focus focus-visible:outline-none";
 
 const MAX_QUANTITY = 9999;
 
 function Cell({
   label,
+  unit,
   value,
   onChange,
   footer,
 }: {
   label: string;
+  /** Sheet or piece, read as part of the field name ("Rp100 · keping"). */
+  unit?: string;
   value: string;
   onChange: (text: string) => void;
   footer: React.ReactNode;
 }) {
   const id = useId();
   return (
-    <div className="grid content-start gap-2 rounded-container border-(length:--border-w) border-border bg-surface-2 p-3">
-      <label htmlFor={id} className="text-base leading-6 font-semibold tabular">
+    <div className="grid min-w-0 flex-[1_1_8rem] content-start gap-1.5 rounded-container border-(length:--border-w) border-border bg-surface-2 p-2.5">
+      <label
+        htmlFor={id}
+        className="text-base leading-6 font-semibold whitespace-nowrap tabular"
+      >
         {label}
+        {unit && (
+          // The group legend already says sheets or coins; keep the unit for
+          // screen readers only so every label stays on one line.
+          <span className="sr-only"> · {unit}</span>
+        )}
       </label>
       <input
         id={id}
@@ -42,15 +52,16 @@ function Cell({
   );
 }
 
-// The blind count: one field per denomination (how many notes), a subtotal
-// under each, and one field for the lump sum of other notes and coins. It
-// never shows a system balance. Controlled; the parent owns the numbers.
+// The blind count: one field per denomination (how many notes or coins) and a
+// subtotal under each. The screen renders one group for notes and one for
+// small coins. Cells wrap and stretch, so a group never ends on a half row
+// with a hole. It never shows a system balance. Controlled; the parent owns
+// the numbers.
 export function DenominationCounter({
   denominations,
   quantities,
   onQuantityChange,
-  otherIdr,
-  onOtherChange,
+  unitLabel,
   className,
 }: {
   /** Denominations in rupiah, highest first. */
@@ -58,16 +69,14 @@ export function DenominationCounter({
   /** Count per denomination; a missing entry counts as 0. */
   quantities: Readonly<Record<number, number>>;
   onQuantityChange: (denominationIdr: number, quantity: number) => void;
-  /** Lump sum of small notes and coins, whole rupiah. */
-  otherIdr: number;
-  onOtherChange: (amountIdr: number) => void;
+  /** Unit word per denomination (sheet or piece), shown next to the amount. */
+  unitLabel?: (denominationIdr: number) => string;
   className?: string;
 }) {
-  const t = useT();
   return (
     <div
       data-slot="denomination-counter"
-      className={cn("grid gap-3 sm:grid-cols-2 lg:grid-cols-3", className)}
+      className={cn("flex flex-wrap gap-3", className)}
     >
       {denominations.map((denomination) => {
         const quantity = quantities[denomination] ?? 0;
@@ -75,6 +84,7 @@ export function DenominationCounter({
           <Cell
             key={denomination}
             label={formatRupiah(denomination)}
+            unit={unitLabel?.(denomination)}
             value={String(quantity)}
             onChange={(text) =>
               onQuantityChange(denomination, parseDigits(text, MAX_QUANTITY))
@@ -83,12 +93,6 @@ export function DenominationCounter({
           />
         );
       })}
-      <Cell
-        label={t("posKasirCommon.denomination.other")}
-        value={formatRupiah(otherIdr)}
-        onChange={(text) => onOtherChange(parseDigits(text))}
-        footer={t("posKasirCommon.denomination.otherHint")}
-      />
     </div>
   );
 }

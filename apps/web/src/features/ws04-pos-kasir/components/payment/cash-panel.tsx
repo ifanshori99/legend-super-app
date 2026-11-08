@@ -8,6 +8,12 @@ import { AmountKeypad, Notice, PosPanel, StatusPill } from "../shared";
 import { useConfirmCash, usePaymentSession } from "../../hooks";
 import { nextSequence, roundUpIdr } from "./payment-helpers";
 import type { PaymentPanelProps } from "./panel-types";
+import {
+  CashShiftNotice,
+  OpenShiftButton,
+  isShiftNotOpen,
+  useCashShiftGate,
+} from "./shift-gate";
 
 // Cash: the cashier keys what the customer handed over, sees the change, and
 // confirms. Nothing counts as paid until the confirmation is accepted; the
@@ -20,6 +26,11 @@ export function CashPanel({
   const t = useT();
   const { bill } = usePaymentSession(orderId);
   const confirm = useConfirmCash();
+  const gate = useCashShiftGate();
+  // The server refused the cash (no open shift): nothing was recorded, so the
+  // "recorded to the shift" line goes and the way out takes the main button.
+  const shiftRefused = confirm.isError && isShiftNotOpen(confirm.error);
+  const awaiting = gate.state === "awaiting";
   const [received, setReceived] = useState(amountIdr);
 
   const short = received < amountIdr;
@@ -48,21 +59,29 @@ export function CashPanel({
           >
             {t("posKasirPayment.cash.changeAmount")}
           </Button>
-          <Button
-            type="button"
-            disabled={
-              short || overRemaining || amountIdr <= 0 || confirm.isPending
-            }
-            aria-busy={confirm.isPending}
-            onClick={() =>
-              confirm.mutate({ orderId, amountIdr, receivedIdr: received })
-            }
-          >
-            {confirm.isPending
-              ? t("posKasirPayment.cash.confirming")
-              : t("posKasirPayment.cash.confirm")}
-            <ArrowRight aria-hidden="true" />
-          </Button>
+          {shiftRefused && !awaiting ? (
+            <OpenShiftButton orderId={orderId} />
+          ) : (
+            <Button
+              type="button"
+              disabled={
+                short ||
+                overRemaining ||
+                amountIdr <= 0 ||
+                confirm.isPending ||
+                shiftRefused
+              }
+              aria-busy={confirm.isPending}
+              onClick={() =>
+                confirm.mutate({ orderId, amountIdr, receivedIdr: received })
+              }
+            >
+              {confirm.isPending
+                ? t("posKasirPayment.cash.confirming")
+                : t("posKasirPayment.cash.confirm")}
+              <ArrowRight aria-hidden="true" />
+            </Button>
+          )}
         </>
       }
     >
@@ -96,14 +115,15 @@ export function CashPanel({
                 amount: formatRupiah(amountIdr - received),
               })}
             />
-          ) : (
+          ) : shiftRefused ? null : (
             <p className="text-base text-muted-foreground">
               {t("posKasirPayment.cash.note", {
                 amount: formatRupiah(amountIdr),
               })}
             </p>
           )}
-          {confirm.isError && (
+          {shiftRefused && <CashShiftNotice awaiting={awaiting} />}
+          {confirm.isError && !isShiftNotOpen(confirm.error) && (
             <Notice tone="danger" title={t("posKasirPayment.cash.failedTitle")}>
               {confirm.error.message} {t("posKasirPayment.cash.failedHint")}
             </Notice>

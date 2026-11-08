@@ -183,16 +183,60 @@ function ResultPanel({ review }: { review: ShiftReview }) {
   );
 }
 
-/** Where a failed approval shows: on the PIN field, or as a notice for the rest. */
-type SubmitProblem = { field: "pin" | "form"; message: string };
+/**
+ * Where a failed approval shows: on the PIN field, on the note field, or as a
+ * notice for the rest. `reload` offers a reload button next to the notice:
+ * "latest" for a count that moved, "plain" when the screen is just out of date.
+ */
+type ReloadKind = "latest" | "plain";
+
+type SubmitProblem = {
+  field: "pin" | "note" | "form";
+  message: string;
+  reload?: ReloadKind;
+};
+
+type Translate = ReturnType<typeof useT>;
 
 // Only the PIN step can blame the PIN. A FORBIDDEN from the approve step means
 // the approver may not close this shift, which the PIN field cannot fix.
 function toProblem(
   error: unknown,
   stage: "override" | "approve",
+  t: Translate,
 ): SubmitProblem {
   if (error instanceof ApiError) {
+    // The count moved under the supervisor, or the shift is already done: say
+    // what happened in plain words and what to do next.
+    if (stage === "approve") {
+      if (error.code === "SHIFT_COUNT_STALE") {
+        return {
+          field: "form",
+          message: t("posKasirSupervisor.review.countStale"),
+          reload: "latest",
+        };
+      }
+      if (error.code === "SHIFT_COUNT_SUPERSEDED") {
+        return {
+          field: "form",
+          message: t("posKasirSupervisor.review.countSuperseded"),
+          reload: "latest",
+        };
+      }
+      if (error.code === "SHIFT_ALREADY_CLOSED") {
+        return {
+          field: "form",
+          message: t("posKasirSupervisor.review.alreadyClosed"),
+          reload: "plain",
+        };
+      }
+      if (error.code === "SHIFT_VARIANCE_NOTE_REQUIRED") {
+        return {
+          field: "note",
+          message: t("posKasirSupervisor.review.reasonRequired"),
+        };
+      }
+    }
     const onPin =
       stage === "override" &&
       (error.code === "PIN_INVALID" ||
@@ -211,12 +255,39 @@ type GrantedOverride = {
   reason: string;
 };
 
+function ReloadButton({
+  label,
+  loading,
+  onClick,
+}: {
+  label: string;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const t = useT();
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      disabled={loading}
+      aria-busy={loading || undefined}
+      onClick={onClick}
+    >
+      {loading ? t("posKasirSupervisor.review.reloading") : label}
+    </Button>
+  );
+}
+
 function ReviewForm({
   review,
+  reloading,
   onBack,
+  onReload,
 }: {
   review: ShiftReview;
+  reloading: boolean;
   onBack: () => void;
+  onReload: () => void;
 }) {
   const t = useT();
   const noteId = useId();
@@ -231,12 +302,14 @@ function ReviewForm({
   const [noteError, setNoteError] = useState<string>();
   const [pinError, setPinError] = useState<string>();
   const [formError, setFormError] = useState<string>();
+  const [reloadKind, setReloadKind] = useState<ReloadKind>();
   const granted = useRef<GrantedOverride | null>(null);
 
   const hasVariance = review.varianceIdr !== 0;
   const options = supervisors.data ?? [];
   const approverUserId = chosen || options[0]?.userId || "";
   const pending = requestOverride.isPending || approve.isPending;
+  const countMissing = review.countId === null;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -251,7 +324,11 @@ function ReviewForm({
     setNoteError(noteProblem);
     setPinError(pinProblem);
     setFormError(undefined);
+    setReloadKind(undefined);
     if (noteProblem || pinProblem || approverUserId === "") return;
+    // No count on record: the cashier has not sent one yet, nothing to close.
+    // The submit button is off in that case; this guards the type for `countId`.
+    if (review.countId === null) return;
     let stage: "override" | "approve" = "override";
     try {
       // Supervisor PIN in, `overrideId` out; the close consumes that id.
@@ -281,6 +358,7 @@ function ReviewForm({
       stage = "approve";
       await approve.mutateAsync({
         shiftId: review.shiftId,
+        countId: review.countId,
         overrideId,
         reason: trimmed,
       });
@@ -292,12 +370,24 @@ function ReviewForm({
       ) {
         granted.current = null;
       }
-      const problem = toProblem(error, stage);
+      // The approval was granted for the old count's variance: ask again.
+      if (
+        error instanceof ApiError &&
+        (error.code === "SHIFT_COUNT_STALE" ||
+          error.code === "SHIFT_COUNT_SUPERSEDED")
+      ) {
+        granted.current = null;
+        setPin("");
+      }
+      const problem = toProblem(error, stage, t);
       if (problem.field === "pin") {
         setPin("");
         setPinError(problem.message);
+      } else if (problem.field === "note") {
+        setNoteError(problem.message);
       } else {
         setFormError(problem.message);
+        setReloadKind(problem.reload);
       }
     }
   }
@@ -346,7 +436,7 @@ function ReviewForm({
             </Button>
             <Button
               type="submit"
-              disabled={pending || supervisors.isPending}
+              disabled={pending || supervisors.isPending || countMissing}
               aria-busy={pending || undefined}
             >
               {pending
@@ -357,6 +447,23 @@ function ReviewForm({
         }
       >
         <div className="grid content-start gap-5">
+          {countMissing && (
+            <Notice
+              tone="warning"
+              role="status"
+              title={t("posKasirSupervisor.review.countMissingTitle")}
+            >
+              {t("posKasirSupervisor.review.countMissing")}.{" "}
+              {t("posKasirSupervisor.review.countMissingHint")}
+              <div className="mt-3">
+                <ReloadButton
+                  label={t("posKasirSupervisor.review.reloadPlain")}
+                  loading={reloading}
+                  onClick={onReload}
+                />
+              </div>
+            </Notice>
+          )}
           {formError !== undefined && (
             <Notice
               tone="danger"
@@ -365,6 +472,19 @@ function ReviewForm({
               {formError === ""
                 ? t("posKasirSupervisor.review.failedHint")
                 : formError}
+              {reloadKind !== undefined && (
+                <div className="mt-3">
+                  <ReloadButton
+                    label={
+                      reloadKind === "plain"
+                        ? t("posKasirSupervisor.review.reloadPlain")
+                        : t("posKasirSupervisor.review.reload")
+                    }
+                    loading={reloading}
+                    onClick={onReload}
+                  />
+                </div>
+              )}
             </Notice>
           )}
           <FormField
@@ -558,6 +678,16 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
   const query = useShiftReview(shiftId);
   const review = query.data;
   const goBack = () => router.history.back();
+  // Said out loud after a reload: the count either changed or it did not.
+  const [reloadResult, setReloadResult] = useState<"new" | "same">();
+
+  async function reload() {
+    setReloadResult(undefined);
+    const before = review?.countId ?? null;
+    const result = await query.refetch();
+    if (result.data === undefined) return;
+    setReloadResult(result.data.countId !== before ? "new" : "same");
+  }
 
   return (
     <div className="grid gap-4">
@@ -579,6 +709,19 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
           </StatusPill>
         }
       />
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-base text-muted-foreground empty:hidden"
+      >
+        {query.isFetching && !query.isPending
+          ? t("posKasirSupervisor.review.reloading")
+          : reloadResult === "new"
+            ? t("posKasirSupervisor.review.reloadedNew")
+            : reloadResult === "same"
+              ? t("posKasirSupervisor.review.reloadedSame")
+              : ""}
+      </p>
       {query.isPending ? (
         <LoadingBlock />
       ) : query.isError || !review ? (
@@ -599,7 +742,13 @@ export function ShiftApprovalScreen({ shiftId }: { shiftId: string }) {
           {review.status === "closed" ? (
             <ClosedPanel review={review} onBack={goBack} />
           ) : (
-            <ReviewForm review={review} onBack={goBack} />
+            <ReviewForm
+              key={review.countId ?? "no-count"}
+              review={review}
+              reloading={query.isFetching}
+              onBack={goBack}
+              onReload={() => void reload()}
+            />
           )}
         </PosTwoPane>
       )}

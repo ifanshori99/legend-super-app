@@ -1,9 +1,17 @@
-import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useRef, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { businessDateOf } from "@starter/shared/core";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOutletClock } from "@/lib/tenant-context";
 import { useOpenShift, useRegisteredTerminals } from "../../hooks";
@@ -20,23 +28,38 @@ import { ActionError, ContextBlock } from "./shift-parts";
 
 // Open shift: the cashier counts the float in the drawer and enters it.
 // Shown by the shift screen when the terminal has no active shift.
-export function ShiftOpenScreen() {
+export function ShiftOpenScreen({ returnTo }: { returnTo?: string }) {
   const t = useT();
   const { clock } = useOutletClock();
   const businessDate = businessDateOf(new Date(), clock);
   const terminals = useRegisteredTerminals();
+  const navigate = useNavigate();
   const openShift = useOpenShift();
   const [floatIdr, setFloatIdr] = useState(0);
-  // An empty drawer is valid: a zero float needs one explicit confirmation.
-  const [zeroArmed, setZeroArmed] = useState(false);
-  const confirmingZero = floatIdr === 0 && zeroArmed;
+  // An empty drawer is valid: a zero float asks once, in a dialog, per try.
+  const [zeroDialogOpen, setZeroDialogOpen] = useState(false);
+  const recheckRef = useRef<HTMLButtonElement>(null);
+
+  function send() {
+    setZeroDialogOpen(false);
+    openShift.mutate(
+      { openingFloatIdr: floatIdr },
+      {
+        // Came from a bill that needed cash: back to it (path already checked
+        // by the route's search schema).
+        onSuccess: () => {
+          if (returnTo) void navigate({ href: returnTo });
+        },
+      },
+    );
+  }
 
   function submit() {
-    if (floatIdr === 0 && !zeroArmed) {
-      setZeroArmed(true);
+    if (floatIdr === 0) {
+      setZeroDialogOpen(true);
       return;
     }
-    openShift.mutate({ openingFloatIdr: floatIdr });
+    send();
   }
   const terminal = terminals.data?.[0];
 
@@ -98,18 +121,12 @@ export function ShiftOpenScreen() {
               <Button variant="outline" asChild>
                 <Link to="/pos">{t("posKasirShift.open.back")}</Link>
               </Button>
-              <Button
-                loading={openShift.isPending}
-                aria-describedby={confirmingZero ? "open-zero-hint" : undefined}
-                onClick={submit}
-              >
+              <Button loading={openShift.isPending} onClick={submit}>
                 {openShift.isPending
                   ? t("posKasirShift.open.submitting")
-                  : confirmingZero
-                    ? t("posKasirShift.open.zeroSubmit")
-                    : t("posKasirShift.open.submit", {
-                        amount: formatRupiah(floatIdr),
-                      })}
+                  : t("posKasirShift.open.submit", {
+                      amount: formatRupiah(floatIdr),
+                    })}
               </Button>
             </>
           }
@@ -122,21 +139,10 @@ export function ShiftOpenScreen() {
             <AmountKeypad
               className="contents"
               value={floatIdr}
-              onChange={(value) => {
-                setZeroArmed(false);
-                setFloatIdr(value);
-              }}
+              onChange={setFloatIdr}
               label={t("posKasirShift.open.floatLabel")}
               hint={t("posKasirShift.open.floatHint")}
             />
-            {confirmingZero && (
-              <p
-                id="open-zero-hint"
-                className="text-base text-muted-foreground"
-              >
-                {t("posKasirShift.open.zeroConfirm")}
-              </p>
-            )}
             <Notice tone="warning" title={t("posKasirShift.open.checkTitle")}>
               {t("posKasirShift.open.checkBody")}
             </Notice>
@@ -150,6 +156,37 @@ export function ShiftOpenScreen() {
           </div>
         </PosPanel>
       </PosTwoPane>
+      <Dialog open={zeroDialogOpen} onOpenChange={setZeroDialogOpen}>
+        <DialogContent
+          onOpenAutoFocus={(event) => {
+            // Start on the safe button so Enter never opens with Rp0 by accident.
+            event.preventDefault();
+            recheckRef.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {t("posKasirShift.open.zeroDialog.title")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("posKasirShift.open.zeroDialog.description")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              ref={recheckRef}
+              type="button"
+              variant="outline"
+              onClick={() => setZeroDialogOpen(false)}
+            >
+              {t("posKasirShift.open.zeroDialog.recheck")}
+            </Button>
+            <Button type="button" onClick={send}>
+              {t("posKasirShift.open.zeroDialog.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -43,6 +43,22 @@ export const posKasirSupervisorMessages = {
     submitting: "Memproses…",
     failedTitle: "Persetujuan belum berhasil",
     failedHint: "Periksa isian, lalu coba lagi.",
+    countStale:
+      "Ada transaksi tunai setelah kasir menghitung kas, jadi hitungan ini sudah tidak akurat. Minta kasir menghitung ulang dulu. Setelah itu, muat hitungan terbaru.",
+    countSuperseded:
+      "Kasir sudah mengirim hitungan yang lebih baru. Muat hitungan terbaru, periksa angkanya, lalu setujui lagi.",
+    alreadyClosed:
+      "Shift ini sudah ditutup. Muat ulang untuk melihat hasil yang tersimpan.",
+    countMissingTitle: "Hitungan kas belum ada",
+    countMissing: "Kasir belum mengirim hitungan kas",
+    countMissingHint:
+      "Persetujuan baru bisa dilakukan setelah kasir mengirim hitungan. Muat ulang setelah kasir selesai menghitung.",
+    reload: "Muat hitungan terbaru",
+    reloadPlain: "Muat ulang",
+    reloading: "Memuat…",
+    reloadedNew:
+      "Hitungan terbaru sudah dimuat. Periksa angkanya sebelum menyetujui.",
+    reloadedSame: "Belum ada hitungan yang lebih baru dari kasir.",
   },
   closed: {
     pill: "Shift ditutup",

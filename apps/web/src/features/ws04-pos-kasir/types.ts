@@ -174,8 +174,18 @@ export type CashierCodeOrder = {
 
 // ---- Shift -----------------------------------------------------------------
 
-export const CASH_DENOMINATIONS_IDR = [
+export const CASH_NOTE_DENOMINATIONS_IDR = [
   100_000, 50_000, 20_000, 10_000, 5_000,
+] as const;
+
+export const CASH_SMALL_DENOMINATIONS_IDR = [
+  2_000, 1_000, 500, 200, 100,
+] as const;
+
+/** Every denomination the contract accepts in a blind count (10). */
+export const CASH_DENOMINATIONS_IDR = [
+  ...CASH_NOTE_DENOMINATIONS_IDR,
+  ...CASH_SMALL_DENOMINATIONS_IDR,
 ] as const;
 
 export type ShiftStatus = "open" | "awaiting_approval" | "closed";
@@ -194,6 +204,10 @@ export type ActiveShift = {
   openedAt: string;
   openingFloatIdr: number;
   countSubmitted: boolean;
+  /** Latest blind count, null until one is submitted. */
+  countId: string | null;
+  /** Sequence of the latest blind count (1, 2, ...), null until one is sent. */
+  countSequence: number | null;
 };
 
 export type CashMovementType = "cash_in" | "cash_out" | "drop";
@@ -220,15 +234,17 @@ export type BlindCountLine = { denominationIdr: number; quantity: number };
 export type SubmitBlindCountInput = {
   shiftId: string;
   counts: BlindCountLine[];
-  /** Combined amount of other denominations and coins. */
-  otherAmountIdr: number;
 };
 
 /** The cashier only learns that the count was received. */
 export type BlindCountReceipt = {
+  countId: string;
   shiftId: string;
-  status: "awaiting_supervisor";
+  sequence: number;
+  countedIdr: number;
+  noteRequired: boolean;
   submittedAt: string;
+  status: "awaiting_supervisor";
 };
 
 export type RegisteredTerminal = {
@@ -244,6 +260,9 @@ export type SupervisorOption = { userId: string; name: string };
 
 export type ShiftReview = {
   shiftId: string;
+  /** Latest blind count, the one a close must carry. */
+  countId: string | null;
+  countSequence: number | null;
   shiftNo: string;
   status: Exclude<ShiftStatus, "open">;
   cashierName: string;
@@ -291,6 +310,7 @@ export type OverrideResult = { overrideId: string; approvedByName: string };
 
 export type ApproveShiftCloseInput = {
   shiftId: string;
+  countId: string;
   overrideId: string;
   /** Required when the count differs from the system figure. */
   reason: string;
@@ -411,11 +431,14 @@ export type EngineShift = {
   cashOutIdr: number;
   cashDropIdr: number;
   count: {
+    id: string;
+    sequence: number;
     countedIdr: number;
     counts: BlindCountLine[];
-    otherAmountIdr: number;
     submittedAt: string;
   } | null;
+  /** Cash order paid, refunded, or cash moved after the latest count. */
+  cashChangedAfterCount: boolean;
   closed: {
     expectedIdr: number;
     varianceIdr: number;

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -6,6 +6,25 @@ import { isContractPending } from "../../hooks";
 import { Notice, PosTwoPane } from "../shared";
 
 // Small pieces the three shift screens share.
+
+/**
+ * Ref for a screen root: when `enabled` at mount, moves focus to the screen's
+ * heading. Used after a step swaps the screen (recount, cancel, send), so the
+ * focused button does not vanish and leave keyboard focus on the page body.
+ */
+export function useFocusHeading(enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const heading = ref.current?.querySelector("h1");
+    if (!heading) return;
+    heading.tabIndex = -1;
+    heading.focus();
+    // Only on mount: the flag is already set when the new screen appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return ref;
+}
 
 /** A labelled value in the side panel: small caps label, bold value. */
 export function ContextBlock({

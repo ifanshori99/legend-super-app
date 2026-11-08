@@ -194,12 +194,15 @@ export function demoShift(status: EngineShift["status"] = "open"): EngineShift {
     cashOutIdr: 150_000,
     cashDropIdr: 0,
     count: null,
+    cashChangedAfterCount: false,
     closed: null,
   };
 }
 
 /** The count of the supervisor mockup: Rp2.230.000 in notes. */
 export const demoBlindCount = {
+  id: "0c0c0002-0000-4000-8000-000000000001",
+  sequence: 1,
   countedIdr: 2_230_000,
   counts: [
     { denominationIdr: 100_000, quantity: 18 },
@@ -208,7 +211,6 @@ export const demoBlindCount = {
     { denominationIdr: 10_000, quantity: 2 },
     { denominationIdr: 5_000, quantity: 2 },
   ],
-  otherAmountIdr: 0,
 };
 
 export function demoMovements(): (CashMovement & { shiftId: string })[] {

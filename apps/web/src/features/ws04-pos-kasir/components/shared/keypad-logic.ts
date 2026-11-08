@@ -28,13 +28,12 @@ export function parseDigits(
   return Math.min(Number(digits), max);
 }
 
-/** Sum of count × denomination plus the lump sum for small notes and coins. */
+/** Sum of count × denomination. */
 export function denominationTotal(
   quantities: ReadonlyArray<{ denominationIdr: number; quantity: number }>,
-  otherIdr: number,
 ): number {
   return quantities.reduce(
     (sum, row) => sum + row.denominationIdr * row.quantity,
-    otherIdr,
+    0,
   );
 }

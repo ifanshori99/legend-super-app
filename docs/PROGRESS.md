@@ -52,6 +52,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Biaya sesi ui-engineer (transkrip 5d27428b, 1 compact, 40+ subagent): Opus utama 3694k, Sonnet 8474k, Haiku 223k; total sekitar 12391k unit biaya (sebelum gelombang audit terakhir).
 - Sisa (saran): tab terpilih "Kas keluar" masih hitam pekat (ui-auditor: pakai gaya netral), chip, ikon dan perataan kecil vs mockup, header shell tanpa nama kasir.
 
+## legend-iqi UI kasir alur shift baru (ui-engineer, cabang `ui/pos-kasir-shift`)
+
+- Selesai (mode mock, kontrak acuan `ws/pos-shift` 580d0db): tunai butuh shift terbuka (ubin Tunai "Butuh shift terbuka", tombol utama footer jadi "Buka shift" lalu kembali ke tagihan lewat `returnTo` yang hanya menerima `/pos/bayar/<id>`; shift menunggu supervisor dibedakan); 409 `SHIFT_NOT_OPEN` dari konfirmasi tunai/split tampil sebagai pesan biasa + Buka shift dan menyegarkan cache shift; tutup shift 2 langkah: hitung buta per pecahan (10 pecahan kontrak, kelompok uang kertas dan pecahan kecil/koin, tanpa "total saja") menghasilkan `countId` + nomor hitungan, lalu supervisor menutup dengan `countId`; hitung ulang (sequence naik, countId lama `SHIFT_COUNT_SUPERSEDED`); `SHIFT_COUNT_STALE`, `SHIFT_ALREADY_CLOSED`, 422 `SHIFT_VARIANCE_NOTE_REQUIRED` ditangani; modal Rp0 lewat satu Dialog konfirmasi (founder Q2, 8 Nov), hitungan Rp0 memakai pola dialog yang sama.
+- Skenario mock baru: `?mock=shift-not-open`, `count-stale`, `count-superseded`.
+- Bukti: e2e mock 47/47 (spec baru `e2e/legend-iqi-pos-shift.mock.spec.ts` 15 + mjmm 32); `heavy pnpm check` (1396 root + 1192 API), `heavy pnpm build`, format, color, tenant-hardcode hijau. Screenshot 1280x800 sebelum/sesudah di `docs/qa/pos-kasir-shift/`. Dua putaran reviewer konteks segar + ui-auditor, temuan nyata dibetulkan.
+- Sisa: sambungkan count/close non-mock ke endpoint `/counts` dan `close` setelah `ws/pos-shift` merge (CONTRACT-GAPS); di mock, shift jadi `awaiting_approval` setelah hitungan (API asli tetap open), jadi STALE hanya lewat skenario.
+- Biaya sesi 65e392c1 (20:00-20:52, 17 subagent, 0 compact): Opus 1391k, Sonnet 3285k, total 4676k unit; rata-rata 1,35 subagent berjalan.
+
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".

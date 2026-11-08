@@ -20,6 +20,12 @@ import {
 } from "../../hooks";
 import type { PaymentMethodCode } from "../../types";
 import { confirmedAllocations } from "./payment-helpers";
+import {
+  CASH_SHIFT_NOTICE_ID,
+  CashShiftNotice,
+  OpenShiftButton,
+  useCashShiftGate,
+} from "./shift-gate";
 
 const ICONS: Record<PaymentMethodCode, LucideIcon> = {
   qris: QrCode,
@@ -55,6 +61,15 @@ export function MethodGrid({
   const { bill } = usePaymentSession(orderId);
   const options = methods.data ?? [];
   const current = options.find((m) => m.code === selected && m.enabled);
+  const gate = useCashShiftGate();
+  const cashSelected = current?.code === "cash";
+  const noShift = gate.blocked && cashSelected;
+  // Space for the notice is kept from the moment cash is picked, so the
+  // answer of the shift query does not push the buttons around.
+  const noticeSlot = cashSelected && gate.state !== "open";
+  const blockedProps = noShift
+    ? { "aria-describedby": CASH_SHIFT_NOTICE_ID }
+    : {};
   const paymentCount = bill ? confirmedAllocations(bill).length + 1 : 1;
   return (
     <PosPanel
@@ -69,21 +84,29 @@ export function MethodGrid({
           <Button
             type="button"
             variant="outline"
-            disabled={!current}
+            disabled={!current || noShift}
             onClick={() => current && onPartial(current.code)}
+            {...blockedProps}
           >
             {t("posKasirPayment.methods.partial")}
           </Button>
-          <Button
-            type="button"
-            disabled={!current}
-            onClick={() => current && onContinue(current.code)}
-          >
-            {current
-              ? t("posKasirPayment.methods.continue", { method: current.label })
-              : t("posKasirPayment.methods.choose")}
-            <ArrowRight aria-hidden="true" />
-          </Button>
+          {noShift && gate.state === "none" ? (
+            <OpenShiftButton orderId={orderId} />
+          ) : (
+            <Button
+              type="button"
+              disabled={!current || noShift}
+              onClick={() => current && onContinue(current.code)}
+              {...blockedProps}
+            >
+              {current
+                ? t("posKasirPayment.methods.continue", {
+                    method: current.label,
+                  })
+                : t("posKasirPayment.methods.choose")}
+              <ArrowRight aria-hidden="true" />
+            </Button>
+          )}
         </>
       }
     >
@@ -166,10 +189,20 @@ export function MethodGrid({
                   <span className="text-base text-muted-foreground">
                     {method.hint}
                   </span>
+                  {method.code === "cash" && gate.blocked && (
+                    <span className="text-sm font-semibold text-warning">
+                      {t("posKasirPayment.methods.needsShift")}
+                    </span>
+                  )}
                 </span>
               </button>
             );
           })}
+        </div>
+      )}
+      {noticeSlot && (
+        <div className="mt-4 min-h-32">
+          {noShift && <CashShiftNotice awaiting={gate.state === "awaiting"} />}
         </div>
       )}
     </PosPanel>

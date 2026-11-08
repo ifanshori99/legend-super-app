@@ -20,6 +20,15 @@ export const MOCK_SCENARIOS = [
    * guest read hides it.
    */
   "photo-missing",
+  /**
+   * POS kasir shift flow (legend-iqi): a cash payment fails with 409
+   * SHIFT_NOT_OPEN even if the screen thinks a shift is open.
+   */
+  "shift-not-open",
+  /** Approving a shift close fails with 409 SHIFT_COUNT_STALE. */
+  "count-stale",
+  /** Approving a shift close fails with 409 SHIFT_COUNT_SUPERSEDED. */
+  "count-superseded",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

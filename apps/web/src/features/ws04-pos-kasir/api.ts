@@ -223,6 +223,8 @@ function activeShiftFrom(shift: PosShift): ActiveShift {
     openedAt: shift.openedAt,
     openingFloatIdr: Number(shift.openingFloatIdr),
     countSubmitted: false,
+    countId: null,
+    countSequence: null,
   };
 }
 

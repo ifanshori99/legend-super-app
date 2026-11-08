@@ -49,6 +49,7 @@ import {
   supervisorOptions,
   vaBanks,
 } from "./fixtures.ts";
+import { CASH_DENOMINATIONS_IDR } from "./types.ts";
 import type {
   ActiveShift,
   ApproveShiftCloseInput,
@@ -146,16 +147,13 @@ export function cashVarianceIdr(countedIdr: number, expectedIdr: number) {
   return countedIdr - expectedIdr;
 }
 
-/** Notes and coins counted: sum of denomination x quantity + the other amount. */
+/** Notes and coins counted: sum of denomination x quantity. */
 export function countedTotalIdr(
   counts: readonly { denominationIdr: number; quantity: number }[],
-  otherAmountIdr: number,
 ): number {
-  return (
-    counts.reduce(
-      (sum, line) => sum + line.denominationIdr * line.quantity,
-      0,
-    ) + otherAmountIdr
+  return counts.reduce(
+    (sum, line) => sum + line.denominationIdr * line.quantity,
+    0,
   );
 }
 
@@ -173,6 +171,9 @@ function validation(message: string): never {
 }
 function conflict(code: string, message: string): never {
   throw new ApiError(409, code, message);
+}
+function unprocessable(code: string, message: string): never {
+  throw new ApiError(422, code, message);
 }
 function notFound(message: string): never {
   throw new ApiError(404, "NOT_FOUND", message);
@@ -462,8 +463,10 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     order.tenders.push(tender);
     if (remainingOf(order) === 0 && order.receiptNo === null)
       order.receiptNo = receiptNumberFor(order);
-    if (tender.method === "cash" && state.shift?.status === "open")
+    if (tender.method === "cash" && state.shift?.status === "open") {
       state.shift.cashSalesIdr += tender.amountIdr;
+      if (state.shift.count) state.shift.cashChangedAfterCount = true;
+    }
   }
 
   /** Settles an attempt as the order's stored outcome says (confirm or fail). */
@@ -665,7 +668,19 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       openedAt: shift.openedAt,
       openingFloatIdr: shift.openingFloatIdr,
       countSubmitted: shift.count !== null,
+      countId: shift.count?.id ?? null,
+      countSequence: shift.count?.sequence ?? null,
     };
+  }
+
+  /** Cash needs an open shift, even if the screen believes there is one. */
+  function assertCashShiftOpen() {
+    seedShifts();
+    if (scenario() === "shift-not-open" || state.shift?.status !== "open")
+      conflict(
+        "SHIFT_NOT_OPEN",
+        "Belum ada shift kasir terbuka. Buka shift dulu untuk menerima tunai.",
+      );
   }
 
   function shiftOf(shiftId: string): EngineShift {
@@ -691,6 +706,8 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     const counted = shift.count.countedIdr;
     return {
       shiftId: shift.id,
+      countId: shift.count.id,
+      countSequence: shift.count.sequence,
       shiftNo: shift.shiftNo,
       status: shift.status === "closed" ? "closed" : "awaiting_approval",
       cashierName: shift.cashierName,
@@ -880,6 +897,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
 
     confirmCash(input: ConfirmCashInput): PaymentSession {
       const order = orderOf(input.orderId);
+      assertCashShiftOpen();
       settle(order);
       assertOpenBill(order);
       assertNoLiveAttempt(order);
@@ -1041,6 +1059,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       shift.businessDate = DEMO_BUSINESS_DATE;
       shift.openedAt = iso(clock());
       shift.openingFloatIdr = input.openingFloatIdr;
+      shift.cashChangedAfterCount = false;
       shift.cashSalesIdr = 0;
       shift.cashRefundsIdr = 0;
       shift.cashInIdr = 0;
@@ -1075,6 +1094,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       const reasonNote = input.reasonNote.trim();
       if (reasonNote.length < 4)
         validation("Alasan wajib diisi, minimal 4 karakter.");
+      if (shift.count) shift.cashChangedAfterCount = true;
       // No drawer-balance check on purpose: the cashier must not learn the
       // system balance from a refusal (blind count). The server reconciles at
       // close. See CONTRACT-GAPS.md.
@@ -1095,34 +1115,48 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
 
     submitBlindCount(input: SubmitBlindCountInput): BlindCountReceipt {
       const shift = shiftOf(input.shiftId);
-      if (shift.status !== "open")
-        conflict("SHIFT_NOT_OPEN", "Hitungan untuk shift ini sudah dikirim.");
-      if (input.counts.length === 0)
+      // A recount from the waiting screen is allowed: the new count replaces
+      // the old one (sequence + 1, new countId).
+      if (shift.status === "closed")
+        conflict("SHIFT_ALREADY_CLOSED", "Shift ini sudah ditutup.");
+      if (input.counts.length < 1 || input.counts.length > 10)
         validation("Hitung uang per pecahan sebelum mengirim.");
-      for (const line of input.counts)
+      const seen = new Set<number>();
+      for (const line of input.counts) {
         if (
-          !isWholeIdr(line.denominationIdr) ||
-          line.denominationIdr <= 0 ||
-          line.denominationIdr > 100_000 ||
+          !(CASH_DENOMINATIONS_IDR as readonly number[]).includes(
+            line.denominationIdr,
+          ) ||
           !Number.isInteger(line.quantity) ||
           line.quantity < 0 ||
           line.quantity > 10_000
         )
           validation("Jumlah lembar per pecahan tidak valid.");
-      if (!isWholeIdr(input.otherAmountIdr) || input.otherAmountIdr < 0)
-        validation("Nominal pecahan lain dan koin tidak valid.");
+        if (seen.has(line.denominationIdr))
+          validation("Setiap pecahan hanya boleh muncul satu kali.");
+        seen.add(line.denominationIdr);
+      }
       const submittedAt = iso(clock());
+      const countedIdr = countedTotalIdr(input.counts);
+      const sequence = (shift.count?.sequence ?? 0) + 1;
+      const id = nextId();
       shift.count = {
-        countedIdr: countedTotalIdr(input.counts, input.otherAmountIdr),
+        id,
+        sequence,
+        countedIdr,
         counts: clone(input.counts),
-        otherAmountIdr: input.otherAmountIdr,
         submittedAt,
       };
+      shift.cashChangedAfterCount = false;
       shift.status = "awaiting_approval";
       return {
+        countId: id,
         shiftId: shift.id,
-        status: "awaiting_supervisor",
+        sequence,
+        countedIdr,
+        noteRequired: cashVarianceIdr(countedIdr, expectedCashIdr(shift)) !== 0,
         submittedAt,
+        status: "awaiting_supervisor",
       };
     },
 
@@ -1203,7 +1237,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     }): void {
       const shift = shiftOf(input.shiftId);
       if (shift.status === "closed")
-        conflict("SHIFT_CLOSED", "Shift ini sudah ditutup.");
+        conflict("SHIFT_ALREADY_CLOSED", "Shift ini sudah ditutup.");
       const approver = supervisorOptions.find(
         (item) => item.userId === input.approvedBy,
       );
@@ -1213,16 +1247,17 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           "FORBIDDEN",
           "Pengguna ini tidak berwenang menyetujui.",
         );
-      const countedIdr = countedTotalIdr(input.counts, 0);
+      const countedIdr = countedTotalIdr(input.counts);
       const expectedIdr = expectedCashIdr(shift);
       const variance = cashVarianceIdr(countedIdr, expectedIdr);
       const note = (input.varianceNote ?? "").trim();
       if (variance !== 0 && note.length < 4)
         validation("Penjelasan selisih wajib diisi, minimal 4 karakter.");
       shift.count = {
+        id: nextId(),
+        sequence: (shift.count?.sequence ?? 0) + 1,
         countedIdr,
         counts: clone(input.counts),
-        otherAmountIdr: 0,
         submittedAt: iso(clock()),
       };
       shift.status = "closed";
@@ -1238,14 +1273,27 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     approveShiftClose(input: ApproveShiftCloseInput): ShiftReview {
       const shift = shiftOf(input.shiftId);
       if (shift.status === "closed")
-        conflict("SHIFT_CLOSED", "Shift ini sudah ditutup.");
+        conflict("SHIFT_ALREADY_CLOSED", "Shift ini sudah ditutup.");
       if (shift.status !== "awaiting_approval" || !shift.count)
         conflict("COUNT_NOT_SUBMITTED", "Kasir belum mengirim hitungan kas.");
+      if (scenario() === "count-superseded" || input.countId !== shift.count.id)
+        conflict(
+          "SHIFT_COUNT_SUPERSEDED",
+          "Kasir sudah menghitung ulang. Muat hitungan terbaru.",
+        );
+      if (scenario() === "count-stale" || shift.cashChangedAfterCount)
+        conflict(
+          "SHIFT_COUNT_STALE",
+          "Ada transaksi tunai setelah hitungan. Kasir perlu menghitung ulang.",
+        );
       const expectedIdr = expectedCashIdr(shift);
       const variance = cashVarianceIdr(shift.count.countedIdr, expectedIdr);
       const note = input.reason.trim();
       if (variance !== 0 && note.length < 4)
-        validation("Penjelasan selisih wajib diisi, minimal 4 karakter.");
+        unprocessable(
+          "SHIFT_VARIANCE_NOTE_REQUIRED",
+          "Penjelasan selisih wajib diisi, minimal 4 karakter.",
+        );
       const override = consumeOverride(
         input.overrideId,
         "cash_shift_close",

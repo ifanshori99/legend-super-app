@@ -81,6 +81,7 @@ test("remaining, deposit surplus, change and cash variance", () => {
 
 test("split QRIS then cash Rp48.000 with Rp50.000 received pays the bill", () => {
   const { engine } = fresh("split");
+  engine.openShift({ openingFloatIdr: 0 });
   const before = engine.session(DEMO_ORDER_ID);
   assert.equal(before.bill.remainingIdr, 48_000);
   assert.equal(before.bill.allocations[0].method, "qris");
@@ -116,6 +117,7 @@ test("split QRIS then cash Rp48.000 with Rp50.000 received pays the bill", () =>
 
 test("an unknown EDC result blocks every other payment until it is checked", () => {
   const { engine } = fresh("edc-tidak-pasti");
+  engine.openShift({ openingFloatIdr: 0 });
   const session = engine.session(DEMO_ORDER_ID);
   assert.equal(session.activeAttempt.status, "unknown");
   const attemptId = session.activeAttempt.id;
@@ -233,15 +235,26 @@ test("blind count: the cashier gets no system figure; supervisor approves with a
   );
   const receipt = engine.submitBlindCount({
     shiftId: shift.id,
-    counts: [{ denominationIdr: 100_000, quantity: 4 }],
-    otherAmountIdr: 80_000,
+    counts: [
+      { denominationIdr: 100_000, quantity: 4 },
+      { denominationIdr: 2_000, quantity: 40 },
+    ],
   });
+  // No expected figure and no variance in the cashier's receipt.
   assert.deepEqual(Object.keys(receipt).sort(), [
+    "countId",
+    "countedIdr",
+    "noteRequired",
+    "sequence",
     "shiftId",
     "status",
     "submittedAt",
   ]);
+  assert.equal(receipt.sequence, 1);
+  assert.equal(receipt.countedIdr, 480_000);
+  assert.equal(receipt.noteRequired, true);
   const review = engine.shiftReview(shift.id);
+  assert.equal(review.countId, receipt.countId);
   assert.equal(review.countedIdr, 480_000);
   assert.equal(review.expectedIdr, 500_000);
   assert.equal(review.varianceIdr, -20_000);
@@ -262,18 +275,119 @@ test("blind count: the cashier gets no system figure; supervisor approves with a
   const { overrideId } = ask(MOCK_SUPERVISOR_PIN);
   assert.equal(
     code(() =>
-      engine.approveShiftClose({ shiftId: shift.id, overrideId, reason: "" }),
+      engine.approveShiftClose({
+        shiftId: shift.id,
+        countId: receipt.countId,
+        overrideId,
+        reason: "",
+      }),
     ),
-    "VALIDATION_ERROR",
+    "SHIFT_VARIANCE_NOTE_REQUIRED",
   );
   const closed = engine.approveShiftClose({
     shiftId: shift.id,
+    countId: receipt.countId,
     overrideId,
     reason: "Uang kembalian berlebih",
   });
   assert.equal(closed.status, "closed");
   assert.equal(closed.varianceNote, "Uang kembalian berlebih");
   assert.equal(engine.activeShift(), null);
+});
+
+test("cash payment without an open shift is 409 SHIFT_NOT_OPEN", () => {
+  const { engine } = fresh("split");
+  const cash = () =>
+    engine.confirmCash({
+      orderId: DEMO_ORDER_ID,
+      amountIdr: 48_000,
+      receivedIdr: 50_000,
+    });
+  assert.equal(code(cash), "SHIFT_NOT_OPEN");
+  engine.openShift({ openingFloatIdr: 0 });
+  assert.equal(cash().bill.paid, true);
+});
+
+test("recount raises the sequence and the old countId is superseded", () => {
+  const { engine } = fresh();
+  engine.openShift({ openingFloatIdr: 500_000 });
+  const shiftId = engine.activeShift().id;
+  const first = engine.submitBlindCount({
+    shiftId,
+    counts: [{ denominationIdr: 100_000, quantity: 5 }],
+  });
+  const second = engine.submitBlindCount({
+    shiftId,
+    counts: [{ denominationIdr: 100_000, quantity: 4 }],
+  });
+  assert.equal(first.sequence, 1);
+  assert.equal(second.sequence, 2);
+  assert.notEqual(first.countId, second.countId);
+  assert.equal(engine.shiftReview(shiftId).countSequence, 2);
+  const { overrideId } = engine.requestOverride({
+    action: "cash_shift_close",
+    valueIdr: 100_000,
+    reason: "Tutup shift",
+    objectType: "cash_shift",
+    objectId: shiftId,
+    approverUserId: MOCK_SUPERVISOR_ID,
+    pin: MOCK_SUPERVISOR_PIN,
+  });
+  assert.equal(
+    code(() =>
+      engine.approveShiftClose({
+        shiftId,
+        countId: first.countId,
+        overrideId,
+        reason: "Selisih kembalian",
+      }),
+    ),
+    "SHIFT_COUNT_SUPERSEDED",
+  );
+  const closed = engine.approveShiftClose({
+    shiftId,
+    countId: second.countId,
+    overrideId,
+    reason: "Selisih kembalian",
+  });
+  assert.equal(closed.status, "closed");
+});
+
+test("a variance needs a note of 4+ characters: 422 SHIFT_VARIANCE_NOTE_REQUIRED", () => {
+  const { engine } = fresh();
+  engine.openShift({ openingFloatIdr: 500_000 });
+  const shiftId = engine.activeShift().id;
+  const exact = engine.submitBlindCount({
+    shiftId,
+    counts: [{ denominationIdr: 100_000, quantity: 5 }],
+  });
+  assert.equal(exact.noteRequired, false);
+  const short = engine.submitBlindCount({
+    shiftId,
+    counts: [{ denominationIdr: 100_000, quantity: 4 }],
+  });
+  assert.equal(short.noteRequired, true);
+  const { overrideId } = engine.requestOverride({
+    action: "cash_shift_close",
+    valueIdr: 100_000,
+    reason: "Tutup shift",
+    objectType: "cash_shift",
+    objectId: shiftId,
+    approverUserId: MOCK_SUPERVISOR_ID,
+    pin: MOCK_SUPERVISOR_PIN,
+  });
+  for (const reason of ["", "abc"])
+    assert.equal(
+      code(() =>
+        engine.approveShiftClose({
+          shiftId,
+          countId: short.countId,
+          overrideId,
+          reason,
+        }),
+      ),
+      "SHIFT_VARIANCE_NOTE_REQUIRED",
+    );
 });
 
 test("a supervisor PIN locks after five wrong tries", () => {
@@ -362,7 +476,7 @@ test("every typed mock response passes its contract schema", () => {
   });
   // A closed shift carries count, expectation, variance and approver.
   const review = fresh();
-  review.engine.shiftReview(DEMO_SHIFT_ID);
+  const { countId } = review.engine.shiftReview(DEMO_SHIFT_ID);
   const { overrideId } = review.engine.requestOverride({
     action: "cash_shift_close",
     valueIdr: 20_000,
@@ -374,6 +488,7 @@ test("every typed mock response passes its contract schema", () => {
   });
   review.engine.approveShiftClose({
     shiftId: DEMO_SHIFT_ID,
+    countId,
     overrideId,
     reason: "Uang kembalian diduga berlebih",
   });

@@ -160,10 +160,18 @@ function useSessionMutation<TInput extends { orderId: string }>(
     onSuccess: (session, input) =>
       putSession(queryClient, outletId, input.orderId, session),
     // A refused call can still change what the screen must show.
-    onError: (_error, input) =>
+    onError: (error, input) => {
       void queryClient.invalidateQueries({
         queryKey: posKasirKeys.session(outletId, input.orderId),
-      }),
+      });
+      // The server says there is no open shift: the cached shift is stale (for
+      // example closed on another terminal), so "Buka shift" must not land on
+      // an active-shift screen.
+      if (error.status === 409 && error.code === "SHIFT_NOT_OPEN")
+        void queryClient.invalidateQueries({
+          queryKey: posKasirKeys.shift(outletId),
+        });
+    },
   });
 }
 
@@ -287,8 +295,15 @@ export function useSubmitBlindCount() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: SubmitBlindCountInput) => submitBlindCount(input),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: posKasirKeys.shift(outletId) }),
+    onSuccess: (_receipt, input) => {
+      // A recount replaces the old one: the review must carry the new countId.
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.review(outletId, input.shiftId),
+      });
+      return queryClient.invalidateQueries({
+        queryKey: posKasirKeys.shift(outletId),
+      });
+    },
   });
 }
 

@@ -47,6 +47,7 @@ export const posKasirPaymentMessages = {
     partial: "Bayar sebagian",
     continue: "Lanjutkan dengan {method}",
     choose: "Pilih metode",
+    needsShift: "Butuh shift terbuka",
   },
   split: {
     title: "Pembayaran gabungan",
@@ -79,6 +80,15 @@ export const posKasirPaymentMessages = {
     confirming: "Mencatat tunai…",
     failedTitle: "Tunai belum tercatat",
     failedHint: "Periksa nominal dan shift aktif, lalu coba lagi.",
+  },
+  noShift: {
+    title: "Belum ada shift kasir terbuka",
+    hint: "Tunai dicatat ke laci shift. Buka shift lebih dulu, atau pilih metode pembayaran lain.",
+    action: "Buka shift",
+  },
+  awaitingShift: {
+    title: "Shift sedang menunggu persetujuan supervisor",
+    hint: "Tunai bisa diterima lagi setelah shift baru dibuka. Pilih metode pembayaran lain untuk sekarang.",
   },
   success: {
     title: "Pembayaran selesai",

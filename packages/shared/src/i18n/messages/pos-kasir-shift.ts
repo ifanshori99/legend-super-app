@@ -33,9 +33,13 @@ export const posKasirShiftMessages = {
     back: "Kembali",
     submit: "Buka shift · {amount}",
     submitting: "Membuka shift…",
-    zeroConfirm:
-      "Laci kosong? Shift akan dibuka dengan modal Rp 0. Lanjutkan hanya bila memang tidak ada uang tunai di laci.",
-    zeroSubmit: "Ya, laci kosong, buka shift",
+    zeroDialog: {
+      title: "Buka shift dengan modal Rp0?",
+      description:
+        "Laci kasir akan dicatat kosong, tanpa uang tunai di dalamnya. Lanjutkan hanya bila laci memang kosong. Modal ini menjadi dasar hitungan kas saat shift ditutup.",
+      confirm: "Ya, buka dengan Rp0",
+      recheck: "Periksa lagi",
+    },
     errorTitle: "Shift belum bisa dibuka",
   },
   active: {
@@ -86,6 +90,10 @@ export const posKasirShiftMessages = {
     heading: "Tutup shift · Menunggu supervisor",
     subtitle: "Langkah 2 dari 2 · Supervisor memeriksa hitungan kas.",
     status: "Menunggu supervisor",
+    sequence: "Hitungan ke-{sequence}",
+    recountNote:
+      "Salah hitung? Hitung ulang. Hitungan baru menggantikan yang lama.",
+    recount: "Hitung ulang",
   },
   noShift: {
     title: "Belum ada shift aktif",
@@ -98,6 +106,14 @@ export const posKasirShiftMessages = {
     shiftPill: "{cashier} · {terminal}",
     panelTitle: "Jumlah lembar per pecahan",
     panelHint: "Termasuk modal awal dan seluruh uang tunai yang masih di laci.",
+    notesGroup: "Uang kertas",
+    smallGroup: "Pecahan kecil dan koin",
+    unitSheet: "lembar",
+    unitPiece: "keping",
+    recountTitle: "Hitung ulang",
+    keepPrevious: "Batal, pakai hitungan sebelumnya",
+    recountBanner:
+      "Hitungan baru akan menggantikan hitungan sebelumnya yang sudah dikirim.",
     hiddenTitle: "Saldo sistem tidak ditampilkan",
     hiddenBody:
       "Hitung mandiri. Perbandingan baru dibuka setelah hitungan dikirim.",
@@ -108,9 +124,13 @@ export const posKasirShiftMessages = {
     recheckBody: "Selisih setelah hitungan dikirim perlu ditinjau supervisor.",
     emptyHint:
       "Total Rp 0. Bila laci memang kosong, tekan kirim lalu konfirmasi.",
-    zeroConfirm:
-      "Laci kosong? Hitungan Rp 0 akan dikirim ke supervisor. Kirim hanya bila tidak ada uang tunai di laci.",
-    zeroSubmit: "Ya, laci kosong, kirim hitungan",
+    zeroDialog: {
+      title: "Kirim hitungan kas Rp0?",
+      description:
+        "Laci kasir akan dicatat kosong, tanpa uang tunai di dalamnya. Kirim hanya bila laci memang kosong. Supervisor akan memeriksa hitungan ini.",
+      confirm: "Ya, laci kosong, kirim hitungan",
+      recheck: "Periksa lagi",
+    },
     submit: "Kirim hitungan kas",
     submitting: "Mengirim hitungan…",
     back: "Kembali ke shift",

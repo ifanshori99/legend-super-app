@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback-state";
@@ -95,9 +95,11 @@ function ActiveShiftView({ shift }: { shift: ActiveShift }) {
 
 // /pos/shift: no shift yet -> the open form; a shift in progress -> cash
 // movements and the way to close; after the count was sent -> waiting.
-export function ShiftActiveScreen() {
+// `returnTo` is the bill to go back to once a shift is opened.
+export function ShiftActiveScreen({ returnTo }: { returnTo?: string }) {
   const t = useT();
   const shift = useActiveShift();
+  const navigate = useNavigate();
   if (shift.isPending)
     return <ShiftScreenSkeleton label={t("posKasirShift.loading")} />;
   if (shift.isError)
@@ -108,8 +110,24 @@ export function ShiftActiveScreen() {
         onRetry={() => void shift.refetch()}
       />
     );
-  if (shift.data === null) return <ShiftOpenScreen />;
+  if (shift.data === null) return <ShiftOpenScreen returnTo={returnTo} />;
   if (shift.data.status !== "open" || shift.data.countSubmitted)
-    return <ShiftWaiting shift={shift.data} />;
+    return (
+      <ShiftWaiting
+        shift={shift.data}
+        // A sent count can be replaced until the supervisor closes the shift.
+        onRecount={
+          shift.data.countSubmitted && shift.data.status !== "closed"
+            ? () =>
+                void navigate({
+                  to: "/pos/shift/tutup",
+                  // Opens the count form at once instead of a second waiting
+                  // screen: it names the count being replaced.
+                  search: { recount: shift.data?.countSequence ?? undefined },
+                })
+            : undefined
+        }
+      />
+    );
   return <ActiveShiftView shift={shift.data} />;
 }

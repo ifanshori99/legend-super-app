@@ -30,6 +30,10 @@
 //  A11 The seed `edc-tidak-pasti` resolves to a successful EDC result after
 //     "Cek status EDC".
 //  A12 Day close needs no confirmation dialog; if one appears it is confirmed.
+//  A13 (legend-iqi) Cash needs an open shift: cash tests first seed one with
+//      `/pos/shift?demo=shift-aktif` (engine state survives page.goto through
+//      sessionStorage). Opening a shift with Rp0 asks for confirmation in a
+//      dialog with the safe button "Periksa lagi".
 import {
   expect as baseExpect,
   test,
@@ -79,6 +83,12 @@ async function open(page: Page, url: string): Promise<void> {
 }
 
 const main = (page: Page) => page.locator("#main-content");
+
+/** legend-iqi: cash payments need an open shift; seed one for the session. */
+async function seedActiveShift(page: Page): Promise<void> {
+  await open(page, "/pos/shift?demo=shift-aktif");
+  await expect(main(page)).toContainText("Shift aktif");
+}
 
 /** Evidence screenshot 1280x800, named after the mockup PNG. */
 async function shot(page: Page, mockupName: string): Promise<void> {
@@ -197,6 +207,7 @@ test("legend-mjmm PAY-01 payment screen shows the bill, DP and the six methods",
 test("legend-mjmm PAY-01 cash pays the whole bill and shows the change", async ({
   page,
 }) => {
+  await seedActiveShift(page);
   await open(page, payUrl());
   await methodOption(page, "Tunai").click();
   await page.getByRole("button", { name: /Lanjutkan dengan Tunai/ }).click();
@@ -231,6 +242,7 @@ test("legend-mjmm PAY-01 cash pays the whole bill and shows the change", async (
 test("legend-mjmm PAY-01 split: QRIS confirmed, cash 48.000 with 50.000 received gives change 2.000 and a paid bill", async ({
   page,
 }) => {
+  await seedActiveShift(page);
   await open(page, payUrl("split"));
   const area = main(page);
   await expect(area).toContainText(
@@ -566,7 +578,14 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
     page.getByRole("link", { name: /Lanjut ke pembayaran/ }),
   ).toHaveCount(0);
 
-  await code.fill("0044");
+  // Keypad clicks only work once React has hydrated, so the value cannot be
+  // lost to a late hydration (same pattern as CODE-02).
+  await expect(async () => {
+    await code.fill("");
+    for (const digit of "0044")
+      await page.getByRole("button", { name: digit, exact: true }).click();
+    await expect(code).toHaveValue(/0044/, { timeout: 1_000 });
+  }).toPass();
   await page.getByRole("button", { name: /^Cari (ulang )?pesanan$/ }).click();
 
   const area = main(page);
@@ -644,9 +663,16 @@ test("legend-mjmm SHIFT-01 opening a shift records the 500.000 opening cash", as
 
   const opening = page.getByLabel("Uang yang sudah dihitung");
   const submit = page.getByRole("button", { name: /^Buka shift/ });
-  // Nothing counted yet: the shift must not open.
-  await clickIfEnabled(submit);
+  // Nothing counted yet (Rp0): the shift must not open before the cashier
+  // confirms the empty drawer in the dialog (legend-iqi). Backing out keeps the
+  // form as it was.
+  await submit.click();
+  const emptyDrawer = page.getByRole("dialog");
+  await expect(emptyDrawer).toBeVisible();
+  await emptyDrawer.getByRole("button", { name: "Periksa lagi" }).click();
+  await expect(emptyDrawer).toHaveCount(0);
   await expect(heading(page, "Buka shift kasir")).toBeVisible();
+  await expect(area).toContainText("Belum ada shift aktif");
 
   await enterAmount(page, opening, 500_000);
   await expect(
@@ -745,7 +771,9 @@ test("legend-mjmm SHIFT-03 blind count by denomination hides the system balance 
   for (const [value, qty] of counts) {
     await page
       .getByRole("textbox", {
-        name: new RegExp(`^Rp\\s?${value.replace(/\./g, "\\.")}$`),
+        name: new RegExp(
+          `^Rp\\s?${value.replace(/\./g, "\\.")}(?:\\s*·\\s*(?:lembar|keping))?$`,
+        ),
       })
       .fill(qty);
   }

@@ -27,10 +27,6 @@ export const posKasirCommonMessages = {
     backspace: "Hapus angka terakhir",
     quickAmounts: "Nominal cepat",
   },
-  denomination: {
-    other: "Pecahan lain & koin",
-    otherHint: "Isi nominal gabungan",
-  },
   pinDialog: {
     reasonLabel: "Alasan",
     reasonRequired: "Alasan wajib diisi.",
