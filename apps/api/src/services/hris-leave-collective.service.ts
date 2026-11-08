@@ -22,10 +22,11 @@
 //   hris-overtime.service.ts).
 // - National and company holidays never deduct. A leave request counts its
 //   days once, at filing (countLeaveDays excludes the holidays that exist
-//   then). A collective day added or moved into a pending/approved request
-//   after it was filed is therefore already inside that request's day count:
-//   the job skips that employee and date (no ledger row, so a rejected or
-//   cancelled request is deducted on a later run). A collective date that
+//   then, stored in `excluded_holiday_dates`). A collective day inside a
+//   pending/approved request and not excluded by it is therefore already in
+//   that request's day count: the job skips that employee and date (no
+//   ledger row, so a rejected or cancelled request is deducted on a later
+//   run). A collective date that
 //   also has a national/company holiday in the employee's scope (tenant-wide
 //   or their home outlet) is already a paid day off and is not deducted (same
 //   precedence as overtime).
@@ -38,7 +39,7 @@
 //   deduction in the same transaction (reverseCollectiveLeaveDeductions):
 //   the ledger row is deleted and the day returned to `used`, once.
 
-import { and, asc, eq, gte, inArray, lt, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import {
   DEFAULT_TIME_ZONE,
   createUlid,
@@ -76,7 +77,7 @@ import {
 } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-holiday.service.ts";
 import {
-  usableCarriedOverDays,
+  expireBalanceCarryOver,
   type LeaveJobActor,
 } from "./hris-leave.service.ts";
 
@@ -99,6 +100,8 @@ const COLLECTIVE_AUDIT_SAFE_FIELDS = [
   "annualLeaveTypeId",
   "effectiveAnnualLeaveTypeId",
   "collectiveLeaveEffectiveFrom",
+  "forfeitedDays",
+  "carriedOverDays",
 ] as const;
 
 // ----------------------------------------------------------------- access
@@ -302,31 +305,25 @@ export async function updateLeaveSettings(
 
 // -------------------------------------------------------------- deduction
 
-const dayNumber = (date: string) =>
-  Math.floor(Date.parse(`${date}T00:00:00Z`) / 86_400_000);
-
 /**
  * `employeeId|date` pairs whose collective day a pending or approved request
- * already counts as a leave day. countLeaveDays ran at filing, so the stored
- * days exceed a recount against today's calendar by the number of days of
- * the request that became a holiday later. Those are the most recently
- * written holidays in its range (holiday timestamps only, never compared with
- * the request's own clock); the collective ones among them are skipped.
+ * already counts as a leave day: the date is inside the request's range and
+ * not among the holiday dates it excluded at filing
+ * (`excluded_holiday_dates`), whatever happened to the calendar since.
  */
 async function datesCountedByRequests(
   tx: Tx,
   tenantId: SettingsRow["tenantId"],
-  collective: readonly { date: string; outletId: string | null }[],
+  collective: readonly { date: string }[],
   range: { from: string; today: string },
 ): Promise<Set<string>> {
   const counted = new Set<string>();
   const requests = await tx
     .select({
       employeeId: leaveRequests.employeeId,
-      outletId: leaveRequests.outletId,
       startDate: leaveRequests.startDate,
       endDate: leaveRequests.endDate,
-      days: leaveRequests.days,
+      excludedHolidayDates: leaveRequests.excludedHolidayDates,
     })
     .from(leaveRequests)
     .where(
@@ -337,66 +334,15 @@ async function datesCountedByRequests(
         lt(leaveRequests.startDate, range.today),
       ),
     );
-  const inScope = (outletId: string | null, requestOutlet: string) =>
-    outletId === null || outletId.toLowerCase() === requestOutlet.toLowerCase();
-  const inRange = (
-    row: { date: string; outletId: string | null },
-    request: (typeof requests)[number],
-  ) =>
-    row.date >= request.startDate &&
-    row.date <= request.endDate &&
-    inScope(row.outletId, request.outletId);
-  const candidates = requests.filter((request) =>
-    collective.some((holiday) => inRange(holiday, request)),
-  );
-  if (candidates.length === 0) return counted;
-  const first = candidates.reduce(
-    (min, request) => (request.startDate < min ? request.startDate : min),
-    candidates[0]!.startDate,
-  );
-  const last = candidates.reduce(
-    (max, request) => (request.endDate > max ? request.endDate : max),
-    candidates[0]!.endDate,
-  );
-  const calendar = await tx
-    .select({
-      date: holidays.date,
-      outletId: holidays.outletId,
-      type: holidays.type,
-      updatedAt: holidays.updatedAt,
-    })
-    .from(holidays)
-    .where(
-      and(
-        eq(holidays.tenantId, tenantId),
-        gte(holidays.date, first),
-        lte(holidays.date, last),
-      ),
-    );
-  for (const request of candidates) {
-    // Per date in range: latest write, and whether a collective row is there.
-    const dates = new Map<string, { at: number; collective: boolean }>();
-    for (const row of calendar) {
-      if (!inRange(row, request)) continue;
-      const seen = dates.get(row.date);
-      dates.set(row.date, {
-        at: Math.max(seen?.at ?? 0, row.updatedAt.getTime()),
-        collective: (seen?.collective ?? false) || row.type === "collective",
-      });
-    }
-    const recount = BigInt(
-      dayNumber(request.endDate) -
-        dayNumber(request.startDate) +
-        1 -
-        dates.size,
-    );
-    const excess = (parseDecimal4(request.days) - recount * ONE_DAY) / ONE_DAY;
-    if (excess <= 0n) continue;
-    const newest = [...dates.entries()]
-      .sort(([, a], [, b]) => b.at - a.at)
-      .slice(0, Number(excess));
-    for (const [date, entry] of newest)
-      if (entry.collective) counted.add(`${request.employeeId}|${date}`);
+  for (const request of requests) {
+    const excluded = new Set(request.excludedHolidayDates);
+    for (const { date } of collective)
+      if (
+        date >= request.startDate &&
+        date <= request.endDate &&
+        !excluded.has(date)
+      )
+        counted.add(`${request.employeeId}|${date}`);
   }
   return counted;
 }
@@ -581,7 +527,7 @@ export async function applyCollectiveLeaveDeductions(
         }
         // The upsert takes the balance row lock (same as FOR UPDATE), so a
         // concurrent request or job on this balance serializes behind it.
-        const [balance] = await tx
+        const [upserted] = await tx
           .insert(leaveBalances)
           .values({
             tenantId,
@@ -604,11 +550,27 @@ export async function applyCollectiveLeaveDeductions(
             },
           })
           .returning();
-        if (!balance) throw new Error("Leave balance upsert returned no row");
+        if (!upserted) throw new Error("Leave balance upsert returned no row");
         granted += 1;
+        // Expired carry not held by used or pending days is written off
+        // first (once, through the ledger), as the expiry job would.
+        const { balance } = await expireBalanceCarryOver(
+          tx,
+          context,
+          upserted,
+          today,
+          now,
+          (after) =>
+            audit(tx, context, actor, now, {
+              action: "hris.leave_carry_over.forfeited",
+              objectType: "leave_balance",
+              objectId: upserted.id,
+              after,
+            }),
+        );
         const available =
           parseDecimal4(balance.entitledDays) +
-          usableCarriedOverDays(balance, today) -
+          parseDecimal4(balance.carriedOverDays) -
           parseDecimal4(balance.usedDays) -
           parseDecimal4(balance.pendingDays);
         if (available < 0n) {

@@ -731,18 +731,24 @@ describe("collective leave cutover and leave type switch", () => {
 });
 
 describe("collective day inside a leave request (no double deduction)", () => {
-  /** A request row as the request service leaves it; `days` is its count. */
+  /**
+   * A request row as the request service leaves it; `days` is its count and
+   * `excluded` the holiday dates it left out at filing.
+   */
   const request = (
     employeeId: string,
     range: [string, string],
     days: string,
     status: "pending" | "approved",
+    excluded: string[] = [],
   ) =>
     sql<{ id: string }>(
       `INSERT INTO leave_requests
          (tenant_id, outlet_id, employee_id, leave_type_id, period_year,
-          start_date, end_date, days, status, requested_by, requested_at)
-       VALUES ($1, $2, $3, $4, 2044, $5, $6, $7, $8, $9, clock_timestamp())
+          start_date, end_date, days, excluded_holiday_dates, status,
+          requested_by, requested_at)
+       VALUES ($1, $2, $3, $4, 2044, $5, $6, $7, $8::date[], $9, $10,
+               clock_timestamp())
        RETURNING id`,
       [
         tenantId,
@@ -752,6 +758,7 @@ describe("collective day inside a leave request (no double deduction)", () => {
         range[0],
         range[1],
         days,
+        excluded,
         status,
         hr,
       ],
@@ -805,12 +812,51 @@ describe("collective day inside a leave request (no double deduction)", () => {
   it("a request filed after the collective day existed (day excluded from its count) still deducts it", async () => {
     const e = await employee(outletA, "2040-01-02");
     await holiday("2044-04-28", "collective"); // known before filing
-    await request(e.id, ["2044-04-27", "2044-04-29"], "2.0000", "approved");
+    await request(e.id, ["2044-04-27", "2044-04-29"], "2.0000", "approved", [
+      "2044-04-28",
+    ]);
     await setUsed(e.id, "2.0000");
     await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
     const periods = await periodsOf(e.id);
     expect(periods).toContain("2044-04-28");
     expect(Number(await usedOf(e.id, 2044))).toBe(2 + in2044(periods));
+  });
+
+  it("renaming a national holiday the request excluded does not make the job deduct a counted collective day", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    const national = await holiday("2044-04-16", "national"); // at filing
+    // 15-17 Apr: 3 days minus the national 16 Apr = 2 counted.
+    await request(e.id, ["2044-04-15", "2044-04-17"], "2.0000", "approved", [
+      "2044-04-16",
+    ]);
+    await setUsed(e.id, "2.0000");
+    await holiday("2044-04-15", "collective"); // added after filing
+    await updateHoliday(tenantScope(), hr, national.id, {
+      name: "CBDB national renamed",
+      idempotencyKey: key(),
+    } as never);
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const periods = await periodsOf(e.id);
+    // 15 Apr is taken once in total: inside the request's 2 days.
+    expect(periods).not.toContain("2044-04-15");
+    expect(Number(await usedOf(e.id, 2044))).toBe(2 + in2044(periods));
+  });
+
+  it("deleting a national holiday the request excluded does not make the job deduct a counted collective day", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    const national = await holiday("2044-04-18", "national"); // at filing
+    // 18-19 Apr: 2 days minus the national 18 Apr = 1 counted (19 Apr).
+    await request(e.id, ["2044-04-18", "2044-04-19"], "1.0000", "pending", [
+      "2044-04-18",
+    ]);
+    await setUsed(e.id, "0.0000");
+    await deleteHoliday(tenantScope(), hr, national.id);
+    await holiday("2044-04-19", "collective"); // added after filing
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const periods = await periodsOf(e.id);
+    expect(periods).not.toContain("2044-04-19");
+    expect(periods).not.toContain("2044-04-18");
+    expect(Number(await usedOf(e.id, 2044))).toBe(in2044(periods));
   });
 });
 

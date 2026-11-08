@@ -1387,7 +1387,10 @@ describe("legend-hggk holidays reduce the requested days", () => {
         endDate: "2031-05-09",
       } as never),
     );
-    expect(counted).toBe("3.0000");
+    expect(counted).toEqual({
+      days: "3.0000",
+      excludedDates: ["2031-05-07", "2031-05-09"],
+    });
     const atB = await withTenant(db, tenantScope(), (tx) =>
       countLeaveDays(tx, {
         tenantId,
@@ -1396,7 +1399,10 @@ describe("legend-hggk holidays reduce the requested days", () => {
         endDate: "2031-05-09",
       } as never),
     );
-    expect(atB).toBe("3.0000");
+    expect(atB).toEqual({
+      days: "3.0000",
+      excludedDates: ["2031-05-07", "2031-05-08"],
+    });
 
     const type = await makeType();
     const staff = await makeStaff();
@@ -1406,6 +1412,13 @@ describe("legend-hggk holidays reduce the requested days", () => {
     expect(
       (await balanceOf(staff.employee.id, type.id, 2031))?.pending_days,
     ).toBe("3.0000");
+    // The request records which holidays it left out of its count.
+    const [stored] = await sql<{ excluded: string[] }>(
+      `SELECT excluded_holiday_dates::text[] AS excluded FROM leave_requests
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, created.id],
+    );
+    expect(stored?.excluded).toEqual(["2031-05-07", "2031-05-09"]);
   });
 
   it("a range made only of holidays has no working days: 422 LEAVE_NO_WORKING_DAYS", async () => {

@@ -600,6 +600,8 @@ function dayNumber(date: string): number {
  * Calendar days from `startDate` to `endDate` inclusive, minus the dates that
  * are a holiday for the outlet (tenant-wide holidays and that outlet's own).
  * A date that is both counts once. Weekends are not excluded.
+ * `excludedDates` (ascending) are the holiday dates left out of `days`; the
+ * request stores them so later holiday edits never change what it counted.
  */
 export async function countLeaveDays(
   tx: Tx,
@@ -609,7 +611,7 @@ export async function countLeaveDays(
     startDate: string;
     endDate: string;
   },
-): Promise<Decimal4> {
+): Promise<{ days: Decimal4; excludedDates: string[] }> {
   const first = dayNumber(input.startDate);
   const last = dayNumber(input.endDate);
   if (last < first)
@@ -633,7 +635,10 @@ export async function countLeaveDays(
       ),
     );
   const count = BigInt(last - first + 1 - rows.length);
-  return formatDecimal4(count * SCALE);
+  return {
+    days: formatDecimal4(count * SCALE),
+    excludedDates: rows.map((row) => row.date).sort(),
+  };
 }
 
 // ---------------------------------------------------------------- accrual
@@ -983,6 +988,67 @@ export async function expireLeaveCarryOver(
   );
 }
 
+/**
+ * Writes off the carried-over days of one balance whose
+ * `carry_over_expires_on` is on or before `asOf`: claims the
+ * `carry_over_expiry` ledger row (once per balance) and clamps carried to
+ * what `used + pending` still holds (days taken consume the carried-over part
+ * first). Pending days hold their carried part until decided; releasing them
+ * later forfeits it then (`moveBalance` in hris-leave-request.service.ts).
+ * The caller holds the balance row lock. Used by the expiry job and, so that
+ * expired carry is never spent before the job ran, by leave filing and the
+ * collective-leave deduction. `audit` runs only when days were forfeited.
+ * Returns the balance as it is now; `claimed` = this call inserted the row.
+ */
+export async function expireBalanceCarryOver(
+  tx: Tx,
+  context: ScopedTenantContext,
+  balance: LeaveBalanceRow,
+  asOf: string,
+  now: Date,
+  audit?: (after: {
+    periodYear: number;
+    forfeitedDays: Decimal4;
+    carriedOverDays: Decimal4;
+  }) => Promise<void>,
+): Promise<{ balance: LeaveBalanceRow; claimed: boolean }> {
+  const carried = parseDecimal4(balance.carriedOverDays);
+  if (
+    balance.carryOverExpiresOn === null ||
+    balance.carryOverExpiresOn > asOf ||
+    carried <= 0n
+  )
+    return { balance, claimed: false };
+  const forfeited = carried - usableCarriedOverDays(balance, asOf);
+  const claimed = await claimLedger(tx, context, now, {
+    employeeId: balance.employeeId,
+    leaveTypeId: balance.leaveTypeId,
+    kind: "carry_over_expiry",
+    period: String(balance.periodYear),
+    days: -forfeited,
+  });
+  if (!claimed || forfeited <= 0n) return { balance, claimed };
+  const kept = formatDecimal4(carried - forfeited);
+  await tx
+    .update(leaveBalances)
+    .set({ carriedOverDays: kept, updatedAt: now })
+    .where(
+      and(
+        eq(leaveBalances.tenantId, context.tenant.tenantId),
+        eq(leaveBalances.id, balance.id),
+      ),
+    );
+  await audit?.({
+    periodYear: balance.periodYear,
+    forfeitedDays: formatDecimal4(forfeited),
+    carriedOverDays: kept,
+  });
+  return {
+    balance: { ...balance, carriedOverDays: kept, updatedAt: now },
+    claimed,
+  };
+}
+
 /** Expiry body shared by the HTTP path and the scheduled job. */
 export async function expireCarryOverLeave(
   context: ScopedTenantContext,
@@ -1015,35 +1081,16 @@ export async function expireCarryOverLeave(
     let granted = 0;
     let skipped = 0;
     for (const balance of balances) {
-      // Pending days hold their carried part until decided; releasing them
-      // later forfeits it then (`moveBalance` in hris-leave-request.service.ts).
-      const carried = parseDecimal4(balance.carriedOverDays);
-      const forfeited = carried - usableCarriedOverDays(balance, input.asOf);
-      const claimed = await claimLedger(tx, context, now, {
-        employeeId: balance.employeeId,
-        leaveTypeId: balance.leaveTypeId,
-        kind: "carry_over_expiry",
-        period: String(balance.periodYear),
-        days: -forfeited,
-      });
-      if (!claimed) {
-        skipped += 1;
-        continue;
-      }
-      if (forfeited > 0n)
-        await tx
-          .update(leaveBalances)
-          .set({
-            carriedOverDays: formatDecimal4(carried - forfeited),
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(leaveBalances.tenantId, context.tenant.tenantId),
-              eq(leaveBalances.id, balance.id),
-            ),
-          );
-      granted += 1;
+      // The run is audited once below, not per balance.
+      const { claimed } = await expireBalanceCarryOver(
+        tx,
+        context,
+        balance,
+        input.asOf,
+        now,
+      );
+      if (claimed) granted += 1;
+      else skipped += 1;
     }
     await auditTenantWide(tx, context, actor, now, {
       action: "hris.leave_carry_over.expired",

@@ -86,8 +86,8 @@ import {
 } from "./hris-contract.service.ts";
 import {
   countLeaveDays,
+  expireBalanceCarryOver,
   lockBalanceForUpdate,
-  usableCarriedOverDays,
 } from "./hris-leave.service.ts";
 import {
   cancelApprovalRequest,
@@ -748,7 +748,7 @@ export async function createLeaveRequest(
         "Sudah ada pengajuan cuti pada tanggal tersebut.",
       );
 
-    const days = await countLeaveDays(tx, {
+    const { days, excludedDates } = await countLeaveDays(tx, {
       tenantId,
       outletId: own.homeOutletId,
       startDate: input.startDate,
@@ -775,19 +775,40 @@ export async function createLeaveRequest(
           updatedAt: now,
         })
         .onConflictDoNothing();
-      const balance = await lockBalanceForUpdate(
+      const locked = await lockBalanceForUpdate(
         tx,
         tenantId,
         own.id,
         type.row.id,
         periodYear,
       );
-      if (!balance) throw new Error("Leave balance row missing after upsert");
+      if (!locked) throw new Error("Leave balance row missing after upsert");
       // From the expiry date on, carried days not held by used or pending
-      // ones are forfeit, even before the expiry job writes them off.
+      // ones are forfeit: write them off now (once, through the ledger) so a
+      // later filing cannot reopen them before the expiry job runs.
+      const { balance } = await expireBalanceCarryOver(
+        tx,
+        scoped,
+        locked,
+        localDateOf(now),
+        now,
+        (after) =>
+          recordAudit(
+            tx,
+            scoped,
+            hrisAuditEntry(scoped, access.actorUserId, now, {
+              outletId: own.homeOutletId,
+              action: "hris.leave_carry_over.forfeited",
+              objectType: "leave_balance",
+              objectId: locked.id,
+              after,
+            }),
+            LEAVE_BALANCE_AUDIT_SAFE_FIELDS,
+          ),
+      );
       const available =
         parseDecimal4(balance.entitledDays) +
-        usableCarriedOverDays(balance, localDateOf(now)) -
+        parseDecimal4(balance.carriedOverDays) -
         parseDecimal4(balance.usedDays) -
         parseDecimal4(balance.pendingDays) +
         parseDecimal4(type.policy.negativeAllowanceDays);
@@ -810,6 +831,7 @@ export async function createLeaveRequest(
         startDate: input.startDate,
         endDate: input.endDate,
         days,
+        excludedHolidayDates: excludedDates,
         reason: input.reason,
         attachmentKey: input.attachmentUploadRef,
         status: "pending",

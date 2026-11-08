@@ -237,6 +237,15 @@ export const leaveRequests = pgTable(
     startDate: businessDate("start_date").notNull(),
     endDate: businessDate("end_date").notNull(),
     days: days("days").notNull(),
+    /**
+     * Holiday dates inside the range that `days` left out at filing. A date
+     * in range but not listed was counted as a leave day, whatever the
+     * holiday calendar says later (collective-leave deduction skips it).
+     */
+    excludedHolidayDates: businessDate("excluded_holiday_dates")
+      .array()
+      .notNull()
+      .default(sql`'{}'::date[]`),
     reason: text("reason"),
     attachmentKey: varchar("attachment_key", { length: 500 }),
     status: varchar("status", { length: 20 })

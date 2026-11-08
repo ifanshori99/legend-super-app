@@ -528,12 +528,63 @@ describe("brief 85 item 2: expired carry-over is not usable while days are pendi
     expect(refused.status).toBe(409);
     expect(refused.code).toBe("INSUFFICIENT_LEAVE_BALANCE");
     await submitAt(staff, type.id, WEEK_2_TWO, APR_2);
-    // Nothing is written off by filing; the job does that later.
+    // Filing writes the unheld carry off itself, once, as the job would.
     expect(await balanceOf(staff.employee.id, type.id, 2029)).toMatchObject({
-      carried_over_days: "5.0000",
+      carried_over_days: "3.0000",
       pending_days: "5.0000",
     });
-    expect(await expiryLedger(staff.employee.id, type.id)).toHaveLength(0);
+    expect(await expiryLedger(staff.employee.id, type.id)).toEqual([
+      { days: "-2.0000" },
+    ]);
+
+    // The job running later claims nothing more.
+    await runExpiry("2029-04-02", APR_2);
+    expect(
+      (await balanceOf(staff.employee.id, type.id, 2029))?.carried_over_days,
+    ).toBe("3.0000");
+    expect(await expiryLedger(staff.employee.id, type.id)).toHaveLength(1);
+  });
+
+  it("after expiry, small filings cannot reopen the forfeited carry before the job runs", async () => {
+    const type = await makeType();
+    const staff = await makeStaff();
+    await carriedBalance(staff, type.id);
+
+    // 2 Apr, job not run: 2 entitled days left, the 5 carried are forfeit.
+    const first = await submitAt(staff, type.id, WEEK_2_TWO, APR_2);
+    expect(first.days).toBe("2.0000");
+    expect(await balanceOf(staff.employee.id, type.id, 2029)).toMatchObject({
+      carried_over_days: "0.0000",
+      pending_days: "2.0000",
+    });
+    expect(await expiryLedger(staff.employee.id, type.id)).toEqual([
+      { days: "-5.0000" },
+    ]);
+    const forfeits = await sql<{ forfeited: string }>(
+      `SELECT event->'maskedChanges'->'after'->>'forfeitedDays' AS forfeited
+         FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'hris.leave_carry_over.forfeited'
+          AND event->>'objectId' = (SELECT id::text FROM leave_balances
+            WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+              AND period_year = 2029)`,
+      [tenantId, staff.employee.id, type.id],
+    );
+    expect(forfeits).toEqual([{ forfeited: "5.0000" }]);
+
+    // The next 2-day filing finds nothing left.
+    const refused = await failure(
+      submitAt(staff, type.id, ["2029-06-18", "2029-06-19"], APR_2),
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.code).toBe("INSUFFICIENT_LEAVE_BALANCE");
+
+    // The job run afterwards is a no-op: one ledger row, carried unchanged.
+    await runExpiry("2029-04-02", APR_2);
+    expect(await expiryLedger(staff.employee.id, type.id)).toHaveLength(1);
+    expect(await balanceOf(staff.employee.id, type.id, 2029)).toMatchObject({
+      carried_over_days: "0.0000",
+      pending_days: "2.0000",
+    });
   });
 
   it("before the expiry date the whole carry counts; on the expiry date it no longer does", async () => {

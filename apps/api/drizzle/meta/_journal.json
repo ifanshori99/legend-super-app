@@ -519,6 +519,13 @@
       "when": 1794151270783,
       "tag": "0073_hris_leave_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1794151613858,
+      "tag": "0074_hris_leave_excluded_holidays",
+      "breakpoints": true
     }
   ]
 }
