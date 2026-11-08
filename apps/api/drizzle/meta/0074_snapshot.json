@@ -1,5 +1,5 @@
 {
-  "id": "34e67b72-2421-4da5-b0d2-c17bddc84130",
+  "id": "054046d3-978a-4f5b-94de-708314ff1241",
   "prevId": "69e3146d-ad4f-433e-8fa3-1640371735ba",
   "version": "7",
   "dialect": "postgresql",
@@ -20228,6 +20228,411 @@
       },
       "isRLSEnabled": false
     },
+    "public.reservation_guest_links": {
+      "name": "reservation_guest_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reservation_id": {
+          "name": "reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "reservation_guest_links_active_key": {
+          "name": "reservation_guest_links_active_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reservation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"reservation_guest_links\".\"revoked_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reservation_guest_links_tenant_id_tenants_id_fk": {
+          "name": "reservation_guest_links_tenant_id_tenants_id_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_outlet_id_outlets_id_fk": {
+          "name": "reservation_guest_links_outlet_id_outlets_id_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_outlet_fk": {
+          "name": "reservation_guest_links_outlet_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_reservation_fk": {
+          "name": "reservation_guest_links_reservation_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "reservations",
+          "columnsFrom": [
+            "tenant_id",
+            "reservation_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reservation_guest_links_tenant_id_id_key": {
+          "name": "reservation_guest_links_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "reservation_guest_links_token_key": {
+          "name": "reservation_guest_links_token_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reservation_guest_links_token_hash_check": {
+          "name": "reservation_guest_links_token_hash_check",
+          "value": "\"reservation_guest_links\".\"token_hash\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.reservation_reschedule_requests": {
+      "name": "reservation_reschedule_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reservation_id": {
+          "name": "reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guest_link_id": {
+          "name": "guest_link_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_for": {
+          "name": "requested_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "party_size": {
+          "name": "party_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "varchar(300)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_by": {
+          "name": "resolved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "reservation_reschedule_requests_pending_key": {
+          "name": "reservation_reschedule_requests_pending_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reservation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"reservation_reschedule_requests\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reservation_reschedule_requests_list_idx": {
+          "name": "reservation_reschedule_requests_list_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reservation_reschedule_requests_tenant_id_tenants_id_fk": {
+          "name": "reservation_reschedule_requests_tenant_id_tenants_id_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_outlet_id_outlets_id_fk": {
+          "name": "reservation_reschedule_requests_outlet_id_outlets_id_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_outlet_fk": {
+          "name": "reservation_reschedule_requests_outlet_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_reservation_fk": {
+          "name": "reservation_reschedule_requests_reservation_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "reservations",
+          "columnsFrom": [
+            "tenant_id",
+            "reservation_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_link_fk": {
+          "name": "reservation_reschedule_requests_link_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "reservation_guest_links",
+          "columnsFrom": [
+            "tenant_id",
+            "guest_link_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reservation_reschedule_requests_tenant_id_id_key": {
+          "name": "reservation_reschedule_requests_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reservation_reschedule_requests_status_check": {
+          "name": "reservation_reschedule_requests_status_check",
+          "value": "\"reservation_reschedule_requests\".\"status\" IN ('pending', 'approved', 'declined', 'withdrawn')"
+        },
+        "reservation_reschedule_requests_party_size_check": {
+          "name": "reservation_reschedule_requests_party_size_check",
+          "value": "\"reservation_reschedule_requests\".\"party_size\" IS NULL OR (\"reservation_reschedule_requests\".\"party_size\" >= 1 AND \"reservation_reschedule_requests\".\"party_size\" <= 50)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.access_tickets": {
       "name": "access_tickets",
       "schema": "",
@@ -25533,748 +25938,6 @@
         "fixed_assets_name_check": {
           "name": "fixed_assets_name_check",
           "value": "length(btrim(\"fixed_assets\".\"name\")) > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.manual_journals": {
-      "name": "manual_journals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "legal_entity_id": {
-          "name": "legal_entity_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "entry_date": {
-          "name": "entry_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "lines": {
-          "name": "lines",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "submitted_at": {
-          "name": "submitted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decided_by": {
-          "name": "decided_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rejection_reason": {
-          "name": "rejection_reason",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "posted_entry_id": {
-          "name": "posted_entry_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approval_chain_id": {
-          "name": "approval_chain_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "manual_journals_entity_status_idx": {
-          "name": "manual_journals_entity_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "legal_entity_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "manual_journals_chain_idx": {
-          "name": "manual_journals_chain_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "approval_chain_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "manual_journals_tenant_id_tenants_id_fk": {
-          "name": "manual_journals_tenant_id_tenants_id_fk",
-          "tableFrom": "manual_journals",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "manual_journals_legal_entity_fk": {
-          "name": "manual_journals_legal_entity_fk",
-          "tableFrom": "manual_journals",
-          "tableTo": "legal_entities",
-          "columnsFrom": [
-            "tenant_id",
-            "legal_entity_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "manual_journals_outlet_fk": {
-          "name": "manual_journals_outlet_fk",
-          "tableFrom": "manual_journals",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "manual_journals_posted_entry_fk": {
-          "name": "manual_journals_posted_entry_fk",
-          "tableFrom": "manual_journals",
-          "tableTo": "journal_entries",
-          "columnsFrom": [
-            "tenant_id",
-            "posted_entry_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "manual_journals_tenant_id_key": {
-          "name": "manual_journals_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "manual_journals_tenant_idempotency_key": {
-          "name": "manual_journals_tenant_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "idempotency_key"
-          ]
-        },
-        "manual_journals_tenant_posted_entry_key": {
-          "name": "manual_journals_tenant_posted_entry_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "posted_entry_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "manual_journals_status_check": {
-          "name": "manual_journals_status_check",
-          "value": "\"manual_journals\".\"status\" IN ('draft', 'pending_approval', 'rejected', 'cancelled', 'posted')"
-        },
-        "manual_journals_kind_check": {
-          "name": "manual_journals_kind_check",
-          "value": "\"manual_journals\".\"kind\" IN ('general', 'adjustment')"
-        },
-        "manual_journals_posted_check": {
-          "name": "manual_journals_posted_check",
-          "value": "(\"manual_journals\".\"status\" = 'posted') = (\"manual_journals\".\"posted_entry_id\" IS NOT NULL)"
-        },
-        "manual_journals_rejected_check": {
-          "name": "manual_journals_rejected_check",
-          "value": "(\"manual_journals\".\"status\" = 'rejected') = (\"manual_journals\".\"rejection_reason\" IS NOT NULL)"
-        },
-        "manual_journals_distinct_decider_check": {
-          "name": "manual_journals_distinct_decider_check",
-          "value": "\"manual_journals\".\"decided_by\" IS NULL OR \"manual_journals\".\"decided_by\" <> \"manual_journals\".\"requested_by\""
-        },
-        "manual_journals_description_check": {
-          "name": "manual_journals_description_check",
-          "value": "length(btrim(\"manual_journals\".\"description\")) > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.recurring_journal_runs": {
-      "name": "recurring_journal_runs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "recurring_journal_id": {
-          "name": "recurring_journal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "period": {
-          "name": "period",
-          "type": "varchar(7)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "journal_entry_id": {
-          "name": "journal_entry_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "skipped_by": {
-          "name": "skipped_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "skip_reason": {
-          "name": "skip_reason",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "recurring_journal_runs_tenant_id_tenants_id_fk": {
-          "name": "recurring_journal_runs_tenant_id_tenants_id_fk",
-          "tableFrom": "recurring_journal_runs",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "recurring_journal_runs_template_fk": {
-          "name": "recurring_journal_runs_template_fk",
-          "tableFrom": "recurring_journal_runs",
-          "tableTo": "recurring_journals",
-          "columnsFrom": [
-            "tenant_id",
-            "recurring_journal_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "recurring_journal_runs_entry_fk": {
-          "name": "recurring_journal_runs_entry_fk",
-          "tableFrom": "recurring_journal_runs",
-          "tableTo": "journal_entries",
-          "columnsFrom": [
-            "tenant_id",
-            "journal_entry_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "recurring_journal_runs_tenant_template_period_key": {
-          "name": "recurring_journal_runs_tenant_template_period_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "recurring_journal_id",
-            "period"
-          ]
-        },
-        "recurring_journal_runs_tenant_entry_key": {
-          "name": "recurring_journal_runs_tenant_entry_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "journal_entry_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "recurring_journal_runs_period_check": {
-          "name": "recurring_journal_runs_period_check",
-          "value": "\"recurring_journal_runs\".\"period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'"
-        },
-        "recurring_journal_runs_posted_or_skipped_check": {
-          "name": "recurring_journal_runs_posted_or_skipped_check",
-          "value": "(\"recurring_journal_runs\".\"journal_entry_id\" IS NOT NULL) <> (\"recurring_journal_runs\".\"skipped_by\" IS NOT NULL)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.recurring_journals": {
-      "name": "recurring_journals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "legal_entity_id": {
-          "name": "legal_entity_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "description": {
-          "name": "description",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "lines": {
-          "name": "lines",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "frequency": {
-          "name": "frequency",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'monthly'"
-        },
-        "day_of_month": {
-          "name": "day_of_month",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "start_period": {
-          "name": "start_period",
-          "type": "varchar(7)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "end_period": {
-          "name": "end_period",
-          "type": "varchar(7)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approved_by": {
-          "name": "approved_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approved_at": {
-          "name": "approved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rejection_reason": {
-          "name": "rejection_reason",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_generated_period": {
-          "name": "last_generated_period",
-          "type": "varchar(7)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paused_at": {
-          "name": "paused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failed_at": {
-          "name": "failed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approval_chain_id": {
-          "name": "approval_chain_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "recurring_journals_entity_status_idx": {
-          "name": "recurring_journals_entity_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "legal_entity_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "recurring_journals_chain_idx": {
-          "name": "recurring_journals_chain_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "approval_chain_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "recurring_journals_tenant_id_tenants_id_fk": {
-          "name": "recurring_journals_tenant_id_tenants_id_fk",
-          "tableFrom": "recurring_journals",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "recurring_journals_legal_entity_fk": {
-          "name": "recurring_journals_legal_entity_fk",
-          "tableFrom": "recurring_journals",
-          "tableTo": "legal_entities",
-          "columnsFrom": [
-            "tenant_id",
-            "legal_entity_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "recurring_journals_outlet_fk": {
-          "name": "recurring_journals_outlet_fk",
-          "tableFrom": "recurring_journals",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "recurring_journals_tenant_id_key": {
-          "name": "recurring_journals_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "recurring_journals_tenant_idempotency_key": {
-          "name": "recurring_journals_tenant_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "recurring_journals_status_check": {
-          "name": "recurring_journals_status_check",
-          "value": "\"recurring_journals\".\"status\" IN ('draft', 'pending_approval', 'rejected', 'active', 'paused', 'ended')"
-        },
-        "recurring_journals_frequency_check": {
-          "name": "recurring_journals_frequency_check",
-          "value": "\"recurring_journals\".\"frequency\" = 'monthly'"
-        },
-        "recurring_journals_day_check": {
-          "name": "recurring_journals_day_check",
-          "value": "\"recurring_journals\".\"day_of_month\" BETWEEN 1 AND 31"
-        },
-        "recurring_journals_period_check": {
-          "name": "recurring_journals_period_check",
-          "value": "\"recurring_journals\".\"start_period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$' AND (\"recurring_journals\".\"end_period\" IS NULL OR (\"recurring_journals\".\"end_period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$' AND \"recurring_journals\".\"end_period\" >= \"recurring_journals\".\"start_period\"))"
-        },
-        "recurring_journals_approved_check": {
-          "name": "recurring_journals_approved_check",
-          "value": "\"recurring_journals\".\"status\" NOT IN ('active', 'paused', 'ended') OR (\"recurring_journals\".\"approved_by\" IS NOT NULL AND \"recurring_journals\".\"approved_at\" IS NOT NULL)"
-        },
-        "recurring_journals_distinct_approver_check": {
-          "name": "recurring_journals_distinct_approver_check",
-          "value": "\"recurring_journals\".\"approved_by\" IS NULL OR \"recurring_journals\".\"approved_by\" <> \"recurring_journals\".\"requested_by\""
-        },
-        "recurring_journals_description_check": {
-          "name": "recurring_journals_description_check",
-          "value": "length(btrim(\"recurring_journals\".\"description\")) > 0"
         }
       },
       "isRLSEnabled": false
