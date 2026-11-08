@@ -14,7 +14,7 @@
 //
 // Errors from the link are logged by name/code only: driver errors can carry
 // SQL parameters (event payloads), and the credential must never be logged.
-import type { Server } from "node:http";
+import type { IncomingMessage, Server } from "node:http";
 import type { Pool } from "pg";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -265,12 +265,17 @@ export type EdgeLinkHandle = {
 /** Cloud only: accept edge links on /api/edge-link. */
 export async function registerEdgeLink(
   server: Server,
+  options: {
+    /** Client address for the upgrade rate limit (TRUST_PROXY-aware). */
+    clientAddress?: (request: IncomingMessage) => string;
+  } = {},
 ): Promise<EdgeLinkHandle> {
   if (env.EDGE_MODE)
     throw new EdgeBootError("registerEdgeLink runs on the cloud only");
   const version = env.EDGE_NODE_VERSION;
   const linkServer = createEdgeLinkServer<AuthenticatedEdgeNode>(server, {
     version,
+    clientAddress: options.clientAddress,
     authenticate: authenticateEdgeCredential,
     isActive: isEdgeNodeActive,
     storeFor: (identity) =>

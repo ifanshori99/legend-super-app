@@ -73,6 +73,7 @@ function voidDto(row: VoidRow): PosVoid {
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
     approvalRequestId: row.approvalRequestId,
+    overrideId: row.overrideId,
     voidedAt: row.voidedAt.toISOString(),
   });
 }
@@ -90,6 +91,7 @@ function refundDto(row: RefundRow): PosRefund {
     requestedBy: row.requestedBy,
     approvedBy: row.approvedBy,
     approvalRequestId: row.approvalRequestId,
+    overrideId: row.overrideId,
     refundedAt: row.refundedAt.toISOString(),
   });
 }
@@ -196,7 +198,7 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Tidak ada nilai transaksi untuk di-void.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",
         outletId,
@@ -205,8 +207,9 @@ export async function voidPosOrderCorrection(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        now,
       });
       const receipts = posReceiptPort();
       const receipt = await receipts.findForOrder(tx, context, order.id);
@@ -227,7 +230,8 @@ export async function voidPosOrderCorrection(
           reasonNote: input.reasonNote,
           requestedBy: caller.userId,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           voidedAt: now,
         })
         .returning();
@@ -247,7 +251,8 @@ export async function voidPosOrderCorrection(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         voidedFinalOrder: true,
         voidId: row.id,
         receiptNumber: receipt.number,
@@ -282,6 +287,7 @@ export async function voidPosOrderCorrection(
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
+            overrideId: row.overrideId,
             receiptNumber: row.receiptNumber,
           },
           reason: input.reasonNote,
@@ -394,7 +400,7 @@ export async function refundPosOrder(
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
       const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
       assertRefundWithinPaid(idr(paid), idr(refunded), idr(input.amountIdr));
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "refund",
         purpose: "refund",
         outletId,
@@ -403,8 +409,9 @@ export async function refundPosOrder(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: input.amountIdr,
+        now,
       });
       const allocation = refundAllocation(
         stillRefundableByMethod(tenders, refunds),
@@ -427,7 +434,8 @@ export async function refundPosOrder(
           lines,
           requestedBy: caller.userId,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           refundedAt: now,
         })
         .returning();
@@ -445,7 +453,8 @@ export async function refundPosOrder(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         ...refundSplit(order, input.amountIdr),
         refundCashIdr: bucket("cash"),
         refundGatewayIdr: bucket("gateway"),
@@ -486,6 +495,7 @@ export async function refundPosOrder(
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
+            overrideId: row.overrideId,
           },
           reason: input.reasonNote,
         },

@@ -15,7 +15,13 @@ import {
   type LinkScope,
   type LinkStore,
 } from "./link-peer.ts";
-import { LINK_CLOSE, LINK_MAX_FRAME_BYTES, encodeFrame } from "./protocol.ts";
+import {
+  LINK_CLOSE,
+  LINK_MAX_FRAME_BYTES,
+  LINK_REFUSED_CREDENTIAL,
+  LINK_REFUSED_HEADER,
+  encodeFrame,
+} from "./protocol.ts";
 
 export const RECONNECT_BASE_MS = 1_000;
 export const RECONNECT_MAX_MS = 30_000;
@@ -139,9 +145,15 @@ export function createEdgeLinkClient(
       }
       linkPeer.receive(data.toString());
     });
-    // A refused upgrade (401/403) arrives as an unexpected response.
+    // A refused upgrade (401/403) arrives as an unexpected response. Only the
+    // cloud's explicit credential-refusal header is final: a bare 401/403 can
+    // come from a WAF or proxy in front of the cloud, and a 429 or 503 is
+    // transient, so those back off and retry (legend-wg5t #6, #8a).
     ws.on("unexpected-response", (_request, response) => {
-      if (response.statusCode === 401 || response.statusCode === 403)
+      if (
+        (response.statusCode === 401 || response.statusCode === 403) &&
+        response.headers[LINK_REFUSED_HEADER] === LINK_REFUSED_CREDENTIAL
+      )
         setState({ refused: true });
       ws.terminate();
     });

@@ -102,9 +102,21 @@ describe("PAY-02 only verified evidence settles a payment", () => {
     ).toEqual({ kind: "duplicate", providerRef: "DOIT-1" });
   });
 
-  it("PAY-02 a failed intent cannot be revived by a later confirmation", () => {
+  it("PAY-02 a failed intent is settled late only by a verified gateway source (legend-b0au)", () => {
     expect(
       decidePaymentConfirmation(intent({ status: "failed" }), confirmation()),
+    ).toMatchObject({ kind: "settle", late: true, flags: ["late_payment"] });
+    expect(
+      decidePaymentConfirmation(
+        intent({ status: "failed" }),
+        confirmation({ source: "gateway_status" }),
+      ),
+    ).toMatchObject({ kind: "settle", late: true });
+    expect(
+      decidePaymentConfirmation(
+        intent({ status: "failed" }),
+        confirmation({ source: "authorized_cash" }),
+      ),
     ).toMatchObject({ kind: "reject", code: "UNTRUSTED_CONFIRMATION" });
   });
 });
