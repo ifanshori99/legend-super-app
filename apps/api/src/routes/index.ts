@@ -45,6 +45,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
+import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -106,6 +107,9 @@ apiRouter.use("/floor", floorRouter);
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
+// WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;
+// the order router passes unmatched paths through.
+apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 apiRouter.use("/outlets", outletFloorRouter);
 // Before /table-sessions: guest + staff service-request paths span prefixes.
 apiRouter.use(serviceRequestRouter);
@@ -118,6 +122,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 // Public brand website (WS-08 F21): the online menu page, tenant and brand from
 // the request host (TEN-08). Q23 hides items without a photo.
 apiRouter.use("/public/site", publicSiteRouter);
+// Public e-receipt page and PDF by link token, tenant from the host (legend-93a).
+apiRouter.use("/public/receipts", publicReceiptRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.

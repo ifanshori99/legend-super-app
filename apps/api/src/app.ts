@@ -34,7 +34,11 @@ import { createWhatsAppWebhookRouter } from "./routes/identity-wa-webhook.routes
 import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
-import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
+import {
+  setPosOrderPromoPort,
+  setPosReceiptPort,
+} from "./services/pos-order-ports.ts";
+import { createPosReceiptPort } from "./services/pos-receipt.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -46,17 +50,22 @@ setQrOrderDepositCreditLookup(depositCreditForSession);
 setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // WS-04 POS order wiring (legend-kk7): the same promo engine port as QR. The
 // reservation deposit credit is shared through the QR port above. Receipt
-// numbering (legend-93a), cashier shift (legend-6c0), EDC (legend-m0k) and
-// points tenders keep their fail-closed defaults (pos-order-ports.ts) until
-// those beads land.
+// numbering (legend-93a) is wired below; cashier shift (legend-6c0), EDC
+// (legend-m0k) and points tenders keep their fail-closed defaults
+// (pos-order-ports.ts) until those beads land.
 setPosOrderPromoPort(orderPromoPort);
+setPosReceiptPort(createPosReceiptPort());
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+
+// The e-receipt token in the path is a bearer credential too (bead legend-93a).
+const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [path, query] = url.split("?", 2);
+  const [rawPath, query] = url.split("?", 2);
+  const path = rawPath?.replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())

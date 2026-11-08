@@ -442,6 +442,20 @@
       "when": 1794120949179,
       "tag": "0062_outbox_gap_requests_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794130657186,
+      "tag": "0063_pos_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1794130658275,
+      "tag": "0064_pos_receipts_rls",
+      "breakpoints": true
     }
   ]
 }
