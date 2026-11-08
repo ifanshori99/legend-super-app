@@ -5,11 +5,13 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -137,6 +139,23 @@ export const paymentRefunds = pgTable(
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by"),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    /** Approval-matrix chain that decided this refund (opened lazily on first approve/reject). */
+    approvalChainId: uuid("approval_chain_id"),
+    /** Why a refund ended `failed`; null for legacy failed rows and every other status. */
+    failureReason: varchar("failure_reason", { length: 40 }),
+    /** Unknown provider outcomes only (error/timeout); a `pending` answer never counts here. */
+    payoutAttempts: integer("payout_attempts").notNull().default(0),
+    /** Provider answers of `pending`; drives the polling backoff, separate from payoutAttempts. */
+    payoutPendingPolls: integer("payout_pending_polls").notNull().default(0),
+    /** Lease for the in-flight provider call; another worker skips while it is in the future. */
+    payoutClaimedUntil: timestamp("payout_claimed_until", {
+      withTimezone: true,
+    }),
+    /** Fencing token of the current lease holder; a stale worker cannot touch the lease. */
+    payoutClaimToken: uuid("payout_claim_token"),
+    /** Short error code of the last unknown provider outcome (no message, no PII). */
+    lastPayoutError: varchar("last_payout_error", { length: 100 }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -169,7 +188,29 @@ export const paymentRefunds = pgTable(
       t.paymentIntentId,
       t.status,
     ),
+    uniqueIndex("payment_refunds_approval_chain_uq")
+      .on(t.tenantId, t.approvalChainId)
+      .where(sql`${t.approvalChainId} IS NOT NULL`),
+    uniqueIndex("payment_refunds_provider_ref_idx")
+      .on(t.tenantId, t.providerRef)
+      .where(sql`${t.providerRef} IS NOT NULL`),
     check("payment_refunds_amount_check", sql`${t.amountIdr} > 0`),
+    check(
+      "payment_refunds_failure_reason_check",
+      sql`${t.failureReason} IS NULL OR ${t.failureReason} IN ('rejected','approval_expired','provider_declined','cap_exceeded','source_document','approver_unauthorized')`,
+    ),
+    check(
+      "payment_refunds_failure_reason_status_check",
+      sql`${t.failureReason} IS NULL OR ${t.status} = 'failed'`,
+    ),
+    check(
+      "payment_refunds_payout_attempts_check",
+      sql`${t.payoutAttempts} >= 0`,
+    ),
+    check(
+      "payment_refunds_payout_pending_polls_check",
+      sql`${t.payoutPendingPolls} >= 0`,
+    ),
     check(
       "payment_refunds_status_check",
       sql`${t.status} IN ('pending','approved','completed','failed')`,

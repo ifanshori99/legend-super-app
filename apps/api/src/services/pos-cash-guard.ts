@@ -1,0 +1,117 @@
+// Guards that keep POS money writes inside an open business day and an open
+// cashier shift (bead legend-6c0, round 2 findings 1, 2 and 5).
+//
+// - A closed business day is history: `closePosDay` freezes the recap under
+//   an exclusive advisory lock on (tenant, outlet, date). Every order or
+//   correction write of that date takes the SAME lock in shared mode first,
+//   so a write either commits before the close reads its figures or waits
+//   for the close and then sees the `pos_daily_closes` row and is refused.
+// - Cash goes into an open drawer of the device it is taken on: a cash
+//   tender locks the caller's open shift on that device FOR SHARE; a cash
+//   refund or void locks it FOR UPDATE and checks the drawer holds enough.
+//   `closePosShift` and `recordCashMovement` lock that row FOR UPDATE, so
+//   cash taken while a shift is closing waits for the close and then finds
+//   no open shift.
+//
+// Lock order: idempotency lock -> order row -> day lock (shared) -> shift row
+// (share). The day and shift closes take no order row locks, so no cycle.
+
+import { and, eq, inArray, sql } from "drizzle-orm";
+import {
+  CoreError,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import { PosError } from "@starter/shared/pos";
+import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
+import type { Tx } from "./menu-internals.ts";
+import { liveExpectedCashIdr, type ShiftRow } from "./pos-shift-support.ts";
+
+/**
+ * Refuses with BUSINESS_DAY_ALREADY_CLOSED when any of `businessDates` is
+ * closed for the outlet; otherwise holds the day locks (shared) until the
+ * transaction ends, so the day cannot close underneath the caller's write.
+ */
+export async function assertBusinessDayOpen(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { outletId: OutletId; businessDates: readonly string[] },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const dates = [...new Set(input.businessDates)].sort();
+  if (dates.length === 0) return;
+  // Same key and hash as closePosDay's exclusive lock (pos-day.service.ts).
+  for (const date of dates)
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock_shared(hashtext(${`pos-day:${tenantId}:${input.outletId}:${date}`}))`,
+    );
+  const [closed] = await tx
+    .select({ id: posDailyCloses.id })
+    .from(posDailyCloses)
+    .where(
+      and(
+        eq(posDailyCloses.tenantId, tenantId),
+        eq(posDailyCloses.outletId, input.outletId),
+        inArray(posDailyCloses.businessDate, dates),
+      ),
+    )
+    .limit(1);
+  if (closed) throw new PosError("BUSINESS_DAY_ALREADY_CLOSED");
+}
+
+/**
+ * Locks the cashier's open shift ON THIS DEVICE and returns its row; refuses
+ * with SHIFT_NOT_OPEN when the request has no verified device, or the cashier
+ * has no open shift on that device (cash without a drawer, cash through
+ * another device's till, or a drawer that closed while the request waited).
+ * Cash goes into the drawer of the device it was taken on.
+ * - `mode "in"` (a cash tender) locks FOR SHARE.
+ * - `mode "out"` (a cash refund or void) locks FOR UPDATE and refuses with
+ *   CONFLICT when the cash paid out is more than the drawer should hold
+ *   (`cashOutIdr`), so the shift can always still close. The message does not
+ *   reveal the expected amount.
+ * `at` is the time the cash is recorded under; it is taken before the locks,
+ * so when the shift found was opened after `at` (S1 closed and S2 opened
+ * while the request waited) the cash would fall in neither shift's figures
+ * and is refused with SHIFT_NOT_OPEN too.
+ */
+export async function lockCashierShiftForCash(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: OutletId;
+    cashierId: string;
+    deviceId: string | null;
+    mode: "in" | "out";
+    at: Date;
+    /** Cash paid out of the drawer; checked against the drawer in `out` mode. */
+    cashOutIdr?: number;
+  },
+): Promise<ShiftRow> {
+  if (input.deviceId === null) throw new PosError("SHIFT_NOT_OPEN");
+  const query = tx
+    .select()
+    .from(posShifts)
+    .where(
+      and(
+        eq(posShifts.tenantId, context.tenant.tenantId),
+        eq(posShifts.outletId, input.outletId),
+        sql`lower(${posShifts.cashierId}) = lower(${input.cashierId})`,
+        eq(posShifts.deviceId, input.deviceId),
+        eq(posShifts.status, "open"),
+      ),
+    )
+    .limit(1);
+  const [shift] =
+    input.mode === "out" ? await query.for("update") : await query.for("share");
+  if (!shift || input.at < shift.openedAt) throw new PosError("SHIFT_NOT_OPEN");
+  if (input.mode === "out" && (input.cashOutIdr ?? 0) > 0) {
+    const expected = await liveExpectedCashIdr(tx, shift);
+    if (input.cashOutIdr! > expected)
+      throw new CoreError(
+        "CONFLICT",
+        "Tunai di laci tidak cukup untuk transaksi ini. Minta bantuan supervisor.",
+      );
+  }
+  return shift;
+}

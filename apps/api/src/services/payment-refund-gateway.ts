@@ -1,0 +1,100 @@
+// Gateway port for refund payouts (beads legend-hvvn, legend-rbjw; PAY-04).
+//
+// Money only leaves through this port after an approved refund claimed its
+// payout. The port is separate from `PaymentGatewayPort` on purpose: adding a
+// method there would break every `FakeGateway` in the tests and the unmerged
+// DOIT branch. The DOIT adapter implements this port after `ws/doit-provider`
+// merges; until then the default implementation fails closed — a payout answers
+// 503 and the refund stays `approved` so it can be retried later.
+//
+// Contract the adapter must keep:
+// - `idempotencyKey` is `refund:<refundId>` and the provider MUST dedupe on it,
+//   so a retry after a timeout can never pay twice.
+// - A throw means the outcome is UNKNOWN (timeout, 5xx, network). The caller
+//   keeps the refund `approved` and retries with the same key. Only a returned
+//   `failed` result is a definitive decline.
+// - `pending` means the provider accepted the refund and finishes it later
+//   (webhook or `getRefundStatus` poll).
+// - Every call carries an `AbortSignal` (30 s deadline); the adapter must honour
+//   it. A timeout is an unknown outcome like a throw.
+// - Before re-sending after an earlier attempt the service asks
+//   `getRefundStatus`; only `not_found` allows a new `refund()` with the same key.
+
+import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
+
+export type GatewayRefundRequest = {
+  readonly context: ScopedTenantContext;
+  readonly refundId: string;
+  /** `refund:<refundId>`; the provider MUST dedupe on it. */
+  readonly idempotencyKey: string;
+  readonly paymentIntentId: string;
+  /** Provider ref of the original payment (or the fund's evidence). */
+  readonly paymentProviderRef: string | null;
+  /** Integer IDR. */
+  readonly amountIdr: number;
+  readonly reason: string;
+  /** Aborts at the call deadline; an abort is an unknown outcome. */
+  readonly signal: AbortSignal;
+};
+
+export type GatewayRefundResult =
+  | { readonly status: "succeeded"; readonly providerRef: string }
+  /** Async: a webhook or poll finishes it. */
+  | { readonly status: "pending"; readonly providerRef: string }
+  /** Definitive decline; the money did not move. */
+  | {
+      readonly status: "failed";
+      readonly providerRef: string | null;
+      readonly code: string;
+    };
+
+/** Answer of a status lookup: a result, or the provider never saw the key. */
+export type GatewayRefundLookup =
+  GatewayRefundResult | { readonly status: "not_found" };
+
+export interface PaymentRefundPort {
+  /** Provider code of the configured gateway (PRD default: DOIT). */
+  readonly provider: string;
+  /** Throwing means the outcome is unknown; retry with the same key. */
+  refund(input: GatewayRefundRequest): Promise<GatewayRefundResult>;
+  getRefundStatus(input: {
+    context: ScopedTenantContext;
+    idempotencyKey: string;
+    providerRef: string | null;
+    signal: AbortSignal;
+  }): Promise<GatewayRefundLookup>;
+}
+
+/**
+ * Fail-closed default. Both calls answer 503 rather than pretending money
+ * moved; an approved refund then stays `approved` until an adapter is installed.
+ */
+export const unconfiguredRefundGateway: PaymentRefundPort = {
+  provider: "unconfigured",
+  async refund() {
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
+    );
+  },
+  async getRefundStatus() {
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Status refund belum dapat diperiksa. Coba lagi nanti.",
+    );
+  },
+};
+
+let gateway: PaymentRefundPort = unconfiguredRefundGateway;
+
+/**
+ * Installed by the API bootstrap (or a test) with a configured adapter. The
+ * adapter must dedupe on `idempotencyKey`; the service relies on it for retries.
+ */
+export function setPaymentRefundGateway(next: PaymentRefundPort | null): void {
+  gateway = next ?? unconfiguredRefundGateway;
+}
+
+export function paymentRefundGateway(): PaymentRefundPort {
+  return gateway;
+}

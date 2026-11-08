@@ -110,14 +110,29 @@ class FakeGateway implements PaymentGatewayPort {
   /** Shorten every code's life to exercise expiry without a clock jump. */
   expiresInMs: number | null = null;
   lastCreated: string | null = null;
+  /** The outlet each gateway call named (F1: credentials follow the bill). */
+  readonly seenOutlets: Record<
+    "health" | "channels" | "createIntent" | "getStatus",
+    Array<string | undefined>
+  > = { health: [], channels: [], createIntent: [], getStatus: [] };
+  /** Idempotency key of every create call, in order. */
+  readonly seenKeys: string[] = [];
+  /** Runs inside the next create call (after the gateway "accepted" it). */
+  onNextCreate: (() => Promise<void>) | null = null;
   private sequence = 0;
   private readonly payments = new Map<string, GatewayPaymentStatus>();
 
-  async health() {
+  async health(_context?: ScopedTenantContext, outletId?: string) {
+    this.seenOutlets.health.push(outletId);
     return { status: this.healthValue };
   }
 
   async createIntent(input: GatewayIntentRequest) {
+    this.seenOutlets.createIntent.push(input.outletId);
+    this.seenKeys.push(input.idempotencyKey);
+    const hook = this.onNextCreate;
+    this.onNextCreate = null;
+    if (hook) await hook();
     // Provider references are unique per provider transaction in production;
     // the fake keeps the same contract so persisted evidence from an earlier
     // test can never collide with a later one.
@@ -157,7 +172,8 @@ class FakeGateway implements PaymentGatewayPort {
     };
   }
 
-  async getStatus(input: { providerRef: string }) {
+  async getStatus(input: { providerRef: string; outletId?: string }) {
+    this.seenOutlets.getStatus.push(input.outletId);
     return (
       this.payments.get(input.providerRef) ?? {
         status: "pending" as const,
@@ -170,7 +186,9 @@ class FakeGateway implements PaymentGatewayPort {
   async channels(
     _context: ScopedTenantContext,
     method: "qris" | "va" | "bank_transfer",
+    outletId?: string,
   ): Promise<PaymentChannel[]> {
+    this.seenOutlets.channels.push(outletId);
     return method === "qris" ? [] : [{ code: "bca", name: "BCA" }];
   }
 
@@ -325,6 +343,28 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
         amountIdr: 1,
       });
     expect(injected.status).toBe(422);
+  });
+
+  it("F1 every gateway call names the bill's outlet (credentials follow the bill, not the caller scope)", async () => {
+    const { token } = await openBill();
+    const view = await agent(app).get(`/api/payments/links/${token}`);
+    expect(view.status).toBe(200);
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "va",
+        channelCode: "bca",
+        idempotencyKey: "f1-outlet-key",
+      });
+    expect(created.status).toBe(201);
+    await agent(app).get(
+      `/api/payments/links/${token}/intents/${created.body.data.id as string}`,
+    );
+
+    for (const [call, outlets] of Object.entries(gateway.seenOutlets)) {
+      expect(outlets.length, call).toBeGreaterThan(0);
+      expect(new Set(outlets), call).toEqual(new Set([outletA]));
+    }
   });
 
   it("PAY-01 a retried create with the same key returns the first intent", async () => {
@@ -884,6 +924,38 @@ describe("late payment and refresh", () => {
     expect(refreshed.body.data.id).not.toBe(created.body.data.id);
     expect(refreshed.body.data.status).toBe("pending");
     expect(refreshed.body.data.amountIdr).toBe(144_375);
+  });
+
+  it("PAY-01 a refresh whose local write failed after the gateway accepted it gets a new key next time", async () => {
+    gateway.expiresInMs = 40;
+    const { token, linkId } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "refresh-stuck-key",
+      });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const refreshPath = `/api/payments/links/${token}/intents/${created.body.data.id}/refresh`;
+    // The gateway mints the code, then the bill changes before the local write
+    // (a cash part-payment landed): the refresh fails after DOIT accepted it.
+    gateway.onNextCreate = async () => {
+      await owner.query(
+        "UPDATE payment_links SET paid_idr = 10000 WHERE id = $1",
+        [linkId],
+      );
+    };
+    const failed = await agent(app).post(refreshPath);
+    expect(failed.status).toBe(409);
+
+    const retried = await agent(app).post(refreshPath);
+    expect(retried.status).toBe(200);
+    expect(retried.body.data.amountIdr).toBe(144_375 - 10_000);
+    const [, firstRefresh, secondRefresh] = gateway.seenKeys;
+    expect(firstRefresh).toMatch(/^refresh:/);
+    // A replay under the first key would answer the old amount and intent.
+    expect(secondRefresh).not.toBe(firstRefresh);
   });
 
   it("pay at cashier acknowledges and is refused once the bill is paid", async () => {

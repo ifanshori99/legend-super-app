@@ -653,35 +653,6 @@ export function computeProgressiveTax(
   return idr(Number(divideRounded(scaled, 10_000n, mode)));
 }
 
-/** Annual PKP = gross - biaya jabatan - employee pension/JHT - PTKP, rounded
- * down to the table multiple, never negative. */
-export function annualTaxableIncome(
-  params: Pph21AnnualParameters,
-  input: {
-    annualGrossIdr: Idr;
-    annualEmployeeDeductibleIdr: Idr;
-    ptkpIdr: Idr;
-  },
-): Idr {
-  const rawCost = rupiahAtRate(
-    input.annualGrossIdr,
-    params.occupationalCostRateBp,
-    "down",
-  );
-  const cost =
-    rawCost > params.occupationalCostAnnualCapIdr
-      ? params.occupationalCostAnnualCapIdr
-      : rawCost;
-  const net =
-    input.annualGrossIdr -
-    cost -
-    input.annualEmployeeDeductibleIdr -
-    input.ptkpIdr;
-  if (net <= 0) return idr(0);
-  const step = params.taxableIncomeRoundDownToIdr;
-  return idr(Math.floor(net / step) * step);
-}
-
 /**
  * Overtime pay for one day (PRD §3 D.29 Lembur "rumus yang dikonfigurasi"):
  * hourly wage = monthly base / divisor; each tier's hours are paid at its

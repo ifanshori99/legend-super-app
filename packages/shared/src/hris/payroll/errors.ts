@@ -14,6 +14,10 @@ export const payrollErrorHttpStatus = {
   PAYROLL_STATUTORY_TABLE_BACKDATED: 422,
   /** PTKP status or income missing from a TER/PTKP table. */
   PAYROLL_TER_BRACKET_NOT_FOUND: 422,
+  /** PTKP status refused by the tenant PPh 21 policy (K/I under `reject`). */
+  PAYROLL_PPH21_STATUS_UNSUPPORTED: 422,
+  /** A PPh 21 policy version already starts on that date, or is backdated. */
+  PAYROLL_PPH21_POLICY_CONFLICT: 409,
   /** Status transition not allowed by the payroll run state machine. */
   PAYROLL_RUN_INVALID_TRANSITION: 409,
   /** Lock requested without both approvals (PAYR-01). */
@@ -55,6 +59,10 @@ const defaultMessages: Record<PayrollErrorCode, string> = {
     "Tanggal efektif tidak boleh sebelum hari ini.",
   PAYROLL_TER_BRACKET_NOT_FOUND:
     "Kategori atau lapisan TER untuk karyawan ini tidak ditemukan.",
+  PAYROLL_PPH21_STATUS_UNSUPPORTED:
+    "Status PTKP ini tidak dipakai untuk pemotongan PPh 21 menurut kebijakan pajak perusahaan.",
+  PAYROLL_PPH21_POLICY_CONFLICT:
+    "Sudah ada versi kebijakan PPh 21 pada tanggal itu, atau tanggalnya sudah lewat.",
   PAYROLL_RUN_INVALID_TRANSITION: "Perubahan status payroll tidak diizinkan.",
   PAYROLL_RUN_NOT_APPROVED:
     "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",

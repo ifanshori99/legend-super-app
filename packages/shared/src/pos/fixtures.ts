@@ -556,6 +556,7 @@ const discounts: Discount[] = [
 // ---- Shifts and cash movements -------------------------------------------
 
 const shiftIds = { morning: id(701), evening: id(702) };
+const shiftCountIds = { morningFirst: id(795), morningSecond: id(796) };
 
 const shifts: FixtureInput["shifts"] = [
   {
@@ -580,6 +581,7 @@ const shifts: FixtureInput["shifts"] = [
     approvalRequestId: approval.shiftClose,
     approvedAt: "2026-11-01T10:00:00.000Z",
     closedAt: "2026-11-01T10:00:00.000Z",
+    countId: shiftCountIds.morningSecond,
   },
   {
     id: shiftIds.evening,
@@ -603,6 +605,46 @@ const shifts: FixtureInput["shifts"] = [
     approvalRequestId: null,
     approvedAt: null,
     closedAt: null,
+    countId: null,
+  },
+];
+
+/** The morning drawer was counted twice; the close used the second count. */
+const shiftCounts: FixtureInput["shiftCounts"] = [
+  {
+    id: shiftCountIds.morningFirst,
+    ...scope,
+    shiftId: shiftIds.morning,
+    sequence: 1,
+    counts: [
+      { denominationIdr: 100_000, quantity: 5 },
+      { denominationIdr: 20_000, quantity: 1 },
+      { denominationIdr: 10_000, quantity: 1 },
+      { denominationIdr: 5_000, quantity: 1 },
+      { denominationIdr: 100, quantity: 1 },
+    ],
+    countedIdr: 535_100,
+    expectedIdr: 535_100,
+    varianceIdr: 0,
+    submittedBy: staff.cashierMorning,
+    submittedAt: "2026-11-01T09:50:00.000Z",
+  },
+  {
+    id: shiftCountIds.morningSecond,
+    ...scope,
+    shiftId: shiftIds.morning,
+    sequence: 2,
+    counts: [
+      { denominationIdr: 100_000, quantity: 5 },
+      { denominationIdr: 20_000, quantity: 1 },
+      { denominationIdr: 10_000, quantity: 1 },
+      { denominationIdr: 100, quantity: 1 },
+    ],
+    countedIdr: 530_100,
+    expectedIdr: 535_100,
+    varianceIdr: -5_000,
+    submittedBy: staff.cashierMorning,
+    submittedAt: "2026-11-01T09:55:00.000Z",
   },
 ];
 
@@ -1258,6 +1300,7 @@ export const cafeLegendPosFixtures: FixtureInput = {
     cashRoundingIncrementIdr: 100,
   },
   shifts,
+  shiftCounts,
   cashMovements,
   orders,
   orderDetails: orders.map(detailOf),
@@ -1286,6 +1329,7 @@ export const posFixtureIds = {
   orders: orderIds,
   items: itemIds,
   shifts: shiftIds,
+  shiftCounts: shiftCountIds,
   receipts: {
     ids: { cashDineIn: id(710), qrisTakeaway: id(711), corrected: id(712) },
     numbers: receiptNumbers,
