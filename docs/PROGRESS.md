@@ -132,6 +132,28 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
 
+## legend-6c0 shift kasir, putaran 2 (engineer, cabang `ws/pos-shift`)
+
+- Fix 3 P1 + 2 P2 second-opinion (brief `docs/briefs/46-fix-pos-shift-round2.md`) plus 2 temuan reviewer konteks segar (variance bocor ke kasir lewat approval; jam kas sebelum shift dibuka).
+- Hari usaha tertutup: `assertBusinessDayOpen` (kunci advisory bersama, kunci sama dengan tutup hari) di buat/ubah/bayar/selesai/void/refund. Kas wajib shift kasir terbuka (`lockCashierShiftForCash`, FOR SHARE vs FOR UPDATE di tutup shift). Tutup shift dua langkah: hitungan kas disimpan permanen (`pos_shift_counts`), approval terikat ke hitungan dan nilai |selisih| dari server, tingkat matriks dicek saat dipakai. Tutup hari diblokir shift terbuka lintas jam 04.00.
+- Migrasi baru 0066/0067 (bernomor setelah 0063-0065 putaran 1; perlu dinomori ulang bila `main` lebih dulu memakai nomor itu).
+- Status bead: review. Belum merge, belum push.
+
+## legend-6c0 shift kasir, perbaikan review K (engineer, cabang `ws/pos-shift`, 2026-11-08)
+
+- `main` digabung (c87fb5e). Migrasi cabang lama 0063-0067 dihapus, dibuat ulang setelah 0067 milik main: `0068_pos_shift` (skema), `0069_pos_shift_rls` (SQL custom dari `pos-shift.custom.sql`), `0070_pos_day_close_permission` (backfill izin, terpisah supaya bisa dijalankan ulang di test).
+- Tunai per perangkat: tender/refund/void tunai wajib `X-Device-Token` dan shift kasir yang terbuka di perangkat itu, selain itu `SHIFT_NOT_OPEN`. Baris tunai menyimpan `shift_id`; angka shift dijumlah per `shift_id`.
+- Refund/void tunai melebihi isi laci: 409 dengan pesan umum, tidak ada yang tersimpan.
+- Hitung buta: penolakan kas keluar diaudit dengan pesan umum, maksimal 3 hitungan kasir (`SHIFT_COUNT_LIMIT`), pesan persetujuan dibuat umum.
+- Tutup paksa (U9): pemegang `shift.cash.approve_close` mengirim hitungan paksa, saksi menyetujui lewat PIN, lalu `POST /shifts/:id/force-close`.
+- DB: FK `count_id`, open check mewajibkan `count_id IS NULL`, trigger mencocokkan hitungan penutup.
+- Kontrak berubah untuk UI `ui/pos-kasir-shift`: header perangkat wajib untuk tunai, endpoint force-close, error `SHIFT_COUNT_LIMIT`.
+- Putaran 2 (reviewer konteks segar): setelah 2 kali kas keluar/setor ditolak, semua kas keluar/setor di shift itu ditolak, supaya kasir tidak bisa menebak isi laci; `approved_by` diambil dari override yang terverifikasi; batas 3 hitungan hanya menghitung hitungan kasir sendiri (bukan hitungan paksa).
+- Akibat merge main: mock web POS kasir mengikuti alur hitung lalu tutup (`countId`); test QRIS dan rekap main membuka shift dan mengirim token perangkat; 0068 melepas FORCE RLS sementara (pola 0065) supaya bisa dijalankan pemilik tabel tanpa BYPASSRLS.
+- Commit: c87fb5e (merge), a67d4cb, 5db5f47, 788e32e, 4195d5c, 78a274a, e1674b1. Gerbang penuh hijau di e1674b1: API 1411 lulus (1 skip), root 1414 lulus, lint 0 error (3 warning), build lulus.
+- Sisa: second-opinion Codex (tingkat K) sebelum gerbang rilis; celah ULID/UUID `approvalRequestId` di body tutup; trigger DB belum mengecek `expected_idr`/`recorded_by` (layanan sudah).
+- Belum merge, belum push.
+
 ## legend-5cnk + legend-y4wp PPh 21 round 2 (engineer, cabang `ws/payroll-pph21-tests`)
 
 - Selesai: engine PPh 21 v2 (`apps/api/src/services/payroll-pph21.ts`) membetulkan 3 P1 + 3 P2 temuan Codex, ditambah 2 bug dari reviewer (Desember tanpa bayaran, gross_first menagih karyawan atas kurang bayar riwayat net). Kebijakan PPh 21 per tenant: kontrak `packages/shared/src/hris/payroll/pph21-policy.ts`, tabel `payroll_pph21_policies` (migrasi 0068/0069 setelah dinomori ulang, RLS FORCE, append-only), service + route `/api/hris/payroll/pph21-policies` (payroll.view / payroll.run, idempotency, audit).

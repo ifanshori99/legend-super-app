@@ -32,7 +32,10 @@ import {
 } from "@starter/shared/core/server";
 import { refundAllocation, type PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
-import { setStaffPin } from "../services/device-pin.service.ts";
+import {
+  setDeviceOutletResolver,
+  setStaffPin,
+} from "../services/device-pin.service.ts";
 import { verifyEdgeNodeCredential } from "../services/edge-node.service.ts";
 import {
   setPosReceiptPort,
@@ -41,6 +44,9 @@ import {
 import { stillRefundableByMethod } from "../services/pos-order-corrections.ts";
 import { getPosOrder } from "../services/pos-order.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { signDeviceToken } from "../lib/device-token.ts";
+import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -177,6 +183,17 @@ function pos(who: Member = cashier, outletId = tenant.outletId) {
       .post(`${base}${path}`)
       .set(headers)
       .set(originHeader)
+      // The till: cash goes into the drawer of the shift open on this device.
+      .set(
+        DEVICE_TOKEN_HEADER,
+        signDeviceToken({
+          version: 1,
+          issuedAt: Math.floor(Date.now() / 1000),
+          tenantId: tenant.tenantId,
+          brandId: null,
+          deviceId: ids.device,
+        }),
+      )
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
     base,
@@ -282,6 +299,11 @@ beforeAll(async () => {
   setPosReceiptPort(memoryReceiptPort());
   tenant = await createIsolatedTenant(`pos-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
+    tenantId === tenant.tenantId && deviceId === ids.device
+      ? tenant.outletId
+      : null,
+  );
   const roles: [string, string, string[]][] = [
     [
       ids.cashierRole,
@@ -293,6 +315,7 @@ beforeAll(async () => {
         "pos.discount.apply",
         "pos.void.request",
         "pos.refund.request",
+        "shift.cash.operate",
       ],
     ],
     [
@@ -311,6 +334,23 @@ beforeAll(async () => {
   cashier = await member(ids.cashierRole, "POS Kasir");
   supervisor = await member(ids.supervisorRole, "POS Supervisor");
   viewer = await member(ids.viewerRole, "POS Tamu");
+  // Finding 2: cash tenders, refunds and voids of cash-paid orders need the
+  // acting cashier's open shift (409 SHIFT_NOT_OPEN otherwise). The cashier is
+  // the actor of every sale, refund and void here, so one shift opened on the
+  // registered device covers them all.
+  await openPosShift(
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    ),
+    { userId: userIdSchema.parse(cashier.userId), deviceId: ids.device },
+    outletIdSchema.parse(tenant.outletId),
+    { openingFloatIdr: idr(100_000), idempotencyKey: randomUUID() },
+  );
   await setStaffPin(
     establishTenantContext({
       tenantId: tenantIdSchema.parse(tenant.tenantId),
@@ -368,6 +408,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setPosReceiptPort(null);
+  setDeviceOutletResolver(null);
   setEdgeCredentialVerifier(null);
   // Final orders are immutable and audit rows append-only, so the isolated
   // tenant stays in the disposable database; give it a valid creator so the
