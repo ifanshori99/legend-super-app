@@ -1235,6 +1235,23 @@ describe("DOIT adapter: getStatus", () => {
     });
   });
 
+  it("reads a paid time with a space separator and a zone", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08 17:05:00+07:00",
+        }),
+      }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+      paidAt: "2026-11-08T10:05:00.000Z",
+    });
+  });
+
   it("reports `amount` for a paid VA, also once its QR/VA instrument is released", async () => {
     route = methodsAndPayments({
       get: () => ({ json: vaPayment({ status: "paid", rail: null }) }),

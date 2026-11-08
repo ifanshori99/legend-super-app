@@ -147,8 +147,16 @@ export const doitPaymentSchema = z.object({
     .transform((value) => value ?? null),
   // Needs an explicit offset: a zoneless time would be read in the server's
   // zone and could shift the settlement by hours, so it becomes null.
-  paid_at: isoDateTimeSchema
-    .nullish()
+  // Strict ISO with a zone (a zoneless time would be read in server time); a
+  // space between date and time is accepted as `T`.
+  paid_at: z
+    .preprocess(
+      (value) =>
+        typeof value === "string"
+          ? value.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:)/, "$1T$2")
+          : value,
+      isoDateTimeSchema.nullish(),
+    )
     .catch(null)
     .transform((value) => value ?? null),
   flags: z
