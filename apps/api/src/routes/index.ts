@@ -7,6 +7,7 @@ import { posOverrideRouter, staffPinRouter } from "./device-pin.routes";
 import { qrOrderRouter } from "./qr-order.routes";
 import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
+import { createInventoryCountRouter } from "./inventory-count.routes.ts";
 import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
@@ -47,6 +48,10 @@ import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
+import { deviceRouter } from "./device.routes.ts";
+import { edgeDeviceRouter } from "./edge-device.routes.ts";
+import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
 //
@@ -95,6 +100,8 @@ apiRouter.use("/inventory", inventoryRouter);
 apiRouter.use("/inventory", createInventorySetupRouter());
 // Production, waste, transfers, expiry/par alerts, suggestions (WS-06, legend-ugo).
 apiRouter.use("/inventory", createInventoryOpsRouter());
+// Stock opname / stok opname with blind count and approval (legend-j5x, INV-03).
+apiRouter.use("/inventory", createInventoryCountRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);
@@ -145,8 +152,18 @@ apiRouter.use("/operations", operationsEquipmentRouter);
 // WS-02 edge mode (legend-2pi): /edge is served only by an edge node and
 // /edge-nodes (registry) only by the cloud; app.ts edgeRouteGuard enforces
 // the split before any router runs.
+// /edge/devices (registry list + heartbeat, legend-165) before /edge.
+apiRouter.use("/edge/devices", edgeDeviceRouter);
 apiRouter.use("/edge", edgeRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.
 apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
+// Device registry (WS-02 F5, legend-165): enroll, token, revoke, training mode
+// and the device heartbeat, cloud only.
+apiRouter.use("/devices", deviceRouter);
+// Device registry replica feed for edge nodes: edge credential only.
+apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+
+// Registry-backed EdgeDeviceLookup for /api/edge/status `thisDevice`.
+installDeviceRegistryPorts();

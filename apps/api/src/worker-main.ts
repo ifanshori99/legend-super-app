@@ -10,6 +10,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
+import { verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -59,7 +60,11 @@ const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
-const registry = new Pool({ connectionString: workerUrl, max: 1 });
+const registry = new Pool({
+  connectionString: workerUrl,
+  max: 1,
+  verify: verifyQueueConnection,
+});
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
   const parsed = tenantIdSchema.parse(tenantId);

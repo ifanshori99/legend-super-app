@@ -1,2 +1,0 @@
-ALTER TABLE "hris_leave_settings" ADD COLUMN "collective_leave_effective_from" date;--> statement-breakpoint
-CREATE UNIQUE INDEX "leave_accruals_collective_leave_key" ON "leave_accruals" USING btree ("tenant_id","employee_id","period") WHERE "leave_accruals"."kind" = 'collective_leave';

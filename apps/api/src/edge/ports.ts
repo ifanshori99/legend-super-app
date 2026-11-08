@@ -8,8 +8,12 @@
 //   closed). The receive transaction rolls back, nothing is acknowledged and
 //   the sender keeps every event queued, so an unwired applier loses nothing.
 // - EdgeEventClassifier: master data vs transaction event, decided by the
-//   RECEIVER from its own table, never from the peer. Default: transaction
-//   event (append-only; never overwrites, never drops).
+//   RECEIVER from its own table, never from the peer. Default: unclassified
+//   (fail closed, legend-wg5t): an unwired classifier must not silently make
+//   everything append-only transaction data, which would let master data
+//   bypass cloud-wins. `classifyEdgeEvent` throws, the receive transaction
+//   rolls back, nothing is acknowledged and the sender keeps every event
+//   queued, exactly like the unwired applier.
 // - EdgeDeviceLookup: the calling device for /api/edge/status `thisDevice`,
 //   owned by the device registry (legend-165). Default: unknown device.
 //
@@ -41,7 +45,20 @@ export type EdgeEventApplier<Tx = unknown> = {
   ): Promise<number | null>;
 };
 
-export type EdgeEventClassifier = (event: EventEnvelope) => EdgeEventKind;
+/** Returns null for an aggregate the receiver does not know (fail closed). */
+export type EdgeEventClassifier = (
+  event: EventEnvelope,
+) => EdgeEventKind | null;
+
+export class EdgeEventUnclassifiedError extends Error {
+  // aggregateType only: the payload and ids stay out of logs and errors.
+  constructor(aggregateType: string) {
+    super(
+      `No classification for aggregate type ${aggregateType}; the batch stays queued at the sender`,
+    );
+    this.name = "EdgeEventUnclassifiedError";
+  }
+}
 
 export class EdgeApplierUnavailableError extends Error {
   constructor(direction: SyncDirection) {
@@ -59,7 +76,7 @@ const refuseApplier = (direction: SyncDirection): EdgeEventApplier => ({
 });
 
 const appliers = new Map<SyncDirection, EdgeEventApplier>();
-let classifier: EdgeEventClassifier = () => "transaction_event";
+let classifier: EdgeEventClassifier = () => null;
 
 export function setEdgeEventApplier(
   direction: SyncDirection,
@@ -74,11 +91,13 @@ export function edgeEventApplier(direction: SyncDirection): EdgeEventApplier {
 }
 
 export function setEdgeEventClassifier(next: EdgeEventClassifier | null): void {
-  classifier = next ?? (() => "transaction_event");
+  classifier = next ?? (() => null);
 }
 
 export function classifyEdgeEvent(event: EventEnvelope): EdgeEventKind {
-  return classifier(event);
+  const kind = classifier(event);
+  if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
+  return kind;
 }
 
 export type EdgeDeviceLookup = (

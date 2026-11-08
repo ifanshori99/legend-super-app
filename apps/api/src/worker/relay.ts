@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import { PgBoss } from "pg-boss";
+import { assertQueueRole, queueBossOptions } from "../db/role";
 
 const RELAY_QUEUE = "domain-event-relay";
 export const WAKE_CHANNEL = "legend_outbox_wakeup";
@@ -69,7 +70,7 @@ export function createRelayRuntime<Context>(options: {
 }
 
 export function createRelayScheduler(url: string): Scheduler {
-  const boss = new PgBoss({ connectionString: url, createSchema: false });
+  const boss = new PgBoss(queueBossOptions(url));
   boss.on("error", () => console.error("pg-boss relay scheduler error"));
   return {
     start: () => boss.start(),
@@ -104,6 +105,16 @@ export function createWakeListener(url: string): Listener {
         }, 5000);
     });
     await next.connect();
+    try {
+      await assertQueueRole(next);
+    } catch (error) {
+      // A refused role must not be retried in the background. On a reconnect
+      // the error is swallowed, so say so (fixed text, no connection details).
+      console.error("Wake listener refused an unsafe queue role");
+      stopped = true;
+      await next.end().catch(() => {});
+      throw error;
+    }
     await next.query(`LISTEN ${WAKE_CHANNEL}`);
   }
   return {

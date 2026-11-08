@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "leave_requests_tenant_attachment_key" ON "leave_requests" USING btree ("tenant_id","attachment_key");
