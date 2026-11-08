@@ -718,6 +718,13 @@ export type PurchaseOrderSendResult = z.infer<
   typeof purchaseOrderSendResultSchema
 >;
 
+export const purchaseOrderShareLinksRevokedSchema = z.strictObject({
+  revoked: z.number().int().nonnegative(),
+});
+export type PurchaseOrderShareLinksRevoked = z.infer<
+  typeof purchaseOrderShareLinksRevokedSchema
+>;
+
 /** Whole-rupiah value of one line (quantity x unit price, one rounding). */
 export function purchaseOrderLineTotalIdr(
   quantity: Decimal4,

@@ -13,7 +13,7 @@
 // - 9yz-FLOW-6 idempotency, draft-only update, stale expectedUpdatedAt
 // - 9yz-ISO-2 tenant and outlet isolation
 // - 25a7-PO-1 updatedAt on the order DTO is the PATCH precondition
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -33,6 +33,10 @@ import { purchaseOrderLineTotalIdr } from "@starter/shared/inventory";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
 import { handlePurchasingApprovalResolved } from "../services/purchasing-approval-consumer.ts";
+import {
+  getPublicPurchaseOrderPdf,
+  purchaseOrderLinkTokenHash,
+} from "../services/purchasing-send.service.ts";
 import {
   createPurchaseOrder,
   getPurchaseOrder,
@@ -375,6 +379,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const tables = [
+    "purchase_order_share_links",
     "purchase_order_lines",
     "purchase_orders",
     "purchase_request_lines",
@@ -1436,3 +1441,269 @@ async function resolvedEventOf(chainId: string) {
   expect(rows).toHaveLength(1);
   return approvalResolvedEvent.envelopeSchema.parse(rows[0]!.event);
 }
+
+describe("legend-50 architect fixes (slice B)", () => {
+  const linkOf = async (poId: string, outletId = outletA) => {
+    const token = randomBytes(24).toString("base64url");
+    await owner.query(
+      `INSERT INTO purchase_order_share_links
+         (tenant_id, outlet_id, purchase_order_id, token_hash, expires_at, created_by)
+       VALUES ($1, $2, $3, $4, now() + interval '1 day', $5)`,
+      [tenantA, outletId, poId, purchaseOrderLinkTokenHash(token), purchaser],
+    );
+    return token;
+  };
+  const revokedOf = async (token: string) =>
+    (
+      await owner.query<{ revoked_at: Date | null }>(
+        "SELECT revoked_at FROM purchase_order_share_links WHERE token_hash = $1",
+        [purchaseOrderLinkTokenHash(token)],
+      )
+    ).rows[0]!.revoked_at;
+
+  // A PR requested by `selfApprover`, approved by `approver`, and a PO made
+  // from it by `purchaser` (the PO creator is not the PR requester).
+  async function poFromRequesterPr(): Promise<string> {
+    const pr = await createPurchaseRequest(
+      tenantContext(),
+      selfApprover,
+      prInput(),
+    );
+    const prId = pr.request.id as string;
+    await transitionPurchaseRequestStatus(
+      tenantContext(),
+      selfApprover,
+      prId,
+      act("submit"),
+    );
+    await transitionPurchaseRequestStatus(
+      tenantContext(),
+      approver,
+      prId,
+      act("approve"),
+    );
+    const detail = await createPurchaseOrder(
+      tenantContext(),
+      purchaser,
+      poInput({ purchaseRequestId: prId }),
+    );
+    const id = detail.purchaseOrder.id as string;
+    await transitionPurchaseOrderStatus(
+      tenantContext(),
+      purchaser,
+      id,
+      act("submit"),
+    );
+    return id;
+  }
+
+  it("[50-F2] cancelling or closing a PO revokes its share links", async () => {
+    const draft = await createPurchaseOrder(
+      tenantContext(),
+      purchaser,
+      poInput(),
+    );
+    const cancelId = draft.purchaseOrder.id as string;
+    const cancelToken = await linkOf(cancelId);
+    await transitionPurchaseOrderStatus(
+      tenantContext(),
+      purchaser,
+      cancelId,
+      act("cancel"),
+    );
+    expect(await revokedOf(cancelToken)).not.toBeNull();
+    await rejectsWith(getPublicPurchaseOrderPdf(tenantContext(), cancelToken), {
+      status: 404,
+      code: "NOT_FOUND",
+    });
+
+    const closing = await createPurchaseOrder(
+      tenantContext(),
+      purchaser,
+      poInput(),
+    );
+    const closeId = closing.purchaseOrder.id as string;
+    await owner.query(
+      `UPDATE purchase_orders
+          SET status = 'received', approved_by = $2, approved_at = now(),
+              sent_at = now(), sent_to = 'supplier@example.com'
+        WHERE id = $1`,
+      [closeId, approver],
+    );
+    const closeToken = await linkOf(closeId);
+    await transitionPurchaseOrderStatus(
+      tenantContext(),
+      purchaser,
+      closeId,
+      act("close"),
+    );
+    expect(await revokedOf(closeToken)).not.toBeNull();
+    await rejectsWith(getPublicPurchaseOrderPdf(tenantContext(), closeToken), {
+      status: 404,
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("[50-F3] the requester of the source PR cannot approve the PO (manual and chain)", async () => {
+    const manualId = await poFromRequesterPr();
+    await rejectsWith(
+      transitionPurchaseOrderStatus(
+        tenantContext(),
+        selfApprover,
+        manualId,
+        act("approve"),
+      ),
+      { status: 409, code: "PURCHASE_ORDER_SELF_APPROVAL" },
+    );
+    expect((await poRow(manualId)).status).toBe("pending_approval");
+
+    await setPolicy("purchase_order", null, 1);
+    try {
+      const chainPo = await poFromRequesterPr();
+      const chainId = (await poRow(chainPo)).approval_chain_id as string;
+      await decideApprovalRequest(
+        tenant,
+        selfApprover,
+        chainId,
+        { decision: "approved", reason: "Sesuai anggaran bulan ini." },
+        { mfaVerified: true, idempotencyKey: null },
+      );
+      await handlePurchasingApprovalResolved(
+        tenantContext(),
+        await resolvedEventOf(chainId),
+      );
+      expect(await poRow(chainPo)).toMatchObject({
+        status: "draft",
+        approved_by: null,
+      });
+    } finally {
+      await resetPolicies();
+    }
+  });
+
+  it("[50-F4] money overflow in a PO or PR estimate is a 422, not a 500", async () => {
+    const huge = poInput({
+      lines: [
+        {
+          inventoryItemId: itemFlour,
+          quantity: "99999999.0000",
+          uomId: uomKg,
+          unitPriceIdr: "99999999.0000",
+        },
+      ],
+    });
+    await rejectsWith(createPurchaseOrder(tenantContext(), purchaser, huge), {
+      status: 422,
+      code: "VALIDATION_ERROR",
+    });
+    const draft = await createPurchaseOrder(
+      tenantContext(),
+      purchaser,
+      poInput(),
+    );
+    await rejectsWith(
+      updatePurchaseOrder(
+        tenantContext(),
+        purchaser,
+        draft.purchaseOrder.id as string,
+        {
+          expectedUpdatedAt: draft.purchaseOrder.updatedAt,
+          lines: (huge as { lines: unknown }).lines,
+        } as never,
+      ),
+      { status: 422, code: "VALIDATION_ERROR" },
+    );
+
+    // PR estimate: a supplier price so large that quantity x price overflows.
+    const uom = await insertUom("big");
+    const item = await insertItem(uom, "Mahal Flow");
+    await owner.query(
+      `INSERT INTO supplier_prices
+         (tenant_id, supplier_id, inventory_item_id, purchase_uom_id, price_idr, effective_from, is_active, created_by)
+       VALUES ($1, $2, $3, $4, '99999999.0000', '2026-01-01', true, $5)`,
+      [tenantA, supplier, item, uom, requester],
+    );
+    const pr = await createPurchaseRequest(
+      tenantContext(),
+      requester,
+      prInput({
+        lines: [
+          { inventoryItemId: item, quantity: "99999999.0000", uomId: uom },
+        ],
+      }),
+    );
+    await rejectsWith(
+      transitionPurchaseRequestStatus(
+        tenantContext(),
+        requester,
+        pr.request.id as string,
+        act("submit"),
+      ),
+      { status: 422, code: "VALIDATION_ERROR" },
+    );
+  });
+
+  it("[50-F5] a replayed transition by a caller without access is refused, not answered from the stored response", async () => {
+    const temp = await newUser("temp", [
+      { role: "purchasing", outletId: outletA },
+      { role: "kitchen_lead", outletId: outletA },
+    ]);
+    const po = await createPurchaseOrder(tenantContext(), temp, poInput());
+    const poId = po.purchaseOrder.id as string;
+    const poCancel = act("cancel");
+    await transitionPurchaseOrderStatus(tenantContext(), temp, poId, poCancel);
+    const pr = await createPurchaseRequest(tenantContext(), temp, prInput());
+    const prId = pr.request.id as string;
+    const prCancel = act("cancel");
+    await transitionPurchaseRequestStatus(
+      tenantContext(),
+      temp,
+      prId,
+      prCancel,
+    );
+
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+      [tenantA, temp],
+    );
+    await rejectsWith(
+      transitionPurchaseOrderStatus(tenantContext(), temp, poId, poCancel),
+      { status: 403, code: "PERMISSION_DENIED" },
+    );
+    await rejectsWith(
+      transitionPurchaseRequestStatus(tenantContext(), temp, prId, prCancel),
+      { status: 403, code: "PERMISSION_DENIED" },
+    );
+  });
+
+  it("[50-F6] a transition idempotency row carries the real outlet id", async () => {
+    const po = await createPurchaseOrder(tenantContext(), purchaser, poInput());
+    const poKey = key();
+    await transitionPurchaseOrderStatus(
+      tenantContext(),
+      purchaser,
+      po.purchaseOrder.id as string,
+      { action: "cancel", note: null, idempotencyKey: poKey } as never,
+    );
+    const pr = await createPurchaseRequest(
+      tenantContext(),
+      requester,
+      prInput(),
+    );
+    const prKey = key();
+    await transitionPurchaseRequestStatus(
+      tenantContext(),
+      requester,
+      pr.request.id as string,
+      { action: "cancel", note: null, idempotencyKey: prKey } as never,
+    );
+    for (const idempotencyKey of [poKey, prKey]) {
+      const { rows } = await owner.query<{ outlet_id: string | null }>(
+        "SELECT outlet_id FROM purchasing_idempotency WHERE tenant_id = $1 AND idempotency_key = $2",
+        [tenantA, idempotencyKey],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.outlet_id).toBe(outletA);
+    }
+  });
+});

@@ -826,7 +826,8 @@ test("purchasing endpoints are unique and write inputs reject tenant fields and 
       channel: "email",
       idempotencyKey: "fixture-send-0001",
     }).success,
-    false,
+    true,
+    "[50-F1] the server defaults the recipient to the supplier email",
   );
   assert.equal(
     shared.sendPurchaseOrderInputSchema.safeParse({
@@ -985,5 +986,84 @@ test("[25a7-CT-3] the follow-up purchasing error codes exist", () => {
       shared.purchasingErrorCodeSchema.safeParse(code).success,
       true,
     );
+  }
+});
+
+test("[50-F2] the share-link revoke endpoint is in the contract and strict", () => {
+  const endpoint = shared.purchasingEndpoints.find(
+    (item) => item.id === shared.revokePurchaseOrderShareLinks.id,
+  );
+  assert.ok(endpoint, "registered in purchasingEndpoints");
+  assert.equal(endpoint.method, "POST");
+  assert.equal(
+    endpoint.path,
+    "/api/inventory/purchase-orders/:purchaseOrderId/share-links/revoke",
+  );
+  assert.equal(
+    shared.revokePurchaseOrderShareLinksInputSchema.safeParse({
+      idempotencyKey: "fixture-revoke-0001",
+    }).success,
+    true,
+  );
+  assert.equal(
+    shared.revokePurchaseOrderShareLinksInputSchema.safeParse({
+      idempotencyKey: "fixture-revoke-0001",
+      note: "Supplier changed",
+      tenantId: "x",
+    }).success,
+    false,
+  );
+  assert.equal(
+    shared.purchaseOrderShareLinksRevokedSchema.safeParse({ revoked: 2 })
+      .success,
+    true,
+  );
+  assert.equal(
+    shared.purchaseOrderShareLinksRevokedSchema.safeParse({ revoked: -1 })
+      .success,
+    false,
+  );
+});
+
+test("[50-F4] a document accepts at most 200 lines", () => {
+  const supplier = fixtures.suppliers[0];
+  const order = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  const orderLine = {
+    inventoryItemId: order.lines[0].inventoryItemId,
+    quantity: "2.0000",
+    uomId: order.lines[0].uomId,
+    unitPriceIdr: "185000.0000",
+  };
+  const requestLine = {
+    inventoryItemId: orderLine.inventoryItemId,
+    quantity: "2.0000",
+    uomId: orderLine.uomId,
+  };
+  const many = (line, count) => Array.from({ length: count }, () => line);
+  const orderBody = (count) => ({
+    outletId: order.purchaseOrder.outletId,
+    supplierId: supplier.id,
+    expectedDate: "2026-11-06",
+    source: "user",
+    lines: many(orderLine, count),
+    idempotencyKey: "fixture-order-0200",
+  });
+  const requestBody = (count) => ({
+    outletId: order.purchaseOrder.outletId,
+    neededBy: "2026-11-06",
+    lines: many(requestLine, count),
+    idempotencyKey: "fixture-request-0200",
+  });
+  const updateBody = (count) => ({
+    lines: many(orderLine, count),
+    expectedUpdatedAt: "2026-10-20T03:00:00.000Z",
+  });
+  for (const [schema, body] of [
+    [shared.createPurchaseOrderInputSchema, orderBody],
+    [shared.createPurchaseRequestInputSchema, requestBody],
+    [shared.updatePurchaseOrderInputSchema, updateBody],
+  ]) {
+    assert.equal(schema.safeParse(body(200)).success, true, "200 accepted");
+    assert.equal(schema.safeParse(body(201)).success, false, "201 rejected");
   }
 });

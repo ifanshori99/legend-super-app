@@ -11,6 +11,8 @@
 // - 9yz-ISO-3 tenant isolation of send and of the public link
 // - 25a7-PO-2 emailDeliveryStatus on the order DTO (detail and list)
 // - 25a7-SEND-1 send refusals carry their own purchasing codes
+// - 50-F1 default recipient, recipient permission, resend limit
+// - 50-F2 revoke share links
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
 import { Pool, type Client } from "pg";
@@ -24,6 +26,8 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { createLogger } from "../lib/logger.ts";
 import { apiRouter } from "../routes/index.ts";
 import {
@@ -34,6 +38,7 @@ import {
   getPurchaseOrder,
   listPurchaseOrders,
 } from "../services/purchasing-order.service.ts";
+import { revokePurchaseOrderShareLinks } from "../services/purchasing-send.service.ts";
 import { runPurchasingPoEmailJob } from "../worker/purchasing-po-email.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -78,6 +83,9 @@ let approverId: string;
 let uomId: string;
 let itemId: string;
 let supplierId: string;
+let narrow: { client: ReturnType<typeof agent>; userId: string };
+let narrowRoleId: string;
+const extraSupplierIds: string[] = [];
 const createdUserIds: string[] = [];
 const orderIds: string[] = [];
 
@@ -135,6 +143,7 @@ async function grantTemplate(userId: string, templateKey: string) {
 /** A priced order: 2.5 x 10.000 + 3 x 4.000 = Rp 37.000, no tax. */
 async function seedOrder(
   status: string,
+  forSupplierId = supplierId,
 ): Promise<{ id: string; number: string }> {
   const id = randomUUID();
   const number = `PO/209912/${randomBytes(4).toString("hex")}`;
@@ -153,7 +162,7 @@ async function seedOrder(
       id,
       tenantA,
       outletA,
-      supplierId,
+      forSupplierId,
       number,
       status,
       sender.userId,
@@ -177,6 +186,33 @@ async function seedOrder(
     );
   orderIds.push(id);
   return { id, number };
+}
+
+/** A supplier with an optional own email and optional contacts. */
+async function seedSupplier(
+  email: string | null,
+  contacts: { email: string | null; isPrimary: boolean }[] = [],
+): Promise<string> {
+  const id = (
+    await owner.query<{ id: string }>(
+      `INSERT INTO suppliers (tenant_id, name, email, payment_terms_days, created_by)
+       VALUES ($1, $2, $3, 14, $4) RETURNING id`,
+      [
+        tenantA,
+        `Pemasok Alamat ${randomBytes(4).toString("hex")}`,
+        email,
+        sender.userId,
+      ],
+    )
+  ).rows[0]!.id;
+  extraSupplierIds.push(id);
+  for (const contact of contacts)
+    await owner.query(
+      `INSERT INTO supplier_contacts (tenant_id, supplier_id, name, phone, email, is_primary)
+       VALUES ($1, $2, 'Kontak', '+628111111111', $3, $4)`,
+      [tenantA, id, contact.email, contact.isPrimary],
+    );
+  return id;
 }
 
 const sha256 = (value: string) =>
@@ -219,6 +255,20 @@ beforeAll(async () => {
   sender = await signedIn("PO Sender");
   await grantTemplate(sender.userId, "purchasing");
   outsider = await signedIn("PO Outsider");
+  // Holds the send permission only: no supplier management.
+  narrowRoleId = randomUUID();
+  narrow = await signedIn("PO Narrow Sender");
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, permissions, allowed_scope_types)
+     VALUES ($1, $2, $3, '["purchasing.order.create"]', '["tenant"]')`,
+    [narrowRoleId, tenantA, `Narrow Sender ${randomBytes(3).toString("hex")}`],
+  );
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [tenantA, narrow.userId, narrowRoleId],
+  );
   approverId = randomUUID();
   await owner.query(
     'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
@@ -271,7 +321,7 @@ afterAll(async () => {
     [ids],
   );
   await owner.query(
-    "DELETE FROM purchasing_idempotency WHERE tenant_id = $1 AND operation = 'purchase_order.send'",
+    "DELETE FROM purchasing_idempotency WHERE tenant_id = $1 AND operation LIKE 'purchase_order.%'",
     [tenantA],
   );
   await owner.query(
@@ -281,13 +331,20 @@ afterAll(async () => {
   await owner.query("DELETE FROM purchase_orders WHERE id = ANY($1::uuid[])", [
     ids,
   ]);
-  await owner.query("DELETE FROM suppliers WHERE id = $1", [supplierId]);
+  await owner.query(
+    "DELETE FROM supplier_contacts WHERE supplier_id = ANY($1::uuid[])",
+    [extraSupplierIds],
+  );
+  await owner.query("DELETE FROM suppliers WHERE id = ANY($1::uuid[])", [
+    [supplierId, ...extraSupplierIds],
+  ]);
   await owner.query("DELETE FROM inventory_items WHERE id = $1", [itemId]);
   await owner.query("DELETE FROM uoms WHERE id = $1", [uomId]);
   await owner.query(
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantA, createdUserIds],
   );
+  await owner.query("DELETE FROM roles WHERE id = $1", [narrowRoleId]);
   await dropIsolatedTenant(tenantB);
   await owner.end();
   await appPool.end();
@@ -755,5 +812,214 @@ describe("9yz-ISO-3 isolation", () => {
     const pdf = await publicGet(path);
     const text = (pdf.body as Buffer).toString("latin1");
     expect(text).not.toContain(`Tenant ${tenantB.hostname}`);
+  });
+});
+
+describe("50-F1 recipient and resend limit", () => {
+  const emailRows = (orderId: string) =>
+    owner
+      .query<{ recipient_email: string }>(
+        "SELECT recipient_email FROM purchase_order_email_deliveries WHERE purchase_order_id = $1",
+        [orderId],
+      )
+      .then((result) => result.rows.map((row) => row.recipient_email));
+
+  it("[50-F1] an email send without an address goes to the supplier email", async () => {
+    const supplier = await seedSupplier("Orders@Supplier-Default.example");
+    const order = await seedOrder("approved", supplier);
+    const response = await send(sender.client, order.id, { channel: "email" });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      channel: "email",
+      sentTo: "Orders@Supplier-Default.example",
+      purchaseOrder: { status: "sent" },
+    });
+    expect(await emailRows(order.id)).toEqual([
+      "Orders@Supplier-Default.example",
+    ]);
+  });
+
+  it("[50-F1] without a supplier email it uses the primary contact, else 422", async () => {
+    const withContact = await seedSupplier(null, [
+      { email: "second@supplier-default.example", isPrimary: false },
+      { email: "primary@supplier-default.example", isPrimary: true },
+    ]);
+    const order = await seedOrder("approved", withContact);
+    const response = await send(sender.client, order.id, { channel: "email" });
+    expect(response.status).toBe(200);
+    expect(await emailRows(order.id)).toEqual([
+      "primary@supplier-default.example",
+    ]);
+
+    const bare = await seedSupplier(null, [{ email: null, isPrimary: true }]);
+    const bareOrder = await seedOrder("approved", bare);
+    const refused = await send(sender.client, bareOrder.id, {
+      channel: "email",
+    });
+    expect(refused.status).toBe(422);
+    const { rows } = await owner.query(
+      "SELECT status FROM purchase_orders WHERE id = $1",
+      [bareOrder.id],
+    );
+    expect(rows[0].status).toBe("approved");
+  });
+
+  it("[50-F1] another address needs purchasing.supplier.manage; the supplier's own addresses do not", async () => {
+    const supplier = await seedSupplier("own@supplier-default.example", [
+      { email: "Contact@Supplier-Default.example", isPrimary: true },
+    ]);
+    const order = await seedOrder("approved", supplier);
+    const foreign = await send(narrow.client, order.id, {
+      channel: "email",
+      email: "stranger@elsewhere.example",
+    });
+    expect(foreign.status).toBe(403);
+    const { rows } = await owner.query(
+      "SELECT status FROM purchase_orders WHERE id = $1",
+      [order.id],
+    );
+    expect(rows[0].status).toBe("approved");
+    expect(await emailRows(order.id)).toEqual([]);
+
+    // Case-insensitive match on the supplier email and on a contact email.
+    for (const address of [
+      "OWN@supplier-default.example",
+      "contact@supplier-default.example",
+    ]) {
+      const ok = await send(narrow.client, order.id, {
+        channel: "email",
+        email: address,
+      });
+      expect(ok.status).toBe(200);
+    }
+    // A buyer who manages suppliers may use any address.
+    const managed = await send(sender.client, order.id, {
+      channel: "email",
+      email: "stranger@elsewhere.example",
+    });
+    expect(managed.status).toBe(200);
+  });
+
+  it("[50-F1] the sixth send of one PO in an hour is a 429; a replay is not counted", async () => {
+    const order = await seedOrder("approved");
+    const first = {
+      channel: "share_link",
+      idempotencyKey: `send-${randomUUID()}`,
+    };
+    for (let index = 0; index < 5; index += 1) {
+      const body =
+        index === 0
+          ? first
+          : { channel: "email", email: `limit-${index}@supplier-test.example` };
+      expect((await send(sender.client, order.id, body)).status).toBe(200);
+    }
+    const sixth = await send(sender.client, order.id, {
+      channel: "email",
+      email: "limit-6@supplier-test.example",
+    });
+    expect(sixth.status).toBe(429);
+    expect(sixth.body.error.code).toBe("RATE_LIMITED");
+    // Replaying an accepted send still answers from the stored response.
+    expect((await send(sender.client, order.id, first)).status).toBe(200);
+    // Another PO has its own budget.
+    const other = await seedOrder("approved");
+    expect(
+      (await send(sender.client, other.id, { channel: "share_link" })).status,
+    ).toBe(200);
+    // Sends older than an hour no longer count.
+    await owner.query(
+      "UPDATE purchase_order_email_deliveries SET created_at = now() - interval '2 hours' WHERE purchase_order_id = $1",
+      [order.id],
+    );
+    const later = await send(sender.client, order.id, {
+      channel: "email",
+      email: "limit-7@supplier-test.example",
+    });
+    expect(later.status).toBe(200);
+  });
+});
+
+describe("50-F2 revoke share links", () => {
+  const revoke = (
+    client: ReturnType<typeof agent>,
+    orderId: string,
+    body: Record<string, unknown> = {},
+    host = seededHostname,
+  ) =>
+    client
+      .post(`/api/inventory/purchase-orders/${orderId}/share-links/revoke`)
+      .set(originHeader)
+      .set("Host", host)
+      .send({ idempotencyKey: `revoke-${randomUUID()}`, ...body });
+
+  it("[50-F2] revokes every live link, the public URL turns 404, a replay answers the same", async () => {
+    const order = await seedOrder("approved");
+    const one = await send(sender.client, order.id, { channel: "share_link" });
+    const two = await send(sender.client, order.id, { channel: "share_link" });
+    const urls = [one, two].map((r) => pathOf(r.body.data.shareUrl as string));
+    for (const url of urls) expect((await publicGet(url)).status).toBe(200);
+
+    const key = `revoke-${randomUUID()}`;
+    const response = await revoke(sender.client, order.id, {
+      idempotencyKey: key,
+      note: "Wrong supplier",
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ revoked: 2 });
+    for (const url of urls) expect((await publicGet(url)).status).toBe(404);
+    const { rows } = await owner.query<{ n: string }>(
+      "SELECT count(*) AS n FROM purchase_order_share_links WHERE purchase_order_id = $1 AND revoked_at IS NULL",
+      [order.id],
+    );
+    expect(Number(rows[0]!.n)).toBe(0);
+
+    const replay = await revoke(sender.client, order.id, {
+      idempotencyKey: key,
+      note: "Wrong supplier",
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.body.data).toEqual({ revoked: 2 });
+    // Nothing live is left: a new key revokes zero.
+    const again = await revoke(sender.client, order.id);
+    expect(again.body.data).toEqual({ revoked: 0 });
+    // The same key for different input is refused.
+    const reused = await revoke(sender.client, order.id, {
+      idempotencyKey: key,
+      note: "Other",
+    });
+    expect(reused.status).toBe(409);
+  });
+
+  it("[50-F2] needs the order permission, and tenant B cannot reach tenant A's order", async () => {
+    const order = await seedOrder("approved");
+    await send(sender.client, order.id, { channel: "share_link" });
+    expect((await revoke(outsider.client, order.id)).status).toBe(403);
+    const crossTenant = await revoke(
+      staffB.client,
+      order.id,
+      {},
+      tenantB.hostname,
+    );
+    expect(crossTenant.status).toBe(404);
+    const { rows } = await owner.query<{ n: string }>(
+      "SELECT count(*) AS n FROM purchase_order_share_links WHERE purchase_order_id = $1 AND revoked_at IS NULL",
+      [order.id],
+    );
+    expect(Number(rows[0]!.n)).toBe(1);
+  });
+
+  it("[50-F2] revokePurchaseOrderShareLinks revokes live links only and returns the count", async () => {
+    const order = await seedOrder("approved");
+    await send(sender.client, order.id, { channel: "share_link" });
+    await send(sender.client, order.id, { channel: "share_link" });
+    await owner.query(
+      `UPDATE purchase_order_share_links SET revoked_at = now()
+        WHERE id = (SELECT id FROM purchase_order_share_links WHERE purchase_order_id = $1 LIMIT 1)`,
+      [order.id],
+    );
+    const count = await withTenant(db, tenantContext(), (tx) =>
+      revokePurchaseOrderShareLinks(tx, tenantContext(), order.id),
+    );
+    expect(count).toBe(1);
   });
 });

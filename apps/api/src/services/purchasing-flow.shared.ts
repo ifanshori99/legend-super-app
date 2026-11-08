@@ -63,6 +63,20 @@ export function translatePurchasingError(error: unknown): unknown {
   return error;
 }
 
+/**
+ * Money math (`extendCostIdr`, `sumIdr`) throws RangeError past the safe
+ * integer range: a caller's absurd quantity x price is a 422, not a 500.
+ */
+export function guardMoneyMath<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    if (error instanceof RangeError)
+      throw new HttpError(422, "VALIDATION_ERROR", "The amount is too large.");
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------- PO DTO
 
 export type PurchaseOrderRow = typeof purchaseOrders.$inferSelect;

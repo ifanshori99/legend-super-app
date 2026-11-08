@@ -1,4 +1,4 @@
-// Send a purchase order (PRD v1.7 §3.18 "Kirim PO"; bead legend-9yz).
+// Send a purchase order and revoke its share links (PRD v1.7 §3.18 "Kirim PO"; bead legend-9yz).
 //
 // Mounts (lead, routes/index.ts):
 //   apiRouter.use("/inventory", createPurchasingSendRouter())
@@ -15,6 +15,7 @@
 
 import {
   purchaseOrderIdSchema,
+  revokePurchaseOrderShareLinksInputSchema,
   sendPurchaseOrderInputSchema,
 } from "@starter/shared/inventory";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -34,6 +35,7 @@ import {
 import {
   getPublicPurchaseOrderPdf,
   PURCHASE_ORDER_SEND_PERMISSION,
+  revokePurchaseOrderShareLinksForOrder,
   sendPurchaseOrder,
 } from "../services/purchasing-send.service.ts";
 
@@ -52,6 +54,26 @@ export function createPurchasingSendRouter(): Router {
       const input = sendPurchaseOrderInputSchema.parse(req.body);
       res.json({
         data: await sendPurchaseOrder(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          purchaseOrderId,
+          input,
+        ),
+      });
+    },
+  );
+
+  router.post(
+    "/purchase-orders/:purchaseOrderId/share-links/revoke",
+    jsonBody,
+    requireMenuPermission(PURCHASE_ORDER_SEND_PERMISSION),
+    async (req, res) => {
+      const purchaseOrderId = purchaseOrderIdSchema.parse(
+        req.params.purchaseOrderId,
+      );
+      const input = revokePurchaseOrderShareLinksInputSchema.parse(req.body);
+      res.json({
+        data: await revokePurchaseOrderShareLinksForOrder(
           getScopedTenantContext(req),
           getAuth(req).user.id,
           purchaseOrderId,

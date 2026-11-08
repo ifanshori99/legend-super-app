@@ -53,6 +53,7 @@ import { approvalRequests } from "../db/schema/platform-approval.ts";
 import {
   purchaseOrderLines,
   purchaseOrders,
+  purchaseRequests,
   purchasingDocumentSequences,
   suppliers,
 } from "../db/schema/purchasing.ts";
@@ -82,6 +83,7 @@ import {
   assertDocumentOwner,
   claimPurchasingIdempotency,
   completePurchasingIdempotency,
+  guardMoneyMath,
   loadEmailDeliveryStatuses,
   loadPurchaseOrder,
   openPurchasingApproval,
@@ -92,6 +94,7 @@ import {
   toPurchaseOrder,
   translatePurchasingError,
 } from "./purchasing-flow.shared.ts";
+import { revokePurchaseOrderShareLinks } from "./purchasing-send.service.ts";
 import {
   assertItemsAndUoms,
   lockApprovedRequest,
@@ -173,6 +176,10 @@ async function requireActiveSupplier(tx: Tx, supplierId: string) {
 type LineInput = CreatePurchaseOrderInput["lines"][number];
 
 function priceLines(lines: readonly LineInput[]) {
+  return guardMoneyMath(() => priceLinesUnguarded(lines));
+}
+
+function priceLinesUnguarded(lines: readonly LineInput[]) {
   return lines.map((line, index) => ({
     inventoryItemId: line.inventoryItemId,
     quantity: line.quantity,
@@ -280,7 +287,9 @@ export async function createPurchaseOrder(
         await markRequestConverted(tx, request, now);
       }
       const lines = priceLines(input.lines);
-      const totals = purchaseOrderTotals(lines, TAX_IDR, ROUNDING_MODE);
+      const totals = guardMoneyMath(() =>
+        purchaseOrderTotals(lines, TAX_IDR, ROUNDING_MODE),
+      );
       const businessDate = businessDateOf(
         now,
         await loadOutletClock(tx, input.outletId),
@@ -397,7 +406,9 @@ export async function updatePurchaseOrder(
       if (input.lines !== undefined) {
         await assertItemsAndUoms(tx, input.lines);
         const lines = priceLines(input.lines);
-        const totals = purchaseOrderTotals(lines, TAX_IDR, ROUNDING_MODE);
+        const totals = guardMoneyMath(() =>
+          purchaseOrderTotals(lines, TAX_IDR, ROUNDING_MODE),
+        );
         await tx
           .delete(purchaseOrderLines)
           .where(eq(purchaseOrderLines.purchaseOrderId, row.id));
@@ -553,6 +564,28 @@ export function purchaseOrderActionPermission(
   return ACTION_PERMISSION[action];
 }
 
+/**
+ * Who requested the PR this PO was made from (null without a PR). That person
+ * may not approve the PO either: they would sign off their own request.
+ */
+async function sourceRequestRequester(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: OrderRow,
+): Promise<string | null> {
+  if (row.purchaseRequestId === null) return null;
+  const [request] = await tx
+    .select({ requestedBy: purchaseRequests.requestedBy })
+    .from(purchaseRequests)
+    .where(
+      and(
+        eq(purchaseRequests.tenantId, context.tenant.tenantId),
+        eq(purchaseRequests.id, row.purchaseRequestId),
+      ),
+    );
+  return request?.requestedBy ?? null;
+}
+
 async function appendApproved(
   tx: Tx,
   context: ScopedTenantContext,
@@ -588,10 +621,9 @@ export async function transitionPurchaseOrderStatus(
   input: TransitionPurchaseOrderInput,
 ): Promise<PurchaseOrder> {
   const note = input.note?.trim() ? input.note.trim() : null;
-  const claim = {
+  const claimBase = {
     operation: TRANSITION_OPERATION,
     key: input.idempotencyKey,
-    outletId: null,
     fingerprint: requestFingerprint(TRANSITION_OPERATION, actorUserId, {
       orderId: orderId.toLowerCase(),
       action: input.action,
@@ -600,8 +632,6 @@ export async function transitionPurchaseOrderStatus(
   };
   try {
     return await withTenant(db, context, async (tx) => {
-      const replay = await claimPurchasingIdempotency(tx, context, claim);
-      if (replay) return purchaseOrderSchema.parse(replay.replay);
       const row = await lockOrder(tx, context, orderId);
       assertOutlet(context, row.outletId);
       await requireOpsPermission(
@@ -611,6 +641,11 @@ export async function transitionPurchaseOrderStatus(
         ACTION_PERMISSION[input.action],
         row.outletId,
       );
+      // Claimed only after the lock and the access checks: a replay by a caller
+      // without access is refused, never answered from the stored response.
+      const claim = { ...claimBase, outletId: row.outletId };
+      const replay = await claimPurchasingIdempotency(tx, context, claim);
+      if (replay) return purchaseOrderSchema.parse(replay.replay);
       const now = new Date();
       const action: PurchaseOrderAction = input.action;
       const patch: PurchaseOrderPatch = {
@@ -641,6 +676,14 @@ export async function transitionPurchaseOrderStatus(
             },
             actorUserId,
           );
+          if (
+            (await sourceRequestRequester(tx, context, row))?.toLowerCase() ===
+            actorUserId.toLowerCase()
+          )
+            throw new PurchasingError(
+              "PURCHASE_ORDER_SELF_APPROVAL",
+              "The requester of the source purchase request cannot approve the purchase order",
+            );
           patch.status = transitionPurchaseOrder(row.status, "approve");
           patch.approvedBy = actorUserId;
           patch.approvedAt = now;
@@ -689,6 +732,9 @@ export async function transitionPurchaseOrderStatus(
         .returning();
       if (!updated)
         throw new HttpError(409, "CONFLICT", "The order changed; retry.");
+      // A closed or cancelled order is no longer a document to hand out.
+      if (action === "close" || action === "cancel")
+        await revokePurchaseOrderShareLinks(tx, context, row.id, now);
       const result = await loadPurchaseOrder(tx, updated);
       if (approvedNow)
         await appendApproved(tx, context, updated, actorUserId, now);
@@ -756,10 +802,15 @@ export async function settlePurchaseOrderForApproval(
       )
       .orderBy(asc(approvalRequests.level));
     const approver = levels.at(-1)?.decidedBy ?? null;
+    // The requester of the source PR is held to the same rule as the creator.
+    const barred = [
+      row.createdBy.toLowerCase(),
+      (await sourceRequestRequester(tx, context, row))?.toLowerCase(),
+    ];
     const creatorDecided = levels.some(
       (level) =>
         level.decidedBy !== null &&
-        level.decidedBy.toLowerCase() === row.createdBy.toLowerCase(),
+        barred.includes(level.decidedBy.toLowerCase()),
     );
     let approved = false;
     if (outcome === "approved" && approver !== null && !creatorDecided) {

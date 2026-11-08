@@ -77,6 +77,7 @@ import {
   assertDocumentOwner,
   claimPurchasingIdempotency,
   completePurchasingIdempotency,
+  guardMoneyMath,
   openPurchasingApproval,
   PURCHASING_SOURCE_MODULE,
   refuseWhenChainOpen,
@@ -209,7 +210,7 @@ export async function estimatePurchaseRequest(
     const best = current.get(itemKey);
     if (best === undefined || value > best) current.set(itemKey, value);
   }
-  const priced = [];
+  const priced: { quantity: never; unitPriceIdr: never }[] = [];
   for (const line of lines) {
     const best = current.get(`${line.inventoryItemId}|${line.uomId}`);
     if (best === undefined) return null;
@@ -218,7 +219,9 @@ export async function estimatePurchaseRequest(
       unitPriceIdr: formatDecimal4(best) as never,
     });
   }
-  return purchaseRequestEstimateIdr(priced, ROUNDING_MODE);
+  return guardMoneyMath(() =>
+    purchaseRequestEstimateIdr(priced, ROUNDING_MODE),
+  );
 }
 
 async function todayOf(tx: Tx, outletId: string, now: Date): Promise<string> {
@@ -415,10 +418,9 @@ export async function transitionPurchaseRequestStatus(
   input: TransitionPurchaseRequestInput,
 ): Promise<PurchaseRequest> {
   const note = input.note?.trim() ? input.note.trim() : null;
-  const claim = {
+  const claimBase = {
     operation: TRANSITION_OPERATION,
     key: input.idempotencyKey,
-    outletId: null,
     fingerprint: requestFingerprint(TRANSITION_OPERATION, actorUserId, {
       requestId: requestId.toLowerCase(),
       action: input.action,
@@ -427,8 +429,6 @@ export async function transitionPurchaseRequestStatus(
   };
   try {
     return await withTenant(db, context, async (tx) => {
-      const replay = await claimPurchasingIdempotency(tx, context, claim);
-      if (replay) return purchaseRequestSchema.parse(replay.replay);
       const [row] = await tx
         .select()
         .from(purchaseRequests)
@@ -449,6 +449,11 @@ export async function transitionPurchaseRequestStatus(
         ACTION_PERMISSION[input.action],
         row.outletId,
       );
+      // Claimed only after the lock and the access checks: a replay by a caller
+      // without access is refused, never answered from the stored response.
+      const claim = { ...claimBase, outletId: row.outletId };
+      const replay = await claimPurchasingIdempotency(tx, context, claim);
+      if (replay) return purchaseRequestSchema.parse(replay.replay);
       const now = new Date();
       const patch: Partial<typeof purchaseRequests.$inferInsert> = {
         updatedAt: now,

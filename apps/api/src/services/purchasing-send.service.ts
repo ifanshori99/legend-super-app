@@ -14,9 +14,17 @@
 // - Email: a queued delivery row; the worker job
 //   (worker/purchasing-po-email.job.ts) sends it. Audit rows and DTOs never
 //   carry the address, only the mask.
+// - Recipient: an email send without an address goes to the supplier email,
+//   else the primary contact's, else 422. Any other address needs
+//   `purchasing.supplier.manage` (tenant scope), else 403.
+// - Resend limit: at most 5 sends (emails and links) per order per rolling
+//   hour; the sixth is a 429. A replay of an accepted send is not counted.
+// - Revoke: `revokePurchaseOrderShareLinks` kills every live link of an order;
+//   the order service calls it on close and cancel.
 
 import { createHash, createHmac, scryptSync } from "node:crypto";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   assertTrustedScopedContext,
   CoreError,
@@ -32,6 +40,8 @@ import {
   type PurchaseOrder,
   type PurchaseOrderLine,
   type PurchaseOrderSendResult,
+  type PurchaseOrderShareLinksRevoked,
+  type revokePurchaseOrderShareLinksInputSchema,
   type sendPurchaseOrderInputSchema,
 } from "@starter/shared/inventory";
 import type { z } from "zod";
@@ -46,6 +56,7 @@ import {
   purchaseOrderShareLinks,
   purchaseOrders,
   purchasingIdempotency,
+  supplierContacts,
   suppliers,
 } from "../db/schema/purchasing.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -67,11 +78,19 @@ export type SendPurchaseOrderInput = z.infer<
   typeof sendPurchaseOrderInputSchema
 >;
 
+export type RevokePurchaseOrderShareLinksInput = z.infer<
+  typeof revokePurchaseOrderShareLinksInputSchema
+>;
+
 /** PO create/update/submit/close/cancel/send share one permission. */
 export const PURCHASE_ORDER_SEND_PERMISSION = "purchasing.order.create";
 export const PURCHASE_ORDER_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const OPERATION = "purchase_order.send";
+const REVOKE_OPERATION = "purchase_order.share_links_revoke";
+const SUPPLIER_MANAGE_PERMISSION = "purchasing.supplier.manage";
+const SEND_LIMIT = 5;
+const SEND_WINDOW_MS = 60 * 60 * 1000;
 const LINK_KEY_CONTEXT = "legend:purchase-order-link:v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,100}$/;
 const AUDIT_FIELDS = ["channel", "status", "resend"] as const;
@@ -278,6 +297,88 @@ async function completeIdempotency(
     );
 }
 
+// ---- Recipient and send limit ---------------------------------------------
+
+/**
+ * The address an email goes to. No address asked: the supplier's, else the
+ * primary contact's, else 422. An address that is not one of the supplier's
+ * own (case-insensitive) needs `purchasing.supplier.manage` at tenant scope.
+ */
+async function resolveRecipient(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  supplierId: string,
+  requested: string | undefined,
+  canManageSuppliers: boolean,
+): Promise<string> {
+  const [supplier] = await tx
+    .select({ email: suppliers.email })
+    .from(suppliers)
+    .where(and(eq(suppliers.tenantId, tenantId), eq(suppliers.id, supplierId)));
+  const contacts = await tx
+    .select()
+    .from(supplierContacts)
+    .where(
+      and(
+        eq(supplierContacts.tenantId, tenantId),
+        eq(supplierContacts.supplierId, supplierId),
+      ),
+    )
+    .orderBy(asc(supplierContacts.createdAt), asc(supplierContacts.id));
+  const primary = contacts.find((contact) => contact.isPrimary) ?? contacts[0];
+  if (requested === undefined) {
+    const fallback = supplier?.email ?? primary?.email ?? null;
+    if (fallback === null)
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "The supplier has no email address. Enter a recipient.",
+      );
+    return fallback;
+  }
+  const known = [supplier?.email, ...contacts.map((contact) => contact.email)]
+    .filter((address): address is string => !!address)
+    .map((address) => address.toLowerCase());
+  if (!known.includes(requested.toLowerCase()) && !canManageSuppliers)
+    throw new AccessError("PERMISSION_DENIED");
+  return requested;
+}
+
+async function assertSendBudget(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  purchaseOrderId: string,
+  now: Date,
+): Promise<void> {
+  const since = new Date(now.getTime() - SEND_WINDOW_MS);
+  const [emails] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(purchaseOrderEmailDeliveries)
+    .where(
+      and(
+        eq(purchaseOrderEmailDeliveries.tenantId, tenantId),
+        eq(purchaseOrderEmailDeliveries.purchaseOrderId, purchaseOrderId),
+        gt(purchaseOrderEmailDeliveries.createdAt, since),
+      ),
+    );
+  const [links] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(purchaseOrderShareLinks)
+    .where(
+      and(
+        eq(purchaseOrderShareLinks.tenantId, tenantId),
+        eq(purchaseOrderShareLinks.purchaseOrderId, purchaseOrderId),
+        gt(purchaseOrderShareLinks.createdAt, since),
+      ),
+    );
+  if ((emails?.n ?? 0) + (links?.n ?? 0) >= SEND_LIMIT)
+    throw new HttpError(
+      429,
+      "RATE_LIMITED",
+      "This purchase order was sent too often. Try again in an hour.",
+    );
+}
+
 // ---- Send -----------------------------------------------------------------
 
 /** What a replay stores: never the token (the URL is recomputed). */
@@ -323,7 +424,7 @@ export async function sendPurchaseOrder(
       // is simply not found.
       if (!row)
         throw new HttpError(404, "NOT_FOUND", "Purchase order not found.");
-      await requireOpsPermission(
+      const snapshot = await requireOpsPermission(
         tx,
         context,
         actorUserId,
@@ -397,6 +498,17 @@ export async function sendPurchaseOrder(
           "PURCHASE_ORDER_NOT_SENDABLE",
           `Cannot send a purchase order in ${row.status}`,
         );
+      const recipient =
+        input.channel === "email"
+          ? await resolveRecipient(
+              tx,
+              tenantId,
+              row.supplierId,
+              input.email,
+              snapshot.allows(SUPPLIER_MANAGE_PERMISSION, { type: "tenant" }),
+            )
+          : null;
+      await assertSendBudget(tx, tenantId, row.id, now);
       let order = row;
       if (!resend) {
         let next: PurchaseOrderRow["status"];
@@ -412,7 +524,7 @@ export async function sendPurchaseOrder(
           .set({
             status: next,
             sentAt: now,
-            sentTo: input.channel === "email" ? input.email! : null,
+            sentTo: recipient,
             updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
           })
           .where(
@@ -443,7 +555,7 @@ export async function sendPurchaseOrder(
           tenantId,
           outletId: order.outletId,
           purchaseOrderId: order.id,
-          recipientEmail: input.email!,
+          recipientEmail: recipient!,
           createdBy: actorUserId,
         });
       }
@@ -463,12 +575,107 @@ export async function sendPurchaseOrder(
       const stored: StoredSend = {
         purchaseOrder,
         channel: input.channel,
-        sentTo: input.channel === "email" ? input.email! : null,
+        sentTo: recipient,
         expiresAt: expiresAt === null ? null : toIsoDateTime(expiresAt),
       };
       await completeIdempotency(tx, context, claim, stored);
       return toResult(stored, shareUrl);
     });
+  }
+}
+
+// ---- Revoke ---------------------------------------------------------------
+
+/**
+ * Revokes every live (not revoked, not expired) share link of an order inside
+ * the caller's transaction; returns how many it killed. The order service
+ * calls it when an order is closed or cancelled.
+ */
+export async function revokePurchaseOrderShareLinks(
+  tx: Tx,
+  context: ScopedTenantContext,
+  purchaseOrderId: string,
+  now = new Date(),
+): Promise<number> {
+  const revoked = await tx
+    .update(purchaseOrderShareLinks)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        eq(purchaseOrderShareLinks.tenantId, context.tenant.tenantId),
+        eq(purchaseOrderShareLinks.purchaseOrderId, purchaseOrderId),
+        isNull(purchaseOrderShareLinks.revokedAt),
+        gt(purchaseOrderShareLinks.expiresAt, now),
+      ),
+    )
+    .returning({ id: purchaseOrderShareLinks.id });
+  return revoked.length;
+}
+
+export async function revokePurchaseOrderShareLinksForOrder(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  purchaseOrderId: string,
+  input: RevokePurchaseOrderShareLinksInput,
+): Promise<PurchaseOrderShareLinksRevoked> {
+  assertTrustedScopedContext(context);
+  const now = new Date();
+  const tenantId = context.tenant.tenantId;
+  try {
+    return await withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(purchaseOrders)
+        .where(
+          and(
+            eq(purchaseOrders.tenantId, tenantId),
+            eq(purchaseOrders.id, purchaseOrderId),
+          ),
+        )
+        .for("update");
+      if (!row)
+        throw new HttpError(404, "NOT_FOUND", "Purchase order not found.");
+      await requireOpsPermission(
+        tx,
+        context,
+        actorUserId,
+        PURCHASE_ORDER_SEND_PERMISSION,
+        row.outletId,
+      );
+      const claim: Claim = {
+        operation: REVOKE_OPERATION,
+        key: input.idempotencyKey,
+        outletId: row.outletId,
+        fingerprint: requestFingerprint(REVOKE_OPERATION, actorUserId, {
+          purchaseOrderId,
+          note: input.note ?? null,
+        }),
+      };
+      const replay = await claimIdempotency(tx, context, claim);
+      if (replay) return replay.replay as PurchaseOrderShareLinksRevoked;
+      const revoked = await revokePurchaseOrderShareLinks(
+        tx,
+        context,
+        purchaseOrderId,
+        now,
+      );
+      await recordOpsAudit(tx, context, {
+        actorUserId,
+        outletId: row.outletId,
+        action: "purchasing.order_share_links_revoked",
+        objectType: "purchase_order",
+        objectId: row.id,
+        before: null,
+        after: { revoked },
+        safeFields: ["revoked"],
+        reason: input.note ?? null,
+      });
+      const result = { revoked };
+      await completeIdempotency(tx, context, claim, result);
+      return result;
+    });
+  } catch (error) {
+    throw translatePurchasingError(error);
   }
 }
 
