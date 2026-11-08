@@ -12,7 +12,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 |---|---|---|---|---|---|
 | ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
 | ws/refund-approval | 09385266 | K | refund, approval, payout | fix brief 81 selesai (G7ftq, Opus reviewer 2 putaran bersih, gate hijau 1366); migration 0068 bentrok nomor milestone → regen | Codex R2 (SHA pasca-regen) |
-| ws/journals | b87a7d98 | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih, gate hijau 1348+1414); migration 0068/0069 bentrok nomor dgn edge di milestone → regen setelah shareholder | Codex R3 (SHA pasca-regen) |
+| ws/journals | 4ec3babb | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih); regen 0075/0076 di atas m1 8e2e7bc0; DIGABUNG milestone/m1 4e0bacd4 (brief 89, 00:2x); gate: lint+typecheck hijau, API 1496 + 9 file timeout diulang 147/147, root 1419 + 1 artefak diulang 21/21 | Codex R3 brief 70 (SHA 4ec3babb) |
 | ws/payroll-pph21-tests | 461a94bf | K | uang PPh21 | fix 82 + campuran (porsi skema) selesai, reviewer segar + 6000 fuzz bersih, gate hijau 1492; legend-s5c1 P1 prasyarat run service | Codex R4 (SHA 461a94bf) |
 | ws/edc-framework | a6d022d3 | K | uang EDC, tagih dobel | SELESAI (G7cu9 di-resolve): batch_no match (dispatch_batch_no, migration 0070) + kontrak sale sinkron, gate hijau 1408; migration → regen saat merge | Codex R5 brief 60 (SHA a6d022d3) |
 | ws/doit-provider | 8fed84ef | K | pembayaran, webhook | pasangan: FIX SELESAI (brief 80, G8x09; 2 review segar lolos) | Codex R5 brief 62 (SHA 8fed84ef) |
@@ -25,7 +25,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
 | ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 55d90ab3 (22:45); gate milestone lulus 23:05 | Codex R9 |
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
-| ws/hris-leave | fa4ff73f | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp), reviewer 2 putaran bersih, gate hijau 1645; regen 0072-0074 di atas 0071 → bentrok dgn shareholder 0072/0073 di m1 → regen ulang saat giliran merge | gabung milestone |
+| ws/hris-leave | fa4ff73f (prep 05a14884) | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp); regen 0077/0078 di atas m1 4e0bacd4 (FK outlets/employees pola NO FORCE); DIGABUNG milestone/m1 e4938167 (brief 89); gate hijau: API 1723, root 1420 | selesai |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
 | ws/hris-sop | 37aa5cd9 | S | SOP | Sonnet reviewer PERLU FIX → brief 86 selesai 37aa5cd9 (gate hijau); siap merge (regen) | gabung milestone |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
@@ -182,3 +182,10 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - AI, Wi-Fi, ojol tetap masuk rilis pertama.
 - Diagnosis lambat: rata-rata ~1,6 subagent berjalan per agent (ram-guard: 11 subagent untuk 7 agent). Penyebab: brief per fix kecil (tak ada yang bisa diparalelkan), gate penuh diulang tiap langkah, merge serial dikerjakan CTO.
 - Perubahan: (1) agent baru menerima workstream 5–15 kartu dengan `docs/briefs/_TEMPLATE-workstream.md` (fan-out wajib di giliran pertama, test-writer paralel implementer, gate penuh sekali); (2) merge train dipegang thread sendiri (brief 89), persiapan konflik paralel per cabang di worktree, hanya regen migration yang serial; (3) e2e/QA (WS-13, 8%) dimulai sekarang, tidak di akhir; (4) laporan agent wajib menyebut jumlah subagent dan puncak paralel, dicatat tiap gelombang.
+
+### Insiden 00:10 (9 Nov)
+- gxserver mati ~23:55, dinyalakan ulang CTO (`gx server start`). Colima "not running" sementara VM masih hidup: port container baru tidak diteruskan, semua test DB gagal "PostgreSQL is not reachable". Subagent CTO sedang memulihkan.
+- macOS menolak membuka terminal baru dari login ini ("macOS refused to start it from this login"): 3 thread gagal start (G58ni Codex refund, G0c95 WS-02 brief 90, G30x7 WS-13 brief 91). Butuh founder restart Ghostex / logout-login. Setelah itu: reopen/start ulang ketiganya.
+- Git identity global hilang setelah pindah akun; diset lokal di repo (`git config user.name/email`).
+- Thread G5rd6, G9d1y, G7wwc, G7pk4, G7rxu di-resolve: kode di-commit, gate penuh mereka diserahkan ke merge train (G5dhx). SHA: pos-shift 6c1ec83, struk 1657797e, kds 9ee5a885, deploy-prep 3e2f516e, procurement HEAD ws/procurement.
+- Codex: brief 65 refund SHA 09385266 siap; struk diff 87c27ed7..1657797e; deploy-prep milestone/m1..ws/deploy-prep (perlu brief). Cron akun 2 00:25 di sesi CTO ini.
