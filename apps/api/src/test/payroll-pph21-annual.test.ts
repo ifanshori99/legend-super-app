@@ -1232,4 +1232,74 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     expect(r.taxAllowanceIdr).toBe(0);
     expect(r.pph21EmployerBorneIdr).toBe(308_700);
   });
+
+  it("R69 gross_first, pure net December after an all-net year that paid no tax (TER 0%): the Jan-Nov shortfall is the employer's, not cut from the employee", () => {
+    // TK/0 net 5_400_000 a month (TER 0% row), Jan-Nov: prior gross 59_400_000,
+    // withheld 0, borne 0, all on the employer scheme (prior base given).
+    // H = tax(59_400_000) - 0: cost 2_970_000, net 56_430_000, PKP 2_430_000
+    //   (floor to thousands), tax 5% = 121_500. priorTax = 0, so the payer
+    //   split comes from the prior scheme mix: employer 100% => employee part 0.
+    // G = 0 => employee share = 0. December net 5_400_000, X = 5_400_000 + S:
+    //   S0=0       gross 64_800_000 cost 3_240_000 net 61_560_000 PKP 7_560_000 T 378_000
+    //   S1=378_000 gross 65_178_000 cost 3_258_900 net 61_919_100 PKP 7_919_000 T 395_950
+    //   S2=395_950 gross 65_195_950 PKP 7_936_000 T 396_800
+    //   S3=396_800 gross 65_196_800 PKP 7_936_000 T 396_800 -> stop.
+    const r = run(
+      {
+        taxableLines: [{ amountIdr: 5_400_000, taxScheme: "net" }],
+        prior: {
+          ...prior(59_400_000, 0, 0),
+          employerSchemeBaseIdr: 59_400_000,
+        },
+      },
+      { mixedSchemeAllocation: "gross_first" },
+    );
+    expect(r.taxableGrossIdr).toBe(5_796_800);
+    expect(r.pph21Idr).toBe(396_800);
+    expect(r.pph21WithheldIdr).toBe(0);
+    expect(r.pph21EmployerBorneIdr).toBe(396_800);
+  });
+
+  it("R70 same year without a prior scheme base: the shortfall follows this month's mix (all net => employer)", () => {
+    // As R69 but the caller gave no per-scheme base; G/X of December is
+    // 0/5_400_000, so the employer carries all of H. Same expected amounts.
+    const r = run(
+      {
+        taxableLines: [{ amountIdr: 5_400_000, taxScheme: "net" }],
+        prior: prior(59_400_000, 0, 0),
+      },
+      { mixedSchemeAllocation: "gross_first" },
+    );
+    expect(r.taxableGrossIdr).toBe(5_796_800);
+    expect(r.pph21Idr).toBe(396_800);
+    expect(r.pph21WithheldIdr).toBe(0);
+    expect(r.pph21EmployerBorneIdr).toBe(396_800);
+  });
+
+  it("R71 half gross-scheme, half net-scheme year that paid no tax: the employee carries half of the Jan-Nov shortfall", () => {
+    // As R69 with prior base 29_700_000 gross scheme + 29_700_000 employer scheme.
+    // H = 121_500; employer part floor(121_500 x 29.7/59.4) = 60_750,
+    // employee part 60_750. G = 0 => gross_first share = tax(prior) - H + 60_750
+    // = 60_750. December net 5_400_000, X = 5_400_000 + S, C = T - min(T, 60_750):
+    //   S0=0       T 378_000 -> 317_250
+    //   S1=317_250 X 5_717_250 T 393_050 -> 332_300
+    //   S2=332_300 X 5_732_300 T 393_750 -> 333_000
+    //   S3=333_000 X 5_733_000 T 393_800 -> 333_050
+    //   S4=333_050 X 5_733_050 T 393_800 -> 333_050 stop.
+    const r = run(
+      {
+        taxableLines: [{ amountIdr: 5_400_000, taxScheme: "net" }],
+        prior: {
+          ...prior(59_400_000, 0, 0),
+          grossSchemeBaseIdr: 29_700_000,
+          employerSchemeBaseIdr: 29_700_000,
+        },
+      },
+      { mixedSchemeAllocation: "gross_first" },
+    );
+    expect(r.taxableGrossIdr).toBe(5_733_050);
+    expect(r.pph21Idr).toBe(393_800);
+    expect(r.pph21WithheldIdr).toBe(60_750);
+    expect(r.pph21EmployerBorneIdr).toBe(333_050);
+  });
 });

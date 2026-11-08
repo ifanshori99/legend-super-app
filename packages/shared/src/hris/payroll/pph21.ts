@@ -93,6 +93,14 @@ export type Pph21PeriodInput = {
     pph21WithheldIdr: Idr | number;
     /** PPh 21 borne by the employer in earlier periods (net scheme). */
     pph21EmployerBorneIdr: Idr | number;
+    /**
+     * Optional scheme mix of the earlier periods' taxable base: the part paid
+     * on the gross scheme (employee carries its tax) and the part on
+     * gross_up / net (employer carries it). Used only when no tax was paid in
+     * the year yet, to split the history shortfall between payers.
+     */
+    grossSchemeBaseIdr?: Idr | number;
+    employerSchemeBaseIdr?: Idr | number;
   };
 };
 
@@ -212,13 +220,20 @@ export function computePph21Period(
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
 
-  let g = nonNegativeInt(input.employerBenefitIdr, "employerBenefitIdr");
+  const benefit = nonNegativeInt(
+    input.employerBenefitIdr,
+    "employerBenefitIdr",
+  );
+  let g = benefit;
+  let grossLines = 0n;
   let u = 0n;
   let n = 0n;
   for (const line of input.taxableLines) {
     const amount = nonNegativeInt(line.amountIdr, "line amountIdr");
-    if (line.taxScheme === "gross") g += amount;
-    else if (line.taxScheme === "gross_up") u += amount;
+    if (line.taxScheme === "gross") {
+      g += amount;
+      grossLines += amount;
+    } else if (line.taxScheme === "gross_up") u += amount;
     else if (line.taxScheme === "net") n += amount;
     else throw new RangeError("Unknown taxScheme");
   }
@@ -243,6 +258,19 @@ export function computePph21Period(
     "prior.pph21EmployerBorneIdr",
   );
   const priorTax = priorWithheld + priorBorne;
+  const priorGrossScheme = nonNegativeInt(
+    input.prior.grossSchemeBaseIdr ?? 0,
+    "prior.grossSchemeBaseIdr",
+  );
+  const priorEmployerScheme = nonNegativeInt(
+    input.prior.employerSchemeBaseIdr ?? 0,
+    "prior.employerSchemeBaseIdr",
+  );
+  // Employer BPJS (in g) is taxable income, but for a net / gross-up employee
+  // (no gross line) the tax on it is the company's: it joins the employer-
+  // covered tax (allowance or borne) and never reduces take-home. With any
+  // gross line the benefit stays in the employee's gross share.
+  const employeeG = u + n > 0n && grossLines === 0n ? 0n : g;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
   const category = tables.ter.categoryByPtkpStatus[status];
@@ -311,14 +339,23 @@ export function computePph21Period(
   // part follows the year's payer history, like a refund: the share the
   // employer bore before stays with the employer.
   const history = input.lastTaxPeriod ? taxOf(0n).tax : 0n;
-  const employerHistory =
-    history > 0n && priorTax > 0n ? (history * priorBorne) / priorTax : 0n;
+  // With nothing paid yet (priorTax = 0) the payer history is unknown, so the
+  // shortfall follows the earlier scheme mix, else this month's mix.
+  const historyBase0 = g + u + n;
+  const priorMix = priorGrossScheme + priorEmployerScheme;
+  let employerHistory = 0n;
+  if (history > 0n && priorTax > 0n)
+    employerHistory = (history * priorBorne) / priorTax;
+  else if (history > 0n && priorMix > 0n)
+    employerHistory = (history * priorEmployerScheme) / priorMix;
+  else if (history > 0n && historyBase0 > 0n)
+    employerHistory = (history * (historyBase0 - employeeG)) / historyBase0;
   const employeeHistory = history - employerHistory;
   // gross_first: the employee bears the tax their gross components add on top
   // of the prior income, plus their part of H; the employer covers the rest.
   const grossFirstShare =
     policy.mixedSchemeAllocation === "gross_first"
-      ? taxOf(g).tax - history + employeeHistory
+      ? taxOf(employeeG).tax - history + employeeHistory
       : 0n;
 
   // Employee gross share of the period tax T at base x.
@@ -331,7 +368,7 @@ export function computePph21Period(
       const alone = grossFirstShare > 0n ? grossFirstShare : 0n;
       return alone < tax ? alone : tax;
     }
-    return (tax * g) / x;
+    return (tax * employeeG) / x;
   };
 
   // Employer-covered tax S: least fixed point from 0. With the pro rata floor

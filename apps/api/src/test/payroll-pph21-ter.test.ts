@@ -950,3 +950,71 @@ describe("PPh 21 TER monthly reference cases", () => {
     });
   });
 });
+
+describe("PPh 21 employer BPJS tax belongs to the company for net / gross-up employees (R66-R68, founder decision 2026-11-08)", () => {
+  // TK/0 (category A), salary 10_000_000, employer BPJS benefit 400_000.
+  // The benefit is taxable (PMK 168/2023, premi dibayar pemberi kerja), but for
+  // a net or gross-up employee the tax on it is the company's, never taken
+  // from take-home. Fixed point on the employer-covered tax S with
+  // X = 10_400_000 + S, half up (TER A: s.d. 10_700_000 = 250 bp):
+  //   S=0       X=10_400_000 T=260_000
+  //   S=260_000 X=10_660_000 T=266_500
+  //   S=266_500 X=10_666_500 T=266_662.5 -> 266_663
+  //   S=266_663 X=10_666_663 T=266_666.575 -> 266_667
+  //   S=266_667 X=10_666_667 T=266_666.675 -> 266_667 stop.
+  const policies = ["proportional", "gross_first"] as const;
+
+  for (const allocation of policies) {
+    const policy = policyWith({ mixedSchemeAllocation: allocation });
+
+    it(`R66 pure net (${allocation}): the employer bears the tax on the BPJS benefit, take-home stays 10_000_000`, () => {
+      const r = terMonth("TK/0", [net(10_000_000)], {
+        employerBenefitIdr: 400_000,
+        policy,
+      });
+      expect(r).toMatchObject({
+        taxableGrossIdr: 10_666_667,
+        taxAllowanceIdr: 0,
+        pph21Idr: 266_667,
+        pph21WithheldIdr: 0,
+        pph21EmployerBorneIdr: 266_667,
+        ...NO_REFUND,
+      });
+      expect(10_000_000 - r.pph21WithheldIdr).toBe(10_000_000);
+    });
+
+    it(`R67 pure gross-up (${allocation}): the tax on the BPJS benefit goes into the tax allowance, take-home stays 10_000_000`, () => {
+      const r = terMonth("TK/0", [grossUp(10_000_000)], {
+        employerBenefitIdr: 400_000,
+        policy,
+      });
+      expect(r).toMatchObject({
+        taxableGrossIdr: 10_666_667,
+        taxAllowanceIdr: 266_667,
+        pph21Idr: 266_667,
+        pph21WithheldIdr: 266_667,
+        pph21EmployerBorneIdr: 0,
+        ...NO_REFUND,
+      });
+      expect(10_000_000 + r.taxAllowanceIdr - r.pph21WithheldIdr).toBe(
+        10_000_000,
+      );
+    });
+
+    it(`R68 gross employee (${allocation}) is unchanged: the employee still carries the tax on the BPJS benefit`, () => {
+      // X = 10_400_000, 250 bp => 260_000, all withheld.
+      const r = terMonth("TK/0", [gross(10_000_000)], {
+        employerBenefitIdr: 400_000,
+        policy,
+      });
+      expect(r).toMatchObject({
+        taxableGrossIdr: 10_400_000,
+        taxAllowanceIdr: 0,
+        pph21Idr: 260_000,
+        pph21WithheldIdr: 260_000,
+        pph21EmployerBorneIdr: 0,
+        ...NO_REFUND,
+      });
+    });
+  }
+});

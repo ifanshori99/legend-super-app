@@ -4,7 +4,7 @@
 //
 // A version is tenant data versioned by effective business date. Rows are
 // append-only (no update or delete here, and the app role has neither
-// privilege: migration 0064), so a version never changes after it is stored.
+// privilege: migration 0069), so a version never changes after it is stored.
 // A run that keeps the version id (`resolvePph21PolicyFor` returns it) can
 // therefore reproduce its tax later; storing that id in the run snapshot is
 // the payroll run's job (follow-up bead). Reading needs `payroll.view`, publishing
@@ -189,12 +189,16 @@ export async function resolvePph21PolicyFor(
  * Every policy version of the tenant, oldest first, for a payroll run that
  * resolves or verifies the pinned version itself (`pph21PolicyForRun`). No
  * permission check, like `resolvePph21PolicyFor`: the run authorises its
- * caller.
+ * caller. Pass `tx` to read inside the run's own transaction.
  */
 export async function loadPph21PolicyVersionsForRun(
   context: ScopedTenantContext,
+  tx?: Tx,
 ): Promise<Pph21PolicyVersion[]> {
-  return withTenant(db, context, (tx) => loadVersions(tx, context));
+  // With a caller transaction (the run lock) the read joins it.
+  return tx
+    ? loadVersions(tx, context)
+    : withTenant(db, context, (inner) => loadVersions(inner, context));
 }
 
 /** Same resolution with the version it came from, behind `payroll.view`. */

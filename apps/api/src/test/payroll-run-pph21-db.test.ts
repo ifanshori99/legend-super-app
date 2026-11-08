@@ -73,15 +73,19 @@ import {
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   DEFAULT_PPH21_POLICY,
+  pph21ParametersHash,
   type PayslipTax,
   type Pph21PolicyRef,
 } from "@starter/shared/hris/payroll";
 import {
   calculatePayrollRunTax,
   capturePph21PolicyForLock,
+  lockPayrollRunTax,
   type PayrollRunTaxEmployee,
   type PayrollRunTaxRun,
 } from "../services/payroll-run-pph21.service.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { createPph21PolicyVersion } from "../services/payroll-pph21-policy.service.ts";
 import { REFERENCE_TABLES } from "./fixtures/payroll/statutory-tables.ts";
 
@@ -438,6 +442,10 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
       versionId: v1.id,
       version: 1,
       effectiveFrom: date("2026-11-10"),
+      parametersHash: pph21ParametersHash({
+        ...DEFAULT_PPH21_POLICY,
+        roundingMode: "down",
+      }),
     };
     const result = await calculate(draftRun());
     expect(result.pph21Policy).toEqual(v1Ref);
@@ -478,6 +486,10 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
       versionId: v2.id,
       version: 2,
       effectiveFrom: date("2026-11-20"),
+      parametersHash: pph21ParametersHash({
+        ...DEFAULT_PPH21_POLICY,
+        roundingMode: "half_up",
+      }),
     };
 
     // The locked run is identical to before: v1 is pinned.
@@ -607,5 +619,106 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
         },
       },
     ]);
+  });
+
+  it("refuses a pinned ref whose parameters hash differs", async () => {
+    // Right id, number and date, but the hash of another parameter set (v2's
+    // instead of v1's): the stored version no longer matches what was pinned.
+    expect(
+      await failureCode(
+        calculate({
+          ...lockedRun,
+          configSnapshot: {
+            pph21Policy: { ...v1Ref, parametersHash: v2Ref.parametersHash },
+          },
+        }),
+      ),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+  });
+
+  const approvedRun = (): PayrollRunTaxRun => ({
+    status: "approved",
+    payDate: PAY_DATE,
+    configSnapshot: null,
+  });
+  const lockIn = (approved: Pph21PolicyRef | null, tenant: string = tenantId) =>
+    withTenant(db, tenantScope(tenant), (tx) =>
+      lockPayrollRunTax(
+        tenantScope(tenant),
+        { run: approvedRun(), tables: REFERENCE_TABLES, employees: EMPLOYEES },
+        approved,
+        tx,
+      ),
+    );
+
+  it("locks with the ref the run was approved with, pinned from the same computation as the payslips", async () => {
+    // v2 is in force on the pay date and was shown at approval.
+    const locked = await lockIn(v2Ref);
+    expect(locked.pph21Policy).toEqual(v2Ref);
+    expect(taxesOf(locked)).toEqual(EXPECTED_V2);
+    // Capture inside a transaction with the same approved ref.
+    expect(
+      await withTenant(db, tenantScope(), (tx) =>
+        capturePph21PolicyForLock(tenantScope(), PAY_DATE, {
+          tx,
+          approved: v2Ref,
+        }),
+      ),
+    ).toEqual(v2Ref);
+  });
+
+  it("refuses the lock when the approved version is no longer the one in force", async () => {
+    // Approved while v1 was in force; v2 was published since.
+    expect(await failureCode(lockIn(v1Ref))).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // Approved with the default policy (null) while a version is in force.
+    expect(await failureCode(lockIn(null))).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // Same id/number/date but other parameters hash.
+    expect(
+      await failureCode(
+        lockIn({ ...v2Ref, parametersHash: v1Ref.parametersHash }),
+      ),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    expect(
+      await failureCode(
+        withTenant(db, tenantScope(), (tx) =>
+          capturePph21PolicyForLock(tenantScope(), PAY_DATE, {
+            tx,
+            approved: v1Ref,
+          }),
+        ),
+      ),
+    ).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // Tenant B has no version: approved with tenant A's ref is refused, with
+    // null accepted.
+    expect(await failureCode(lockIn(v2Ref, otherTenant))).toBe(
+      "PAYROLL_SNAPSHOT_MISMATCH",
+    );
+    expect((await lockIn(null, otherTenant)).pph21Policy).toBeNull();
+  });
+
+  it("refuses a lock when v3 is published between approval and lock", async () => {
+    // Approval showed v2; the payslips of the lock would use v3 (down).
+    const v3 = await createPph21PolicyVersion(
+      tenantScope(),
+      admin,
+      {
+        effectiveFrom: date("2026-11-25"),
+        parameters: { ...DEFAULT_PPH21_POLICY, roundingMode: "down" },
+        reason: "Koreksi saran konsultan",
+      },
+      NOW,
+    );
+    expect(v3.version).toBe(3);
+    expect(await failureCode(lockIn(v2Ref))).toBe("PAYROLL_SNAPSHOT_MISMATCH");
+    // Approving again against v3 locks with v3, payslips and ref in step.
+    const v3Ref = {
+      versionId: v3.id,
+      version: 3,
+      effectiveFrom: date("2026-11-25"),
+      parametersHash: v1Ref.parametersHash,
+    };
+    const relocked = await lockIn(v3Ref);
+    expect(relocked.pph21Policy).toEqual(v3Ref);
+    expect(taxesOf(relocked)).toEqual(EXPECTED_V1);
   });
 });

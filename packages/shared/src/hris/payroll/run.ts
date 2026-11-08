@@ -49,6 +49,7 @@ import type { PayrollRunTotals } from "./payslips.ts";
 import { payDateAdjustmentSchema, payrollCycleSchema } from "./policies.ts";
 import {
   DEFAULT_PPH21_POLICY,
+  pph21ParametersHash,
   pph21PolicyVersionIdSchema,
   resolvePph21Policy,
 } from "./pph21-policy.ts";
@@ -194,12 +195,15 @@ export type StatutoryVersionRef = z.infer<typeof statutoryVersionRefSchema>;
 
 /**
  * The tenant PPh 21 policy version a run pinned (bead legend-y4wp). Same
- * four fields as a statutory ref minus the table type.
+ * fields as a statutory ref minus the table type, plus the hash of the
+ * version's parameters (`pph21ParametersHash`): a pinned version whose
+ * parameters no longer match is a snapshot mismatch.
  */
 export const pph21PolicyRefSchema = z.strictObject({
   versionId: pph21PolicyVersionIdSchema,
   version: z.number().int().min(1).safe(),
   effectiveFrom: businessDateSchema,
+  parametersHash: z.string().regex(/^[0-9a-f]{64}$/),
 });
 export type Pph21PolicyRef = z.infer<typeof pph21PolicyRefSchema>;
 
@@ -302,13 +306,31 @@ export function statutoryVersionsForRun(
 }
 
 export function pph21PolicyRef(
-  version: Pick<Pph21PolicyVersion, "id" | "version" | "effectiveFrom">,
+  version: Pick<
+    Pph21PolicyVersion,
+    "id" | "version" | "effectiveFrom" | "parameters"
+  >,
 ): Pph21PolicyRef {
   return {
     versionId: version.id,
     version: version.version,
     effectiveFrom: version.effectiveFrom,
+    parametersHash: pph21ParametersHash(version.parameters),
   };
+}
+
+/** Same pinned version: id, number, date and parameters hash all equal. */
+export function isSamePph21PolicyRef(
+  a: Pph21PolicyRef | null,
+  b: Pph21PolicyRef | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.versionId === b.versionId &&
+    a.version === b.version &&
+    a.effectiveFrom === b.effectiveFrom &&
+    a.parametersHash === b.parametersHash
+  );
 }
 
 /**
@@ -317,7 +339,8 @@ export function pph21PolicyRef(
  * the statutory tables. From lock on: exactly the version pinned in the
  * snapshot, by id, whatever was published since (PAYR-02); a pinned `null`
  * keeps the default. A pinned version that is missing or changed, or a
- * frozen run without a snapshot -> PAYROLL_SNAPSHOT_MISMATCH. `ref` is what
+ * frozen run without a snapshot, or pinned parameters that no longer hash to
+ * the stored `parametersHash` -> PAYROLL_SNAPSHOT_MISMATCH. `ref` is what
  * the snapshot stores at lock (null = default).
  */
 export function pph21PolicyForRun(
@@ -342,7 +365,8 @@ export function pph21PolicyForRun(
   if (
     !version ||
     version.version !== ref.version ||
-    version.effectiveFrom !== ref.effectiveFrom
+    version.effectiveFrom !== ref.effectiveFrom ||
+    pph21ParametersHash(version.parameters) !== ref.parametersHash
   )
     throw new PayrollError("PAYROLL_SNAPSHOT_MISMATCH");
   return { parameters: version.parameters, ref };
