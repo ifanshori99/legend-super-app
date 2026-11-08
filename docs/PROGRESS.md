@@ -25,7 +25,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
 | ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 (22:45); gate milestone belum dijalankan ulang | Codex R9 |
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
-| ws/hris-leave | 1db3cd05 | S | cuti (Opus: domain rumit) | Opus reviewer PERLU FIX (2 Tinggi, 2 Sedang) → brief 85 ke G5klp 22:06 | gabung milestone |
+| ws/hris-leave | fa4ff73f | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp), reviewer 2 putaran bersih, gate hijau 1645; regen 0072-0074 di atas 0071 → bentrok dgn shareholder 0072/0073 di m1 → regen ulang saat giliran merge | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
 | ws/hris-sop | 37aa5cd9 | S | SOP | Sonnet reviewer PERLU FIX → brief 86 selesai 37aa5cd9 (gate hijau); siap merge (regen) | gabung milestone |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
@@ -34,7 +34,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
-Urutan merge: edge (1e476101) → stock-opname (7373f00b) → shareholder-docs (regen ke 0072+) → journals → refund-approval → hris-sop → edc → pph21 → pos-shift → hris-leave → lainnya. Tiap cabang regen migration di atas milestone/m1 terbaru, satu per satu.
+Urutan merge (23:00): edge → stock-opname → shareholder-docs (55d90ab3, sudah) → antrean siap: journals (merge-prep subagent), reservation (G2m46), hris-leave, refund, hris-sop, edc, pph21, pos-shift, doit, receipt. CTO merge sesuai urutan siap; cabang berikutnya regen ulang di atas head m1 terbaru. Keputusan founder cuti bersama: mulai 2027-01-01 (sudah default).
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
 
 Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya kuota tidak dipakai untuk temuan yang sudah diketahui. Jendela Codex yang datang sebelum ada fix siap: pakai untuk cabang K berikutnya yang belum direview (recipe/BOM, tenant config export, AI tool catalog).
