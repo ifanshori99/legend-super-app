@@ -343,8 +343,9 @@ export async function deliverQrOrderPaymentEvent(
       ),
     )
     .for("update");
-  // Not a QR order's bill, or already fired / voided (late payment is held as
-  // unallocated funds by WS-05, PAY-04).
+  // Not a QR order's bill, or already fired / voided. A late payment on a
+  // voided order is booked on its bill by WS-05; the payment.paid consumer
+  // files a system refund for it (qr-order-late-payment.ts, legend-dahl).
   if (!order || order.status !== "awaiting_payment") return false;
   const [link] = await tx
     .select({ paidIdr: paymentLinks.paidIdr, totalIdr: paymentLinks.totalIdr })
