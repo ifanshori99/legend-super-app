@@ -1,52 +1,59 @@
 // PPh 21 for one employee and one tax period (PRD v1.7 §3 D.30 "PPh 21",
-// F30, PAYR-03, R15; bead legend-5cnk).
+// F30, PAYR-03, R15; beads legend-5cnk, legend-y4wp).
 //
-// Pure, whole rupiah, no I/O. The caller resolves the statutory table
-// versions in force for the period (statutory.ts `resolveStatutoryTable`) and
-// passes their parameters; nothing here hard-codes a rate.
+// Pure, whole rupiah, BigInt arithmetic, no I/O. The caller resolves the
+// statutory table versions in force for the period (statutory.ts
+// `resolveStatutoryTable`) and the tenant PPh 21 policy in force
+// (pph21-policy.ts `resolvePph21Policy`) and passes their parameters.
 //
-// Method (PP 58/2023, PMK 168/2023):
-// - Every period except the last one of the tax year: monthly TER. Tax =
-//   bruto x TER rate of the employee's PTKP category (PP 58/2023 Pasal 2-3).
-// - Last tax period (December, or the month employment ends): annual
-//   recalculation with Pasal 17 ayat (1) huruf a. Annual bruto - biaya jabatan
-//   (5%, capped at the annual cap pro rata per month worked, i.e. Rp500.000 a
-//   month) - employee JHT/JP - PTKP = PKP, rounded down to the table multiple
-//   (Pasal 17 ayat (4)). Ordinary joiners and leavers are not annualised and
-//   keep the full PTKP. Period tax = annual tax - PPh 21 of earlier periods;
-//   a negative result is lebih potong, refunded.
-// - No tax id (NPWP/NIK): tax x (100% + surcharge), Pasal 21 ayat (5a) UU PPh.
-//   The surcharge is the `pph21_annual` table's `noTaxIdSurchargeBp` and is
-//   applied in TER months too (same statutory rule; the TER table has no own
-//   field). Rounded after the base tax, so base tax and surcharge each follow
-//   the regulation's order: compute the tax, then 120% of it.
+// Method (PP 58/2023; PMK 168/2023
+// https://www.jdih.kemenkeu.go.id/api/download/e60a82e0-b218-40f5-9d18-b924aa1e11ce/2023pmkeuangan168.pdf):
+// - Every period except the last one of the tax year: monthly TER, tax =
+//   bruto x TER rate of the PTKP category (PP 58/2023 Pasal 2-3, Lampiran).
+// - Last tax period (December, or the month employment ends; PMK 168 Pasal
+//   15(1)-(3)): Pasal 17 ayat (1) huruf a on the year. Bruto - biaya jabatan
+//   (5%, cap per policy; Pasal 10(2)) - employee JHT/JP = neto; PKP = neto -
+//   PTKP rounded down to thousands (Pasal 17(4) UU PPh). Ordinary joiners and
+//   leavers keep the full PTKP and are not annualised. When the subjective tax
+//   obligation itself starts or ends within the year (Pasal 15(3), Lampiran
+//   I.2.2.3), neto is annualised (x 12 / months) and the tax is taken pro rata
+//   (x months / 12). Period tax = annual tax - PPh 21 of earlier periods; a
+//   negative result is lebih potong, returned (Pasal 21).
+// - No tax id: rate 20% higher (Pasal 21(5a) UU PPh), the table's
+//   `noTaxIdSurchargeBp`, in TER months too unless the policy says
+//   `annual_only`.
+// - Every tax amount is rounded ONCE with the policy's rounding mode (half up
+//   for Coretax periods, PER-11/PJ/2025 Pasal 129): the surcharge and the
+//   partial-year fraction are multiplied into the numerator first.
 //
 // Tax schemes per component (components.ts `taxScheme`):
-// - gross: tax withheld from the employee.
-// - gross_up: the employer adds a tax allowance (tunjangan pajak) equal to the
-//   tax attributable to the gross-up components plus the allowance itself. The
-//   allowance is taxable income, so it is the least fixed point
-//   A = floor(T(X(A)) x (U + A) / X(A)), found by iterating from 0; the map is
-//   monotone, so the iteration rises to the least solution and stops.
-// - net: the employer bears the tax attributable to the component, without an
-//   allowance line.
-// Attribution is pro rata to the period's taxable base: TER is one flat rate
-// on the whole base, and the annual recalculation has no per-component split
-// in the regulation, so the base share is the neutral rule.
-//   borne = floor(T x N / X), withheld = T - borne (withheld absorbs rounding).
-// Employer BPJS JKK/JKM/Kesehatan shares are a taxable benefit (gross scheme).
+// - gross: the tax is withheld from the employee.
+// - gross_up: the employer pays a tax allowance (taxable earning line).
+// - net: the employer bears the tax; the borne tax is itself a taxable benefit
+//   (FAQ DJP PMK-66/2023 no. 40), so it enters the bruto like the allowance.
+// Let G = gross lines + employer BPJS benefit, U = gross_up lines, N = net
+// lines, S = employer-covered tax (allowance A + borne B), X = G+U+N+S. The
+// employee's share W of the tax follows the policy (`proportional`: T x G / X;
+// `gross_first`: the tax G would carry alone, capped at T). S is the least
+// fixed point of S = T(X(S)) - W(X(S)), iterated from 0 (monotone, so it rises
+// to the least solution). A = S x U / (U + N), B = T - W - A. Withheld = W + A,
+// so the employee's take-home is exactly G + U + N - W: the allowance cancels
+// out to the rupiah.
+// Lebih potong is split by the year's payer history (prior withheld vs prior
+// employer-borne), never by this month's mix, so tax withheld from the
+// employee always goes back to the employee.
 
 import { divideRounded, idr } from "@starter/shared/core";
 import type { Idr, RoundingMode } from "@starter/shared/core";
-import { computeProgressiveTax } from "@starter/shared/hris/payroll";
+import { PayrollError } from "@starter/shared/hris/payroll";
 import type {
   PtkpParameters,
   TerParameters,
   Pph21AnnualParameters,
+  Pph21PolicyParameters,
   TaxScheme,
   TerCategory,
 } from "@starter/shared/hris/payroll";
-import { PayrollError } from "@starter/shared/hris/payroll";
 import type { PtkpStatus } from "@starter/shared/hris";
 
 export type Pph21Tables = {
@@ -65,6 +72,12 @@ export type Pph21PeriodInput = {
   lastTaxPeriod: boolean;
   /** Months at this employer in the tax year, this one included (1..12). */
   monthsWorked: number;
+  /**
+   * The subjective tax obligation starts or ends within the year (PMK 168
+   * Pasal 15(3)), e.g. the employee leaves Indonesia for good. Only in the
+   * last tax period. Not for an ordinary joiner or leaver.
+   */
+  partialYearTaxSubject?: boolean;
   /** Taxable earnings of the period; never the tax allowance itself. */
   taxableLines: readonly Pph21Line[];
   /** Employer JKK + JKM + BPJS Kesehatan shares (taxable benefit). */
@@ -76,8 +89,10 @@ export type Pph21PeriodInput = {
     /** Sum of X (taxableGrossIdr) of earlier periods. */
     taxableGrossIdr: Idr | number;
     employeeDeductibleIdr: Idr | number;
-    /** PPh 21 owed in earlier periods (withheld + employer-borne). */
-    pph21Idr: Idr | number;
+    /** PPh 21 deducted from the employee in earlier periods. */
+    pph21WithheldIdr: Idr | number;
+    /** PPh 21 borne by the employer in earlier periods (net scheme). */
+    pph21EmployerBorneIdr: Idr | number;
   };
 };
 
@@ -85,37 +100,48 @@ export type Pph21AnnualBreakdown = {
   grossIdr: Idr;
   occupationalCostIdr: Idr;
   deductibleIdr: Idr;
+  /** gross - occupational cost - deductible. */
+  netIdr: Idr;
+  /** netIdr x 12 / months for a partial-year tax subject, else netIdr. */
+  annualizedNetIdr: Idr;
   ptkpIdr: Idr;
   taxableIncomeIdr: Idr;
+  /** Tax of the year (pro rata for a partial-year tax subject). */
   annualTaxIdr: Idr;
   priorPph21Idr: Idr;
 };
 
 export type Pph21PeriodResult = {
   method: "ter" | "annual_recalculation";
+  /** PTKP status used for withholding (K/I/n normalised to K/n). */
+  withholdingStatus: PtkpStatus;
   terCategory: TerCategory | null;
   terRateBp: number | null;
-  /** X = taxable lines + employer benefit + tax allowance. */
+  /** X = taxable lines + employer benefit + allowance + borne tax. */
   taxableGrossIdr: Idr;
   /** Gross-up tunjangan pajak (an extra earning line). */
   taxAllowanceIdr: Idr;
   /** Tax owed for the period; negative = lebih potong. */
   pph21Idr: Idr;
-  /** Deducted from the employee (gross and gross-up shares). */
+  /** Deducted from the employee (their gross share + the allowance). */
   pph21WithheldIdr: Idr;
-  /** Borne by the employer (net share). */
+  /** Borne by the employer (net scheme), a taxable benefit in X. */
   pph21EmployerBorneIdr: Idr;
-  /** Lebih potong paid back to the employee (their share of the refund). */
+  /** Lebih potong paid back to the employee. */
   pph21RefundIdr: Idr;
+  /** Lebih potong that returns to the employer (tax it bore). */
+  pph21EmployerRefundIdr: Idr;
   /**
-   * The no-tax-id rule applies to this employee (no tax id and the table has
-   * a surcharge), even when the period's base tax is 0 and nothing was added.
+   * The no-tax-id rule applies in this period (no tax id, the table has a
+   * surcharge and the policy surcharges this method), even when the base tax
+   * is 0 and nothing was added.
    */
   noTaxIdSurchargeApplied: boolean;
   annual: Pph21AnnualBreakdown | null;
 };
 
-const MAX_GROSS_UP_ITERATIONS = 1000;
+const MAX_ITERATIONS = 1000;
+const BP = 10_000n;
 
 function nonNegativeInt(value: number, name: string): bigint {
   if (!Number.isSafeInteger(value) || value < 0)
@@ -123,7 +149,9 @@ function nonNegativeInt(value: number, name: string): bigint {
   return BigInt(value);
 }
 
-function bracketRateBp(
+const toIdr = (value: bigint): Idr => idr(Number(value));
+
+function terRateBp(
   brackets: TerParameters["bracketsByCategory"]["A"],
   amount: bigint,
 ): number {
@@ -134,13 +162,33 @@ function bracketRateBp(
   return bracket.rateBp;
 }
 
-function withSurcharge(
-  tax: bigint,
-  surchargeBp: number | null,
-  mode: RoundingMode,
+/** Sum of slice x rateBp over the Pasal 17 brackets (rupiah x bp, exact). */
+function progressiveScaled(
+  brackets: Pph21AnnualParameters["brackets"],
+  income: bigint,
 ): bigint {
-  if (surchargeBp === null || tax <= 0n) return tax;
-  return divideRounded(tax * BigInt(10_000 + surchargeBp), 10_000n, mode);
+  if (income <= 0n) return 0n;
+  let lower = 0n;
+  let scaled = 0n;
+  for (const bracket of brackets) {
+    const upper = bracket.upToIdr === null ? income : BigInt(bracket.upToIdr);
+    const top = upper < income ? upper : income;
+    if (top > lower) scaled += (top - lower) * BigInt(bracket.rateBp);
+    if (bracket.upToIdr === null || upper >= income) break;
+    lower = upper;
+  }
+  return scaled;
+}
+
+/** K/I/n is an SPT status; withholding uses K/n (or refuses, per policy). */
+function withholdingStatusOf(
+  status: PtkpStatus,
+  policy: Pph21PolicyParameters,
+): PtkpStatus {
+  if (!status.startsWith("K/I/")) return status;
+  if (policy.combinedSpouseStatus === "reject")
+    throw new PayrollError("PAYROLL_PPH21_STATUS_UNSUPPORTED");
+  return status.replace("K/I/", "K/") as PtkpStatus;
 }
 
 type PeriodTax = {
@@ -151,6 +199,7 @@ type PeriodTax = {
 
 export function computePph21Period(
   tables: Pph21Tables,
+  policy: Pph21PolicyParameters,
   input: Pph21PeriodInput,
 ): Pph21PeriodResult {
   if (
@@ -159,6 +208,9 @@ export function computePph21Period(
     input.monthsWorked > 12
   )
     throw new RangeError("monthsWorked must be 1..12");
+  const partialYear = input.partialYearTaxSubject === true;
+  if (partialYear && !input.lastTaxPeriod)
+    throw new RangeError("partialYearTaxSubject applies to the last period");
 
   let g = nonNegativeInt(input.employerBenefitIdr, "employerBenefitIdr");
   let u = 0n;
@@ -182,110 +234,162 @@ export function computePph21Period(
     input.prior.employeeDeductibleIdr,
     "prior.employeeDeductibleIdr",
   );
-  if (!Number.isSafeInteger(input.prior.pph21Idr))
-    throw new RangeError("prior.pph21Idr must be whole rupiah");
-  const priorTax = BigInt(input.prior.pph21Idr);
+  const priorWithheld = nonNegativeInt(
+    input.prior.pph21WithheldIdr,
+    "prior.pph21WithheldIdr",
+  );
+  const priorBorne = nonNegativeInt(
+    input.prior.pph21EmployerBorneIdr,
+    "prior.pph21EmployerBorneIdr",
+  );
+  const priorTax = priorWithheld + priorBorne;
 
-  const category = tables.ter.categoryByPtkpStatus[input.ptkpStatus];
-  const ptkp = tables.ptkp.annualAmountIdrByStatus[input.ptkpStatus];
+  const status = withholdingStatusOf(input.ptkpStatus, policy);
+  const category = tables.ter.categoryByPtkpStatus[status];
+  const ptkp = tables.ptkp.annualAmountIdrByStatus[status];
   if (category === undefined || ptkp === undefined)
     throw new PayrollError("PAYROLL_TER_BRACKET_NOT_FOUND");
-  const surchargeBp = input.hasTaxId ? null : tables.annual.noTaxIdSurchargeBp;
+
+  const tableSurcharge = tables.annual.noTaxIdSurchargeBp;
+  const surchargeApplies =
+    !input.hasTaxId &&
+    tableSurcharge !== null &&
+    (input.lastTaxPeriod || policy.noTaxIdSurcharge === "ter_and_annual");
+  const factor = BP + BigInt(surchargeApplies ? (tableSurcharge ?? 0) : 0);
+  const mode: RoundingMode = policy.roundingMode;
+  const months = BigInt(input.monthsWorked);
 
   const taxOf = (x: bigint): PeriodTax => {
     if (!input.lastTaxPeriod) {
-      const rateBp = bracketRateBp(tables.ter.bracketsByCategory[category], x);
-      const mode = tables.ter.roundingMode;
-      const base = divideRounded(x * BigInt(rateBp), 10_000n, mode);
+      const rateBp = terRateBp(tables.ter.bracketsByCategory[category], x);
       return {
-        tax: withSurcharge(base, surchargeBp, mode),
+        tax: divideRounded(x * BigInt(rateBp) * factor, BP * BP, mode),
         terRateBp: rateBp,
         annual: null,
       };
     }
     const params = tables.annual;
     const gross = priorGross + x;
-    const rawCost = divideRounded(
-      gross * BigInt(params.occupationalCostRateBp),
-      10_000n,
-      "down",
-    );
-    const capCost = divideRounded(
-      BigInt(params.occupationalCostAnnualCapIdr) * BigInt(input.monthsWorked),
-      12n,
-      "down",
-    );
-    const cost = rawCost < capCost ? rawCost : capCost;
+    const rawCost = (gross * BigInt(params.occupationalCostRateBp)) / BP;
+    const annualCap = BigInt(params.occupationalCostAnnualCapIdr);
+    const cap =
+      policy.occupationalCostCap === "full_annual"
+        ? annualCap
+        : (annualCap * months) / 12n;
+    const cost = rawCost < cap ? rawCost : cap;
     const totalDeductible = priorDeductible + deductible;
-    const net = gross - cost - totalDeductible - BigInt(ptkp);
+    const net = gross - cost - totalDeductible;
+    const annualizedNet = partialYear && net > 0n ? (net * 12n) / months : net;
     const step = BigInt(params.taxableIncomeRoundDownToIdr);
-    const pkp = net <= 0n ? 0n : (net / step) * step;
-    const base = BigInt(
-      computeProgressiveTax(
-        params.brackets,
-        idr(Number(pkp)),
-        params.roundingMode,
-      ),
+    const beforeRounding = annualizedNet - BigInt(ptkp);
+    const pkp = beforeRounding <= 0n ? 0n : (beforeRounding / step) * step;
+    const fractionNumerator = partialYear ? months : 12n;
+    const annualTax = divideRounded(
+      progressiveScaled(params.brackets, pkp) * factor * fractionNumerator,
+      BP * BP * 12n,
+      mode,
     );
-    const annualTax = withSurcharge(base, surchargeBp, params.roundingMode);
     return {
       tax: annualTax - priorTax,
       terRateBp: null,
       annual: {
-        grossIdr: idr(Number(gross)),
-        occupationalCostIdr: idr(Number(cost)),
-        deductibleIdr: idr(Number(totalDeductible)),
+        grossIdr: toIdr(gross),
+        occupationalCostIdr: toIdr(cost),
+        deductibleIdr: toIdr(totalDeductible),
+        netIdr: toIdr(net),
+        annualizedNetIdr: toIdr(annualizedNet),
         ptkpIdr: idr(ptkp),
-        taxableIncomeIdr: idr(Number(pkp)),
-        annualTaxIdr: idr(Number(annualTax)),
-        priorPph21Idr: idr(Number(priorTax)),
+        taxableIncomeIdr: toIdr(pkp),
+        annualTaxIdr: toIdr(annualTax),
+        priorPph21Idr: toIdr(priorTax),
       },
     };
   };
 
-  // Gross-up allowance: least fixed point of a monotone map, from 0.
-  let allowance = 0n;
-  if (u > 0n) {
-    for (let i = 0; ; i++) {
-      if (i >= MAX_GROSS_UP_ITERATIONS)
-        throw new RangeError("Gross-up allowance did not converge");
-      const x = g + u + n + allowance;
-      const { tax } = taxOf(x);
-      const next = tax > 0n ? (tax * (u + allowance)) / x : 0n;
-      // With mixed schemes the pro rata floor can dip by 1 rupiah as X grows;
-      // stop on the first non-increase, keeping the larger allowance so the
-      // employee is never short of the tax on their gross-up components.
-      if (next <= allowance) break;
-      allowance = next;
+  // Last period only: the history shortfall H = annual tax on the prior
+  // income alone minus what was already paid (0 in a TER month). Its employee
+  // part follows the year's payer history, like a refund: the share the
+  // employer bore before stays with the employer.
+  const history = input.lastTaxPeriod ? taxOf(0n).tax : 0n;
+  const employerHistory =
+    history > 0n && priorTax > 0n ? (history * priorBorne) / priorTax : 0n;
+  const employeeHistory = history - employerHistory;
+  // gross_first: the employee bears the tax their gross components add on top
+  // of the prior income, plus their part of H; the employer covers the rest.
+  const grossFirstShare =
+    policy.mixedSchemeAllocation === "gross_first"
+      ? taxOf(g).tax - history + employeeHistory
+      : 0n;
+
+  // Employee gross share of the period tax T at base x.
+  const employeeShare = (tax: bigint, x: bigint): bigint => {
+    if (tax <= 0n) return 0n;
+    // Nothing paid this period (last period only can owe tax at X = 0): no
+    // employer benefit exists to carry it, so the employee owes it all.
+    if (x === 0n) return tax;
+    if (policy.mixedSchemeAllocation === "gross_first") {
+      const alone = grossFirstShare > 0n ? grossFirstShare : 0n;
+      return alone < tax ? alone : tax;
     }
+    return (tax * g) / x;
+  };
+
+  // Employer-covered tax S: least fixed point from 0. With the pro rata floor
+  // the map can dip by a rupiah; stop on the first non-increase and let the
+  // borne amount absorb the residual (take-home stays exact).
+  // Runs for gross-only pay too: under gross_first the employer's part of the
+  // history shortfall is borne, hence taxable as well. Otherwise the first
+  // step returns 0 and the loop stops at once.
+  let covered = 0n;
+  for (let i = 0; ; i++) {
+    if (i >= MAX_ITERATIONS)
+      throw new RangeError("Employer-covered tax did not converge");
+    const x = g + u + n + covered;
+    const { tax } = taxOf(x);
+    const next = tax > 0n ? tax - employeeShare(tax, x) : 0n;
+    if (next <= covered) break;
+    covered = next;
   }
 
-  const x = g + u + n + allowance;
+  const x = g + u + n + covered;
   const period = taxOf(x);
   const tax = period.tax;
-  let borne = 0n;
   let withheld = 0n;
-  let refund = 0n;
+  let allowance = 0n;
+  let borne = 0n;
+  let employeeRefund = 0n;
+  let employerRefund = 0n;
   if (tax >= 0n) {
-    borne = x > 0n ? (tax * n) / x : 0n;
-    withheld = tax - borne;
+    const w = employeeShare(tax, x);
+    const employerPart = tax - w;
+    allowance = u + n > 0n ? (covered * u) / (u + n) : 0n;
+    if (allowance > employerPart) allowance = employerPart;
+    borne = employerPart - allowance;
+    withheld = w + allowance;
   } else {
     const owedBack = -tax;
-    const employerShare = x > 0n ? (owedBack * n) / x : 0n;
-    refund = owedBack - employerShare;
+    if (policy.mixedSchemeAllocation === "gross_first") {
+      employeeRefund = owedBack < priorWithheld ? owedBack : priorWithheld;
+      employerRefund = owedBack - employeeRefund;
+    } else {
+      employerRefund = priorTax > 0n ? (owedBack * priorBorne) / priorTax : 0n;
+      employeeRefund = owedBack - employerRefund;
+    }
   }
 
   return {
     method: input.lastTaxPeriod ? "annual_recalculation" : "ter",
+    withholdingStatus: status,
     terCategory: input.lastTaxPeriod ? null : category,
     terRateBp: period.terRateBp,
-    taxableGrossIdr: idr(Number(x)),
-    taxAllowanceIdr: idr(Number(allowance)),
-    pph21Idr: idr(Number(tax)),
-    pph21WithheldIdr: idr(Number(withheld)),
-    pph21EmployerBorneIdr: idr(Number(borne)),
-    pph21RefundIdr: idr(Number(refund)),
-    noTaxIdSurchargeApplied: surchargeBp !== null && surchargeBp > 0,
+    taxableGrossIdr: toIdr(x),
+    taxAllowanceIdr: toIdr(allowance),
+    pph21Idr: toIdr(tax),
+    pph21WithheldIdr: toIdr(withheld),
+    pph21EmployerBorneIdr: toIdr(borne),
+    pph21RefundIdr: toIdr(employeeRefund),
+    pph21EmployerRefundIdr: toIdr(employerRefund),
+    noTaxIdSurchargeApplied: surchargeApplies,
     annual: period.annual,
   };
 }

@@ -17,9 +17,17 @@
 // - PKP rounded down to whole thousands: Pasal 17 ayat (4) UU PPh.
 // - No-NPWP surcharge: Pasal 21 ayat (5a) UU PPh, tarif 20% lebih tinggi.
 //
+// Rounding: the tables keep `roundingMode: "down"` for other consumers, but
+// the PPh 21 engine rounds with the tenant policy's versioned mode
+// (pph21-policy.ts; default half up for Coretax periods, PER-11/PJ/2025
+// Pasal 129
+// https://pajak.go.id/index.php/id/peraturan/ketentuan-pelaporan-pajak-penghasilan-pajak-pertambahan-nilai-pajak-penjualan-atas-0).
+// Lampiran PP 58/2023:
+// https://pajak.go.id/sites/default/files/lampiran/Lampiran%20PP58TAHUN2023.pdf
+//
 // K/I statuses: PP 58/2023 lists no K/I category (withholding uses the
-// employee's own status); they are mapped like K/n here so the table is total.
-// Flagged in the bead report.
+// employee's own status); they are mapped like K/n here so the table is total,
+// and the engine normalises K/I/n to K/n (or rejects it) per tenant policy.
 
 import {
   ptkpParametersSchema,

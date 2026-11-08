@@ -55,3 +55,9 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-5cnk + legend-y4wp PPh 21 round 2 (engineer, cabang `ws/payroll-pph21-tests`)
+
+- Selesai: engine PPh 21 v2 (`apps/api/src/services/payroll-pph21.ts`) membetulkan 3 P1 + 3 P2 temuan Codex, ditambah 2 bug dari reviewer (Desember tanpa bayaran, gross_first menagih karyawan atas kurang bayar riwayat net). Kebijakan PPh 21 per tenant: kontrak `packages/shared/src/hris/payroll/pph21-policy.ts`, tabel `payroll_pph21_policies` (migrasi 0063/0064, RLS FORCE, append-only), service + route `/api/hris/payroll/pph21-policies` (payroll.view / payroll.run, idempotency, audit).
+- Test: 108 test engine PPh 21 (R01-R65 + guard) + 5 kontrak kebijakan + test DB + test API. Gerbang penuh hijau setelah perubahan terakhir (141 file, 1332 test; build; format; color; tenant-hardcode).
+- Berikut: `legend-oo3q` (pin versi kebijakan di snapshot run + sambung engine ke payslip builder). Migrasi 0063/0064 bentrok nomor dengan cabang lain: nomori ulang saat merge.

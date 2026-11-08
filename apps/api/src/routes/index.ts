@@ -40,6 +40,7 @@ import { reservationRouter } from "./reservation.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -133,6 +134,9 @@ apiRouter.use(reservationRouter);
 apiRouter.use("/facility", facilityRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
+// whose router applies its own middleware to everything under its prefix.
+apiRouter.use("/hris/payroll/pph21-policies", payrollPph21PolicyRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
