@@ -1,6 +1,45 @@
 # PROGRESS — Legend Super App
 
-Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
+Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
+
+## Serah terima CTO (2026-11-08 ±19:50, sesi G4tde compact 2x)
+
+CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread ada di `docs/briefs/` (42–58).
+
+### Siap merge (menunggu gerbang founder)
+- `ws/db-role-provisioning` 4d08dac — 4 putaran review, terverifikasi Opus.
+- `ws/fiscal-close-lock` bfe16fb — Codex: tanpa blocker, setuju dengan architect.
+- `ws/edge-hardening` 2536ec6 — fix 0063 untuk migrator non-superuser (drop/restore FORCE RLS di transaksi), test 11/11, gerbang penuh hijau. Bead lanjutan `legend-jtnd` (role migrator production: superuser atau owner WITH BYPASSRLS; migrasi 0000–0062 butuh itu).
+- `ws/pos-payment-fixes` 2f68a5c — Codex verify statis (G0o4n): 4 temuan tertutup, tidak ada regresi baru, lifecycle 12/12, kontrak 44/44. Tes integrasi terfokus BELUM jalan (kuota Codex habis): jalankan lewat subagent test-runner sebelum minta gerbang. `legend-dahl` ditutup saat merge.
+- Urutan merge edge: `ws/edge-hardening` → legend-2lp.7 (registry pull) → `ws/device-registry`. Salah urut = semua token device edge ditolak.
+- Saat merge: nomor migration 0063–0065 bentrok antar cabang, renumber per HANDOFF §5 (drizzle-kit, jangan edit `_journal.json` tangan). Merge lewat worktree sementara `.worktrees/main-merge`, `merge --no-ff`, gerbang penuh di main.
+
+### Thread berjalan
+| Thread | Kerja | Cabang |
+|---|---|---|
+| G8pc7 | POS shift putaran 2 (brief 46) | ws/pos-shift |
+| G2737 | Struk putaran 2 (brief 55) | ws/pos-receipt |
+| G70ms | PPh21 putaran 2 + config kebijakan pajak `legend-y4wp` (brief 54) | ws/payroll-pph21-tests |
+| G3pew | Refund approval legend-hvvn + rbjw (brief 51) | — |
+| G5klp | HRIS cuti legend-hggk (brief 53) | — |
+| G8zyp | Stok opname legend-j5x (brief 57) | ws/stock-opname |
+| G5psg | Jurnal manual/berulang legend-vmyg (brief 58) | ws/journals |
+
+Uang/PPh21/refund/shift/struk: setelah lapor, perlu reviewer + architect + second-opinion Codex.
+
+### Menunggu second-opinion Codex (kuota habis)
+- Akun Codex 3 reset 23:36, akun 2 reset 00:24 (9 Nov). Cron 518b310d jam 23:40 (sesi lama; bila sesi lama mati, jadwalkan ulang): mulai maks 3 sekaligus.
+- Antrean: EDC (ws/edc-framework 5f797fe), procurement (ws/procurement ae09d1d), DOIT (ws/doit-provider be35d6b), KDS (ws/kds 4a1f613), print agent (ws/print-agent cb385ab), device registry (7caa7be, B18), recipe/BOM (f0cec09, B19), tenant config export (1405f19, B20), AI tool catalog (78d516a+d15542a, B22). Brief second-opinion untuk tiap cabang belum ditulis (pola: brief 24/26/30/32).
+- Cabang lain belum direview: ws/checklist-engine e3ac2ef, fix/worktree-shared 4ab45cc.
+
+### Menunggu founder
+- Gerbang merge: db-role, fiscal, edge-hardening (dan payment setelah tes integrasi).
+- Review UI POS kasir (`ui/pos-kasir` 3f5c91e): page `scratchpad/pos-kasir-review.html` sesi lama, Q1 setuju/ubah, Q2 modal awal Rp0.
+- DOIT sandbox: base URL, link docs, webhook secret. Key sandbox di `~/.config/legend/doit-sandbox-api-key`.
+- Config PPh21: sementara ikut saran CTO, nanti disesuaikan konsultan (legend-y4wp).
+
+### Biaya sesi CTO G4tde
+Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,07 jt).
 
 ## Sudah
 - Benchmark order pelanggan ESB + Richeese vs Legend: `design/benchmark/REPORT.md` (14 celah), `design/REFERENCES.md`. Cabang `ux/customer-order-benchmark`.
