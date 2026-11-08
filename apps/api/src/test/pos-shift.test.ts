@@ -721,13 +721,23 @@ describe("POS-03 cash in, cash out and drops", () => {
       reasonNote: "Setor ke brankas",
     });
     expect(dropTooMuch.status).toBe(409);
-    const exact = await move(cashier, shift.id, {
+    // Two refusals used up the shift's allowance (review K round 2): even an
+    // exact fit is refused now. A fresh shift takes the exact amount.
+    const afterTwo = await move(cashier, shift.id, {
+      type: "drop",
+      amountIdr: FLOAT_IDR,
+      reasonNote: "Setor ke brankas",
+    });
+    expect(afterTwo.status, JSON.stringify(afterTwo.body)).toBe(409);
+    const fresh = await newCashier("Kasir Pas");
+    const freshShift = await openShift(fresh);
+    const exact = await move(fresh, freshShift.id, {
       type: "drop",
       amountIdr: FLOAT_IDR,
       reasonNote: "Setor ke brankas",
     });
     expect(exact.status, JSON.stringify(exact.body)).toBe(201);
-    expect(await outboxNames(shift.id)).toEqual([
+    expect(await outboxNames(freshShift.id)).toEqual([
       "cashier_shift.opened",
       "cash_movement.recorded",
     ]);
@@ -2142,6 +2152,120 @@ describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
       ...(await approvalFor(cashier, third.body.data.id)),
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+  });
+
+  it("after 2 over-drawer cash-out refusals every further cash out is refused, whatever the amount; cash in, counts and close still work", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const message = "Kas keluar ini perlu persetujuan supervisor.";
+    const refusals = () =>
+      owner.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
+            AND event->>'objectId' = $2`,
+        [tenant.tenantId, shift.id],
+      );
+    const movements = () =>
+      owner.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
+        [tenant.tenantId, shift.id],
+      );
+    for (const over of [FLOAT_IDR + 1_000, FLOAT_IDR + 2_000]) {
+      const refused = await move(cashier, shift.id, {
+        type: "cash_out",
+        amountIdr: over,
+        reasonNote: "Beli gas elpiji",
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    }
+    expect((await refusals()).rows[0]?.n).toBe(2);
+
+    // A small cash out that fits the drawer is now refused as well, with the
+    // same message, and audited like any other refusal.
+    for (const [index, type] of (["cash_out", "drop"] as const).entries()) {
+      const refused = await move(cashier, shift.id, {
+        type,
+        amountIdr: 1,
+        reasonNote: "Beli gas elpiji",
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.error.message).toBe(message);
+      expect((await refusals()).rows[0]?.n).toBe(3 + index);
+    }
+    expect((await movements()).rows[0]?.n).toBe(0);
+
+    // Cash in stays allowed.
+    const cashIn = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: 10_000,
+    });
+    expect(cashIn.status, JSON.stringify(cashIn.body)).toBe(201);
+    expect((await movements()).rows[0]?.n).toBe(1);
+
+    // Counting and closing are untouched.
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR + 10_000);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+  });
+
+  it("stores the verified override's approver, not the client's spelling of the id, on the shift, its event and the audit row", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const override = await pinOverride(cashier, count.id, 0);
+    expect(override.approvedBy).toBe(supervisor.userId);
+    const spelling = supervisor.userId.toUpperCase();
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: spelling,
+      approvalRequestId: randomUUID(),
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data.approvedBy).toBe(supervisor.userId);
+    const { rows } = await owner.query<{
+      stored: string;
+      event: string;
+      audit: string;
+    }>(
+      `SELECT s.approved_by AS stored,
+              (SELECT e.event->'payload'->>'approvedBy'
+                 FROM domain_event_outbox e
+                WHERE e.tenant_id = s.tenant_id
+                  AND e.event->>'name' = 'cashier_shift.closed'
+                  AND e.event->'payload'->>'shiftId' = s.id::text) AS event,
+              (SELECT a.event->'maskedChanges'->'after'->>'approvedBy'
+                 FROM audit_logs a
+                WHERE a.tenant_id = s.tenant_id
+                  AND a.event->>'action' = 'pos_shift.closed'
+                  AND a.event->>'objectId' = s.id::text) AS audit
+         FROM pos_shifts s WHERE s.tenant_id = $1 AND s.id = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows[0]?.stored).toBe(override.approvedBy);
+    expect(rows[0]?.event).toBe(override.approvedBy);
+    expect(rows[0]?.audit).toBe(override.approvedBy);
+  });
+
+  it("a supervisor's forced counts do not use up the cashier's 3 counts: the 4th cashier count is SHIFT_COUNT_LIMIT", async () => {
+    const cashier = await newCashier();
+    const caller = await member(
+      tenant,
+      roleIds.supervisor,
+      "Supervisor Hitung",
+    );
+    const shift = await openShift(cashier);
+    const first = await forcedCount(caller, shift.id, FLOAT_IDR - 1_000);
+    const second = await forcedCount(caller, shift.id, FLOAT_IDR - 2_000);
+    expect([first.sequence, second.sequence]).toEqual([1, 2]);
+    for (const [index, delta] of [3_000, 4_000, 5_000].entries()) {
+      const counted = await countDrawer(cashier, shift.id, FLOAT_IDR - delta);
+      expect(counted.sequence).toBe(3 + index);
+    }
+    const fourth = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(fourth.status, JSON.stringify(fourth.body)).toBe(409);
+    expect(fourth.body.error.code).toBe("SHIFT_COUNT_LIMIT");
   });
 });
 

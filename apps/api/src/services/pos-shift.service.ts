@@ -60,6 +60,7 @@ import {
 import { db } from "../db/index.ts";
 import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
+import { auditLogs } from "../db/schema/core-audit.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
   cashMovements,
@@ -117,6 +118,8 @@ const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
 
 /** The cashier may submit this many counts per shift; then a supervisor closes. */
 const MAX_CASHIER_COUNTS = 3;
+/** Over-drawer cash-out refusals a shift gets before every cash-out is refused. */
+const MAX_CASH_OUT_REFUSALS = 2;
 
 const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
@@ -527,7 +530,23 @@ export async function recordCashMovement(
         live.cashInIdr -
         live.cashOutIdr -
         live.cashDropIdr;
-      if (input.amountIdr > expected) {
+      // After MAX_CASH_OUT_REFUSALS refusals every cash out is refused whatever
+      // the amount, with the same message and audit row, so refusals cannot be
+      // used to binary-search the expected drawer cash.
+      const [refusals] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(auditLogs)
+        .where(
+          and(
+            eq(auditLogs.tenantId, tenantId),
+            sql`${auditLogs.event}->>'action' = 'pos_shift.cash_movement_refused'`,
+            sql`${auditLogs.event}->>'objectId' = ${shift.id}`,
+          ),
+        );
+      if (
+        (refusals?.n ?? 0) >= MAX_CASH_OUT_REFUSALS ||
+        input.amountIdr > expected
+      ) {
         await auditShift(
           tx,
           context,
@@ -727,10 +746,22 @@ export async function submitPosShiftCount(
       )
       .orderBy(desc(posShiftCounts.sequence))
       .limit(1);
-    // A forced count is the shift's last (it closes the shift), so before
-    // one exists the last sequence is the number of the cashier's own counts.
-    if (!forced && (last?.sequence ?? 0) >= MAX_CASHIER_COUNTS)
-      throw new PosError("SHIFT_COUNT_LIMIT");
+    // The limit counts the cashier's own counts only: a supervisor's forced
+    // count must not use up the cashier's recounts.
+    if (!forced) {
+      const [own] = await tx
+        .select({ n: sql<number>`count(*)::int` })
+        .from(posShiftCounts)
+        .where(
+          and(
+            eq(posShiftCounts.tenantId, tenantId),
+            eq(posShiftCounts.shiftId, shift.id),
+            eq(posShiftCounts.forced, false),
+          ),
+        );
+      if ((own?.n ?? 0) >= MAX_CASHIER_COUNTS)
+        throw new PosError("SHIFT_COUNT_LIMIT");
+    }
     const [row] = await tx
       .insert(posShiftCounts)
       .values({
@@ -1194,7 +1225,6 @@ export async function closePosShift(
       count,
       closed,
       override,
-      approvedBy: input.approvedBy,
       idempotencyKey,
       fingerprint,
       now,
@@ -1206,7 +1236,8 @@ export async function closePosShift(
 /**
  * The closing UPDATE, the `cashier_shift.closed` event and the audit row,
  * shared by the cashier close and the supervisor force close. The stored
- * approval id is the verified override's, never the raw client value.
+ * approval id and approver are the verified override's, never the raw client
+ * values.
  */
 async function writeClose(
   tx: Tx,
@@ -1219,7 +1250,6 @@ async function writeClose(
     count: ShiftCountRow;
     closed: PosShift;
     override: OverrideRow;
-    approvedBy: string;
     idempotencyKey: string;
     fingerprint: string;
     now: Date;
@@ -1229,6 +1259,9 @@ async function writeClose(
   const { outletId, shift, aggregates, count, closed, override, now } = input;
   const tenantId = context.tenant.tenantId;
   const approvedAt = override.resolvedAt ?? override.createdAt;
+  // The verified override's approver, never the client's spelling of the id.
+  const approvedBy = override.approvedBy;
+  if (approvedBy === null) throw new Error("Verified override has no approver");
   const approvalRequestId =
     override.approvalRequestId ?? ulidToUuid(override.id);
   let row: ShiftRow | undefined;
@@ -1248,7 +1281,7 @@ async function writeClose(
         varianceNote: closed.varianceNote,
         counts: count.counts,
         countId: count.id,
-        approvedBy: input.approvedBy,
+        approvedBy,
         approvalRequestId,
         approvalOverrideId: ulidToUuid(override.id),
         approvedAt,
@@ -1297,7 +1330,7 @@ async function writeClose(
       countedIdr: closed.countedIdr,
       differenceIdr: closed.varianceIdr,
       varianceNote: dto.varianceNote,
-      approvedBy: input.approvedBy,
+      approvedBy,
       approvalRequestId,
       closedAt: toIsoDateTime(now),
     },
@@ -1453,7 +1486,6 @@ export async function forceClosePosShift(
       count,
       closed,
       override,
-      approvedBy: input.approvedBy,
       idempotencyKey,
       fingerprint,
       now,
