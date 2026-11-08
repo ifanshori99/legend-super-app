@@ -808,6 +808,98 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
   );
 
   await t.test(
+    "a tenant table in the queue schema reached by a column grant needs RLS",
+    async () => {
+      await refuses(
+        "CREATE TABLE pgboss.zoqc_tenant (id integer, tenant_id uuid); GRANT SELECT (tenant_id) ON pgboss.zoqc_tenant TO legend_app",
+        "DROP TABLE pgboss.zoqc_tenant",
+        /TEN-02.*pgboss\.zoqc_tenant \(row-level security disabled, not forced, no restrictive tenant_isolation policy\)/,
+      );
+    },
+  );
+
+  await t.test(
+    "exception tables refuse write policies not tied to the tenant",
+    async () => {
+      for (const [grant, revoke, message] of [
+        [
+          "CREATE POLICY zoqc_loose ON public.tenant_domains FOR UPDATE USING (true)",
+          "DROP POLICY zoqc_loose ON public.tenant_domains",
+          /TEN-02.*public\.tenant_domains \(write policy zoqc_loose is not limited to the tenant\).*DROP POLICY/,
+        ],
+        [
+          "CREATE POLICY zoqc_loose ON public.payment_link_tokens FOR ALL TO legend_app USING (true) WITH CHECK (true)",
+          "DROP POLICY zoqc_loose ON public.payment_link_tokens",
+          /TEN-02.*public\.payment_link_tokens \(write policy zoqc_loose is not limited to the tenant\)/,
+        ],
+        [
+          "CREATE POLICY zoqc_loose ON public.tenant_domains FOR INSERT WITH CHECK (true)",
+          "DROP POLICY zoqc_loose ON public.tenant_domains",
+          /TEN-02.*public\.tenant_domains \(write policy zoqc_loose is not limited to the tenant\)/,
+        ],
+        [
+          "ALTER POLICY tenant_domain_delete ON public.tenant_domains USING (true)",
+          "ALTER POLICY tenant_domain_delete ON public.tenant_domains USING (tenant_id = app.require_tenant_id())",
+          /TEN-02.*public\.tenant_domains \(write policy tenant_domain_delete is not limited to the tenant\)/,
+        ],
+      ])
+        await refuses(grant, revoke, message);
+      // A policy for a role the login cannot use, or a read policy, is fine.
+      await admin.query(
+        "CREATE POLICY zoqc_other ON public.tenant_domains FOR UPDATE TO pg_monitor USING (true); CREATE POLICY zoqc_read ON public.payment_link_tokens FOR SELECT USING (true)",
+      );
+      try {
+        const unrelated = job({});
+        assert.equal(unrelated.status, 0, unrelated.stderr);
+      } finally {
+        await admin.query(
+          "DROP POLICY zoqc_other ON public.tenant_domains; DROP POLICY zoqc_read ON public.payment_link_tokens",
+        );
+      }
+    },
+  );
+
+  await t.test(
+    "the job refuses SET or ALTER SYSTEM grants on privileged parameters",
+    async () => {
+      for (const [grant, revoke, message] of [
+        [
+          "GRANT SET ON PARAMETER session_replication_role TO PUBLIC",
+          "REVOKE SET ON PARAMETER session_replication_role FROM PUBLIC",
+          /application role may change server settings it must not: SET on session_replication_role \(granted to PUBLIC\).*REVOKE SET ON PARAMETER/,
+        ],
+        [
+          "GRANT SET ON PARAMETER log_statement TO legend_app",
+          "REVOKE SET ON PARAMETER log_statement FROM legend_app",
+          /application role may change server settings it must not: SET on log_statement \(granted to legend_app\)/,
+        ],
+        [
+          `GRANT ALTER SYSTEM ON PARAMETER work_mem TO "${roles[1]}"`,
+          `REVOKE ALTER SYSTEM ON PARAMETER work_mem FROM "${roles[1]}"`,
+          new RegExp(
+            `queue role may change server settings it must not: ALTER SYSTEM on work_mem \\(granted to ${roles[1]}\\)`,
+          ),
+        ],
+        // A parameter no loaded module defines yet may become superuser-only.
+        [
+          `GRANT SET ON PARAMETER zoqc.flag TO "${roles[1]}"`,
+          `REVOKE SET ON PARAMETER zoqc.flag FROM "${roles[1]}"`,
+          /queue role may change server settings it must not: SET on zoqc\.flag/,
+        ],
+      ])
+        await refuses(grant, revoke, message);
+      // SET on a setting every session may change anyway grants nothing.
+      await admin.query("GRANT SET ON PARAMETER work_mem TO legend_app");
+      try {
+        const harmless = job({});
+        assert.equal(harmless.status, 0, harmless.stderr);
+      } finally {
+        await admin.query("REVOKE SET ON PARAMETER work_mem FROM legend_app");
+      }
+    },
+  );
+
+  await t.test(
     "a table created after the job gets only the group's rights",
     async () => {
       await admin.query(
@@ -959,6 +1051,16 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
         `GRANT UPDATE ON SEQUENCE public.consents_seq_seq TO "${roles[1]}"`,
         `REVOKE UPDATE ON SEQUENCE public.consents_seq_seq FROM "${roles[1]}"`,
         /Role audit failed: .*sequence rights .*UPDATE on public\.consents_seq_seq/,
+      ],
+      [
+        "CREATE POLICY zoqc_loose ON public.tenant_domains FOR UPDATE USING (true)",
+        "DROP POLICY zoqc_loose ON public.tenant_domains",
+        /Role audit failed: .*TEN-02.*public\.tenant_domains \(write policy zoqc_loose is not limited to the tenant\)/,
+      ],
+      [
+        "GRANT SET ON PARAMETER session_replication_role TO PUBLIC",
+        "REVOKE SET ON PARAMETER session_replication_role FROM PUBLIC",
+        /Role audit failed: .*server settings .*SET on session_replication_role \(granted to PUBLIC\)/,
       ],
     ]) {
       await admin.query(grant);

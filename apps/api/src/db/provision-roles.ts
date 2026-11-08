@@ -558,11 +558,50 @@ async function assertNoSensitive(
 }
 
 /**
+ * SET on a parameter only a superuser may change (session_replication_role
+ * skips triggers and foreign keys) or ALTER SYSTEM on any parameter is a
+ * superuser power. Grants are read from pg_parameter_acl, so a grant on a
+ * parameter no loaded module defines yet is caught too (it is refused: the
+ * module may make it superuser-only). Only a grant reaches the login: no
+ * parameter ACL row means no privilege.
+ */
+async function assertNoParameterGrants(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
+  // pg_parameter_acl exists from PostgreSQL 15.
+  if ((await serverVersion(client)) < 150000) return;
+  const granted = await client.query(
+    `SELECT ARRAY(
+       SELECT format('%s on %s (granted to %s)', x.privilege_type, a.parname,
+                     CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(x.grantee) END)
+       FROM pg_catalog.pg_parameter_acl a
+       CROSS JOIN LATERAL pg_catalog.aclexplode(a.paracl) x
+       -- parname is stored in lower case; pg_settings keeps names like DateStyle.
+       LEFT JOIN pg_catalog.pg_settings s ON pg_catalog.lower(s.name) = a.parname
+       WHERE (x.grantee = 0 OR pg_catalog.pg_has_role($1, x.grantee, 'MEMBER'))
+         AND (x.privilege_type = 'ALTER SYSTEM' OR s.context IS NULL
+              OR s.context NOT IN ('user', 'backend'))
+       ORDER BY 1
+     ) AS grants`,
+    [user],
+  );
+  const grants: string[] = granted.rows[0].grants;
+  if (grants.length)
+    throw new ProvisionError(
+      `The ${label} role may change server settings it must not: ${grants.slice(0, 5).join(", ")}${grants.length > 5 ? ", ..." : ""}. As a superuser run REVOKE SET ON PARAMETER <parameter> FROM <role|PUBLIC> (or REVOKE ALTER SYSTEM ON PARAMETER ...), then re-run.`,
+    );
+}
+
+/**
  * TEN-02: every table with a tenant_id (outside the queue schema, or inside
  * it when the application can reach it) enables and forces row-level
  * security and keeps a restrictive policy, for every command and every role,
  * that matches app.require_tenant_id() on reads and writes. Only the
- * documented exceptions are exempt.
+ * documented exceptions are exempt; those that keep row-level security may
+ * only have permissive write policies (for the login) limited to the tenant,
+ * as the migrations create them.
  */
 async function assertTenantRls(client: ClientBase, user: string) {
   const tables = await client.query(
@@ -574,14 +613,34 @@ async function assertTenantRls(client: ClientBase, user: string) {
                 AND p.polroles = '{0}'::oid[]
                 AND pg_get_expr(p.polqual, p.polrelid) = $2
                 AND pg_get_expr(p.polwithcheck, p.polrelid) = $2
-            ) AS policy
+            ) AS policy,
+            -- Permissive write policies the login can use whose expressions
+            -- are not exactly the tenant predicate (the documented exceptions
+            -- rely on these alone to stop cross-tenant writes). UPDATE and ALL
+            -- may omit WITH CHECK: USING then also checks the new row.
+            ARRAY(
+              SELECT format('%I', p.polname) FROM pg_catalog.pg_policy p
+              WHERE p.polrelid = c.oid AND p.polpermissive AND p.polcmd IN ('a', 'w', 'd', '*')
+                AND ('0'::oid = ANY(p.polroles)
+                     OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS r(oid) WHERE pg_has_role($1, r.oid, 'MEMBER')))
+                AND NOT CASE p.polcmd
+                  WHEN 'a' THEN pg_get_expr(p.polwithcheck, p.polrelid) IS NOT DISTINCT FROM $2
+                  WHEN 'd' THEN pg_get_expr(p.polqual, p.polrelid) IS NOT DISTINCT FROM $2
+                  ELSE pg_get_expr(p.polqual, p.polrelid) IS NOT DISTINCT FROM $2
+                    AND (p.polwithcheck IS NULL OR pg_get_expr(p.polwithcheck, p.polrelid) = $2)
+                END
+              ORDER BY 1
+            ) AS loose
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
      WHERE c.relkind IN ('r', 'p')
        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-       AND (n.nspname <> $3 OR has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE'))
+       -- A grant on a single column reaches the table as much as a table grant.
+       AND (n.nspname <> $3
+            OR has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE')
+            OR has_any_column_privilege($1, c.oid, 'SELECT, INSERT, UPDATE'))
      ORDER BY 1`,
     [user, TENANT_PREDICATE, QUEUE_SCHEMA],
   );
@@ -590,12 +649,21 @@ async function assertTenantRls(client: ClientBase, user: string) {
     enabled: boolean;
     forced: boolean;
     policy: boolean;
+    loose: string[];
   };
   const broken = (tables.rows as Row[]).flatMap((row) => {
     const exception = TENANT_RLS_EXCEPTIONS[row.relation];
     if (exception)
-      return exception.rowSecurity && !row.enabled
-        ? [`${row.relation} (row-level security disabled)`]
+      return exception.rowSecurity
+        ? [
+            ...(row.enabled
+              ? []
+              : [`${row.relation} (row-level security disabled)`]),
+            ...row.loose.map(
+              (policy) =>
+                `${row.relation} (write policy ${policy} is not limited to the tenant)`,
+            ),
+          ]
         : [];
     const problems = [
       ...(row.enabled ? [] : ["row-level security disabled"]),
@@ -606,7 +674,7 @@ async function assertTenantRls(client: ClientBase, user: string) {
   });
   if (broken.length)
     throw new ProvisionError(
-      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains or payment_link_tokens, which only need RLS enabled). Then re-run.`,
+      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains or payment_link_tokens, which only need RLS enabled). For a write policy "not limited to the tenant" on tenant_domains or payment_link_tokens run DROP POLICY <policy> ON <table>, or, for one the migrations created (tenant_domain_* or payment_link_tokens_*), ALTER POLICY <policy> ON <table> so each of its USING and WITH CHECK expressions is (tenant_id = app.require_tenant_id()). Then re-run.`,
     );
 }
 
@@ -826,6 +894,7 @@ async function auditApp(client: ClientBase, user: string) {
     APP_SEQUENCE_RIGHTS,
   );
   await assertNoSensitive(client, user, "application");
+  await assertNoParameterGrants(client, user, "application");
   await assertTenantRls(client, user);
 }
 
@@ -837,6 +906,7 @@ async function auditWorker(client: ClientBase, user: string) {
   await assertSequenceRights(client, user, "queue", [QUEUE_SCHEMA], []);
   await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], [], []);
   await assertNoSensitive(client, user, "queue");
+  await assertNoParameterGrants(client, user, "queue");
 }
 
 async function assertRegistry(client: ClientBase) {

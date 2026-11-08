@@ -470,6 +470,12 @@ or if a login:
   short, reviewable and version-independent. Other catalog grants to `PUBLIC`
   are not detected;
 - can create objects in the database or any schema outside its own;
+- holds, directly, through a group or through `PUBLIC`, `SET` on a parameter
+  that is not a plain user setting (such as `session_replication_role`, which
+  skips triggers and foreign keys) or on a parameter no loaded module defines
+  yet, or `ALTER SYSTEM` on any parameter. As a superuser, remove it with
+  `REVOKE SET ON PARAMETER <parameter> FROM <role|PUBLIC>` (or
+  `REVOKE ALTER SYSTEM ON PARAMETER ...`) and re-run;
 - belongs, directly or through `legend_app`, to any role other than
   `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);
 - holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
@@ -488,13 +494,15 @@ or if a login:
 
 The same run (and every audit) also checks tenant isolation itself (TEN-02):
 every table with a `tenant_id` column (in `pgboss` only if the application can
-reach it) must have row-level security enabled and forced, and a restrictive
+reach it, including through a grant on a single column) must have row-level security enabled and forced, and a restrictive
 policy for all commands and roles whose `USING` and `WITH CHECK` are exactly
 `tenant_id = app.require_tenant_id()`, as `app.enforce_tenant_rls` creates it.
 Five tables are documented exceptions, the same list as
 `apps/api/src/db/rls.test.ts`: `tenant_domains` and `payment_link_tokens`
 (must keep row-level security enabled; reads are open, writes are
-tenant-checked), and `session`, `login_challenges` and `wa_inbound_messages`
+tenant-checked: every permissive `INSERT`, `UPDATE`, `DELETE` or `ALL` policy
+the application login can use must have `USING` and `WITH CHECK` exactly
+`tenant_id = app.require_tenant_id()`, as the migrations create them), and `session`, `login_challenges` and `wa_inbound_messages`
 (read before a tenant is known; scoped by the services). A table that fails
 the check stops the job. As the migration owner, fix "disabled" with
 `ALTER TABLE <table> ENABLE ROW LEVEL SECURITY` and "not forced" with
@@ -502,7 +510,10 @@ the check stops the job. As the migration owner, fix "disabled" with
 drop the table's `tenant_access` and `tenant_isolation` policies, then run
 `SELECT app.enforce_tenant_rls('<table>'::regclass)` (it creates both and fails
 if either exists). Never run it on `tenant_domains` or `payment_link_tokens`:
-they only need row-level security enabled. The job compares the policy text
+they only need row-level security enabled. For a write policy on either
+reported as "not limited to the tenant", drop it (`DROP POLICY <policy> ON
+<table>`), or, if the migrations created it (`tenant_domain_*`,
+`payment_link_tokens_*`), restore its expressions with `ALTER POLICY`. The job compares the policy text
 with `search_path` set to `pg_catalog`, so a custom `search_path` does not
 matter.
 
