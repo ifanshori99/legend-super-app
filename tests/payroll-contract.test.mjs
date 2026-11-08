@@ -152,6 +152,7 @@ const snapshotFor = (versions) => ({
     },
   ],
   loanMaxDeductionOfNetPayBp: 5000,
+  pph21Policy: null,
   capturedAt: at(26),
 });
 
@@ -802,18 +803,37 @@ test("PTKP and Pasal 17 annual recalculation are table driven", () => {
     9_000_000,
   );
   assert.equal(payroll.computeProgressiveTax(annual.brackets, 0, "down"), 0);
-  const pkp = payroll.annualTaxableIncome(annual, {
-    annualGrossIdr: 150_000_000,
-    annualEmployeeDeductibleIdr: 3_600_000,
-    ptkpIdr: 54_000_000,
-  });
-  // 150M - min(7.5M, 6M) - 3.6M - 54M = 86.4M
-  assert.equal(pkp, 86_400_000);
   const ptkp = published("ptkp", 30, "2026-01-01", {
     annualAmountIdrByStatus: Object.fromEntries(
       ptkpStatuses.map((s, i) => [s, 54_000_000 + i * 1000]),
     ),
   });
+  // The PPh 21 engine (pph21.ts) derives the PKP in the last tax period.
+  const december = payroll.computePph21Period(
+    {
+      ptkp: ptkp.parameters,
+      ter: ter.parameters,
+      annual: payroll.pph21AnnualParametersSchema.parse(annual),
+    },
+    payroll.DEFAULT_PPH21_POLICY,
+    {
+      ptkpStatus: "TK/0",
+      hasTaxId: true,
+      lastTaxPeriod: true,
+      monthsWorked: 12,
+      taxableLines: [{ amountIdr: 150_000_000, taxScheme: "gross" }],
+      employerBenefitIdr: 0,
+      employeeDeductibleIdr: 3_600_000,
+      prior: {
+        taxableGrossIdr: 0,
+        employeeDeductibleIdr: 0,
+        pph21WithheldIdr: 0,
+        pph21EmployerBorneIdr: 0,
+      },
+    },
+  );
+  // 150M - min(7.5M, 6M) - 3.6M - 54M = 86.4M
+  assert.equal(december.annual.taxableIncomeIdr, 86_400_000);
   assert.equal(payroll.ptkpAnnualAmount(ptkp, "TK/0"), 54_000_000);
 });
 
@@ -1136,6 +1156,10 @@ const slip = (employeeNo, base, paymentMethod = "bank_transfer") => {
       taxableGrossIdr: gross,
       pph21Idr: pph21,
       pph21WithheldIdr: pph21,
+      taxAllowanceIdr: 0,
+      pph21EmployerBorneIdr: 0,
+      pph21RefundIdr: 0,
+      pph21EmployerRefundIdr: 0,
       noTaxIdSurchargeApplied: false,
     },
     paymentMethod,
