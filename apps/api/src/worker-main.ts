@@ -21,6 +21,8 @@ import { resolveFilledOutboxGaps } from "./services/core-outbox-gaps.ts";
 import { createNotificationConsumer } from "./services/notification-consumer.ts";
 import { deliverNotificationAttempt } from "./services/notification-delivery.ts";
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
+import { runPurchasingPoEmailJob } from "./worker/purchasing-po-email.job.ts";
+import { handlePurchasingApprovalResolved } from "./services/purchasing-approval-consumer.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
@@ -112,6 +114,9 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
+          // from the chain re-read under the row lock; replays are no-ops.
+          await handlePurchasingApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -202,6 +207,15 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // PRD §3.18 "Kirim PO" (legend-9yz): send queued PO emails. Logs carry only
+    // a masked address; an unconfigured provider fails the delivery closed.
+    try {
+      await runPurchasingPoEmailJob([context], {
+        email: handlers.notificationDelivery?.email ?? null,
+      });
+    } catch {
+      console.error("Purchasing PO email sweep failed");
     }
     // OPS-01 (legend-5zkp): mark overdue checklist runs missed and queue the
     // supervisor alert through the notification outbox. Same fail-closed rule:

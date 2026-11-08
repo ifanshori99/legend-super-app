@@ -52,11 +52,14 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 setPosOrderPromoPort(orderPromoPort);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
+const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [path, query] = url.split("?", 2);
+  const [rawPath, query] = url.split("?", 2);
+  // The purchase order share token is a path segment: bearer credential.
+  const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
   if (!query) return path;
   const params = new URLSearchParams(query);
   for (const key of params.keys())
