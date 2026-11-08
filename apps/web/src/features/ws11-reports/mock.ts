@@ -233,17 +233,23 @@ const RUNNING = MONTH_FIGURES[
 function profileOf(range: DateRange, atoms: Atoms): Profile {
   const closedMonth =
     range.startDate === LAST_MONTH.start && range.endDate === LAST_MONTH.end;
-  if (closedMonth)
+  // Any range inside the closed October is final, so it carries October's cost
+  // structure (COGS 33,7%), scaled by its share of the month's net sales; the
+  // whole month is exactly the owner insights' figures.
+  if (range.startDate >= LAST_MONTH.start && range.endDate <= LAST_MONTH.end) {
+    const share = closedMonth ? 1 : atoms.net / OCTOBER.netSales;
+    const atMonthEnd = range.endDate === LAST_MONTH.end;
     return {
       food: OCTOBER.food / 100,
       labor: OCTOBER.labor / 100,
-      waste: OCTOBER.waste,
-      promo: OCTOBER.promo,
-      below: 21_000_000,
-      netProfit: OCTOBER.net,
-      cash: 34_600_000,
-      bank: 512_300_000,
+      waste: Math.round(OCTOBER.waste * share),
+      promo: Math.round(OCTOBER.promo * share),
+      below: Math.round(21_000_000 * share),
+      netProfit: Math.round(OCTOBER.net * share),
+      // Balances are the month-end ones, only on the month's last day.
+      ...(atMonthEnd ? { cash: 34_600_000, bank: 512_300_000 } : {}),
     };
+  }
   const share = atoms.net / BASE_DAY.net;
   return {
     food: RUNNING.food / 100,
@@ -255,7 +261,8 @@ function profileOf(range: DateRange, atoms: Atoms): Profile {
   };
 }
 
-function periodFigures(range: DateRange): Figures {
+/** Exported for tests/ws11-fixture-reconcile.test.mjs. */
+export function periodFigures(range: DateRange): Figures {
   const atoms = periodAtoms(range);
   const figures = { ...atoms } as Figures;
   for (const key of DERIVED_KEYS) {
@@ -623,8 +630,17 @@ const SERVED_REPORTS: readonly string[] = [
   "performance.station",
 ];
 
-function runKey(result: ReportResult): string {
-  return `${result.reportCode}|${result.groupBy.join(",")}|${result.period.startDate}|${result.period.endDate}`;
+/**
+ * One run per report, split, period and outlet scope: two outlets are two
+ * questions (legend-3nuv), so a run another owner serves for one outlet never
+ * hides this feature's run for another.
+ */
+export function runKey(result: ReportResult): string {
+  const outlets =
+    result.outletFilter.kind === "outlets"
+      ? [...result.outletFilter.outletIds].sort().join(",")
+      : "*";
+  return `${result.reportCode}|${result.groupBy.join(",")}|${result.period.startDate}|${result.period.endDate}|${outlets}`;
 }
 
 function periodsOf(report: ReportDefinition): DateRange[] {

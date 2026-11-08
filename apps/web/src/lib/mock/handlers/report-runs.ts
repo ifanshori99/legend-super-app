@@ -11,6 +11,7 @@ import {
   runReportEndpoint,
   type ReportResult,
 } from "@starter/shared/dashboard";
+import { cafeLegendFixtures } from "@starter/shared/core";
 import { ApiError } from "../../api/errors.ts";
 import { registerMock } from "../registry.ts";
 
@@ -38,6 +39,10 @@ function scopeOf(outletIds: readonly string[] | undefined): string {
     ? ALL_OUTLETS
     : [...outletIds].sort().join(",");
 }
+
+const TENANT_OUTLET_SCOPE = scopeOf(
+  cafeLegendFixtures.outlets.map((outlet) => outlet.id),
+);
 
 function scopeOfResult(result: ReportResult): string {
   return result.outletFilter.kind === "outlets"
@@ -67,10 +72,14 @@ function findRun(
   const scope = scopeOf(outletIds);
   const exact = runs.get(runKey(question, scope));
   if (exact !== undefined) return exact;
-  // A run over all outlets answers an outlet-scoped request; a request
-  // without outlets is answered by the first run of the question.
-  const all = runs.get(runKey(question, ALL_OUTLETS));
-  if (all !== undefined) return all;
+  // A run over all outlets answers only a request that names every outlet of
+  // the tenant (the same set); a narrower request must not get all-outlet
+  // figures. A request without outlets is answered by the first run of the
+  // question.
+  if (scope === TENANT_OUTLET_SCOPE) {
+    const all = runs.get(runKey(question, ALL_OUTLETS));
+    if (all !== undefined) return all;
+  }
   if (scope !== ALL_OUTLETS) return undefined;
   const first = scopesByQuestion.get(question)?.[0];
   return first === undefined ? undefined : runs.get(runKey(question, first));

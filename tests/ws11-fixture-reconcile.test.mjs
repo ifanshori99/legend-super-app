@@ -5,6 +5,7 @@
 // stripping the same way the browser glob registers them.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { cafeLegendFixtures } from "../packages/shared/src/core/index.ts";
 import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import * as metrics from "../packages/shared/src/metrics/index.ts";
 import { cafeLegendAccountingFixtures } from "../packages/shared/src/accounting/index.ts";
@@ -22,6 +23,10 @@ import {
   hasMockReportRun,
   registerMockReportRuns,
 } from "../apps/web/src/lib/mock/handlers/report-runs.ts";
+import {
+  periodFigures,
+  runKey as viewerRunKey,
+} from "../apps/web/src/features/ws11-reports/mock.ts";
 import * as dayModel from "../apps/web/src/features/ws11-reports/mock-day-model.ts";
 
 const ownerLayout = dashboard.cafeLegendDashboardFixtures.ownerLayout;
@@ -545,5 +550,96 @@ describe("ws11 mock report runs · the run key carries the outlet (legend-3nuv)"
       (reason) => reason,
     );
     assert.equal(error?.code, "REPORT_FILTER_NOT_SUPPORTED");
+  });
+});
+
+describe("ws11 mock reports · review findings (legend-3nuv)", () => {
+  const outletA = ownerLayout.availableOutlets[0];
+  const outletB = "b7d2c1a0-4e3f-4a5b-8c6d-0e1f2a3b4c5d";
+
+  test("1: the viewer's own run key carries the outlet, so another outlet's run never hides it", () => {
+    const base = dashboard.reportRunResultFixture;
+    const withOutlet = (outletIds) => ({
+      ...base,
+      outletFilter: { kind: "outlets", outletIds },
+    });
+    assert.notEqual(
+      viewerRunKey(withOutlet([outletA])),
+      viewerRunKey(withOutlet([outletB])),
+    );
+    assert.equal(
+      viewerRunKey(withOutlet([outletA, outletB])),
+      viewerRunKey(withOutlet([outletB, outletA])),
+    );
+    assert.notEqual(
+      viewerRunKey(withOutlet([outletA])),
+      viewerRunKey({ ...base, outletFilter: { kind: "all" } }),
+    );
+  });
+
+  test("2: an all-outlet run answers only a request naming every outlet of the tenant", async () => {
+    const day = { startDate: "2031-04-07", endDate: "2031-04-07" };
+    const allRun = dashboard.reportResultSchema.parse({
+      ...(await post({
+        reportCode: "sales.target",
+        period: {
+          startDate: dayModel.BUSINESS_DATE,
+          endDate: dayModel.BUSINESS_DATE,
+        },
+        outletIds: [outletA],
+        groupBy: [],
+        filters: [],
+        bucket: "total",
+        limit: 100,
+      })),
+      period: {
+        ...day,
+        bucket: "total",
+        status: "open",
+        accountingPeriodClosed: false,
+      },
+      outletFilter: { kind: "all" },
+    });
+    registerMockReportRuns({ all: allRun });
+    const request = (outletIds) => ({
+      reportCode: "sales.target",
+      period: day,
+      outletIds,
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
+    const tenantOutlets = cafeLegendFixtures.outlets.map((entry) => entry.id);
+    assert.ok(tenantOutlets.length > 1, "the demo tenant has several outlets");
+    // Naming every outlet of the tenant (in any order) gets the all-outlet run.
+    for (const ids of [tenantOutlets, [...tenantOutlets].reverse()])
+      assert.equal((await post(request(ids))).outletFilter.kind, "all");
+    // A narrower or foreign request never gets all-outlet figures.
+    assert.equal(await post(request([tenantOutlets[0]])), null);
+    assert.equal(await post(request([outletB])), null);
+    assert.equal(await post(request([...tenantOutlets, outletB])), null);
+  });
+
+  test("3: a range inside the closed October carries October's cost structure", () => {
+    const share = (figures, key) => figures[key] / figures.net;
+    const month = periodFigures({
+      startDate: dayModel.LAST_MONTH.start,
+      endDate: dayModel.LAST_MONTH.end,
+    });
+    const week = periodFigures({
+      startDate: "2026-10-25",
+      endDate: "2026-10-31",
+    });
+    assert.ok(Math.abs(share(week, "cogs") - 0.337) < 0.0005);
+    assert.ok(Math.abs(share(week, "labor") - 0.245) < 0.0005);
+    assert.ok(Math.abs(share(week, "cogs") - share(month, "cogs")) < 0.0005);
+    assert.ok(week.net < month.net);
+    // The running month keeps its own structure (COGS 31,2%).
+    const today = periodFigures({
+      startDate: dayModel.BUSINESS_DATE,
+      endDate: dayModel.BUSINESS_DATE,
+    });
+    assert.ok(Math.abs(share(today, "cogs") - 0.312) < 0.0005);
   });
 });
