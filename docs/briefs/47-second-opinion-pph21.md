@@ -17,3 +17,6 @@ Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/payroll
 
 ## Laporan
 Temuan urut paling berat: file:baris, masalah, skenario gagal konkret (input, nilai salah vs benar), fix. "Tidak ada blocker" bila memang tidak ada.
+
+## Temuan awal reviewer sebelumnya (verifikasi dulu)
+Skema net: pajak yang ditanggung perusahaan tidak ditambahkan kembali ke penghasilan bruto. FAQ DJP: fasilitas itu tetap objek pajak. Verifikasi dengan contoh angka (input, nilai engine vs nilai benar), lalu lanjutkan audit penuh.
