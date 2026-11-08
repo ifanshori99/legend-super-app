@@ -42,6 +42,8 @@ export const INVENTORY_ERROR_CODES = [
   "STOCK_COUNT_COST_MISSING",
   /** Someone who approved or rejected this count cannot enter a line (403). */
   "STOCK_COUNT_DECIDER_CANNOT_COUNT",
+  /** Someone who opened the blind detail (system quantity) cannot enter a line (403). */
+  "STOCK_COUNT_VIEWER_CANNOT_COUNT",
   /** The approval deadline passed; approve is refused until it is settled (409). */
   "STOCK_COUNT_APPROVAL_EXPIRED",
   /** The requested production-order action is not allowed from its status. */

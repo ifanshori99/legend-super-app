@@ -61,14 +61,10 @@ import {
   insufficientStock,
   loadOutletClock,
   lockLocations,
-  outletTarget,
   requireOpsPermission,
   type Tx,
 } from "./inventory-ops.shared.ts";
-import {
-  blindCountHiddenFilter,
-  type BlindViewer,
-} from "./inventory-count.visibility.ts";
+import { blindCountHiddenFilter } from "./inventory-count.visibility.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -378,8 +374,8 @@ async function expiringBatches(
   filter: {
     locationId?: string;
     inventoryItemId?: string;
-    /** Set by user reads: drops the pairs of open blind counts they must not see. */
-    viewer?: BlindViewer;
+    /** Set by user reads: drops the pairs of open blind counts. */
+    hideBlind?: boolean;
   } = {},
 ): Promise<ExpiringBatch[]> {
   const horizon = addBusinessDays(asOf, warnDays);
@@ -391,8 +387,7 @@ async function expiringBatches(
     filters.push(eq(stockBatches.locationId, filter.locationId));
   if (filter.inventoryItemId)
     filters.push(eq(stockBatches.inventoryItemId, filter.inventoryItemId));
-  if (filter.viewer)
-    filters.push(blindCountHiddenFilter(filter.viewer, stockBatches));
+  if (filter.hideBlind) filters.push(blindCountHiddenFilter(stockBatches));
   const candidates = await loadBatchStock(tx, filters);
   if (candidates.length === 0) return [];
   const availability = await availabilityForPairs(
@@ -446,28 +441,21 @@ export async function listExpiryAlerts(
 ): Promise<ExpiryAlert[]> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    const snapshot = await requireOpsPermission(
+    await requireOpsPermission(
       tx,
       context,
       actorUserId,
       "inventory.stock.view",
       query.outletId,
     );
-    // Blind counts hide their pairs' batch quantities (stock opname T1).
-    const viewer = {
-      userId: actorUserId,
-      canApprove: snapshot.allows(
-        "inventory.adjustment.approve",
-        outletTarget(query.outletId),
-      ),
-    };
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const clock = await loadOutletClock(tx, query.outletId);
     const asOf = businessDateOf(new Date(), clock);
     const warnDays = await expiryWarningDays(tx, context);
     const rows = await expiringBatches(tx, query.outletId, asOf, warnDays, {
       locationId: query.locationId,
       inventoryItemId: query.inventoryItemId,
-      viewer,
+      hideBlind: true,
     });
     return rows.map((row) =>
       expiryAlertSchema.parse({ ...row, asOf, warnDays }),

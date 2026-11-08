@@ -126,3 +126,19 @@ Tests (test-writer): rewrite the delta test (~~:1505) to the real-stock example 
 ## Wave 3b — T1 residual reads
 
 Apply the same `blindCountHiddenFilter` (from `apps/api/src/services/inventory-count.visibility.ts`, see how `listStockBalances` in `inventory.service.ts` computes `canApprove` at the queried outlet) to the quantity reads in `apps/api/src/services/inventory-par-alerts.service.ts` (~202, `/stock-alerts`, `onHand`) and `apps/api/src/services/inventory-expiry.service.ts` (~85, ~235, `/expiry-alerts`, batch quantity/remaining). Hide = exclude those pairs' rows in SQL. If an alert is computed in JS from rows, filter the source rows. Tests: counter GET `/api/inventory/stock-alerts` and `/api/inventory/expiry-alerts` misses the open blind pair; approver (non-counter) still sees it; after posting the counter sees it.
+
+## Wave 4 (review K round 2, brief 84)
+
+Decided behaviour (already coded, tests must follow it):
+
+- Quantity reads (`/inventory/balances`, `/stock-ledger`, `/batches`, `/stock-alerts`, `/expiry-alerts`, `/purchase-suggestions`) hide the (location, item) pairs of an open blind count (draft/counting/pending_approval/approved) from EVERYONE, approvers included. `visibility.ts` no longer takes a viewer.
+- Blind detail `GET /stock-counts/:id`: still 403 BLIND_HIDDEN for counters (any status) and for everyone in draft/counting; an approver who is not a counter can open it in pending_approval/approved, and is then appended to `stock_counts.viewer_ids`.
+- Line entry (sheet or full) by anyone in `viewer_ids` → 403 `STOCK_COUNT_VIEWER_CANNOT_COUNT`.
+- Posting: a decrease (outflow) carries no unit cost, so the ledger values it at the moving average at posting; an increase keeps the entry cost (S3). `stock_count_lines.posted_value_idr` = signed IDR the ledger booked for the line.
+
+Tests (in `apps/api/src/test/inventory-count.test.ts`):
+
+- W4-1: `dual` (count + approve) who entered nothing, and `approver`, miss the pair in balances during draft/counting and pending_approval.
+- W4-2: approver opens detail at pending_approval → `viewer_ids` has them; reject → count back to counting (check how reject works in the file) → approver line entry 403 VIEWER_CANNOT_COUNT; counter can still enter.
+- W4-3: 10 @ 1.000 on hand, blind or non-blind count, counted 8 (line entry), then receipt 10 @ 2.000, then submit + approve (post). Assert: balance qty 18, balance value (qty × avg) equals Σ(ledger qty × unit cost) for the pair, the count's adjustment ledger row has unit cost = avg at posting (20 on hand at 1.500 after the receipt → row −2 @ 1.500; balance 18 @ 1.500 = 27.000 = ledger 10.000 + 20.000 − 3.000), and `posted_value_idr` of the line equals that row's qty × cost.
+- Update every existing expectation that an approver/`dual`-before-counting SEES a pair of an open blind count: it is now hidden. Posted/cancelled/non-blind cases unchanged.

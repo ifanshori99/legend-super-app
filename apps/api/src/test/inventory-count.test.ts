@@ -1827,19 +1827,16 @@ describe("T1 an open blind count is hidden from quantity reads", () => {
     return { locationId, hidden: itemIds[0]!, other: itemIds[1]! };
   }
 
-  it("the counter and a viewer without the approval permission miss the counted pair while the count is open; the approver sees it", async () => {
+  it("everyone, the approver included, misses the counted pair while the count is open (wave 4)", async () => {
     const { locationId, hidden, other } = await seedBatched();
     await createCount(counter, locationId, [hidden], { blind: true });
 
     for (const kind of READS) {
-      for (const viewer of [counter, counter2]) {
+      for (const viewer of [counter, counter2, approver]) {
         const seen = await visibleItems(viewer, kind, locationId);
         expect(seen.has(hidden), `${kind} hides the counted item`).toBe(false);
         expect(seen.has(other), `${kind} keeps other items`).toBe(true);
       }
-      const seen = await visibleItems(approver, kind, locationId);
-      expect(seen.has(hidden), `${kind} for the approver`).toBe(true);
-      expect(seen.has(other)).toBe(true);
     }
   });
 
@@ -1853,18 +1850,18 @@ describe("T1 an open blind count is hidden from quantity reads", () => {
     }
     expect(
       (await visibleItems(approver, "balances", locationId)).has(hidden),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("an approver who counted a line is hidden, through the line and through counter_ids alone", async () => {
+  it("hiding does not depend on counter history: still hidden through the line and through counter_ids alone", async () => {
     const { locationId, hidden, other } = await seedBatched();
     const { count } = await createCount(counter, locationId, [hidden], {
       blind: true,
     });
     await ok(await transition(counter, count.id, "start"));
-    // Not a counter yet: the approval permission shows everything.
+    // Wave 4: not a counter yet, and still hidden (no viewer exception).
     expect((await visibleItems(dual, "balances", locationId)).has(hidden)).toBe(
-      true,
+      false,
     );
 
     await enterCounts(dual, count.id, true, { [hidden]: "9.0000" });
@@ -1901,7 +1898,7 @@ describe("T1 an open blind count is hidden from quantity reads", () => {
       ).toBe(false);
     expect(
       (await visibleItems(approver, "balances", locationId)).has(hidden),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("the counter sees the pair again once the count is posted", async () => {
@@ -2076,7 +2073,7 @@ describe("T1 (wave 3b) alerts hide the counted pair of an open blind count", () 
     ["purchase-suggestions", purchaseSuggestions],
   ] as const) {
     describe(`/api/inventory/${name}`, () => {
-      it("the counter and another counter miss the counted pair while the count is open; the approver sees it", async () => {
+      it("the counter, another counter and the approver all miss the counted pair while the count is open", async () => {
         const { locationId, hidden, other } = await alerter.seed();
         // Before the count: the counter sees both (the seed really alerts).
         const before = await alerter.visible(counter, locationId);
@@ -2085,22 +2082,21 @@ describe("T1 (wave 3b) alerts hide the counted pair of an open blind count", () 
 
         await createCount(counter, locationId, [hidden], { blind: true });
 
-        for (const viewer of [counter, counter2]) {
+        for (const viewer of [counter, counter2, approver]) {
           const seen = await alerter.visible(viewer, locationId);
           expect(seen.has(hidden), "counted item is hidden").toBe(false);
           expect(seen.has(other), "other items stay visible").toBe(true);
         }
-        const seen = await alerter.visible(approver, locationId);
-        expect(seen.has(hidden), "approver still sees it").toBe(true);
-        expect(seen.has(other)).toBe(true);
       });
 
       it("a counter who also holds the approval permission is hidden too", async () => {
         const { locationId, hidden, other } = await alerter.seed();
         await createCount(dual, locationId, [hidden], { blind: true });
-        const seen = await alerter.visible(dual, locationId);
-        expect(seen.has(hidden)).toBe(false);
-        expect(seen.has(other)).toBe(true);
+        for (const viewer of [dual, approver]) {
+          const seen = await alerter.visible(viewer, locationId);
+          expect(seen.has(hidden)).toBe(false);
+          expect(seen.has(other)).toBe(true);
+        }
       });
 
       it("the counter sees the pair again once the count is posted", async () => {
@@ -2296,4 +2292,189 @@ describe("R8 a counter's inbox approval keeps the count and opens a fresh chain"
       "6.0000",
     );
   });
+});
+
+// ============================================================================
+// Wave 4 (review K round 2): W4-1, W4-2, W4-3
+// ============================================================================
+
+describe("W4-1 an open blind count is hidden from approvers too", () => {
+  const KINDS = ["balances", "stock-ledger"] as const;
+
+  async function seen(actor: Actor, kind: string, locationId: string) {
+    const response = await actor.client.get(
+      `/api/inventory/${kind}?outletId=${outletA}&locationId=${locationId}&limit=100`,
+    );
+    await ok(response);
+    return new Set(
+      (response.body.data as Array<{ inventoryItemId: string }>).map(
+        (row) => row.inventoryItemId,
+      ),
+    );
+  }
+
+  it("dual (who entered nothing) and the approver miss the pair in draft, counting and pending_approval; it returns after posting", async () => {
+    const { locationId, itemIds } = await seedStock([
+      { onHand: "10.0000" },
+      { onHand: "10.0000" },
+    ]);
+    const [hidden, other] = itemIds as [string, string];
+
+    async function expectHidden(stage: string) {
+      for (const viewer of [dual, approver])
+        for (const kind of KINDS) {
+          const items = await seen(viewer, kind, locationId);
+          expect(items.has(hidden), `${kind} ${stage}`).toBe(false);
+          expect(items.has(other), `${kind} ${stage}: other item`).toBe(true);
+        }
+    }
+
+    const { count } = await createCount(counter, locationId, [hidden], {
+      blind: true,
+    });
+    await expectHidden("draft");
+    await ok(await transition(counter, count.id, "start"));
+    await expectHidden("counting");
+    await enterCounts(counter, count.id, true, { [hidden]: "8.0000" });
+    await ok(await transition(counter, count.id, "submit"));
+    await expectHidden("pending_approval");
+
+    await ok(await transition(approver, count.id, "approve"));
+    for (const viewer of [dual, approver, counter])
+      for (const kind of KINDS)
+        expect(
+          (await seen(viewer, kind, locationId)).has(hidden),
+          `${kind} after posting`,
+        ).toBe(true);
+  });
+});
+
+describe("W4-2 a viewer of the blind detail cannot count", () => {
+  async function viewerIds(countId: string): Promise<string[]> {
+    const { rows } = await owner.query<{ viewer_ids: string[] }>(
+      "SELECT viewer_ids FROM stock_counts WHERE tenant_id = $1 AND id = $2",
+      [tenantA, countId],
+    );
+    return rows[0]!.viewer_ids;
+  }
+
+  it("opening the detail at pending_approval records the viewer; after a rejection the viewer is refused (STOCK_COUNT_VIEWER_CANNOT_COUNT) and the counter can still enter", async () => {
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["8.0000"], {
+      blind: true,
+    });
+    const item = prepared.itemIds[0]!;
+    expect(await viewerIds(prepared.countId)).toEqual([]);
+
+    // Assumption: `approver` (outlet_manager) lacks inventory.opname.count, so
+    // the line-entry probe uses `dual`, who holds count + approve.
+    await ok(await get(approver, `/${prepared.countId}`));
+    await ok(await get(dual, `/${prepared.countId}`));
+    const viewers = await viewerIds(prepared.countId);
+    expect(viewers).toContain(approver.userId);
+    expect(viewers).toContain(dual.userId);
+    expect(viewers).not.toContain(counter.userId);
+
+    // `approver` rejects (a decider, not `dual`): back to counting.
+    const rejected = await ok(
+      await transition(approver, prepared.countId, "reject", { note: "Ulang" }),
+    );
+    expect(rejected.body.data.status).toBe("counting");
+
+    const lineId = (await lineIdsOf(counter, prepared.countId, true)).get(
+      item,
+    )!;
+    expectError(
+      await patch(dual, `/${prepared.countId}/sheet/lines/${lineId}`, {
+        countedQty: "7.0000",
+      }),
+      403,
+      "STOCK_COUNT_VIEWER_CANNOT_COUNT",
+    );
+    // The same refusal on a non-blind line edit path is not reachable (blind
+    // counts refuse the plain endpoint), so only the sheet path is probed.
+    await ok(
+      await patch(counter, `/${prepared.countId}/sheet/lines/${lineId}`, {
+        countedQty: "7.0000",
+      }),
+    );
+  });
+
+  it("the blind detail stays 403 STOCK_COUNT_BLIND_HIDDEN in draft and counting and records no viewer", async () => {
+    const prepared = await startedCount([{ onHand: "10.0000" }], {
+      blind: true,
+    });
+    expectError(
+      await get(approver, `/${prepared.countId}`),
+      403,
+      "STOCK_COUNT_BLIND_HIDDEN",
+    );
+    expectError(
+      await get(dual, `/${prepared.countId}`),
+      403,
+      "STOCK_COUNT_BLIND_HIDDEN",
+    );
+    expect(await viewerIds(prepared.countId)).toEqual([]);
+    // Nobody viewed anything, so `dual` may still count.
+    await enterCounts(dual, prepared.countId, true, {
+      [prepared.itemIds[0]!]: "9.0000",
+    });
+  });
+});
+
+describe("W4-3 a decrease is valued at the moving average at posting", () => {
+  for (const blind of [false, true]) {
+    it(`${blind ? "blind" : "non-blind"} count: 10 @ 1.000, counted 8, receipt 10 @ 2.000, post -> row -2 @ 1.500, balance 18 @ 1.500`, async () => {
+      const { locationId, itemIds } = await seedStock([
+        { onHand: "10.0000", cost: "1000.0000" },
+      ]);
+      const item = itemIds[0]!;
+      const { count } = await createCount(counter, locationId, itemIds, {
+        blind,
+      });
+      await ok(await transition(counter, count.id, "start"));
+      // System quantity at entry is 10, so the adjustment is 8 - 10 = -2.
+      await enterCounts(counter, count.id, blind, { [item]: "8.0000" });
+      await receive(locationId, item, "10.0000", "2000.0000");
+      await ok(await transition(counter, count.id, "submit"));
+      await ok(await transition(approver, count.id, "approve"));
+
+      const balance = await owner.query<{ quantity: string; avg: string }>(
+        `SELECT quantity::text AS quantity, avg_cost_idr::text AS avg FROM stock_balances
+         WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3`,
+        [tenantA, locationId, item],
+      );
+      expect(Number(balance.rows[0]!.quantity)).toBe(18);
+      expect(Number(balance.rows[0]!.avg)).toBe(1500);
+      // Balance value = quantity x average = 27.000.
+      const balanceValue =
+        Number(balance.rows[0]!.quantity) * Number(balance.rows[0]!.avg);
+      expect(balanceValue).toBe(27000);
+
+      // Σ(ledger qty x unit cost) = 10.000 + 20.000 - 3.000 = balance value.
+      const ledgerValue = await owner.query<{ value: string }>(
+        `SELECT COALESCE(SUM(quantity * unit_cost_idr), 0)::text AS value FROM stock_ledger
+         WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3`,
+        [tenantA, locationId, item],
+      );
+      expect(Number(ledgerValue.rows[0]!.value)).toBe(balanceValue);
+
+      const adjustment = await owner.query<{ quantity: string; cost: string }>(
+        `SELECT quantity::text AS quantity, unit_cost_idr::text AS cost FROM stock_ledger
+         WHERE tenant_id = $1 AND source_id = $2`,
+        [tenantA, count.id],
+      );
+      expect(adjustment.rows).toHaveLength(1);
+      expect(Number(adjustment.rows[0]!.quantity)).toBe(-2);
+      expect(Number(adjustment.rows[0]!.cost)).toBe(1500);
+
+      const line = await owner.query<{ posted: string }>(
+        "SELECT posted_value_idr::text AS posted FROM stock_count_lines WHERE stock_count_id = $1",
+        [count.id],
+      );
+      expect(Number(line.rows[0]!.posted)).toBe(
+        Number(adjustment.rows[0]!.quantity) * Number(adjustment.rows[0]!.cost),
+      );
+      expect(Number(line.rows[0]!.posted)).toBe(-3000);
+    });
+  }
 });

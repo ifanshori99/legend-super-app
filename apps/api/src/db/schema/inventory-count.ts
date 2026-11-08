@@ -76,6 +76,12 @@ export const stockCounts = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    // Everyone who opened the blind detail (system quantity) after submit;
+    // only appended. A viewer can never enter a line afterwards.
+    viewerIds: text("viewer_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     countVersion: integer("count_version").notNull().default(0),
     snapshotAt: timestamp("snapshot_at", { withTimezone: true }),
     countedAt: timestamp("counted_at", { withTimezone: true }),
@@ -169,6 +175,9 @@ export const stockCountLines = pgTable(
     countedQty: decimal4Column("counted_qty"),
     varianceQty: decimal4Column("variance_qty"),
     varianceIdr: idrColumn("variance_idr"),
+    // Value the ledger really booked for this line at posting (signed IDR):
+    // a decrease is valued at the moving average at posting, not at entry.
+    postedValueIdr: idrColumn("posted_value_idr"),
     countedBy: text("counted_by").references(() => user.id),
     countedAt: timestamp("counted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

@@ -778,14 +778,10 @@ export async function listStockBatches(
     const target = outletTarget(query.outletId);
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
-    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
-    const viewer = {
-      userId: actorUserId,
-      canApprove: snapshot.allows("inventory.adjustment.approve", target),
-    };
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(stockBatches.outletId, query.outletId),
-      blindCountHiddenFilter(viewer, stockBatches),
+      blindCountHiddenFilter(stockBatches),
     ];
     if (query.locationId)
       filters.push(eq(stockBatches.locationId, query.locationId));
@@ -1148,14 +1144,10 @@ export async function listStockLedger(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
-    const viewer = {
-      userId: actorUserId,
-      canApprove: snapshot.allows("inventory.adjustment.approve", target),
-    };
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(stockLedger.outletId, query.outletId),
-      blindCountHiddenFilter(viewer, stockLedger),
+      blindCountHiddenFilter(stockLedger),
     ];
     if (query.locationId)
       filters.push(eq(stockLedger.locationId, query.locationId));
@@ -1245,14 +1237,10 @@ export async function listStockBalances(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
-    const viewer = {
-      userId: actorUserId,
-      canApprove: snapshot.allows("inventory.adjustment.approve", target),
-    };
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(stockBalances.outletId, query.outletId),
-      blindCountHiddenFilter(viewer, stockBalances),
+      blindCountHiddenFilter(stockBalances),
     ];
     if (query.locationId)
       filters.push(eq(stockBalances.locationId, query.locationId));

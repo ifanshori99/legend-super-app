@@ -63,7 +63,6 @@ import {
   cursorUuid,
   EVENT_DESTINATION,
   lockLocations,
-  outletTarget,
   requireOpsPermission,
   type CursorPage,
   type Tx,
@@ -392,25 +391,18 @@ export async function listStockAlerts(
 ): Promise<CursorPage<StockAlert>> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    const snapshot = await requireOpsPermission(
+    await requireOpsPermission(
       tx,
       context,
       actorUserId,
       "inventory.stock.view",
       query.outletId,
     );
-    // Blind counts hide their pairs' on-hand quantity (stock opname T1).
-    const viewer = {
-      userId: actorUserId,
-      canApprove: snapshot.allows(
-        "inventory.adjustment.approve",
-        outletTarget(query.outletId),
-      ),
-    };
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const filters: SQL[] = [
       eq(inventoryStockAlerts.outletId, query.outletId),
       isNull(inventoryStockAlerts.resolvedAt),
-      blindCountHiddenFilter(viewer, inventoryStockAlerts),
+      blindCountHiddenFilter(inventoryStockAlerts),
     ];
     if (query.kind) filters.push(eq(inventoryStockAlerts.kind, query.kind));
     if (query.locationId)

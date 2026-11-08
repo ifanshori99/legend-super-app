@@ -64,8 +64,10 @@ import { AccessError, type PermissionCode } from "@starter/shared/access";
 import {
   CoreError,
   encodeCursor,
+  extendCostIdr,
   formatDecimal4,
   parseDecimal4,
+  sumIdr,
   type Decimal4,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -81,6 +83,7 @@ import {
   type StockCountLine,
   type StockCountSheet,
   type StockCountSheetLine,
+  type StockLedgerEntry,
   type stockCountQuerySchema,
   type transitionStockCountInputSchema,
   type updateStockCountLineInputSchema,
@@ -405,6 +408,20 @@ export async function getStockCountDetail(
             "STOCK_COUNT_BLIND_HIDDEN",
             "The system quantity of a blind count is hidden from you.",
           );
+        // The viewer now knows the system quantity: if the count goes back to
+        // counting (reject, recount) they may not enter a line.
+        if (!finished)
+          await tx
+            .update(stockCounts)
+            .set({
+              viewerIds: sql`CASE WHEN ${actorUserId}::text = ANY(${stockCounts.viewerIds}) THEN ${stockCounts.viewerIds} ELSE array_append(${stockCounts.viewerIds}, ${actorUserId}::text) END`,
+            })
+            .where(
+              and(
+                eq(stockCounts.tenantId, row.tenantId),
+                eq(stockCounts.id, row.id),
+              ),
+            );
       }
       return stockCountDetailSchema.parse({
         count: toStockCount(row),
@@ -720,6 +737,11 @@ async function editLine(
         throw countError(
           "STOCK_COUNT_DECIDER_CANNOT_COUNT",
           "A person who approved or rejected this stock count cannot count it.",
+        );
+      if (row.viewerIds.some((id) => id.toLowerCase() === actor))
+        throw countError(
+          "STOCK_COUNT_VIEWER_CANNOT_COUNT",
+          "A person who saw the system quantity of this stock count cannot count it.",
         );
       if (mode === "full" && row.blind)
         throw countError(
@@ -1623,26 +1645,48 @@ async function postLine(
     locationId: row.locationId,
     inventoryItemId: line.inventoryItemId,
     movementType: "adjustment" as const,
-    unitCostIdr: line.unitCostIdr,
     sourceType: "stock_count" as const,
     sourceId: row.id,
     actor: { type: "user" as const, id: postedBy },
   };
+  const entries: StockLedgerEntry[] = [];
   if (delta > 0n) {
-    await recordStockMovementInTransaction(tx, context, {
-      ...base,
-      quantity: formatDecimal4(delta),
-      batchId: null,
-      idempotencyKey: key,
-    });
-    return;
+    // Found stock is an inflow: valued at the cost fixed at entry (S3).
+    entries.push(
+      await recordStockMovementInTransaction(tx, context, {
+        ...base,
+        unitCostIdr: line.unitCostIdr,
+        quantity: formatDecimal4(delta),
+        batchId: null,
+        idempotencyKey: key,
+      }),
+    );
+  } else {
+    // A decrease is an outflow: no explicit cost, so the ledger values it at
+    // the moving average at posting (an outflow never moves the average).
+    const allocations = await decreaseAllocations(tx, row, line, -delta);
+    for (const [index, allocation] of allocations.entries())
+      entries.push(
+        await recordStockMovementInTransaction(tx, context, {
+          ...base,
+          quantity: formatDecimal4(-parseDecimal4(allocation.quantity)),
+          batchId: allocation.batch?.id ?? null,
+          idempotencyKey: index === 0 ? key : `${key}:${index}`,
+        }),
+      );
   }
-  const allocations = await decreaseAllocations(tx, row, line, -delta);
-  for (const [index, allocation] of allocations.entries())
-    await recordStockMovementInTransaction(tx, context, {
-      ...base,
-      quantity: formatDecimal4(-parseDecimal4(allocation.quantity)),
-      batchId: allocation.batch?.id ?? null,
-      idempotencyKey: index === 0 ? key : `${key}:${index}`,
-    });
+  const postedValueIdr = sumIdr(
+    entries.map((entry) =>
+      extendCostIdr(entry.quantity, entry.unitCostIdr, ROUNDING_MODE),
+    ),
+  );
+  await tx
+    .update(stockCountLines)
+    .set({ postedValueIdr, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(stockCountLines.tenantId, row.tenantId),
+        eq(stockCountLines.id, line.id),
+      ),
+    );
 }
