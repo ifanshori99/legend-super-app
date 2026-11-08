@@ -23,7 +23,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
 | ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
 | ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
-| ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 (22:45); gate milestone belum dijalankan ulang | Codex R9 |
+| ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 55d90ab3 (22:45); gate milestone lulus 23:05 | Codex R9 |
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
 | ws/hris-leave | fa4ff73f | S | cuti (Opus: domain rumit) | brief 85 selesai (G5klp), reviewer 2 putaran bersih, gate hijau 1645; regen 0072-0074 di atas 0071 → bentrok dgn shareholder 0072/0073 di m1 → regen ulang saat giliran merge | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
