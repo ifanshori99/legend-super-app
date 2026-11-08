@@ -2,6 +2,55 @@
 
 Diperbarui 2026-11-08 ±19:50 oleh CTO (sesi G4tde "CTO baru"), serah terima ke CTO berikutnya.
 
+## Workflow v3.3 diterapkan (2026-11-08 21:05)
+
+Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review Claude digabung ke sini (`--no-ff`, renumber migration via drizzle-kit). Gabung `milestone/m1` → `main` = gerbang rilis: tunggu semua antrean Codex tingkat K selesai + temuan nyata dibetulkan + klik founder.
+
+### Tingkat per cabang
+
+| Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
+|---|---|---|---|---|---|
+| ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan Opus+architect jalan | Codex R1 |
+| ws/refund-approval | 5b6a707 | K | refund, approval | pasangan jalan | Codex R2 |
+| ws/journals | aafe04c | K | jurnal | pasangan jalan | Codex R3 |
+| ws/payroll-pph21-tests | a0bf212+ | K | pajak | setelah G70ms lapor | Codex R4 |
+| ws/edc-framework | 5f797fe | K | pembayaran | pasangan jalan | Codex R5 |
+| ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan jalan | Codex R5 (tunggu detail sandbox DOIT) |
+| ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan jalan | Codex R6 |
+| ws/edge-registry-pull (+device-registry 7caa7be) | 9932716 | K | auth device, sinkron offline | setelah G1u8c lapor | Codex R6 |
+| ws/stock-opname | e96f678+ | K | nilai stok, akses counter | architect sudah; fix G8zyp; Opus reviewer setelah fix | Codex R7 |
+| ws/recipe-bom | f0cec09 | K | HPP | pasangan gelombang 2 | Codex R7 |
+| ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
+| ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
+| ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
+| ws/shareholder-docs | (G8fpw) | K | data pribadi, dokumen legal | setelah lapor | Codex R9 |
+| ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
+| ws/hris-leave | 576cb1e+ | S | cuti (Opus: domain rumit) | architect + Opus reviewer setelah G5klp lapor | gabung milestone |
+| ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
+| ws/hris-sop | (G4ali) | S | SOP | Sonnet setelah lapor | gabung milestone |
+| ws/checklist-engine | e3ac2ef | S | checklist | Sonnet jalan | gabung milestone |
+| fix/worktree-shared | 4ab45cc | S | tooling | Sonnet jalan | gabung milestone |
+| ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
+| ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
+
+### Antrean second-opinion Codex v3.3
+
+Aturan: maks 1 run per akun ready, brief hanya rentang diff + berkas berisiko (±800 baris) + invariant PRD, tanpa temuan Claude. Codex hanya menahan gerbang rilis.
+
+| Run | Isi | Effort | Brief | Jadwal |
+|---|---|---|---|---|
+| R1 | pos-shift | xhigh | 59 | akun 3, 23:36 (cron d29dba1e) |
+| R2 | refund-approval | xhigh | 65 | akun 2, 00:24 (cron 8763dcff) |
+| R3 | journals | xhigh | 70 | jendela berikut |
+| R4 | PPh21 | xhigh | menyusul | jendela berikut |
+| R5 | EDC + DOIT | high | 60, 62 | |
+| R6 | struk + edge registry | high | 68, menyusul | |
+| R7 | stok opname + recipe/BOM | high | menyusul | |
+| R8 | procurement + AI tool catalog | high | menyusul | |
+| R9 | config export + shareholder docs + reservasi | high | menyusul | |
+
+Kuota: akun 2 dan 3 limit 5 jam (reset 23:36 dan 00:24), mingguan 32–37%. Perkiraan 9 run ≈ 5 jendela 5 jam.
+
 ## Serah terima CTO (2026-11-08 ±19:50, sesi G4tde compact 2x)
 
 CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread ada di `docs/briefs/` (42–58).
