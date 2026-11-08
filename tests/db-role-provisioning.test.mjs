@@ -1413,13 +1413,13 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       // wrapper refuses such lines instead of missing them.
       [
         {
-          api: `﻿MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n${files.api}`,
+          api: `\uFEFFMIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n${files.api}`,
         },
         /api\.env has a non-ASCII character .* before a key on line 1;/,
       ],
       [
         {
-          worker: `${files.worker} MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n`,
+          worker: `${files.worker}\u00A0MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n`,
         },
         /worker\.env has a non-ASCII character .* before a key on line 4;/,
       ],
@@ -1436,7 +1436,7 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     const fromFile = run(["--dry-run"]);
     assert.equal(fromFile.status, 0, fromFile.stderr);
     // Non-ASCII in a value or a comment is fine.
-    write({ web: `${files.web}# café\nBRAND=Café\n` });
+    write({ web: `${files.web}# caf\u00E9\nBRAND=Caf\u00E9\n` });
     const accented = run(["--dry-run"]);
     assert.equal(accented.status, 0, accented.stderr);
   } finally {
@@ -1503,8 +1503,8 @@ test("legend-zoqc wrapper refuses a key Compose would read behind a BOM or no-br
     );
     const env = { PATH: process.env.PATH, HOME: process.env.HOME };
     for (const [name, api] of [
-      ["BOM", `﻿MIGRATION_DATABASE_URL=${admin}\n${files.api}`],
-      ["NBSP", `${files.api} MIGRATION_DATABASE_URL=${admin}\n`],
+      ["BOM", `\uFEFFMIGRATION_DATABASE_URL=${admin}\n${files.api}`],
+      ["NBSP", `${files.api}\u00A0MIGRATION_DATABASE_URL=${admin}\n`],
     ]) {
       write({ api });
       // Real Compose really hands this key to the API service (the output
