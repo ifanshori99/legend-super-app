@@ -15,7 +15,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/journals | b87a7d98 | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih, gate hijau 1348+1414); migration 0068/0069 bentrok nomor dgn edge di milestone → regen setelah shareholder | Codex R3 (SHA pasca-regen) |
 | ws/payroll-pph21-tests | 461a94bf | K | uang PPh21 | fix 82 + campuran (porsi skema) selesai, reviewer segar + 6000 fuzz bersih, gate hijau 1492; legend-s5c1 P1 prasyarat run service | Codex R4 (SHA 461a94bf) |
 | ws/edc-framework | 6e40141f | K | uang EDC, tagih dobel | fix brief 76 selesai (G7cu9, 3 putaran reviewer, gate hijau 1403); lanjutan batch_no match + kontrak sale sinkron dikirim 22:26; migration 0068/0069 → regen saat merge | Codex R5 (SHA pasca-lanjutan) |
-| ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
+| ws/doit-provider | 8fed84ef | K | pembayaran, webhook | pasangan: FIX SELESAI (brief 80, G8x09; 2 review segar lolos) | Codex R5 brief 62 (SHA 8fed84ef) |
 | ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
 | ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38 | K | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40); gate milestone lulus 21:44 (check 1414 test, build ok; journal when monoton > 0067) | Codex R6 |
 | ws/stock-opname | 59e96f16 | K | nilai stok, akses counter | putaran 2 (brief 84) selesai, Opus reviewer bersih; DIGABUNG milestone/m1 7373f00b (migration 0070/0071); gate milestone lulus 22:30 | Codex R7 (SHA 59e96f16) |
@@ -34,7 +34,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
-Urutan merge (23:00): edge → stock-opname → shareholder-docs (55d90ab3, sudah) → antrean siap: journals (merge-prep subagent), reservation (G2m46), hris-leave, refund, hris-sop, edc, pph21, pos-shift, doit, receipt. CTO merge sesuai urutan siap; cabang berikutnya regen ulang di atas head m1 terbaru. Keputusan founder cuti bersama: mulai 2027-01-01 (sudah default).
+Urutan merge (23:00): edge → stock-opname → shareholder-docs (55d90ab3) → reservation (8e2e7bc0, migration 0074, when 1794153034313) sudah → antrean siap: journals (merge-prep subagent regen ke 0075+), hris-leave, refund, hris-sop, edc, pph21, pos-shift, doit, receipt. CTO merge sesuai urutan siap; cabang berikutnya regen ulang di atas head m1 terbaru. Keputusan founder cuti bersama: mulai 2027-01-01 (sudah default).
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
 
 Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya kuota tidak dipakai untuk temuan yang sudah diketahui. Jendela Codex yang datang sebelum ada fix siap: pakai untuk cabang K berikutnya yang belum direview (recipe/BOM, tenant config export, AI tool catalog).
@@ -158,3 +158,12 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 
 ## Serah terima kuota (22:45)
 Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Berjalan: G8x09 DOIT, G7cu9 EDC batch_no, G2tir PPh21 campuran, G5rd6 shift (ulang gate), G5klp cuti (brief 85), G9d1y struk (brief 77). Subagent: fix hris-sop (brief 86). Berikut: gate milestone setelah merge shareholder; merge journals → refund → hris-sop → edc → pph21 → shift → hris-leave (regen tiap cabang). Codex cron 23:41 & 00:27. Subagent merge-prep shareholder sempat menjalankan `pkill -f <id task>` (pelanggaran, cakupan sempit) — cek tidak ada test lain yang mati.
+## Serah terima CTO 23:05 (sesi compact 2x)
+
+- milestone/m1 head 8e2e7bc0 (reservasi masuk). Gerbang penuh belum dijalankan ulang setelah merge reservasi; cabang reservasi sendiri sudah hijau di atas 55d90ab3 (API 1527, root 1420). Jalankan `heavy pnpm check` di worktree milestone sebelum merge berikut.
+- Merge-prep journals: subagent CTO lama sedang regen migration journals di atas head terbaru (0075+). Bila hasilnya hilang bersama sesi lama: ulang dari brief "Catatan merge milestone" di atas.
+- DOIT `ws/doit-provider` 8fed84ef: fix review K selesai (G8x09 di-resolve). Migration cabang 0068/0069 bentrok dengan edge 0068/0069 di m1, wajib regen saat gilirannya. Full `pnpm check` belum diulang setelah fix migration terakhir (file terdampak 136/136 hijau). Belum diuji ke sandbox DOIT; cek apakah `~/.config/legend/doit-sandbox-api-key` ada (jangan cetak isinya).
+- DOIT pertanyaan founder terbuka: transfer bank kode unik dimatikan (API DOIT tidak memberi rekening tujuan). Opsi: biarkan mati, atau perluas skema instruksi pembayaran (rekening tujuan, kode unik, fallback `hosted_url` saat QR kedaluwarsa ~10 menit).
+- Thread jalan: G5rd6 pos-shift (gerbang 78a274a jalan), G7cu9 EDC (gerbang), G9d1y struk (brief 77), G7pk4 procurement (brief 73), G7wwc KDS (brief 74).
+- Codex: cron d29dba1e 23:36 (R1, akun 3) dan 8763dcff 00:24 (R2, akun 2) ada di sesi CTO lama; cron sesi tidak ikut pindah, jadwalkan ulang di sesi baru. Brief R4 PPh21, R6–R9 belum ditulis.
+- Jawaban founder "berapa task lagi": 440 kartu non-epic terbuka, 35 P0/P1 (7 P0 semua EXT pihak luar). Inti rilis: 10 cabang antrean merge, Codex R1–R9, jembatan inventori→GL (legend-w1vo), migrator role production (legend-jtnd, legend-k1np), e2e A–Z (legend-hmz2, legend-o2on), runbook (legend-71d), monitoring (legend-az9), review founder Q6 + Q12, akun production. Usulan ke founder: tetapkan daftar potong rilis (WS-12 AI, sebagian WS-09/WS-14 pascarilis).

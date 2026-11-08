@@ -4,8 +4,8 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/doit-provider`, cabang `ws/doit-provider`, SHA `be35d6b`.
-Rentang diff: `git diff $(git merge-base main be35d6b)..be35d6b` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/doit-provider`, cabang `ws/doit-provider`, SHA `8fed84ef`.
+Rentang diff: `git diff $(git merge-base main 8fed84ef)..8fed84ef` (abaikan drizzle `meta/*.json`).
 
 ## Berkas berisiko
 - `apps/api/src/services/payment-doit.ts`
