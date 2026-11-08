@@ -21,6 +21,7 @@ import { z } from "zod";
 import {
   createUlid,
   encodeCursor,
+  localDateOf,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -137,6 +138,18 @@ const stationInOutlets = (ids: readonly string[]) =>
 const isLatest = sql`not exists (select 1 from sop_documents next
   where next.tenant_id = sop_documents.tenant_id
     and next.supersedes_id = sop_documents.id)`;
+
+/**
+ * Latest version that already applies on `today` (WIB): effective by then and
+ * not followed by a version that is also effective. Employees read and
+ * confirm this one; a future-dated version waits for its date.
+ */
+const isEffectiveLatest = (today: string) =>
+  sql`(sop_documents.effective_from <= ${today}::date
+    and not exists (select 1 from sop_documents next
+      where next.tenant_id = sop_documents.tenant_id
+        and next.supersedes_id = sop_documents.id
+        and next.effective_from <= ${today}::date))`;
 
 function page<Row, T>(
   rows: Row[],
@@ -380,6 +393,8 @@ async function latestVersion(
   tx: Tx,
   context: ScopedTenantContext,
   lineageId: string,
+  /** Only versions effective on this date (WIB); omitted = every version. */
+  effectiveOn?: string,
 ): Promise<number> {
   const [row] = await tx
     .select({
@@ -390,6 +405,9 @@ async function latestVersion(
       and(
         eq(sopDocuments.tenantId, context.tenant.tenantId),
         eq(sopDocuments.lineageId, lineageId),
+        effectiveOn
+          ? sql`${sopDocuments.effectiveFrom} <= ${effectiveOn}::date`
+          : undefined,
       ),
     );
   return row?.version ?? 0;
@@ -520,7 +538,9 @@ export async function listSopDocuments(
     const viewer = await loadViewer(tx, context, actorUserId, now);
     const filters: SQL[] = [
       eq(sopDocuments.tenantId, context.tenant.tenantId),
-      isLatest,
+      // A manager sees the true head (incl. a future version); an employee
+      // only the version already in force.
+      viewer.manage ? isLatest : isEffectiveLatest(localDateOf(now)),
       visibleTo(viewer),
     ];
     if (query.stationId)
@@ -601,7 +621,7 @@ export async function listSopAcknowledgementStatus(
         and(
           eq(sopDocuments.tenantId, context.tenant.tenantId),
           eq(sopDocuments.lineageId, requested.lineageId),
-          isLatest,
+          isEffectiveLatest(localDateOf(now)),
         ),
       )
       .limit(1);
@@ -734,9 +754,16 @@ export async function acknowledgeSopDocument(
     // a newer version was published (the first call did succeed).
     if (replay && replay.idempotencyKey === input.idempotencyKey)
       return toAcknowledgement(replay);
+    // A future-dated version cannot be confirmed before its date.
+    if (document.effectiveFrom > localDateOf(now))
+      throw new HttpError(
+        409,
+        "SOP_NOT_EFFECTIVE",
+        "Versi SOP ini belum berlaku.",
+      );
     const isHead =
       document.version ===
-      (await latestVersion(tx, context, document.lineageId));
+      (await latestVersion(tx, context, document.lineageId, localDateOf(now)));
     // A fresh confirmation of a superseded version is stale: the employee
     // must read and confirm the current one.
     if (!isHead) throw staleVersion();

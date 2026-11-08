@@ -78,6 +78,10 @@ import {
 export const TRAINING_MANAGE_CODE = "hr.training.manage";
 export const TRAINING_SELF_CODE = "self.sop.read";
 export const TRAINING_MAX_ATTEMPTS = 100;
+/** Quiz attempts one employee may make per training in a rolling 24 hours. */
+export const TRAINING_ATTEMPTS_PER_DAY = 5;
+/** A new attempt is allowed this many days before the certificate expires. */
+export const TRAINING_RENEWAL_DAYS = 30;
 
 type Page<T> = {
   data: T[];
@@ -509,6 +513,13 @@ export function addMonths(date: string, months: number): string {
   return `${pad(nextYear, 4)}-${pad(nextMonth, 2)}-${pad(Math.min(day, lastDay), 2)}`;
 }
 
+/** `date` + `days` calendar days. */
+function addDays(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 function certificateNumber(completedAt: Date): string {
   return `CERT-${localDateOf(completedAt).replaceAll("-", "")}-${randomBase32(6)}`;
 }
@@ -574,6 +585,44 @@ export async function completeTraining(
     );
     if (!training) throw notFound("Pelatihan");
 
+    // A scheduled training only takes attempts inside its window.
+    if (
+      (training.scheduledStart && now < training.scheduledStart) ||
+      (training.scheduledEnd && now > training.scheduledEnd)
+    )
+      throw new HttpError(
+        409,
+        "TRAINING_OUTSIDE_SCHEDULE",
+        "Pelatihan ini belum dibuka atau sudah ditutup.",
+      );
+
+    // No new attempt while a certificate is still valid (renewal opens in
+    // the last TRAINING_RENEWAL_DAYS before it expires).
+    const [certificate] = await tx
+      .select({ id: trainingCertificates.id })
+      .from(trainingCertificates)
+      .where(
+        and(
+          eq(trainingCertificates.tenantId, tenantId),
+          eq(trainingCertificates.trainingId, trainingId),
+          eq(trainingCertificates.employeeId, self.employeeId),
+          or(
+            isNull(trainingCertificates.expiresOn),
+            gt(
+              trainingCertificates.expiresOn,
+              addDays(localDateOf(now), TRAINING_RENEWAL_DAYS),
+            ),
+          ),
+        ),
+      )
+      .limit(1);
+    if (certificate)
+      throw new HttpError(
+        409,
+        "TRAINING_CERTIFICATE_ACTIVE",
+        "Sertifikat pelatihan ini masih berlaku.",
+      );
+
     // The answer key: the only place `correct_option_index` is read.
     const keyRows = await tx
       .select({
@@ -602,6 +651,13 @@ export async function completeTraining(
         );
       given.add(answer.questionId);
     }
+    // Every question must be answered, so a blank answer cannot probe the key.
+    if (given.size !== questionIds.size)
+      throw new HttpError(
+        422,
+        "TRAINING_ANSWERS_INCOMPLETE",
+        "Jawab semua soal pelatihan.",
+      );
     const grade = gradeTrainingAttempt(
       {
         passingScore: training.passingScore,
@@ -623,6 +679,27 @@ export async function completeTraining(
     );
     // The completion contract forbids a passing zero score (passing score 0).
     const passed = grade.passed && grade.score > 0;
+
+    const [recent] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(trainingCompletions)
+      .where(
+        and(
+          eq(trainingCompletions.tenantId, tenantId),
+          eq(trainingCompletions.trainingId, trainingId),
+          eq(trainingCompletions.employeeId, self.employeeId),
+          gt(
+            trainingCompletions.completedAt,
+            new Date(now.getTime() - 86_400_000),
+          ),
+        ),
+      );
+    if ((recent?.count ?? 0) >= TRAINING_ATTEMPTS_PER_DAY)
+      throw new HttpError(
+        429,
+        "TRAINING_ATTEMPTS_RATE_LIMITED",
+        "Terlalu banyak percobaan kuis. Coba lagi besok.",
+      );
 
     const [last] = await tx
       .select({ attemptNumber: trainingCompletions.attemptNumber })

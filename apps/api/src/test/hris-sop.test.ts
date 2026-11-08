@@ -235,7 +235,7 @@ const content = (overrides: Record<string, unknown> = {}) => ({
   body: "1. Giling 18 g.\n2. Ekstraksi 28 detik.",
   mediaIds: [] as string[],
   requiresAcknowledgement: true,
-  effectiveFrom: "2026-11-10",
+  effectiveFrom: "2026-01-01",
   ...overrides,
 });
 const createInput = (overrides: Record<string, unknown> = {}) =>
@@ -380,7 +380,7 @@ describe("SOP versions", () => {
       versionInput({
         title: "Versi uji dua",
         body: "Isi baru.",
-        effectiveFrom: "2026-11-20",
+        effectiveFrom: "2026-02-01",
       }),
     );
     expect(v2.version).toBe(2);
@@ -769,6 +769,71 @@ describe("SOP acknowledgement", () => {
         )
       ).status,
     ).toBe(404);
+  });
+});
+
+describe("SOP future-dated versions", () => {
+  it("employees list and confirm the version in force, not a future one", async () => {
+    const v1 = await createSopDocument(
+      tenantScope(),
+      hr,
+      createInput({ stationId: stationA, title: "Berlaku bertahap" }),
+    );
+    const v2 = await publishSopVersion(
+      tenantScope(),
+      hr,
+      v1.id,
+      versionInput({ effectiveFrom: "2099-01-01" }),
+    );
+    const mine = await listSopDocuments(outletScope(outletA), staffA, {
+      limit: 200,
+    });
+    const ids = mine.data.map((d) => d.id);
+    expect(ids).toContain(v1.id);
+    expect(ids).not.toContain(v2.id);
+    // A manager sees the true head.
+    const managed = await listSopDocuments(tenantScope(), hr, {
+      limit: 200,
+      stationId: stationA,
+    });
+    expect(managed.data.map((d) => d.id)).toContain(v2.id);
+    const future = await failure(
+      acknowledgeSopDocument(outletScope(outletA), staffA, v2.id, {
+        idempotencyKey: `sop-${randomUUID()}`,
+      }),
+    );
+    expect(future).toMatchObject({ status: 409, code: "SOP_NOT_EFFECTIVE" });
+    // v1 is still the version in force, so confirming it works.
+    const ack = await acknowledgeSopDocument(
+      outletScope(outletA),
+      staffA,
+      v1.id,
+      { idempotencyKey: `sop-${randomUUID()}` },
+    );
+    expect(ack.documentVersion).toBe(1);
+    const status = await listSopAcknowledgementStatus(
+      tenantScope(),
+      hr,
+      v2.id,
+      {
+        limit: 100,
+      },
+    );
+    expect(status.data.find((s) => s.employeeId === employeeA)).toMatchObject({
+      acknowledgedVersion: 1,
+      current: true,
+    });
+    // Once the date has come, v2 replaces v1.
+    const later = new Date("2099-01-02T03:00:00Z");
+    const afterDate = await listSopDocuments(
+      outletScope(outletA),
+      staffA,
+      { limit: 200 },
+      later,
+    );
+    const laterIds = afterDate.data.map((d) => d.id);
+    expect(laterIds).toContain(v2.id);
+    expect(laterIds).not.toContain(v1.id);
   });
 });
 

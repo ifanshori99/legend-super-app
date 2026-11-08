@@ -391,30 +391,197 @@ describe("createTraining", () => {
 });
 
 describe("completeTraining", () => {
-  it("grades by weight; unanswered counts as wrong", async () => {
+  it("grades by weight and returns only the passed flag and total score", async () => {
     const training = await makeTraining({ passingScore: 70 });
-    const heavyOnly = await completeTraining(
+    const light = await completeTraining(
       outletScope(outletA),
       staffA,
       training.id,
-      answers(training, [1, 1]), // q1 wrong, q2 right = 70
+      answers(training, [0, 0]), // only q1 right = 30
     );
-    expect(heavyOnly).toMatchObject({ score: 70, passed: true, attempts: 1 });
-    const skipped = await completeTraining(
-      outletScope(outletA),
-      staffA,
-      training.id,
-      answers(training, [0, undefined]), // only q1 right = 30
+    expect(light).toMatchObject({ score: 30, passed: false, attempts: 1 });
+    expect(Object.keys(light).sort()).toEqual(
+      [
+        "attempts",
+        "completedAt",
+        "employeeId",
+        "expiresOn",
+        "id",
+        "passed",
+        "score",
+        "tenantId",
+        "trainingId",
+      ].sort(),
     );
-    expect(skipped).toMatchObject({ score: 30, passed: false, attempts: 2 });
     const allWrong = await completeTraining(
       outletScope(outletA),
       staffA,
       training.id,
       answers(training, [1, 0]),
     );
-    expect(allWrong).toMatchObject({ score: 0, passed: false, attempts: 3 });
+    expect(allWrong).toMatchObject({ score: 0, passed: false, attempts: 2 });
     expect(allWrong.expiresOn).toBeNull();
+    const heavyOnly = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [1, 1]), // q1 wrong, q2 right = 70
+    );
+    expect(heavyOnly).toMatchObject({ score: 70, passed: true, attempts: 3 });
+  });
+
+  it("requires an answer for every question and does not use up an attempt", async () => {
+    const training = await makeTraining();
+    const failed = await failure(
+      completeTraining(
+        outletScope(outletA),
+        staffA,
+        training.id,
+        answers(training, [0, undefined]),
+      ),
+    );
+    expect(failed).toMatchObject({
+      status: 422,
+      code: "TRAINING_ANSWERS_INCOMPLETE",
+    });
+    const next = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [1, 0]),
+    );
+    expect(next.attempts).toBe(1);
+  });
+
+  it("allows 5 attempts per 24 hours, then 429, and again after the window", async () => {
+    const training = await makeTraining();
+    const now = new Date("2026-05-01T03:00:00.000Z");
+    for (let attempt = 1; attempt <= 5; attempt += 1)
+      await completeTraining(
+        outletScope(outletA),
+        staffA,
+        training.id,
+        answers(training, [1, 0]),
+        now,
+      );
+    const blocked = await failure(
+      completeTraining(
+        outletScope(outletA),
+        staffA,
+        training.id,
+        answers(training, [0, 1]),
+        new Date(now.getTime() + 3_600_000),
+      ),
+    );
+    expect(blocked).toMatchObject({
+      status: 429,
+      code: "TRAINING_ATTEMPTS_RATE_LIMITED",
+    });
+    // Another employee is not affected.
+    const other = await completeTraining(
+      outletScope(outletA),
+      staffA2,
+      training.id,
+      answers(training, [1, 0]),
+      new Date(now.getTime() + 3_600_000),
+    );
+    expect(other.attempts).toBe(1);
+    const later = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [0, 1]),
+      new Date(now.getTime() + 25 * 3_600_000),
+    );
+    expect(later).toMatchObject({ passed: true, attempts: 6 });
+  });
+
+  it("refuses a new attempt while the certificate is valid, except in its last 30 days", async () => {
+    const training = await makeTraining({ validityMonths: 12 });
+    const now = new Date("2026-03-01T03:00:00.000Z");
+    const first = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [0, 1]),
+      now,
+    );
+    expect(first.expiresOn).toBe("2027-03-01");
+    const blocked = await failure(
+      completeTraining(
+        outletScope(outletA),
+        staffA,
+        training.id,
+        answers(training, [0, 1]),
+        new Date("2026-09-01T03:00:00.000Z"),
+      ),
+    );
+    expect(blocked).toMatchObject({
+      status: 409,
+      code: "TRAINING_CERTIFICATE_ACTIVE",
+    });
+    // 2027-01-30 is 30 days before 2027-03-01 (Jakarta): renewal is open.
+    const renewal = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [0, 1]),
+      new Date("2027-01-30T03:00:00.000Z"),
+    );
+    expect(renewal).toMatchObject({ passed: true, attempts: 2 });
+    // A certificate without an expiry never opens renewal.
+    const never = await makeTraining({ validityMonths: 0 });
+    await completeTraining(
+      outletScope(outletA),
+      staffA,
+      never.id,
+      answers(never, [0, 1]),
+    );
+    const again = await failure(
+      completeTraining(
+        outletScope(outletA),
+        staffA,
+        never.id,
+        answers(never, [0, 1]),
+        new Date("2040-01-01T03:00:00.000Z"),
+      ),
+    );
+    expect(again.code).toBe("TRAINING_CERTIFICATE_ACTIVE");
+  });
+
+  it("only takes attempts inside the scheduled window", async () => {
+    const training = await createTraining(
+      tenantScope(),
+      mgr,
+      createTrainingInputSchema.parse({
+        ...trainingInput(),
+        scheduledStart: "2026-06-01T01:00:00.000Z",
+        scheduledEnd: "2026-06-01T05:00:00.000Z",
+      }),
+    );
+    for (const outside of [
+      "2026-06-01T00:59:00.000Z",
+      "2026-06-01T05:01:00.000Z",
+    ])
+      expect(
+        await failure(
+          completeTraining(
+            outletScope(outletA),
+            staffA,
+            training.id,
+            answers(training, [0, 1]),
+            new Date(outside),
+          ),
+        ),
+      ).toMatchObject({ status: 409, code: "TRAINING_OUTSIDE_SCHEDULE" });
+    const inside = await completeTraining(
+      outletScope(outletA),
+      staffA,
+      training.id,
+      answers(training, [0, 1]),
+      new Date("2026-06-01T03:00:00.000Z"),
+    );
+    expect(inside.passed).toBe(true);
   });
 
   it("issues a certificate only on a pass, with the expiry from the Jakarta date", async () => {
@@ -545,7 +712,7 @@ describe("completeTraining", () => {
       client.query(
         `INSERT INTO training_completions
            (tenant_id, training_id, employee_id, attempt_number, score, passed, answers, completed_at, idempotency_key)
-         SELECT $1, $2, $3, g, 0, false, '[]'::jsonb, now(), 'seed-' || g
+         SELECT $1, $2, $3, g, 0, false, '[]'::jsonb, now() - interval '3 days', 'seed-' || g
            FROM generate_series(1, 100) g`,
         [tenantId, training.id, eX],
       ),
