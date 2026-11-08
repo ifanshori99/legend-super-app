@@ -16,6 +16,7 @@ export default defineConfig([
     "apps/web/src/routeTree.gen.ts",
     "playwright-report/**",
     "test-results/**",
+    "design/**",
   ]),
   js.configs.recommended,
   ...tseslint.configs.recommended,
