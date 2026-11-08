@@ -13,7 +13,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
 | ws/refund-approval | 09385266 | K | refund, approval, payout | fix brief 81 selesai (G7ftq, Opus reviewer 2 putaran bersih, gate hijau 1366); migration 0068 bentrok nomor milestone → regen | Codex R2 (SHA pasca-regen) |
 | ws/journals | b87a7d98 | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih, gate hijau 1348+1414); migration 0068/0069 bentrok nomor dgn edge di milestone → regen setelah shareholder | Codex R3 (SHA pasca-regen) |
-| ws/payroll-pph21-tests | a0bf212+ | K | pajak | setelah G70ms lapor | Codex R4 |
+| ws/payroll-pph21-tests | 727dc65f | K | uang PPh21 | fix brief 82 selesai (G2tir, 2 reviewer, fuzz 4000/mode, gate hijau 1484); keputusan founder BPJS net→perusahaan masuk; lanjutan karyawan campuran (porsi skema) dikirim 22:35; migration 0068/0069 → regen saat merge | Codex R4 (SHA pasca-lanjutan) |
 | ws/edc-framework | 6e40141f | K | uang EDC, tagih dobel | fix brief 76 selesai (G7cu9, 3 putaran reviewer, gate hijau 1403); lanjutan batch_no match + kontrak sale sinkron dikirim 22:26; migration 0068/0069 → regen saat merge | Codex R5 (SHA pasca-lanjutan) |
 | ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
 | ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
