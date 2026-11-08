@@ -1,3 +1,17 @@
+-- legend-6c0: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS; see 0065). The foreign keys below are validated by a query that
+-- FORCE ROW LEVEL SECURITY would run under the tenant policies, which raise
+-- 42501 without app.tenant_id. Lift FORCE on the existing tables they touch
+-- for this transaction only; it is restored at the end of this migration
+-- (drizzle applies pending migrations in one transaction).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_voids NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_refunds NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "cash_movements" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -171,3 +185,11 @@ ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_shift_fk" FORE
 ALTER TABLE "pos_order_tenders" ADD CONSTRAINT "pos_order_tenders_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pos_order_voids" ADD CONSTRAINT "pos_order_voids_shift_fk" FOREIGN KEY ("tenant_id","shift_id") REFERENCES "public"."pos_shifts"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pos_overrides" ADD CONSTRAINT "pos_overrides_action_check" CHECK ("pos_overrides"."action" IN ('void', 'discount', 'refund', 'cash_drawer_open', 'price_correction', 'cash_shift_close'));
+--> statement-breakpoint
+ALTER TABLE public.pos_order_refunds FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_voids FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.pos_order_tenders FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
