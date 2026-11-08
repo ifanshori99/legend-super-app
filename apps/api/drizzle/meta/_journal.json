@@ -638,6 +638,20 @@
       "when": 1794158184781,
       "tag": "0090_doit_webhook_events_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794177446377,
+      "tag": "0091_nervous_goblin_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794177463010,
+      "tag": "0092_pos_receipts_rls",
+      "breakpoints": true
     }
   ]
 }
