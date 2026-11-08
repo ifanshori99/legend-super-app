@@ -21,7 +21,6 @@ import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { checkDatabase } from "../db/index.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
-import { lookupEdgeDevice } from "../edge/ports.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
@@ -31,6 +30,7 @@ import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
+import { findActiveDeviceForToken } from "../services/device-registry-check.ts";
 import { getEdgeStatus } from "../services/edge-status.service.ts";
 
 /** Operational staff of the outlet may see its offline status (§4 Alur F). */
@@ -77,14 +77,11 @@ const deviceReader: RequestHandler = async (req, _res, next) => {
   const payload = verifyDeviceToken(raw);
   const device =
     payload && payload.tenantId === identity.scope.tenantId
-      ? await lookupEdgeDevice(identity.context, payload.deviceId)
+      ? await findActiveDeviceForToken(payload, {
+          outletId: identity.scope.outletId,
+        })
       : null;
-  if (
-    !device ||
-    device.status !== "active" ||
-    device.tenantId !== identity.scope.tenantId ||
-    device.outletId !== identity.scope.outletId
-  )
+  if (!device)
     throw new CoreError(
       "UNAUTHORIZED",
       "Hanya perangkat terdaftar di outlet ini yang dapat membaca status.",

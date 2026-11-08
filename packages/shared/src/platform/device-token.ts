@@ -20,6 +20,11 @@ export const deviceTokenPayloadSchema = z.strictObject({
   /** Brand the device is pinned to; null = the tenant's default brand. */
   brandId: brandIdSchema.nullable(),
   deviceId: uuidSchema,
+  /**
+   * Unix seconds the token was minted. Accepted only if not older than the
+   * device's `token_issued_at` floor: a reissue rotates older tokens out.
+   */
+  issuedAt: z.number().int().positive(),
   /** Unix seconds; an expired token is refused. */
   expiresAt: z.number().int().positive(),
 });

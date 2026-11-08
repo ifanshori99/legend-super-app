@@ -449,6 +449,13 @@
       "when": 1794139607620,
       "tag": "0063_edge_received_events",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1794142516903,
+      "tag": "0064_sticky_bullseye",
+      "breakpoints": true
     }
   ]
 }
