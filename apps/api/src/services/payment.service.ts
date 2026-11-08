@@ -14,7 +14,7 @@
 // storage): read a plan, call the gateway, then write in one transaction. The
 // gateway adapter is idempotent per key, so a retry cannot create two codes.
 
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   assertOutletInScope,
   createUlid,
@@ -104,6 +104,35 @@ const INTENT_LIFETIME_MINUTES: Record<OnlinePaymentMethod, number> = {
 /** A bill link is short-lived: 24 hours unless the caller sets its own. */
 const LINK_LIFETIME_MINUTES = 24 * 60;
 const SETTLED_STATUSES = ["paid", "partially_refunded", "refunded"] as const;
+/** Fixed RFC 9562 namespace for payment intent ids. Never change it: stored
+ * intents and the DOIT `reference` of their payments were derived from it. */
+const PAYMENT_INTENT_ID_NAMESPACE = Buffer.from(
+  "6f1c2a4e8b3d4f5a9c7e2d1b0a3f4e5d",
+  "hex",
+);
+
+/**
+ * Deterministic intent id (UUID version 5) for one create request: the same
+ * tenant and idempotency key always give the same id. The id is the DOIT
+ * `reference` and the idempotency key is the DOIT Idempotency-Key, so a retry
+ * after a lost gateway answer, or after a local write that failed once DOIT had
+ * accepted the payment, sends the identical request: DOIT replays the payment
+ * it already made, the adapter's reference check passes, and the retry stores
+ * that payment. One DOIT payment, one local intent. A DOIT payment whose local
+ * row was never written stays unpaid (the guest never received its code) until
+ * such a retry binds it or it expires at DOIT.
+ */
+function intentIdFor(tenantId: string, idempotencyKey: string): string {
+  const bytes = createHash("sha1")
+    .update(PAYMENT_INTENT_ID_NAMESPACE)
+    .update(`${tenantId}:${idempotencyKey}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 const nonnegativeIdr = idrSchema.refine((n) => n >= 0);
 
@@ -584,7 +613,8 @@ export async function createIntent(
   const requestedExpiry = new Date(
     now.getTime() + INTENT_LIFETIME_MINUTES[parsed.method] * 60_000,
   );
-  const intentId = randomUUID();
+  // Same key, same id, same DOIT request: see intentIdFor.
+  const intentId = intentIdFor(context.tenant.tenantId, parsed.idempotencyKey);
   const created: GatewayIntent = await gateway.createIntent({
     context,
     outletId: plan.link.outletId,
@@ -1191,12 +1221,13 @@ export async function refreshIntent(
       );
     return Number(row?.count ?? 0);
   });
-  // If a create succeeded at the gateway but the local write threw, the
-  // gateway replays that payment for the same key (old amount, old intent
-  // reference), which the adapter refuses: the refresh would be stuck. So the
-  // key also carries the current balance (a changed bill gets a new key) and
-  // the minute (any other failure clears within a minute), while repeated
-  // taps within that minute still share one key. Well under 100 chars.
+  // If a create succeeded at the gateway but the local write threw, a retry
+  // under the same key gets the same intent id (intentIdFor), so the gateway
+  // replays that payment and the retry binds it. A replay answers the old
+  // amount, which the adapter refuses, so the key also carries the current
+  // balance (a changed bill gets a new key) and the minute (any other failure
+  // clears within a minute), while repeated taps within that minute still
+  // share one key and recover a lost answer. Well under 100 chars.
   const minute = Math.floor(now.getTime() / 60_000);
   const idempotencyKey =
     `refresh:${link.id}:${count}:${outstandingIdr(link)}:${minute}`.slice(

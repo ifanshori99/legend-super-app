@@ -26,6 +26,7 @@ import type {
 import { createApp } from "../app";
 import {
   setPaymentGateway,
+  type GatewayIntent,
   type GatewayIntentRequest,
   type GatewayPaymentStatus,
   type PaymentGatewayPort,
@@ -36,6 +37,7 @@ import {
   expireDueIntents,
   getIntentView,
   getPaymentLinkView,
+  refreshIntent,
   requestPayAtCashier,
   type CreatePaymentLinkInput,
 } from "../services/payment.service";
@@ -119,8 +121,22 @@ class FakeGateway implements PaymentGatewayPort {
   readonly seenKeys: string[] = [];
   /** Runs inside the next create call (after the gateway "accepted" it). */
   onNextCreate: (() => Promise<void>) | null = null;
+  /** Intent id (DOIT `reference`) of every create call, in order. */
+  readonly seenReferences: string[] = [];
+  /** The next create is accepted, then its answer is lost on the way back. */
+  loseNextAnswer = false;
   private sequence = 0;
   private readonly payments = new Map<string, GatewayPaymentStatus>();
+  /** Like DOIT: a repeated Idempotency-Key replays the first payment. */
+  private readonly byKey = new Map<
+    string,
+    { reference: string; amountIdr: number; answer: GatewayIntent }
+  >();
+
+  /** Distinct payments the gateway has made. */
+  get paymentCount() {
+    return this.payments.size;
+  }
 
   async health(_context?: ScopedTenantContext, outletId?: string) {
     this.seenOutlets.health.push(outletId);
@@ -130,9 +146,20 @@ class FakeGateway implements PaymentGatewayPort {
   async createIntent(input: GatewayIntentRequest) {
     this.seenOutlets.createIntent.push(input.outletId);
     this.seenKeys.push(input.idempotencyKey);
+    this.seenReferences.push(input.intentId);
     const hook = this.onNextCreate;
     this.onNextCreate = null;
     if (hook) await hook();
+    const replay = this.byKey.get(input.idempotencyKey);
+    if (replay) {
+      // The adapter refuses a replay that describes another payment.
+      if (
+        replay.reference !== input.intentId ||
+        replay.amountIdr !== input.amountIdr
+      )
+        throw new Error("Replayed payment does not match the request");
+      return replay.answer;
+    }
     // Provider references are unique per provider transaction in production;
     // the fake keeps the same contract so persisted evidence from an earlier
     // test can never collide with a later one.
@@ -162,7 +189,7 @@ class FakeGateway implements PaymentGatewayPort {
               uniqueCode: "123",
               transferTotalIdr: idr(input.amountIdr + 123),
             };
-    return {
+    const answer: GatewayIntent = {
       providerRef,
       instructions,
       expiresAt:
@@ -170,6 +197,16 @@ class FakeGateway implements PaymentGatewayPort {
           ? input.expiresAt
           : new Date(Date.now() + this.expiresInMs).toISOString(),
     };
+    this.byKey.set(input.idempotencyKey, {
+      reference: input.intentId,
+      amountIdr: input.amountIdr,
+      answer,
+    });
+    if (this.loseNextAnswer) {
+      this.loseNextAnswer = false;
+      throw new Error("socket hang up");
+    }
+    return answer;
   }
 
   async getStatus(input: { providerRef: string; outletId?: string }) {
@@ -269,6 +306,14 @@ async function assign(userId: string, templateKey: string) {
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
     [tenantId, userId, rows[0].id],
   );
+}
+
+async function intentRowsOf(linkId: string) {
+  const { rows } = await owner.query<{ id: string; provider_ref: string }>(
+    "SELECT id, provider_ref FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+    [tenantId, linkId],
+  );
+  return rows;
 }
 
 describe("PAY-01 server-priced intents behind a payment link", () => {
@@ -440,6 +485,74 @@ describe("PAY-01 server-priced intents behind a payment link", () => {
     );
     expect(oldIntent.status).toBe(200);
     expect(oldIntent.body.data.status).toBe("expired");
+  });
+
+  it("P1 a create whose gateway answer was lost binds the same DOIT payment on retry", async () => {
+    const { token, linkId } = await openBill();
+    const body = {
+      method: "qris",
+      channelCode: null,
+      idempotencyKey: "lost-answer-key",
+    };
+    // DOIT accepted the payment, but its answer never reached us.
+    gateway.loseNextAnswer = true;
+    const lost = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(body);
+    expect(lost.status).not.toBe(201);
+    expect(await intentRowsOf(linkId)).toHaveLength(0);
+    const madeRef = gateway.lastCreated;
+
+    const retried = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(body);
+    expect(retried.status).toBe(201);
+    // Same key, same reference: DOIT replays instead of making a second payment.
+    const [firstRef, secondRef] = gateway.seenReferences;
+    expect(secondRef).toBe(firstRef);
+    expect(retried.body.data.id).toBe(firstRef);
+    expect(gateway.paymentCount).toBe(1);
+    expect(await intentRowsOf(linkId)).toEqual([
+      { id: firstRef, provider_ref: madeRef },
+    ]);
+  });
+
+  it("P1 a create whose local write failed after DOIT accepted it binds that payment on retry", async () => {
+    const { token, linkId } = await openBill();
+    const body = {
+      method: "qris",
+      channelCode: null,
+      idempotencyKey: "local-write-failed-key",
+    };
+    // The bill changes while DOIT mints the code, so the local insert refuses.
+    gateway.onNextCreate = async () => {
+      await owner.query(
+        "UPDATE payment_links SET paid_idr = 10000 WHERE id = $1",
+        [linkId],
+      );
+    };
+    const failed = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(body);
+    expect(failed.status).toBe(409);
+    expect(await intentRowsOf(linkId)).toHaveLength(0);
+    const madeRef = gateway.lastCreated;
+
+    // The change is undone (same balance again): the retry binds DOIT's payment.
+    await owner.query("UPDATE payment_links SET paid_idr = 0 WHERE id = $1", [
+      linkId,
+    ]);
+    const retried = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(body);
+    expect(retried.status).toBe(201);
+    const [firstRef, secondRef] = gateway.seenReferences;
+    expect(secondRef).toBe(firstRef);
+    expect(retried.body.data.id).toBe(firstRef);
+    expect(gateway.paymentCount).toBe(1);
+    expect(await intentRowsOf(linkId)).toEqual([
+      { id: firstRef, provider_ref: madeRef },
+    ]);
   });
 });
 
@@ -924,6 +1037,44 @@ describe("late payment and refresh", () => {
     expect(refreshed.body.data.id).not.toBe(created.body.data.id);
     expect(refreshed.body.data.status).toBe("pending");
     expect(refreshed.body.data.amountIdr).toBe(144_375);
+  });
+
+  it("P1 a refresh whose gateway answer was lost binds the same DOIT payment on retry", async () => {
+    gateway.expiresInMs = 40;
+    const { token, linkId } = await openBill();
+    const created = await agent(app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send({
+        method: "qris",
+        channelCode: null,
+        idempotencyKey: "refresh-lost-key",
+      });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    // One clock for both taps: the refresh key is per minute.
+    const now = new Date();
+    gateway.loseNextAnswer = true;
+    await expect(
+      refreshIntent(contextFor(), token, created.body.data.id, now),
+    ).rejects.toThrow("socket hang up");
+    const madeRef = gateway.lastCreated;
+
+    const retried = await refreshIntent(
+      contextFor(),
+      token,
+      created.body.data.id,
+      now,
+    );
+    const [, firstRefresh, secondRefresh] = gateway.seenReferences;
+    expect(secondRefresh).toBe(firstRefresh);
+    expect(retried.id).toBe(firstRefresh);
+    expect(retried.status).toBe("pending");
+    // The first code and one refresh code: no second refresh payment.
+    expect(gateway.paymentCount).toBe(2);
+    const rows = await intentRowsOf(linkId);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === firstRefresh)?.provider_ref).toBe(
+      madeRef,
+    );
   });
 
   it("PAY-01 a refresh whose local write failed after the gateway accepted it gets a new key next time", async () => {
