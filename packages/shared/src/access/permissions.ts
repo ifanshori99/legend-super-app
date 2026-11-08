@@ -103,6 +103,9 @@ const entries = [
   ["shift.cash.operate", ["payment"]],
   ["shift.cash.approve_close", ["approve", "payment"]],
   ["shift.cash.view_all", ["payment"]],
+  // Founder Q9 (2026-11-08): the business day is closed by the outlet
+  // manager, not by a shift supervisor (POS-05, legend-6c0).
+  ["pos.day.close", ["approve", "payment"]],
   ["wifi.voucher.issue", []],
 
   // Kitchen (§3.11, F9, F40)

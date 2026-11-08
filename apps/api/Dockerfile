@@ -29,9 +29,18 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 FROM deps AS builder
 COPY --from=pruner /app/out/full/ .
 COPY tsconfig.base.json starter.config.json ./
-# tsup bundles the code, @starter/shared, and npm dependencies into dist/, so
-# the images below need no node_modules. No secrets are needed to build.
+# tsup bundles the code, @starter/shared, and npm dependencies into dist/. Only
+# sharp stays external; the worker and runner images get it from the native stage. No secrets are needed to build.
 RUN pnpm --filter @starter/api run build
+
+# --- Native runtime deps: sharp cannot be bundled (platform .node binary) ----
+# Installs the exact sharp version from the lockfile, plus its @img/* binary
+# for this image's platform, into /native/node_modules.
+FROM builder AS native
+RUN mkdir /native && cd /native \
+    && npm init -y >/dev/null \
+    && npm install --omit=dev --no-audit --no-fund \
+       "sharp@$(node -p "require('/app/apps/api/node_modules/sharp/package.json').version")"
 
 # --- Migrator: apply committed SQL once per release --------------------------
 # Uses MIGRATION_DATABASE_URL when set, otherwise DATABASE_URL.
@@ -48,6 +57,7 @@ FROM node:${NODE_VERSION} AS worker
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder --chown=node:node /app/apps/api/dist ./dist
+COPY --from=native --chown=node:node /native/node_modules ./node_modules
 USER node
 # Liveness only: PID 1 must still be the worker process. Queue/relay health
 # requires external monitoring; this probe does not claim readiness.
@@ -62,6 +72,7 @@ ENV NODE_ENV=production \
     PORT=4000 \
     HOST=0.0.0.0
 COPY --from=builder --chown=node:node /app/apps/api/dist ./dist
+COPY --from=native --chown=node:node /native/node_modules ./node_modules
 USER node
 EXPOSE 4000
 

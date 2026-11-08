@@ -4,6 +4,7 @@ Worktree: legend/.worktrees/refund-approval (cabang ws/refund-approval, sudah me
 Kode utama: apps/api/src/services/payment-refund.service.ts (+ payment-admin.service.ts, payment-refund-gateway.ts, worker-main.ts, routes/platform-approval.routes.ts). Test: apps/api/src/test/payment-refund-approval.test.ts.
 
 ## Temuan (prioritas)
+
 A. Tinggi — refund admin tidak menolak intent terikat dokumen sumber (orderId, accessTicketId, subscriptionInvoiceId). createRefund & applyApproval wajib tolak intent berdokumen sumber kecuali requester sistem (system:pos, system:reservation). Refund penjualan wajib lewat modul pemilik (order.refunded). Batas refund gabungan payment_refunds + pos_order_refunds di bawah kunci yang sama bila dua jalur tetap mungkin. Refund provider completed atas dana tanpa dokumen sumber: periksa apakah perlu jurnal balik (payment.refunded sengaja tidak memposting di packages/shared/src/accounting/posting-rules.ts:16-18).
 B. Sedang — idempotency: approve diulang dengan key sama (rantai 2 level, juga level 1) → IDEMPOTENCY_KEY_REUSED; reject diulang → 409. Fix: cek baris rantai dengan decisionIdempotencyKey===key && decidedBy===actor, kembalikan loadView; reject dibungkus idempotentPaymentAdminWrite. Kontrak docs/plan/contracts.md:118.
 C. Sedang — sweep payout di tick relay outbox (worker-main.ts ~195-201, service ~1044-1056) memanggil provider berurutan (20 × 2×30 dtk) → relay macet. Fix: loop/job sendiri atau batch kecil + anggaran waktu ±20 dtk per putaran.
@@ -14,6 +15,7 @@ F. Rendah — cek payment.reconcile per outlet hanya di route refund; lewat inbo
 Migration baru digenerate SETELAH semua perubahan schema: `pnpm db:generate --name refund_approval_payout` (dijalankan agent utama, bukan subagent).
 
 ## Keputusan desain (engineer)
+
 - A: tolak bila `refund.unallocatedFundId IS NULL` DAN intent punya orderId/accessTicketId/subscriptionInvoiceId DAN requester adalah user (`isUserId`). Requester `system:*` (reservation, pos, qr — lihat systemRefundActorSchema di packages/shared/src/payment/admin.ts) tetap boleh. Dana belum teralokasi (unallocated fund) tetap boleh (bukan bagian penjualan, penerimaannya tidak dijurnal, jadi refund-nya juga tidak dijurnal).
   - createRefund (payment-admin.service.ts): 409 sebelum insert, kode error `REFUND_SOURCE_DOCUMENT` (ikuti pola conflict/CoreError yang ada).
   - applyApproval: refund lama yang terlanjur pending → `failRefund` reason baru `source_document` (tambah ke CHECK di db/schema/payment-admin.ts:197 dan refundFailureReasonSchema di packages/shared/src/payment/admin.ts:193, plus label i18n bila ada).
@@ -26,6 +28,7 @@ Migration baru digenerate SETELAH semua perubahan schema: `pnpm db:generate --na
 - Jangan generate migration. Jangan commit. Jangan jalankan suite penuh; boleh `pnpm --filter @starter/api exec tsc --noEmit` lewat `heavy`.
 
 ## Potongan
+
 - P1 (implementer): A + B + F. File: payment-refund.service.ts baris 1–690 (sampai rejectRefund), payment-admin.service.ts, db/schema/payment-admin.ts (CHECK failure_reason saja), packages/shared/src/payment/admin.ts.
 - P2 (implementer): E sisi penyimpanan. File: db/schema/payment.ts, payment.service.ts. Tambah `evidenceId` di paymentUnallocatedFunds.
 - P3 (implementer, SETELAH P1): C + D + E sisi pembaca. File: payment-refund.service.ts baris 690–akhir, worker-main.ts, db/schema/payment-admin.ts (kolom payout_pending_polls).

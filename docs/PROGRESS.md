@@ -14,6 +14,14 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - legend-18qw (worker event transport, gap replay, adapter notifikasi Brevo): commit `b22d549` di `ws/worker-transport` (worktree `.worktrees/worker-transport`). pnpm check hijau. Bead sudah di-close engineer.
 - Review legend-18qw: reviewer Claude (tanpa blocker) + second-opinion Codex (2 major). Semua temuan: `docs/briefs/06-fix-review-worker-transport.md`.
 
+## Brief 88 persiapan deploy (engineer, cabang `ws/deploy-prep`, worktree `.worktrees/deploy-prep`)
+
+- legend-jtnd: peran migrator production `legend_migrator_<16 hex>` (NOSUPERUSER, BYPASSRLS, CREATEROLE, pemilik database), dibuat sekali oleh superuser bootstrap lewat `deploy/single-vm/provision-roles.sh --env-file ... --migrator` (`apps/api/src/db/migrator-role.ts`). Peran aplikasi dan queue tidak berubah (NOBYPASSRLS).
+- legend-k1np: cek pra-deploy `node dist/predeploy-check.js` (`apps/api/src/db/predeploy-check.ts`), jalan sebelum migrate di `deploy.sh` dan provisioning first boot. Gagal bila migrator tidak bisa migrasi atau ada stream outbox yang sekuensnya bukan 1..N per tujuan.
+- Runbook: `docs/deployment.md` ("Create the migrator login", "Pre-deploy check").
+- Review: reviewer Opus + architect, semua temuan nyata sudah dibetulkan. Follow-up pra-ada: issue bd backup login `postgres`.
+- Belum: test DB terakhir dan `heavy pnpm check` belum hijau karena forwarding port Colima untuk container baru mati (ECONNREFUSED), bukan karena kode. Jalankan ulang setelah Colima dipulihkan. Second-opinion Codex (tingkat K) masih perlu diantre CTO.
+
 ## Sedang
 
 - (kosong selain thread di bawah)
@@ -124,6 +132,27 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
 
+## legend-6c0 shift kasir, putaran 2 (engineer, cabang `ws/pos-shift`)
+
+- Fix 3 P1 + 2 P2 second-opinion (brief `docs/briefs/46-fix-pos-shift-round2.md`) plus 2 temuan reviewer konteks segar (variance bocor ke kasir lewat approval; jam kas sebelum shift dibuka).
+- Hari usaha tertutup: `assertBusinessDayOpen` (kunci advisory bersama, kunci sama dengan tutup hari) di buat/ubah/bayar/selesai/void/refund. Kas wajib shift kasir terbuka (`lockCashierShiftForCash`, FOR SHARE vs FOR UPDATE di tutup shift). Tutup shift dua langkah: hitungan kas disimpan permanen (`pos_shift_counts`), approval terikat ke hitungan dan nilai |selisih| dari server, tingkat matriks dicek saat dipakai. Tutup hari diblokir shift terbuka lintas jam 04.00.
+- Migrasi baru 0066/0067 (bernomor setelah 0063-0065 putaran 1; perlu dinomori ulang bila `main` lebih dulu memakai nomor itu).
+- Status bead: review. Belum merge, belum push.
+
+## legend-6c0 shift kasir, perbaikan review K (engineer, cabang `ws/pos-shift`, 2026-11-08)
+
+- `main` digabung (c87fb5e). Migrasi cabang lama 0063-0067 dihapus, dibuat ulang setelah 0067 milik main: `0068_pos_shift` (skema), `0069_pos_shift_rls` (SQL custom dari `pos-shift.custom.sql`), `0070_pos_day_close_permission` (backfill izin, terpisah supaya bisa dijalankan ulang di test).
+- Tunai per perangkat: tender/refund/void tunai wajib `X-Device-Token` dan shift kasir yang terbuka di perangkat itu, selain itu `SHIFT_NOT_OPEN`. Baris tunai menyimpan `shift_id`; angka shift dijumlah per `shift_id`.
+- Refund/void tunai melebihi isi laci: 409 dengan pesan umum, tidak ada yang tersimpan.
+- Hitung buta: penolakan kas keluar diaudit dengan pesan umum, maksimal 3 hitungan kasir (`SHIFT_COUNT_LIMIT`), pesan persetujuan dibuat umum.
+- Tutup paksa (U9): pemegang `shift.cash.approve_close` mengirim hitungan paksa, saksi menyetujui lewat PIN, lalu `POST /shifts/:id/force-close`.
+- DB: FK `count_id`, open check mewajibkan `count_id IS NULL`, trigger mencocokkan hitungan penutup.
+- Kontrak berubah untuk UI `ui/pos-kasir-shift`: header perangkat wajib untuk tunai, endpoint force-close, error `SHIFT_COUNT_LIMIT`.
+- Putaran 2 (reviewer konteks segar): setelah 2 kali kas keluar/setor ditolak, semua kas keluar/setor di shift itu ditolak, supaya kasir tidak bisa menebak isi laci; `approved_by` diambil dari override yang terverifikasi; batas 3 hitungan hanya menghitung hitungan kasir sendiri (bukan hitungan paksa).
+- Akibat merge main: mock web POS kasir mengikuti alur hitung lalu tutup (`countId`); test QRIS dan rekap main membuka shift dan mengirim token perangkat; 0068 melepas FORCE RLS sementara (pola 0065) supaya bisa dijalankan pemilik tabel tanpa BYPASSRLS.
+- Commit: c87fb5e (merge), a67d4cb, 5db5f47, 788e32e, 4195d5c, 78a274a, e1674b1. Gerbang penuh hijau di e1674b1: API 1411 lulus (1 skip), root 1414 lulus, lint 0 error (3 warning), build lulus.
+- Sisa: second-opinion Codex (tingkat K) sebelum gerbang rilis; celah ULID/UUID `approvalRequestId` di body tutup; trigger DB belum mengecek `expected_idr`/`recorded_by` (layanan sudah).
+- Belum merge, belum push.
 ## legend-5cnk + legend-y4wp PPh 21 round 2 (engineer, cabang `ws/payroll-pph21-tests`)
 
 - Selesai: engine PPh 21 v2 (`apps/api/src/services/payroll-pph21.ts`) membetulkan 3 P1 + 3 P2 temuan Codex, ditambah 2 bug dari reviewer (Desember tanpa bayaran, gross_first menagih karyawan atas kurang bayar riwayat net). Kebijakan PPh 21 per tenant: kontrak `packages/shared/src/hris/payroll/pph21-policy.ts`, tabel `payroll_pph21_policies` (migrasi 0068/0069 setelah dinomori ulang, RLS FORCE, append-only), service + route `/api/hris/payroll/pph21-policies` (payroll.view / payroll.run, idempotency, audit).
@@ -180,3 +209,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Watermark disimpan di tabel baru `edge_pull_checkpoints` (migration `0069_hesitant_smiling_tiger`, RLS tenant + outlet), bukan dari replika: heartbeat edge menaikkan `updated_at` lokal.
 - Gagal tarik: replika lama tetap dipakai, tidak ada akses device yang dibuka. Basi bila tarik sukses terakhir lebih tua dari `EDGE_DEVICE_SYNC_STALE_SECONDS` (default 900): log error, `deviceRegistry.stale` di `/api/edge/status` dan `/api/edge/health` (status HTTP health tidak berubah).
 - Kontrak: `edgeStatusSchema.deviceRegistry` opsional (edge lama tidak mengirimnya). Lanjutan web: tampilkan status basi di panel edge dan isi mock `apps/web/src/features/ws02-edge/mock.ts`.
+
+## legend-w1vo jembatan inventori ke GL (brief 87, engineer, 2026-11-09)
+
+- Sudah: konsumen `stock.moved` → jurnal (opname `stock.adjusted#count`, waste `stock.adjusted#waste`, HPP `stock.deducted`) di `apps/api/src/services/inventory-gl-consumer.ts`, dipasang di worker cloud. Migration 0075 (`inventory_gl_postings`, `inventory_gl_blocked`, indeks sumber `stock_ledger`) dan 0076 (RLS). Periode tutup / pemetaan akun hilang: savepoint, sumber diparkir, sweep worker coba ulang dengan jeda 10 menit; cloud-sync tidak ikut tertahan.
+- Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
+- Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
+- Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
