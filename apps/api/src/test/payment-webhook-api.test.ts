@@ -2060,6 +2060,134 @@ describe("PAY-02 an intent past its expiry asks DOIT before it expires", () => {
   });
 });
 
+describe("PAY-02 a gateway error never closes a lapsed intent", () => {
+  const minutes = 60_000;
+  const pollAt = (at: Date) =>
+    pollPendingGatewayIntents(contextFor(tenantA), at, 100);
+  const lapse = async (intentId: string, interval: string) => {
+    const { rows } = await owner.query<{ expires_at: Date }>(
+      `UPDATE payment_intents SET expires_at = now() - $2::interval
+       WHERE id = $1 RETURNING expires_at`,
+      [intentId, interval],
+    );
+    return rows[0]!.expires_at;
+  };
+  /** DOIT cannot be read for this payment (the fake answers 404). */
+  async function withDoitDown<T>(bill: Bill, run: () => Promise<T>) {
+    const payment = doit.payments.get(bill.providerRef)!;
+    doit.payments.delete(bill.providerRef);
+    try {
+      return await run();
+    } finally {
+      doit.payments.set(bill.providerRef, payment);
+    }
+  }
+  const flagsOf = async (intentId: string) =>
+    (
+      await owner.query<{ flags: string[] }>(
+        "SELECT flags FROM payment_intents WHERE id = $1",
+        [intentId],
+      )
+    ).rows[0]!.flags;
+  const polledAt = async (intentId: string) =>
+    (
+      await owner.query<{ gateway_polled_at: Date | null }>(
+        "SELECT gateway_polled_at FROM payment_intents WHERE id = $1",
+        [intentId],
+      )
+    ).rows[0]!.gateway_polled_at;
+
+  it("PAY-02 paid before expiry but polled after it: not late, recorded at DOIT's paid time", async () => {
+    const bill = await openIntent();
+    const expiresAt = await lapse(bill.intentId, "1 minute");
+    const paidAt = new Date(expiresAt.getTime() - 1 * minutes);
+    doit.settle(bill.providerRef);
+    doit.payments.get(bill.providerRef)!.paid_at = paidAt.toISOString();
+    await pollAt(new Date(Date.now() + 2 * minutes));
+    await expectPaidOnce(bill);
+    expect(await flagsOf(bill.intentId)).not.toContain("late_payment");
+    expect((await intentRow(bill.intentId)).paid_at?.toISOString()).toBe(
+      paidAt.toISOString(),
+    );
+    const { rows } = await owner.query<{ received_at: Date }>(
+      "SELECT received_at FROM payment_evidence WHERE payment_intent_id = $1",
+      [bill.intentId],
+    );
+    expect(rows.map((row) => row.received_at.toISOString())).toEqual([
+      paidAt.toISOString(),
+    ]);
+  });
+
+  it("PAY-02 a gateway error past expiry keeps the intent pending; the guest sees it expired; a later poll settles it", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    const first = new Date(Date.now() + 2 * minutes);
+    await withDoitDown(bill, async () => {
+      await pollAt(first);
+      const view = await agent(app).get(
+        `/api/payments/links/${bill.token}/intents/${bill.intentId}`,
+      );
+      expect(view.status).toBe(200);
+      expect(view.body.data.status).toBe("expired");
+    });
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+
+    // DOIT answers again: the money that arrived is found and recorded.
+    doit.settle(bill.providerRef);
+    await pollAt(new Date(first.getTime() + 65 * minutes));
+    await expectPaidOnce(bill);
+    expect(await flagsOf(bill.intentId)).toContain("late_payment");
+  });
+
+  it("PAY-02 a lapsed intent is asked again only after the backoff", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    const first = new Date(Date.now() + 2 * minutes);
+    await withDoitDown(bill, () => pollAt(first));
+    expect((await polledAt(bill.intentId))?.getTime()).toBe(first.getTime());
+    doit.settle(bill.providerRef);
+    // The wait is half the time since expiry: not due after 5 minutes, due
+    // once it has passed (62 minutes past expiry at the first poll).
+    await pollAt(new Date(first.getTime() + 5 * minutes));
+    expect((await polledAt(bill.intentId))?.getTime()).toBe(first.getTime());
+    await expectUntouched(bill);
+    await pollAt(new Date(first.getTime() + 65 * minutes));
+    await expectPaidOnce(bill);
+  });
+
+  it("PAY-02 a new code for the bill leaves the lapsed, unconfirmed code pending for reconciliation", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    const refreshed = await withDoitDown(bill, () =>
+      agent(app).post(
+        `/api/payments/links/${bill.token}/intents/${bill.intentId}/refresh`,
+      ),
+    );
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.data.id).not.toBe(bill.intentId);
+    expect(refreshed.body.data.status).toBe("pending");
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+
+    doit.settle(bill.providerRef);
+    await pollAt(new Date(Date.now() + 2 * minutes));
+    await expectPaidOnce(bill);
+  });
+
+  it("PAY-02 after the poll window an unanswered intent expires as timeout, audited", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "25 hours");
+    await withDoitDown(bill, () => pollAt(new Date(Date.now() + 2 * minutes)));
+    expect((await intentRow(bill.intentId)).status).toBe("expired");
+    const { rows } = await owner.query<{ reason: string | null }>(
+      `SELECT event->>'reason' AS reason FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = $2 AND event->>'objectId' = $3`,
+      [tenantA, "payment.reconciliation_timed_out", bill.intentId],
+    );
+    expect(rows).toEqual([{ reason: "gateway_unreachable" }]);
+  });
+});
+
 /** A paid webhook crediting `paidAmount` (the fake's default is the bill). */
 function paidEventWithAmount(providerRef: string, paidAmount: number) {
   const event = doit.eventFor(providerRef, "paid");

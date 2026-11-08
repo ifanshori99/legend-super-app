@@ -269,11 +269,23 @@ export function doitPaymentToGatewayStatus(
   payment: DoitPayment,
 ): GatewayPaymentStatus {
   if (payment.status === "refunded")
-    return { status: "pending", providerRef: payment.id, amountIdr: null };
+    return {
+      status: "pending",
+      providerRef: payment.id,
+      amountIdr: null,
+      paidAt: null,
+    };
+  const paid = payment.status === "paid";
   return {
     status: payment.status,
     providerRef: payment.id,
-    amountIdr: payment.status === "paid" ? payment.amount : null,
+    amountIdr: paid ? payment.amount : null,
+    // `paid_at` already parsed as a timestamp; normalized to ISO for the
+    // lifecycle's confirmation schema.
+    paidAt:
+      paid && payment.paid_at !== null
+        ? new Date(payment.paid_at).toISOString()
+        : null,
   };
 }
 

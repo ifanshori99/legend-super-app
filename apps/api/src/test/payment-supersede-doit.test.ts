@@ -628,4 +628,63 @@ describe("A4 a superseded DOIT code that is still payable", () => {
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect(await evidenceCount(oldCode.id)).toBe(0);
   });
+  /** Superseded 20 minutes ago; its code lapsed 10 minutes ago, well past
+   * the 60-second grace that used to end its poll. */
+  const lapseSuperseded = (code: Intent) =>
+    owner.query(
+      `UPDATE payment_intents
+       SET updated_at = now() - interval '20 minutes',
+           expires_at = now() - interval '10 minutes'
+       WHERE id = $1`,
+      [code.id],
+    );
+  const statusReads = (code: Intent) =>
+    doit.calls.filter((call) => call === `GET /v1/payments/${code.providerRef}`)
+      .length;
+
+  it("a gateway error after the old code lapsed does not drop it: a later poll still settles it", async () => {
+    const { bill, oldCode } = await supersededBill();
+    await lapseSuperseded(oldCode);
+    const first = new Date(Date.now() + 120_000);
+    const payment = doit.payments.get(oldCode.providerRef)!;
+    doit.payments.delete(oldCode.providerRef);
+    try {
+      await pollPendingGatewayIntents(tenantContext(), first, 100);
+    } finally {
+      doit.payments.set(oldCode.providerRef, payment);
+    }
+    expect((await intentRow(oldCode.id)).status).toBe("expired");
+    expect(await evidenceCount(oldCode.id)).toBe(0);
+
+    doit.settle(oldCode.providerRef);
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(first.getTime() + 20 * 60_000),
+      100,
+    );
+    const old = await intentRow(oldCode.id);
+    expect(old.status).toBe("paid");
+    expect(old.flags).toContain("late_payment");
+    expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
+  });
+
+  it("a definitive DOIT answer after the old code lapsed ends its poll", async () => {
+    const { bill, oldCode } = await supersededBill();
+    await lapseSuperseded(oldCode);
+    doit.payments.get(oldCode.providerRef)!.status = "expired";
+    const first = new Date(Date.now() + 120_000);
+    await pollPendingGatewayIntents(tenantContext(), first, 100);
+    const reads = statusReads(oldCode);
+    expect(reads).toBeGreaterThanOrEqual(1);
+
+    // Later runs no longer ask DOIT about it.
+    await pollPendingGatewayIntents(
+      tenantContext(),
+      new Date(first.getTime() + 2 * 60 * 60_000),
+      100,
+    );
+    expect(statusReads(oldCode)).toBe(reads);
+    expect((await intentRow(oldCode.id)).status).toBe("expired");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+  });
 });
