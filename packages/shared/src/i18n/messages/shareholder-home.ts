@@ -100,8 +100,9 @@ export const shareholderHomeMessages = {
     hint: "Laporan bulanan dan dokumen lain yang sudah diterbitkan untuk shareholder.",
     published: "Terbit {date}",
     loadMore: "Muat dokumen berikutnya",
-    downloadNote:
-      "Berkas belum bisa diunduh dari layar ini. Hubungi admin bila Anda membutuhkan salinannya.",
+    download: "Unduh",
+    downloadLabel: "Unduh {title}",
+    downloadFailed: "Dokumen belum bisa diunduh. Coba lagi.",
     emptyTitle: "Belum ada dokumen",
     emptyHint:
       "Dokumen muncul di sini setelah manajemen menerbitkannya untuk shareholder.",

@@ -1,6 +1,6 @@
 // "Dokumen" (PRD §3 F35, SH-02): documents management published for
-// shareholders. The contract exposes storage keys, not download URLs, so rows
-// are listed without links and the screen says so.
+// shareholders. The contract exposes storage keys, not download URLs, so each
+// row's button asks for a short-lived signed URL instead (legend-135u).
 import { FileText } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTableShell } from "@/components/ui/data-table-shell";
 import { formatInstantDate } from "../board.ts";
 import { useShareholderDocuments } from "../hooks";
+import { DocumentDownload } from "./document-download";
 import { RegionFailure } from "./region";
 
 export function DocumentsSection() {
@@ -64,6 +65,7 @@ export function DocumentsSection() {
             <Badge tone="neutral">
               {t(`shareholderHome.documents.kinds.${doc.kind}`)}
             </Badge>
+            <DocumentDownload doc={doc} />
           </li>
         ))}
       </ul>
@@ -79,9 +81,6 @@ export function DocumentsSection() {
           </Button>
         </div>
       )}
-      <p className="border-t-(length:--border-w) p-card text-xs leading-5 text-muted-foreground">
-        {t("shareholderHome.documents.downloadNote")}
-      </p>
     </DataTableShell>
   );
 }

@@ -71,5 +71,18 @@ Berkas milik: `apps/web/src/features/ws11-reports/mock.ts`, `apps/web/src/featur
 - `tests/dashboard-contract.test.mjs:613-614` masih memakai `recipients`; ubah ke `recipientUserIds`.
 - Bukti: `node --test tests/ws11-*.test.mjs tests/dashboard-contract.test.mjs` hijau, typecheck shared + web.
 
+### E2 — perbaikan review K runtime metrik (legend-cdta), tingkat K
+Berkas milik: `apps/api/src/services/metrics-query.service.ts`, `apps/api/src/services/metrics-gl-sources.ts`, `apps/api/src/test/metrics-runtime.test.ts`, `packages/shared/src/metrics/schemas.ts` (hanya `meta` respons query), `packages/shared/src/metrics/fixtures.ts` (hanya rumus registry metrik uang), `packages/shared/src/metrics/endpoints.ts`. JANGAN ubah `apps/api/src/test/ws11-gl-parity.acceptance.test.ts`; ia harus tetap 24/24.
+Kode sudah ada (baca dulu). Perbaiki berurutan:
+1. Reviewer (I2): `metrics-query.service.ts:293-329` bulan dianggap tutup hanya bila SEMUA badan usaha tenant punya baris tutup; badan usaha tanpa buku di bulan itu (baris `fiscal_periods` dibuat saat posting pertama) mengunci label `estimate` selamanya. Wajibkan tutup hanya untuk badan usaha yang punya baris `fiscal_periods` (atau jurnal) di bulan itu. Test skenario: A tutup Jan–Feb, B mulai Maret ⇒ Jan final.
+2. Rasio dengan pembilang tanpa data ⇒ null, bukan 0% (`:499-512`; contoh `labor_cost_pct` untuk pembaca scope outlet karena payroll di level badan usaha).
+3. `groupBy=outlet` membuang baris level badan usaha (outlet null) (`:627-644`) ⇒ jumlah outlet ≠ total `net_profit` (I4). Tambah seri "Tingkat badan usaha" (hanya untuk pembaca tingkat tenant). Test jumlah seri == total untuk `net_profit`.
+4. Baca `closedMonths` dan `ledgerRows` dalam satu transaksi `REPEATABLE READ READ ONLY`. Tambah `accountingVersion` per bulan di `meta` respons.
+5. Performa: jangan pindai semua baris per bucket per grup (`:457`, `:645-660`); agregasi per (bucket, outlet, komponen) di SQL atau indeks sekali.
+6. Satu sumber rumus: rumus registry metrik uang di `metrics/fixtures.ts` (mis. `net_sales` = order.paid − refund − comp, `food_cost_pct` = stock.cost) harus menggambarkan sumber GL yang benar-benar dipakai (definisi ini dikirim ke AI/MCP lewat `definitionRef`); naikkan versi definisi. Test pelindung: tiap kunci di `metrics-gl-sources.ts` ada di `reportMetricByCode` dengan unit cocok, dan tiap metrik `idr` terpetakan atau tercatat di daftar `NON_GL` eksplisit.
+7. Term berbasis role: sertakan akun anak (`parentId`) dari akun yang di-mapping.
+8. Test alur reopen → estimate → re-close → final, dan parity jurnal vs snapshot untuk semua bulan tutup.
+Bukti: `LEGEND_TEST_FILES=src/test/metrics-runtime.test.ts,src/test/ws11-gl-parity.acceptance.test.ts heavy pnpm test` (cek format daftar file di `scripts/test.mjs`), typecheck api + shared + web.
+
 ## Laporan tiap potongan
 Berkas berubah, perintah test yang dijalankan + hasil, hal yang tidak bisa diverifikasi, keputusan yang kamu ambil. Butuh berkas di luar daftar milikmu: berhenti dan laporkan, jangan edit.

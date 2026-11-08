@@ -37,15 +37,15 @@ const definitionInputs = [
   {
     id: "dce874d4-b0a0-4403-b0e3-50b202a52076",
     code: "net_sales",
-    version: 1,
+    version: 2,
     name: "Penjualan bersih",
     description:
-      "Nilai penjualan setelah diskon, refund, dan comp, dari pesanan yang sudah dibayar.",
+      "Saldo bagian pendapatan di buku besar (kredit dikurangi debit), sudah dikurangi akun kontra diskon, refund, dan comp.",
     ownerModule: "pos",
     formula: {
       formulaRef: "pos.net_sales",
       expression:
-        "sum(order.paid.amount_idr) - sum(refund.amount_idr) - sum(comp.amount_idr)",
+        "sum(journal_lines.credit_idr - journal_lines.debit_idr) where chart_of_accounts.report_group = 'revenue'",
       inputs: [],
     },
     unit: "idr",
@@ -158,15 +158,16 @@ const definitionInputs = [
   {
     id: "212e7b30-18ae-47f0-b6b1-cd5fe103802c",
     code: "food_cost_pct",
-    version: 1,
+    version: 2,
     name: "Food cost %",
     description:
-      "HPP bahan dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
+      "HPP di buku besar dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
     ownerModule: "inventory",
     formula: {
       formulaRef: "inventory.food_cost_pct",
-      expression: "sum(stock.cost_idr) / net_sales * 100",
-      inputs: ["net_sales"],
+      expression:
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs' / net_sales * 100",
+      inputs: ["cogs", "net_sales"],
     },
     unit: "percent",
     aggregation: "ratio",
@@ -185,15 +186,15 @@ const definitionInputs = [
   {
     id: "90437aa2-128d-415b-ac80-59cb03ea5ec2",
     code: "labor_cost_pct",
-    version: 1,
+    version: 2,
     name: "Labor cost %",
     description:
-      "Biaya tenaga kerja dibagi penjualan bersih; resmi setelah periode akuntansi ditutup.",
+      "Beban gaji dan BPJS perusahaan di buku besar dibagi penjualan bersih; resmi setelah periode akuntansi ditutup. Gaji dicatat di tingkat badan usaha, jadi untuk satu outlet nilainya kosong.",
     ownerModule: "payroll",
     formula: {
       formulaRef: "payroll.labor_cost_pct",
       expression:
-        "sum(payroll_run.gross_idr + bpjs_employer_idr) / net_sales * 100",
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role in ('salary_expense', 'bpjs_expense') incl. child accounts / net_sales * 100",
       inputs: ["net_sales"],
     },
     unit: "percent",
@@ -213,15 +214,16 @@ const definitionInputs = [
   {
     id: "79b9ca9c-2622-4c78-b197-d68e0b46b48b",
     code: "prime_cost_pct",
-    version: 1,
+    version: 2,
     name: "Prime cost %",
     description:
       "Food cost % ditambah labor cost %; dasar margin operasional harian.",
     ownerModule: "accounting",
     formula: {
       formulaRef: "accounting.prime_cost_pct",
-      expression: "food_cost_pct + labor_cost_pct",
-      inputs: ["food_cost_pct", "labor_cost_pct"],
+      expression:
+        "(sum(journal_lines.debit_idr - journal_lines.credit_idr) where chart_of_accounts.report_group = 'cogs' or account_mappings.role in ('salary_expense', 'bpjs_expense') incl. child accounts) / net_sales * 100",
+      inputs: ["cogs", "net_sales"],
     },
     unit: "percent",
     aggregation: "ratio",
@@ -373,14 +375,15 @@ const definitionInputs = [
   {
     id: "104ed679-71b2-492f-a83b-266e4b94ad16",
     code: "net_profit",
-    version: 1,
+    version: 2,
     name: "Laba bersih",
     description:
       "Laba bersih akuntansi periode; hanya resmi setelah periode ditutup (SH-02).",
     ownerModule: "accounting",
     formula: {
       formulaRef: "accounting.net_profit",
-      expression: "sum(journal.profit_idr)",
+      expression:
+        "sum(journal_lines.credit_idr - journal_lines.debit_idr) where chart_of_accounts.report_group in ('revenue', 'other_income', 'cogs', 'operating_expense', 'other_expense')",
       inputs: [],
     },
     unit: "idr",
@@ -451,13 +454,14 @@ const definitionInputs = [
   {
     id: "6808467f-6b4b-4e98-ac71-7ed828586833",
     code: "waste_cost",
-    version: 1,
+    version: 2,
     name: "Biaya waste",
     description: "Nilai bahan rusak, tumpah, atau kedaluwarsa pada periode.",
     ownerModule: "inventory",
     formula: {
       formulaRef: "inventory.waste_cost",
-      expression: "sum(stock_ledger.waste_cost_idr)",
+      expression:
+        "sum(journal_lines.debit_idr - journal_lines.credit_idr) where account_mappings.role = 'waste_expense' incl. child accounts",
       inputs: [],
     },
     unit: "idr",
@@ -562,7 +566,7 @@ export const metricDailyRows = [
     value: { unit: "idr", valueIdr: 9_646_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
-    definitionVersion: 1,
+    definitionVersion: 2,
     updatedAt: "2026-11-01T00:05:00.000Z",
   },
   {
@@ -575,7 +579,7 @@ export const metricDailyRows = [
     value: { unit: "idr", valueIdr: 5_395_000 },
     finality: "final",
     definitionId: "dce874d4-b0a0-4403-b0e3-50b202a52076",
-    definitionVersion: 1,
+    definitionVersion: 2,
     updatedAt: "2026-11-01T00:05:00.000Z",
   },
 ].map((row) => metricDailyRowSchema.parse(row));
