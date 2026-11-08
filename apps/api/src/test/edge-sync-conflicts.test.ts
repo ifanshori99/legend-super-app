@@ -30,6 +30,7 @@ import {
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -1219,11 +1220,11 @@ describe("legend-wqc6 replay guards", () => {
           aggregate_sequence: number;
           reason: string;
         }>(
-          `SELECT id, aggregate_sequence, reason FROM edge_sync_conflicts
+          `SELECT id, aggregate_sequence::int AS aggregate_sequence, reason FROM edge_sync_conflicts
             WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence`,
           [tenantA.tenantId, aggregateId],
         )
-      ).rows;
+      ).rows.map((row) => ({ ...row, id: uuidToUlid(row.id) }));
 
     // Sequence 3 arrives first: a hole before it, recorded as a conflict.
     const third = eventAt(3);
@@ -1318,15 +1319,15 @@ describe("legend-wqc6 applier refusal and replay preconditions", () => {
         detail: string | null;
         kind: string;
       }>(
-        `SELECT id, aggregate_sequence, reason, detail, kind FROM edge_sync_conflicts
+        `SELECT id, aggregate_sequence::int AS aggregate_sequence, reason, detail, kind FROM edge_sync_conflicts
           WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence`,
         [tenantA.tenantId, aggregateId],
       )
-    ).rows;
+    ).rows.map((row) => ({ ...row, id: uuidToUlid(row.id) }));
   const receiptOutcomes = async (aggregateId: string) =>
     (
       await owner.query<{ aggregate_sequence: number; outcome: string }>(
-        `SELECT aggregate_sequence, outcome FROM edge_inbound_events
+        `SELECT aggregate_sequence::int AS aggregate_sequence, outcome FROM edge_inbound_events
           WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence`,
         [tenantA.tenantId, aggregateId],
       )
