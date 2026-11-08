@@ -23,7 +23,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
 | ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
 | ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
-| ws/shareholder-docs | cdc372c6 | K | data pribadi, dokumen legal | thread 2 reviewer+architect + Opus reviewer: 1 Sedang (malware scan) fixed cdc372c6; merge-prep regen di atas milestone jalan | Codex R9 |
+| ws/shareholder-docs | f2760e4b | K | data pribadi, dokumen legal | malware fix cdc372c6; regen 0072/0073; DIGABUNG milestone/m1 (22:45); gate milestone belum dijalankan ulang | Codex R9 |
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
 | ws/hris-leave | 1db3cd05 | S | cuti (Opus: domain rumit) | Opus reviewer PERLU FIX (2 Tinggi, 2 Sedang) → brief 85 ke G5klp 22:06 | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
@@ -154,3 +154,7 @@ Total ±11,58 juta token-biaya* (subagent Opus 1,31 jt, Sonnet 0,38 jt, Haiku 0,
 
 ## Vendor (gelombang ini)
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+
+## Serah terima kuota (22:45)
+Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Berjalan: G8x09 DOIT, G7cu9 EDC batch_no, G2tir PPh21 campuran, G5rd6 shift (ulang gate), G5klp cuti (brief 85), G9d1y struk (brief 77). Subagent: fix hris-sop (brief 86). Berikut: gate milestone setelah merge shareholder; merge journals → refund → hris-sop → edc → pph21 → shift → hris-leave (regen tiap cabang). Codex cron 23:41 & 00:27. Subagent merge-prep shareholder sempat menjalankan `pkill -f <id task>` (pelanggaran, cakupan sempit) — cek tidak ada test lain yang mati.
