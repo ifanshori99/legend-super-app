@@ -19,6 +19,8 @@
     "./payment": "./src/payment/index.ts",
     "./payment/admin": "./src/payment/admin.ts",
     "./edge": "./src/edge/index.ts",
+    "./edc": "./src/edc/index.ts",
+    "./edc/events": "./src/edc/events.ts",
     "./adapters": "./src/adapters/index.ts",
     "./storage": "./src/storage/index.ts",
     "./api": "./src/api/index.ts",

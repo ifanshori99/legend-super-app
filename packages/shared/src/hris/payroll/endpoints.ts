@@ -95,6 +95,11 @@ import {
   serviceChargePoolStatusSchema,
 } from "./service-charge.ts";
 import {
+  createPph21PolicyVersionInputSchema,
+  pph21PolicyInForceSchema,
+  pph21PolicyVersionSchema,
+} from "./pph21-policy.ts";
+import {
   statutoryTableDraftInputSchema,
   statutoryTableTypeSchema,
   statutoryTableVersionSchema,
@@ -163,6 +168,31 @@ export const archiveStatutoryTable = defineEndpoint({
   params: z.strictObject({ versionId: statutoryTableVersionIdSchema }),
   body: clientInputSchema(write),
   response: dataResponseSchema(statutoryTableVersionSchema),
+});
+
+// ---- PPh 21 policy versions (legend-y4wp, R15, R20) ------------------------
+// Append-only: no PUT, PATCH or DELETE. payroll.view reads, payroll.run writes.
+
+export const listPph21Policies = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/pph21-policies`,
+  response: dataResponseSchema(z.array(pph21PolicyVersionSchema)),
+});
+
+/** Policy in force on `date` (default today's business date). */
+export const getPph21PolicyInForce = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/pph21-policies/in-force`,
+  query: z.strictObject({ date: businessDateSchema.optional() }),
+  response: dataResponseSchema(pph21PolicyInForceSchema),
+});
+
+/** New version; the server assigns the version number. 409 on past or taken date. */
+export const createPph21Policy = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/pph21-policies`,
+  body: createPph21PolicyVersionInputSchema.extend(write),
+  response: dataResponseSchema(pph21PolicyVersionSchema),
 });
 
 // ---- Policies, components, THR schedules ---------------------------------
