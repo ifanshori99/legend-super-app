@@ -4,8 +4,8 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pos-shift`, cabang `ws/pos-shift`, SHA `580d0db`.
-Rentang diff: `git diff $(git merge-base main 580d0db)..580d0db` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pos-shift`, cabang `ws/pos-shift` 69ddb9a4, digabung ke `milestone/m1` lewat `prep/pos-shift` SHA `1eda3a4b` (merge m1 `30a31a3c`, migration diregen jadi 0088-0090).
+Rentang diff: `git diff 71751c8f 30a31a3c` (isi cabang saja di atas m1; abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`: menyeret isi m1 lain.
 
 ## Berkas berisiko
 - `apps/api/src/services/pos-shift.service.ts`
