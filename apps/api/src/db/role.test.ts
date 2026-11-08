@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { createPgBoss } from "../worker/runtime";
+import { createRelayScheduler, createWakeListener } from "../worker/relay";
 import { createAppPool, verifyQueueConnection } from "./role";
 
 describe("application database role", () => {
@@ -50,6 +51,24 @@ describe("queue database role", () => {
       await expect(boss.start()).rejects.toThrow(unsafe);
     } finally {
       await boss.stop().catch(() => {});
+    }
+  });
+  it("refuses a privileged login in the relay scheduler's pg-boss pool", async () => {
+    const scheduler = createRelayScheduler(
+      process.env.STARTER_TEST_DATABASE_URL!,
+    );
+    try {
+      await expect(scheduler.start()).rejects.toThrow(unsafe);
+    } finally {
+      await scheduler.stop().catch(() => {});
+    }
+  });
+  it("refuses a privileged login in the wake listener before LISTEN", async () => {
+    const listener = createWakeListener(process.env.STARTER_TEST_DATABASE_URL!);
+    try {
+      await expect(listener.start(() => {})).rejects.toThrow(unsafe);
+    } finally {
+      await listener.stop().catch(() => {});
     }
   });
   it("allows a restricted login that is not a legend_app member", async () => {
