@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794148303939,
+      "tag": "0068_accounting_journal_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794148317207,
+      "tag": "0069_accounting_journal_requests_rls",
+      "breakpoints": true
     }
   ]
 }

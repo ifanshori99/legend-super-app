@@ -174,6 +174,13 @@ export const recurringJournals = pgTable(
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     rejectionReason: varchar("rejection_reason", { length: 500 }),
     lastGeneratedPeriod: varchar("last_generated_period", { length: 7 }),
+    // Set when the template is paused, cleared on resume: resume skips only
+    // the months that fell due after this instant (legend-vmyg review K).
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    // Last scheduled-generation failure, cleared on the next success, so a
+    // silently failing template is visible to finance.
+    lastError: varchar("last_error", { length: 500 }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
     approvalChainId: uuid("approval_chain_id"),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     requestFingerprint: varchar("request_fingerprint", {
