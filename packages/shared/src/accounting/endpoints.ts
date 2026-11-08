@@ -299,6 +299,17 @@ export const transitionRecurringJournalEndpoint = defineEndpoint({
   response: dataResponseSchema(recurringJournalSchema),
 });
 
+export const skipRecurringJournalPeriodEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/recurring-journals/:recurringJournalId/skip-period`,
+  params: recurringParams,
+  body: z.strictObject({
+    period: periodKeySchema,
+    reason: z.string().trim().min(1).max(500),
+  }),
+  response: dataResponseSchema(recurringJournalSchema),
+});
+
 // ---- Fiscal periods --------------------------------------------------------
 
 const periodParams = z.strictObject({ fiscalPeriodId: fiscalPeriodIdSchema });
@@ -700,6 +711,7 @@ export const accountingEndpoints = Object.freeze({
   listRecurringJournals,
   createRecurringJournal,
   transitionRecurringJournalEndpoint,
+  skipRecurringJournalPeriodEndpoint,
   listFiscalPeriods,
   closeFiscalPeriod,
   getPeriodSnapshot,

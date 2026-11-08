@@ -34,6 +34,7 @@ import { publicSiteRouter } from "./public-site.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
+import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { approvalRouter } from "./platform-approval.routes";
@@ -133,6 +134,8 @@ apiRouter.use("/tax", taxRouter);
 apiRouter.use("/accounting", createShareholderDocumentsRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
+// Manual + recurring journals with approval (WS-07, legend-vmyg).
+apiRouter.use("/accounting", accountingJournalRouter);
 // AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
