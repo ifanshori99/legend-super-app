@@ -212,3 +212,6 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - m1 `b49202b5` prettier 2 file refund (format:check tidak termasuk `pnpm check`; kini dijalankan per merge).
 - m1 `f77e18d8` deploy-prep (tanpa migration; gate prep 97f008cc API 2177 / root 1427 termasuk legend-zoqc DB; jtnd k1np ditutup).
 - Rantai dibangun ulang (brief 89c): fix-sharp → pos-shift (0088-0090) → refund fix (0091) → procurement → kds → doit → e2e-az → ws11-reports → fix-whitelabel → struk (cherry-pick 85723463).
+- 07:50 WS-02 edge (G0c95 selesai): ws/ws02-edge 756b45ae, 7 kartu ditutup, 21 subagent (puncak 8). Migration 0079/0080 → regen (FK edge_sync_conflict_resolutions tetap di CREATE TABLE). Codex R12 (auth rotasi/lockout + migrasi + stok→GL, high). m1 sudah di 0085.
+- Fix produksi: ws/fix-sharp 9761605c (docker runner terverifikasi), ws/fix-whitelabel 47bcf9c1; AUTH-06 sedang (subagent CTO, ws/fix-auth06).
+- Brief 98 WS-01 menunggu slot.
