@@ -1,1 +1,0 @@
-ALTER TABLE "leave_requests" ADD COLUMN "excluded_holiday_dates" date[] DEFAULT '{}'::date[] NOT NULL;

@@ -64,6 +64,7 @@ CREATE TABLE "leave_requests" (
 	"start_date" date NOT NULL,
 	"end_date" date NOT NULL,
 	"days" numeric(9, 4) NOT NULL,
+	"excluded_holiday_dates" date[] DEFAULT '{}'::date[] NOT NULL,
 	"reason" text,
 	"attachment_key" varchar(500),
 	"status" varchar(20) DEFAULT 'pending' NOT NULL,
@@ -140,12 +141,15 @@ CREATE TABLE "overtime_requests" (
 	CONSTRAINT "overtime_requests_status_check" CHECK ("overtime_requests"."status" IN ('pending', 'approved', 'rejected', 'cancelled'))
 );
 --> statement-breakpoint
--- The tables above are new and empty, but adding a foreign key still runs the
--- referential check query against the referenced tables, whose FORCE row level
--- security needs a tenant and outlet scope when the migrator is a plain table
--- owner (NOBYPASSRLS). A nil tenant scope matches no rows; the scope is
--- transaction-local and cleared right after the foreign keys.
-SELECT set_config('app.tenant_id', '00000000-0000-0000-0000-000000000000', true), set_config('app.outlet_ids', '*', true);--> statement-breakpoint
+-- legend-hggk: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated against outlets and employees (the new tables are empty, but
+-- adding a foreign key still runs the referential check query). Lift FORCE for
+-- this transaction only and restore it before commit (drizzle applies pending
+-- migrations in one transaction; same pattern as 0065/0068).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "holidays" ADD CONSTRAINT "holidays_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "holidays" ADD CONSTRAINT "holidays_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hris_leave_settings" ADD CONSTRAINT "hris_leave_settings_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -166,7 +170,8 @@ ALTER TABLE "overtime_requests" ADD CONSTRAINT "overtime_requests_tenant_id_tena
 ALTER TABLE "overtime_requests" ADD CONSTRAINT "overtime_requests_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "overtime_requests" ADD CONSTRAINT "overtime_requests_employee_fk" FOREIGN KEY ("tenant_id","employee_id") REFERENCES "public"."employees"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "overtime_requests" ADD CONSTRAINT "overtime_requests_formula_fk" FOREIGN KEY ("tenant_id","formula_id") REFERENCES "public"."overtime_formulas"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-SELECT set_config('app.tenant_id', '', true), set_config('app.outlet_ids', '', true);--> statement-breakpoint
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "holidays_tenant_date_idx" ON "holidays" USING btree ("tenant_id","date");--> statement-breakpoint
 CREATE UNIQUE INDEX "leave_accruals_collective_leave_key" ON "leave_accruals" USING btree ("tenant_id","employee_id","period") WHERE "leave_accruals"."kind" = 'collective_leave';--> statement-breakpoint
 CREATE INDEX "leave_requests_tenant_employee_start_idx" ON "leave_requests" USING btree ("tenant_id","employee_id","start_date");--> statement-breakpoint
