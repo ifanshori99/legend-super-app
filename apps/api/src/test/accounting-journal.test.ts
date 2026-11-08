@@ -37,7 +37,10 @@ import {
   approveManualJournal,
   settleManualJournalForApproval,
 } from "../services/accounting-journal-manual.service";
-import { runDueRecurringJournals } from "../services/accounting-journal-recurring.service";
+import {
+  runDueRecurringJournals,
+  skipRecurringJournalPeriod,
+} from "../services/accounting-journal-recurring.service";
 import { agent, originHeader, signUp } from "./helpers";
 
 const app = createApp();
@@ -52,6 +55,7 @@ const owner = new Pool({
 const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
 const createdUserIds: string[] = [];
 const trackedTemplateIds: string[] = [];
+const createdRoleIds: string[] = [];
 const ACTIONS = ["manual_journal", "recurring_journal"];
 let savedPolicies: Record<string, unknown>[] = [];
 const tenantB = randomUUID();
@@ -308,6 +312,56 @@ async function setPolicy(actionType: string) {
   );
 }
 
+// Fix E helpers: an approver who may DECIDE the chain in the inbox but is not
+// (or not here) allowed to post journals. `accounting.journal.post` is only
+// granted by the finance role, so the matrix is pointed at a custom role.
+const APPROVER_ONLY = ["approval.inbox.view", "approval.request.decide"];
+
+async function approverWith(
+  name: string,
+  permissions: string[],
+  scopeOutletId: string,
+) {
+  const user = await signedIn(name);
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO roles (tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, false, $3::jsonb, '["outlet"]'::jsonb) RETURNING id`,
+    [tenantId, `Journal approver ${unique()}`, JSON.stringify(permissions)],
+  );
+  const roleId = rows[0]!.id;
+  createdRoleIds.push(roleId);
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+    [tenantId, user.userId, roleId, scopeOutletId],
+  );
+  return { ...user, roleId };
+}
+
+/** Run `fn` with the journal approval matrix pointed at `roleId`, then restore. */
+async function withMatrixRole<T>(roleId: string, fn: () => Promise<T>) {
+  const setRole = (role: string) =>
+    owner.query(
+      `UPDATE approval_policies SET approver_role_id = $3
+        WHERE tenant_id = $1 AND action_type = ANY($2::text[])`,
+      [tenantId, ACTIONS, role],
+    );
+  await setRole(roleId);
+  try {
+    return await fn();
+  } finally {
+    await setRole(await financeRoleId());
+  }
+}
+
+async function settleManual(id: string, at: string) {
+  const context = scopedContext();
+  return withTenant(db, context, (tx) =>
+    settleManualJournalForApproval(tx, context, id, new Date(at)),
+  );
+}
+
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
@@ -371,6 +425,10 @@ afterAll(async () => {
   await owner.query(
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantId, createdUserIds],
+  );
+  await owner.query(
+    "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    [tenantId, createdRoleIds],
   );
   await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
   await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
@@ -700,7 +758,9 @@ describe("legend-vmyg manual journals behind the approval matrix (§3.7)", () =>
         tx,
         context,
         id,
-        new Date("2026-11-03T05:00:00Z"),
+        // Real clock: the approver's role assignment is valid_from now()-1h,
+        // so the permission re-check at settle time needs a current date.
+        new Date(),
       ),
     );
     expect(settled.status).toBe("posted");
@@ -713,7 +773,7 @@ describe("legend-vmyg manual journals behind the approval matrix (§3.7)", () =>
         tx,
         context,
         id,
-        new Date("2026-11-03T06:00:00Z"),
+        new Date(Date.now() + 60 * 60 * 1000),
       ),
     );
     expect(replayed).toEqual(settled);
@@ -778,6 +838,127 @@ describe("legend-vmyg manual journals behind the approval matrix (§3.7)", () =>
     const self = await command(s.requester.client, id, "approve");
     expect(self.status).toBe(403);
     expect(await entriesOf("manual", id)).toHaveLength(0);
+  });
+
+  // Fix E (AUTH-06, §3 F7): the final approver of a chain must also hold
+  // accounting.journal.post over the journal's scope; deciding is not enough.
+  // Assumption: the rejection reason is "approval approver lacks permission"
+  // and decidedBy stays null; the approve endpoint's own HTTP status is not
+  // pinned, only the resulting state is.
+  it("Fix E settle rejects a chain approved by a user who can decide but lacks accounting.journal.post; nothing posts", async () => {
+    const s = await scenario("approver no post");
+    const weak = await approverWith("No post", APPROVER_ONLY, outletId);
+    await withMatrixRole(weak.roleId, async () => {
+      const id = await createManual(s, {}, 2_000_000);
+      await submitManual(s, id);
+      const request = await approvalRequestOf("manual_journal", id);
+      await decideInbox(weak.userId, request!.id, "approved");
+
+      const settled = await settleManual(id, "2026-11-03T05:00:00Z");
+      expect(settled.status).toBe("rejected");
+      expect(settled.rejectionReason).toBe(
+        "approval approver lacks permission",
+      );
+      expect(settled.decidedBy).toBeNull();
+      expect(await entriesOf("manual", id)).toHaveLength(0);
+
+      // A late approve call by a finance user cannot turn it into a posting.
+      await command(s.approver.client, id, "approve");
+      expect(await entriesOf("manual", id)).toHaveLength(0);
+      expect(await getManualApi(s.requester.client, id)).toMatchObject({
+        status: "rejected",
+        postedEntryId: null,
+        rejectionReason: "approval approver lacks permission",
+      });
+    });
+  });
+
+  it("Fix E the approve endpoint settling a chain approved by a user without accounting.journal.post posts nothing and ends rejected", async () => {
+    const s = await scenario("approver no post endpoint");
+    const weak = await approverWith("No post 2", APPROVER_ONLY, outletId);
+    await withMatrixRole(weak.roleId, async () => {
+      const id = await createManual(s, {}, 2_000_000);
+      await submitManual(s, id);
+      const request = await approvalRequestOf("manual_journal", id);
+      await decideInbox(weak.userId, request!.id, "approved");
+
+      // The finance caller is allowed to post; the chain's final approver is not.
+      await command(s.approver.client, id, "approve");
+      expect(await entriesOf("manual", id)).toHaveLength(0);
+      expect(await getManualApi(s.requester.client, id)).toMatchObject({
+        status: "rejected",
+        postedEntryId: null,
+        rejectionReason: "approval approver lacks permission",
+      });
+    });
+  });
+
+  it("Fix E the approver's scope must cover every outlet the journal books to: an approver scoped to the header outlet only is rejected, one covering both posts", async () => {
+    // The inbox itself refuses an approver who cannot see the header outlet, so
+    // the journal header is outlet A and one line is booked to outlet B. The
+    // approver is scoped to A only: the inbox decision succeeds but the journal
+    // may not post at settle time.
+    const s = await scenario("approver scope");
+    const post = [...APPROVER_ONLY, "accounting.journal.post"];
+    const onlyHeaderOutlet = await approverWith(
+      "Header outlet only",
+      post,
+      outletId,
+    );
+    const bothOutlets = await approverWith("Both outlets", post, outletId);
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [tenantId, bothOutlets.userId, bothOutlets.roleId, secondOutletId],
+    );
+    const crossOutletLines = [
+      {
+        accountId: s.cash,
+        debitIdr: 2_000_000,
+        creditIdr: 0,
+        outletId,
+        costCenter: null,
+      },
+      {
+        accountId: s.revenue,
+        debitIdr: 0,
+        creditIdr: 2_000_000,
+        outletId: secondOutletId,
+        costCenter: null,
+      },
+    ];
+    // Real clock: the role assignments are valid from now()-1h.
+    const now = () => new Date().toISOString();
+
+    await withMatrixRole(onlyHeaderOutlet.roleId, async () => {
+      const id = await createManual(s, { lines: crossOutletLines }, 2_000_000);
+      await submitManual(s, id);
+      const request = await approvalRequestOf("manual_journal", id);
+      const decided = await decideInbox(
+        onlyHeaderOutlet.userId,
+        request!.id,
+        "approved",
+      );
+      expect(decided).toBeTruthy();
+      const settled = await settleManual(id, now());
+      expect(settled.status).toBe("rejected");
+      expect(settled.rejectionReason).toBe(
+        "approval approver lacks permission",
+      );
+      expect(await entriesOf("manual", id)).toHaveLength(0);
+    });
+
+    await withMatrixRole(bothOutlets.roleId, async () => {
+      const id = await createManual(s, { lines: crossOutletLines }, 2_000_000);
+      await submitManual(s, id);
+      const request = await approvalRequestOf("manual_journal", id);
+      await decideInbox(bothOutlets.userId, request!.id, "approved");
+      const settled = await settleManual(id, now());
+      expect(settled.status).toBe("posted");
+      expect(settled.decidedBy).toBe(bothOutlets.userId);
+      expect(await entriesOf("manual", id)).toHaveLength(1);
+    });
   });
 });
 
@@ -981,24 +1162,47 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
     expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-03");
   });
 
-  it("pause stops generation, resume continues, end stops it for good and respects endPeriod", async () => {
+  it("pause stops generation, resume skips the paused months and starts at the current month, end stops it for good and respects endPeriod", async () => {
+    // Founder decision Q5: resume skips months that passed during the pause;
+    // generation restarts at the current month (Asia/Jakarta). The transition
+    // endpoint uses the real clock, so this test derives its periods from it.
+    // dayOfMonth 1 keeps the current month due whatever day the suite runs.
+    const periodOffset = (months: number) => {
+      const jakarta = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const index =
+        jakarta.getUTCFullYear() * 12 + jakarta.getUTCMonth() + months;
+      const year = Math.floor(index / 12);
+      const month = (index % 12) + 1;
+      return `${year}-${String(month).padStart(2, "0")}`;
+    };
+    const current = periodOffset(0);
     const s = await scenario("recurring lifecycle");
     const id = await createTemplate(s, {
-      startPeriod: "2026-01",
-      endPeriod: "2026-02",
+      dayOfMonth: 1,
+      startPeriod: periodOffset(-2),
+      endPeriod: current,
     });
     await activate(s, id);
     const paused = await transition(s.approver.client, id, { type: "pause" });
     expect(paused.status, JSON.stringify(paused.body)).toBe(200);
     expect(paused.body.data.status).toBe("paused");
-    await runDueRecurringJournals(scopedContext(), march15);
+    await runDueRecurringJournals(scopedContext(), new Date());
     expect(await entriesOf("recurring", id)).toHaveLength(0);
 
     const resumed = await transition(s.approver.client, id, { type: "resume" });
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
     expect(resumed.body.data.status).toBe("active");
-    await runDueRecurringJournals(scopedContext(), march15);
-    // endPeriod 2026-02: March is never generated.
-    expect(await runPeriods(id)).toEqual(["2026-01", "2026-02"]);
+    // The two paused months are handled (skipped), not backfilled.
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe(
+      periodOffset(-1),
+    );
+    await runDueRecurringJournals(scopedContext(), new Date());
+    expect(await runPeriods(id)).toEqual([current]);
+
+    // endPeriod is the current month: the next month is never generated.
+    const nextMonth = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+    await runDueRecurringJournals(scopedContext(), nextMonth);
+    expect(await runPeriods(id)).toEqual([current]);
 
     const ended = await transition(s.approver.client, id, { type: "end" });
     expect(ended.body.data.status).toBe("ended");
@@ -1006,9 +1210,9 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
     expect(again.status).toBeGreaterThanOrEqual(400);
     await runDueRecurringJournals(
       scopedContext(),
-      new Date("2026-06-15T05:00:00Z"),
+      new Date(Date.now() + 200 * 24 * 60 * 60 * 1000),
     );
-    expect(await entriesOf("recurring", id)).toHaveLength(2);
+    expect(await entriesOf("recurring", id)).toHaveLength(1);
   });
 
   it("a template behind an approval chain stays pending (409) until the inbox approves it", async () => {
@@ -1035,6 +1239,255 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
     expect(approved.body.data.status).toBe("active");
     await runDueRecurringJournals(scopedContext(), march15);
     expect(await entriesOf("recurring", id)).toHaveLength(3);
+  });
+
+  it("Fix E a template approved in the inbox by a user without accounting.journal.post ends rejected, never active, and generates nothing", async () => {
+    const s = await scenario("recurring approver no post");
+    const weak = await approverWith("No post rec", APPROVER_ONLY, outletId);
+    await withMatrixRole(weak.roleId, async () => {
+      const id = await createTemplate(s, {}, 2_000_000);
+      const submit = await transition(s.requester.client, id, {
+        type: "submit",
+      });
+      expect(submit.status, JSON.stringify(submit.body)).toBe(200);
+      const request = await approvalRequestOf("recurring_journal", id);
+      await decideInbox(weak.userId, request!.id, "approved");
+
+      // The finance caller may approve; the chain's final approver may not post.
+      await transition(s.approver.client, id, { type: "approve" });
+      expect((await templateOf(s, id))?.status).toBe("rejected");
+      await runDueRecurringJournals(scopedContext(), march15);
+      expect(await entriesOf("recurring", id)).toHaveLength(0);
+      expect(await runPeriods(id)).toHaveLength(0);
+    });
+  });
+
+  // ---- Fix F (legend-j4ko): resume skips paused months, operator skip-period.
+  // `lastGeneratedPeriod` means "last month handled (posted or skipped)".
+
+  /** Asia/Jakarta calendar month of an instant, as YYYY-MM. */
+  function jakartaPeriod(at: Date): string {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Jakarta",
+      year: "numeric",
+      month: "2-digit",
+    }).formatToParts(at);
+    const part = (type: string) => parts.find((p) => p.type === type)!.value;
+    return `${part("year")}-${part("month")}`;
+  }
+
+  function addMonths(period: string, delta: number): string {
+    const [year, month] = period.split("-").map(Number) as [number, number];
+    const index = year * 12 + (month - 1) + delta;
+    return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}`;
+  }
+
+  function skipPeriod(
+    client: Client,
+    id: string,
+    body: { period: string; reason: string },
+  ) {
+    return client
+      .post(`${BASE}/recurring-journals/${id}/skip-period`)
+      .set(originHeader)
+      .send(body);
+  }
+
+  async function runRows(id: string) {
+    const { rows } = await owner.query<{
+      period: string;
+      journal_entry_id: string | null;
+      skipped_by: string | null;
+      skip_reason: string | null;
+    }>(
+      `SELECT period, journal_entry_id, skipped_by, skip_reason
+         FROM recurring_journal_runs
+        WHERE tenant_id = $1 AND recurring_journal_id = $2 ORDER BY period`,
+      [tenantId, id],
+    );
+    return rows;
+  }
+
+  async function skipAuditCount(id: string): Promise<number> {
+    const { rows } = await owner.query<{ count: string }>(
+      `SELECT count(*) FROM audit_logs
+        WHERE tenant_id = $1
+          AND event->>'action' LIKE '%recurring_journal.period_skipped'
+          AND event->>'objectId' = $2`,
+      [tenantId, id],
+    );
+    return Number(rows[0]?.count);
+  }
+
+  it("Fix F resume after a 2-month pause skips the paused months and still posts the current month on its day", async () => {
+    // The transition endpoint resumes at the real clock, so the periods are
+    // derived from today (Asia/Jakarta) instead of fixed 2026 dates.
+    const current = jakartaPeriod(new Date());
+    const start = addMonths(current, -3);
+    const s = await scenario("recurring resume skips pause");
+    const id = await createTemplate(s, { dayOfMonth: 20, startPeriod: start });
+    await activate(s, id);
+
+    await runDueRecurringJournals(
+      scopedContext(),
+      new Date(`${start}-21T05:00:00Z`),
+    );
+    expect(await runPeriods(id)).toEqual([start]);
+
+    const paused = await transition(s.approver.client, id, { type: "pause" });
+    expect(paused.status, JSON.stringify(paused.body)).toBe(200);
+    // start+1 and start+2 pass while paused.
+    const resumed = await transition(s.approver.client, id, { type: "resume" });
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(resumed.body.data.status).toBe("active");
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe(
+      addMonths(current, -1),
+    );
+
+    // Current month, before its day: nothing is generated, no paused month posts.
+    await runDueRecurringJournals(
+      scopedContext(),
+      new Date(`${current}-10T05:00:00Z`),
+    );
+    expect(await runPeriods(id)).toEqual([start]);
+    expect(await entriesOf("recurring", id)).toHaveLength(1);
+
+    // Current month, after its day: exactly that month posts.
+    await runDueRecurringJournals(
+      scopedContext(),
+      new Date(`${current}-21T05:00:00Z`),
+    );
+    expect(await runPeriods(id)).toEqual([start, current]);
+    expect(
+      (await entriesOf("recurring", id)).map((row) => row.entry_date),
+    ).toEqual([`${start}-20`, `${current}-20`]);
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe(current);
+  });
+
+  it("Fix F a template stuck on a closed month can be skipped by a user with accounting.journal.post, then the next run posts the following month", async () => {
+    const s = await scenario("recurring skip closed");
+    const id = await createTemplate(s);
+    await activate(s, id);
+    await setClosed(s.entity, "2026-02", true);
+
+    await runDueRecurringJournals(scopedContext(), march15);
+    expect(await runPeriods(id)).toEqual(["2026-01"]);
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-01");
+
+    const reason = "Periode Februari sudah ditutup, tidak diakru";
+    const skipped = await skipPeriod(s.requester.client, id, {
+      period: "2026-02",
+      reason,
+    });
+    expect(skipped.status, JSON.stringify(skipped.body)).toBe(200);
+    expect(skipped.body.data).toMatchObject({
+      id,
+      status: "active",
+      lastGeneratedPeriod: "2026-02",
+    });
+    // The skip is a run row without a journal entry, attributed to the actor.
+    expect(await runRows(id)).toEqual([
+      expect.objectContaining({ period: "2026-01", skipped_by: null }),
+      {
+        period: "2026-02",
+        journal_entry_id: null,
+        skipped_by: s.requester.userId,
+        skip_reason: reason,
+      },
+    ]);
+    expect(await entriesOf("recurring", id)).toHaveLength(1);
+
+    await runDueRecurringJournals(scopedContext(), march15);
+    expect(await runPeriods(id)).toEqual(["2026-01", "2026-02", "2026-03"]);
+    // February never posts: only January and March have entries.
+    expect(
+      (await entriesOf("recurring", id)).map((row) => row.entry_date),
+    ).toEqual(["2026-01-10", "2026-03-10"]);
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-03");
+  });
+
+  it("Fix F skip-period is idempotent: one run row, one audit row, template unchanged", async () => {
+    const s = await scenario("recurring skip idempotent");
+    const id = await createTemplate(s, { startPeriod: "2026-02" });
+    await activate(s, id);
+    await setClosed(s.entity, "2026-02", true);
+    const body = { period: "2026-02", reason: "Periode ditutup" };
+
+    const first = await skipPeriod(s.requester.client, id, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const again = await skipPeriod(s.requester.client, id, body);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect(again.body.data).toEqual(first.body.data);
+    expect(again.body.data.lastGeneratedPeriod).toBe("2026-02");
+
+    expect(await runRows(id)).toHaveLength(1);
+    expect(await skipAuditCount(id)).toBe(1);
+  });
+
+  it("Fix F skip-period is refused (409) for an open month and a non-next month, and (403) without accounting.journal.post; a permitted skip then works", async () => {
+    const s = await scenario("recurring skip refused");
+    const id = await createTemplate(s, { startPeriod: "2026-02" });
+    await activate(s, id);
+    const reason = "Periode ditutup";
+    const untouched = async () => {
+      expect((await templateOf(s, id))?.lastGeneratedPeriod).toBeNull();
+      expect(await runRows(id)).toHaveLength(0);
+      expect(await skipAuditCount(id)).toBe(0);
+    };
+
+    // The next due month (2026-02) is still open.
+    const open = await skipPeriod(s.requester.client, id, {
+      period: "2026-02",
+      reason,
+    });
+    expect(open.status, JSON.stringify(open.body)).toBe(409);
+    await untouched();
+
+    // 2026-03 is closed but is not the next due month (2026-02 is).
+    await setClosed(s.entity, "2026-03", true);
+    const notNext = await skipPeriod(s.requester.client, id, {
+      period: "2026-03",
+      reason,
+    });
+    expect(notNext.status, JSON.stringify(notNext.body)).toBe(409);
+    await untouched();
+
+    // The next month is closed now, but the caller lacks accounting.journal.post.
+    await setClosed(s.entity, "2026-02", true);
+    const weak = await approverWith("No post skip", APPROVER_ONLY, outletId);
+    const denied = await skipPeriod(weak.client, id, {
+      period: "2026-02",
+      reason,
+    });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    await untouched();
+
+    // Control: the same request by a permitted user is accepted.
+    const ok = await skipPeriod(s.requester.client, id, {
+      period: "2026-02",
+      reason,
+    });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(ok.body.data.lastGeneratedPeriod).toBe("2026-02");
+  });
+
+  it("Fix F skip-period by another tenant answers NOT_FOUND and changes nothing", async () => {
+    const s = await scenario("recurring skip tenant");
+    const id = await createTemplate(s, { startPeriod: "2026-02" });
+    await activate(s, id);
+    await setClosed(s.entity, "2026-02", true);
+
+    await expect(
+      skipRecurringJournalPeriod(
+        scopedContext(tenantIdSchema.parse(tenantB)),
+        userIdSchema.parse(tenantBUser),
+        id,
+        { period: "2026-02", reason: "Bukan milik tenant ini" },
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBeNull();
+    expect(await runRows(id)).toHaveLength(0);
+    expect(await skipAuditCount(id)).toBe(0);
   });
 });
 

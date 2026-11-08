@@ -42,6 +42,7 @@ import { manualJournals } from "../db/schema";
 import { approvalRequests } from "../db/schema/platform-approval";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { approverMayPostJournal } from "./accounting-journal-approver";
 import {
   assertJournalPeriodPostable,
   JOURNAL_APPROVAL_SOURCE_MODULE,
@@ -701,8 +702,31 @@ async function settleRow(
     if (
       decider !== null &&
       decider.toLowerCase() !== row.requestedBy.toLowerCase()
-    )
-      return postApproved(tx, context, row, userIdSchema.parse(decider), now);
+    ) {
+      const approverId = userIdSchema.parse(decider);
+      // The inbox role can decide; the ledger still needs the post permission.
+      if (
+        !(await approverMayPostJournal(
+          tx,
+          context,
+          approverId,
+          { outletId: row.outletId, lines: row.lines },
+          now,
+        ))
+      )
+        return updateRow(
+          tx,
+          row,
+          {
+            status: "rejected",
+            rejectionReason: "approval approver lacks permission",
+            decidedBy: null,
+            decidedAt: now,
+          },
+          now,
+        );
+      return postApproved(tx, context, row, approverId, now);
+    }
     return updateRow(
       tx,
       row,

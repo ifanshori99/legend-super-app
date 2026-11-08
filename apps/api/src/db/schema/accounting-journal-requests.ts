@@ -244,7 +244,8 @@ export const recurringJournals = pgTable(
 );
 
 /**
- * `recurring_journal_runs` (T): one row per template + month that posted.
+ * `recurring_journal_runs` (T): one row per template + month that was handled:
+ * posted (journal_entry_id) or skipped by an operator (skipped_by + reason).
  * The UNIQUE key is the guard against double generation (re-run, two workers).
  */
 export const recurringJournalRuns = pgTable(
@@ -256,7 +257,10 @@ export const recurringJournalRuns = pgTable(
       .references(() => tenants.id),
     recurringJournalId: uuid("recurring_journal_id").notNull(),
     period: varchar("period", { length: 7 }).notNull(),
-    journalEntryId: uuid("journal_entry_id").notNull(),
+    // Null on an operator skip of a closed month (then skipped_by is set).
+    journalEntryId: uuid("journal_entry_id"),
+    skippedBy: text("skipped_by"),
+    skipReason: varchar("skip_reason", { length: 500 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -284,6 +288,10 @@ export const recurringJournalRuns = pgTable(
     check(
       "recurring_journal_runs_period_check",
       sql`${table.period} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+    check(
+      "recurring_journal_runs_posted_or_skipped_check",
+      sql`(${table.journalEntryId} IS NOT NULL) <> (${table.skippedBy} IS NOT NULL)`,
     ),
   ],
 );

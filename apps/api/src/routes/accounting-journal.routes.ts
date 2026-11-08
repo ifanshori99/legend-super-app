@@ -15,6 +15,7 @@ import {
   listManualJournals,
   listRecurringJournals,
   rejectManualJournal,
+  skipRecurringJournalPeriodEndpoint,
   submitManualJournal,
   transitionRecurringJournalEndpoint,
   updateManualJournal,
@@ -43,6 +44,7 @@ import {
 import {
   createRecurringJournal as createRecurringJournalService,
   listRecurringJournals as listRecurringJournalsService,
+  skipRecurringJournalPeriod as skipRecurringJournalPeriodService,
   transitionRecurringJournal as transitionRecurringJournalService,
 } from "../services/accounting-journal-recurring.service";
 
@@ -254,6 +256,25 @@ accountingJournalRouter.post(
     const body = transitionRecurringJournalEndpoint.body.parse(req.body);
     res.json({
       data: await transitionRecurringJournalService(
+        getScopedTenantContext(req),
+        actorId(req),
+        recurringJournalId,
+        body,
+      ),
+    });
+  },
+);
+
+accountingJournalRouter.post(
+  route(skipRecurringJournalPeriodEndpoint.path),
+  post,
+  jsonBody,
+  async (req, res) => {
+    const { recurringJournalId } =
+      skipRecurringJournalPeriodEndpoint.params.parse(req.params);
+    const body = skipRecurringJournalPeriodEndpoint.body.parse(req.body);
+    res.json({
+      data: await skipRecurringJournalPeriodService(
         getScopedTenantContext(req),
         actorId(req),
         recurringJournalId,

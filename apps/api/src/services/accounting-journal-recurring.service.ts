@@ -11,6 +11,10 @@
 //   whose outlet is in its scope (a null outlet is tenant-level data);
 // - create is idempotent per (tenant, idempotencyKey) bound to a request
 //   fingerprint, like the accounting journal service;
+// - `lastGeneratedPeriod` means "last month handled (posted or skipped)": a
+//   month is skipped on resume (it passed while paused) or by an operator
+//   (`skipRecurringJournalPeriod`, a closed month); both move the cursor and
+//   an operator skip leaves a `recurring_journal_runs` row without an entry;
 // - the job posts each month in its OWN transaction under the key
 //   `recurring-journal:<templateId>:<YYYY-MM>`; `recurring_journal_runs` is
 //   UNIQUE per template + period, so a re-run or a second worker never posts
@@ -27,11 +31,14 @@ import {
   assertJournalBalanced,
   checkJournalBalance,
   createRecurringJournal as createRecurringJournalEndpoint,
+  nextPeriod,
   periodOf,
+  previousPeriod,
   recurringJournalSchema,
   recurringOccurrenceDate,
   recurringPeriodsDue,
   transitionRecurringJournal as transitionRecurringJournalState,
+  skipRecurringJournalPeriodEndpoint,
   transitionRecurringJournalEndpoint,
   type JournalLineInput,
   type RecurringJournal,
@@ -44,6 +51,7 @@ import {
   type z,
 } from "@starter/shared/core";
 import { db } from "../db";
+import { fiscalPeriods } from "../db/schema";
 import {
   recurringJournalRuns,
   recurringJournals,
@@ -57,6 +65,7 @@ import {
   JOURNAL_APPROVAL_SOURCE_MODULE,
   RECURRING_JOURNAL_OBJECT_TYPE,
 } from "./accounting-journal-period-gate";
+import { approverMayPostJournal } from "./accounting-journal-approver";
 import {
   assertJournalLinesPostable,
   postJournalInTransaction,
@@ -81,6 +90,10 @@ export type CreateRecurringJournalInput = z.infer<
 >;
 export type RecurringJournalTransitionBody = z.infer<
   typeof transitionRecurringJournalEndpoint.body
+>;
+
+export type SkipRecurringJournalPeriodInput = z.infer<
+  typeof skipRecurringJournalPeriodEndpoint.body
 >;
 
 /** What one run of the job did, summed over every active template. */
@@ -429,6 +442,17 @@ async function settleLocked(
   const decider = last.decidedBy;
   if (decider === null || sameUser(decider, row.requestedBy))
     return reject("approval approver_invalid");
+  // The inbox role can decide; the ledger still needs the post permission.
+  if (
+    !(await approverMayPostJournal(
+      tx,
+      context,
+      decider as UserId,
+      { outletId: row.outletId, lines: row.lines as JournalLineInput[] },
+      now,
+    ))
+  )
+    return reject("approval approver lacks permission");
   const status = transitionRecurringJournalState(stateOf(row), {
     type: "approve",
     actorId: decider as UserId,
@@ -475,11 +499,132 @@ export async function transitionRecurringJournal(
           type: body.type,
           actorId,
         });
-        const updated = await updateTemplate(tx, row, { status }, now);
+        const updated = await updateTemplate(
+          tx,
+          row,
+          {
+            status,
+            ...(body.type === "resume"
+              ? resumeCursorPatch(row, periodOf(entityToday(now)))
+              : {}),
+          },
+          now,
+        );
         await auditTemplate(tx, context, actorId, body.type, row, updated);
         return toRecurring(updated);
       }
     }
+  });
+}
+
+/**
+ * Months that passed while paused are skipped on resume: generation restarts
+ * from the current month (it still posts when its day arrives). A template
+ * whose start is not before the current month has nothing to skip.
+ */
+function resumeCursorPatch(
+  row: Row,
+  currentPeriod: string,
+): Partial<typeof recurringJournals.$inferInsert> {
+  if (row.startPeriod >= currentPeriod) return {};
+  const handledThrough = previousPeriod(currentPeriod);
+  if (
+    row.lastGeneratedPeriod !== null &&
+    row.lastGeneratedPeriod >= handledThrough
+  )
+    return {};
+  return { lastGeneratedPeriod: handledThrough };
+}
+
+/**
+ * Operator skip of the next due month of an `active` or `paused` template
+ * whose fiscal period is closed (the job cannot post into it and would wait
+ * forever). Records a run row without a journal entry, moves the cursor, and
+ * audits in the same transaction. Replaying a skip changes nothing.
+ */
+export async function skipRecurringJournalPeriod(
+  context: ScopedTenantContext,
+  actorId: UserId,
+  id: string,
+  input: SkipRecurringJournalPeriodInput,
+  now = new Date(),
+): Promise<RecurringJournal> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const period = input.period;
+  const reason = input.reason.trim();
+  return withTenant(db, context, async (tx) => {
+    const row = await lockTemplate(tx, context, id);
+    const [run] = await tx
+      .select({
+        journalEntryId: recurringJournalRuns.journalEntryId,
+        skippedBy: recurringJournalRuns.skippedBy,
+      })
+      .from(recurringJournalRuns)
+      .where(
+        and(
+          eq(recurringJournalRuns.tenantId, tenantId),
+          eq(recurringJournalRuns.recurringJournalId, row.id),
+          eq(recurringJournalRuns.period, period),
+        ),
+      )
+      .limit(1);
+    if (run) {
+      // Already skipped: idempotent. A posted month cannot be skipped.
+      if (run.skippedBy === null)
+        throw new AccountingError("INVALID_TRANSITION");
+      return toRecurring(row);
+    }
+    if (row.status !== "active" && row.status !== "paused")
+      throw new AccountingError("INVALID_TRANSITION");
+    const nextDue = row.lastGeneratedPeriod
+      ? nextPeriod(row.lastGeneratedPeriod)
+      : row.startPeriod;
+    if (
+      period !== nextDue ||
+      (row.endPeriod !== null && period > row.endPeriod)
+    )
+      throw new AccountingError("INVALID_TRANSITION");
+    const [fiscal] = await tx
+      .select({ status: fiscalPeriods.status })
+      .from(fiscalPeriods)
+      .where(
+        and(
+          eq(fiscalPeriods.tenantId, tenantId),
+          eq(fiscalPeriods.legalEntityId, row.legalEntityId),
+          eq(fiscalPeriods.period, period),
+        ),
+      )
+      .limit(1)
+      .for("share");
+    // No fiscal row yet means the month was never closed.
+    if (fiscal?.status !== "closed")
+      throw new AccountingError("PERIOD_NOT_CLOSED");
+    await tx.insert(recurringJournalRuns).values({
+      tenantId,
+      recurringJournalId: row.id,
+      period,
+      journalEntryId: null,
+      skippedBy: actorId,
+      skipReason: reason,
+    });
+    const updated = await updateTemplate(
+      tx,
+      row,
+      { lastGeneratedPeriod: period },
+      now,
+    );
+    await auditAccountingChange(tx, context, {
+      actorId,
+      action: "accounting.recurring_journal.period_skipped",
+      objectType: RECURRING_JOURNAL_OBJECT_TYPE,
+      objectId: updated.id,
+      outletId: updated.outletId,
+      reason,
+      before: { status: row.status },
+      after: { status: updated.status },
+    });
+    return toRecurring(updated);
   });
 }
 
