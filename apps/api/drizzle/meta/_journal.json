@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794146648788,
+      "tag": "0068_known_randall",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794146653001,
+      "tag": "0069_shareholder_documents_rls",
+      "breakpoints": true
     }
   ]
 }

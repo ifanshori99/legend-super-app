@@ -34,6 +34,7 @@ import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
 import { accountingRouter } from "./accounting.routes";
+import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
@@ -120,6 +121,8 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 apiRouter.use("/public/site", publicSiteRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
+// Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.
+apiRouter.use("/accounting", createShareholderDocumentsRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
 // AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).

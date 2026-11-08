@@ -9,6 +9,7 @@ import {
   cursorPageSchema,
   dataResponseSchema,
   idempotencyKeySchema,
+  isoDateTimeSchema,
   z,
 } from "../core/index.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
@@ -30,12 +31,14 @@ import {
   shareAllocationVersionSchema,
   shareAllocationVersionStatusSchema,
   shareVersionDecisionInputSchema,
+  shareholderDocumentFileSchema,
   shareholderDocumentKindSchema,
   shareholderDocumentSchema,
   shareholderSchema,
   updateProfitEntityInputSchema,
   updateShareAllocationVersionInputSchema,
   updateShareholderInputSchema,
+  uploadShareholderDocumentFileMetadataSchema,
 } from "./profit-share.ts";
 import {
   distributionLineIdSchema,
@@ -240,6 +243,26 @@ export const publishShareholderDocument = defineEndpoint({
   }),
   body: commandBody,
   response: dataResponseSchema(shareholderDocumentSchema),
+});
+/** Multipart upload of the PDF (field `file` + `profitEntityId`); manager only. */
+export const uploadShareholderDocumentFile = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/shareholder-documents/files`,
+  body: uploadShareholderDocumentFileMetadataSchema,
+  response: dataResponseSchema(shareholderDocumentFileSchema),
+});
+export const shareholderDocumentSignedUrlBodySchema = z.strictObject({});
+/** Short-lived download URL (300 s); a shareholder only for a published own document. */
+export const createShareholderDocumentSignedUrl = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/shareholder-documents/:shareholderDocumentId/signed-url`,
+  params: z.strictObject({
+    shareholderDocumentId: shareholderDocumentIdSchema,
+  }),
+  body: shareholderDocumentSignedUrlBodySchema,
+  response: dataResponseSchema(
+    z.strictObject({ url: z.url(), expiresAt: isoDateTimeSchema }),
+  ),
 });
 /** The caller's own share, history, statements and labelled estimates. */
 export const getMyProfitShare = defineEndpoint({
