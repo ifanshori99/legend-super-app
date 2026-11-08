@@ -4,7 +4,10 @@
 // identity, so a mis-mounted router answers nothing useful.
 //
 //   GET /api/edge/health  liveness for the outlet's monitoring: mode, cloud
-//                         link and local database. No session, no tenant data.
+//                         link, local database and whether the device
+//                         registry replica is stale. No session, no tenant
+//                         data. Staleness never changes the HTTP status: an
+//                         offline edge keeps serving (legend-2lp.7).
 //   GET /api/edge/status  getEdgeStatus. Tenant and outlet are the node's own
 //                         (from its credential), never the request's
 //                         (TEN-02). Readers:
@@ -20,7 +23,10 @@ import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { checkDatabase } from "../db/index.ts";
-import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import {
+  getDeviceRegistrySyncState,
+  getEdgeRuntimeState,
+} from "../edge/runtime.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
@@ -151,6 +157,7 @@ edgeRouter.get("/health", async (_req, res) => {
     mode: runtime.edgeMode ? "edge" : "cloud",
     cloudLink: runtime.link.cloudLink,
     database,
+    deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
   });
 });
 

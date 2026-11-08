@@ -222,12 +222,18 @@ async function expectReceiptsKept(scratch: Pool) {
 
 async function expectRlsStillForced(scratch: Pool) {
   // 0063 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
-  // FKs and backfill, and must restore all three before it commits.
+  // FKs and backfill; 0064 lifts it on outlets and stations; 0065 on outlets
+  // and edge_nodes. Each must restore it before it commits, and the tables the
+  // three migrations create must end with RLS forced.
   const tables = [
     "outlets",
     "edge_nodes",
+    "stations",
     "edge_inbound_events",
     "edge_received_events",
+    "devices",
+    "device_training_periods",
+    "edge_pull_checkpoints",
   ];
   const flags = await scratch.query(
     `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class

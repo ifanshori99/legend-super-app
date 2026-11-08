@@ -5,8 +5,10 @@
 //     (EDGE_MODE=false) it is a no-op. On the edge it runs the boot guards
 //     (edge settings valid, local migrations applied, the node's own row
 //     present and active), then opens the persistent link to the cloud with
-//     reconnect + backoff, and keeps the cloud link state for
-//     /api/edge/status. The edge's local PostgreSQL is migrated by the same
+//     reconnect + backoff, keeps the cloud link state for /api/edge/status,
+//     and starts the periodic device-registry pull (legend-2lp.7; EDG-02:
+//     revocations reach the edge only through this pull, so a stale replica
+//     is reported in /api/edge/status and /api/edge/health, never hidden). The edge's local PostgreSQL is migrated by the same
 //     migrator as the cloud (`node dist/migrate.js` / `pnpm db:migrate` with
 //     DATABASE_URL pointing at the local database) before the API starts.
 //   - `registerEdgeLink(server)` on the cloud only: accepts edge links on
@@ -30,7 +32,13 @@ import {
   recordEdgeHeartbeat,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
+import { pullDeviceRegistry } from "../services/edge-device-sync.ts";
+import {
+  loadDeviceRegistryCheckpoint,
+  saveDeviceRegistryCheckpoint,
+} from "../services/edge-device-sync-store.ts";
 import { EDGE_LINK_WAKE_CHANNEL } from "../services/edge-queue.service.ts";
+import { createDeviceRecordsFetcher } from "./cloud-http.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -39,6 +47,11 @@ import {
 } from "./link-client.ts";
 import type { LinkScope } from "./link-peer.ts";
 import { createEdgeLinkServer } from "./link-server.ts";
+import {
+  createDeviceRegistryPuller,
+  type DeviceRegistryPuller,
+  type DeviceRegistrySyncState,
+} from "./device-registry-puller.ts";
 
 /** Tables the edge runtime needs; missing ones mean migrations did not run. */
 export const EDGE_REQUIRED_TABLES = [
@@ -49,10 +62,14 @@ export const EDGE_REQUIRED_TABLES = [
   "edge_outbound_queue",
   "edge_inbound_events",
   "edge_sync_conflicts",
+  "edge_pull_checkpoints",
 ] as const;
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
 const SWEEP_INTERVAL_MS = 5_000;
+
+/** Longest wait between device-registry pulls while the cloud is failing. */
+const MIN_MAX_PULL_BACKOFF_MS = 300_000;
 
 export class EdgeBootError extends Error {
   constructor(message: string) {
@@ -84,6 +101,13 @@ let state: EdgeRuntimeState = {
 
 export function getEdgeRuntimeState(): EdgeRuntimeState {
   return state;
+}
+
+let registryPuller: DeviceRegistryPuller | null = null;
+
+/** Device-registry pull state (edge only); null on the cloud or before boot. */
+export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
+  return registryPuller?.getState() ?? null;
 }
 
 /** Test seam: install a runtime state without starting a link. */
@@ -200,6 +224,7 @@ export async function startEdgeRuntime(
   const config = parsed.config;
   if (!config.edgeMode) {
     state = { edgeMode: false, identity: null, link: disconnected };
+    registryPuller = null;
     return { stop: async () => {} };
   }
   await assertEdgeSchemaReady();
@@ -246,11 +271,51 @@ export async function startEdgeRuntime(
   });
   const sweep = setInterval(() => client.notify(), SWEEP_INTERVAL_MS);
   sweep.unref();
+  const fetchDeviceRecords = createDeviceRecordsFetcher({
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+  });
+  const puller = createDeviceRegistryPuller({
+    pull: (since, signal) =>
+      pullDeviceRegistry({
+        context: local.context,
+        since,
+        fetchPage: (cursor) => fetchDeviceRecords(cursor, signal),
+      }),
+    load: () =>
+      loadDeviceRegistryCheckpoint(local.context, local.scope.edgeNodeId),
+    save: (input) =>
+      saveDeviceRegistryCheckpoint(
+        local.context,
+        local.scope.edgeNodeId,
+        input,
+      ),
+    intervalMs: config.deviceSyncIntervalMs,
+    staleAfterMs: config.deviceSyncStaleAfterMs,
+    maxBackoffMs: Math.max(
+      config.deviceSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge device registry replica is stale; device revocations may be missing",
+        );
+      else logger.info("Edge device registry replica is fresh again");
+    },
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge device registry pull failed"),
+  });
+  registryPuller = puller;
+  // Not awaited: boot never waits for, or fails on, the cloud.
+  puller.start();
   return {
     async stop() {
       clearInterval(sweep);
-      await stopWakeups();
-      await client.stop();
+      // Torn down together: a pull stuck in a slow local write must not hold
+      // the link and the wakeup listener open during shutdown.
+      await Promise.all([puller.stop(), stopWakeups(), client.stop()]);
+      if (registryPuller === puller) registryPuller = null;
       state = { ...state, link: disconnected };
     },
   };

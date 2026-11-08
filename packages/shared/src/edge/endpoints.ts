@@ -41,7 +41,9 @@ export type CloudLink = z.infer<typeof cloudLinkSchema>;
 /**
  * What staff devices need to show offline status (Alur F step 1): the cloud
  * link, the edge node heartbeat, the outbox backlog (PRD §5 Sinkronisasi) and
- * this device's training mode (PRD §3 F5 Mode Latihan).
+ * this device's training mode (PRD §3 F5 Mode Latihan). `deviceRegistry` is
+ * the edge's replica of the cloud device registry (legend-2lp.7): when it is
+ * stale, a device revoked on the cloud may still be accepted here.
  */
 export const edgeStatusSchema = z.strictObject({
   ...scope,
@@ -49,6 +51,15 @@ export const edgeStatusSchema = z.strictObject({
   edgeNode: edgeNodeSchema.nullable(),
   pendingEventCount: z.number().int().nonnegative(),
   lastSyncedAt: isoDateTimeSchema.nullable(),
+  deviceRegistry: z
+    .strictObject({
+      /** Last successful pull of the device registry from the cloud. */
+      lastPulledAt: isoDateTimeSchema.nullable(),
+      stale: z.boolean(),
+    })
+    // Optional: an edge image older than legend-2lp.7 does not send it; the
+    // edge API always does.
+    .optional(),
   thisDevice: deviceSchema.nullable(),
 });
 export type EdgeStatus = z.infer<typeof edgeStatusSchema>;

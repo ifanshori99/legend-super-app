@@ -1,3 +1,15 @@
+-- legend-wg5t: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated against outlets and stations. Lift FORCE on those two for this
+-- transaction only; it is restored right after the last foreign key, before
+-- commit (drizzle applies pending migrations in one transaction, so no other
+-- session ever sees the lifted state). tenants never had FORCE, so it is left
+-- alone.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.stations NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "device_training_periods" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -42,6 +54,10 @@ ALTER TABLE "devices" ADD CONSTRAINT "devices_tenant_id_tenants_id_fk" FOREIGN K
 ALTER TABLE "devices" ADD CONSTRAINT "devices_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "devices" ADD CONSTRAINT "devices_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "devices" ADD CONSTRAINT "devices_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.stations FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE UNIQUE INDEX "device_training_periods_open_key" ON "device_training_periods" USING btree ("tenant_id","device_id") WHERE "device_training_periods"."ended_at" IS NULL;--> statement-breakpoint
 CREATE INDEX "device_training_periods_device_idx" ON "device_training_periods" USING btree ("tenant_id","device_id","started_at");--> statement-breakpoint
 CREATE INDEX "devices_sync_idx" ON "devices" USING btree ("tenant_id","outlet_id","updated_at","id");
