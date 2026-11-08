@@ -7,6 +7,10 @@
 // database to 0062, seeds the duplicate shape, then applies the full folder.
 // The scratch database lives on the disposable test server and is dropped in
 // afterAll; the shared test database and the real journal are never touched.
+// A second suite repeats the upgrade with a NON-superuser table owner, like
+// production (drizzle/0001: the migration connection is a separate owner with
+// CREATEROLE), because 0063 lifts and restores FORCE ROW LEVEL SECURITY and
+// the test server's default user is a superuser that bypasses RLS anyway.
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   cpSync,
@@ -50,17 +54,45 @@ const dupEvent = randomUUID(); // seen by both nodes of tenant one, and by tenan
 const primaryOnlyEvent = randomUUID();
 const cloudToEdgeEvent = randomUUID();
 
-let admin: Pool;
-let scratch: Pool;
-let workDir: string;
-
-function scratchUrl() {
+function urlFor(database: string, user?: string, password?: string) {
   const url = new URL(adminUrl as string);
-  url.pathname = `/${scratchName}`;
+  url.pathname = `/${database}`;
+  if (user) url.username = user;
+  if (password) url.password = password;
   return url.toString();
 }
 
-async function seedTenant(fixture: Fixture, withStandby: boolean) {
+// Refuse to create databases on anything but the disposable test server.
+function assertDisposableServer() {
+  if (
+    !adminUrl ||
+    !process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-")
+  )
+    throw new Error(
+      "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
+    );
+}
+
+// Temp copy of the migrations, journal cut at idx 62. The real folder and
+// journal stay untouched.
+function copyMigrationsUpTo0062() {
+  const dir = mkdtempSync(join(tmpdir(), "legend-mig-0062-"));
+  const upTo0062 = join(dir, "drizzle");
+  cpSync(drizzleFolder, upTo0062, { recursive: true });
+  const journalPath = join(upTo0062, "meta", "_journal.json");
+  const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+    entries: { idx: number }[];
+  };
+  journal.entries = journal.entries.filter((entry) => entry.idx <= 62);
+  writeFileSync(journalPath, JSON.stringify(journal));
+  return { dir, upTo0062 };
+}
+
+async function seedTenant(
+  scratch: Pool,
+  fixture: Fixture,
+  withStandby: boolean,
+) {
   const brand = randomUUID();
   const entity = randomUUID();
   const suffix = randomBytes(4).toString("hex");
@@ -103,6 +135,7 @@ async function seedTenant(fixture: Fixture, withStandby: boolean) {
 }
 
 function receipt(
+  scratch: Pool,
   fixture: Fixture,
   node: Node,
   direction: "edge_to_cloud" | "cloud_to_edge",
@@ -124,87 +157,117 @@ function receipt(
   );
 }
 
-beforeAll(async () => {
-  // Refuse to create databases on anything but the disposable test server.
-  if (
-    !adminUrl ||
-    !process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-")
-  )
-    throw new Error(
-      "Run this suite through pnpm test so it gets the disposable PostgreSQL server.",
-    );
-  admin = new Pool({ connectionString: adminUrl, max: 1 });
-  await admin.query(`CREATE DATABASE ${scratchName}`);
-  scratch = new Pool({ connectionString: scratchUrl(), max: 2 });
-
-  // Temp copy of the migrations, journal cut at idx 62. The real folder and
-  // journal stay untouched.
-  workDir = mkdtempSync(join(tmpdir(), "legend-mig-0062-"));
-  const upTo0062 = join(workDir, "drizzle");
-  cpSync(drizzleFolder, upTo0062, { recursive: true });
-  const journalPath = join(upTo0062, "meta", "_journal.json");
-  const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
-    entries: { idx: number }[];
-  };
-  journal.entries = journal.entries.filter((entry) => entry.idx <= 62);
-  writeFileSync(journalPath, JSON.stringify(journal));
-  await migrate(drizzle(scratch), { migrationsFolder: upTo0062 });
-
-  // Pre-0063 data. Receipt times are explicit: the standby holds the EARLIEST
-  // receipt of the duplicated event, so the backfill must pick the standby,
-  // not simply the first node inserted.
-  await seedTenant(one, true);
-  await seedTenant(two, false);
+// Pre-0063 data. Receipt times are explicit: the standby holds the EARLIEST
+// receipt of the duplicated event, so the backfill must pick the standby,
+// not simply the first node inserted. Seeded by the superuser, which
+// bypasses RLS on the owner's tables.
+async function seedDuplicateShape(scratch: Pool) {
+  await seedTenant(scratch, one, true);
+  await seedTenant(scratch, two, false);
+  const at = (second: number) => `2026-11-08T10:00:0${second}Z`;
+  await receipt(scratch, one, one.primary, "edge_to_cloud", dupEvent, at(2));
+  await receipt(scratch, one, one.standby, "edge_to_cloud", dupEvent, at(1));
   await receipt(
-    one,
-    one.primary,
-    "edge_to_cloud",
-    dupEvent,
-    "2026-11-08T10:00:02Z",
-  );
-  await receipt(
-    one,
-    one.standby,
-    "edge_to_cloud",
-    dupEvent,
-    "2026-11-08T10:00:01Z",
-  );
-  await receipt(
+    scratch,
     one,
     one.primary,
     "edge_to_cloud",
     primaryOnlyEvent,
-    "2026-11-08T10:00:03Z",
+    at(3),
   );
   await receipt(
+    scratch,
     one,
     one.primary,
     "cloud_to_edge",
     cloudToEdgeEvent,
-    "2026-11-08T10:00:04Z",
+    at(4),
   );
   // Another tenant reuses the same event id: dedupe is per tenant.
-  await receipt(
-    two,
-    two.primary,
-    "edge_to_cloud",
-    dupEvent,
-    "2026-11-08T10:00:05Z",
-  );
-  // 62 migrations into a fresh database outlast the default hook timeout on a
-  // slow disposable Postgres.
-}, 120_000);
+  await receipt(scratch, two, two.primary, "edge_to_cloud", dupEvent, at(5));
+}
 
-afterAll(async () => {
-  await scratch?.end();
-  if (admin) {
-    await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
-    await admin.end();
+async function expectBackfilledRegistry(scratch: Pool) {
+  const rows = await scratch.query(
+    `SELECT tenant_id, event_id, outlet_id, first_edge_node_id
+       FROM edge_received_events ORDER BY tenant_id, event_id`,
+  );
+  // tenant one: duplicated event + primary-only event; tenant two: the reused id.
+  expect(rows.rowCount).toBe(3);
+  const key = (tenantId: string, eventId: string) =>
+    rows.rows.find((r) => r.tenant_id === tenantId && r.event_id === eventId);
+  const dup = key(one.tenantId, dupEvent);
+  expect(dup.first_edge_node_id).toBe(one.standby.id);
+  expect(dup.outlet_id).toBe(one.outletId);
+  expect(key(one.tenantId, primaryOnlyEvent).first_edge_node_id).toBe(
+    one.primary.id,
+  );
+  expect(key(two.tenantId, dupEvent).first_edge_node_id).toBe(two.primary.id);
+  // cloud_to_edge receipts are per node and never enter the registry.
+  expect(key(one.tenantId, cloudToEdgeEvent)).toBeUndefined();
+}
+
+async function expectReceiptsKept(scratch: Pool) {
+  const dup = await scratch.query(
+    `SELECT count(*)::int AS n FROM edge_inbound_events
+      WHERE tenant_id = $1 AND direction = 'edge_to_cloud' AND event_id = $2`,
+    [one.tenantId, dupEvent],
+  );
+  expect(dup.rows[0].n).toBe(2);
+  const all = await scratch.query(
+    `SELECT count(*)::int AS n FROM edge_inbound_events`,
+  );
+  expect(all.rows[0].n).toBe(5);
+}
+
+async function expectRlsStillForced(scratch: Pool) {
+  // 0063 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
+  // FKs and backfill, and must restore all three before it commits.
+  const tables = [
+    "outlets",
+    "edge_nodes",
+    "edge_inbound_events",
+    "edge_received_events",
+  ];
+  const flags = await scratch.query(
+    `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1)`,
+    [tables],
+  );
+  const byName = Object.fromEntries(flags.rows.map((r) => [r.relname, r]));
+  for (const table of tables) {
+    expect(byName[table]?.relrowsecurity, `${table} row security`).toBe(true);
+    expect(byName[table]?.relforcerowsecurity, `${table} FORCE`).toBe(true);
   }
-  if (workDir) rmSync(workDir, { recursive: true, force: true });
-});
+}
 
 describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
+  let admin: Pool;
+  let scratch: Pool;
+  let workDir: string;
+
+  beforeAll(async () => {
+    assertDisposableServer();
+    admin = new Pool({ connectionString: adminUrl, max: 1 });
+    await admin.query(`CREATE DATABASE ${scratchName}`);
+    scratch = new Pool({ connectionString: urlFor(scratchName), max: 2 });
+    const copy = copyMigrationsUpTo0062();
+    workDir = copy.dir;
+    await migrate(drizzle(scratch), { migrationsFolder: copy.upTo0062 });
+    await seedDuplicateShape(scratch);
+    // 62 migrations into a fresh database outlast the default hook timeout on a
+    // slow disposable Postgres.
+  }, 120_000);
+
+  afterAll(async () => {
+    await scratch?.end();
+    if (admin) {
+      await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
+      await admin.end();
+    }
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("the fixture really holds the data shape that broke the old index", async () => {
     const dup = await scratch.query(
       `SELECT count(*)::int AS n FROM edge_inbound_events
@@ -225,48 +288,15 @@ describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
   });
 
   it("backfills one registry row per edge_to_cloud event, from the earliest receipt", async () => {
-    const rows = await scratch.query(
-      `SELECT tenant_id, event_id, outlet_id, first_edge_node_id
-         FROM edge_received_events ORDER BY tenant_id, event_id`,
-    );
-    // tenant one: duplicated event + primary-only event; tenant two: the reused id.
-    expect(rows.rowCount).toBe(3);
-    const key = (tenantId: string, eventId: string) =>
-      rows.rows.find((r) => r.tenant_id === tenantId && r.event_id === eventId);
-    const dup = key(one.tenantId, dupEvent);
-    expect(dup.first_edge_node_id).toBe(one.standby.id);
-    expect(dup.outlet_id).toBe(one.outletId);
-    expect(key(one.tenantId, primaryOnlyEvent).first_edge_node_id).toBe(
-      one.primary.id,
-    );
-    expect(key(two.tenantId, dupEvent).first_edge_node_id).toBe(two.primary.id);
-    // cloud_to_edge receipts are per node and never enter the registry.
-    expect(key(one.tenantId, cloudToEdgeEvent)).toBeUndefined();
+    await expectBackfilledRegistry(scratch);
   });
 
   it("keeps every receipt: both duplicate receipts survive (append-only)", async () => {
-    const dup = await scratch.query(
-      `SELECT count(*)::int AS n FROM edge_inbound_events
-        WHERE tenant_id = $1 AND direction = 'edge_to_cloud' AND event_id = $2`,
-      [one.tenantId, dupEvent],
-    );
-    expect(dup.rows[0].n).toBe(2);
-    const all = await scratch.query(
-      `SELECT count(*)::int AS n FROM edge_inbound_events`,
-    );
-    expect(all.rows[0].n).toBe(5);
+    await expectReceiptsKept(scratch);
   });
 
   it("leaves row level security forced on the receipts and on the new registry", async () => {
-    const flags = await scratch.query(
-      `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
-        WHERE relnamespace = 'public'::regnamespace
-          AND relname IN ('edge_inbound_events', 'edge_received_events')`,
-    );
-    const byName = Object.fromEntries(flags.rows.map((r) => [r.relname, r]));
-    expect(byName.edge_inbound_events.relforcerowsecurity).toBe(true);
-    expect(byName.edge_received_events.relrowsecurity).toBe(true);
-    expect(byName.edge_received_events.relforcerowsecurity).toBe(true);
+    await expectRlsStillForced(scratch);
   });
 
   it("the old partial unique index is gone and the registry is append-only", async () => {
@@ -280,5 +310,109 @@ describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
         one.tenantId,
       ]),
     ).rejects.toThrow(/append-only|not allowed|immutable/i);
+  });
+});
+
+describe("legend-wg5t migration 0063 run by a non-superuser table owner", () => {
+  const ownerRole = `edge_rcv_owner_${randomBytes(6).toString("hex")}`;
+  const ownerPassword = randomBytes(16).toString("hex");
+  const ownerDatabase = `edge_rcv_own_${randomBytes(6).toString("hex")}`;
+  let admin: Pool; // superuser, connected to the server's default database
+  let adminInScratch: Pool; // superuser, connected to the owner's database
+  let owner: Pool; // the migrator, NOSUPERUSER; reopened without BYPASSRLS
+  let workDir: string;
+
+  beforeAll(async () => {
+    assertDisposableServer();
+    admin = new Pool({ connectionString: adminUrl, max: 1 });
+    // Role names and the hex password are generated here, so interpolation
+    // into DDL (which takes no bind parameters) is safe.
+    // Only 0063 is under test here. Migrations 0000..0062 need BYPASSRLS for
+    // a non-superuser owner: adding a foreign key to a table with FORCE ROW
+    // LEVEL SECURITY validates existing rows under the tenant policy, which
+    // raises "tenant context is required" without app.tenant_id (first hit
+    // in 0004, domain_event_replays). That is older than 0063 and out of
+    // scope, so the role starts with BYPASSRLS and loses it before 0063 runs.
+    await admin.query(
+      `CREATE ROLE ${ownerRole} LOGIN PASSWORD '${ownerPassword}' NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB`,
+    );
+    await admin.query(`CREATE DATABASE ${ownerDatabase} OWNER ${ownerRole}`);
+    owner = new Pool({
+      connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),
+      max: 1,
+    });
+    adminInScratch = new Pool({
+      connectionString: urlFor(ownerDatabase),
+      max: 1,
+    });
+    const copy = copyMigrationsUpTo0062();
+    workDir = copy.dir;
+    await migrate(drizzle(owner), { migrationsFolder: copy.upTo0062 });
+    await seedDuplicateShape(adminInScratch);
+    // Production shape from here on (drizzle/0001): a plain table owner with
+    // CREATEROLE, subject to RLS. ALTER ROLE only applies to new sessions, so
+    // the migrator gets a fresh pool.
+    await owner.end();
+    await admin.query(`ALTER ROLE ${ownerRole} NOBYPASSRLS`);
+    owner = new Pool({
+      connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),
+      max: 1,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await owner?.end();
+    await adminInScratch?.end();
+    if (admin) {
+      await admin.query(
+        `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
+      );
+      await admin.query(`DROP ROLE IF EXISTS ${ownerRole}`);
+      await admin.end();
+    }
+    if (workDir) rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("the migrator really is a plain table owner that RLS applies to", async () => {
+    const role = await admin.query(
+      `SELECT rolsuper, rolbypassrls, rolcreaterole FROM pg_roles WHERE rolname = $1`,
+      [ownerRole],
+    );
+    expect(role.rows[0]).toEqual({
+      rolsuper: false,
+      rolbypassrls: false,
+      rolcreaterole: true,
+    });
+    // The migrator's own session is the one that must be a plain owner.
+    const session = await owner.query(
+      `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+    );
+    expect(session.rows[0]).toEqual({ rolsuper: false, rolbypassrls: false });
+    const tableOwner = await adminInScratch.query(
+      `SELECT pg_get_userbyid(relowner) AS owner, relforcerowsecurity FROM pg_class
+        WHERE oid = 'public.edge_inbound_events'::regclass`,
+    );
+    expect(tableOwner.rows[0]).toEqual({
+      owner: ownerRole,
+      relforcerowsecurity: true,
+    });
+  });
+
+  it("applies the full migration folder as the non-superuser owner", async () => {
+    await expect(
+      migrate(drizzle(owner), { migrationsFolder: drizzleFolder }),
+    ).resolves.not.toThrow();
+  });
+
+  it("backfills one registry row per edge_to_cloud event, from the earliest receipt", async () => {
+    await expectBackfilledRegistry(adminInScratch);
+  });
+
+  it("keeps every receipt: both duplicate receipts survive (append-only)", async () => {
+    await expectReceiptsKept(adminInScratch);
+  });
+
+  it("leaves row level security forced on the receipts and on the new registry", async () => {
+    await expectRlsStillForced(adminInScratch);
   });
 });

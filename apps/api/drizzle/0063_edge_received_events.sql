@@ -3,6 +3,19 @@
 -- duplicates. Drop it where a dev database applied that draft.
 DROP INDEX IF EXISTS "edge_inbound_events_edge_to_cloud_event_key";
 --> statement-breakpoint
+-- legend-wg5t: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated (outlets, edge_nodes) and while the backfill reads the
+-- receipts. Lift FORCE for this transaction only; it is restored after the
+-- backfill, before commit (drizzle applies pending migrations in one
+-- transaction, so no other session ever sees the lifted state).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.edge_nodes NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.edge_inbound_events NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "edge_received_events" (
 	"tenant_id" uuid NOT NULL,
 	"outlet_id" uuid NOT NULL,
@@ -20,11 +33,8 @@ ALTER TABLE "edge_received_events" ADD CONSTRAINT "edge_received_events_edge_nod
 -- Backfill from the existing receipts. Primary and standby may already hold
 -- receipts for the same (tenant, event) on different nodes; DISTINCT ON keeps
 -- one registry row per event (the earliest receipt) and the receipts stay
--- untouched (append-only). edge_inbound_events forces RLS, so the owner reads
--- it with FORCE lifted for this transaction only; it is restored below
--- before commit.
-ALTER TABLE public.edge_inbound_events NO FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
+-- untouched (append-only). FORCE RLS on the receipts was lifted above and is
+-- restored right after the backfill.
 INSERT INTO public.edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id, received_at)
 SELECT DISTINCT ON (tenant_id, event_id) tenant_id, outlet_id, event_id, edge_node_id, received_at
 FROM public.edge_inbound_events
@@ -32,6 +42,10 @@ WHERE direction = 'edge_to_cloud'
 ORDER BY tenant_id, event_id, received_at, edge_node_id;
 --> statement-breakpoint
 ALTER TABLE public.edge_inbound_events FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.edge_nodes FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.edge_received_events'::regclass);
 --> statement-breakpoint
