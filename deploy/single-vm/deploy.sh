@@ -1,5 +1,8 @@
 #!/bin/sh
-# Deploy the single-VM stack: database, migrations, role audit, services.
+# Deploy the single-VM stack: database, pre-deploy check, migrations, role
+# audit, services. The pre-deploy check (legend-jtnd, legend-k1np) runs first
+# and stops everything before any migration when the migration login lacks the
+# rights migrations need or the outbox holds old-scheme sequences.
 # The restricted database logins must exist first (provision-roles.sh, see
 # docs/deployment.md); the audit after migrating refuses to start the
 # services when they are missing or a migration widened their rights.
@@ -22,10 +25,14 @@ compose config --quiet >/dev/null 2>&1 || {
 }
 if [ "$dry_run" -eq 1 ]; then
   "$script_dir/provision-roles.sh" --env-file "$env_file" --dry-run >/dev/null
-  echo 'Validated compose configuration; would start database, run migrations, audit database roles, then start services.'
+  echo 'Validated compose configuration; would start database, run the pre-deploy check, run migrations, audit database roles, then start services.'
   exit 0
 fi
 compose up -d --wait postgres
+compose --profile migration run --rm migrate node dist/predeploy-check.js || {
+  echo "Pre-deploy check failed: nothing was migrated and services were not started. See docs/deployment.md (Pre-deploy check)." >&2
+  exit 1
+}
 compose --profile migration run --rm migrate
 "$script_dir/provision-roles.sh" --env-file "$env_file" --audit ||
   { echo "Database role audit failed: services were not started. Run provision-roles.sh (docs/deployment.md) and deploy again." >&2; exit 1; }
