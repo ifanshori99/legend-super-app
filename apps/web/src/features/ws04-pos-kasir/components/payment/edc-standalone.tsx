@@ -48,7 +48,8 @@ export function EdcStandalone({
   const [pinError, setPinError] = useState<string>();
 
   const amountIdr = bill.remainingIdr;
-  const approver = approverId ?? supervisors.data?.[0]?.userId;
+  // Radix Select can report "" (no matching item yet): treat it as no choice.
+  const approver = approverId || supervisors.data?.[0]?.userId || undefined;
   const pending = override.isPending || record.isPending;
   const canSubmit =
     terminal !== undefined &&
@@ -165,7 +166,10 @@ export function EdcStandalone({
                 hint={t("posKasirEdc.standalone.pinHint")}
                 required
               >
-                <Select value={approver ?? ""} onValueChange={setApproverId}>
+                <Select
+                  value={approver ?? ""}
+                  onValueChange={(next) => setApproverId(next || undefined)}
+                >
                   <SelectTrigger>
                     <SelectValue
                       placeholder={t(

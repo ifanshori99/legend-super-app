@@ -546,7 +546,7 @@ test("legend-mjmm CODE-01 a valid customer code is matched and leads to payment"
 }) => {
   await open(page, "/pos/kode");
   await expect(heading(page, "Terima kode pelanggan")).toBeVisible();
-  const code = page.getByLabel("Nomor kode pesanan");
+  const code = page.getByLabel(/Kode .Bayar di kasir./);
   await expect(code).toBeVisible();
   // Empty state: nothing found yet and no way to pay.
   await expect(main(page)).not.toContainText("Pesanan ditemukan");
@@ -587,8 +587,15 @@ test("legend-mjmm CODE-02 a wrong code keeps the input, starts no payment and ca
   page,
 }) => {
   await open(page, "/pos/kode");
-  const code = page.getByLabel("Nomor kode pesanan");
-  await code.fill("0049");
+  const code = page.getByLabel(/Kode .Bayar di kasir./);
+  // Typed through the keypad: its buttons only work once React has hydrated,
+  // so a value typed before hydration cannot slip past the screen's state.
+  await expect(async () => {
+    await code.fill("");
+    for (const digit of "0049")
+      await page.getByRole("button", { name: digit, exact: true }).click();
+    await expect(code).toHaveValue(/0049/, { timeout: 1_000 });
+  }).toPass();
   await page.getByRole("button", { name: /^Cari (ulang )?pesanan$/ }).click();
 
   const area = main(page);
@@ -602,8 +609,9 @@ test("legend-mjmm CODE-02 a wrong code keeps the input, starts no payment and ca
   await shot(page, "cashier-code-invalid");
 
   // Correct it and search again.
+  // Editing drops the stale "not found" result, so the label may reset.
   await code.fill("0044");
-  await page.getByRole("button", { name: "Cari ulang pesanan" }).click();
+  await page.getByRole("button", { name: /^Cari (ulang )?pesanan$/ }).click();
   await expect(area).toContainText("Pesanan ditemukan");
   await expect(area).toContainText("Meja A01");
   await expect(area).not.toContainText("Kode tidak ditemukan");
@@ -643,7 +651,7 @@ test("legend-mjmm SHIFT-01 opening a shift records the 500.000 opening cash", as
     new RegExp(`Modal awal\\s*${rp("500.000")}`),
   );
   await expect(
-    page.getByRole("button", { name: "Mulai tutup shift" }),
+    page.getByRole("link", { name: "Mulai tutup shift" }),
   ).toBeVisible();
 });
 
@@ -948,7 +956,7 @@ test.describe("390 px", () => {
       await open(page, url);
       const target =
         name === "kode"
-          ? page.getByLabel("Nomor kode pesanan")
+          ? page.getByLabel(/Kode .Bayar di kasir./)
           : main(page).getByText(anchor, { exact: false }).first();
       await expect(target).toBeVisible();
       const overflow = await page.evaluate(() => {

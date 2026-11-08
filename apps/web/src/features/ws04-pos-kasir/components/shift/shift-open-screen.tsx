@@ -89,6 +89,7 @@ export function ShiftOpenScreen() {
               </Button>
               <Button
                 loading={openShift.isPending}
+                disabled={floatIdr <= 0}
                 onClick={() => openShift.mutate({ openingFloatIdr: floatIdr })}
               >
                 {openShift.isPending

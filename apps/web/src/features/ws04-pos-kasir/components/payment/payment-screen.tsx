@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, RotateCw } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -132,8 +132,17 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
             ? "posKasirPayment.screen.pendingHint"
             : "posKasirPayment.screen.errorHint",
         )}
-        onRetry={pending ? undefined : () => void session.refetch()}
-        action={<BackLink />}
+        action={
+          <div className="flex flex-wrap gap-3">
+            {!pending && (
+              <Button onClick={() => void session.refetch()}>
+                <RotateCw aria-hidden="true" />
+                {t("common.retry")}
+              </Button>
+            )}
+            <BackLink />
+          </div>
+        }
       />
     );
   }
