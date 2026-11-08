@@ -1,6 +1,7 @@
 // Download button of one published shareholder document (PRD §3 F35, SH-01).
 // Each click asks the server for a fresh signed URL (valid 300 s); the server
 // only signs a published document the caller owns.
+import { useState } from "react";
 import { Download } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -20,8 +21,11 @@ function openBlankTab(): Window | null {
 export function DocumentDownload({ doc }: { doc: ShareholderDocument }) {
   const t = useT();
   const download = useShareholderDocumentDownload();
+  // Popup blocked: keep the user in the app and offer a real link, whose own
+  // click opens the document.
+  const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
   return (
-    <div className="flex shrink-0 flex-col items-end gap-1">
+    <div className="flex max-w-48 shrink-0 flex-col items-end gap-1 text-right">
       <Button
         variant="outline"
         size="sm"
@@ -30,11 +34,12 @@ export function DocumentDownload({ doc }: { doc: ShareholderDocument }) {
           title: doc.title,
         })}
         onClick={() => {
+          setBlockedUrl(null);
           const tab = openBlankTab();
           download.mutate(doc.id, {
             onSuccess: (signed) => {
-              if (tab) tab.location.href = signed.url;
-              else window.location.assign(signed.url);
+              if (tab && !tab.closed) tab.location.href = signed.url;
+              else setBlockedUrl(signed.url);
             },
             onError: () => tab?.close(),
           });
@@ -44,9 +49,20 @@ export function DocumentDownload({ doc }: { doc: ShareholderDocument }) {
         {t("shareholderHome.documents.download")}
       </Button>
       {download.isError && (
-        <p role="alert" className="text-xs text-danger">
+        <p role="alert" className="text-xs break-words text-danger">
           {t("shareholderHome.documents.downloadFailed")}
         </p>
+      )}
+      {blockedUrl !== null && (
+        <a
+          href={blockedUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          role="status"
+          className="text-xs break-words underline underline-offset-2"
+        >
+          {t("shareholderHome.documents.openBlocked")}
+        </a>
       )}
     </div>
   );

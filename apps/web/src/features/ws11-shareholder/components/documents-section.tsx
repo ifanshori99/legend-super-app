@@ -43,11 +43,11 @@ export function DocumentsSection() {
         description: t("shareholderHome.documents.emptyHint"),
       }}
     >
-      <ul>
+      <ul aria-live="polite">
         {docs.items.map((doc) => (
           <li
             key={doc.id}
-            className="flex items-start gap-3 border-b-(length:--border-w) p-card last:border-0"
+            className="flex flex-wrap items-start gap-3 border-b-(length:--border-w) p-card last:border-0"
           >
             <FileText
               className="mt-0.5 size-5 shrink-0 text-muted-foreground"
@@ -55,12 +55,13 @@ export function DocumentsSection() {
             />
             <div className="min-w-0 flex-1">
               <p className="font-medium break-words">{doc.title}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {doc.publishedAt !== null &&
-                  t("shareholderHome.documents.published", {
+              {doc.publishedAt !== null && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("shareholderHome.documents.published", {
                     date: formatInstantDate(doc.publishedAt),
                   })}
-              </p>
+                </p>
+              )}
             </div>
             <Badge tone="neutral">
               {t(`shareholderHome.documents.kinds.${doc.kind}`)}

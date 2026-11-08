@@ -247,12 +247,13 @@ export const reportBuilderMessages = {
     recipients: "Penerima",
     recipientsHint:
       "Pilih pengguna Anda yang berhak melihat laporan ini, maksimal 20. Email mereka diambil oleh sistem.",
-    recipientsLoading: "Memuat daftar pengguna...",
-    recipientsFailed: "Daftar pengguna gagal dimuat. Tutup dan buka lagi.",
+    recipientsLoading: "Memuat daftar pengguna…",
+    recipientsFailed: "Daftar pengguna gagal dimuat.",
+    recipientsRetry: "Coba lagi",
     recipientsEmpty: "Belum ada pengguna yang bisa dipilih.",
     submit: "Buat jadwal",
     created: "Jadwal pengiriman {name} dibuat.",
-    personalTitle: "Butuh approval",
+    personalTitle: "Laporan ini tidak bisa dijadwalkan",
     personalHint:
       "Laporan ini berisi data pribadi (dipecah atau disaring per orang), jadi tidak bisa dikirim otomatis lewat email. Minta ekspor dengan permintaan approval, atau simpan versi tanpa dimensi karyawan.",
     summary: "{when} · {format} · {count} penerima",
