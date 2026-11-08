@@ -14,9 +14,9 @@ export const DEFAULT_WEB_URL = "http://localhost:3000";
 
 export function assertNode() {
   const [major, minor] = process.versions.node.split(".").map(Number);
-  if (major < 22 || (major === 22 && minor < 12))
+  if (major < 22 || (major === 22 && minor < 18))
     throw new Error(
-      "Install Node.js 22.12 or newer from https://nodejs.org, then try again.",
+      "Install Node.js 22.18 or newer from https://nodejs.org, then try again.",
     );
 }
 

@@ -60,3 +60,5 @@ export * from "./edge-node";
 export * from "./pos-order";
 // WS-06 stock count / stok opname (legend-j5x).
 export * from "./inventory-count";
+// WS-02 device registry + training periods (legend-165).
+export * from "./device";

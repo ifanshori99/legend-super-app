@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z, tenantIdSchema, ulidSchema } from "@starter/shared/core";
 import { PgBoss } from "pg-boss";
+import { queueBossOptions } from "../db/role";
 
 export const OUTBOX_QUEUE = "domain-event-outbox";
 export const OUTBOX_DEAD_LETTER_QUEUE = "domain-event-outbox-dead";
@@ -117,7 +118,7 @@ export function createWorkerRuntime<Context>(options: {
 
 /** Adapt the actual pg-boss instance without exposing its queue API to consumers. */
 export function createPgBoss(connectionString: string): Boss {
-  const boss = new PgBoss({ connectionString, createSchema: false });
+  const boss = new PgBoss(queueBossOptions(connectionString));
   // pg-boss emits background errors; an explicit listener avoids EventEmitter's
   // unhandled-error crash while keeping credentials out of logs.
   boss.on("error", () => console.error("pg-boss encountered a database error"));

@@ -1,1 +1,0 @@
-ALTER TABLE "stock_counts" ADD COLUMN "decider_ids" text[] DEFAULT '{}'::text[] NOT NULL;

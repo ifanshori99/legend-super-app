@@ -5,19 +5,20 @@
   "type": "module",
   "packageManager": "pnpm@10.34.6",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "worktree:setup": "node scripts/worktree-setup.mjs",
     "dev:prepare": "node scripts/prepare.mjs",
     "dev": "node scripts/prepare.mjs && turbo run dev",
     "dev:api": "node scripts/prepare.mjs && turbo run dev --filter=@starter/api",
     "dev:web": "turbo run dev --filter=@starter/web",
-    "build": "turbo run build",
+    "build": "node scripts/check-workspace-links.mjs && turbo run build",
     "start": "turbo run start",
     "lint": "eslint .",
     "typecheck": "turbo run typecheck && tsc -p tsconfig.json",
-    "check": "pnpm run lint && pnpm run typecheck && pnpm run test",
+    "check": "node scripts/check-workspace-links.mjs && pnpm run lint && pnpm run typecheck && pnpm run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:generate": "pnpm --filter @starter/api run db:generate",

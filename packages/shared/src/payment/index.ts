@@ -63,7 +63,10 @@ export type PaymentConfirmationSource = z.infer<
 const transitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
   pending: ["paid", "expired", "failed"],
   expired: ["paid"],
-  failed: [],
+  // legend-b0au: a verified gateway settlement may still land after the intent
+  // failed (the guest paid the code the gateway had reported failed); the
+  // source check below keeps every other source refused.
+  failed: ["paid"],
   paid: ["partially_refunded", "refunded"],
   partially_refunded: ["refunded"],
   refunded: [],
@@ -77,6 +80,13 @@ export function canTransitionPayment(
 ): boolean {
   if (!transitions[from]?.includes(to)) return false;
   if (to !== "paid") return true;
+  // Only the gateway can prove money arrived for an intent it reported failed.
+  if (
+    from === "failed" &&
+    source !== "verified_webhook" &&
+    source !== "gateway_status"
+  )
+    return false;
 
   switch (source) {
     case "verified_webhook":

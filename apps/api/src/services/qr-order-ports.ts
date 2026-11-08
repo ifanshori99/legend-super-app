@@ -11,6 +11,7 @@
 //   station target of the cart, else a conservative fixed window.
 // - Open service requests (legend-7qg) for the session view. Default: none.
 
+import { sql } from "drizzle-orm";
 import {
   CoreError,
   idr,
@@ -83,6 +84,33 @@ export async function depositCreditFor(
 ): Promise<number> {
   const value = await depositCredit(tx, tenantId, tableSessionId);
   return Number.isSafeInteger(value) ? Math.max(0, value) : 0;
+}
+
+/**
+ * Serializes every reader-then-writer of one table session's deposit credit
+ * (bead legend-94qt): the QR pay-first checkout and every POS order create or
+ * reprice of the session take this transaction lock right before they sum the
+ * deposit the session's other live orders already applied, and hold it until
+ * commit, so two orders never both apply the same remaining credit. It is a
+ * leaf lock: nothing else is locked after it, only the caller's own order row
+ * is written (already locked, or a fresh insert).
+ *
+ * Global lock order across the QR and POS bills (legend-94qt): the order row,
+ * then the promo engine locks (`redeemPromotions` doc in crm-promo-engine.ts),
+ * THEN this deposit lock. POS follows it by construction (discount apply ->
+ * redeem -> repriceOrder -> depositFor). The QR pay-first checkout therefore
+ * inserts its order, redeems its promotion, and only then takes this lock to
+ * apply the credit; taking it before the redeem deadlocked (40P01) against a
+ * POS promo discount in the same session. Never take a promo lock after this.
+ */
+export async function lockSessionDeposit(
+  tx: Tx,
+  tenantId: TenantId,
+  tableSessionId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`table-deposit:${tenantId}:${tableSessionId.toLowerCase()}`}, 0))`,
+  );
 }
 
 // ---- Serving estimate (ORD-11) -----------------------------------------------
