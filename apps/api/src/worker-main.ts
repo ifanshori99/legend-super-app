@@ -24,6 +24,11 @@ import { deliverNotificationAttempt } from "./services/notification-delivery.ts"
 import { expireDueApprovalRequests } from "./services/platform-approval.service.ts";
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
+import {
+  deliverInventoryGlEvent,
+  retryBlockedInventoryGl,
+} from "./services/inventory-gl-consumer.ts";
+import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
@@ -64,6 +69,10 @@ if (!process.env.WORKER_DATABASE_URL)
     "WORKER_DATABASE_URL is required for the isolated queue role",
   );
 const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
+// PRD §3.19 (legend-w1vo): only the cloud posts the GL from stock movements;
+// an edge node (or an unreadable edge configuration) never does.
+const edgeRuntime = parseEdgeRuntimeConfig(process.env);
+const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
@@ -123,6 +132,11 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // PRD §3.19 (legend-w1vo), cloud only: stock.moved of a count, waste
+          // or sale posts its GL journal in a savepoint; a closed period or a
+          // missing mapping parks the source for the sweep, never fails this.
+          if (postsInventoryGl)
+            await deliverInventoryGlEvent(context, event, tx);
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
@@ -221,6 +235,16 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // PRD §3.19 (legend-w1vo), cloud only: retry stock sources whose journal
+    // was blocked (closed period, missing mapping). Retry only, never another
+    // period. A sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await retryBlockedInventoryGl(context, new Date());
+      } catch {
+        console.error("Inventory GL retry sweep failed");
+      }
     }
     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
     // templates, one transaction per period. Fail closed, next tick resumes.
