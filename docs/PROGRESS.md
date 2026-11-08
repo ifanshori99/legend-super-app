@@ -172,3 +172,8 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Fitur kamar mandi / smart lock ditunda (legend-3dm8, legend-bzih, legend-2ke, legend-s20 → deferred). Rilis menyusul.
 - Tidak ada transfer bank. Metode bayar: QRIS, virtual account, debit/kartu kredit, bayar di kasir (tunai, EDC). Transfer bank kode unik DOIT tetap mati; tidak perlu perluasan skema `hosted_url`. Cek apakah rail kartu (debit/CC online) DOIT sudah tercakup di `ws/doit-provider`.
 - Fitur AI, Wi-Fi, ojol: founder belum menunda, anggap tetap dalam cakupan.
+
+### Rekonsiliasi papan 23:25
+- 8 kartu ditutup (kerja sudah di main/m1): sdet, xm30, 165, 2lp.7, meki, 69yq, o5gr, j5x.
+- 26 kartu ditutup saat cabangnya digabung ke m1: ai-tool-catalog 1zxo 9v9t; pph21 oo3q y4wp iwgb 5cnk; refund rbjw hvvn; kds s2dh 4d5; procurement 25a7 9yz; hris-leave hggk arj.1 arj.3 arj.4; checklist 5v69; pos-shift 6c0; hris-sop 7df1; receipt 93a; doit b9i; recipe-bom db6; journals vmyg; config-export 34c; print-agent 46p; edc apt.
+- Progres nyata ~43% (331 selesai, 435 tersisa). Terendah: WS-13 QA 8%, WS-12 AI 12%, WS-02 edge 23%.
