@@ -16,14 +16,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Sedang (dihentikan di tengah)
 - Fix temuan review legend-18qw: commit WIP `5a6070d` di `ws/worker-transport`. Kode untuk 9 fix (#1-#9 brief 06) sudah ditulis, test baru sudah ditambah, tapi BELUM dijalankan sama sekali (typecheck terakhir lulus sebelum test baru). Sisa urutan: `heavy pnpm check` via test-runner (rawan: insert `roles`/`tenants` test tenant C, regex `status (\d{3})`), subagent reviewer cek diff fix, buat 3 bead lanjutan (cloud-sync tenant-wide di edge, healthcheck worker, cek backfill sequence sebelum deploy pertama), tutup `legend-3a0y`, rapikan pesan commit WIP agar merujuk `legend-18qw`. Thread lama "engineer: worker event transport" (S30:P9mkl:G7rl2) bisa di-reopen untuk konteks.
 
-## Menunggu founder
-- Q6: setujui mockup final (`design/mockups/final-a-*`) untuk dibangun, atau ubah dulu. Halaman review dibuat dari gambar itu.
+## Keputusan founder Q6 (mockup final): UBAH DULU
+- Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
+- Langkah: riset psikologi warna untuk F&B order (warna CTA/tombol, warna yang mendorong nafsu makan dan nilai pesanan lebih besar, bukti dari sumber kredibel, bedakan mitos vs bukti, tetap lolos kontras WCAG), tulis `design/COLOR-RESEARCH.md`, lalu designer (Codex) ulang `final-a-*` dengan palet baru, review founder lagi. Pola upsell/menambah pesanan (rekomendasi "tambah minuman", bundling) boleh diusulkan bersama.
 
 ## Langkah berikut
 1. Engineer lanjutkan fix brief 06 di `ws/worker-transport` (agent baru: Opus high, brief 03 + 06).
-2. Setelah Q6 disetujui: ui-engineer bangun UI order pelanggan dari `final-a-*`, update `DESIGN.md` sesuai usulan README mockup. Jangan sentuh area worker.
-3. Merge `ws/worker-transport` dan `ux/customer-order-benchmark` ke `main`: menunggu gerbang founder.
-4. Penghalang rilis lain (HANDOFF.md §7): legend-zoqc, legend-91i (layar ke API asli), POS FE, dsb.
+2. Riset warna + ulang mockup (lihat Keputusan founder Q6), founder review lagi.
+3. Setelah mockup disetujui: ui-engineer bangun UI order pelanggan dari `final-a-*`, update `DESIGN.md` sesuai usulan README mockup. Jangan sentuh area worker.
+4. Merge `ws/worker-transport` dan `ux/customer-order-benchmark` ke `main`: menunggu gerbang founder.
+5. Penghalang rilis lain (HANDOFF.md §7): legend-zoqc, legend-91i (layar ke API asli), POS FE, dsb.
 
 ## Catatan teknis
 - Coordinator Ghostex dijalankan di folder `legend super app` (bukan repo git): `start-thread --worktree` gagal. Buat worktree manual di `legend/.worktrees/<nama>` + `.claude/settings.local.json` pematik claude-mem, tulis path di brief.
