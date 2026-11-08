@@ -12,7 +12,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 |---|---|---|---|---|---|
 | ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
 | ws/refund-approval | 5b6a707 | K | refund, approval | pasangan: PERLU FIX (brief 81) | fix, lalu Codex R2 |
-| ws/journals | aafe04c | K | jurnal | pasangan: PERLU FIX (brief 78) | fix, lalu Codex R3 |
+| ws/journals | b87a7d98 | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih, gate hijau 1348+1414); migration 0068/0069 bentrok nomor dgn edge di milestone → regen setelah shareholder | Codex R3 (SHA pasca-regen) |
 | ws/payroll-pph21-tests | a0bf212+ | K | pajak | setelah G70ms lapor | Codex R4 |
 | ws/edc-framework | 5f797fe | K | pembayaran | pasangan: PERLU FIX (brief 76) | fix, lalu Codex R5 |
 | ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
@@ -23,9 +23,9 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
 | ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
 | ws/tenant-config-export | 1405f19 | K | data keluar | pasangan gelombang 2 | Codex R9 |
-| ws/shareholder-docs | (G8fpw) | K | data pribadi, dokumen legal | setelah lapor | Codex R9 |
+| ws/shareholder-docs | cdc372c6 | K | data pribadi, dokumen legal | thread 2 reviewer+architect + Opus reviewer: 1 Sedang (malware scan) fixed cdc372c6; merge-prep regen di atas milestone jalan | Codex R9 |
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
-| ws/hris-leave | 576cb1e+ | S | cuti (Opus: domain rumit) | architect + Opus reviewer setelah G5klp lapor | gabung milestone |
+| ws/hris-leave | 1db3cd05 | S | cuti (Opus: domain rumit) | Opus reviewer PERLU FIX (2 Tinggi, 2 Sedang) → brief 85 ke G5klp 22:06 | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
 | ws/hris-sop | (G4ali) | S | SOP | Sonnet setelah lapor | gabung milestone |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
