@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "gateway_webhook_events_rejected_hash_uq" ON "gateway_webhook_events" USING btree ("tenant_id","payload_hash") WHERE NOT "gateway_webhook_events"."signature_valid";

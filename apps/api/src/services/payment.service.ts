@@ -25,6 +25,7 @@ import {
   uuidSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   customerPaymentIntentSchema,
   createPaymentIntentInputSchema,
@@ -40,7 +41,7 @@ import {
   type PaymentLinkView,
   type PayAtCashierAcknowledgement,
 } from "@starter/shared/payment";
-import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNotNull, lt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -770,55 +771,102 @@ async function failIntent(
   });
 }
 
-/** Applies a provider status without inventing one (PAY-02). */
+type SyncResult = {
+  intent: PaymentIntentRow;
+  /** True when the gateway call failed and the answer is unknown. */
+  gatewayError: boolean;
+};
+
+/**
+ * Applies a provider status without inventing one (PAY-02). Past its expiry a
+ * pending intent with a provider reference asks the gateway first: money may
+ * have arrived after the code lapsed, and the lifecycle flags that as a late
+ * payment. Any other answer, or a gateway error, expires it as before.
+ */
+async function syncPendingIntentDetailed(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  now: Date,
+): Promise<SyncResult> {
+  if (intent.status !== "pending") return { intent, gatewayError: false };
+  const pastExpiry = intent.expiresAt <= now;
+  if (intent.providerRef === null) {
+    if (!pastExpiry) return { intent, gatewayError: false };
+    await expireIntent(context, intent, now, "timeout");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  let providerStatus;
+  let gatewayError = false;
+  try {
+    providerStatus = await paymentGateway().getStatus({
+      context,
+      providerRef: intent.providerRef,
+      intentId: intent.id,
+    });
+  } catch {
+    // Gateway outage: the stored status stays; the link view reports it down.
+    gatewayError = true;
+  }
+  if (providerStatus?.status === "paid" && providerStatus.amountIdr !== null) {
+    // Fail closed: a status answer without the settled amount proves nothing
+    // about how much arrived; the verified webhook settles it instead (PAY-02).
+    try {
+      return {
+        intent: await applyConfirmation(
+          context,
+          intent,
+          {
+            source: "gateway_status",
+            method: intent.method,
+            amountIdr: providerStatus.amountIdr,
+            providerRef: providerStatus.providerRef,
+            at: now.toISOString(),
+          },
+          { type: "system" },
+          now,
+        ),
+        gatewayError: false,
+      };
+    } catch (error) {
+      // Past expiry a rejected settlement (409) must not surface on the link
+      // view: fall through and expire the intent instead.
+      if (!pastExpiry) throw error;
+    }
+  }
+  if (pastExpiry) {
+    await expireIntent(context, intent, now, "timeout");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError,
+    };
+  }
+  if (providerStatus === undefined) return { intent, gatewayError };
+  if (providerStatus.status === "expired") {
+    await expireIntent(context, intent, now, "gateway");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  if (providerStatus.status === "failed") {
+    await failIntent(context, intent, now);
+    return {
+      intent: { ...intent, status: "failed", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  return { intent, gatewayError: false };
+}
+
 async function syncPendingIntent(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<PaymentIntentRow> {
-  if (intent.status !== "pending") return intent;
-  if (intent.expiresAt <= now) {
-    await expireIntent(context, intent, now, "timeout");
-    return { ...intent, status: "expired", updatedAt: now };
-  }
-  if (intent.providerRef === null) return intent;
-  let providerStatus;
-  try {
-    providerStatus = await paymentGateway().getStatus({
-      context,
-      providerRef: intent.providerRef,
-    });
-  } catch {
-    // Gateway outage: the stored status stays; the link view reports it down.
-    return intent;
-  }
-  if (providerStatus.status === "paid") {
-    // Fail closed: a status answer without the settled amount proves nothing
-    // about how much arrived; the verified webhook settles it instead (PAY-02).
-    if (providerStatus.amountIdr === null) return intent;
-    return applyConfirmation(
-      context,
-      intent,
-      {
-        source: "gateway_status",
-        method: intent.method,
-        amountIdr: providerStatus.amountIdr,
-        providerRef: providerStatus.providerRef,
-        at: now.toISOString(),
-      },
-      { type: "system" },
-      now,
-    );
-  }
-  if (providerStatus.status === "expired") {
-    await expireIntent(context, intent, now, "gateway");
-    return { ...intent, status: "expired", updatedAt: now };
-  }
-  if (providerStatus.status === "failed") {
-    await failIntent(context, intent, now);
-    return { ...intent, status: "failed", updatedAt: now };
-  }
-  return intent;
+  return (await syncPendingIntentDetailed(context, intent, now)).intent;
 }
 
 export async function getIntentView(
@@ -1326,4 +1374,112 @@ export async function expireDueIntents(
     expired += 1;
   }
   return { expired };
+}
+
+// ------------------------------------------- gateway webhook and polling
+
+/** How long a pending intent is left to the verified webhook before the
+ * polling fallback asks the gateway (PRD PAY-02/03). */
+export const GATEWAY_POLL_GRACE_MS = 60_000;
+
+/** Time budget of one polling run, and how many gateway errors in a row end it. */
+export const GATEWAY_POLL_BUDGET_MS = 20_000;
+export const GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
+/**
+ * Applies a verified provider "expired"/"failed" outcome. It acts only while
+ * the intent is still `pending`: the conditional UPDATE re-checks the status
+ * under the row lock, so a paid (or otherwise settled) intent is never
+ * downgraded by a late or out-of-order delivery. Returns the current intent.
+ */
+export async function applyGatewayFailure(
+  context: ScopedTenantContext,
+  intentId: string,
+  outcome: "expired" | "failed",
+  now = new Date(),
+): Promise<PaymentIntent> {
+  const id = uuidSchema.parse(intentId);
+  const load = () =>
+    withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.id, id),
+          ),
+        );
+      return row ?? null;
+    });
+  const intent = await load();
+  if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+  assertOutletInScope(context.outletScope, intent.outletId);
+  if (intent.status === "pending") {
+    if (outcome === "expired")
+      await expireIntent(context, intent, now, "gateway");
+    else await failIntent(context, intent, now);
+  }
+  const current = (await load()) ?? intent;
+  return toPaymentIntent(current);
+}
+
+/**
+ * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
+ * pending intents that have a provider reference and are older than the grace
+ * period, through the same path as the customer's status check. A gateway
+ * error leaves the intent untouched; the next run retries. A run stops after
+ * its time budget or three gateway errors in a row (the gateway is down).
+ */
+export async function pollPendingGatewayIntents(
+  context: ScopedTenantContext,
+  now = new Date(),
+  limit = 100,
+): Promise<{ checked: number; settled: number }> {
+  const cutoff = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
+  const pending = await withTenant(db, context, async (tx) =>
+    tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.status, "pending"),
+          eq(paymentIntents.provider, paymentGateway().provider),
+          isNotNull(paymentIntents.providerRef),
+          lt(paymentIntents.createdAt, cutoff),
+        ),
+      )
+      .orderBy(asc(paymentIntents.createdAt))
+      .limit(limit),
+  );
+  let checked = 0;
+  let settled = 0;
+  let consecutiveErrors = 0;
+  const startedAt = Date.now();
+  for (const row of pending) {
+    if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+    if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
+    checked += 1;
+    try {
+      // Narrow to the intent's outlet so the gateway reads that outlet's own
+      // DOIT credentials when it has them (outlet row wins over tenant row).
+      const outletContext =
+        context.outletScope.kind === "tenant"
+          ? establishScopedTenantContext(context.tenant, {
+              kind: "outlets",
+              outletIds: [row.outletId],
+            })
+          : context;
+      const result = await syncPendingIntentDetailed(outletContext, row, now);
+      consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
+      if (
+        (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+      )
+        settled += 1;
+    } catch {
+      // One intent's failure never blocks the others; the next run retries.
+    }
+  }
+  return { checked, settled };
 }

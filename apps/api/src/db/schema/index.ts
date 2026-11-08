@@ -28,6 +28,7 @@ export * from "./identity";
 export * from "./tax";
 
 export * from "./payment-admin";
+export * from "./payment-gateway-webhook";
 // WS-01 generic approval requests (legend-y5q).
 export * from "./platform-approval";
 // WS-08 promo engine: promotions, vouchers, redemptions (legend-7x4g).

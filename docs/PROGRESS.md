@@ -34,6 +34,15 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Biaya sesi ui-engineer (transkrip fe7d1815, 07:57–09:41 UTC, 2 compact, 19 subagent): Opus utama 6128k, Sonnet 5723k, Opus subagent 257k, Haiku 114k; total 12223k unit biaya.
 - Kebutuhan kontrak (belum dikerjakan): metode bayar kasir / kode bayar eksplisit + POS terima pembayaran order tertahan; ubah pax sesi; foto cover outlet; patch opsi baris keranjang; kode promo/voucher ikut `placeOrder`; metode guest `va` dan `card` (nomor VA + channel + kedaluwarsa, URL halaman kartu penyedia di `guestPaymentSchema`).
 
+## legend-b9i DOIT PaymentProvider (engineer, cabang `ws/doit-provider`)
+
+- Adapter DOIT di belakang `PaymentGatewayPort`: QRIS, VA, transfer bank kode unik, daftar metode dari endpoint DOIT (cache 60 dtk), Bearer + `Idempotency-Key` di tiap POST, kredensial per tenant/outlet dari `tenant_integrations` (terenkripsi), gagal tertutup bila tidak ada. Port diperluas `ewallet`/`card` + `methods()` opsional, jadi gateway lain bisa menambah tanpa ubah kontrak.
+- Webhook `POST /api/webhooks/payments/doit/:tenantId`: verifikasi `PayBridge-Signature` atas byte mentah, simpan dulu ke `gateway_webhook_events` (migration 0063-0065, RLS), dedupe per event id, status payload sebagai kebenaran, terikat ke intent (provider ref + reference + nominal + integrasi penanda tangan). Uang yang tidak bisa dilunasi (intent gagal, nominal beda) dicatat sebagai dana belum teralokasi. Limiter hanya menghitung verifikasi gagal per IP.
+- Polling cadangan + ulang event tersimpan: job worker `payment-gateway-poll.job.ts` (per outlet, anggaran 20 dtk, backoff waktu, window 24 jam), purge baris ditolak > 30 hari.
+- Format wire DOIT (path, payload, header tanda tangan `t=,v1=`) masih ASUMSI di `payment-doit-wire.ts` sampai dokumen sandbox DOIT ada (legend-saov, legend-s5c).
+- Brief subagent: `docs/briefs/sub-doit-provider.md`. Smoke test sandbox opsional `apps/api/src/test/payment-doit-sandbox.test.ts` (dilewati tanpa `DOIT_API_KEY` + `DOIT_SANDBOX_BASE_URL`).
+- Metrik gelombang (17.22-18.03): biaya* sesi 6064k (Opus utama 1819k, Opus subagent 238k, Sonnet subagent 4007k), 20 subagent (Claude saja, 0 Codex), puncak konteks 228k, 0 compact. Satu review lagi menemukan 5 temuan setelah fix wave 1; dua gelombang perbaikan.
+
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".

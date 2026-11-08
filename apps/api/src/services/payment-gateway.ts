@@ -25,6 +25,23 @@ import type {
 /** Online methods the guest screen offers (PRD §3.13 "Metode DOIT"). */
 export type OnlinePaymentMethod = "qris" | "va" | "bank_transfer";
 
+/**
+ * Every online method a gateway may offer. Founder rule (8 Nov 2026): the
+ * customer web takes QRIS, VA, e-wallet and card (plus pay at the cashier); POS
+ * adds EDC. DOIT serves QRIS, VA and bank transfer at release (e-wallets pay
+ * through QRIS); a gateway that adds direct e-wallet or card implements the
+ * same port and reports them from `methods()`, so no caller contract changes.
+ */
+export type GatewayPaymentMethod = OnlinePaymentMethod | "ewallet" | "card";
+
+/** One method as the provider reports it (PRD: "Daftar metode aktif diambil
+ * dari endpoint DOIT, bukan ditulis tetap di kode"). */
+export type GatewayMethodAvailability = {
+  readonly method: GatewayPaymentMethod;
+  readonly enabled: boolean;
+  readonly channels: readonly PaymentChannel[];
+};
+
 export type GatewayHealth = {
   readonly status: PaymentGatewayStatus;
 };
@@ -33,7 +50,9 @@ export type GatewayIntentRequest = {
   readonly context: ScopedTenantContext;
   readonly provider: string;
   readonly intentId: string;
-  readonly method: OnlinePaymentMethod;
+  /** A gateway refuses (CoreError VALIDATION_ERROR) a method it does not
+   * report as enabled from `methods()`. */
+  readonly method: GatewayPaymentMethod;
   readonly channelCode: string | null;
   /** Server-priced amount (PAY-01). */
   readonly amountIdr: number;
@@ -63,12 +82,21 @@ export interface PaymentGatewayPort {
   getStatus(input: {
     context: ScopedTenantContext;
     providerRef: string;
+    /** When given, the adapter refuses (as a gateway error) a provider
+     * payment that was not created for this intent. */
+    intentId?: string;
   }): Promise<GatewayPaymentStatus>;
   /** Banks/channels for `va` and `bank_transfer`; empty for `qris`. */
   channels(
     context: ScopedTenantContext,
     method: OnlinePaymentMethod,
   ): Promise<PaymentChannel[]>;
+  /** Active methods from the provider's own endpoint. Optional so test
+   * doubles written before it stay valid; a missing method means "use
+   * `channels()` per online method". */
+  methods?(
+    context: ScopedTenantContext,
+  ): Promise<readonly GatewayMethodAvailability[]>;
 }
 
 /**
