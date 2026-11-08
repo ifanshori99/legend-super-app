@@ -1,0 +1,808 @@
+// Production notification adapters (bead legend-18qw, Part N): provider env
+// parsing, the Brevo email adapter (fake fetch, no keys) and the recipient
+// resolver against the disposable PostgreSQL (RLS on, app role).
+import { randomUUID } from "node:crypto";
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createUlid } from "@starter/shared/core";
+import {
+  cafeLegendFixtures,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { emailRequestSchema } from "@starter/shared/adapters";
+import { eventEnvelopeSchema, eventFixture } from "@starter/shared/events";
+import * as schema from "../db/schema/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  createBrevoEmailProvider,
+  createNotificationRecipientResolver,
+  createWorkerNotificationHandlers,
+  parseNotificationProviderEnv,
+} from "../worker/notification-adapters.ts";
+
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 2,
+});
+const appPool = new Pool({ connectionString: process.env.APP_DATABASE_URL });
+const database = drizzle(appPool, { schema });
+const tenantId = cafeLegendFixtures.tenant.id;
+const brandId = cafeLegendFixtures.brand.id;
+const bandung = cafeLegendFixtures.outlets[0].id;
+const bandung2 = cafeLegendFixtures.outlets[1].id;
+const tenantB = randomUUID();
+const tenantBUser = randomUUID();
+const tenantBRole = randomUUID();
+const tenantContext = (id: string): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId: id, brandId: null, source: "job" }),
+    { kind: "tenant" },
+  );
+const context = tenantContext(tenantId);
+
+const disabledEnv = {
+  NOTIFICATION_EMAIL_PROVIDER: "disabled",
+  NOTIFICATION_PUSH_PROVIDER: "disabled",
+  NOTIFICATION_WHATSAPP_PROVIDER: "disabled",
+};
+const brevoEnv = {
+  ...disabledEnv,
+  NOTIFICATION_EMAIL_PROVIDER: "brevo",
+  BREVO_API_KEY: "xkeysib-test-secret-value",
+  NOTIFICATION_EMAIL_FROM: "noreply@example.test",
+  NOTIFICATION_EMAIL_FROM_NAME: "Legend",
+};
+
+// ---- Brevo adapter and env (no database) -------------------------------------
+
+type Call = { url: string; init: RequestInit };
+function fakeFetch(respond: () => Response | Promise<Response>) {
+  const calls: Call[] = [];
+  const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return respond();
+  }) as typeof globalThis.fetch;
+  return { calls, fetch };
+}
+const emailRequest = emailRequestSchema.parse({
+  tenantId,
+  outletId: bandung,
+  reference: "attempt-key-1",
+  to: "staf@example.test",
+  subject: "Judul",
+  body: "Isi pesan",
+});
+const brevo = (fetch: typeof globalThis.fetch) =>
+  createBrevoEmailProvider({
+    apiKey: "xkeysib-test-secret-value",
+    from: "noreply@example.test",
+    fromName: "Legend",
+    fetch,
+  });
+
+describe("legend-18qw brevo email adapter", () => {
+  it("legend-18qw posts the documented request and returns the provider message id", async () => {
+    const { calls, fetch } = fakeFetch(
+      () =>
+        new Response(JSON.stringify({ messageId: "<m1@brevo>" }), {
+          status: 201,
+        }),
+    );
+    const result = await brevo(fetch).send(context, emailRequest);
+    expect(result).toEqual({ reference: "<m1@brevo>", accepted: true });
+    expect(calls).toHaveLength(1);
+    const [{ url, init }] = calls;
+    expect(url).toBe("https://api.brevo.com/v3/smtp/email");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({
+      "api-key": "xkeysib-test-secret-value",
+      "content-type": "application/json",
+      accept: "application/json",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      sender: { email: "noreply@example.test", name: "Legend" },
+      to: [{ email: "staf@example.test" }],
+      subject: "Judul",
+      textContent: "Isi pesan",
+      headers: { "X-Legend-Reference": "attempt-key-1" },
+      tags: ["legend-notification"],
+    });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("legend-18qw falls back to the attempt reference when the 2xx body has no message id", async () => {
+    const { fetch } = fakeFetch(
+      () => new Response("not json", { status: 202 }),
+    );
+    await expect(brevo(fetch).send(context, emailRequest)).resolves.toEqual({
+      reference: "attempt-key-1",
+      accepted: true,
+    });
+  });
+
+  it("legend-18qw declines on 4xx but throws on 401, 403, 408, 429, 5xx and network errors", async () => {
+    for (const status of [400, 404, 422]) {
+      const { fetch } = fakeFetch(() => new Response("{}", { status }));
+      await expect(brevo(fetch).send(context, emailRequest)).resolves.toEqual({
+        reference: "attempt-key-1",
+        accepted: false,
+      });
+    }
+    // A bad or revoked key, an unverified sender and timeouts retry visibly.
+    for (const status of [401, 403, 408, 429, 500, 503]) {
+      const { fetch } = fakeFetch(() => new Response("{}", { status }));
+      await expect(brevo(fetch).send(context, emailRequest)).rejects.toThrow(
+        String(status),
+      );
+    }
+    const failing = (async () => {
+      throw new TypeError("network down");
+    }) as typeof globalThis.fetch;
+    await expect(brevo(failing).send(context, emailRequest)).rejects.toThrow(
+      "network down",
+    );
+  });
+
+  it("legend-18qw validates the request and refuses another tenant before any I/O", async () => {
+    const { calls, fetch } = fakeFetch(
+      () => new Response("{}", { status: 200 }),
+    );
+    await expect(
+      brevo(fetch).send(context, { ...emailRequest, to: "bukan-email" }),
+    ).rejects.toThrow();
+    await expect(
+      brevo(fetch).send(tenantContext(tenantB), emailRequest),
+    ).rejects.toThrow("Tenant mismatch");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("legend-18qw notification provider env", () => {
+  it("legend-18qw parses disabled and brevo configurations", () => {
+    expect(parseNotificationProviderEnv(disabledEnv)).toEqual({
+      email: { provider: "disabled" },
+      push: { provider: "disabled" },
+      whatsapp: { provider: "disabled" },
+    });
+    expect(parseNotificationProviderEnv(brevoEnv).email).toEqual({
+      provider: "brevo",
+      apiKey: "xkeysib-test-secret-value",
+      from: "noreply@example.test",
+      fromName: "Legend",
+    });
+  });
+
+  it("legend-18qw refuses a missing provider key and names the key, not a value", () => {
+    for (const key of [
+      "NOTIFICATION_EMAIL_PROVIDER",
+      "NOTIFICATION_PUSH_PROVIDER",
+      "NOTIFICATION_WHATSAPP_PROVIDER",
+    ]) {
+      const env: Record<string, string | undefined> = { ...disabledEnv };
+      delete env[key];
+      expect(() => parseNotificationProviderEnv(env)).toThrow(key);
+    }
+    expect(() => parseNotificationProviderEnv({})).toThrow(
+      /NOTIFICATION_EMAIL_PROVIDER.*NOTIFICATION_PUSH_PROVIDER.*NOTIFICATION_WHATSAPP_PROVIDER/,
+    );
+    const invalid = { ...disabledEnv, NOTIFICATION_EMAIL_PROVIDER: "sendgrid" };
+    expect(() => parseNotificationProviderEnv(invalid)).toThrow(
+      "NOTIFICATION_EMAIL_PROVIDER",
+    );
+    expect(() => parseNotificationProviderEnv(invalid)).not.toThrow(/sendgrid/);
+    expect(() =>
+      parseNotificationProviderEnv({
+        ...disabledEnv,
+        NOTIFICATION_PUSH_PROVIDER: "",
+      }),
+    ).toThrow("NOTIFICATION_PUSH_PROVIDER");
+  });
+
+  it("legend-18qw rejects brevo without an api key or a valid sender", () => {
+    const withoutKey: Record<string, string | undefined> = { ...brevoEnv };
+    delete withoutKey.BREVO_API_KEY;
+    expect(() => parseNotificationProviderEnv(withoutKey)).toThrow(
+      "BREVO_API_KEY",
+    );
+    const withoutFrom: Record<string, string | undefined> = { ...brevoEnv };
+    delete withoutFrom.NOTIFICATION_EMAIL_FROM;
+    expect(() => parseNotificationProviderEnv(withoutFrom)).toThrow(
+      "NOTIFICATION_EMAIL_FROM",
+    );
+    expect(() =>
+      parseNotificationProviderEnv({
+        ...brevoEnv,
+        NOTIFICATION_EMAIL_FROM: "bukan-email",
+      }),
+    ).toThrow("NOTIFICATION_EMAIL_FROM");
+    try {
+      parseNotificationProviderEnv(withoutFrom);
+    } catch (error) {
+      expect(String(error)).not.toContain("xkeysib-test-secret-value");
+    }
+  });
+
+  it("legend-18qw disabled providers refuse to send and brevo is wired through the handlers", async () => {
+    const disabled = createWorkerNotificationHandlers(database, disabledEnv);
+    await expect(
+      disabled.notificationDelivery.email.send(context, emailRequest),
+    ).rejects.toThrow("email provider is disabled");
+    await expect(
+      disabled.notificationDelivery.push.send(context, {} as never),
+    ).rejects.toThrow("push provider is disabled");
+    // Absent, not a disabled stub: worker-main polls WhatsApp attempts only
+    // when the provider is present.
+    expect(disabled.notificationDelivery.whatsapp).toBeUndefined();
+    expect("whatsapp" in disabled.notificationDelivery).toBe(false);
+    const { calls, fetch } = fakeFetch(
+      () => new Response(JSON.stringify({ messageId: "m2" }), { status: 201 }),
+    );
+    const wired = createWorkerNotificationHandlers(database, brevoEnv, {
+      fetch,
+    });
+    await expect(
+      wired.notificationDelivery.email.send(context, emailRequest),
+    ).resolves.toEqual({ reference: "m2", accepted: true });
+    expect(calls).toHaveLength(1);
+    expect(() =>
+      createWorkerNotificationHandlers(database, {
+        ...disabledEnv,
+        NOTIFICATION_EMAIL_PROVIDER: undefined,
+      }),
+    ).toThrow("NOTIFICATION_EMAIL_PROVIDER");
+  });
+});
+
+// ---- Recipient resolver (database) -------------------------------------------
+
+const createdUserIds: string[] = [];
+const requestIds: string[] = [];
+const users = {} as Record<
+  | "requester"
+  | "outletApprover"
+  | "otherOutletApprover"
+  | "brandApprover"
+  | "tenantApprover"
+  | "lapsedApprover"
+  | "cashier"
+  | "tenantOwner"
+  | "outletOwner",
+  string
+>;
+
+async function roleIdOf(templateKey: string): Promise<string> {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
+    [tenantId, templateKey],
+  );
+  if (!rows[0]) throw new Error(`No ${templateKey} role`);
+  return rows[0].id;
+}
+
+async function createUser(
+  name: string,
+  templateKey: string,
+  scope: { type: string; id?: string },
+  options: { validFrom?: string; validUntil?: string; verified?: boolean } = {},
+): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified) VALUES ($1, $2, $3, $4)`,
+    [id, name, `${id}@example.test`, options.verified ?? false],
+  );
+  createdUserIds.push(id);
+  // Backdated: the container clock may drift from the Node clock.
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
+     VALUES ($1, $2, $3, $4, $5, now() + $6::interval, ${
+       options.validUntil ? "now() + $7::interval" : "$7::timestamptz"
+     }, $2)`,
+    [
+      tenantId,
+      id,
+      await roleIdOf(templateKey),
+      scope.type,
+      scope.id ?? null,
+      options.validFrom ?? "-1 hour",
+      options.validUntil ?? null,
+    ],
+  );
+  return id;
+}
+
+async function insertApprovalRequest(input: {
+  tenant?: string;
+  outletId: string | null;
+  requestedBy: string;
+  approverRoleIds: string[];
+  decided?: { by: string };
+}): Promise<string> {
+  const id = randomUUID();
+  requestIds.push(id);
+  await owner.query(
+    `INSERT INTO approval_requests
+       (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+        requested_by, source, level, required_levels, required_steps, status,
+        decided_by, decided_at, reason, request_reason, deadline_at)
+     VALUES ($1, $2, $3, $1, 'payment', 'void', 'order', $4, $5, 'user', 1, 1, $6::jsonb, $7,
+             $8, $9, $10, 'Permintaan uji notifikasi', now() + interval '1 hour')`,
+    [
+      id,
+      input.tenant ?? tenantId,
+      input.outletId,
+      randomUUID(),
+      input.requestedBy,
+      JSON.stringify([{ level: 1, approverRoleIds: input.approverRoleIds }]),
+      input.decided ? "rejected" : "pending",
+      input.decided?.by ?? null,
+      input.decided ? new Date() : null,
+      input.decided ? "Ditolak dalam uji" : null,
+    ],
+  );
+  return id;
+}
+
+function envelope(
+  name: string,
+  outletId: string | null,
+  payload: Record<string, unknown>,
+) {
+  return eventEnvelopeSchema.parse({
+    ...eventFixture,
+    id: createUlid(),
+    tenantId,
+    outletId,
+    name,
+    aggregateType: name.split(".")[0],
+    aggregateId: createUlid(),
+    idempotencyKey: `${name}-${randomUUID()}`,
+    payloadSchemaRef: `${name}.v1`,
+    payload,
+  });
+}
+
+const resolve = (
+  channels: { email: boolean; push: boolean },
+  event: ReturnType<typeof envelope>,
+) =>
+  withTenant(database, context, (tx) =>
+    createNotificationRecipientResolver(channels)(context, event, tx),
+  );
+/** Seeded fixture users may match the same roles; assert only on our own. */
+const ours = <T extends { userId: string }>(recipients: T[]) =>
+  recipients.filter((recipient) => createdUserIds.includes(recipient.userId));
+
+describe("legend-18qw notification recipient resolver", () => {
+  beforeAll(async () => {
+    users.requester = await createUser("Pemohon", "supervisor", {
+      type: "tenant",
+    });
+    users.outletApprover = await createUser(
+      "Penyetuju outlet",
+      "supervisor",
+      { type: "outlet", id: bandung },
+      { verified: true },
+    );
+    users.otherOutletApprover = await createUser(
+      "Penyetuju outlet lain",
+      "supervisor",
+      {
+        type: "outlet",
+        id: bandung2,
+      },
+    );
+    users.brandApprover = await createUser("Penyetuju brand", "supervisor", {
+      type: "brand",
+      id: brandId,
+    });
+    users.tenantApprover = await createUser("Penyetuju tenant", "supervisor", {
+      type: "tenant",
+    });
+    users.lapsedApprover = await createUser(
+      "Penyetuju lewat",
+      "supervisor",
+      { type: "tenant" },
+      { validFrom: "-2 hours", validUntil: "-1 hour" },
+    );
+    users.cashier = await createUser("Kasir", "cashier", {
+      type: "outlet",
+      id: bandung,
+    });
+    users.tenantOwner = await createUser("Pemilik tenant", "owner", {
+      type: "tenant",
+    });
+    users.outletOwner = await createUser("Pemilik outlet", "owner", {
+      type: "outlet",
+      id: bandung,
+    });
+    // A web push subscription and a stored preference for one approver.
+    await owner.query(
+      `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version)
+     VALUES ($1, $2, $3, 'hash-18qw', 'cipher', 'v1')`,
+      [tenantId, randomUUID(), users.outletApprover],
+    );
+    await owner.query(
+      `INSERT INTO notification_preferences (tenant_id, user_id, categories, quiet_hours, time_zone)
+     VALUES ($1, $2, '{}'::jsonb, NULL, 'Asia/Makassar')`,
+      [tenantId, users.outletApprover],
+    );
+    // A second tenant holding a role and user the first tenant must never see.
+    await owner.query(
+      `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     VALUES ($1, $2, 'Adapter test tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+      [tenantB, `adapters-${tenantB}`, tenantBUser],
+    );
+    await owner.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'B', $2)`,
+      [tenantBUser, `${tenantBUser}@example.test`],
+    );
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+     VALUES ($1, $2, 'Penyetuju B', false, '[]'::jsonb, '["tenant"]'::jsonb)`,
+      [tenantBRole, tenantB],
+    );
+    await owner.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, assigned_by, valid_from)
+     VALUES ($1, $2, $3, 'tenant', $2, now() - interval '1 hour')`,
+      [tenantB, tenantBUser, tenantBRole],
+    );
+  });
+
+  afterAll(async () => {
+    await owner.query(
+      `DELETE FROM approval_requests WHERE id = ANY($1::uuid[])`,
+      [requestIds],
+    );
+    await owner.query(
+      `DELETE FROM push_subscriptions WHERE tenant_id = $1 AND user_id = ANY($2::uuid[])`,
+      [tenantId, createdUserIds],
+    );
+    await owner.query(
+      `DELETE FROM notification_preferences WHERE tenant_id = $1 AND user_id = ANY($2::uuid[])`,
+      [tenantId, createdUserIds],
+    );
+    await owner.query(
+      "DELETE FROM role_assignments WHERE tenant_id = ANY($1::uuid[]) AND user_id = ANY($2::text[])",
+      [
+        [tenantId, tenantB],
+        [...createdUserIds, tenantBUser],
+      ],
+    );
+    await owner.query("DELETE FROM roles WHERE tenant_id = $1", [tenantB]);
+    await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
+    await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
+      [...createdUserIds, tenantBUser],
+    ]);
+    await owner.end();
+    await appPool.end();
+  });
+
+  it("legend-18qw approval.requested reaches in-scope approvers only, never the requester or another tenant", async () => {
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      // A foreign role id in the snapshot must not leak the other tenant's user.
+      approverRoleIds: [await roleIdOf("supervisor"), tenantBRole],
+    });
+    const event = envelope("approval.requested", bandung, {
+      requestId,
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const recipients = await resolve({ email: true, push: true }, event);
+    expect(recipients.map((r) => r.userId)).not.toContain(users.requester);
+    expect(recipients.map((r) => r.userId)).not.toContain(tenantBUser);
+    expect(
+      ours(recipients)
+        .map((r) => r.userId)
+        .sort(),
+    ).toEqual(
+      [users.outletApprover, users.brandApprover, users.tenantApprover].sort(),
+    );
+    const outletApprover = recipients.find(
+      (r) => r.userId === users.outletApprover,
+    );
+    expect(outletApprover).toMatchObject({
+      category: "approval_request",
+      link: `/kelola/persetujuan/${requestId}`,
+      whatsappSentThisMonth: expect.any(Number),
+      defaultTimeZone: "Asia/Makassar",
+      reachability: {
+        hasPushSubscription: true,
+        hasVerifiedEmail: true,
+        whatsappOptIn: false,
+      },
+    });
+    expect(outletApprover?.preference?.timeZone).toBe("Asia/Makassar");
+    expect(outletApprover?.policy.tenantId).toBe(tenantId);
+    const tenantApprover = recipients.find(
+      (r) => r.userId === users.tenantApprover,
+    );
+    expect(tenantApprover?.reachability).toEqual({
+      hasPushSubscription: false,
+      hasVerifiedEmail: false,
+      whatsappOptIn: false,
+    });
+    expect(tenantApprover?.defaultTimeZone).toBe("Asia/Jakarta");
+    // Content stays generic: no amounts, ids of objects or secrets.
+    expect(outletApprover?.body).not.toMatch(/\d{3}/);
+  });
+
+  it("legend-18qw a delayed approval.requested for a decided request or another level pages nobody", async () => {
+    const payload = (requestId: string, level: number) => ({
+      requestId,
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level,
+      requiredLevels: 2,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const decided = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+      decided: { by: users.tenantApprover },
+    });
+    expect(
+      await resolve(
+        { email: true, push: true },
+        envelope("approval.requested", bandung, payload(decided, 1)),
+      ),
+    ).toEqual([]);
+    const pending = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+    });
+    // The row is at level 1; an event naming level 2 is not this level's.
+    expect(
+      await resolve(
+        { email: true, push: true },
+        envelope("approval.requested", bandung, payload(pending, 2)),
+      ),
+    ).toEqual([]);
+  });
+
+  it("legend-18qw a tenant-wide approval.requested reaches tenant-scope approvers only", async () => {
+    const requestId = await insertApprovalRequest({
+      outletId: null,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+    });
+    const event = envelope("approval.requested", null, {
+      requestId,
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const recipients = await resolve({ email: true, push: true }, event);
+    expect(ours(recipients).map((r) => r.userId)).toEqual([
+      users.tenantApprover,
+    ]);
+  });
+
+  it("legend-18qw disabled channels are never reachable", async () => {
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+    });
+    const event = envelope("approval.requested", bandung, {
+      requestId,
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const recipients = await resolve({ email: false, push: false }, event);
+    const outletApprover = recipients.find(
+      (r) => r.userId === users.outletApprover,
+    );
+    expect(outletApprover).toBeDefined();
+    for (const recipient of ours(recipients))
+      expect(recipient.reachability).toEqual({
+        hasPushSubscription: false,
+        hasVerifiedEmail: false,
+        whatsappOptIn: false,
+      });
+  });
+
+  it("legend-18qw approval.resolved notifies the requester re-read from the request row", async () => {
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.outletApprover,
+      approverRoleIds: [await roleIdOf("supervisor")],
+      decided: { by: users.tenantApprover },
+    });
+    const event = envelope("approval.resolved", bandung, {
+      chainId: requestId,
+      requestId,
+      sourceModule: "payment",
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      outcome: "rejected",
+      level: 1,
+      requiredLevels: 1,
+      // Not the real requester: the payload id must be ignored.
+      requestedBy: users.cashier,
+      decidedBy: users.tenantApprover,
+      amountIdr: null,
+    });
+    const recipients = await resolve({ email: true, push: true }, event);
+    expect(recipients).toHaveLength(1);
+    expect(recipients[0]).toMatchObject({
+      userId: users.outletApprover,
+      category: "approval_request",
+      title: "Permintaan ditolak",
+      link: `/kelola/persetujuan/${requestId}`,
+    });
+  });
+
+  it("legend-18qw a banned account is never notified; a malformed preference falls back to defaults", async () => {
+    const supervisor = await roleIdOf("supervisor");
+    const resolved = (requestId: string) =>
+      envelope("approval.resolved", bandung, {
+        chainId: requestId,
+        requestId,
+        sourceModule: "payment",
+        actionType: "void",
+        objectType: "order",
+        objectId: randomUUID(),
+        source: "user",
+        outcome: "rejected",
+        level: 1,
+        requiredLevels: 1,
+        requestedBy: users.cashier,
+        decidedBy: users.tenantApprover,
+        amountIdr: null,
+      });
+    const banned = await createUser(
+      "Pemohon diblokir",
+      "supervisor",
+      { type: "tenant" },
+      { verified: true },
+    );
+    await owner.query(`UPDATE "user" SET banned = true WHERE id = $1`, [
+      banned,
+    ]);
+    const bannedRequest = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: banned,
+      approverRoleIds: [supervisor],
+      decided: { by: users.tenantApprover },
+    });
+    expect(
+      await resolve({ email: true, push: true }, resolved(bannedRequest)),
+    ).toEqual([]);
+
+    const odd = await createUser(
+      "Preferensi rusak",
+      "supervisor",
+      { type: "tenant" },
+      { verified: true },
+    );
+    await owner.query(
+      `INSERT INTO notification_preferences (tenant_id, user_id, categories, quiet_hours, time_zone)
+     VALUES ($1, $2, '{"approval_request": "not-a-setting"}'::jsonb, NULL, 'Asia/Jakarta')`,
+      [tenantId, odd],
+    );
+    const oddRequest = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: odd,
+      approverRoleIds: [supervisor],
+      decided: { by: users.tenantApprover },
+    });
+    const recipients = await resolve(
+      { email: true, push: false },
+      resolved(oddRequest),
+    );
+    expect(recipients).toHaveLength(1);
+    expect(recipients[0]).toMatchObject({ userId: odd, preference: null });
+  });
+
+  it("legend-18qw approval events fail closed when the request row is missing or from another outlet", async () => {
+    const payload = {
+      requestId: randomUUID(),
+      actionType: "void",
+      objectType: "order",
+      objectId: randomUUID(),
+      source: "user",
+      level: 1,
+      requiredLevels: 1,
+      requestedBy: users.requester,
+      amountIdr: null,
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    await expect(
+      resolve(
+        { email: true, push: true },
+        envelope("approval.requested", bandung, payload),
+      ),
+    ).rejects.toThrow("Approval request not found");
+    const requestId = await insertApprovalRequest({
+      outletId: bandung,
+      requestedBy: users.requester,
+      approverRoleIds: [await roleIdOf("supervisor")],
+    });
+    await expect(
+      resolve(
+        { email: true, push: true },
+        envelope("approval.requested", bandung2, { ...payload, requestId }),
+      ),
+    ).rejects.toThrow("outlet does not match");
+  });
+
+  it("legend-18qw support access events reach tenant-scope settings managers only", async () => {
+    for (const name of ["support_access.granted", "support_access.ended"]) {
+      const event = envelope(name, null, {});
+      const recipients = await resolve({ email: true, push: true }, event);
+      const mine = ours(recipients).map((r) => r.userId);
+      expect(mine).toEqual([users.tenantOwner]);
+      expect(recipients[0]?.category).toBe("security");
+    }
+  });
+
+  it("legend-18qw checklist events alert outlet supervisors, not the assignee", async () => {
+    const payload = {
+      runId: randomUUID(),
+      templateId: randomUUID(),
+      shiftDate: "2026-11-08",
+      assignedTo: users.outletApprover,
+      dueAt: "2026-11-08T03:00:00.000Z",
+      detectedAt: "2026-11-08T03:05:00.000Z",
+    };
+    const recipients = await resolve(
+      { email: true, push: true },
+      envelope("checklist.missed", bandung, payload),
+    );
+    const mine = ours(recipients).map((r) => r.userId);
+    expect(mine).toContain(users.tenantApprover);
+    expect(mine).toContain(users.brandApprover);
+    expect(mine).not.toContain(users.outletApprover);
+    expect(mine).not.toContain(users.otherOutletApprover);
+    expect(mine).not.toContain(users.cashier);
+    expect(mine).not.toContain(users.lapsedApprover);
+  });
+
+  it("legend-18qw an unknown event name throws so the outbox retries and dead-letters", async () => {
+    await expect(
+      resolve(
+        { email: true, push: true },
+        envelope("order.paid", bandung, {
+          totalIdr: 90000,
+          receiptNumber: "LG-001",
+        }),
+      ),
+    ).rejects.toThrow("No notification recipient rule for order.paid");
+  });
+});

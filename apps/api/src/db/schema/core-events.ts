@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
+  check,
   foreignKey,
   index,
   integer,
@@ -154,5 +156,54 @@ export const domainEventReplays = pgTable(
       columns: [table.tenantId, table.outboxId],
       foreignColumns: [domainEventOutbox.tenantId, domainEventOutbox.id],
     }),
+  ],
+);
+
+/**
+ * A durable, idempotent record that a destination is missing an outbox
+ * sequence. Sequences are allocated in the producer's transaction, so a gap is
+ * a producer bug: the record only feeds a throttled alert and is never used to
+ * skip the sequence. It is resolved when the consumer offset passes the gap.
+ */
+export const domainEventGapRequests = pgTable(
+  "domain_event_gap_requests",
+  {
+    tenantId: uuid("tenant_id").notNull(),
+    id: uuid("id").notNull().defaultRandom(),
+    outletId: uuid("outlet_id"),
+    destination: varchar("destination", { length: 255 }).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 255 }).notNull(),
+    aggregateId: uuid("aggregate_id").notNull(),
+    missingSequence: bigint("missing_sequence", { mode: "number" }).notNull(),
+    firstRequestedAt: timestamp("first_requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastRequestedAt: timestamp("last_requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    requestCount: integer("request_count").notNull().default(1),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.id] }),
+    unique("domain_event_gap_requests_gap_key").on(
+      table.tenantId,
+      table.destination,
+      table.aggregateType,
+      table.aggregateId,
+      table.missingSequence,
+    ),
+    index("domain_event_gap_requests_open_idx").on(
+      table.tenantId,
+      table.resolvedAt,
+    ),
+    check(
+      "domain_event_gap_requests_sequence_check",
+      sql`${table.missingSequence} >= 1`,
+    ),
+    check(
+      "domain_event_gap_requests_count_check",
+      sql`${table.requestCount} >= 1`,
+    ),
   ],
 );

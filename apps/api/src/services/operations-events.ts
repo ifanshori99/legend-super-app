@@ -35,9 +35,14 @@ async function nextSequence(
   tenantId: string,
   aggregateType: string,
   aggregateId: string,
+  destination: string,
 ): Promise<number> {
+  // The outbox orders each destination's stream on its own (unique key and
+  // consumer offsets are per destination), so the sequence is too: a shared
+  // count would hand the notification stream a first event with sequence > 1
+  // and block that aggregate forever (legend-18qw).
   await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${`operations-outbox:${tenantId}:${aggregateType}:${aggregateId}`}))`,
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`operations-outbox:${tenantId}:${destination}:${aggregateType}:${aggregateId}`}))`,
   );
   const [row] = await tx
     .select({
@@ -47,6 +52,7 @@ async function nextSequence(
     .where(
       and(
         eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, destination),
         eq(domainEventOutbox.aggregateType, aggregateType),
         eq(domainEventOutbox.aggregateId, aggregateId),
       ),
@@ -69,11 +75,13 @@ export async function emitOperationsEvent(
   },
 ): Promise<void> {
   const now = input.now ?? new Date();
+  const destination = input.destination ?? OPERATIONS_EVENT_DESTINATION;
   const sequence = await nextSequence(
     tx,
     context.tenant.tenantId,
     definition.entry.aggregateType,
     input.aggregateId,
+    destination,
   );
   const event = definition.envelopeSchema.parse({
     id: createUlid(now.getTime()),
@@ -94,7 +102,7 @@ export async function emitOperationsEvent(
   await appendOutbox(tx, context, {
     id: createUlid(now.getTime()),
     event,
-    destination: input.destination ?? OPERATIONS_EVENT_DESTINATION,
+    destination,
     direction: null,
     peerId: null,
   });
