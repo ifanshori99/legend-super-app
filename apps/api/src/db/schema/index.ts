@@ -58,3 +58,7 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// HRIS SOP library, training and announcements (legend-7df1).
+export * from "./hris-sop";
+export * from "./hris-training";
+export * from "./hris-announcement";

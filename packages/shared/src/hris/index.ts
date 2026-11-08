@@ -10,6 +10,7 @@ export * from "./attendance.ts";
 export * from "./scheduling.ts";
 export * from "./leave.ts";
 export * from "./performance.ts";
+export * from "./learning.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
 export * from "./fixtures.ts";

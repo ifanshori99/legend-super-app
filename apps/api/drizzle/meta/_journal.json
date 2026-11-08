@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794144522515,
+      "tag": "0068_chubby_network",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794144535877,
+      "tag": "0069_hris_sop_rls",
+      "breakpoints": true
     }
   ]
 }
