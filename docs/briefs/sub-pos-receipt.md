@@ -179,3 +179,32 @@ R2-D (file: `test/pos-receipt.test.ts` only): tests that fail on the current cod
 
 - P1: sparse batch `lastNumber=3` with only #3 on an empty cloud → `RECEIPT_SEQUENCE_GAP`, nothing written; then batch #1,#2 `lastNumber=2` → accepted; then #3 `lastNumber=3` → accepted, gaps empty. Reversed: merge #1..#3 then a late replay batch #1,#2 `lastNumber=2` → no-op, no error. Backfill: cloud with a hole below lastNumber (seed via owner SQL bypassing service, e.g. advance last_number and insert #1,#3) → batch with #2 inserts it and `receiptGapsForOutlet` becomes empty. Conflicting ordinal (same ordinal, other order) → `RECEIPT_SEQUENCE_REGRESSION`.
 - P2: issue a receipt, then rename outlet and change its address via owner SQL → staff document, PDF text, public e-receipt and email body still show the original name/address; a receipt issued after the rename shows the new one. `outlet_snapshot` UPDATE via owner SQL is refused by the trigger.
+
+## Q4: tax-free orders print (founder decision)
+
+A tax-free order (outlet not PPN/PB1, or every item exempt) prints with no tax
+rows. Done in `apps/api/src/services/pos-receipt-document.ts`: `taxLines` is
+`[]` when `order.taxIdr` is 0, and a zero-amount tax line is dropped. The
+shared `receiptDocumentSchema.taxLines` no longer needs one entry.
+`order.taxResult` that is null still answers 409 (tax not computed).
+
+Q4-T test (in `apps/api/src/test/pos-receipt.test.ts`, new `describe`):
+
+- Make a completed sale whose tax is 0 in this isolated tenant without
+  changing the tenant-wide PBJT rule other tests use. Example: a menu item
+  that no tax rule applies to (read `apps/api/src/db/schema/tax.ts` and the
+  tax service for the item class / exemption options).
+- Assert:
+  - The issued receipt is 200, `document.taxLines` is `[]`, `taxIdr` is 0
+    and `totalIdr` adds up.
+  - The staff PDF and public PDF hold no tax label (`PBJT`, `PPN`, `PB1`,
+    `Pajak`).
+  - The email body has no tax row.
+  - The public e-receipt's `taxLines` is `[]`.
+  - An invoice for the sale is 201 with `taxLines` `[]`.
+- Fail-before: the Q4 code is committed on HEAD. Write the old document over it
+  with `git show e11caae:apps/api/src/services/pos-receipt-document.ts > apps/api/src/services/pos-receipt-document.ts`.
+  Run the test and expect 409. Restore with
+  `git checkout HEAD -- apps/api/src/services/pos-receipt-document.ts`.
+- Run: `LEGEND_TEST_FILES="src/test/pos-receipt.test.ts" heavy pnpm test`
+  from the repo root. Do not commit.

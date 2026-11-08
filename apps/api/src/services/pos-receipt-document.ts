@@ -97,18 +97,29 @@ export async function buildReceiptDocument(
   ]);
 
   const result = order.taxResult;
-  if (!result || result.taxes.length === 0)
+  if (!result)
     throw conflict("Rincian pajak pesanan belum tersedia untuk struk.");
-  const ruleIds = result.taxes.map((summary) => summary.taxRuleId);
+  // Founder decision Q4 (legend-93a): a tax-free order (non-PPN/PB1 outlet or
+  // exempt items) prints without tax rows; a zero tax line is never shown.
+  const taxes =
+    Number(order.taxIdr) === 0
+      ? []
+      : result.taxes.filter((summary) => Number(summary.taxIdr) > 0);
+  const ruleIds = taxes.map((summary) => summary.taxRuleId);
   const names = new Map(
-    (
-      await tx
-        .select({ id: taxRules.id, name: taxRules.name })
-        .from(taxRules)
-        .where(
-          and(eq(taxRules.tenantId, tenantId), inArray(taxRules.id, ruleIds)),
-        )
-    ).map((row) => [row.id as string, row.name]),
+    ruleIds.length === 0
+      ? []
+      : (
+          await tx
+            .select({ id: taxRules.id, name: taxRules.name })
+            .from(taxRules)
+            .where(
+              and(
+                eq(taxRules.tenantId, tenantId),
+                inArray(taxRules.id, ruleIds),
+              ),
+            )
+        ).map((row) => [row.id as string, row.name]),
   );
 
   let serviceCharge: ReceiptDocument["serviceCharge"] = null;
@@ -173,7 +184,7 @@ export async function buildReceiptDocument(
       amountIdr: row.amountIdr,
     })),
     serviceCharge,
-    taxLines: result.taxes.map((summary) => ({
+    taxLines: taxes.map((summary) => ({
       taxRuleId: summary.taxRuleId,
       name: (names.get(summary.taxRuleId) ?? summary.code).slice(0, 150),
       rateBp: summary.rateBp,

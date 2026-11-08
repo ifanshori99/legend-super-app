@@ -1405,7 +1405,8 @@ export const receiptDocumentBaseShape = {
   items: z.array(posDocumentLineSchema).min(1),
   discounts: z.array(discountLineSchema),
   serviceCharge: serviceChargeLineSchema.nullable(),
-  taxLines: z.array(taxLineSchema).min(1),
+  // Empty for a tax-free order: the receipt prints no tax rows.
+  taxLines: z.array(taxLineSchema),
   ...documentTotalsShape,
   tenders: z.array(posDocumentTenderSchema).min(1),
   cashierName: z.string().min(1).max(150).nullable(),
