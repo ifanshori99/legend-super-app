@@ -2578,6 +2578,142 @@ describe("POS-03 review K: supervisor force close (legend-6c0)", () => {
   });
 });
 
+describe("POS-03 close names the PIN override by its own ULID (legend-6c0)", () => {
+  const stored = async (shiftId: string) => {
+    const { rows } = await owner.query<{
+      approval_request_id: string;
+      approval_override_id: string;
+    }>(
+      `SELECT approval_request_id::text, approval_override_id::text
+         FROM pos_shifts WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, shiftId],
+    );
+    return rows[0]!;
+  };
+
+  it("closes with the override's ULID exactly as the override service returned it", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const override = await pinOverride(cashier, count.id, 0);
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: override.id,
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data.status).toBe("closed");
+    const row = await stored(shift.id);
+    expect(row.approval_request_id).toBe(ulidToUuid(override.id));
+    expect(row.approval_override_id).toBe(ulidToUuid(override.id));
+  });
+
+  it("closes with the override's ulidToUuid form, which is not an RFC uuid", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const override = await pinOverride(cashier, count.id, 0);
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: ulidToUuid(override.id),
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect((await stored(shift.id)).approval_override_id).toBe(
+      ulidToUuid(override.id),
+    );
+  });
+
+  it("force close accepts the witness override's ULID", async () => {
+    const cashier = await newCashier();
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Paksa");
+    const shift = await openShift(cashier);
+    for (const delta of [1_000, 2_000, 3_000])
+      await countDrawer(cashier, shift.id, FLOAT_IDR - delta);
+    const count = await forcedCount(caller, shift.id, FLOAT_IDR - 5_000);
+    const { override } = await witnessFor(caller, count.id);
+    const closed = await forceClose(caller, shift.id, {
+      countId: count.id,
+      note: "Kasir gagal menghitung kas tiga kali",
+      approvedBy: supervisor.userId,
+      approvalRequestId: override.id,
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect((await stored(shift.id)).approval_override_id).toBe(
+      ulidToUuid(override.id),
+    );
+  });
+
+  it("refuses the ULID of another count's override and the shift stays open", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const first = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const second = await countDrawer(cashier, shift.id, FLOAT_IDR - 6_000);
+    const firstOverride = await pinOverride(cashier, first.id, 0);
+    await pinOverride(cashier, second.id, 0);
+    const refused = await close(cashier, shift.id, {
+      countId: second.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: firstOverride.id,
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+  });
+
+  it("refuses the ULID of an override for another action and the shift stays open", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    await pinOverride(cashier, count.id, 0);
+    const { override: voidOverride } = await createPosOverride(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      cashier.userId,
+      {
+        outletId: tenant.outletId,
+        action: "void",
+        valueIdr: 0,
+        reason: "Batalkan pesanan uji",
+        objectType: "order",
+        objectId: randomUUID(),
+        approval: {
+          method: "supervisor_pin",
+          approverUserId: userIdSchema.parse(supervisor.userId),
+          pin: PIN,
+        },
+      } as Parameters<typeof createPosOverride>[2],
+      { idempotencyKey: randomUUID() },
+    );
+    const refused = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: voidOverride.id,
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+  });
+
+  it("rejects a garbage approval id with 422 VALIDATION_ERROR", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const response = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: "abc",
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error.code).toBe("VALIDATION_ERROR");
+  });
+});
+
 describe("POS-03 a closed shift and its cash movements cannot be changed", () => {
   it("refuses direct SQL UPDATE and DELETE of a closed shift, even by the database owner", async () => {
     const cashier = await newCashier();

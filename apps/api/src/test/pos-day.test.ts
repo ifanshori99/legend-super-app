@@ -21,8 +21,7 @@
 //   device (the order service wires the shift lookup through app.ts).
 // - A supervisor's PIN override for `cash_shift_close` names the cashier's
 //   blind count submission (objectType `pos_shift_count`, round 2) and is
-//   named in the close body by the UUID form of the override id
-//   (`ulidToUuid(override.id)`); see the KNOWN GAP note in `pinApproval`.
+//   named in the close body by the override's own ULID (`override.id`).
 // - A day close blocked by a rule is 409 (CoreError CONFLICT / PosError 409);
 //   an unavailable inventory port is 503; permission failures are 403;
 //   strict-schema validation failures are 422 (the API error handler's
@@ -282,9 +281,6 @@ async function cashSale(
   };
 }
 
-const RFC_UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 /** The supervisor's own tile + PIN, as the POS does it (staff-override service). */
 async function pinApproval(input: {
   action: "void" | "refund" | "cash_shift_close";
@@ -294,43 +290,34 @@ async function pinApproval(input: {
   approver?: string;
 }) {
   const approver = input.approver ?? supervisor.userId;
-  // KNOWN GAP (reported, not hidden): the shift close body takes a strict RFC
-  // UUID `approvalRequestId`, but a PIN override's id is a ULID whose UUID form
-  // is RFC-valid only ~12% of the time. Until the service/contract names PIN
-  // approvals reliably, re-approve until the id is nameable so the day tests
-  // stay deterministic.
-  for (let attempt = 0; attempt < 400; attempt += 1) {
-    const { override } = await createPosOverride(
-      establishTenantContext({
-        tenantId: tenantIdSchema.parse(tenant.tenantId),
-        brandId: null,
-        source: "session",
-      }),
-      cashier.userId,
-      {
-        outletId: tenant.outletId,
-        action: input.action,
-        valueIdr: input.valueIdr,
-        reason: "Persetujuan uji tutup hari",
-        objectType: input.objectType,
-        objectId: input.objectId,
-        approval: {
-          method: "supervisor_pin",
-          approverUserId: userIdSchema.parse(approver),
-          pin: PIN,
-        },
-      } as Parameters<typeof createPosOverride>[2],
-      { idempotencyKey: randomUUID() },
-    );
-    expect(override.status).toBe("approved");
-    // Void/refund name the override itself (main legend-0gy1).
-    if (input.action !== "cash_shift_close")
-      return { approvedBy: approver, overrideId: override.id };
-    const asUuid = ulidToUuid(override.id);
-    if (RFC_UUID.test(asUuid))
-      return { approvedBy: approver, approvalRequestId: asUuid };
-  }
-  throw new Error("No PIN override id with an RFC UUID form after 400 tries");
+  const { override } = await createPosOverride(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    cashier.userId,
+    {
+      outletId: tenant.outletId,
+      action: input.action,
+      valueIdr: input.valueIdr,
+      reason: "Persetujuan uji tutup hari",
+      objectType: input.objectType,
+      objectId: input.objectId,
+      approval: {
+        method: "supervisor_pin",
+        approverUserId: userIdSchema.parse(approver),
+        pin: PIN,
+      },
+    } as Parameters<typeof createPosOverride>[2],
+    { idempotencyKey: randomUUID() },
+  );
+  expect(override.status).toBe("approved");
+  // Void/refund name the override itself (main legend-0gy1); the shift close
+  // names it by its ULID too (legend-6c0).
+  if (input.action !== "cash_shift_close")
+    return { approvedBy: approver, overrideId: override.id };
+  return { approvedBy: approver, approvalRequestId: override.id };
 }
 
 const deviceToken = () =>

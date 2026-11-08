@@ -79,6 +79,17 @@ export const storedApprovalIdSchema = z
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
   .toLowerCase();
 /**
+ * The approval a shift close names (legend-6c0): the WS-01 phone approval id
+ * (uuid), or the supervisor PIN override id itself, the `pos_overrides` ULID as
+ * the override service returns it. The `ulidToUuid` form a closed shift stores
+ * parses too, so a client may send back the value it read. The server still
+ * proves the approval from the override row, never from the id alone.
+ */
+export const closeApprovalIdSchema = z.union([
+  posOverrideIdSchema,
+  storedApprovalIdSchema,
+]);
+/**
  * legend-0gy1: the `pos_overrides` row (ULID) a void / discount / refund
  * consumed. It is the proof of approval; `approvalRequestId` is only the WS-01
  * chain id of a phone approval and is null for a supervisor PIN.
@@ -1005,7 +1016,7 @@ export const closePosShiftInputSchema = clientInputSchema({
   countId: posShiftCountIdSchema,
   varianceNote: z.string().min(4).max(500).nullable().optional(),
   approvedBy: userIdSchema,
-  approvalRequestId: approvalRequestIdSchema,
+  approvalRequestId: closeApprovalIdSchema,
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -1021,7 +1032,7 @@ export const forceClosePosShiftInputSchema = clientInputSchema({
   countId: posShiftCountIdSchema,
   note: z.string().trim().min(10).max(500),
   approvedBy: userIdSchema,
-  approvalRequestId: approvalRequestIdSchema,
+  approvalRequestId: closeApprovalIdSchema,
   idempotencyKey: idempotencyKeySchema,
 });
 

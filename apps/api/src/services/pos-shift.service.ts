@@ -32,6 +32,7 @@ import {
   encodeCursor,
   isoDateTimeSchema,
   toIsoDateTime,
+  ulidSchema,
   ulidToUuid,
   uuidSchema,
   uuidToUlid,
@@ -50,6 +51,7 @@ import {
   listPosCashMovements as listMovementsEndpoint,
   listPosShifts as listShiftsEndpoint,
   PosError,
+  storedApprovalIdSchema,
   type PosCashMovement,
   type PosShift,
   type PosShiftCount,
@@ -875,13 +877,24 @@ async function verifyCloseApproval(
 ): Promise<OverrideRow> {
   const { shift, object } = input;
   if (sameUser(input.approvedBy, shift.cashierId)) throw approvalRefused();
-  const requestId = uuidSchema.safeParse(input.approvalRequestId);
-  if (!requestId.success) throw approvalRefused();
+  // The id is either the PIN override's own ULID (what the override service
+  // returns), or a uuid: the phone approval chain id, or an override id in its
+  // stored `ulidToUuid` form. Both name the same override row.
+  let requestUuid: string;
   let overrideId: string | null = null;
-  try {
-    overrideId = uuidToUlid(requestId.data);
-  } catch {
-    overrideId = null;
+  const ulid = ulidSchema.safeParse(input.approvalRequestId);
+  if (ulid.success) {
+    overrideId = ulid.data;
+    requestUuid = ulidToUuid(ulid.data);
+  } else {
+    const uuid = storedApprovalIdSchema.safeParse(input.approvalRequestId);
+    if (!uuid.success) throw approvalRefused();
+    requestUuid = uuid.data;
+    try {
+      overrideId = uuidToUlid(requestUuid);
+    } catch {
+      overrideId = null;
+    }
   }
   // Candidates: approved cash_shift_close overrides for exactly this count
   // submission, requested by the shift's cashier and decided by the named
@@ -911,7 +924,7 @@ async function verifyCloseApproval(
   //    once; approval_override_id is unique besides.
   const named = candidates.find(
     (row) =>
-      row.approvalRequestId?.toLowerCase() === requestId.data ||
+      row.approvalRequestId?.toLowerCase() === requestUuid ||
       (overrideId !== null && row.id === overrideId),
   );
   let override = named;
@@ -926,9 +939,9 @@ async function verifyCloseApproval(
         and(
           eq(posOverrides.tenantId, context.tenant.tenantId),
           overrideId === null
-            ? eq(posOverrides.approvalRequestId, requestId.data)
+            ? eq(posOverrides.approvalRequestId, requestUuid)
             : or(
-                eq(posOverrides.approvalRequestId, requestId.data),
+                eq(posOverrides.approvalRequestId, requestUuid),
                 eq(posOverrides.id, overrideId),
               ),
         ),
@@ -943,7 +956,7 @@ async function verifyCloseApproval(
       .where(
         and(
           eq(approvalRequests.tenantId, context.tenant.tenantId),
-          eq(approvalRequests.id, requestId.data),
+          eq(approvalRequests.id, requestUuid),
         ),
       )
       .limit(1);

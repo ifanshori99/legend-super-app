@@ -329,10 +329,25 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
       .success,
     false,
   );
+
+  // legend-6c0: the close names the PIN override by its ULID, or by a uuid in
+  // any shape (the stored `ulidToUuid` form is not an RFC uuid).
+  const pinOverrideUlid = "01JD5Z8X3K9Q2M7R4T6V8W0YAB";
+  const nonRfcUuid = "019b3c5e-0000-0000-0000-00000000abcd";
+  for (const id of [pinOverrideUlid, nonRfcUuid]) {
+    assert.equal(
+      pos.closePosShiftInputSchema.safeParse({
+        ...validClose,
+        approvalRequestId: id,
+      }).success,
+      true,
+      `close accepts ${id}`,
+    );
+  }
   assert.equal(
     pos.closePosShiftInputSchema.safeParse({
       ...validClose,
-      countId: undefined,
+      approvalRequestId: "abc",
     }).success,
     false,
   );
@@ -349,6 +364,22 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
   assert.equal(
     pos.forceClosePosShiftInputSchema.safeParse(validForce).success,
     true,
+  );
+  for (const id of [pinOverrideUlid, nonRfcUuid])
+    assert.equal(
+      pos.forceClosePosShiftInputSchema.safeParse({
+        ...validForce,
+        approvalRequestId: id,
+      }).success,
+      true,
+      `force close accepts ${id}`,
+    );
+  assert.equal(
+    pos.forceClosePosShiftInputSchema.safeParse({
+      ...validForce,
+      approvalRequestId: "abc",
+    }).success,
+    false,
   );
   for (const [label, patch] of [
     ["a short note", { note: "terlalu" }],
