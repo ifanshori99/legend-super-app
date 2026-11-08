@@ -34,6 +34,7 @@ import {
   loanPolicySchema,
   planLoanDeductions,
 } from "./loans.ts";
+import { computePayslipTax } from "./payslip-tax.ts";
 import {
   adjustPayDate,
   payrollPeriodFor,
@@ -60,6 +61,8 @@ import {
   sumPayrollRunTotals,
 } from "./payslips.ts";
 import type { PayslipBpjsLine, PayslipLine } from "./payslips.ts";
+import { DEFAULT_PPH21_POLICY } from "./pph21-policy.ts";
+import type { Pph21Tables } from "./pph21.ts";
 import {
   distributeServiceChargePool,
   serviceChargeAllocationSchema,
@@ -72,8 +75,6 @@ import {
   bpjsRateOf,
   computeBpjsContribution,
   computeOvertimePay,
-  computeTerWithholding,
-  lookupTerRate,
   resolveStatutoryTable,
   statutoryTableVersionSchema,
 } from "./statutory.ts";
@@ -237,7 +238,10 @@ const bracket = (upToIdr: number | null, rateBp: number) => ({
   rateBp,
 });
 const ter = parseVersion("pph21_ter", {
-  ...publishedMeta(5007, "Tarif efektif rata-rata bulanan (angka terpotong)"),
+  ...publishedMeta(
+    5007,
+    "Tarif efektif rata-rata bulanan PP 58/2023 Lampiran A, B, C",
+  ),
   type: "pph21_ter",
   parameters: {
     categoryByPtkpStatus: Object.fromEntries(
@@ -254,7 +258,41 @@ const ter = parseVersion("pph21_ter", {
         bracket(8_550_000, 150),
         bracket(9_650_000, 175),
         bracket(10_050_000, 200),
-        bracket(null, 500),
+        bracket(10_350_000, 225),
+        bracket(10_700_000, 250),
+        bracket(11_050_000, 300),
+        bracket(11_600_000, 350),
+        bracket(12_500_000, 400),
+        bracket(13_750_000, 500),
+        bracket(15_100_000, 600),
+        bracket(16_950_000, 700),
+        bracket(19_750_000, 800),
+        bracket(24_150_000, 900),
+        bracket(26_450_000, 1000),
+        bracket(28_000_000, 1100),
+        bracket(30_050_000, 1200),
+        bracket(32_400_000, 1300),
+        bracket(35_400_000, 1400),
+        bracket(39_100_000, 1500),
+        bracket(43_850_000, 1600),
+        bracket(47_800_000, 1700),
+        bracket(51_400_000, 1800),
+        bracket(56_300_000, 1900),
+        bracket(62_200_000, 2000),
+        bracket(68_600_000, 2100),
+        bracket(77_500_000, 2200),
+        bracket(89_000_000, 2300),
+        bracket(103_000_000, 2400),
+        bracket(125_000_000, 2500),
+        bracket(157_000_000, 2600),
+        bracket(206_000_000, 2700),
+        bracket(337_000_000, 2800),
+        bracket(454_000_000, 2900),
+        bracket(550_000_000, 3000),
+        bracket(695_000_000, 3100),
+        bracket(910_000_000, 3200),
+        bracket(1_400_000_000, 3300),
+        bracket(null, 3400),
       ],
       B: [
         bracket(6_200_000, 0),
@@ -262,11 +300,41 @@ const ter = parseVersion("pph21_ter", {
         bracket(6_850_000, 50),
         bracket(7_300_000, 75),
         bracket(9_200_000, 100),
-        bracket(10_750_000, 125),
-        bracket(11_250_000, 150),
-        bracket(11_600_000, 175),
-        bracket(12_600_000, 200),
-        bracket(null, 500),
+        bracket(10_750_000, 150),
+        bracket(11_250_000, 200),
+        bracket(11_600_000, 250),
+        bracket(12_600_000, 300),
+        bracket(13_600_000, 400),
+        bracket(14_950_000, 500),
+        bracket(16_400_000, 600),
+        bracket(18_450_000, 700),
+        bracket(21_850_000, 800),
+        bracket(26_000_000, 900),
+        bracket(27_700_000, 1000),
+        bracket(29_350_000, 1100),
+        bracket(31_450_000, 1200),
+        bracket(33_950_000, 1300),
+        bracket(37_100_000, 1400),
+        bracket(41_100_000, 1500),
+        bracket(45_800_000, 1600),
+        bracket(49_500_000, 1700),
+        bracket(53_800_000, 1800),
+        bracket(58_500_000, 1900),
+        bracket(64_000_000, 2000),
+        bracket(71_000_000, 2100),
+        bracket(80_000_000, 2200),
+        bracket(93_000_000, 2300),
+        bracket(109_000_000, 2400),
+        bracket(129_000_000, 2500),
+        bracket(163_000_000, 2600),
+        bracket(211_000_000, 2700),
+        bracket(374_000_000, 2800),
+        bracket(459_000_000, 2900),
+        bracket(555_000_000, 3000),
+        bracket(704_000_000, 3100),
+        bracket(957_000_000, 3200),
+        bracket(1_405_000_000, 3300),
+        bracket(null, 3400),
       ],
       C: [
         bracket(6_600_000, 0),
@@ -278,7 +346,38 @@ const ter = parseVersion("pph21_ter", {
         bracket(10_950_000, 150),
         bracket(11_200_000, 175),
         bracket(12_050_000, 200),
-        bracket(null, 500),
+        bracket(12_950_000, 300),
+        bracket(14_150_000, 400),
+        bracket(15_550_000, 500),
+        bracket(17_050_000, 600),
+        bracket(19_500_000, 700),
+        bracket(22_700_000, 800),
+        bracket(26_600_000, 900),
+        bracket(28_100_000, 1000),
+        bracket(30_100_000, 1100),
+        bracket(32_600_000, 1200),
+        bracket(35_400_000, 1300),
+        bracket(38_900_000, 1400),
+        bracket(43_000_000, 1500),
+        bracket(47_400_000, 1600),
+        bracket(51_200_000, 1700),
+        bracket(55_800_000, 1800),
+        bracket(60_400_000, 1900),
+        bracket(66_700_000, 2000),
+        bracket(74_500_000, 2100),
+        bracket(83_200_000, 2200),
+        bracket(95_600_000, 2300),
+        bracket(110_000_000, 2400),
+        bracket(134_000_000, 2500),
+        bracket(169_000_000, 2600),
+        bracket(221_000_000, 2700),
+        bracket(390_000_000, 2800),
+        bracket(463_000_000, 2900),
+        bracket(561_000_000, 3000),
+        bracket(709_000_000, 3100),
+        bracket(965_000_000, 3200),
+        bracket(1_419_000_000, 3300),
+        bracket(null, 3400),
       ],
     },
     roundingMode: "down",
@@ -455,6 +554,26 @@ const componentTuples: readonly ComponentTuple[] = [
     130,
   ],
   [5032, "PPH21", "PPh 21", "pph21", "variable", false, false, 140],
+  [
+    5033,
+    "TAX_ALLOWANCE",
+    "Tunjangan PPh 21",
+    "tax_allowance",
+    "variable",
+    false,
+    false,
+    90,
+  ],
+  [
+    5034,
+    "PPH21_REFUND",
+    "Pengembalian PPh 21",
+    "custom_earning",
+    "variable",
+    false,
+    false,
+    100,
+  ],
 ];
 
 const payComponents = componentTuples.map(
@@ -960,6 +1079,32 @@ type CalculationInput = {
   paymentMethod: "bank_transfer" | "cash";
 };
 
+// Published fixture versions as the PPh 21 engine takes them. The mock months
+// are plain TER months (never a last tax period), under the default policy.
+const pph21Tables: Pph21Tables = {
+  ptkp: ptkp.parameters,
+  ter: ter.parameters,
+  annual: pph21Annual.parameters,
+};
+const hasTaxIdOf = (employee: Employee) => {
+  const pii = must(
+    cafeLegendHrisFixtures.employeePii.find(
+      (row) => row.employeeId === employee.id,
+    ),
+    `PII of ${employee.employeeNo}`,
+  ).pii;
+  return pii.npwp !== null || pii.nik !== null;
+};
+/** Months at the employer in the pay date's tax year, this one included. */
+const monthsWorkedIn = (employee: Employee, payDate: string) => {
+  const joinYear = Number(employee.joinDate.slice(0, 4));
+  const joinMonth = Number(employee.joinDate.slice(5, 7));
+  const payYear = Number(payDate.slice(0, 4));
+  const payMonth = Number(payDate.slice(5, 7));
+  const months = joinYear < payYear ? payMonth : payMonth - joinMonth + 1;
+  return Math.min(12, Math.max(1, months));
+};
+
 const MEAL_DAYS = 25;
 const MEAL_RATE_IDR = 30_000;
 
@@ -1054,16 +1199,42 @@ function calculate(input: CalculationInput) {
       )
       .map((b) => b.employerIdr),
   );
-  const taxableGrossIdr = idr(
-    sumIdr(earnings.filter((l) => l.taxable).map((l) => l.amountIdr)) +
-      employerBenefitIdr,
+  const employeeDeductibleIdr = sumIdr(
+    bpjs
+      .filter((b) => b.type === "jht" || b.type === "jp")
+      .map((b) => b.employeeIdr),
   );
-  const lookup = lookupTerRate(ter, ptkpStatus, taxableGrossIdr);
-  const pph21Idr = computeTerWithholding(ter, ptkpStatus, taxableGrossIdr);
+  const { tax } = computePayslipTax({
+    tables: pph21Tables,
+    policy: DEFAULT_PPH21_POLICY,
+    ptkpStatus,
+    hasTaxId: hasTaxIdOf(employee),
+    lastTaxPeriod: false,
+    monthsWorked: monthsWorkedIn(employee, input.period.payDate),
+    earnings: earnings.map((earning) => ({
+      amountIdr: earning.amountIdr,
+      taxable: earning.taxable,
+      taxScheme: componentByCode(earning.componentCode).taxScheme,
+    })),
+    employerBenefitIdr,
+    employeeDeductibleIdr,
+    prior: {
+      taxableGrossIdr: 0,
+      employeeDeductibleIdr: 0,
+      pph21WithheldIdr: 0,
+      pph21EmployerBorneIdr: 0,
+    },
+  });
+  const pph21Idr = tax.pph21Idr;
+  // Extra earnings of the tax step: gross-up allowance and lebih potong refund.
+  if (tax.taxAllowanceIdr > 0)
+    earnings.push(line("TAX_ALLOWANCE", tax.taxAllowanceIdr));
+  if (tax.pph21RefundIdr > 0)
+    earnings.push(line("PPH21_REFUND", tax.pph21RefundIdr));
 
   const grossIdr = sumIdr(earnings.map((l) => l.amountIdr));
   const netBeforeLoansIdr = idr(
-    grossIdr - bpjsEmployeeIdr - pph21Idr - input.lateIdr,
+    grossIdr - bpjsEmployeeIdr - tax.pph21WithheldIdr - input.lateIdr,
   );
   const loanPlan =
     input.loan === null
@@ -1077,7 +1248,7 @@ function calculate(input: CalculationInput) {
 
   const deductions: PayslipLine[] = [
     line("BPJS_EMP", bpjsEmployeeIdr),
-    line("PPH21", pph21Idr),
+    line("PPH21", tax.pph21WithheldIdr),
   ];
   if (input.lateIdr > 0) deductions.push(line("LATE", input.lateIdr));
   const loanPlanned = loanPlan[0];
@@ -1110,16 +1281,7 @@ function calculate(input: CalculationInput) {
     overtimeIdr: sumOf("overtime"),
     lines,
     bpjs,
-    tax: {
-      ptkpStatus,
-      method: "ter",
-      terCategory: lookup.category,
-      terRateBp: lookup.rateBp,
-      taxableGrossIdr,
-      pph21Idr,
-      pph21WithheldIdr: pph21Idr,
-      noTaxIdSurchargeApplied: false,
-    },
+    tax,
     paymentMethod: input.paymentMethod,
   });
   return { calculation, loanPlan };
@@ -1276,6 +1438,7 @@ const snapshotFor = (capturedAt: string, payDate: string) =>
       thrBase: component.thrBase,
     })),
     loanMaxDeductionOfNetPayBp: loanPolicy.maxDeductionOfNetPayBp,
+    pph21Policy: null,
     capturedAt,
   });
 

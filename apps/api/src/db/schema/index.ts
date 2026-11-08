@@ -63,6 +63,8 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp).
+export * from "./payroll-pph21-policy";
 // EDC agent framework (legend-apt).
 export * from "./edc";
 // HRIS SOP library, training and announcements (legend-7df1).

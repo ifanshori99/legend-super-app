@@ -12,6 +12,7 @@ import {
   deliveryErrorHttpStatus,
 } from "@starter/shared/delivery";
 import { FacilityError } from "@starter/shared/facility";
+import { PayrollError } from "@starter/shared/hris/payroll";
 import { IdentityError } from "@starter/shared/identity";
 import { NotificationError } from "@starter/shared/notification";
 import { OperationsError } from "@starter/shared/operations";
@@ -57,6 +58,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     error instanceof IdentityError ||
     error instanceof NotificationError ||
     error instanceof OperationsError ||
+    error instanceof PayrollError ||
     error instanceof PlatformError ||
     error instanceof PosError ||
     error instanceof TaxError
