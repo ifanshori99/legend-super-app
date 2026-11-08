@@ -4,8 +4,8 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/edc-framework`, cabang `ws/edc-framework`, SHA `a6d022d3`.
-Rentang diff: `git diff $(git merge-base main a6d022d3)..a6d022d3` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/edc-framework`, cabang `ws/edc-framework` a6d022d3, digabung ke `milestone/m1` lewat `prep/edc-framework` SHA `81038feb` (merge m1 `658b055b`, migration diregen jadi 0082/0083).
+Rentang diff: `git diff fd2616f4 658b055b` (isi cabang saja di atas m1; abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`: menyeret isi m1 lain.
 
 ## Berkas berisiko
 - `apps/api/src/db/schema/edc.ts`
