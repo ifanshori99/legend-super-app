@@ -1012,7 +1012,7 @@ async function recordPaymentEvidence(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   confirmation: PaymentConfirmation,
-): Promise<boolean> {
+): Promise<{ recorded: boolean; evidenceId: string }> {
   const [inserted] = await tx
     .insert(paymentEvidence)
     .values({
@@ -1034,7 +1034,7 @@ async function recordPaymentEvidence(
       ],
     })
     .returning();
-  if (inserted) return true;
+  if (inserted) return { recorded: true, evidenceId: inserted.id };
   const [existing] = await tx
     .select()
     .from(paymentEvidence)
@@ -1053,7 +1053,7 @@ async function recordPaymentEvidence(
       "CONFLICT",
       "This payment reference is already recorded for another payment.",
     );
-  return false;
+  return { recorded: false, evidenceId: existing.id };
 }
 
 /** Re-reads the intent under a row lock, so a replayed evidence path returns
@@ -1124,13 +1124,18 @@ async function applyConfirmation(
       // PAY-04 retries: one provider transaction must produce one unallocated
       // money row. The evidence identity decides; a replay returns the current
       // intent and writes nothing.
-      const recorded = await recordPaymentEvidence(tx, context, current, {
-        source: confirmation.source,
-        method: confirmation.method,
-        amountIdr: decision.amountIdr,
-        providerRef: confirmation.providerRef,
-        at: confirmation.at,
-      });
+      const { recorded, evidenceId } = await recordPaymentEvidence(
+        tx,
+        context,
+        current,
+        {
+          source: confirmation.source,
+          method: confirmation.method,
+          amountIdr: decision.amountIdr,
+          providerRef: confirmation.providerRef,
+          at: confirmation.at,
+        },
+      );
       if (!recorded) return current;
       const [row] = await tx
         .update(paymentIntents)
@@ -1147,6 +1152,7 @@ async function applyConfirmation(
         tenantId: context.tenant.tenantId,
         outletId: current.outletId,
         paymentIntentId: current.id,
+        evidenceId,
         amountIdr: idr(decision.amountIdr),
         reason: "double_payment",
       });
@@ -1185,13 +1191,18 @@ async function applyConfirmation(
     // paid late): only the remainder is allocated, the rest is unallocated.
     // Evidence identity before any money write: a replay of this provider
     // transaction returns the committed state and records nothing.
-    const recorded = await recordPaymentEvidence(tx, context, current, {
-      source: confirmation.source,
-      method: confirmation.method,
-      amountIdr: confirmation.amountIdr,
-      providerRef: confirmation.providerRef,
-      at: confirmation.at,
-    });
+    const { recorded, evidenceId } = await recordPaymentEvidence(
+      tx,
+      context,
+      current,
+      {
+        source: confirmation.source,
+        method: confirmation.method,
+        amountIdr: confirmation.amountIdr,
+        providerRef: confirmation.providerRef,
+        at: confirmation.at,
+      },
+    );
     if (!recorded) return current;
     const allocatableNow = Math.min(
       current.amountIdr,
@@ -1250,6 +1261,7 @@ async function applyConfirmation(
         tenantId: context.tenant.tenantId,
         outletId: current.outletId,
         paymentIntentId: current.id,
+        evidenceId,
         amountIdr: idr(unallocatedNow),
         reason: reasonNow,
       });
