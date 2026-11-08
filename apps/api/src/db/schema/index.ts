@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-02 device registry + training periods (legend-165).
+export * from "./device";
