@@ -23,6 +23,7 @@ CREATE TABLE "edc_transactions" (
 	"invoice_no" varchar(20),
 	"batch_no" varchar(20),
 	"dispatched_at" timestamp with time zone,
+	"dispatch_batch_no" varchar(20),
 	"needs_reconciliation" boolean DEFAULT false NOT NULL,
 	"inquiry_count" integer DEFAULT 0 NOT NULL,
 	"last_inquiry_at" timestamp with time zone,
@@ -46,23 +47,17 @@ CREATE TABLE "edc_transactions" (
 -- foreign keys below are validated (no app.tenant_id set -> 42501). Lift FORCE
 -- on the referenced tables for this transaction only; restored below, before
 -- commit (drizzle applies pending migrations in one transaction).
-ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
-ALTER TABLE public.payment_edc_terminals NO FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
-ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.payment_edc_terminals NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "edc_transactions" ADD CONSTRAINT "edc_transactions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_transactions" ADD CONSTRAINT "edc_transactions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_transactions" ADD CONSTRAINT "edc_transactions_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_transactions" ADD CONSTRAINT "edc_transactions_terminal_fk" FOREIGN KEY ("tenant_id","outlet_id","terminal_id") REFERENCES "public"."payment_edc_terminals"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edc_transactions" ADD CONSTRAINT "edc_transactions_payment_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
-ALTER TABLE public.payment_edc_terminals FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
-ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
+ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.payment_edc_terminals FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "edc_transactions_approved_reference_key" ON "edc_transactions" USING btree ("tenant_id","outlet_id","reference") WHERE "edc_transactions"."status" = 'approved' AND "edc_transactions"."type" = 'sale';--> statement-breakpoint
 CREATE INDEX "edc_transactions_reference_idx" ON "edc_transactions" USING btree ("tenant_id","outlet_id","reference");--> statement-breakpoint
 CREATE INDEX "edc_transactions_terminal_status_idx" ON "edc_transactions" USING btree ("tenant_id","terminal_id","status");
