@@ -94,6 +94,14 @@ export async function depositCreditFor(
  * commit, so two orders never both apply the same remaining credit. It is a
  * leaf lock: nothing else is locked after it, only the caller's own order row
  * is written (already locked, or a fresh insert).
+ *
+ * Global lock order across the QR and POS bills (legend-94qt): the order row,
+ * then the promo engine locks (`redeemPromotions` doc in crm-promo-engine.ts),
+ * THEN this deposit lock. POS follows it by construction (discount apply ->
+ * redeem -> repriceOrder -> depositFor). The QR pay-first checkout therefore
+ * inserts its order, redeems its promotion, and only then takes this lock to
+ * apply the credit; taking it before the redeem deadlocked (40P01) against a
+ * POS promo discount in the same session. Never take a promo lock after this.
  */
 export async function lockSessionDeposit(
   tx: Tx,

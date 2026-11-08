@@ -1608,27 +1608,12 @@ async function checkout(
   const orderId = createUlid(now.getTime());
   const payFirst = plan.kitchenFire === "held_for_payment";
   // Reservation DP credit (WS-08), floored at 0 and never above this order.
+  // legend-94qt: the order row is inserted with no deposit; the credit is
+  // applied below, AFTER the promotion redeem, so this checkout takes the promo
+  // locks before the session deposit lock (the POS order: discount -> redeem
+  // -> reprice -> deposit).
   let depositApplied = 0;
-  if (payFirst) {
-    const credit = await depositCreditFor(tx, tenantId, session.id);
-    // legend-94qt: same session deposit lock as the POS reprice.
-    if (credit > 0) await lockSessionDeposit(tx, tenantId, session.id);
-    const [used] = await tx
-      .select({
-        used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
-      })
-      .from(orders)
-      .where(
-        and(
-          eq(orders.tenantId, tenantId),
-          eq(orders.tableSessionId, session.id),
-          ne(orders.status, "voided"),
-        ),
-      );
-    const remaining = Math.max(0, credit - Number(used?.used ?? 0));
-    depositApplied = Math.min(remaining, quote.totalIdr);
-  }
-  const [order] = await tx
+  let [order] = await tx
     .insert(orders)
     .values({
       id: orderId,
@@ -1646,7 +1631,7 @@ async function checkout(
       taxIdr: quote.taxIdr,
       roundingIdr: quote.rounding.adjustmentIdr,
       totalIdr: quote.totalIdr,
-      depositAppliedIdr: idr(depositApplied),
+      depositAppliedIdr: idr(0),
       status: payFirst ? "awaiting_payment" : "sent",
       businessDate,
       taxResult: built.tax,
@@ -1708,6 +1693,41 @@ async function checkout(
         "CONFLICT",
         "Promo berubah saat checkout; minta penawaran harga ulang.",
       );
+  }
+
+  if (payFirst) {
+    const credit = await depositCreditFor(tx, tenantId, session.id);
+    if (credit > 0) {
+      // legend-94qt: global lock order promo -> deposit (see
+      // `lockSessionDeposit`). Same session deposit lock as the POS reprice,
+      // taken after the promo redeem above and right before the used sum.
+      await lockSessionDeposit(tx, tenantId, session.id);
+      const [used] = await tx
+        .select({
+          used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.tenantId, tenantId),
+            eq(orders.tableSessionId, session.id),
+            ne(orders.status, "voided"),
+            ne(orders.id, orderId),
+          ),
+        );
+      const remaining = Math.max(0, credit - Number(used?.used ?? 0));
+      depositApplied = Math.min(remaining, quote.totalIdr);
+      if (depositApplied > 0) {
+        const [withDeposit] = await tx
+          .update(orders)
+          .set({ depositAppliedIdr: idr(depositApplied) })
+          .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+          .returning();
+        if (!withDeposit)
+          throw new Error("Order deposit update returned no row");
+        order = withDeposit;
+      }
+    }
   }
 
   // The whole cart is consumed: ordered lines became the order, sold-out

@@ -12,7 +12,7 @@
 // PRECONDITION_FAILED (legend-63l6).
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
@@ -39,6 +39,7 @@ import {
   type PosTender,
 } from "@starter/shared/pos";
 import {
+  approvalRequests,
   domainEventOutbox,
   floorZones,
   menuItems,
@@ -651,7 +652,7 @@ const APPROVAL_ERROR = {
  * override must be approved, on this outlet, for this action and object,
  * requested by the caller, approved by `approvedBy` (never the requester,
  * AUTH-06), fresh (approved within PIN_APPROVAL_WINDOW_MS of `now`, for both
- * methods) and worth at least the value acted on. Anything else is the
+ * methods; a phone approval counts from its last chain level's `decidedAt`) and worth at least the value acted on. Anything else is the
  * contract's *_APPROVAL_REQUIRED (fail closed). Returns the override row:
  * callers store `override.id` and `override.approvalRequestId` (the WS-01 chain
  * id, null for a PIN) on rows, events and audit, never client input.
@@ -705,10 +706,30 @@ export async function consumeApproval(
     override.valueIdr < input.minValueIdr
   )
     throw refuse();
-  // Freshness is measured from the approval (`resolvedAt`; the row has no
-  // `approvedAt`), from creation if that is missing, against the caller's
-  // injected clock, never Date.now().
-  const approvedAt = override.resolvedAt ?? override.createdAt;
+  // Freshness is measured from the approval, against the caller's injected
+  // clock, never Date.now(). A PIN override is approved when it is created, so
+  // `resolvedAt` (the row has no `approvedAt`; `createdAt` if missing) is the
+  // approval. A phone approval is NOT: its `resolvedAt` is when the consumer
+  // or poll processed it, which can be long after the supervisor decided
+  // (legend-0gy1 round 2). It is as old as the last level of its WS-01
+  // `approval_requests` chain was decided; no decided chain = fail closed.
+  let approvedAt: Date;
+  if (override.method === "supervisor_phone") {
+    if (override.approvalRequestId === null) throw refuse();
+    const [last] = await tx
+      .select({ decidedAt: approvalRequests.decidedAt })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenantId),
+          eq(approvalRequests.chainId, override.approvalRequestId),
+        ),
+      )
+      .orderBy(desc(approvalRequests.level))
+      .limit(1);
+    if (!last?.decidedAt) throw refuse();
+    approvedAt = last.decidedAt;
+  } else approvedAt = override.resolvedAt ?? override.createdAt;
   if (input.now.getTime() - approvedAt.getTime() > PIN_APPROVAL_WINDOW_MS)
     throw refuse();
   const consumed = await tx

@@ -206,6 +206,101 @@ async function usesOf(overrideId: string): Promise<number> {
   return Number(rows[0]?.count);
 }
 
+/**
+ * A phone approval as the consumer/poll leaves it (legend-0gy1 round 2): the
+ * `pos_overrides` row is approved with `resolvedAt` = when it was processed,
+ * the WS-01 `approval_requests` chain carries when each level was decided.
+ * `decidedMinutesAgo` is per level (level 1 first), relative to `base`.
+ */
+async function phoneApproval(input: {
+  orderId: string;
+  base: Date;
+  decidedMinutesAgo: number[];
+  processedMinutesAgo: number;
+}): Promise<{ approvedBy: string; overrideId: string }> {
+  const overrideId = createUlid(input.base.getTime());
+  const overrideUuid = ulidToUuid(overrideId);
+  const at = (minutes: number) =>
+    new Date(input.base.getTime() - minutes * MINUTE).toISOString();
+  const levels = input.decidedMinutesAgo.length;
+  const chainId = randomUUID();
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    for (const [index, ago] of input.decidedMinutesAgo.entries()) {
+      await client.query(
+        `INSERT INTO approval_requests
+           (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type,
+            object_id, payload, requested_by, source, level, required_levels,
+            required_steps, status, request_reason, decided_by, decided_at, reason,
+            deadline_at, created_at)
+         VALUES ($1, $2, $3, $4, 'pos_override', 'void', 'pos_override', $5, '{}', $6,
+                 'user', $7, $8, '[]', 'approved', 'Pelanggan salah pesan', $9, $10,
+                 'Disetujui', $11, $12)`,
+        [
+          index === 0 ? chainId : randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          chainId,
+          overrideUuid,
+          cashier.userId,
+          index + 1,
+          levels,
+          supervisor.userId,
+          at(ago),
+          new Date(input.base.getTime() + 60 * MINUTE).toISOString(),
+          at(60),
+        ],
+      );
+    }
+    await client.query(
+      `INSERT INTO pos_overrides
+         (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
+          reason, value_idr, object_type, object_id, approval_request_id,
+          request_fingerprint, created_at, resolved_at)
+       VALUES ($1, $2, $3, 'void', 'supervisor_phone', 'approved', $4, $5,
+               'Pelanggan salah pesan', 1000000, 'order', $6, $7, $8, $9, $10)`,
+      [
+        overrideUuid,
+        tenant.tenantId,
+        tenant.outletId,
+        cashier.userId,
+        supervisor.userId,
+        input.orderId,
+        chainId,
+        randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        at(60),
+        at(input.processedMinutesAgo),
+      ],
+    );
+  });
+  return { approvedBy: supervisor.userId, overrideId };
+}
+
+async function voidWith(
+  orderId: string,
+  status: string,
+  approval: { approvedBy: string; overrideId: string },
+  now: Date,
+) {
+  return voidPosOrder(
+    tenantContext(tenant.tenantId),
+    {
+      userId: userIdSchema.parse(cashier.userId) as UserId,
+      deviceId: null,
+      expectedVersion: null,
+    },
+    outletIdSchema.parse(tenant.outletId),
+    orderId,
+    {
+      reason: "customer_cancelled" as const,
+      reasonNote: "Pelanggan salah pesan",
+      expectedStatus: status,
+      idempotencyKey: randomUUID(),
+      ...approval,
+    } as never,
+    now,
+  );
+}
+
 beforeAll(async () => {
   app = createApp();
   tenant = await createIsolatedTenant(`posap-${randomUUID().slice(0, 6)}`);
@@ -465,6 +560,49 @@ describe("POS approval carries the override id (legend-0gy1)", () => {
     expect(await usesOf(approval.overrideId)).toBe(0);
     const fresh = await call(new Date(approvedAt.getTime() + 14 * MINUTE));
     expect(fresh.status).toBe("voided");
+  });
+
+  it("a phone approval is as old as the supervisor's decision, not as its processing (legend-0gy1)", async () => {
+    const base = new Date();
+    // Decided 20 min ago, but the poll/consumer only settled the override
+    // 1 min ago: resolvedAt looks fresh, the decision is not.
+    const stale = await openOrder();
+    const lateApproval = await phoneApproval({
+      orderId: stale.orderId,
+      base,
+      decidedMinutesAgo: [20],
+      processedMinutesAgo: 1,
+    });
+    await expect(
+      voidWith(stale.orderId, stale.status, lateApproval, base),
+    ).rejects.toMatchObject({ code: "VOID_APPROVAL_REQUIRED" });
+    expect(await usesOf(lateApproval.overrideId)).toBe(0);
+
+    // Decided 5 min ago: accepted.
+    const fresh = await openOrder();
+    const recent = await phoneApproval({
+      orderId: fresh.orderId,
+      base,
+      decidedMinutesAgo: [5],
+      processedMinutesAgo: 1,
+    });
+    const voided = await voidWith(fresh.orderId, fresh.status, recent, base);
+    expect(voided.status).toBe("voided");
+    expect(await usesOf(recent.overrideId)).toBe(1);
+  });
+
+  it("a multi-level phone approval is as old as its last level's decision", async () => {
+    const base = new Date();
+    const order = await openOrder();
+    // Level 1 decided 20 min ago, the last level 3 min ago: fresh.
+    const approval = await phoneApproval({
+      orderId: order.orderId,
+      base,
+      decidedMinutesAgo: [20, 3],
+      processedMinutesAgo: 1,
+    });
+    const voided = await voidWith(order.orderId, order.status, approval, base);
+    expect(voided.status).toBe("voided");
   });
 
   it("an override for another action, object, requester or approver is refused", async () => {

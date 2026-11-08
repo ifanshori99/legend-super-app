@@ -615,7 +615,23 @@ export async function createIntent(
           ),
         )
         .for("update");
-      if (!lockedLink || outstandingIdr(lockedLink) !== amountIdr)
+      // legend-b0au: the gateway call above ran outside any lock, so a
+      // `cancelPaymentLinkInTx` (cash replaced the QRIS, order voided) may have
+      // committed meanwhile. A link that is closed now, or whose expiry moved
+      // since the plan (the cancel stamps its own `now`, which can be later
+      // than this request's clock), never receives the new intent.
+      if (
+        !lockedLink ||
+        (lockedLink.expiresAt !== null &&
+          (lockedLink.expiresAt <= now ||
+            lockedLink.expiresAt.getTime() !== plan.link.expiresAt?.getTime()))
+      )
+        throw new HttpError(
+          404,
+          "NOT_FOUND",
+          "This payment link is not available.",
+        );
+      if (outstandingIdr(lockedLink) !== amountIdr)
         throw new HttpError(
           409,
           "CONFLICT",
