@@ -60,6 +60,7 @@ export const POS_OVERRIDE_APPROVE_PERMISSION = {
   refund: "pos.refund.approve",
   cash_drawer_open: "pos.cash_drawer.approve",
   price_correction: "pos.price_correction.approve",
+  cash_shift_close: "shift.cash.approve_close",
 } as const satisfies Record<PosOverrideAction, PermissionCode>;
 
 // -------------------------------------------------------------- staff pins

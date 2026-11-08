@@ -1,0 +1,103 @@
+-- Hand-copied from src/db/schema/pos-shift.custom.sql (legend-6c0).
+-- Custom SQL migration fragment for legend-6c0 (WS-04 cashier shift, cash
+-- movements, end-of-day close). Append AFTER the drizzle-generated CREATE
+-- TABLE statements for pos_shifts, cash_movements and pos_daily_closes.
+--
+-- PRD v1.7 POS-03: "Tutup shift memakai blind count; selisih kas tidak dapat
+-- disembunyikan atau diubah setelah disetujui". The service checks the same
+-- rules first (contract closeShift / assertShiftCountEditable /
+-- assertCashMovementAllowed); these triggers are the database backstop.
+
+-- 1. A shift's identity never changes, a closed shift never changes at all,
+--    and no shift is ever deleted (the variance stays on record).
+CREATE OR REPLACE FUNCTION app.pos_shifts_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'POS-03: shift % cannot be deleted', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  IF OLD.status = 'closed' THEN
+    RAISE EXCEPTION 'POS-03: shift % is closed; its count and variance are locked', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.id <> OLD.id
+    OR NEW.tenant_id <> OLD.tenant_id
+    OR NEW.outlet_id <> OLD.outlet_id
+    OR NEW.device_id <> OLD.device_id
+    OR NEW.cashier_id <> OLD.cashier_id
+    OR NEW.business_date <> OLD.business_date
+    OR NEW.opened_at <> OLD.opened_at
+    OR NEW.opening_float_idr <> OLD.opening_float_idr
+    OR NEW.open_key <> OLD.open_key
+    OR NEW.open_fingerprint <> OLD.open_fingerprint
+    OR NEW.created_at <> OLD.created_at
+  THEN
+    RAISE EXCEPTION 'POS-03: shift % identity and opening float cannot change', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER "pos_shifts_guard_trg"
+  BEFORE UPDATE OR DELETE ON "pos_shifts"
+  FOR EACH ROW EXECUTE FUNCTION app.pos_shifts_guard();
+--> statement-breakpoint
+
+-- 2. Cash movements are append-only and only land on an open shift of the
+--    same outlet ("kas masuk dan keluar dengan alasan", F8 Shift Kasir).
+CREATE OR REPLACE FUNCTION app.cash_movements_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  shift_status text;
+  shift_outlet uuid;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'POS-03: cash movement % is history and cannot change', OLD.id
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT s.status, s.outlet_id INTO shift_status, shift_outlet
+  FROM public.pos_shifts s
+  WHERE s.tenant_id = NEW.tenant_id AND s.id = NEW.shift_id;
+  IF shift_status IS DISTINCT FROM 'open' THEN
+    RAISE EXCEPTION 'POS-03: shift % is not open', NEW.shift_id
+      USING ERRCODE = '23514';
+  END IF;
+  IF shift_outlet <> NEW.outlet_id THEN
+    RAISE EXCEPTION 'TEN-03: cash movement outlet differs from its shift'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER "cash_movements_guard_trg"
+  BEFORE INSERT OR UPDATE OR DELETE ON "cash_movements"
+  FOR EACH ROW EXECUTE FUNCTION app.cash_movements_guard();
+--> statement-breakpoint
+
+-- 3. A closed business day is history (POS-05: the figures WS-07 and WS-06
+--    read never move after the close).
+CREATE OR REPLACE FUNCTION app.pos_daily_closes_immutable() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  RAISE EXCEPTION 'POS-05: business day close % cannot change', OLD.id
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER "pos_daily_closes_immutable_trg"
+  BEFORE UPDATE OR DELETE ON "pos_daily_closes"
+  FOR EACH ROW EXECUTE FUNCTION app.pos_daily_closes_immutable();
+--> statement-breakpoint
+
+-- 4. Tenant + outlet RLS (TEN-01/TEN-03).
+SELECT app.enforce_tenant_rls('public.pos_shifts'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.pos_shifts'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.cash_movements'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.cash_movements'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.pos_daily_closes'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.pos_daily_closes'::regclass);

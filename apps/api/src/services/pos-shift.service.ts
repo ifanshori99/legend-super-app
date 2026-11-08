@@ -1,0 +1,876 @@
+// Cashier shift service (bead legend-6c0; PRD v1.7 §3 F8 "Shift Kasir", §4 E;
+// acceptance POS-03: "Tutup shift memakai blind count; selisih kas tidak dapat
+// disembunyikan atau diubah setelah disetujui").
+//
+// - Open: from a registered terminal only (device token verified by the route,
+//   device -> outlet resolved by WS-02), one open shift per terminal and per
+//   cashier, never on a closed business day.
+// - Cash movements (kas masuk / keluar / setoran) on the cashier's own open
+//   shift, with a reason; append-only.
+// - Close: blind count (denominations only, the server derives counted,
+//   expected and variance), a supervisor approval (`cash_shift_close`
+//   override, re-verified here) and a written note for any difference. The
+//   closing UPDATE writes everything at once; the closed row is frozen by the
+//   pos-shift.custom.sql triggers.
+// - Money is computed on the server only. Every mutation is one `withTenant`
+//   transaction: row lock + write + outbox event + audit. Idempotency keys are
+//   bound to a request fingerprint stored on the row.
+// - Permissions are checked here on the outlet (fail closed) as well as at the
+//   route; a shift of another outlet or tenant is 404.
+
+import { and, desc, eq, or, sql } from "drizzle-orm";
+import {
+  CoreError,
+  decodeCursor,
+  encodeCursor,
+  isoDateTimeSchema,
+  toIsoDateTime,
+  ulidToUuid,
+  uuidSchema,
+  uuidToUlid,
+  z,
+  type CursorPage,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  closeShift,
+  assertCashMovementAllowed,
+  listPosCashMovements as listMovementsEndpoint,
+  listPosShifts as listShiftsEndpoint,
+  PosError,
+  type PosCashMovement,
+  type PosShift,
+  type PosShiftReport,
+  posShiftReportSchema,
+} from "@starter/shared/pos";
+import { db } from "../db/index.ts";
+import { approvalRequests } from "../db/schema/platform-approval.ts";
+import { posOverrides } from "../db/schema/device-pin.ts";
+import {
+  cashMovements,
+  posDailyCloses,
+  posShifts,
+} from "../db/schema/pos-shift.ts";
+import { withTenant } from "../db/tenant.ts";
+import { resolveDeviceOutlet } from "./device-pin.service.ts";
+import { loadOutlet, businessDateFor } from "./pos-order-support.ts";
+import type { PosShiftLookup } from "./pos-order-ports.ts";
+import { posReceiptGapsPort } from "./pos-shift-ports.ts";
+import {
+  appendShiftEvent,
+  assertOutletPermission,
+  auditShift,
+  computeShiftAggregates,
+  findShift,
+  loadOutletAccess,
+  movementDto,
+  movementsOf,
+  parseShiftId,
+  shiftAuditView,
+  shiftDto,
+  shiftFingerprint,
+  permissionDenied,
+  uniqueViolationOf,
+  type ClosePosShiftInput,
+  type OpenPosShiftInput,
+  type RecordCashMovementInput,
+  type ShiftAggregates,
+  type ShiftCaller,
+  type ShiftRow,
+} from "./pos-shift-support.ts";
+import type { Tx } from "./permission-resolver.ts";
+
+export type { ShiftCaller } from "./pos-shift-support.ts";
+
+type ShiftListQuery = z.output<typeof listShiftsEndpoint.query>;
+type MovementListQuery = z.output<typeof listMovementsEndpoint.query>;
+
+/** A PIN approval is only good for this long after the supervisor typed it. */
+const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
+
+const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+function invalidCursor(): CoreError {
+  return new CoreError("VALIDATION_ERROR", "Cursor tidak valid.");
+}
+
+/** Keyset cursor `[isoInstant, id]` of a (time, id) ordered list. */
+function decodeTimeCursor(cursor: string): { at: string; id: string } {
+  try {
+    const [at, id] = decodeCursor(cursor);
+    return {
+      at: isoDateTimeSchema.parse(at),
+      id: uuidSchema.parse(id),
+    };
+  } catch {
+    throw invalidCursor();
+  }
+}
+
+// ---- Open -------------------------------------------------------------------
+
+export async function openPosShift(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  input: OpenPosShiftInput,
+): Promise<PosShift> {
+  if (caller.deviceId === null)
+    throw new CoreError(
+      "FORBIDDEN",
+      "Shift hanya dapat dibuka dari perangkat kasir terdaftar.",
+    );
+  const deviceId = caller.deviceId;
+  const tenantId = context.tenant.tenantId;
+  const deviceOutlet = await resolveDeviceOutlet(tenantId, deviceId);
+  if (deviceOutlet === null || !sameUser(deviceOutlet, outletId))
+    throw new CoreError(
+      "FORBIDDEN",
+      "Shift hanya dapat dibuka dari perangkat kasir terdaftar.",
+    );
+  const { idempotencyKey, ...request } = input;
+  const fingerprint = shiftFingerprint({
+    op: "shift.open",
+    outletId,
+    userId: caller.userId,
+    body: request,
+  });
+  const now = new Date();
+  return withTenant(db, context, async (tx) => {
+    const outlet = await loadOutlet(tx, context, outletId);
+    await assertOutletPermission(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      "shift.cash.operate",
+    );
+    // One opener per outlet at a time: the replay lookup, the open-shift
+    // checks and the insert then see one state.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-shift-open:${tenantId}:${outletId}`}, 0))`,
+    );
+    const [replay] = await tx
+      .select()
+      .from(posShifts)
+      .where(
+        and(
+          eq(posShifts.tenantId, tenantId),
+          eq(posShifts.outletId, outletId),
+          eq(posShifts.openKey, idempotencyKey),
+        ),
+      );
+    if (replay) {
+      if (replay.openFingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+        );
+      // POS-03 blind count: the cashier never sees the live drawer figures.
+      return shiftDto(replay);
+    }
+    const businessDate = businessDateFor(outlet, now);
+    const [closedDay] = await tx
+      .select({ id: posDailyCloses.id })
+      .from(posDailyCloses)
+      .where(
+        and(
+          eq(posDailyCloses.tenantId, tenantId),
+          eq(posDailyCloses.outletId, outletId),
+          eq(posDailyCloses.businessDate, businessDate),
+        ),
+      );
+    if (closedDay) throw new PosError("BUSINESS_DAY_ALREADY_CLOSED");
+    const [open] = await tx
+      .select({ id: posShifts.id })
+      .from(posShifts)
+      .where(
+        and(
+          eq(posShifts.tenantId, tenantId),
+          eq(posShifts.outletId, outletId),
+          eq(posShifts.status, "open"),
+          or(
+            eq(posShifts.deviceId, deviceId),
+            eq(posShifts.cashierId, caller.userId),
+          ),
+        ),
+      );
+    if (open) throw new PosError("SHIFT_ALREADY_OPEN");
+    let row: ShiftRow | undefined;
+    try {
+      [row] = await tx
+        .insert(posShifts)
+        .values({
+          tenantId,
+          outletId,
+          deviceId,
+          cashierId: caller.userId,
+          businessDate,
+          status: "open",
+          openedAt: now,
+          openingFloatIdr: input.openingFloatIdr,
+          openKey: idempotencyKey,
+          openFingerprint: fingerprint,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    } catch (error) {
+      const constraint = uniqueViolationOf(error);
+      if (
+        constraint === "pos_shifts_open_device_key" ||
+        constraint === "pos_shifts_open_cashier_key"
+      )
+        throw new PosError("SHIFT_ALREADY_OPEN");
+      throw error;
+    }
+    if (!row) throw new Error("Shift insert returned no row");
+    await appendShiftEvent(tx, context, "cashier_shift.opened", {
+      aggregateId: row.id,
+      outletId,
+      payload: {
+        shiftId: row.id,
+        outletId,
+        deviceId,
+        cashierId: caller.userId,
+        businessDate,
+        openingFloatIdr: Number(row.openingFloatIdr),
+        openedAt: toIsoDateTime(now),
+      },
+      caller,
+      now,
+    });
+    await auditShift(
+      tx,
+      context,
+      {
+        action: "pos_shift.opened",
+        outletId,
+        objectType: "pos_shift",
+        objectId: row.id,
+        caller,
+        before: null,
+        after: shiftAuditView(row),
+      },
+      now,
+    );
+    return shiftDto(row);
+  });
+}
+
+// ---- Reads ------------------------------------------------------------------
+
+/**
+ * Own shift needs `operate`; any shift of the outlet needs view_all or
+ * approve_close. Returns whether the caller may see the live drawer figures of
+ * an open shift: POS-03 blind count ("kasir menghitung tanpa melihat angka
+ * sistem") hides them from the shift's own cashier until the close, whatever
+ * else that cashier may hold.
+ */
+async function assertCanRead(
+  tx: Tx,
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shift: Pick<ShiftRow, "cashierId">,
+): Promise<{ seesLiveFigures: boolean }> {
+  const access = await loadOutletAccess(tx, context, caller.userId, outletId);
+  const own = sameUser(shift.cashierId, caller.userId);
+  if (
+    access.has("shift.cash.view_all") ||
+    access.has("shift.cash.approve_close")
+  )
+    return { seesLiveFigures: !own };
+  if (access.has("shift.cash.operate") && own)
+    return { seesLiveFigures: false };
+  throw permissionDenied();
+}
+
+export async function getPosShiftReport(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+): Promise<PosShiftReport> {
+  const now = new Date();
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    const row = await findShift(tx, context, outletId, shiftId);
+    const { seesLiveFigures } = await assertCanRead(
+      tx,
+      context,
+      caller,
+      outletId,
+      row,
+    );
+    const live =
+      row.status === "open" && seesLiveFigures
+        ? await computeShiftAggregates(tx, row, now)
+        : undefined;
+    const movements = await movementsOf(tx, row);
+    const receiptGaps = await posReceiptGapsPort()(tx, context, {
+      outletId,
+      deviceId: row.deviceId,
+    });
+    return posShiftReportSchema.parse({
+      shift: shiftDto(row, live),
+      movements: movements.map(movementDto),
+      receiptGaps,
+    });
+  });
+}
+
+export async function listPosShifts(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  query: ShiftListQuery,
+): Promise<CursorPage<PosShift>> {
+  const now = new Date();
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    const access = await loadOutletAccess(tx, context, caller.userId, outletId);
+    const seesAll =
+      access.has("shift.cash.view_all") ||
+      access.has("shift.cash.approve_close");
+    if (!seesAll && !access.has("shift.cash.operate")) throw permissionDenied();
+    const tenantId = context.tenant.tenantId;
+    const filters = [
+      eq(posShifts.tenantId, tenantId),
+      eq(posShifts.outletId, outletId),
+    ];
+    if (!seesAll) filters.push(eq(posShifts.cashierId, caller.userId));
+    if (query.businessDate)
+      filters.push(eq(posShifts.businessDate, query.businessDate));
+    if (query.deviceId) filters.push(eq(posShifts.deviceId, query.deviceId));
+    if (query.cursor) {
+      const after = decodeTimeCursor(query.cursor);
+      filters.push(
+        sql`(${posShifts.openedAt}, ${posShifts.id}) < (${after.at}::timestamptz, ${after.id}::uuid)`,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(posShifts)
+      .where(and(...filters))
+      .orderBy(desc(posShifts.openedAt), desc(posShifts.id))
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const data: PosShift[] = [];
+    for (const row of page)
+      data.push(
+        shiftDto(
+          row,
+          // POS-03 blind count: never the caller's own open shift.
+          row.status === "open" &&
+            seesAll &&
+            !sameUser(row.cashierId, caller.userId)
+            ? await computeShiftAggregates(tx, row, now)
+            : undefined,
+        ),
+      );
+    const last = page.at(-1);
+    return {
+      data,
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([toIsoDateTime(last.openedAt), last.id])
+            : null,
+      },
+    };
+  });
+}
+
+export async function listCashMovements(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+  query: MovementListQuery,
+): Promise<CursorPage<PosCashMovement>> {
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    const row = await findShift(tx, context, outletId, shiftId);
+    await assertCanRead(tx, context, caller, outletId, row);
+    const filters = [
+      eq(cashMovements.tenantId, context.tenant.tenantId),
+      eq(cashMovements.outletId, outletId),
+      eq(cashMovements.shiftId, row.id),
+    ];
+    if (query.type) filters.push(eq(cashMovements.type, query.type));
+    if (query.cursor) {
+      const after = decodeTimeCursor(query.cursor);
+      filters.push(
+        sql`(${cashMovements.recordedAt}, ${cashMovements.id}) > (${after.at}::timestamptz, ${after.id}::uuid)`,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(cashMovements)
+      .where(and(...filters))
+      .orderBy(
+        sql`${cashMovements.recordedAt} asc`,
+        sql`${cashMovements.id} asc`,
+      )
+      .limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      data: page.map(movementDto),
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([toIsoDateTime(last.recordedAt), last.id])
+            : null,
+      },
+    };
+  });
+}
+
+// ---- Cash movement ----------------------------------------------------------
+
+export async function recordCashMovement(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+  input: RecordCashMovementInput,
+): Promise<PosCashMovement> {
+  const { idempotencyKey, ...request } = input;
+  const id = parseShiftId(shiftId);
+  const fingerprint = shiftFingerprint({
+    op: "cash_movement.record",
+    outletId,
+    shiftId: id,
+    userId: caller.userId,
+    body: request,
+  });
+  const now = new Date();
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    await assertOutletPermission(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      "shift.cash.operate",
+    );
+    const shift = await findShift(tx, context, outletId, id, true);
+    if (!sameUser(shift.cashierId, caller.userId))
+      throw new CoreError(
+        "FORBIDDEN",
+        "Kas hanya dapat dicatat oleh kasir pemilik shift.",
+      );
+    const [replay] = await tx
+      .select()
+      .from(cashMovements)
+      .where(
+        and(
+          eq(cashMovements.tenantId, tenantId),
+          eq(cashMovements.shiftId, shift.id),
+          eq(cashMovements.idempotencyKey, idempotencyKey),
+        ),
+      );
+    if (replay) {
+      if (replay.requestFingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+        );
+      return movementDto(replay);
+    }
+    assertCashMovementAllowed(shift);
+    // Cash out and drops come out of the drawer: never more than the drawer
+    // should hold, or the shift could never close (contract expectedIdr ≥ 0,
+    // movements are insert-only so there is no correction path). The shift
+    // row is locked, so the figures cannot move under this check.
+    if (input.type !== "cash_in") {
+      const live = await computeShiftAggregates(tx, shift, now);
+      const expected =
+        Number(shift.openingFloatIdr) +
+        live.cashSalesIdr -
+        live.cashRefundsIdr +
+        live.cashInIdr -
+        live.cashOutIdr -
+        live.cashDropIdr;
+      if (input.amountIdr > expected)
+        throw new CoreError(
+          "CONFLICT",
+          "Jumlah kas keluar melebihi kas yang seharusnya ada di laci.",
+        );
+    }
+    const [row] = await tx
+      .insert(cashMovements)
+      .values({
+        tenantId,
+        outletId,
+        shiftId: shift.id,
+        type: input.type,
+        amountIdr: input.amountIdr,
+        reasonNote: input.reasonNote,
+        recordedBy: caller.userId,
+        recordedAt: now,
+        approvedBy: null,
+        idempotencyKey,
+        requestFingerprint: fingerprint,
+      })
+      .returning();
+    if (!row) throw new Error("Cash movement insert returned no row");
+    const dto = movementDto(row);
+    await appendShiftEvent(tx, context, "cash_movement.recorded", {
+      aggregateId: row.id,
+      outletId,
+      payload: {
+        movementId: row.id,
+        shiftId: shift.id,
+        outletId,
+        deviceId: shift.deviceId,
+        type: dto.type,
+        amountIdr: dto.amountIdr,
+        reasonNote: dto.reasonNote,
+        recordedBy: dto.recordedBy,
+        recordedAt: dto.recordedAt,
+      },
+      caller,
+      now,
+    });
+    await auditShift(
+      tx,
+      context,
+      {
+        action: "pos_shift.cash_movement_recorded",
+        outletId,
+        objectType: "cash_movement",
+        objectId: row.id,
+        caller,
+        before: null,
+        after: {
+          id: row.id,
+          shiftId: shift.id,
+          type: dto.type,
+          amountIdr: dto.amountIdr,
+        },
+        reason: dto.reasonNote,
+      },
+      now,
+    );
+    return dto;
+  });
+}
+
+// ---- Close ------------------------------------------------------------------
+
+type OverrideRow = typeof posOverrides.$inferSelect;
+
+const approvalRefused = () =>
+  new CoreError("FORBIDDEN", "Persetujuan supervisor tidak sah.");
+
+/**
+ * The supervisor decision a close names: an approved `cash_shift_close`
+ * override for exactly this shift, requested by the cashier, decided by
+ * `approvedBy` (never the cashier), found by its phone chain id or its own id,
+ * fresh when it is a PIN decision, and `approvedBy` must still hold the
+ * approve permission. Anything else is refused (fail closed).
+ */
+async function verifyCloseApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    outletId: OutletId;
+    shift: ShiftRow;
+    approvedBy: string;
+    approvalRequestId: string;
+    now: Date;
+  },
+): Promise<OverrideRow> {
+  const { shift } = input;
+  if (sameUser(input.approvedBy, shift.cashierId)) throw approvalRefused();
+  const requestId = uuidSchema.safeParse(input.approvalRequestId);
+  if (!requestId.success) throw approvalRefused();
+  let overrideId: string | null = null;
+  try {
+    overrideId = uuidToUlid(requestId.data);
+  } catch {
+    overrideId = null;
+  }
+  // Candidates: approved cash_shift_close overrides for exactly this shift,
+  // requested by its cashier and decided by the named approver.
+  const candidates = await tx
+    .select()
+    .from(posOverrides)
+    .where(
+      and(
+        eq(posOverrides.tenantId, context.tenant.tenantId),
+        eq(posOverrides.outletId, input.outletId),
+        eq(posOverrides.status, "approved"),
+        eq(posOverrides.action, "cash_shift_close"),
+        eq(posOverrides.objectType, "pos_shift"),
+        sql`lower(${posOverrides.objectId}) = ${shift.id.toLowerCase()}`,
+        sql`lower(${posOverrides.requestedBy}) = ${shift.cashierId.toLowerCase()}`,
+        sql`lower(${posOverrides.approvedBy}) = ${input.approvedBy.toLowerCase()}`,
+      ),
+    )
+    .orderBy(desc(posOverrides.createdAt))
+    .for("update");
+  // 1. The named approval: the phone chain id, or the override id itself.
+  // 2. A PIN override has no approval request and its ULID id rarely parses
+  //    as an RFC UUID (same contract gap as pos-order consumeApproval): the
+  //    newest PIN override for this very shift, cashier and approver. The
+  //    override names this shift and a shift closes once, so it cannot be
+  //    replayed elsewhere; approval_override_id is unique besides.
+  const named = candidates.find(
+    (row) =>
+      row.approvalRequestId?.toLowerCase() === requestId.data ||
+      (overrideId !== null && row.id === overrideId),
+  );
+  let override = named;
+  if (!override) {
+    // The fallback only serves an id that names no override at all: an id
+    // that names another decision (another shift, action or approver) is
+    // refused, never silently swapped for a different approval.
+    const [elsewhere] = await tx
+      .select({ id: posOverrides.id })
+      .from(posOverrides)
+      .where(
+        and(
+          eq(posOverrides.tenantId, context.tenant.tenantId),
+          overrideId === null
+            ? eq(posOverrides.approvalRequestId, requestId.data)
+            : or(
+                eq(posOverrides.approvalRequestId, requestId.data),
+                eq(posOverrides.id, overrideId),
+              ),
+        ),
+      )
+      .limit(1);
+    if (elsewhere) throw approvalRefused();
+    // Nor an id of a request in the approval inbox (another module's, or a
+    // rejected one): the shift and its event would name the wrong decision.
+    const [inbox] = await tx
+      .select({ id: approvalRequests.id })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, context.tenant.tenantId),
+          eq(approvalRequests.id, requestId.data),
+        ),
+      )
+      .limit(1);
+    if (inbox) throw approvalRefused();
+    override = candidates.find((row) => row.method === "supervisor_pin");
+  }
+  if (
+    !override ||
+    override.approvedBy === null ||
+    sameUser(override.approvedBy, override.requestedBy)
+  )
+    throw approvalRefused();
+  if (
+    override.method === "supervisor_pin" &&
+    input.now.getTime() - override.createdAt.getTime() > PIN_APPROVAL_WINDOW_MS
+  )
+    throw approvalRefused();
+  const approver = await loadOutletAccess(
+    tx,
+    context,
+    override.approvedBy,
+    input.outletId,
+    input.now,
+  );
+  if (!approver.has("shift.cash.approve_close")) throw approvalRefused();
+  return override;
+}
+
+export async function closePosShift(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+  input: ClosePosShiftInput,
+): Promise<PosShift> {
+  const { idempotencyKey, ...request } = input;
+  const id = parseShiftId(shiftId);
+  const fingerprint = shiftFingerprint({
+    op: "shift.close",
+    outletId,
+    shiftId: id,
+    userId: caller.userId,
+    body: { ...request, varianceNote: request.varianceNote ?? null },
+  });
+  const now = new Date();
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    await assertOutletPermission(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      "shift.cash.operate",
+    );
+    const shift = await findShift(tx, context, outletId, id, true);
+    if (!sameUser(shift.cashierId, caller.userId))
+      throw new CoreError(
+        "FORBIDDEN",
+        "Shift hanya dapat ditutup oleh kasir pemilik shift.",
+      );
+    if (shift.status === "closed") {
+      if (shift.closeKey !== idempotencyKey)
+        throw new PosError("SHIFT_ALREADY_CLOSED");
+      if (shift.closeFingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+        );
+      return shiftDto(shift);
+    }
+    const override = await verifyCloseApproval(tx, context, {
+      outletId,
+      shift,
+      approvedBy: input.approvedBy,
+      approvalRequestId: input.approvalRequestId,
+      now,
+    });
+    const aggregates: ShiftAggregates = await computeShiftAggregates(
+      tx,
+      shift,
+      now,
+    );
+    let closed: PosShift;
+    try {
+      closed = closeShift(shiftDto(shift, aggregates), {
+        counts: input.counts,
+        varianceNote: input.varianceNote ?? null,
+        approvedBy: input.approvedBy,
+        approvalRequestId: input.approvalRequestId,
+        approvedAt: toIsoDateTime(override.resolvedAt ?? override.createdAt),
+        closedAt: toIsoDateTime(now),
+      });
+    } catch (error) {
+      if (error instanceof RangeError)
+        throw new CoreError("CONFLICT", error.message);
+      throw error;
+    }
+    if (
+      closed.expectedIdr === null ||
+      closed.countedIdr === null ||
+      closed.varianceIdr === null
+    )
+      throw new Error("Closed shift is missing its figures");
+    let row: ShiftRow | undefined;
+    try {
+      [row] = await tx
+        .update(posShifts)
+        .set({
+          status: "closed",
+          cashSalesIdr: closed.cashSalesIdr,
+          cashRefundsIdr: closed.cashRefundsIdr,
+          cashInIdr: closed.cashInIdr,
+          cashOutIdr: closed.cashOutIdr,
+          cashDropIdr: closed.cashDropIdr,
+          expectedIdr: closed.expectedIdr,
+          countedIdr: closed.countedIdr,
+          varianceIdr: closed.varianceIdr,
+          varianceNote: closed.varianceNote,
+          counts: input.counts.map((line) => ({
+            denominationIdr: line.denominationIdr,
+            quantity: line.quantity,
+          })),
+          approvedBy: input.approvedBy,
+          approvalRequestId: input.approvalRequestId,
+          approvalOverrideId: ulidToUuid(override.id),
+          approvedAt: override.resolvedAt ?? override.createdAt,
+          closedAt: now,
+          closedBy: caller.userId,
+          closeKey: idempotencyKey,
+          closeFingerprint: fingerprint,
+          version: shift.version + 1,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(posShifts.tenantId, tenantId),
+            eq(posShifts.outletId, outletId),
+            eq(posShifts.id, shift.id),
+            eq(posShifts.status, "open"),
+          ),
+        )
+        .returning();
+    } catch (error) {
+      if (uniqueViolationOf(error) === "pos_shifts_approval_override_key")
+        throw new CoreError(
+          "FORBIDDEN",
+          "Persetujuan supervisor ini sudah dipakai.",
+        );
+      throw error;
+    }
+    if (!row) throw new CoreError("CONFLICT", "Shift sudah tidak terbuka.");
+    const dto = shiftDto(row);
+    await appendShiftEvent(tx, context, "cashier_shift.closed", {
+      aggregateId: row.id,
+      outletId,
+      payload: {
+        shiftId: row.id,
+        outletId,
+        deviceId: row.deviceId,
+        cashierId: row.cashierId,
+        businessDate: row.businessDate,
+        openingFloatIdr: dto.openingFloatIdr,
+        cashSalesIdr: dto.cashSalesIdr,
+        cashRefundsIdr: dto.cashRefundsIdr,
+        cashInIdr: dto.cashInIdr,
+        cashOutIdr: dto.cashOutIdr,
+        cashDropIdr: dto.cashDropIdr,
+        expectedIdr: closed.expectedIdr,
+        countedIdr: closed.countedIdr,
+        differenceIdr: closed.varianceIdr,
+        varianceNote: dto.varianceNote,
+        approvedBy: input.approvedBy,
+        approvalRequestId: input.approvalRequestId,
+        closedAt: toIsoDateTime(now),
+      },
+      caller,
+      now,
+    });
+    await auditShift(
+      tx,
+      context,
+      {
+        action: "pos_shift.closed",
+        outletId,
+        objectType: "pos_shift",
+        objectId: row.id,
+        caller,
+        before: shiftAuditView(shift, aggregates),
+        after: shiftAuditView(row),
+        reason: dto.varianceNote,
+      },
+      now,
+    );
+    return dto;
+  });
+}
+
+// ---- Order service hook -----------------------------------------------------
+
+/** The open shift of a cashier (and terminal, when given) for order attribution. */
+export const findOpenShiftId: PosShiftLookup = async (tx, context, input) => {
+  const filters = [
+    eq(posShifts.tenantId, context.tenant.tenantId),
+    eq(posShifts.outletId, input.outletId as OutletId),
+    eq(posShifts.status, "open"),
+    eq(posShifts.cashierId, input.cashierId),
+  ];
+  if (input.deviceId) filters.push(eq(posShifts.deviceId, input.deviceId));
+  const [row] = await tx
+    .select({ id: posShifts.id })
+    .from(posShifts)
+    .where(and(...filters))
+    .limit(1);
+  return row?.id ?? null;
+};

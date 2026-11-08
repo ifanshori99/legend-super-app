@@ -315,6 +315,40 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
   );
   assert.throws(() => pos.blindCountTotalIdr([]), RangeError);
 
+  // Q8: the count is per Rupiah denomination, each at most once.
+  assert.equal(pos.IDR_CASH_DENOMINATIONS.length, 10);
+  assert.equal(
+    pos.closePosShiftInputSchema.safeParse({
+      ...validClose,
+      counts: [{ denominationIdr: 75_000, quantity: 1 }],
+    }).success,
+    false,
+    "75.000 is not a note",
+  );
+  assert.equal(
+    pos.closePosShiftInputSchema.safeParse({
+      ...validClose,
+      counts: [
+        { denominationIdr: 50_000, quantity: 1 },
+        { denominationIdr: 50_000, quantity: 2 },
+      ],
+    }).success,
+    false,
+    "a denomination is counted once",
+  );
+  assert.throws(
+    () => pos.blindCountTotalIdr([{ denominationIdr: 75_000, quantity: 1 }]),
+    RangeError,
+  );
+  assert.throws(
+    () =>
+      pos.blindCountTotalIdr([
+        { denominationIdr: 50_000, quantity: 1 },
+        { denominationIdr: 50_000, quantity: 2 },
+      ]),
+    RangeError,
+  );
+
   // The closed morning shift: expected comes from the drawer maths, never from
   // the cashier, and the difference is explained and approved.
   const closed = parsed.shifts[0];

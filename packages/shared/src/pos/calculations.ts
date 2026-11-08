@@ -17,6 +17,7 @@ import {
 import type { Idr } from "../core/index.ts";
 import type { PaymentMethod } from "../payment/index.ts";
 import { PosError } from "./errors.ts";
+import { IDR_CASH_DENOMINATIONS } from "./schemas.ts";
 import type {
   BlindCashCount,
   PosShift,
@@ -195,9 +196,17 @@ export function blindCountTotalIdr(counts: readonly BlindCashCount[]): Idr {
   if (counts.length === 0)
     throw new RangeError("A blind count needs at least one denomination");
   let total = 0n;
+  const seen = new Set<number>();
   for (const row of counts) {
-    if (!Number.isSafeInteger(row.denominationIdr) || row.denominationIdr <= 0)
+    if (
+      !(IDR_CASH_DENOMINATIONS as readonly number[]).includes(
+        row.denominationIdr,
+      )
+    )
       throw new RangeError(`Invalid denomination: ${row.denominationIdr}`);
+    if (seen.has(row.denominationIdr))
+      throw new RangeError(`Duplicate denomination: ${row.denominationIdr}`);
+    seen.add(row.denominationIdr);
     if (!Number.isSafeInteger(row.quantity) || row.quantity < 0)
       throw new RangeError(`Invalid note count: ${row.quantity}`);
     total += BigInt(row.denominationIdr) * BigInt(row.quantity);

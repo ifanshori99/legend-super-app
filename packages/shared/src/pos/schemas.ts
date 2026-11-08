@@ -876,9 +876,24 @@ export const posShiftSchema = z
   });
 export type PosShift = z.infer<typeof posShiftSchema>;
 
+/**
+ * Rupiah notes and coins in circulation (Bank Indonesia); the blind count is
+ * entered per denomination from this list (founder Q8, 2026-11-08).
+ */
+export const IDR_CASH_DENOMINATIONS = [
+  100_000, 50_000, 20_000, 10_000, 5_000, 2_000, 1_000, 500, 200, 100,
+] as const;
+
 /** One denomination line of the blind count sheet. */
 export const blindCashCountSchema = z.strictObject({
-  denominationIdr: z.number().int().positive().max(100_000),
+  denominationIdr: z
+    .number()
+    .refine(
+      (value) => (IDR_CASH_DENOMINATIONS as readonly number[]).includes(value),
+      {
+        message: `denominationIdr must be one of ${IDR_CASH_DENOMINATIONS.join(", ")}`,
+      },
+    ),
   quantity: z.number().int().min(0).max(10_000),
 });
 export type BlindCashCount = z.infer<typeof blindCashCountSchema>;
@@ -891,7 +906,16 @@ export type BlindCashCount = z.infer<typeof blindCashCountSchema>;
  * `cash_shift_close`); the API re-checks them, the id alone is not proof.
  */
 export const closePosShiftInputSchema = clientInputSchema({
-  counts: z.array(blindCashCountSchema).min(1),
+  counts: z
+    .array(blindCashCountSchema)
+    .min(1)
+    .max(IDR_CASH_DENOMINATIONS.length)
+    .refine(
+      (counts) =>
+        new Set(counts.map((row) => row.denominationIdr)).size ===
+        counts.length,
+      { message: "Each denomination can be counted only once" },
+    ),
   varianceNote: z.string().min(4).max(500).nullable().optional(),
   approvedBy: userIdSchema,
   approvalRequestId: approvalRequestIdSchema,
