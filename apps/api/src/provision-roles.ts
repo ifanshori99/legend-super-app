@@ -1,16 +1,23 @@
 // First-boot database role job (legend-zoqc). Run by an operator on the
 // private network after migrations, never by the API or worker:
-//   node dist/provision-roles.js [--audit]   (migrator image, see docs/deployment.md)
-//   pnpm --filter @starter/api exec tsx src/provision-roles.ts [--audit]
+//   node dist/provision-roles.js [--audit | --migrator]   (migrator image, see docs/deployment.md)
+//   pnpm --filter @starter/api exec tsx src/provision-roles.ts [--audit | --migrator]
 //
 // --audit changes nothing: it only verifies the provisioned state (deploy.sh
 // runs it after every migration).
 //
+// --migrator runs once at first boot, before any migration (legend-jtnd): the
+// bootstrap superuser (BOOTSTRAP_DATABASE_USER, BOOTSTRAP_DATABASE_PASSWORD)
+// creates the legend_migrator_* login named by MIGRATION_DATABASE_URL and makes
+// it the database owner, with BYPASSRLS and CREATEROLE, not a superuser.
+//
 // Reads MIGRATION_DATABASE_URL (owner/admin), APP_DATABASE_URL and
 // WORKER_DATABASE_URL. Each may instead be given as NAME_FILE, a path to a
-// file holding the URL. Prints role names only, never a URL or password.
+// file holding the URL (--migrator reads MIGRATION_DATABASE_URL and the two
+// BOOTSTRAP_DATABASE_* settings only). Prints role names only, never a URL or password.
 // Deliberately does not load .env files: the operator supplies the settings.
 import { readFileSync } from "node:fs";
+import { provisionMigrator } from "./db/migrator-role";
 import {
   ProvisionError,
   auditRoles,
@@ -75,11 +82,27 @@ function describe(error: unknown) {
 
 const args = process.argv.slice(2);
 const audit = args.length === 1 && args[0] === "--audit";
+const migrator = args.length === 1 && args[0] === "--migrator";
 
 try {
-  if (args.length && !audit)
-    throw new ProvisionError("Usage: provision-roles [--audit]");
-  if (audit) {
+  if (args.length && !audit && !migrator)
+    throw new ProvisionError("Usage: provision-roles [--audit | --migrator]");
+  if (migrator) {
+    const result = await provisionMigrator({
+      bootstrap: {
+        user: setting("BOOTSTRAP_DATABASE_USER"),
+        password: setting("BOOTSTRAP_DATABASE_PASSWORD"),
+      },
+      migratorUrl: setting("MIGRATION_DATABASE_URL"),
+      // Optional: the restricted logins of this deploy, so the migrator can
+      // re-key them if they already exist (never logins of other databases).
+      appUrl: process.env.APP_DATABASE_URL || undefined,
+      workerUrl: process.env.WORKER_DATABASE_URL || undefined,
+    });
+    console.log(
+      `Migrator login ${result.user} ${result.outcome}: owns the database, BYPASSRLS, CREATEROLE, not superuser.`,
+    );
+  } else if (audit) {
     const result = await auditRoles({
       adminUrl: setting("MIGRATION_DATABASE_URL"),
       appUrl: setting("APP_DATABASE_URL"),
