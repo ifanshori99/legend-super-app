@@ -197,13 +197,6 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Reservation refund retry sweep failed");
     }
-    // PAY-04 (legend-hvvn): pay out approved refunds whose provider call has not
-    // finished (unknown outcome, pending); backs off and stops after 8 tries.
-    try {
-      await sweepApprovedRefundPayouts(context, new Date());
-    } catch {
-      console.error("Refund payout sweep failed");
-    }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per
     // legal entity (idempotent per entity+period and asset+period). Fail closed.
     try {
@@ -279,10 +272,56 @@ const relay = createRelayRuntime({
     }
   },
 });
+// PAY-04 (legend-hvvn): pay out approved refunds whose provider call has not
+// finished (unknown outcome, pending). Its own loop, not the relay tick: each
+// provider call may take up to a minute and must never stall the outbox relay.
+// Rounds never overlap; each tenant sweep has a time budget of its own.
+const REFUND_PAYOUT_SWEEP_INTERVAL_MS = 30_000;
+let refundSweepStopped = false;
+let refundSweepTimer: NodeJS.Timeout | null = null;
+let refundSweepRound: Promise<void> = Promise.resolve();
+async function runRefundPayoutRound() {
+  try {
+    const tenants = await registry.query<{ id: string }>(
+      "SELECT id FROM app.active_tenant_registry",
+    );
+    for (const { id } of tenants.rows) {
+      if (refundSweepStopped) return;
+      try {
+        await sweepApprovedRefundPayouts(
+          await resolveContext(id),
+          new Date(),
+          undefined,
+          undefined,
+          () => refundSweepStopped,
+        );
+      } catch {
+        console.error("Refund payout sweep failed");
+      }
+    }
+  } catch {
+    console.error("Refund payout sweep failed");
+  }
+}
+function scheduleRefundPayoutRound() {
+  if (refundSweepStopped) return;
+  refundSweepTimer = setTimeout(() => {
+    refundSweepRound = runRefundPayoutRound().finally(
+      scheduleRefundPayoutRound,
+    );
+  }, REFUND_PAYOUT_SWEEP_INTERVAL_MS);
+}
+async function stopRefundPayoutSweep() {
+  refundSweepStopped = true;
+  if (refundSweepTimer) clearTimeout(refundSweepTimer);
+  await refundSweepRound;
+}
 try {
   await runtime.start();
   await relay.start();
+  scheduleRefundPayoutRound();
 } catch (error) {
+  refundSweepStopped = true;
   await runtime.stop().catch(() => {});
   await registry.end();
   throw error;
@@ -291,6 +330,7 @@ let stopping = false;
 async function stop() {
   if (stopping) return;
   stopping = true;
+  await stopRefundPayoutSweep();
   await relay.stop();
   await runtime.stop();
   await registry.end();

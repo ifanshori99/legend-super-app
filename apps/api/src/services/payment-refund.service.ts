@@ -36,9 +36,12 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
   authorize,
   conflict,
+  hasSourceDocument,
   missing,
   refundableBalance,
   refundAudit,
@@ -73,6 +76,10 @@ const PROVIDER_TIMEOUT_MS = 30_000;
 const PAYOUT_MAX_ATTEMPTS = 8;
 const PAYOUT_BACKOFF_CAP_MINUTES = 60;
 const PAYOUT_SWEEP_BATCH = 20;
+/** Time budget of one sweep round: no new refund is claimed once it is spent. */
+const PAYOUT_SWEEP_BUDGET_MS = 20_000;
+/** A refund the provider still reports `pending` this long after approval needs ops. */
+const PAYOUT_PENDING_MAX_HOURS = 72;
 export const MANUAL_RECONCILIATION = "MANUAL_RECONCILIATION";
 
 type Fund = typeof paymentUnallocatedFunds.$inferSelect;
@@ -176,6 +183,21 @@ async function applyApproval(
   const { intent, fund, refund } = locked;
   if (approvedBy.toLowerCase() === refund.requestedBy.toLowerCase())
     throw new AccessError("APPROVER_IS_REQUESTER");
+  // A user-filed refund of a sale is never paid from here: the owning module
+  // refunds it (order.refunded). Legacy pending rows fail closed. System
+  // requesters and unallocated funds (never journalled) are exempt.
+  if (
+    !refund.unallocatedFundId &&
+    hasSourceDocument(intent) &&
+    isUserId(refund.requestedBy)
+  )
+    return failRefund(tx, context, refund, {
+      reason: "source_document",
+      action: "payment.refund_failed",
+      actorId: approvedBy,
+      note: null,
+      now,
+    });
   // This refund is itself reserved (pending), so reserved must still fit the cap.
   const fits = fund
     ? !fund.resolution
@@ -437,6 +459,34 @@ async function settleLocked(
   if (outcome === "approved") {
     const last = rows.at(-1);
     if (!last?.decidedBy) throw new Error("approved chain has no approver");
+    // Every approver must hold payment.reconcile at this outlet (the inbox
+    // route does not check the outlet). The chain is already resolved, so a
+    // pending refund could never be decided again: fail it closed instead
+    // (never paid, and the approval.resolved consumer does not retry forever).
+    for (const row of rows) {
+      if (row.status !== "approved" || !row.decidedBy) continue;
+      const allowed = await authorize(
+        tx,
+        context,
+        row.decidedBy,
+        "payment.reconcile",
+        refund.outletId,
+      ).then(
+        () => true,
+        (error: unknown) => {
+          if (error instanceof AccessError) return false;
+          throw error;
+        },
+      );
+      if (!allowed)
+        return failRefund(tx, context, refund, {
+          reason: "approver_unauthorized",
+          action: "payment.refund_failed",
+          actorId: null,
+          note: null,
+          now,
+        });
+    }
     return applyApproval(tx, context, locked, last.decidedBy, now);
   }
   if (outcome === "rejected") {
@@ -478,9 +528,17 @@ export async function settleRefundFromChain(
 // ------------------------------------------------- approve / reject calls
 
 type Decision = "approved" | "rejected";
+
+/** Same answer as createRefund: a sale's payment is refunded by its module. */
+const sourceDocumentRefused = () =>
+  new HttpError(
+    409,
+    "REFUND_SOURCE_DOCUMENT",
+    "Payment belongs to a sales document; refund it from the owning module.",
+  );
 type FirstStep =
   | { readonly kind: "done" }
-  | { readonly kind: "capped" }
+  | { readonly kind: "capped"; readonly reason?: string | null }
   | { readonly kind: "payout" }
   | { readonly kind: "decide"; readonly requestId: string | null };
 
@@ -507,100 +565,133 @@ async function decideRefund(
       await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
       if (refund.requestedBy === actor)
         throw new AccessError("APPROVER_IS_REQUESTER");
-      if (refund.status !== "pending") {
-        // A reject (or an approve of a failed refund) never succeeds silently;
-        // an approve of an approved/completed refund is a replay: same view.
-        if (decision === "rejected" || refund.status === "failed")
-          throw conflict("Refund is no longer pending.");
-        return { kind: "done" };
-      }
-
-      let chainId = refund.approvalChainId;
-      const systemRequester = !isUserId(refund.requestedBy);
-      if (systemRequester && decision === "rejected") {
-        // No user requested it, so any authorised human may decline it directly.
-        if (chainId !== null)
-          await cancelApprovalRequest(tx, context, {
-            chainId,
-            sourceModule: REFUND_SOURCE_MODULE,
-            actorUserId: actor,
-            now,
-          });
-        await failRefund(tx, context, refund, {
-          reason: "rejected",
-          action: "payment.refund_rejected",
-          actorId: actor,
-          note: reason,
-          now,
-        });
-        return { kind: "done" };
-      }
-      let justOpened = false;
-      if (chainId === null) {
-        const opened = await openApprovalRequest(tx, context, {
-          sourceModule: REFUND_SOURCE_MODULE,
-          actionType: REFUND_ACTION_TYPE,
-          objectType: REFUND_OBJECT_TYPE,
-          objectId: refund.id,
-          amountIdr: refund.amountIdr,
-          outletId: refund.outletId,
-          // A system requester has no user row: the first human acting submits.
-          requestedBy: systemRequester ? actor : refund.requestedBy,
-          source: "user",
-          requestReason: requestReasonOf(refund.reason),
-          payload: {
-            paymentIntentId: refund.paymentIntentId,
-            unallocatedFundId: refund.unallocatedFundId,
-          },
-          deadlineMinutes: REFUND_DEADLINE_MINUTES,
-          now,
-        });
-        if (!opened.required) {
-          // Below every tier of the matrix: this one authorised person decides.
-          if (decision === "approved") {
-            const applied = await applyApproval(
+      // Idempotent by key, in this same transaction: a retried call (also a
+      // submit-only call or a direct reject, which leave no keyed chain row)
+      // replays the first step; the same key with another body is refused.
+      return idempotentPaymentAdminWrite(
+        tx,
+        context,
+        actor,
+        key,
+        `refund.${decision}`,
+        { refundId: refund.id, reason },
+        async (): Promise<FirstStep> => {
+          // Replay: this actor already recorded this decision with this key on a
+          // level of the chain. Return the current state (settling a still-pending
+          // refund whose settle step may not have run), never a conflict.
+          if (refund.approvalChainId !== null) {
+            const chain = await chainRowsOf(
               tx,
-              context,
-              locked,
-              actor,
-              now,
+              refund.tenantId,
+              refund.approvalChainId,
             );
-            return {
-              kind: applied.status === "approved" ? "payout" : "capped",
-            };
+            const replay = chain.some(
+              (row) =>
+                row.decisionIdempotencyKey === key &&
+                row.status === decision &&
+                row.decidedBy?.toLowerCase() === actor.toLowerCase(),
+            );
+            if (replay)
+              return refund.status === "pending"
+                ? { kind: "decide", requestId: null }
+                : { kind: "done" };
           }
-          await failRefund(tx, context, refund, {
-            reason: "rejected",
-            action: "payment.refund_rejected",
-            actorId: actor,
-            note: reason,
-            now,
-          });
-          return { kind: "done" };
-        }
-        await tx
-          .update(paymentRefunds)
-          .set({ approvalChainId: opened.chainId, updatedAt: now })
-          .where(
-            and(
-              eq(paymentRefunds.tenantId, refund.tenantId),
-              eq(paymentRefunds.id, refund.id),
-            ),
-          );
-        chainId = opened.chainId;
-        justOpened = true;
-      }
+          if (refund.status !== "pending") {
+            // A reject (or an approve of a failed refund) never succeeds silently;
+            // an approve of an approved/completed refund is a replay: same view.
+            if (decision === "rejected" || refund.status === "failed")
+              throw conflict("Refund is no longer pending.");
+            return { kind: "done" };
+          }
 
-      const rows = await chainRowsOf(tx, refund.tenantId, chainId);
-      assertChainBound(rows, refund);
-      // The submitter of a system-requested refund is the chain requester: their
-      // first call only submits, another person decides (never the submitter).
-      if (systemRequester && rows[0]?.requestedBy === actor) {
-        if (justOpened) return { kind: "done" };
-        throw new AccessError("APPROVER_IS_REQUESTER");
-      }
-      const open = rows.find((row) => row.status === "pending");
-      return { kind: "decide", requestId: open?.id ?? null };
+          let chainId = refund.approvalChainId;
+          const systemRequester = !isUserId(refund.requestedBy);
+          if (systemRequester && decision === "rejected") {
+            // No user requested it, so any authorised human may decline it directly.
+            if (chainId !== null)
+              await cancelApprovalRequest(tx, context, {
+                chainId,
+                sourceModule: REFUND_SOURCE_MODULE,
+                actorUserId: actor,
+                now,
+              });
+            await failRefund(tx, context, refund, {
+              reason: "rejected",
+              action: "payment.refund_rejected",
+              actorId: actor,
+              note: reason,
+              now,
+            });
+            return { kind: "done" };
+          }
+          let justOpened = false;
+          if (chainId === null) {
+            const opened = await openApprovalRequest(tx, context, {
+              sourceModule: REFUND_SOURCE_MODULE,
+              actionType: REFUND_ACTION_TYPE,
+              objectType: REFUND_OBJECT_TYPE,
+              objectId: refund.id,
+              amountIdr: refund.amountIdr,
+              outletId: refund.outletId,
+              // A system requester has no user row: the first human acting submits.
+              requestedBy: systemRequester ? actor : refund.requestedBy,
+              source: "user",
+              requestReason: requestReasonOf(refund.reason),
+              payload: {
+                paymentIntentId: refund.paymentIntentId,
+                unallocatedFundId: refund.unallocatedFundId,
+              },
+              deadlineMinutes: REFUND_DEADLINE_MINUTES,
+              now,
+            });
+            if (!opened.required) {
+              // Below every tier of the matrix: this one authorised person decides.
+              if (decision === "approved") {
+                const applied = await applyApproval(
+                  tx,
+                  context,
+                  locked,
+                  actor,
+                  now,
+                );
+                return applied.status === "approved"
+                  ? { kind: "payout" }
+                  : { kind: "capped", reason: applied.failureReason };
+              }
+              await failRefund(tx, context, refund, {
+                reason: "rejected",
+                action: "payment.refund_rejected",
+                actorId: actor,
+                note: reason,
+                now,
+              });
+              return { kind: "done" };
+            }
+            await tx
+              .update(paymentRefunds)
+              .set({ approvalChainId: opened.chainId, updatedAt: now })
+              .where(
+                and(
+                  eq(paymentRefunds.tenantId, refund.tenantId),
+                  eq(paymentRefunds.id, refund.id),
+                ),
+              );
+            chainId = opened.chainId;
+            justOpened = true;
+          }
+
+          const rows = await chainRowsOf(tx, refund.tenantId, chainId);
+          assertChainBound(rows, refund);
+          // The submitter of a system-requested refund is the chain requester: their
+          // first call only submits, another person decides (never the submitter).
+          if (systemRequester && rows[0]?.requestedBy === actor) {
+            if (justOpened) return { kind: "done" };
+            throw new AccessError("APPROVER_IS_REQUESTER");
+          }
+          const open = rows.find((row) => row.status === "pending");
+          return { kind: "decide", requestId: open?.id ?? null };
+        },
+      );
     },
   );
 
@@ -624,8 +715,10 @@ async function decideRefund(
       if (!raced) throw error;
     }
   }
-  if (first.kind === "capped")
+  if (first.kind === "capped") {
+    if (first.reason === "source_document") throw sourceDocumentRefused();
     throw conflict("Refund exceeds available paid amount.");
+  }
   if (first.kind === "decide") {
     const settled = await settleRefundFromChain(context, refundId);
     // A reject must never approve or pay; a failed refund (cap exceeded, or
@@ -633,8 +726,11 @@ async function decideRefund(
     // failure is already committed.
     if (decision === "rejected" && settled.status !== "failed")
       throw conflict("Refund could not be rejected.");
-    if (decision === "approved" && settled.status === "failed")
+    if (decision === "approved" && settled.status === "failed") {
+      if (settled.failureReason === "source_document")
+        throw sourceDocumentRefused();
       throw conflict("Refund could not be approved.");
+    }
     // Our decision did not land (another approver took this level): the state
     // above is settled, but a still-pending refund is not a success for us.
     if (raced && settled.status === "pending")
@@ -816,7 +912,17 @@ export async function runRefundPayout(
       if (!intent) throw missing();
       let paymentProviderRef = intent.providerRef;
       if (refund.unallocatedFundId) {
-        // The excess arrived last; its evidence is the transaction to refund.
+        // The fund's own evidence is the transaction to refund. A fund without
+        // one (row from before the column) falls back to the intent's latest.
+        const [fund] = await tx
+          .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
+          .from(paymentUnallocatedFunds)
+          .where(
+            and(
+              eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
+              eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+            ),
+          );
         const [evidence] = await tx
           .select({ providerRef: paymentEvidence.providerRef })
           .from(paymentEvidence)
@@ -824,6 +930,9 @@ export async function runRefundPayout(
             and(
               eq(paymentEvidence.tenantId, refund.tenantId),
               eq(paymentEvidence.paymentIntentId, refund.paymentIntentId),
+              ...(fund?.evidenceId
+                ? [eq(paymentEvidence.id, fund.evidenceId)]
+                : []),
             ),
           )
           .orderBy(
@@ -969,9 +1078,14 @@ export async function runRefundPayout(
       .update(paymentRefunds)
       .set({
         providerRef: outcome.providerRef,
+        // The provider answered: give back the claim's attempt and count a poll.
+        // Only the lease holder does: a stale worker must not undo the current
+        // holder's attempt (that one may still end unknown).
         ...(keepLease
           ? {}
           : {
+              payoutAttempts: sql`greatest(${paymentRefunds.payoutAttempts} - 1, 0)`,
+              payoutPendingPolls: sql`${paymentRefunds.payoutPendingPolls} + 1`,
               lastPayoutError: null,
               payoutClaimedUntil: null,
               payoutClaimToken: null,
@@ -992,16 +1106,24 @@ export async function runRefundPayout(
 /**
  * Worker sweep for `approved` refunds whose payout is not finished: lease free,
  * oldest first, with backoff by attempts (2^attempts minutes, at most an hour
- * after the last attempt). After `PAYOUT_MAX_ATTEMPTS` the refund stays
- * `approved`, is flagged `MANUAL_RECONCILIATION` and logged for ops.
+ * after the last attempt; provider `pending` polls back off on their own
+ * counter). After `PAYOUT_MAX_ATTEMPTS` unknown outcomes, or a `pending` answer
+ * older than 72 hours, the refund stays `approved`, is flagged
+ * `MANUAL_RECONCILIATION` and logged for ops. A round stops claiming new
+ * refunds once `budgetMs` is spent.
  */
 export async function sweepApprovedRefundPayouts(
   context: ScopedTenantContext,
   now: Date = new Date(),
   limit = PAYOUT_SWEEP_BATCH,
+  budgetMs = PAYOUT_SWEEP_BUDGET_MS,
+  /** Checked before each claim (worker shutdown): stop starting new payouts. */
+  shouldStop: () => boolean = () => false,
 ): Promise<{ attempted: number; exhausted: number }> {
   const tenantId = context.tenant.tenantId;
   const leaseFree = sql`(${paymentRefunds.payoutClaimedUntil} IS NULL OR ${paymentRefunds.payoutClaimedUntil} <= ${now})`;
+  const decidedAtOrCreated = sql`coalesce(${paymentRefunds.decidedAt}, ${paymentRefunds.createdAt})`;
+  const pendingTooLong = sql`(${paymentRefunds.payoutPendingPolls} > 0 AND ${decidedAtOrCreated} + ${PAYOUT_PENDING_MAX_HOURS} * interval '1 hour' <= ${now})`;
   const { due, exhausted } = await withTenant(db, context, async (tx) => {
     const due = await tx
       .select({ id: paymentRefunds.id, outletId: paymentRefunds.outletId })
@@ -1011,8 +1133,9 @@ export async function sweepApprovedRefundPayouts(
           eq(paymentRefunds.tenantId, tenantId),
           eq(paymentRefunds.status, "approved"),
           sql`${paymentRefunds.payoutAttempts} < ${PAYOUT_MAX_ATTEMPTS}`,
+          sql`NOT ${pendingTooLong}`,
           leaseFree,
-          sql`${paymentRefunds.updatedAt} + least(power(2, ${paymentRefunds.payoutAttempts}), ${PAYOUT_BACKOFF_CAP_MINUTES}) * interval '1 minute' <= ${now}`,
+          sql`${paymentRefunds.updatedAt} + least(power(2, ${paymentRefunds.payoutAttempts} + ${paymentRefunds.payoutPendingPolls}), ${PAYOUT_BACKOFF_CAP_MINUTES}) * interval '1 minute' <= ${now}`,
         ),
       )
       .orderBy(asc(paymentRefunds.updatedAt), asc(paymentRefunds.id))
@@ -1024,7 +1147,7 @@ export async function sweepApprovedRefundPayouts(
         and(
           eq(paymentRefunds.tenantId, tenantId),
           eq(paymentRefunds.status, "approved"),
-          sql`${paymentRefunds.payoutAttempts} >= ${PAYOUT_MAX_ATTEMPTS}`,
+          sql`(${paymentRefunds.payoutAttempts} >= ${PAYOUT_MAX_ATTEMPTS} OR ${pendingTooLong})`,
           leaseFree,
           sql`${paymentRefunds.lastPayoutError} IS DISTINCT FROM ${MANUAL_RECONCILIATION}`,
         ),
@@ -1042,6 +1165,7 @@ export async function sweepApprovedRefundPayouts(
   // by the real elapsed time so a later row's lease is not born expired.
   const started = Date.now();
   for (const row of due) {
+    if (shouldStop() || Date.now() - started >= budgetMs) break;
     try {
       await runRefundPayout(
         outletContext(context.tenant, row.outletId),

@@ -143,7 +143,10 @@ export const paymentRefunds = pgTable(
     approvalChainId: uuid("approval_chain_id"),
     /** Why a refund ended `failed`; null for legacy failed rows and every other status. */
     failureReason: varchar("failure_reason", { length: 40 }),
+    /** Unknown provider outcomes only (error/timeout); a `pending` answer never counts here. */
     payoutAttempts: integer("payout_attempts").notNull().default(0),
+    /** Provider answers of `pending`; drives the polling backoff, separate from payoutAttempts. */
+    payoutPendingPolls: integer("payout_pending_polls").notNull().default(0),
     /** Lease for the in-flight provider call; another worker skips while it is in the future. */
     payoutClaimedUntil: timestamp("payout_claimed_until", {
       withTimezone: true,
@@ -194,7 +197,7 @@ export const paymentRefunds = pgTable(
     check("payment_refunds_amount_check", sql`${t.amountIdr} > 0`),
     check(
       "payment_refunds_failure_reason_check",
-      sql`${t.failureReason} IS NULL OR ${t.failureReason} IN ('rejected','approval_expired','provider_declined','cap_exceeded')`,
+      sql`${t.failureReason} IS NULL OR ${t.failureReason} IN ('rejected','approval_expired','provider_declined','cap_exceeded','source_document','approver_unauthorized')`,
     ),
     check(
       "payment_refunds_failure_reason_status_check",
@@ -203,6 +206,10 @@ export const paymentRefunds = pgTable(
     check(
       "payment_refunds_payout_attempts_check",
       sql`${t.payoutAttempts} >= 0`,
+    ),
+    check(
+      "payment_refunds_payout_pending_polls_check",
+      sql`${t.payoutPendingPolls} >= 0`,
     ),
     check(
       "payment_refunds_status_check",

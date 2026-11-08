@@ -36,6 +36,13 @@ export const conflict = (message: string) =>
 
 export type Intent = typeof paymentIntents.$inferSelect;
 export type Refund = typeof paymentRefunds.$inferSelect;
+/** A sale's payment is refunded by the module that owns the document (order.refunded). */
+export const hasSourceDocument = (
+  intent: Pick<Intent, "orderId" | "accessTicketId" | "subscriptionInvoiceId">,
+) =>
+  intent.orderId !== null ||
+  intent.accessTicketId !== null ||
+  intent.subscriptionInvoiceId !== null;
 // Evidence and fund rows are written under the intent lock by settlement.
 // Compute in PostgreSQL numeric and bigint to avoid rounding aggregate sums.
 export async function refundableBalance(tx: Tx, intent: Intent) {
@@ -284,6 +291,12 @@ export async function createRefund(
       "refund.create",
       body,
       async () => {
+        if (hasSourceDocument(intent))
+          throw new HttpError(
+            409,
+            "REFUND_SOURCE_DOCUMENT",
+            "Payment belongs to a sales document; refund it from the owning module.",
+          );
         if (
           !intent.paidAt ||
           !["paid", "partially_refunded"].includes(intent.status)
@@ -357,7 +370,7 @@ export async function listRefundablePayments(
       .orderBy(desc(paymentIntents.paidAt));
     const payments = [];
     for (const intent of intents) {
-      if (!intent.paidAt) continue;
+      if (!intent.paidAt || hasSourceDocument(intent)) continue;
       const { cap, reserved } = await refundableBalance(tx, intent);
       if (reserved >= cap) continue;
       const { link, outlet } = await paymentInfo(tx, intent);

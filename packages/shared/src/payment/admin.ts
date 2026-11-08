@@ -195,6 +195,8 @@ export const refundFailureReasonSchema = z.enum([
   "approval_expired",
   "provider_declined",
   "cap_exceeded",
+  "source_document",
+  "approver_unauthorized",
 ]);
 export type RefundFailureReason = z.infer<typeof refundFailureReasonSchema>;
 
