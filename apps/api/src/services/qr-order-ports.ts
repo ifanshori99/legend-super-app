@@ -11,6 +11,7 @@
 //   station target of the cart, else a conservative fixed window.
 // - Open service requests (legend-7qg) for the session view. Default: none.
 
+import { sql } from "drizzle-orm";
 import {
   CoreError,
   idr,
@@ -83,6 +84,25 @@ export async function depositCreditFor(
 ): Promise<number> {
   const value = await depositCredit(tx, tenantId, tableSessionId);
   return Number.isSafeInteger(value) ? Math.max(0, value) : 0;
+}
+
+/**
+ * Serializes every reader-then-writer of one table session's deposit credit
+ * (bead legend-94qt): the QR pay-first checkout and every POS order create or
+ * reprice of the session take this transaction lock right before they sum the
+ * deposit the session's other live orders already applied, and hold it until
+ * commit, so two orders never both apply the same remaining credit. It is a
+ * leaf lock: nothing else is locked after it, only the caller's own order row
+ * is written (already locked, or a fresh insert).
+ */
+export async function lockSessionDeposit(
+  tx: Tx,
+  tenantId: TenantId,
+  tableSessionId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`table-deposit:${tenantId}:${tableSessionId.toLowerCase()}`}, 0))`,
+  );
 }
 
 // ---- Serving estimate (ORD-11) -----------------------------------------------

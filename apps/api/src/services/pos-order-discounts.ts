@@ -114,7 +114,11 @@ export async function applyPosDiscount(
       );
 
       let amount: number;
-      let approved: { by: string; requestId: string } | null = null;
+      let approved: {
+        by: string;
+        requestId: string | null;
+        overrideId: string;
+      } | null = null;
       let promoCode: string | null = null;
       if (input.source === "manual") {
         if (input.kind !== "percent" || input.percentBp === undefined)
@@ -142,16 +146,12 @@ export async function applyPosDiscount(
         });
         if (
           needsApproval &&
-          (input.approvalRequestId === undefined ||
-            input.approvedBy === undefined)
+          (input.overrideId === undefined || input.approvedBy === undefined)
         )
           throw new PosError("DISCOUNT_APPROVAL_REQUIRED");
         // An approval that is sent is always verified, required or not.
-        if (
-          input.approvalRequestId !== undefined &&
-          input.approvedBy !== undefined
-        ) {
-          await consumeApproval(tx, context, {
+        if (input.overrideId !== undefined && input.approvedBy !== undefined) {
+          const override = await consumeApproval(tx, context, {
             action: "discount",
             purpose: "discount",
             outletId,
@@ -160,12 +160,14 @@ export async function applyPosDiscount(
             objectId: order.id,
             requesterId: caller.userId,
             approvedBy: input.approvedBy,
-            approvalRequestId: input.approvalRequestId,
+            overrideId: input.overrideId,
             minValueIdr: amount,
+            now,
           });
           approved = {
             by: input.approvedBy,
-            requestId: input.approvalRequestId,
+            requestId: override.approvalRequestId,
+            overrideId: override.id,
           };
         }
       } else {
@@ -236,6 +238,7 @@ export async function applyPosDiscount(
           appliedBy: caller.userId,
           approvedBy: approved?.by ?? null,
           approvalRequestId: approved?.requestId ?? null,
+          overrideId: approved?.overrideId ?? null,
           createdAt: now,
           updatedAt: now,
         })
@@ -256,6 +259,7 @@ export async function applyPosDiscount(
           reason: row.reason,
           approvedBy: row.approvedBy,
           approvalRequestId: row.approvalRequestId,
+          overrideId: row.overrideId,
           totalIdr: repriced.totalIdr,
         },
         caller,
@@ -280,6 +284,7 @@ export async function applyPosDiscount(
             reason: row.reason,
             approvedBy: row.approvedBy,
             approvalRequestId: row.approvalRequestId,
+            overrideId: row.overrideId,
             totalIdr: repriced.totalIdr,
           },
           reason: row.reasonNote,

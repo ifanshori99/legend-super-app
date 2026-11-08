@@ -194,11 +194,15 @@ export type RefundStatus = z.infer<typeof refundStatusSchema>;
  * the reservation DP refund decided from the policy snapshot, PRD §3.22). The
  * approval still needs a person with `payment.reconcile` (never the system).
  */
-export const systemRefundActorSchema = z.enum(["system:reservation"]);
+export const systemRefundActorSchema = z.enum([
+  "system:reservation",
+  "system:pos",
+]);
 export type SystemRefundActor = z.infer<typeof systemRefundActorSchema>;
 /** Display names for system requesters (no `user` row exists for them). */
 export const systemRefundActorNames: Record<SystemRefundActor, string> = {
   "system:reservation": "Sistem (reservasi)",
+  "system:pos": "Sistem (kasir)",
 };
 
 export const refundViewSchema = z.strictObject({

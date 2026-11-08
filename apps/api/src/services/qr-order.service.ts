@@ -113,6 +113,7 @@ import type { OrderPromoInput, OrderPromoQuote } from "./order-promo-port.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
   depositCreditFor,
+  lockSessionDeposit,
   qrOrderOpenServiceRequests,
   qrOrderPromoPort,
   qrOrderServingEstimatePort,
@@ -1610,6 +1611,8 @@ async function checkout(
   let depositApplied = 0;
   if (payFirst) {
     const credit = await depositCreditFor(tx, tenantId, session.id);
+    // legend-94qt: same session deposit lock as the POS reprice.
+    if (credit > 0) await lockSessionDeposit(tx, tenantId, session.id);
     const [used] = await tx
       .select({
         used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
