@@ -135,5 +135,5 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Migrasi 0079/0080 dibuat dari merge-base e4938167; `milestone/m1` sudah sampai 0085, jadi merge train perlu regenerasi nomor.
 - Keputusan: NPWP dan regionId kosong di edge setelah bootstrap; link "up" = heartbeat < 45 dtk; izin konflik = `device.registry.manage`, rotasi = `device.registry.revoke`; cek outlet lintas dokumen di s4r6 baca transaksi tenant-wide (hanya baris committed).
 - Review: reviewer 2 putaran + architect (tingkat K). Second-opinion Codex wajib sebelum gerbang rilis.
-- Berikut: test DB gabungan, `heavy pnpm check`, commit lokal, laporan ke CTO.
+- Hasil: `heavy pnpm check` 1828 lulus, 3 gagal (migrasi 0079 FK lewat outlets FORCE RLS untuk migrator NOBYPASSRLS) → FK dipindah inline, test migrasi 11/11. Test edge gabungan lulus setelah perbaikan test (bigint/ULID). Kartu ditutup. Berikut: second-opinion Codex (tingkat K), regenerasi nomor migrasi saat merge ke m1 (FK 0079 tetap inline).
 - Gelombang (05:30–06:31, 61 menit): 21 subagent (Claude saja: Opus 295 req, Sonnet 313 req, Haiku 8 req), maks 8 berjalan sekaligus, rata-rata 1,1. Biaya* 14.242k (utama 3.288k, subagent 10.954k). 1 compact.
