@@ -1221,11 +1221,11 @@ describe("TEN-01 end-of-day isolation (legend-6c0)", () => {
   });
 });
 
-// ---- Migration 0070 backfill (was 0065 before the main merge) -----------------
+// ---- Migration 0088 backfill (was 0070, regenerated on milestone/m1) -----------------
 
-describe("POS-05 migration 0070 grants pos.day.close to existing template roles (legend-6c0)", () => {
+describe("POS-05 migration 0088 grants pos.day.close to existing template roles (legend-6c0)", () => {
   const migrationSql = readFileSync(
-    new URL("../../drizzle/0070_pos_day_close_permission.sql", import.meta.url),
+    new URL("../../drizzle/0088_pos_day_close_permission.sql", import.meta.url),
     "utf8",
   );
   const templateRoleId = randomUUID();
@@ -1295,7 +1295,7 @@ describe("POS-05 migration 0070 grants pos.day.close to existing template roles 
 
     const role = await runMigrationAsOwner();
     console.info(
-      `[0070] migration role: ${role.name} rolsuper=${role.super} rolbypassrls=${role.bypass}`,
+      `[0088] migration role: ${role.name} rolsuper=${role.super} rolbypassrls=${role.bypass}`,
     );
     const afterFirst = await permissionsOf(templateRoleId);
     expect(afterFirst.filter((code) => code === "pos.day.close")).toHaveLength(
