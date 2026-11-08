@@ -69,6 +69,7 @@ const appPool = new Pool({
 });
 
 const createdUserIds: string[] = [];
+const createdRoleIds: string[] = [];
 const createdItemIds: string[] = [];
 const createdUomIds: string[] = [];
 const createdSupplierIds: string[] = [];
@@ -208,6 +209,17 @@ async function setPolicy(
       level,
     ],
   );
+}
+
+// A policy only above any amount the tests use: the matrix asks for no chain,
+// so the module approves manually. A tenant with no policy at all is blocked
+// (409 APPROVAL_POLICY_MISSING), never approved by one person.
+const NEVER_REACHED_IDR = 1_000_000_000_000;
+
+async function useManualPolicies(): Promise<void> {
+  await resetPolicies();
+  for (const action of POLICY_ACTIONS)
+    await setPolicy(action, NEVER_REACHED_IDR);
 }
 
 async function insertUom(code: string): Promise<string> {
@@ -375,6 +387,14 @@ beforeAll(async () => {
   itemFlour = await insertItem(uomKg, "Tepung Flow");
   itemSugar = await insertItem(uomKg, "Gula Flow");
   supplier = await insertSupplier("Supplier Flow");
+  // Priced items: a PR estimate stays below the policy tier (manual approval).
+  for (const item of [itemFlour, itemSugar])
+    await owner.query(
+      `INSERT INTO supplier_prices (tenant_id, supplier_id, inventory_item_id, purchase_uom_id, price_idr, effective_from, created_by)
+       VALUES ($1, $2, $3, $4, 10000, '2026-01-01', $5)`,
+      [tenantA, supplier, item, uomKg, purchaser],
+    );
+  await useManualPolicies();
 });
 
 afterAll(async () => {
@@ -419,6 +439,9 @@ afterAll(async () => {
     "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
     [tenantA, createdUserIds],
   );
+  await owner.query("DELETE FROM roles WHERE id = ANY($1::uuid[])", [
+    createdRoleIds,
+  ]);
   await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
     createdUserIds,
   ]);
@@ -721,18 +744,14 @@ describe("9yz-FLOW purchase request and order flow", () => {
       await handlePurchasingApprovalResolved(tenantContext(), forged as never);
       expect((await poRow(stillPending)).status).toBe("pending_approval");
     } finally {
-      await resetPolicies();
+      await useManualPolicies();
     }
   });
 
   it("[9yz-FLOW-5] the PR estimate from supplier prices decides whether the matrix asks for approval", async () => {
     await setPolicy("purchase_request", 100_000);
     try {
-      await owner.query(
-        `INSERT INTO supplier_prices (tenant_id, supplier_id, inventory_item_id, purchase_uom_id, price_idr, effective_from, created_by)
-         VALUES ($1, $2, $3, $4, 10000, '2026-01-01', $5)`,
-        [tenantA, supplier, itemFlour, uomKg, purchaser],
-      );
+      // Flour is priced 10.000 in beforeAll.
       const cheap = await createPurchaseRequest(
         tenantContext(),
         requester,
@@ -753,13 +772,18 @@ describe("9yz-FLOW purchase request and order flow", () => {
       ).rows[0];
       expect(cheapRow.approval_chain_id).toBeNull();
 
-      // No price for sugar: the estimate is unknown, every tier applies.
+      // No price for this item: the estimate is unknown, every tier applies.
+      const itemUnpriced = await insertItem(uomKg, "Tanpa Harga");
       const unknown = await createPurchaseRequest(
         tenantContext(),
         requester,
         prInput({
           lines: [
-            { inventoryItemId: itemSugar, quantity: "1.0000", uomId: uomKg },
+            {
+              inventoryItemId: itemUnpriced,
+              quantity: "1.0000",
+              uomId: uomKg,
+            },
           ],
         }),
       );
@@ -799,7 +823,7 @@ describe("9yz-FLOW purchase request and order flow", () => {
       );
       expect(chain.rows[0].status).toBe("cancelled");
     } finally {
-      await resetPolicies();
+      await useManualPolicies();
     }
   });
 
@@ -999,7 +1023,7 @@ describe("25a7-PO updatedAt", () => {
         );
       }
     } finally {
-      await resetPolicies();
+      await useManualPolicies();
     }
   });
 });
@@ -1139,7 +1163,7 @@ describe("9yz-FLOW separation of duties", () => {
       });
       expect(await eventsOf(taintedId, "purchase_order.approved")).toBe(0);
     } finally {
-      await resetPolicies();
+      await useManualPolicies();
     }
   });
 });
@@ -1577,7 +1601,7 @@ describe("legend-50 architect fixes (slice B)", () => {
         approved_by: null,
       });
     } finally {
-      await resetPolicies();
+      await useManualPolicies();
     }
   });
 
@@ -1705,5 +1729,300 @@ describe("legend-50 architect fixes (slice B)", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]!.outlet_id).toBe(outletA);
     }
+  });
+});
+
+describe("legend-proc policy and cancel/close access", () => {
+  it("[proc-1] submit with no policy is 409 APPROVAL_POLICY_MISSING, never a manual approval", async () => {
+    const pr = await createPurchaseRequest(
+      tenantContext(),
+      requester,
+      prInput(),
+    );
+    const po = await createPurchaseOrder(tenantContext(), purchaser, poInput());
+    await resetPolicies();
+    try {
+      await rejectsWith(
+        transitionPurchaseRequestStatus(
+          tenantContext(),
+          requester,
+          pr.request.id as string,
+          act("submit"),
+        ),
+        { status: 409, code: "APPROVAL_POLICY_MISSING" },
+      );
+      await rejectsWith(
+        transitionPurchaseOrderStatus(
+          tenantContext(),
+          purchaser,
+          po.purchaseOrder.id as string,
+          act("submit"),
+        ),
+        { status: 409, code: "APPROVAL_POLICY_MISSING" },
+      );
+    } finally {
+      await useManualPolicies();
+    }
+    expect(
+      (
+        await getPurchaseRequest(
+          tenantContext(),
+          requester,
+          pr.request.id as string,
+        )
+      ).request.status,
+    ).toBe("draft");
+    expect((await poRow(po.purchaseOrder.id as string)).status).toBe("draft");
+  });
+
+  it("[proc-2] a multi-level policy opens the chain for a PR and a PO, not a manual approval", async () => {
+    await resetPolicies();
+    try {
+      for (const action of POLICY_ACTIONS) {
+        await setPolicy(action, null, 1);
+        await setPolicy(action, null, 2);
+      }
+      const pr = await createPurchaseRequest(
+        tenantContext(),
+        requester,
+        prInput(),
+      );
+      const prId = pr.request.id as string;
+      expect(
+        (
+          await transitionPurchaseRequestStatus(
+            tenantContext(),
+            requester,
+            prId,
+            act("submit"),
+          )
+        ).status,
+      ).toBe("pending_approval");
+      const prChain = (
+        await owner.query(
+          "SELECT approval_chain_id FROM purchase_requests WHERE id = $1",
+          [prId],
+        )
+      ).rows[0].approval_chain_id;
+      expect(prChain).not.toBeNull();
+      await rejectsWith(
+        transitionPurchaseRequestStatus(
+          tenantContext(),
+          approver,
+          prId,
+          act("approve"),
+        ),
+        { status: 409, code: "CONFLICT" },
+      );
+
+      const poId = await pendingPo();
+      expect((await poRow(poId)).approval_chain_id).not.toBeNull();
+      expect((await poRow(poId)).status).toBe("pending_approval");
+      await rejectsWith(
+        transitionPurchaseOrderStatus(
+          tenantContext(),
+          approver,
+          poId,
+          act("approve"),
+        ),
+        { status: 409, code: "CONFLICT" },
+      );
+    } finally {
+      await useManualPolicies();
+    }
+  });
+
+  it("[proc-3] cancel and close need the creator or an approver; another user with the create permission gets 403", async () => {
+    const otherPurchaser = await newUser("other purchaser", [
+      { role: "purchasing", outletId: outletA },
+    ]);
+    const otherKitchen = await newUser("other kitchen", [
+      { role: "kitchen_lead", outletId: outletA },
+    ]);
+    const draftPo = async () =>
+      (await createPurchaseOrder(tenantContext(), purchaser, poInput()))
+        .purchaseOrder.id as string;
+    const draftPr = async () =>
+      (await createPurchaseRequest(tenantContext(), requester, prInput()))
+        .request.id as string;
+    const receivedPo = async () => {
+      const id = await draftPo();
+      await owner.query(
+        `UPDATE purchase_orders
+            SET status = 'received', approved_by = $2, approved_at = now(),
+                sent_at = now(), sent_to = 'supplier@example.com'
+          WHERE id = $1`,
+        [id, approver],
+      );
+      return id;
+    };
+    const poStatus = async (id: string) => (await poRow(id)).status;
+    const prStatus = async (id: string) =>
+      (await getPurchaseRequest(tenantContext(), requester, id)).request.status;
+    const denied = { status: 403, code: "PERMISSION_DENIED" };
+
+    // PO cancel.
+    for (const [actor, ok] of [
+      [otherPurchaser, false],
+      [purchaser, true],
+      [approver, true],
+    ] as const) {
+      const id = await draftPo();
+      const run = transitionPurchaseOrderStatus(
+        tenantContext(),
+        actor,
+        id,
+        act("cancel"),
+      );
+      if (ok) expect((await run).status).toBe("cancelled");
+      else {
+        await rejectsWith(run, denied);
+        expect(await poStatus(id)).toBe("draft");
+      }
+    }
+    // PO close.
+    for (const [actor, ok] of [
+      [otherPurchaser, false],
+      [purchaser, true],
+      [approver, true],
+    ] as const) {
+      const id = await receivedPo();
+      const run = transitionPurchaseOrderStatus(
+        tenantContext(),
+        actor,
+        id,
+        act("close"),
+      );
+      if (ok) expect((await run).status).toBe("closed");
+      else {
+        await rejectsWith(run, denied);
+        expect(await poStatus(id)).toBe("received");
+      }
+    }
+    // PR cancel.
+    for (const [actor, ok] of [
+      [otherKitchen, false],
+      [requester, true],
+      [approver, true],
+    ] as const) {
+      const id = await draftPr();
+      const run = transitionPurchaseRequestStatus(
+        tenantContext(),
+        actor,
+        id,
+        act("cancel"),
+      );
+      if (ok) expect((await run).status).toBe("cancelled");
+      else {
+        await rejectsWith(run, denied);
+        expect(await prStatus(id)).toBe("draft");
+      }
+    }
+  });
+
+  it("[proc-4] an approver without the create permission cancels and closes a document they did not create, over HTTP", async () => {
+    const approverOnly = await signedIn("HTTP approver only", []);
+    const roleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenantA,
+        `Proc approver only ${roleId.slice(0, 8)}`,
+        JSON.stringify(["purchasing.order.approve"]),
+        JSON.stringify(["outlet"]),
+      ],
+    );
+    createdRoleIds.push(roleId);
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [tenantA, approverOnly.userId, roleId, outletA],
+    );
+    const asOtherBuyer = await signedIn("HTTP other buyer", [
+      { role: "purchasing", outletId: outletA },
+    ]);
+    const transition = (
+      client: ReturnType<typeof agent>,
+      kind: "purchase-orders" | "purchase-requests",
+      id: string,
+      action: string,
+    ) =>
+      client
+        .post(`/api/inventory/${kind}/${id}/transitions`)
+        .set(originHeader)
+        .send(act(action) as object);
+    const draftPo = async () =>
+      (await createPurchaseOrder(tenantContext(), purchaser, poInput()))
+        .purchaseOrder.id as string;
+    const received = async () => {
+      const id = await draftPo();
+      await owner.query(
+        `UPDATE purchase_orders
+            SET status = 'received', approved_by = $2, approved_at = now(),
+                sent_at = now(), sent_to = 'supplier@example.com'
+          WHERE id = $1`,
+        [id, approver],
+      );
+      return id;
+    };
+    const draftPr = async () =>
+      (await createPurchaseRequest(tenantContext(), requester, prInput()))
+        .request.id as string;
+
+    const cancelPo = await draftPo();
+    expect(
+      (
+        await transition(
+          asOtherBuyer.client,
+          "purchase-orders",
+          cancelPo,
+          "cancel",
+        )
+      ).status,
+    ).toBe(403);
+    const cancelled = await transition(
+      approverOnly.client,
+      "purchase-orders",
+      cancelPo,
+      "cancel",
+    );
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.data.status).toBe("cancelled");
+
+    const closePo = await received();
+    const closed = await transition(
+      approverOnly.client,
+      "purchase-orders",
+      closePo,
+      "close",
+    );
+    expect(closed.status).toBe(200);
+    expect(closed.body.data.status).toBe("closed");
+
+    const cancelPr = await draftPr();
+    const prCancelled = await transition(
+      approverOnly.client,
+      "purchase-requests",
+      cancelPr,
+      "cancel",
+    );
+    expect(prCancelled.status).toBe(200);
+    expect(prCancelled.body.data.status).toBe("cancelled");
+
+    // The approver permission alone does not open the other actions.
+    const submitPo = await draftPo();
+    expect(
+      (
+        await transition(
+          approverOnly.client,
+          "purchase-orders",
+          submitPo,
+          "submit",
+        )
+      ).status,
+    ).toBe(403);
   });
 });

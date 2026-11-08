@@ -44,7 +44,7 @@ function winAnsi(text: string): string {
   return out;
 }
 
-function textWidth(text: string, size: number): number {
+export function textWidth(text: string, size: number): number {
   let total = 0;
   for (const char of text) {
     const code = char.charCodeAt(0);
@@ -132,15 +132,21 @@ function formatDate(isoDate: string): string {
   return `${day}/${month}/${year}`;
 }
 
-// Table columns, left x offset from the margin and alignment.
-const COLUMNS = {
-  no: { x: 0, width: 24 },
-  item: { x: 28, width: 232 },
-  qty: { x: 264, width: 70 },
-  unit: { x: 338, width: 40 },
-  price: { x: 382, width: 70 },
-  total: { x: 456, width: 59 },
+// Table columns, left x offset from the margin and width. Amount columns hold
+// a 10-digit rupiah figure (`Rp 9.999.999.999`, ~72pt at 9pt) and a NUMERIC
+// (14,4) unit price (`Rp 9.999.999.999,9999`, ~94pt); anything wider shrinks
+// its font in `put` instead of running into the neighbouring column.
+export const COLUMNS = {
+  no: { x: 0, width: 20 },
+  item: { x: 24, width: 142 },
+  qty: { x: 170, width: 70 },
+  unit: { x: 244, width: 34 },
+  price: { x: 282, width: 112 },
+  total: { x: 398, width: 117 },
 } as const;
+
+/** Smallest font a right-aligned cell may shrink to. */
+const MIN_CELL_SIZE = 5;
 
 type PageOps = string[];
 
@@ -167,12 +173,21 @@ function paginate(input: PurchaseOrderPdfInput): string[] {
     width = 0,
   ) => {
     const safe = winAnsi(value);
+    let drawSize = size;
+    if (align === "right" && width > 0) {
+      const natural = textWidth(safe, size);
+      if (natural > width)
+        drawSize = Math.max(
+          MIN_CELL_SIZE,
+          Math.floor((size * width * 100) / natural) / 100,
+        );
+    }
     const left =
       align === "right"
-        ? PAGE.margin + x + width - textWidth(safe, size)
+        ? PAGE.margin + x + width - textWidth(safe, drawSize)
         : PAGE.margin + x;
     current().push(
-      `BT /${font} ${size} Tf ${left.toFixed(2)} ${y.toFixed(2)} Td (${escapePdf(safe)}) Tj ET`,
+      `BT /${font} ${drawSize} Tf ${left.toFixed(2)} ${y.toFixed(2)} Td (${escapePdf(safe)}) Tj ET`,
     );
   };
   const rule = () => {

@@ -142,13 +142,28 @@ function readScopeByPermissions(
 const readContext = (res: Response) =>
   res.locals.purchasingReadContext as ScopedTenantContext;
 
-/** Picks the gate from the already parsed JSON body. */
+/**
+ * Picks the gate from the already parsed JSON body. One permission uses the
+ * plain menu gate. Several (close / cancel: the creator's create permission or
+ * an approver's `purchasing.order.approve`) merge the reach of every one that
+ * passes into `res.locals.purchasingReadContext`; the service stays
+ * authoritative (creator or approver at the document's outlet).
+ */
 function menuGateFor(
-  permissionOf: (body: unknown) => PermissionCode,
+  permissionsOf: (body: unknown) => readonly PermissionCode[],
 ): RequestHandler {
-  return (req, res, next) =>
-    requireMenuPermission(permissionOf(req.body))(req, res, next);
+  return (req, res, next) => {
+    const permissions = permissionsOf(req.body);
+    if (permissions.length === 1)
+      return requireMenuPermission(permissions[0]!)(req, res, next);
+    return readScopeByPermissions(permissions)(req, res, next);
+  };
 }
+
+/** Context of a transition: merged reach when several permissions were tried. */
+const transitionContext = (req: Request, res: Response): ScopedTenantContext =>
+  (res.locals.purchasingReadContext as ScopedTenantContext | undefined) ??
+  getScopedTenantContext(req);
 
 export function createPurchasingOrderRouter(): Router {
   const router = Router();
@@ -207,17 +222,18 @@ export function createPurchasingOrderRouter(): Router {
   router.post(
     "/purchase-requests/:purchaseRequestId/transitions",
     jsonBody,
-    menuGateFor((body) =>
-      purchaseRequestActionPermission(
-        transitionPurchaseRequestInputSchema.parse(body).action,
-      ),
-    ),
+    menuGateFor((body) => {
+      const { action } = transitionPurchaseRequestInputSchema.parse(body);
+      return action === "cancel"
+        ? [purchaseRequestActionPermission(action), "purchasing.order.approve"]
+        : [purchaseRequestActionPermission(action)];
+    }),
     async (req, res) => {
       const id = purchaseRequestIdSchema.parse(req.params.purchaseRequestId);
       const input = transitionPurchaseRequestInputSchema.parse(req.body);
       res.json({
         data: await transitionPurchaseRequestStatus(
-          getScopedTenantContext(req),
+          transitionContext(req, res),
           getAuth(req).user.id,
           id,
           input,
@@ -290,17 +306,18 @@ export function createPurchasingOrderRouter(): Router {
   router.post(
     "/purchase-orders/:purchaseOrderId/transitions",
     jsonBody,
-    menuGateFor((body) =>
-      purchaseOrderActionPermission(
-        transitionPurchaseOrderInputSchema.parse(body).action,
-      ),
-    ),
+    menuGateFor((body) => {
+      const { action } = transitionPurchaseOrderInputSchema.parse(body);
+      return action === "close" || action === "cancel"
+        ? [purchaseOrderActionPermission(action), "purchasing.order.approve"]
+        : [purchaseOrderActionPermission(action)];
+    }),
     async (req, res) => {
       const id = purchaseOrderIdSchema.parse(req.params.purchaseOrderId);
       const input = transitionPurchaseOrderInputSchema.parse(req.body);
       res.json({
         data: await transitionPurchaseOrderStatus(
-          getScopedTenantContext(req),
+          transitionContext(req, res),
           getAuth(req).user.id,
           id,
           input,

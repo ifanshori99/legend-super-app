@@ -7,8 +7,12 @@
 //   estimate from active supplier prices of today, null when a line has no
 //   price: every tier applies). With a chain open the module approve/reject is
 //   refused (409 CONFLICT) and `settlePurchaseRequestForApproval` applies the
-//   outcome from the `approval.resolved` consumer. Without a chain the module
-//   approves manually (`purchasing.order.approve`, never the requester).
+//   outcome from the `approval.resolved` consumer. When the matrix asks for
+//   none at this amount the module approves manually (`purchasing.order.approve`,
+//   never the requester). No policy for the action (or a broken one) refuses
+//   submit with 409 APPROVAL_POLICY_MISSING.
+// - `cancel`: only the requester (with `purchasing.request.create`) or a holder
+//   of `purchasing.order.approve` at the outlet; others get 403.
 // - Every create/transition is bound to its idempotency key and request
 //   fingerprint (`purchasing_idempotency`).
 
@@ -79,6 +83,7 @@ import {
   completePurchasingIdempotency,
   guardMoneyMath,
   openPurchasingApproval,
+  requireCreatorOrApprover,
   PURCHASING_SOURCE_MODULE,
   refuseWhenChainOpen,
   requireAnyPurchasingPermission,
@@ -408,7 +413,7 @@ export function purchaseRequestActionPermission(action: PurchaseRequestAction) {
 
 /**
  * POST transition. Needs the action's permission at the request's outlet
- * (submit/cancel `purchasing.request.create`, approve/reject
+ * (submit `purchasing.request.create`, cancel: requester or approver, approve/reject
  * `purchasing.order.approve`, convert `purchasing.order.create`).
  */
 export async function transitionPurchaseRequestStatus(
@@ -442,13 +447,23 @@ export async function transitionPurchaseRequestStatus(
       if (!row)
         throw new HttpError(404, "NOT_FOUND", "Purchase request not found.");
       assertOutlet(context, row.outletId);
-      await requireOpsPermission(
-        tx,
-        context,
-        actorUserId,
-        ACTION_PERMISSION[input.action],
-        row.outletId,
-      );
+      if (input.action === "cancel")
+        await requireCreatorOrApprover(
+          tx,
+          context,
+          actorUserId,
+          row.requestedBy,
+          ACTION_PERMISSION[input.action],
+          row.outletId,
+        );
+      else
+        await requireOpsPermission(
+          tx,
+          context,
+          actorUserId,
+          ACTION_PERMISSION[input.action],
+          row.outletId,
+        );
       // Claimed only after the lock and the access checks: a replay by a caller
       // without access is refused, never answered from the stored response.
       const claim = { ...claimBase, outletId: row.outletId };

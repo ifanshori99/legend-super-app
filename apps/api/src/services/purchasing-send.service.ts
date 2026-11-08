@@ -10,17 +10,20 @@
 //   token. Only the SHA-256 of the token is stored. It expires after 7 days.
 // - Public read: the tenant comes from the request host (TEN-02); the token is
 //   looked up by its hash inside that tenant. An unknown, malformed, expired or
-//   revoked token is one and the same 404.
+//   revoked token, or a cancelled or closed order, is one and the same 404.
 // - Email: a queued delivery row; the worker job
-//   (worker/purchasing-po-email.job.ts) sends it. Audit rows and DTOs never
-//   carry the address, only the mask.
+//   (worker/purchasing-po-email.job.ts) sends it. The send result and the
+//   order DTO (`sentTo`) carry the recipient address; audit rows never do
+//   (they keep only channel, status and resend).
 // - Recipient: an email send without an address goes to the supplier email,
 //   else the primary contact's, else 422. Any other address needs
 //   `purchasing.supplier.manage` (tenant scope), else 403.
 // - Resend limit: at most 5 sends (emails and links) per order per rolling
 //   hour; the sixth is a 429. A replay of an accepted send is not counted.
-// - Revoke: `revokePurchaseOrderShareLinks` kills every live link of an order;
-//   the order service calls it on close and cancel.
+// - Revoke: `revokePurchaseOrderShareLinks` kills every live link of an order
+//   and fails every still-queued email delivery of it (so the worker never
+//   mints or sends a link after a revoke); the order service calls it on close
+//   and cancel.
 
 import { createHash, createHmac, scryptSync } from "node:crypto";
 import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
@@ -183,6 +186,38 @@ export async function ensurePurchaseOrderShareLink(
       createdBy,
     })
     .onConflictDoNothing();
+  const link = await findPurchaseOrderShareLink(
+    tx,
+    context,
+    order,
+    linkKeyValue,
+    now,
+  );
+  // An existing link (same key) that died must not be handed out again.
+  if (!link) throw shareLinkUnavailable();
+  return link;
+}
+
+const shareLinkUnavailable = () =>
+  new PurchasingError(
+    "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+    "The share link could not be issued.",
+  );
+
+/**
+ * Lookup only (never inserts): the live link for `linkKeyValue`, or null when
+ * it does not exist, is revoked, expired or belongs to another order. The
+ * email worker uses it on a retry so a retry can never mint a new link.
+ */
+export async function findPurchaseOrderShareLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: { id: string },
+  linkKeyValue: string,
+  now: Date,
+): Promise<{ token: string; url: string; expiresAt: Date } | null> {
+  const tenantId = context.tenant.tenantId;
+  const token = purchaseOrderLinkToken(tenantId, order.id, linkKeyValue);
   const [link] = await tx
     .select({
       expiresAt: purchaseOrderShareLinks.expiresAt,
@@ -193,20 +228,19 @@ export async function ensurePurchaseOrderShareLink(
     .where(
       and(
         eq(purchaseOrderShareLinks.tenantId, tenantId),
-        eq(purchaseOrderShareLinks.tokenHash, tokenHash),
+        eq(
+          purchaseOrderShareLinks.tokenHash,
+          purchaseOrderLinkTokenHash(token),
+        ),
       ),
     );
-  // An existing link (same key) that died must not be handed out again.
   if (
     !link ||
     link.purchaseOrderId !== order.id ||
     link.revokedAt !== null ||
     link.expiresAt <= now
   )
-    throw new PurchasingError(
-      "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
-      "The share link could not be issued.",
-    );
+    return null;
   return {
     token,
     url: await purchaseOrderLinkUrl(tx, tenantId, token),
@@ -586,10 +620,16 @@ export async function sendPurchaseOrder(
 
 // ---- Revoke ---------------------------------------------------------------
 
+/** Reason stored on a queued email that a revoke, close or cancel stopped. */
+export const EMAIL_STOPPED_REASON = "Tautan dicabut atau PO ditutup.";
+
 /**
  * Revokes every live (not revoked, not expired) share link of an order inside
- * the caller's transaction; returns how many it killed. The order service
- * calls it when an order is closed or cancelled.
+ * the caller's transaction; returns how many links it killed. In the same
+ * transaction every still-queued email delivery of the order is marked
+ * `failed` (reason EMAIL_STOPPED_REASON, no retry), so the worker never sends
+ * it; the returned count is links only. The order service calls it when an
+ * order is closed or cancelled.
  */
 export async function revokePurchaseOrderShareLinks(
   tx: Tx,
@@ -609,6 +649,20 @@ export async function revokePurchaseOrderShareLinks(
       ),
     )
     .returning({ id: purchaseOrderShareLinks.id });
+  await tx
+    .update(purchaseOrderEmailDeliveries)
+    .set({
+      status: "failed",
+      lastError: EMAIL_STOPPED_REASON,
+      nextAttemptAt: null,
+    })
+    .where(
+      and(
+        eq(purchaseOrderEmailDeliveries.tenantId, context.tenant.tenantId),
+        eq(purchaseOrderEmailDeliveries.purchaseOrderId, purchaseOrderId),
+        eq(purchaseOrderEmailDeliveries.status, "queued"),
+      ),
+    );
   return revoked.length;
 }
 
@@ -688,7 +742,7 @@ export type PurchaseOrderPdfFile = { pdf: Buffer; filename: string };
 
 /**
  * The PDF behind a share link. Unknown, malformed, expired, revoked and
- * cancelled-order links all answer the same 404. `context` must be the
+ * cancelled-order and closed-order links all answer the same 404. `context` must be the
  * tenant-scope context of the request host.
  */
 export async function getPublicPurchaseOrderPdf(
@@ -722,7 +776,8 @@ export async function getPublicPurchaseOrderPdf(
           eq(purchaseOrders.id, link.purchaseOrderId),
         ),
       );
-    if (!row || row.status === "cancelled") throw documentNotFound();
+    if (!row || row.status === "cancelled" || row.status === "closed")
+      throw documentNotFound();
     const order = await loadPurchaseOrder(tx, row);
     const [supplier] = await tx
       .select({

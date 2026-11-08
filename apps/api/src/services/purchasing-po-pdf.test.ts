@@ -6,9 +6,11 @@ import type {
   PurchaseOrderLine,
 } from "@starter/shared/inventory";
 import {
+  COLUMNS,
   formatRupiah,
   type PurchaseOrderPdfInput,
   renderPurchaseOrderPdf,
+  textWidth,
 } from "./purchasing-po-pdf";
 
 const order = {
@@ -117,5 +119,53 @@ describe("renderPurchaseOrderPdf", () => {
   it("[9yz-PDF-5] formats rupiah with dot grouping", () => {
     expect(formatRupiah(1234567)).toBe("Rp 1.234.567");
     expect(formatRupiah(0)).toBe("Rp 0");
+  });
+
+  it("[9yz-PDF-6] 10-digit amounts stay inside their column", () => {
+    const big = {
+      ...line(1, "Daging Wagyu"),
+      quantity: "9999999999.9999",
+      unitPriceIdr: "9999999999.9999",
+      lineTotalIdr: 9999999999,
+    } as unknown as PurchaseOrderPdfInput["lines"][number];
+    const text = renderPurchaseOrderPdf(
+      input({
+        lines: [big],
+        order: {
+          ...order,
+          subtotalIdr: 9999999999,
+          totalIdr: 9999999999,
+        } as unknown as PurchaseOrder,
+      }),
+    ).toString("latin1");
+    expect(text).toContain("Rp 9.999.999.999");
+
+    const margin = 40;
+    const cell = (value: string) => {
+      const match = new RegExp(
+        `BT /F1 ([\\d.]+) Tf ([\\d.]+) [\\d.]+ Td \\(${value.replace(/[.,]/g, "\\$&")}\\) Tj ET`,
+      ).exec(text);
+      if (!match) throw new Error(`cell not found: ${value}`);
+      const size = Number(match[1]);
+      const left = Number(match[2]);
+      return { left, right: left + textWidth(value, size) };
+    };
+    const within = (
+      drawn: { left: number; right: number },
+      column: { x: number; width: number },
+    ) => {
+      expect(drawn.left).toBeGreaterThanOrEqual(margin + column.x - 0.01);
+      expect(drawn.right).toBeLessThanOrEqual(
+        margin + column.x + column.width + 0.01,
+      );
+    };
+    const qty = cell("9.999.999.999,9999");
+    const price = cell("Rp 9.999.999.999,9999");
+    const total = cell("Rp 9.999.999.999");
+    within(qty, COLUMNS.qty);
+    within(price, COLUMNS.price);
+    within(total, COLUMNS.total);
+    expect(qty.right).toBeLessThan(margin + COLUMNS.unit.x);
+    expect(price.right).toBeLessThan(total.left);
   });
 });

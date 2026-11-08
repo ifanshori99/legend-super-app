@@ -37,6 +37,7 @@ import {
 import {
   getPurchaseOrder,
   listPurchaseOrders,
+  transitionPurchaseOrderStatus,
 } from "../services/purchasing-order.service.ts";
 import { revokePurchaseOrderShareLinks } from "../services/purchasing-send.service.ts";
 import { runPurchasingPoEmailJob } from "../worker/purchasing-po-email.job.ts";
@@ -1021,5 +1022,308 @@ describe("50-F2 revoke share links", () => {
       revokePurchaseOrderShareLinks(tx, tenantContext(), order.id),
     );
     expect(count).toBe(1);
+  });
+});
+
+describe("proc-fix PO email stops after revoke, close, cancel", () => {
+  const revoke = (orderId: string) =>
+    sender.client
+      .post(`/api/inventory/purchase-orders/${orderId}/share-links/revoke`)
+      .set(originHeader)
+      .set("Host", seededHostname)
+      .send({ idempotencyKey: `revoke-${randomUUID()}` });
+
+  const transition = (orderId: string, action: "close" | "cancel") =>
+    transitionPurchaseOrderStatus(tenantContext(), sender.userId, orderId, {
+      action,
+      idempotencyKey: `tr-${randomUUID()}`,
+    });
+
+  const deliveryOf = async (orderId: string) =>
+    (
+      await owner.query<{
+        status: string;
+        attempts: number;
+        last_error: string | null;
+      }>(
+        "SELECT status, attempts, last_error FROM purchase_order_email_deliveries WHERE purchase_order_id = $1",
+        [orderId],
+      )
+    ).rows[0]!;
+
+  const linkCount = async (orderId: string) =>
+    Number(
+      (
+        await owner.query<{ n: string }>(
+          "SELECT count(*) AS n FROM purchase_order_share_links WHERE purchase_order_id = $1",
+          [orderId],
+        )
+      ).rows[0]!.n,
+    );
+
+  async function queueEmail(status = "approved") {
+    const order = await seedOrder(status);
+    const address = `stop-${randomBytes(4).toString("hex")}@supplier-test.example`;
+    const response = await send(sender.client, order.id, {
+      channel: "email",
+      email: address,
+    });
+    expect(response.status).toBe(200);
+    return { order, address };
+  }
+
+  it("[proc-fix] revoke link -> job: provider not called, delivery failed with a reason", async () => {
+    const { order, address } = await queueEmail();
+    expect((await revoke(order.id)).body.data).toEqual({ revoked: 0 });
+    const fake = new FakeEmailProvider();
+    await runPurchasingPoEmailJob([tenantContext()], { email: fake });
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "failed",
+      attempts: 0,
+    });
+    expect((await deliveryOf(order.id)).last_error).toBeTruthy();
+  });
+
+  it("[proc-fix] revokePurchaseOrderShareLinks keeps the link count and fails only queued deliveries", async () => {
+    const { order } = await queueEmail();
+    await send(sender.client, order.id, { channel: "share_link" });
+    const count = await withTenant(db, tenantContext(), (tx) =>
+      revokePurchaseOrderShareLinks(tx, tenantContext(), order.id),
+    );
+    expect(count).toBe(1);
+    expect((await deliveryOf(order.id)).status).toBe("failed");
+  });
+
+  it("[proc-fix] close -> job: not sent, delivery failed", async () => {
+    const { order, address } = await queueEmail();
+    await transition(order.id, "close");
+    const fake = new FakeEmailProvider();
+    await runPurchasingPoEmailJob([tenantContext()], { email: fake });
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect((await deliveryOf(order.id)).status).toBe("failed");
+  });
+
+  it("[proc-fix] cancel -> job: not sent, delivery failed", async () => {
+    const { order, address } = await queueEmail();
+    await transition(order.id, "cancel");
+    const fake = new FakeEmailProvider();
+    await runPurchasingPoEmailJob([tenantContext()], { email: fake });
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect((await deliveryOf(order.id)).status).toBe("failed");
+  });
+
+  it("[proc-fix] the job fails permanently, with no retry, when the order is no longer sent", async () => {
+    const { order, address } = await queueEmail();
+    // Bypass the service revoke: the row is still queued, the order is closed.
+    await owner.query(
+      "UPDATE purchase_orders SET status = 'closed', closed_at = now() WHERE id = $1",
+      [order.id],
+    );
+    const fake = new FakeEmailProvider();
+    const result = await runPurchasingPoEmailJob([tenantContext()], {
+      email: fake,
+    });
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+    });
+    expect(await linkCount(order.id)).toBe(0);
+  });
+
+  it("[proc-fix] a public PDF link of a closed order is a 404", async () => {
+    const order = await seedOrder("approved");
+    const issued = await send(sender.client, order.id, {
+      channel: "share_link",
+    });
+    const path = pathOf(issued.body.data.shareUrl as string);
+    expect((await publicGet(path)).status).toBe(200);
+    // Close without the service so the link itself stays live.
+    await owner.query(
+      "UPDATE purchase_orders SET status = 'closed', closed_at = now() WHERE id = $1",
+      [order.id],
+    );
+    expect((await publicGet(path)).status).toBe(404);
+  });
+
+  it("[proc-fix] a retry reuses the same link: no new share-link row", async () => {
+    const { order, address } = await queueEmail();
+    let calls = 0;
+    const bodies: string[] = [];
+    const flaky = {
+      send: async (
+        _context: unknown,
+        message: { to: string; body: string; reference: string },
+      ) => {
+        if (message.to === address) {
+          calls += 1;
+          bodies.push(message.body);
+          if (calls === 1) throw new Error("smtp down");
+        }
+        return { accepted: true, reference: message.reference };
+      },
+    };
+    const now = new Date();
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: flaky as never },
+      now,
+    );
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "queued",
+      attempts: 1,
+    });
+    expect(await linkCount(order.id)).toBe(1);
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: flaky as never },
+      new Date(now.getTime() + 61_000),
+    );
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "sent",
+      attempts: 2,
+    });
+    expect(await linkCount(order.id)).toBe(1);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+  });
+
+  it("[proc-fix] a retry whose link died fails the delivery and mints no new link", async () => {
+    const { order, address } = await queueEmail();
+    const failing = {
+      send: async () => {
+        throw new Error("smtp down");
+      },
+    };
+    const now = new Date();
+    await runPurchasingPoEmailJob([tenantContext()], { email: failing }, now);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "queued",
+      attempts: 1,
+    });
+    // The link dies without the service revoke, so the row stays queued.
+    await owner.query(
+      "UPDATE purchase_order_share_links SET revoked_at = now() WHERE purchase_order_id = $1",
+      [order.id],
+    );
+    const fake = new FakeEmailProvider();
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: fake },
+      new Date(now.getTime() + 61_000),
+    );
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "failed",
+      attempts: 2,
+    });
+    expect(await linkCount(order.id)).toBe(1);
+  });
+
+  // Holds the order FOR UPDATE (as close/cancel/revoke do) while the job runs.
+  async function runWhileOrderLocked(
+    orderId: string,
+    email: FakeEmailProvider,
+  ) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT id FROM purchase_orders WHERE id = $1 FOR UPDATE",
+        [orderId],
+      );
+      return await runPurchasingPoEmailJob([tenantContext()], { email });
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  }
+
+  it("[proc-fix] a locked order (55P03) leaves the delivery queued for a plain retry", async () => {
+    const { order, address } = await queueEmail();
+    const fake = new FakeEmailProvider();
+    const result = await runWhileOrderLocked(order.id, fake);
+    expect(result).toMatchObject({ sent: 0, failed: 0 });
+    expect(fake.sent.some((item) => item.to === address)).toBe(false);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "queued",
+      attempts: 1,
+    });
+    expect(await linkCount(order.id)).toBe(0);
+  });
+
+  it("[proc-fix] a first attempt that rolled back before the link is retried: link created, email sent", async () => {
+    const { order, address } = await queueEmail();
+    await runWhileOrderLocked(order.id, new FakeEmailProvider());
+    expect(await linkCount(order.id)).toBe(0);
+    const fake = new FakeEmailProvider();
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: fake },
+      new Date(Date.now() + 61_000),
+    );
+    expect(fake.sent.filter((item) => item.to === address)).toHaveLength(1);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "sent",
+      attempts: 2,
+    });
+    expect(await linkCount(order.id)).toBe(1);
+  });
+
+  it("[proc-fix] the provider is called outside the transaction, and a concurrent run does not double-send", async () => {
+    const { order, address } = await queueEmail();
+    const now = new Date();
+    let calls = 0;
+    let lockFree = false;
+    let leased = false;
+    const probing = {
+      send: async (
+        _context: unknown,
+        message: { to: string; reference: string },
+      ) => {
+        if (message.to !== address)
+          return { accepted: true, reference: message.reference };
+        calls += 1;
+        // No transaction may hold the row: NOWAIT would throw 55P03.
+        const client = await owner.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query(
+            "SELECT id FROM purchase_order_email_deliveries WHERE id = $1 FOR UPDATE NOWAIT",
+            [message.reference],
+          );
+          lockFree = true;
+          const { rows } = await client.query<{ next_attempt_at: Date }>(
+            "SELECT next_attempt_at FROM purchase_order_email_deliveries WHERE id = $1",
+            [message.reference],
+          );
+          leased = rows[0]!.next_attempt_at > now;
+        } finally {
+          await client.query("ROLLBACK");
+          client.release();
+        }
+        // A second worker running now must find the row leased.
+        await runPurchasingPoEmailJob(
+          [tenantContext()],
+          { email: new FakeEmailProvider() },
+          now,
+        );
+        return { accepted: true, reference: message.reference };
+      },
+    };
+    await runPurchasingPoEmailJob(
+      [tenantContext()],
+      { email: probing as never },
+      now,
+    );
+    expect(calls).toBe(1);
+    expect(lockFree).toBe(true);
+    expect(leased).toBe(true);
+    expect(await deliveryOf(order.id)).toMatchObject({
+      status: "sent",
+      attempts: 1,
+    });
   });
 });

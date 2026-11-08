@@ -6,10 +6,12 @@
 // Approval: on `submit` the document asks the generic approval service
 // (sourceModule `purchasing`). A required chain is stored on the document and
 // is decided in the approvals inbox; the module `approve` / `reject` action is
-// refused while a chain is open. Without a chain (the matrix asks for none, or
-// the tenant has no policy for the action) the module transition approves
-// manually: approver needs `purchasing.order.approve` and must not be the
-// requester / creator. Nothing is ever auto-approved.
+// refused while a chain is open. Without a chain (the matrix asks for none at
+// this amount) the module transition approves manually: approver needs
+// `purchasing.order.approve` and must not be the requester / creator. A tenant
+// with no (or a broken) policy for the action is blocked, never approved by one
+// person: submit fails with 409 APPROVAL_POLICY_MISSING. Nothing is ever
+// auto-approved.
 
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
@@ -41,7 +43,10 @@ import {
   outletTarget,
   type Tx,
 } from "./inventory-ops.shared.ts";
-import type { AccessSnapshot } from "./permission-resolver.ts";
+import {
+  accessSnapshotInTransaction,
+  type AccessSnapshot,
+} from "./permission-resolver.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
 export const PURCHASING_SOURCE_MODULE = "purchasing";
@@ -181,6 +186,38 @@ export function assertDocumentOwner(
       "PERMISSION_DENIED",
       "Only the creator of this document can change or submit it.",
     );
+}
+
+/**
+ * Close / cancel (founder Q11): only the document creator (holding the
+ * document's create permission) or a holder of `purchasing.order.approve` at
+ * the outlet. Anyone else is denied with PERMISSION_DENIED (403).
+ */
+export async function requireCreatorOrApprover(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  ownerUserId: string,
+  createPermission: PermissionCode,
+  outletId: string,
+): Promise<void> {
+  const snapshot = await accessSnapshotInTransaction(
+    tx,
+    context,
+    actorUserId,
+    new Date(),
+  );
+  const target = outletTarget(outletId);
+  const isOwner = ownerUserId.toLowerCase() === actorUserId.toLowerCase();
+  if (
+    (isOwner && snapshot.allows(createPermission, target)) ||
+    snapshot.allows("purchasing.order.approve", target)
+  )
+    return;
+  throw new AccessError(
+    "PERMISSION_DENIED",
+    "Only the creator of this document or an approver can cancel or close it.",
+  );
 }
 
 /** Audit row for an effect the system applied (no human actor). */
@@ -323,8 +360,9 @@ export async function completePurchasingIdempotency(
 /**
  * Opens the approval chain for a submitted document. Returns the chain id when
  * the matrix requires approval, null when the document is approved manually
- * through the module transition (matrix asks for none at this amount, or the
- * tenant has no policy for the action).
+ * through the module transition (the matrix asks for none at this amount). A
+ * missing or broken policy is not a fallback: the AccessError
+ * APPROVAL_POLICY_MISSING propagates (HTTP 409, fail closed).
  */
 export async function openPurchasingApproval(
   tx: Tx,
@@ -339,28 +377,19 @@ export async function openPurchasingApproval(
     payload: Record<string, unknown>;
   },
 ): Promise<string | null> {
-  try {
-    const opened = await openApprovalRequest(tx, context, {
-      sourceModule: PURCHASING_SOURCE_MODULE,
-      actionType: input.objectType,
-      objectType: input.objectType,
-      objectId: input.objectId,
-      amountIdr: input.amountIdr,
-      outletId: input.outletId,
-      requestedBy: input.requestedBy,
-      source: "user",
-      requestReason: input.requestReason,
-      payload: input.payload,
-    });
-    return opened.required ? opened.chainId : null;
-  } catch (error) {
-    if (
-      error instanceof AccessError &&
-      error.code === "APPROVAL_POLICY_MISSING"
-    )
-      return null;
-    throw error;
-  }
+  const opened = await openApprovalRequest(tx, context, {
+    sourceModule: PURCHASING_SOURCE_MODULE,
+    actionType: input.objectType,
+    objectType: input.objectType,
+    objectId: input.objectId,
+    amountIdr: input.amountIdr,
+    outletId: input.outletId,
+    requestedBy: input.requestedBy,
+    source: "user",
+    requestReason: input.requestReason,
+    payload: input.payload,
+  });
+  return opened.required ? opened.chainId : null;
 }
 
 /** The module decision is refused while an approval chain decides. */

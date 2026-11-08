@@ -537,6 +537,44 @@ describe("9yz-SUP-2 catalog and price history", () => {
     ).toBe(true);
   });
 
+  it("[9yz-SUP-2] price history is append-only for legend_app: UPDATE and DELETE are 42501", async () => {
+    const { client } = await signedInAs("Buyer SUP-2 append", "purchasing");
+    const supplier = await createViaHttp(client);
+    const created = await client
+      .post(`/api/inventory/suppliers/${supplier.id}/catalog`)
+      .set(originHeader)
+      .send({
+        inventoryItemId: itemA,
+        purchaseUomId: uomKg,
+        idempotencyKey: `price-${randomUUID()}`,
+        priceIdr: "10000.0000",
+        effectiveFrom: "2025-01-01",
+      });
+    expect(created.status).toBe(201);
+
+    await expect(
+      asTenant(tenantA, (c) =>
+        c.query(
+          "UPDATE supplier_prices SET price_idr = 1 WHERE supplier_id = $1",
+          [supplier.id],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      asTenant(tenantA, (c) =>
+        c.query("DELETE FROM supplier_prices WHERE supplier_id = $1", [
+          supplier.id,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    const { rows } = await owner.query<{ price_idr: string }>(
+      "SELECT price_idr FROM supplier_prices WHERE supplier_id = $1",
+      [supplier.id],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
   it("[9yz-SUP-2] refuses a price for an inactive supplier, unknown item or bad price", async () => {
     const { client } = await signedInAs("Buyer SUP-2 refuse", "purchasing");
     const supplier = await createViaHttp(client);

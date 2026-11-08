@@ -12,9 +12,12 @@
 //   `submit` opens an approval chain when the matrix asks for one (amount =
 //   total); with a chain open the module approve/reject is refused (409
 //   CONFLICT) and `settlePurchaseOrderForApproval` applies the outcome from
-//   the `approval.resolved` consumer. Without a chain the module approves
-//   manually (`purchasing.order.approve`, never the creator). `reject` returns
-//   the PO to `draft`.
+//   the `approval.resolved` consumer. When the matrix asks for none at this
+//   amount the module approves manually (`purchasing.order.approve`, never the
+//   creator). No policy for the action (or a broken one) refuses submit with
+//   409 APPROVAL_POLICY_MISSING. `reject` returns the PO to `draft`.
+// - `close` / `cancel`: only the creator (with `purchasing.order.create`) or a
+//   holder of `purchasing.order.approve` at the outlet; others get 403.
 // - Events `purchase_order.created` / `purchase_order.approved` go through the
 //   transactional outbox.
 
@@ -87,6 +90,7 @@ import {
   loadEmailDeliveryStatuses,
   loadPurchaseOrder,
   openPurchasingApproval,
+  requireCreatorOrApprover,
   PURCHASING_SOURCE_MODULE,
   recordSystemPurchasingAudit,
   refuseWhenChainOpen,
@@ -634,13 +638,23 @@ export async function transitionPurchaseOrderStatus(
     return await withTenant(db, context, async (tx) => {
       const row = await lockOrder(tx, context, orderId);
       assertOutlet(context, row.outletId);
-      await requireOpsPermission(
-        tx,
-        context,
-        actorUserId,
-        ACTION_PERMISSION[input.action],
-        row.outletId,
-      );
+      if (input.action === "close" || input.action === "cancel")
+        await requireCreatorOrApprover(
+          tx,
+          context,
+          actorUserId,
+          row.createdBy,
+          ACTION_PERMISSION[input.action],
+          row.outletId,
+        );
+      else
+        await requireOpsPermission(
+          tx,
+          context,
+          actorUserId,
+          ACTION_PERMISSION[input.action],
+          row.outletId,
+        );
       // Claimed only after the lock and the access checks: a replay by a caller
       // without access is refused, never answered from the stored response.
       const claim = { ...claimBase, outletId: row.outletId };
