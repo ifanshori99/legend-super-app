@@ -32,7 +32,8 @@ describe("POS-06 CETAK ULANG mark", () => {
     expect(receiptDocumentSchema.parse({ ...doc, reprint: true }).reprint).toBe(
       true,
     );
-    const { reprint: _omit, ...withoutFlag } = doc;
+    const withoutFlag: Record<string, unknown> = { ...doc };
+    delete withoutFlag.reprint;
     expect(receiptDocumentSchema.safeParse(withoutFlag).success).toBe(false);
   });
 
