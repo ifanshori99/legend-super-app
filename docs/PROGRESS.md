@@ -14,6 +14,9 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 - Urutan merge edge: `ws/edge-hardening` → legend-2lp.7 (registry pull) → `ws/device-registry`. Salah urut = semua token device edge ditolak.
 - Saat merge: nomor migration 0063–0065 bentrok antar cabang, renumber per HANDOFF §5 (drizzle-kit, jangan edit `_journal.json` tangan). Merge lewat worktree sementara `.worktrees/main-merge`, `merge --no-ff`, gerbang penuh di main.
 
+- 2026-11-08 malam (CTO G6ifq): tes integrasi `ws/pos-payment-fixes` 2f68a5c LULUS: `heavy pnpm test` API 1227 lulus/0 gagal (141 file), root 1384/0; fokus payment-lifecycle 12, qris-lifecycle 14, qris-round2 3, approval 9, deposit-lock 6, pos-order 13. Siap gerbang merge.
+- Brief second-opinion Codex 59–63 ditulis (commit d376a5a).
+
 ### Thread berjalan
 | Thread | Kerja | Cabang |
 |---|---|---|
