@@ -177,3 +177,8 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - 8 kartu ditutup (kerja sudah di main/m1): sdet, xm30, 165, 2lp.7, meki, 69yq, o5gr, j5x.
 - 26 kartu ditutup saat cabangnya digabung ke m1: ai-tool-catalog 1zxo 9v9t; pph21 oo3q y4wp iwgb 5cnk; refund rbjw hvvn; kds s2dh 4d5; procurement 25a7 9yz; hris-leave hggk arj.1 arj.3 arj.4; checklist 5v69; pos-shift 6c0; hris-sop 7df1; receipt 93a; doit b9i; recipe-bom db6; journals vmyg; config-export 34c; print-agent 46p; edc apt.
 - Progres nyata ~43% (331 selesai, 435 tersisa). Terendah: WS-13 QA 8%, WS-12 AI 12%, WS-02 edge 23%.
+
+### Keputusan founder 23:35 + perbaikan workflow
+- AI, Wi-Fi, ojol tetap masuk rilis pertama.
+- Diagnosis lambat: rata-rata ~1,6 subagent berjalan per agent (ram-guard: 11 subagent untuk 7 agent). Penyebab: brief per fix kecil (tak ada yang bisa diparalelkan), gate penuh diulang tiap langkah, merge serial dikerjakan CTO.
+- Perubahan: (1) agent baru menerima workstream 5–15 kartu dengan `docs/briefs/_TEMPLATE-workstream.md` (fan-out wajib di giliran pertama, test-writer paralel implementer, gate penuh sekali); (2) merge train dipegang thread sendiri (brief 89), persiapan konflik paralel per cabang di worktree, hanya regen migration yang serial; (3) e2e/QA (WS-13, 8%) dimulai sekarang, tidak di akhir; (4) laporan agent wajib menyebut jumlah subagent dan puncak paralel, dicatat tiap gelombang.
