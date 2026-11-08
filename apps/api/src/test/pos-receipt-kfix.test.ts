@@ -195,12 +195,29 @@ function api(outletId: string, deviceToken?: string) {
   };
 }
 
-function deviceTokenFor(deviceId: string): string {
+/**
+ * A token for a device in the registry (legend-165): a token is only accepted
+ * while the tenant has an active device row with `token_issued_at` at or
+ * before the token's `issuedAt`.
+ */
+async function deviceTokenFor(
+  deviceId: string,
+  outletId: string,
+): Promise<string> {
+  const issuedAt = Math.floor(Date.now() / 1000);
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', 'Kasir uji', $4)`,
+      [deviceId, tenant.tenantId, outletId, new Date(issuedAt * 1000)],
+    );
+  });
   return signDeviceToken({
     version: 1,
     tenantId: tenant.tenantId,
     brandId: tenant.brandId,
     deviceId,
+    issuedAt,
   });
 }
 
@@ -583,7 +600,10 @@ describe("POS-06 K F1 cloud sequence C and device sequences P1.. (legend-93a)", 
   it("POS-06 a sale finished over HTTP with a valid device token stores that device on the order and receipt", async () => {
     const outletId = await freshOutlet();
     const device = randomUUID();
-    const orderId = await completedSale(outletId, deviceTokenFor(device));
+    const orderId = await completedSale(
+      outletId,
+      await deviceTokenFor(device, outletId),
+    );
     const stored = await receiptRows(outletId);
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
