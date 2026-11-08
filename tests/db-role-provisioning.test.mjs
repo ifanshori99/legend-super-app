@@ -886,6 +886,13 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
           `REVOKE SET ON PARAMETER zoqc.flag FROM "${roles[1]}"`,
           /queue role may change server settings it must not: SET on zoqc\.flag/,
         ],
+        // A placeholder with a value (ALTER DATABASE ... SET) shows in the
+        // admin session's pg_settings as a plain user setting; still refused.
+        [
+          `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET zoqc.valued = %L', current_database(), 'x'); END $$; GRANT SET ON PARAMETER zoqc.valued TO "${roles[1]}"`,
+          `REVOKE SET ON PARAMETER zoqc.valued FROM "${roles[1]}"; DO $$ BEGIN EXECUTE format('ALTER DATABASE %I RESET zoqc.valued', current_database()); END $$`,
+          /queue role may change server settings it must not: SET on zoqc\.valued/,
+        ],
       ])
         await refuses(grant, revoke, message);
       // SET on a setting every session may change anyway grants nothing.
