@@ -1146,12 +1146,11 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
 
     const first = await runDueRecurringJournals(scopedContext(), march15);
     expect(first.failed).toBeGreaterThanOrEqual(1);
-    // January posted; February is blocked; March must wait for February.
-    expect(
-      (await entriesOf("recurring", id)).map((row) => row.entry_date),
-    ).toEqual(["2026-01-10"]);
-    expect(await runPeriods(id)).toEqual(["2026-01"]);
-    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-01");
+    // January is blocked too (the posting guard refuses a month behind a
+    // closed one) and March waits for both: nothing is posted.
+    expect(await entriesOf("recurring", id)).toHaveLength(0);
+    expect(await runPeriods(id)).toEqual([]);
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBeNull();
 
     await setClosed(s.entity, "2026-02", false);
     await runDueRecurringJournals(scopedContext(), march15);
@@ -1186,6 +1185,13 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
     const paused = await transition(s.approver.client, id, { type: "pause" });
     expect(paused.status, JSON.stringify(paused.body)).toBe(200);
     expect(paused.body.data.status).toBe("paused");
+    // Resume skips only months that fell due after the pause. The endpoint
+    // pauses at the real clock, so move the pause back before the first month.
+    await owner.query(
+      `UPDATE recurring_journals SET paused_at = $3
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, id, `${periodOffset(-3)}-15T05:00:00Z`],
+    );
     await runDueRecurringJournals(scopedContext(), new Date());
     expect(await entriesOf("recurring", id)).toHaveLength(0);
 
@@ -1197,12 +1203,15 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
       periodOffset(-1),
     );
     await runDueRecurringJournals(scopedContext(), new Date());
-    expect(await runPeriods(id)).toEqual([current]);
+    // The skipped months are run rows too; only the current month posts.
+    const handled = [periodOffset(-2), periodOffset(-1), current];
+    expect(await runPeriods(id)).toEqual(handled);
+    expect(await entriesOf("recurring", id)).toHaveLength(1);
 
     // endPeriod is the current month: the next month is never generated.
     const nextMonth = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
     await runDueRecurringJournals(scopedContext(), nextMonth);
-    expect(await runPeriods(id)).toEqual([current]);
+    expect(await runPeriods(id)).toEqual(handled);
 
     const ended = await transition(s.approver.client, id, { type: "end" });
     expect(ended.body.data.status).toBe("ended");
@@ -1336,7 +1345,13 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
 
     const paused = await transition(s.approver.client, id, { type: "pause" });
     expect(paused.status, JSON.stringify(paused.body)).toBe(200);
-    // start+1 and start+2 pass while paused.
+    // start+1 and start+2 pass while paused (the endpoint pauses at the real
+    // clock, so move the pause back to just after the first posted month).
+    await owner.query(
+      `UPDATE recurring_journals SET paused_at = $3
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, id, `${start}-22T05:00:00Z`],
+    );
     const resumed = await transition(s.approver.client, id, { type: "resume" });
     expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
     expect(resumed.body.data.status).toBe("active");
@@ -1349,7 +1364,12 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
       scopedContext(),
       new Date(`${current}-10T05:00:00Z`),
     );
-    expect(await runPeriods(id)).toEqual([start]);
+    // The paused months are recorded as skipped runs, nothing else.
+    expect(await runPeriods(id)).toEqual([
+      start,
+      addMonths(start, 1),
+      addMonths(start, 2),
+    ]);
     expect(await entriesOf("recurring", id)).toHaveLength(1);
 
     // Current month, after its day: exactly that month posts.
@@ -1357,7 +1377,12 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
       scopedContext(),
       new Date(`${current}-21T05:00:00Z`),
     );
-    expect(await runPeriods(id)).toEqual([start, current]);
+    expect(await runPeriods(id)).toEqual([
+      start,
+      addMonths(start, 1),
+      addMonths(start, 2),
+      current,
+    ]);
     expect(
       (await entriesOf("recurring", id)).map((row) => row.entry_date),
     ).toEqual([`${start}-20`, `${current}-20`]);
@@ -1366,13 +1391,14 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
 
   it("Fix F a template stuck on a closed month can be skipped by a user with accounting.journal.post, then the next run posts the following month", async () => {
     const s = await scenario("recurring skip closed");
-    const id = await createTemplate(s);
+    const id = await createTemplate(s, { startPeriod: "2026-02" });
     await activate(s, id);
     await setClosed(s.entity, "2026-02", true);
 
+    // February is closed, so it cannot post and March waits for it.
     await runDueRecurringJournals(scopedContext(), march15);
-    expect(await runPeriods(id)).toEqual(["2026-01"]);
-    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-01");
+    expect(await runPeriods(id)).toEqual([]);
+    expect((await templateOf(s, id))?.lastGeneratedPeriod).toBeNull();
 
     const reason = "Periode Februari sudah ditutup, tidak diakru";
     const skipped = await skipPeriod(s.requester.client, id, {
@@ -1387,7 +1413,6 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
     });
     // The skip is a run row without a journal entry, attributed to the actor.
     expect(await runRows(id)).toEqual([
-      expect.objectContaining({ period: "2026-01", skipped_by: null }),
       {
         period: "2026-02",
         journal_entry_id: null,
@@ -1395,14 +1420,14 @@ describe("legend-vmyg recurring journals (§3.19 Jurnal Berulang)", () => {
         skip_reason: reason,
       },
     ]);
-    expect(await entriesOf("recurring", id)).toHaveLength(1);
+    expect(await entriesOf("recurring", id)).toHaveLength(0);
 
     await runDueRecurringJournals(scopedContext(), march15);
-    expect(await runPeriods(id)).toEqual(["2026-01", "2026-02", "2026-03"]);
-    // February never posts: only January and March have entries.
+    expect(await runPeriods(id)).toEqual(["2026-02", "2026-03"]);
+    // February never posts: only March has an entry.
     expect(
       (await entriesOf("recurring", id)).map((row) => row.entry_date),
-    ).toEqual(["2026-01-10", "2026-03-10"]);
+    ).toEqual(["2026-03-10"]);
     expect((await templateOf(s, id))?.lastGeneratedPeriod).toBe("2026-03");
   });
 

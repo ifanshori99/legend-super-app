@@ -12,9 +12,10 @@
 // - create is idempotent per (tenant, idempotencyKey) bound to a request
 //   fingerprint, like the accounting journal service;
 // - `lastGeneratedPeriod` means "last month handled (posted or skipped)": a
-//   month is skipped on resume (it passed while paused) or by an operator
-//   (`skipRecurringJournalPeriod`, a closed month); both move the cursor and
-//   an operator skip leaves a `recurring_journal_runs` row without an entry;
+//   month is skipped on resume (it fell due after `paused_at`) or by an
+//   operator (`skipRecurringJournalPeriod`, a month the ledger refuses); both
+//   move the cursor and leave a `recurring_journal_runs` row without an entry
+//   (arrears from before the pause are never skipped silently);
 // - the job posts each month in its OWN transaction under the key
 //   `recurring-journal:<templateId>:<YYYY-MM>`; `recurring_journal_runs` is
 //   UNIQUE per template + period, so a re-run or a second worker never posts
@@ -33,7 +34,6 @@ import {
   createRecurringJournal as createRecurringJournalEndpoint,
   nextPeriod,
   periodOf,
-  previousPeriod,
   recurringJournalSchema,
   recurringOccurrenceDate,
   recurringPeriodsDue,
@@ -51,7 +51,6 @@ import {
   type z,
 } from "@starter/shared/core";
 import { db } from "../db";
-import { fiscalPeriods } from "../db/schema";
 import {
   recurringJournalRuns,
   recurringJournals,
@@ -66,6 +65,7 @@ import {
   RECURRING_JOURNAL_OBJECT_TYPE,
 } from "./accounting-journal-period-gate";
 import { approverMayPostJournal } from "./accounting-journal-approver";
+import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service";
 import {
   assertJournalLinesPostable,
   postJournalInTransaction,
@@ -231,7 +231,7 @@ async function updateTemplate(
 async function auditTemplate(
   tx: TenantTransaction,
   context: ScopedTenantContext,
-  actorId: UserId,
+  actorId: UserId | null,
   action: string,
   before: Row | null,
   after: Row,
@@ -429,19 +429,28 @@ async function settleLocked(
     outcome = "expired";
   if (outcome === "pending") return row;
 
-  const reject = async (reason: string) => {
+  // `actorId` null = a system decision (expired chain, invalid or unauthorised
+  // approver); a human inbox rejection is audited under that person.
+  const reject = async (reason: string, actorId: UserId | null) => {
     const updated = await updateTemplate(
       tx,
       row,
       { status: "rejected", rejectionReason: reason },
       now,
     );
+    await auditTemplate(tx, context, actorId, "reject", row, updated, reason);
     return updated;
   };
-  if (outcome !== "approved") return reject(`approval ${outcome}`);
+  if (outcome !== "approved")
+    return reject(
+      `approval ${outcome}`,
+      outcome === "expired" || last.decidedBy === null
+        ? null
+        : (last.decidedBy as UserId),
+    );
   const decider = last.decidedBy;
   if (decider === null || sameUser(decider, row.requestedBy))
-    return reject("approval approver_invalid");
+    return reject("approval approver_invalid", null);
   // The inbox role can decide; the ledger still needs the post permission.
   if (
     !(await approverMayPostJournal(
@@ -452,7 +461,7 @@ async function settleLocked(
       now,
     ))
   )
-    return reject("approval approver lacks permission");
+    return reject("approval approver lacks permission", null);
   const status = transitionRecurringJournalState(stateOf(row), {
     type: "approve",
     actorId: decider as UserId,
@@ -499,13 +508,18 @@ export async function transitionRecurringJournal(
           type: body.type,
           actorId,
         });
+        const resumeCursor =
+          body.type === "resume"
+            ? await skipPausedMonths(tx, context, actorId, row, now)
+            : null;
         const updated = await updateTemplate(
           tx,
           row,
           {
             status,
+            ...(body.type === "pause" ? { pausedAt: now } : {}),
             ...(body.type === "resume"
-              ? resumeCursorPatch(row, periodOf(entityToday(now)))
+              ? { pausedAt: null, ...resumeCursor }
               : {}),
           },
           now,
@@ -517,29 +531,85 @@ export async function transitionRecurringJournal(
   });
 }
 
+/** Reason stored on a run row skipped by a resume (system text, not the actor's). */
+const PAUSE_SKIP_REASON = "Dilewati otomatis: jatuh tempo saat templat dijeda";
+
 /**
- * Months that passed while paused are skipped on resume: generation restarts
- * from the current month (it still posts when its day arrives). A template
- * whose start is not before the current month has nothing to skip.
+ * Months that fell due while paused are skipped on resume: generation restarts
+ * from the current month (it still posts when its day arrives). Only a month
+ * whose occurrence date is after the pause counts; arrears that were already
+ * due before the pause stay owed (the job posts them, or an operator uses
+ * skip-period). Arrears always precede the paused months, so they are passed
+ * over without a row, and the cursor only advances when there were none: the
+ * job then posts the arrears and moves past the paused months through their
+ * run rows. Each skipped month is a `recurring_journal_runs` row (skipped_by =
+ * the resuming actor) plus an audit row, in the resume transaction. Returns
+ * the cursor patch.
  */
-function resumeCursorPatch(
+async function skipPausedMonths(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  actorId: UserId,
   row: Row,
-  currentPeriod: string,
-): Partial<typeof recurringJournals.$inferInsert> {
-  if (row.startPeriod >= currentPeriod) return {};
-  const handledThrough = previousPeriod(currentPeriod);
-  if (
-    row.lastGeneratedPeriod !== null &&
-    row.lastGeneratedPeriod >= handledThrough
-  )
-    return {};
-  return { lastGeneratedPeriod: handledThrough };
+  now: Date,
+): Promise<Partial<typeof recurringJournals.$inferInsert>> {
+  const currentPeriod = periodOf(entityToday(now));
+  // Rows paused before the column existed fall back to their last update.
+  const pausedOn = entityToday(row.pausedAt ?? row.updatedAt);
+  let period = row.lastGeneratedPeriod
+    ? nextPeriod(row.lastGeneratedPeriod)
+    : row.startPeriod;
+  let handledThrough: string | null = null;
+  let arrears = false;
+  while (
+    period < currentPeriod &&
+    (row.endPeriod === null || period <= row.endPeriod)
+  ) {
+    if (recurringOccurrenceDate(period, row.dayOfMonth) <= pausedOn) {
+      // Owed from before the pause: left for the job or skip-period.
+      arrears = true;
+      period = nextPeriod(period);
+      continue;
+    }
+    const [inserted] = await tx
+      .insert(recurringJournalRuns)
+      .values({
+        tenantId: row.tenantId,
+        recurringJournalId: row.id,
+        period,
+        journalEntryId: null,
+        skippedBy: actorId,
+        skipReason: PAUSE_SKIP_REASON,
+      })
+      .onConflictDoNothing({
+        target: [
+          recurringJournalRuns.tenantId,
+          recurringJournalRuns.recurringJournalId,
+          recurringJournalRuns.period,
+        ],
+      })
+      .returning({ id: recurringJournalRuns.id });
+    if (inserted)
+      await auditAccountingChange(tx, context, {
+        actorId,
+        action: "accounting.recurring_journal.period_skipped",
+        objectType: RECURRING_JOURNAL_OBJECT_TYPE,
+        objectId: row.id,
+        outletId: row.outletId,
+        reason: PAUSE_SKIP_REASON,
+        before: { status: row.status },
+        after: { status: "active" },
+      });
+    if (!arrears) handledThrough = period;
+    period = nextPeriod(period);
+  }
+  return handledThrough === null ? {} : { lastGeneratedPeriod: handledThrough };
 }
 
 /**
  * Operator skip of the next due month of an `active` or `paused` template
- * whose fiscal period is closed (the job cannot post into it and would wait
- * forever). Records a run row without a journal entry, moves the cursor, and
+ * the ledger refuses (its fiscal period, or a later one, is closed: the job
+ * cannot post into it and would wait forever). Records a run row without a journal entry, moves the cursor, and
  * audits in the same transaction. Replaying a skip changes nothing.
  */
 export async function skipRecurringJournalPeriod(
@@ -585,20 +655,17 @@ export async function skipRecurringJournalPeriod(
       (row.endPeriod !== null && period > row.endPeriod)
     )
       throw new AccountingError("INVALID_TRANSITION");
-    const [fiscal] = await tx
-      .select({ status: fiscalPeriods.status })
-      .from(fiscalPeriods)
-      .where(
-        and(
-          eq(fiscalPeriods.tenantId, tenantId),
-          eq(fiscalPeriods.legalEntityId, row.legalEntityId),
-          eq(fiscalPeriods.period, period),
-        ),
-      )
-      .limit(1)
-      .for("share");
-    // No fiscal row yet means the month was never closed.
-    if (fiscal?.status !== "closed")
+    // Skippable exactly when posting into the month would fail PERIOD_CLOSED:
+    // the month is closed, or a later month is (the posting guard refuses an
+    // open or never-created month behind a closed one too).
+    if (
+      !(await wouldPostingBeBlockedByClosedPeriod(
+        tx,
+        tenantId,
+        row.legalEntityId,
+        period,
+      ))
+    )
       throw new AccountingError("PERIOD_NOT_CLOSED");
     await tx.insert(recurringJournalRuns).values({
       tenantId,
@@ -611,7 +678,9 @@ export async function skipRecurringJournalPeriod(
     const updated = await updateTemplate(
       tx,
       row,
-      { lastGeneratedPeriod: period },
+      // The skipped month is handled: clear the failure shown to finance (a
+      // template whose last month is skipped never runs again to clear it).
+      { lastGeneratedPeriod: period, lastError: null, failedAt: null },
       now,
     );
     await auditAccountingChange(tx, context, {
@@ -785,14 +854,52 @@ export async function runDueRecurringJournals(
         if (outcome === "posted") posted += 1;
         else if (outcome === "skipped") skipped += 1;
         else break; // paused, ended or changed meanwhile: nothing more now
-      } catch {
+      } catch (error) {
         failed += 1;
         console.error("Recurring journal generation failed for a template");
+        await recordGenerationFailure(context, template.id, error, now);
         break; // later months wait for this one
       }
     }
   }
   return { posted, skipped, failed };
+}
+
+/** Short, secret-free description of a failure (domain code + message only). */
+function describeFailure(error: unknown): string {
+  const text =
+    error instanceof AccountingError || error instanceof CoreError
+      ? `${error.code}: ${error.message}`
+      : `Unexpected ${error instanceof Error ? error.name : "error"}`;
+  return text.slice(0, 500);
+}
+
+/**
+ * Stores the last failure on the template (own transaction, so the rolled
+ * back month cannot erase it). Best effort: a failure to record it must not
+ * stop the job.
+ */
+async function recordGenerationFailure(
+  context: ScopedTenantContext,
+  templateId: string,
+  error: unknown,
+  now: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      tx
+        .update(recurringJournals)
+        .set({ lastError: describeFailure(error), failedAt: now })
+        .where(
+          and(
+            eq(recurringJournals.tenantId, context.tenant.tenantId),
+            eq(recurringJournals.id, templateId),
+          ),
+        ),
+    );
+  } catch {
+    console.error("Recurring journal failure could not be recorded");
+  }
 }
 
 async function generatePeriod(
@@ -820,7 +927,13 @@ async function generatePeriod(
       template.lastGeneratedPeriod === null ||
       template.lastGeneratedPeriod < period
     )
-      await updateTemplate(tx, template, { lastGeneratedPeriod: period }, now);
+      await updateTemplate(
+        tx,
+        template,
+        // A handled month clears the last failure shown to finance.
+        { lastGeneratedPeriod: period, lastError: null, failedAt: null },
+        now,
+      );
   };
   const [existingRun] = await tx
     .select({ id: recurringJournalRuns.id })

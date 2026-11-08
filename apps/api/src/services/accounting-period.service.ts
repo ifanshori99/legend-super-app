@@ -27,7 +27,7 @@
 // row is created lazily on first use inside the same transaction, protected
 // by the (tenant, legal entity, period) unique key.
 
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, sql } from "drizzle-orm";
 import {
   AccountingError,
   assertPeriodVersion,
@@ -223,6 +223,34 @@ export async function assertPeriodOpenForPosting(
   if (input.expectedVersion != null)
     assertPeriodVersion(row, input.expectedVersion);
   return row;
+}
+
+/**
+ * Side-effect-free probe of the `assertPeriodOpenForPosting` PERIOD_CLOSED
+ * rule: true when posting into `period` would fail because the month itself
+ * or any LATER month of the entity is closed. Creates no period row. Takes the
+ * entity FOR SHARE lock like the guard so close/reopen cannot race the read.
+ */
+export async function wouldPostingBeBlockedByClosedPeriod(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+  period: string,
+): Promise<boolean> {
+  await lockLegalEntity(tx, tenantId, legalEntityId, "share");
+  const [closed] = await tx
+    .select({ id: fiscalPeriods.id })
+    .from(fiscalPeriods)
+    .where(
+      and(
+        eq(fiscalPeriods.tenantId, tenantId),
+        eq(fiscalPeriods.legalEntityId, legalEntityId),
+        gte(fiscalPeriods.period, period),
+        eq(fiscalPeriods.status, "closed"),
+      ),
+    )
+    .limit(1);
+  return closed !== undefined;
 }
 
 export async function listFiscalPeriods(

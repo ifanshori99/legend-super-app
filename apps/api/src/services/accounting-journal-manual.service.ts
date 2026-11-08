@@ -268,7 +268,7 @@ async function updateRow(
 async function audit(
   tx: TenantTransaction,
   context: ScopedTenantContext,
-  actorId: UserId,
+  actorId: UserId | null,
   action: string,
   row: Row,
   reason?: string,
@@ -283,6 +283,27 @@ async function audit(
     before: null,
     after: { entryDate: row.entryDate },
   });
+}
+
+/**
+ * Business refusals of the posting guards (closed period, inactive or foreign
+ * account). A request whose chain is already approved cannot wait for these to
+ * clear, so settle ends it as rejected; any other error (infra, lock timeout)
+ * is rethrown so the outbox retries.
+ */
+const POSTING_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "PERIOD_CLOSED",
+  "PERIOD_MISMATCH",
+  "ACCOUNT_INACTIVE",
+  "ACCOUNT_NOT_POSTABLE",
+  "ACCOUNT_ENTITY_MISMATCH",
+]);
+
+function postingRefusalCode(error: unknown): string | null {
+  return error instanceof AccountingError &&
+    POSTING_REFUSAL_CODES.has(error.code)
+    ? error.code
+    : null;
 }
 
 /** Posts the approved request and marks it posted, decided by `deciderId`. */
@@ -714,45 +735,76 @@ async function settleRow(
           now,
         ))
       )
-        return updateRow(
+        return rejectSettled(
           tx,
+          context,
           row,
-          {
-            status: "rejected",
-            rejectionReason: "approval approver lacks permission",
-            decidedBy: null,
-            decidedAt: now,
-          },
+          "approval approver lacks permission",
+          null,
           now,
         );
-      return postApproved(tx, context, row, approverId, now);
+      try {
+        // Savepoint: a refused posting leaves no partial ledger write behind.
+        return await tx.transaction((sp) =>
+          postApproved(sp, context, row, approverId, now),
+        );
+      } catch (error) {
+        const code = postingRefusalCode(error);
+        if (code === null) throw error;
+        return rejectSettled(
+          tx,
+          context,
+          row,
+          `posting refused: ${code}`,
+          null,
+          now,
+        );
+      }
     }
-    return updateRow(
+    return rejectSettled(
       tx,
+      context,
       row,
-      {
-        status: "rejected",
-        rejectionReason: "approval approver invalid",
-        decidedAt: now,
-      },
+      "approval approver invalid",
+      null,
       now,
     );
   }
-  return updateRow(
+  return rejectSettled(
+    tx,
+    context,
+    row,
+    `approval ${outcome}`,
+    last.decidedBy !== null &&
+      last.decidedBy.toLowerCase() !== row.requestedBy.toLowerCase()
+      ? userIdSchema.parse(last.decidedBy)
+      : null,
+    now,
+  );
+}
+
+/** Ends a pending request as rejected by the chain or the system and audits it. */
+async function rejectSettled(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  row: Row,
+  reason: string,
+  decidedBy: UserId | null,
+  now: Date,
+): Promise<Row> {
+  const rejected = await updateRow(
     tx,
     row,
     {
       status: "rejected",
-      rejectionReason: `approval ${outcome}`,
-      decidedBy:
-        last.decidedBy !== null &&
-        last.decidedBy.toLowerCase() !== row.requestedBy.toLowerCase()
-          ? last.decidedBy
-          : null,
+      rejectionReason: reason,
+      decidedBy,
       decidedAt: now,
     },
     now,
   );
+  await audit(tx, context, decidedBy, "rejected", rejected, reason);
+  return rejected;
 }
 
 // ------------------------------------------------------------------ reject

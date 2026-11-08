@@ -46,6 +46,7 @@ import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
 
@@ -204,7 +205,14 @@ const relay = createRelayRuntime({
     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
     // templates, one transaction per period. Fail closed, next tick resumes.
     try {
-      await runDueRecurringJournals(context, new Date());
+      const recurring = await runDueRecurringJournals(context, new Date());
+      // Counts only (no template data); the per-template reason is stored on
+      // recurring_journals.last_error for finance.
+      if (recurring.failed > 0)
+        logger.warn(
+          { job: "recurring_journals", ...recurring },
+          "recurring journal generation had failures",
+        );
     } catch {
       console.error("Recurring journal sweep failed");
     }
