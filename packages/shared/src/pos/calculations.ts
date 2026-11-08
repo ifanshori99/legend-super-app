@@ -235,6 +235,8 @@ export function assertCashMovementAllowed(
 
 export type CloseShiftInput = {
   readonly counts: readonly BlindCashCount[];
+  /** The stored count submission (`pos_shift_counts`) the close uses. */
+  readonly countId: string;
   readonly varianceNote: string | null;
   readonly approvedBy: string;
   readonly approvalRequestId: string;
@@ -267,6 +269,7 @@ export function closeShift(shift: PosShift, input: CloseShiftInput): PosShift {
     approvalRequestId: input.approvalRequestId,
     approvedAt: input.approvedAt,
     closedAt: input.closedAt,
+    countId: input.countId as PosShift["countId"],
   };
 }
 

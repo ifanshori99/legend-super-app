@@ -463,6 +463,20 @@
       "when": 1794131138274,
       "tag": "0065_pos_day_close_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1794138778991,
+      "tag": "0066_pos_shift_counts",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1794138792247,
+      "tag": "0067_pos_shift_counts_rls",
+      "breakpoints": true
     }
   ]
 }

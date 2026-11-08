@@ -18,7 +18,14 @@
 // - Permissions are checked here on the outlet (fail closed) as well as at the
 //   route; a shift of another outlet or tenant is 404.
 
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import {
+  AccessError,
+  approvalPolicySchema,
+  approvalRequirementFor,
+  assertApprovalDecisionAllowed,
+} from "@starter/shared/access";
 import {
   CoreError,
   decodeCursor,
@@ -30,30 +37,39 @@ import {
   uuidToUlid,
   z,
   type CursorPage,
+  type Idr,
   type OutletId,
   type ScopedTenantContext,
+  type UserId,
 } from "@starter/shared/core";
 import {
+  blindCountTotalIdr,
   closeShift,
   assertCashMovementAllowed,
+  shiftExpectedCashIdr,
   listPosCashMovements as listMovementsEndpoint,
   listPosShifts as listShiftsEndpoint,
   PosError,
   type PosCashMovement,
   type PosShift,
+  type PosShiftCount,
+  type PosShiftCountReceipt,
   type PosShiftReport,
   posShiftReportSchema,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
+import { approvalPolicies } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { posOverrides } from "../db/schema/device-pin.ts";
 import {
   cashMovements,
   posDailyCloses,
+  posShiftCounts,
   posShifts,
 } from "../db/schema/pos-shift.ts";
 import { withTenant } from "../db/tenant.ts";
 import { resolveDeviceOutlet } from "./device-pin.service.ts";
+import { outletTarget } from "./device-pin-support.ts";
 import { loadOutlet, businessDateFor } from "./pos-order-support.ts";
 import type { PosShiftLookup } from "./pos-order-ports.ts";
 import { posReceiptGapsPort } from "./pos-shift-ports.ts";
@@ -62,6 +78,8 @@ import {
   assertOutletPermission,
   auditShift,
   computeShiftAggregates,
+  countDto,
+  countReceiptDto,
   findShift,
   loadOutletAccess,
   movementDto,
@@ -71,15 +89,22 @@ import {
   shiftDto,
   shiftFingerprint,
   permissionDenied,
+  SHIFT_COUNT_OBJECT_TYPE,
   uniqueViolationOf,
   type ClosePosShiftInput,
   type OpenPosShiftInput,
   type RecordCashMovementInput,
   type ShiftAggregates,
   type ShiftCaller,
+  type ShiftCountRow,
   type ShiftRow,
+  type SubmitPosShiftCountInput,
 } from "./pos-shift-support.ts";
-import type { Tx } from "./permission-resolver.ts";
+import {
+  loadTenantAccessInTransaction,
+  type Tx,
+} from "./permission-resolver.ts";
+import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
 
@@ -563,6 +588,197 @@ export async function recordCashMovement(
   });
 }
 
+// ---- Blind count submissions (POS-03) ---------------------------------------
+//
+// Second-opinion round 2 (legend-6c0, P1 "approval not bound to the variance"
+// and P2 "count discarded without a note"): the cashier first submits the
+// count. The server stores it append-only (pos_shift_counts) with the
+// expected cash and variance it computed under the shift lock, and the
+// cashier only learns whether a note will be needed. The supervisor approval
+// names that submission (object `pos_shift_count`) and its value is the
+// server variance (staff-override.service.ts). Different numbers are a new
+// submission and therefore need a new approval; every submission stays on
+// record for the supervisor.
+
+/** Expected drawer cash of `shift` with `aggregates`; RangeError -> 409. */
+function expectedCashOf(shift: ShiftRow, aggregates: ShiftAggregates): number {
+  try {
+    return Number(shiftExpectedCashIdr(shiftDto(shift, aggregates)));
+  } catch (error) {
+    if (error instanceof RangeError)
+      throw new CoreError("CONFLICT", error.message);
+    throw error;
+  }
+}
+
+function countedCashOf(counts: ShiftCountRow["counts"]): number {
+  try {
+    return Number(blindCountTotalIdr(counts));
+  } catch (error) {
+    if (error instanceof RangeError)
+      throw new CoreError("VALIDATION_ERROR", error.message);
+    throw error;
+  }
+}
+
+/** sha256 of the denomination lines in a canonical order. */
+function countsFingerprintOf(counts: ShiftCountRow["counts"]): string {
+  const lines = [...counts]
+    .map((line) => [line.denominationIdr, line.quantity] as const)
+    .sort((a, b) => b[0] - a[0]);
+  return createHash("sha256").update(JSON.stringify(lines)).digest("hex");
+}
+
+export async function submitPosShiftCount(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+  input: SubmitPosShiftCountInput,
+): Promise<PosShiftCountReceipt> {
+  const { idempotencyKey, ...request } = input;
+  const id = parseShiftId(shiftId);
+  const fingerprint = shiftFingerprint({
+    op: "shift.count",
+    outletId,
+    shiftId: id,
+    userId: caller.userId,
+    body: request,
+  });
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    await assertOutletPermission(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      "shift.cash.operate",
+    );
+    // Same row lock as cash, cash movements and the close: the expected cash
+    // stored with the count is the drawer at this instant.
+    const shift = await findShift(tx, context, outletId, id, true);
+    if (!sameUser(shift.cashierId, caller.userId))
+      throw new CoreError(
+        "FORBIDDEN",
+        "Hanya kasir pemilik shift yang dapat menyerahkan hitungan kas.",
+      );
+    const [replay] = await tx
+      .select()
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, tenantId),
+          eq(posShiftCounts.shiftId, shift.id),
+          eq(posShiftCounts.idempotencyKey, idempotencyKey),
+        ),
+      );
+    if (replay) {
+      if (replay.requestFingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+        );
+      return countReceiptDto(replay);
+    }
+    if (shift.status !== "open") throw new PosError("SHIFT_ALREADY_CLOSED");
+    const now = new Date();
+    const aggregates = await computeShiftAggregates(tx, shift, now);
+    const expectedIdr = expectedCashOf(shift, aggregates);
+    const counts = request.counts.map((line) => ({
+      denominationIdr: line.denominationIdr,
+      quantity: line.quantity,
+    }));
+    const countedIdr = countedCashOf(counts);
+    const [last] = await tx
+      .select({ sequence: posShiftCounts.sequence })
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, tenantId),
+          eq(posShiftCounts.shiftId, shift.id),
+        ),
+      )
+      .orderBy(desc(posShiftCounts.sequence))
+      .limit(1);
+    const [row] = await tx
+      .insert(posShiftCounts)
+      .values({
+        tenantId,
+        outletId,
+        shiftId: shift.id,
+        sequence: (last?.sequence ?? 0) + 1,
+        counts,
+        countsFingerprint: countsFingerprintOf(counts),
+        countedIdr: countedIdr as Idr,
+        expectedIdr: expectedIdr as Idr,
+        varianceIdr: (countedIdr - expectedIdr) as Idr,
+        submittedBy: caller.userId,
+        submittedAt: now,
+        idempotencyKey,
+        requestFingerprint: fingerprint,
+      })
+      .returning();
+    if (!row) throw new Error("pos_shift_counts insert returned no row");
+    await auditShift(
+      tx,
+      context,
+      {
+        action: "pos_shift.counted",
+        outletId,
+        objectType: "pos_shift_count",
+        objectId: row.id,
+        caller,
+        before: null,
+        after: {
+          shiftId: row.shiftId,
+          sequence: row.sequence,
+          counts: row.counts,
+          countedIdr: Number(row.countedIdr),
+          expectedIdr: Number(row.expectedIdr),
+          varianceIdr: Number(row.varianceIdr),
+        },
+      },
+      now,
+    );
+    return countReceiptDto(row);
+  });
+}
+
+/** Every count submission of a shift, oldest first (supervisors only). */
+export async function listPosShiftCounts(
+  context: ScopedTenantContext,
+  caller: ShiftCaller,
+  outletId: OutletId,
+  shiftId: string,
+): Promise<PosShiftCount[]> {
+  return withTenant(db, context, async (tx) => {
+    await loadOutlet(tx, context, outletId);
+    const shift = await findShift(tx, context, outletId, shiftId);
+    const { seesLiveFigures } = await assertCanRead(
+      tx,
+      context,
+      caller,
+      outletId,
+      shift,
+    );
+    // The shift's own cashier counts blind: the trail shows the variance.
+    if (!seesLiveFigures) throw permissionDenied();
+    const rows = await tx
+      .select()
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, context.tenant.tenantId),
+          eq(posShiftCounts.outletId, outletId),
+          eq(posShiftCounts.shiftId, shift.id),
+        ),
+      )
+      .orderBy(asc(posShiftCounts.sequence));
+    return rows.map(countDto);
+  });
+}
+
 // ---- Close ------------------------------------------------------------------
 
 type OverrideRow = typeof posOverrides.$inferSelect;
@@ -572,10 +788,12 @@ const approvalRefused = () =>
 
 /**
  * The supervisor decision a close names: an approved `cash_shift_close`
- * override for exactly this shift, requested by the cashier, decided by
- * `approvedBy` (never the cashier), found by its phone chain id or its own id,
- * fresh when it is a PIN decision, and `approvedBy` must still hold the
- * approve permission. Anything else is refused (fail closed).
+ * override for exactly this count submission, requested by the cashier,
+ * decided by `approvedBy` (never the cashier), worth exactly the server
+ * variance, found by its phone chain id or its own id, fresh when it is a PIN
+ * decision, `approvedBy` still holding the approve permission, and the
+ * approval matrix tier for that value satisfied now. Anything else is
+ * refused (fail closed).
  */
 async function verifyCloseApproval(
   tx: Tx,
@@ -583,12 +801,14 @@ async function verifyCloseApproval(
   input: {
     outletId: OutletId;
     shift: ShiftRow;
+    count: ShiftCountRow;
+    valueIdr: number;
     approvedBy: string;
     approvalRequestId: string;
     now: Date;
   },
 ): Promise<OverrideRow> {
-  const { shift } = input;
+  const { shift, count } = input;
   if (sameUser(input.approvedBy, shift.cashierId)) throw approvalRefused();
   const requestId = uuidSchema.safeParse(input.approvalRequestId);
   if (!requestId.success) throw approvalRefused();
@@ -598,8 +818,9 @@ async function verifyCloseApproval(
   } catch {
     overrideId = null;
   }
-  // Candidates: approved cash_shift_close overrides for exactly this shift,
-  // requested by its cashier and decided by the named approver.
+  // Candidates: approved cash_shift_close overrides for exactly this count
+  // submission, requested by the shift's cashier and decided by the named
+  // approver.
   const candidates = await tx
     .select()
     .from(posOverrides)
@@ -609,8 +830,8 @@ async function verifyCloseApproval(
         eq(posOverrides.outletId, input.outletId),
         eq(posOverrides.status, "approved"),
         eq(posOverrides.action, "cash_shift_close"),
-        eq(posOverrides.objectType, "pos_shift"),
-        sql`lower(${posOverrides.objectId}) = ${shift.id.toLowerCase()}`,
+        eq(posOverrides.objectType, SHIFT_COUNT_OBJECT_TYPE),
+        sql`lower(${posOverrides.objectId}) = ${count.id.toLowerCase()}`,
         sql`lower(${posOverrides.requestedBy}) = ${shift.cashierId.toLowerCase()}`,
         sql`lower(${posOverrides.approvedBy}) = ${input.approvedBy.toLowerCase()}`,
       ),
@@ -620,9 +841,9 @@ async function verifyCloseApproval(
   // 1. The named approval: the phone chain id, or the override id itself.
   // 2. A PIN override has no approval request and its ULID id rarely parses
   //    as an RFC UUID (same contract gap as pos-order consumeApproval): the
-  //    newest PIN override for this very shift, cashier and approver. The
-  //    override names this shift and a shift closes once, so it cannot be
-  //    replayed elsewhere; approval_override_id is unique besides.
+  //    newest PIN override for this very count, cashier and approver. The
+  //    override names one immutable count of one shift and a shift closes
+  //    once; approval_override_id is unique besides.
   const named = candidates.find(
     (row) =>
       row.approvalRequestId?.toLowerCase() === requestId.data ||
@@ -631,7 +852,7 @@ async function verifyCloseApproval(
   let override = named;
   if (!override) {
     // The fallback only serves an id that names no override at all: an id
-    // that names another decision (another shift, action or approver) is
+    // that names another decision (another count, action or approver) is
     // refused, never silently swapped for a different approval.
     const [elsewhere] = await tx
       .select({ id: posOverrides.id })
@@ -670,6 +891,8 @@ async function verifyCloseApproval(
     sameUser(override.approvedBy, override.requestedBy)
   )
     throw approvalRefused();
+  // Bound to the value: the approval was given for exactly this variance.
+  if (Number(override.valueIdr) !== input.valueIdr) throw approvalRefused();
   if (
     override.method === "supervisor_pin" &&
     input.now.getTime() - override.createdAt.getTime() > PIN_APPROVAL_WINDOW_MS
@@ -683,7 +906,135 @@ async function verifyCloseApproval(
     input.now,
   );
   if (!approver.has("shift.cash.approve_close")) throw approvalRefused();
+  await assertApprovalTier(tx, context, {
+    override,
+    approvedBy: override.approvedBy,
+    cashierId: shift.cashierId,
+    outletId: input.outletId,
+    valueIdr: input.valueIdr,
+    now: input.now,
+  });
   return override;
+}
+
+/**
+ * §3.7 approval matrix, checked when the approval is used (not only when it
+ * was asked for): the tier for the variance value as the tenant's matrix
+ * stands now. A tenant without a `cash_shift_close` rule relies on the
+ * approve permission alone (checked by the caller).
+ * - Phone approval: the chain was opened for exactly this value and approved
+ *   at least at as many levels as the tier asks for.
+ * - PIN approval: one person decides at the device, so the tier must have one
+ *   level and the approver must hold one of its roles on this outlet.
+ */
+async function assertApprovalTier(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    override: OverrideRow;
+    approvedBy: string;
+    cashierId: string;
+    outletId: OutletId;
+    valueIdr: number;
+    now: Date;
+  },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const policies = (
+    await tx
+      .select()
+      .from(approvalPolicies)
+      .where(
+        and(
+          eq(approvalPolicies.tenantId, tenantId),
+          eq(approvalPolicies.actionType, "cash_shift_close"),
+        ),
+      )
+  ).map((row) =>
+    approvalPolicySchema.parse({
+      id: row.id,
+      actionType: row.actionType,
+      thresholdIdr: row.thresholdIdr,
+      approverRoleId: row.approverRoleId,
+      levels: row.levels,
+      requiresDistinctActor: true,
+    }),
+  );
+  if (policies.length === 0) return;
+  const requirement = approvalRequirementFor(
+    policies,
+    "cash_shift_close",
+    input.valueIdr,
+  );
+  if (!requirement.required) return;
+  const { override } = input;
+  if (override.method === "supervisor_phone") {
+    if (override.approvalRequestId === null) throw approvalRefused();
+    const chain = await tx
+      .select({
+        level: approvalRequests.level,
+        status: approvalRequests.status,
+        amountIdr: approvalRequests.amountIdr,
+        sourceModule: approvalRequests.sourceModule,
+        actionType: approvalRequests.actionType,
+      })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenantId),
+          eq(approvalRequests.chainId, override.approvalRequestId),
+        ),
+      );
+    const first = chain.find((row) => row.level === 1);
+    const approvedLevels = chain.filter(
+      (row) => row.status === "approved",
+    ).length;
+    if (
+      !first ||
+      first.sourceModule !== POS_OVERRIDE_SOURCE_MODULE ||
+      first.actionType !== "cash_shift_close" ||
+      first.amountIdr === null ||
+      Number(first.amountIdr) !== input.valueIdr ||
+      chain.some((row) => row.status !== "approved") ||
+      approvedLevels < requirement.steps.length
+    )
+      throw approvalRefused();
+    return;
+  }
+  if (requirement.steps.length !== 1)
+    throw new CoreError(
+      "FORBIDDEN",
+      "Selisih sebesar ini butuh persetujuan berjenjang; ajukan lewat ponsel supervisor.",
+    );
+  const step = requirement.steps[0];
+  if (!step) throw approvalRefused();
+  const data = await loadTenantAccessInTransaction(
+    tx,
+    context,
+    input.approvedBy,
+  );
+  try {
+    assertApprovalDecisionAllowed({
+      requirement,
+      requestedBy: input.cashierId,
+      priorDecisions: [],
+      level: step.level,
+      approver: {
+        tenantId,
+        userId: input.approvedBy as UserId,
+        assignments: data.assignments,
+      },
+      approverRoles: data.roles,
+      approverMfaVerified: false,
+      surface: "pos",
+      target: outletTarget(input.outletId),
+      org: data.org,
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof AccessError) throw approvalRefused();
+    throw error;
+  }
 }
 
 export async function closePosShift(
@@ -702,7 +1053,6 @@ export async function closePosShift(
     userId: caller.userId,
     body: { ...request, varianceNote: request.varianceNote ?? null },
   });
-  const now = new Date();
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     await loadOutlet(tx, context, outletId);
@@ -713,7 +1063,11 @@ export async function closePosShift(
       outletId,
       "shift.cash.operate",
     );
+    // Row lock first: cash tenders, refunds and voids take the same row
+    // (pos-cash-guard.ts, FOR SHARE), so everything that committed before
+    // this point is in the figures below and nothing lands after it.
     const shift = await findShift(tx, context, outletId, id, true);
+    const now = new Date();
     if (!sameUser(shift.cashierId, caller.userId))
       throw new CoreError(
         "FORBIDDEN",
@@ -729,26 +1083,50 @@ export async function closePosShift(
         );
       return shiftDto(shift);
     }
-    const override = await verifyCloseApproval(tx, context, {
-      outletId,
-      shift,
-      approvedBy: input.approvedBy,
-      approvalRequestId: input.approvalRequestId,
-      now,
-    });
+    const [count] = await tx
+      .select()
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, tenantId),
+          eq(posShiftCounts.outletId, outletId),
+          eq(posShiftCounts.shiftId, shift.id),
+          eq(posShiftCounts.id, input.countId),
+        ),
+      );
+    if (!count)
+      throw new CoreError("NOT_FOUND", "Hitungan kas tidak ditemukan.");
+    const [latest] = await tx
+      .select({ id: posShiftCounts.id })
+      .from(posShiftCounts)
+      .where(
+        and(
+          eq(posShiftCounts.tenantId, tenantId),
+          eq(posShiftCounts.shiftId, shift.id),
+        ),
+      )
+      .orderBy(desc(posShiftCounts.sequence))
+      .limit(1);
+    if (!latest || latest.id !== count.id)
+      throw new PosError("SHIFT_COUNT_SUPERSEDED");
     const aggregates: ShiftAggregates = await computeShiftAggregates(
       tx,
       shift,
       now,
     );
+    // The variance is the server's: if the drawer moved since the count, the
+    // approved value no longer describes it and the cashier counts again.
+    if (expectedCashOf(shift, aggregates) !== Number(count.expectedIdr))
+      throw new PosError("SHIFT_COUNT_STALE");
     let closed: PosShift;
     try {
       closed = closeShift(shiftDto(shift, aggregates), {
-        counts: input.counts,
+        counts: count.counts,
+        countId: count.id,
         varianceNote: input.varianceNote ?? null,
         approvedBy: input.approvedBy,
         approvalRequestId: input.approvalRequestId,
-        approvedAt: toIsoDateTime(override.resolvedAt ?? override.createdAt),
+        approvedAt: toIsoDateTime(now),
         closedAt: toIsoDateTime(now),
       });
     } catch (error) {
@@ -759,9 +1137,20 @@ export async function closePosShift(
     if (
       closed.expectedIdr === null ||
       closed.countedIdr === null ||
-      closed.varianceIdr === null
+      closed.varianceIdr === null ||
+      closed.varianceIdr !== Number(count.varianceIdr)
     )
-      throw new Error("Closed shift is missing its figures");
+      throw new Error("Closed shift figures differ from its count");
+    const override = await verifyCloseApproval(tx, context, {
+      outletId,
+      shift,
+      count,
+      valueIdr: Math.abs(closed.varianceIdr),
+      approvedBy: input.approvedBy,
+      approvalRequestId: input.approvalRequestId,
+      now,
+    });
+    const approvedAt = override.resolvedAt ?? override.createdAt;
     let row: ShiftRow | undefined;
     try {
       [row] = await tx
@@ -777,14 +1166,12 @@ export async function closePosShift(
           countedIdr: closed.countedIdr,
           varianceIdr: closed.varianceIdr,
           varianceNote: closed.varianceNote,
-          counts: input.counts.map((line) => ({
-            denominationIdr: line.denominationIdr,
-            quantity: line.quantity,
-          })),
+          counts: count.counts,
+          countId: count.id,
           approvedBy: input.approvedBy,
           approvalRequestId: input.approvalRequestId,
           approvalOverrideId: ulidToUuid(override.id),
-          approvedAt: override.resolvedAt ?? override.createdAt,
+          approvedAt,
           closedAt: now,
           closedBy: caller.userId,
           closeKey: idempotencyKey,
@@ -847,7 +1234,7 @@ export async function closePosShift(
         objectId: row.id,
         caller,
         before: shiftAuditView(shift, aggregates),
-        after: shiftAuditView(row),
+        after: { ...shiftAuditView(row), countId: count.id },
         reason: dto.varianceNote,
       },
       now,

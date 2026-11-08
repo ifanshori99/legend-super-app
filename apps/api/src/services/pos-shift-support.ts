@@ -22,9 +22,14 @@ import {
   openPosShiftInputSchema,
   posCashMovementSchema,
   posEvents,
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
   posShiftSchema,
   recordCashMovementInputSchema,
+  submitPosShiftCountInputSchema,
   type PosCashMovement,
+  type PosShiftCount,
+  type PosShiftCountReceipt,
   type PosEventName,
   type PosShift,
 } from "@starter/shared/pos";
@@ -35,7 +40,11 @@ import {
   posOrderVoids,
 } from "../db/schema/pos-order.ts";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { cashMovements, posShifts } from "../db/schema/pos-shift.ts";
+import {
+  cashMovements,
+  posShiftCounts,
+  posShifts,
+} from "../db/schema/pos-shift.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { outletTarget } from "./device-pin-support.ts";
@@ -45,6 +54,16 @@ export type ShiftRow = typeof posShifts.$inferSelect;
 export type CashMovementRow = typeof cashMovements.$inferSelect;
 export type OpenPosShiftInput = z.output<typeof openPosShiftInputSchema>;
 export type ClosePosShiftInput = z.output<typeof closePosShiftInputSchema>;
+export type SubmitPosShiftCountInput = z.output<
+  typeof submitPosShiftCountInputSchema
+>;
+export type ShiftCountRow = typeof posShiftCounts.$inferSelect;
+
+/**
+ * `pos_overrides.object_type` of a shift-close approval: it names one blind
+ * count submission (round 2, legend-6c0), never the shift itself.
+ */
+export const SHIFT_COUNT_OBJECT_TYPE = "pos_shift_count";
 export type RecordCashMovementInput = z.output<
   typeof recordCashMovementInputSchema
 >;
@@ -410,7 +429,7 @@ export async function auditShift(
   input: {
     action: string;
     outletId: OutletId;
-    objectType: "pos_shift" | "cash_movement";
+    objectType: "pos_shift" | "cash_movement" | "pos_shift_count";
     objectId: string;
     caller: ShiftCaller;
     before: Record<string, unknown> | null;
@@ -495,6 +514,39 @@ export function shiftDto(
     approvalRequestId: row.approvalRequestId,
     approvedAt: row.approvedAt ? toIsoDateTime(row.approvedAt) : null,
     closedAt: row.closedAt ? toIsoDateTime(row.closedAt) : null,
+    countId: row.countId ?? null,
+  });
+}
+
+/** Supervisor view of one blind count submission (expected and variance). */
+export function countDto(row: ShiftCountRow): PosShiftCount {
+  return posShiftCountSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    shiftId: row.shiftId,
+    sequence: row.sequence,
+    counts: row.counts,
+    countedIdr: Number(row.countedIdr),
+    expectedIdr: Number(row.expectedIdr),
+    varianceIdr: Number(row.varianceIdr),
+    submittedBy: row.submittedBy,
+    submittedAt: toIsoDateTime(row.submittedAt),
+  });
+}
+
+/**
+ * Cashier view of the same submission: blind, so no expected or variance;
+ * only whether the close will need a written note (POS-03).
+ */
+export function countReceiptDto(row: ShiftCountRow): PosShiftCountReceipt {
+  return posShiftCountReceiptSchema.parse({
+    id: row.id,
+    shiftId: row.shiftId,
+    sequence: row.sequence,
+    countedIdr: Number(row.countedIdr),
+    noteRequired: Number(row.varianceIdr) !== 0,
+    submittedAt: toIsoDateTime(row.submittedAt),
   });
 }
 

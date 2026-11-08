@@ -42,6 +42,7 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import { createIntent, createPaymentLink } from "./payment.service.ts";
+import { lockCashierShiftForCash } from "./pos-cash-guard.ts";
 import { posEdcTenderPort, posPointsTenderPort } from "./pos-order-ports.ts";
 import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
@@ -124,6 +125,11 @@ export async function addPosTender(
           if (input.receivedIdr === undefined)
             throw new PosError("CASH_TENDER_MISMATCH");
           const plan = planCashTender(idr(remaining), idr(input.receivedIdr));
+          await lockCashierShiftForCash(tx, context, {
+            outletId,
+            cashierId: caller.userId,
+            at: now,
+          });
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({

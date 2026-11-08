@@ -26,6 +26,8 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   closePosDay,
   closePosShift,
+  listPosShiftCounts,
+  submitPosShiftCount,
   getEndOfDayRecap,
   getPosShift,
   listPosCashMovements,
@@ -155,6 +157,39 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
   const { outletId, shiftId } = getPosShift.params.parse(req.params);
   res.json({
     data: await shifts.getPosShiftReport(
+      getScopedTenantContext(req),
+      caller(req),
+      outletId,
+      shiftId,
+    ),
+  });
+});
+
+// Blind count submissions (legend-6c0 round 2): the cashier submits, the
+// supervisor reads the trail with expected and variance.
+posShiftRouter.post(
+  "/shifts/:shiftId/counts",
+  operate,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, shiftId } = submitPosShiftCount.params.parse(req.params);
+    const body = submitPosShiftCount.body.parse(req.body);
+    res.status(201).json({
+      data: await shifts.submitPosShiftCount(
+        getScopedTenantContext(req),
+        caller(req),
+        outletId,
+        shiftId,
+        body,
+      ),
+    });
+  },
+);
+
+posShiftRouter.get("/shifts/:shiftId/counts", readShift, async (req, res) => {
+  const { outletId, shiftId } = listPosShiftCounts.params.parse(req.params);
+  res.json({
+    data: await shifts.listPosShiftCounts(
       getScopedTenantContext(req),
       caller(req),
       outletId,

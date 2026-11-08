@@ -191,7 +191,8 @@ export const posOverrideViewSchema = z
     approvedBy: userIdSchema.nullable(),
     reasonCode: z.string().min(1).max(50).nullable(),
     reason: overrideReasonSchema,
-    valueIdr: overrideValueSchema,
+    /** Null when hidden from this viewer (blind cash count: the requester never sees the variance). */
+    valueIdr: overrideValueSchema.nullable(),
     objectType: objectTypeSchema,
     objectId: objectIdSchema,
     approvalRequestId: z.uuid().toLowerCase().nullable(),
@@ -231,9 +232,17 @@ export const posOverrideViewSchema = z
   });
 export type PosOverrideView = z.infer<typeof posOverrideViewSchema>;
 
-/** The AUTH-06 record of an approved override; null for anything else. */
+/**
+ * The AUTH-06 record of an approved override; null for anything else, and
+ * null when the value is hidden from this view (a record needs its value).
+ */
 export function posOverrideRecordOf(view: PosOverrideView): PosOverride | null {
-  if (view.status !== "approved" || view.approvedBy === null) return null;
+  if (
+    view.status !== "approved" ||
+    view.approvedBy === null ||
+    view.valueIdr === null
+  )
+    return null;
   return posOverrideSchema.parse({
     id: view.id,
     outletId: view.outletId,

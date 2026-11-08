@@ -52,6 +52,8 @@ import {
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
   posRefundSchema,
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
   posShiftIdSchema,
   posShiftReportSchema,
   posShiftSchema,
@@ -65,6 +67,7 @@ import {
   recordCashMovementInputSchema,
   refundReasonSchema,
   serviceTypeSchema,
+  submitPosShiftCountInputSchema,
   voidReasonSchema,
 } from "./schemas.ts";
 
@@ -410,7 +413,24 @@ export const getPosShift = defineEndpoint({
   response: dataResponseSchema(posShiftReportSchema),
 });
 
-/** POS-03: blind count + supervisor approval; the variance is locked after. */
+/** POS-03: a blind count submission (cashier); the answer is blind too. */
+export const submitPosShiftCount = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  body: submitPosShiftCountInputSchema,
+  response: dataResponseSchema(posShiftCountReceiptSchema),
+});
+
+/** Supervisor view of every count submission of the shift. */
+export const listPosShiftCounts = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/counts",
+  params: shiftParams,
+  response: dataResponseSchema(z.array(posShiftCountSchema)),
+});
+
+/** POS-03: close with a stored count + supervisor approval; variance locked. */
 export const closePosShift = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pos/shifts/:shiftId/close",

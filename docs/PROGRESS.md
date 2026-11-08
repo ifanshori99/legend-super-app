@@ -55,3 +55,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-6c0 shift kasir, putaran 2 (engineer, cabang `ws/pos-shift`)
+
+- Fix 3 P1 + 2 P2 second-opinion (brief `docs/briefs/46-fix-pos-shift-round2.md`) plus 2 temuan reviewer konteks segar (variance bocor ke kasir lewat approval; jam kas sebelum shift dibuka).
+- Hari usaha tertutup: `assertBusinessDayOpen` (kunci advisory bersama, kunci sama dengan tutup hari) di buat/ubah/bayar/selesai/void/refund. Kas wajib shift kasir terbuka (`lockCashierShiftForCash`, FOR SHARE vs FOR UPDATE di tutup shift). Tutup shift dua langkah: hitungan kas disimpan permanen (`pos_shift_counts`), approval terikat ke hitungan dan nilai |selisih| dari server, tingkat matriks dicek saat dipakai. Tutup hari diblokir shift terbuka lintas jam 04.00.
+- Migrasi baru 0066/0067 (bernomor setelah 0063-0065 putaran 1; perlu dinomori ulang bila `main` lebih dulu memakai nomor itu).
+- Status bead: review. Belum merge, belum push.

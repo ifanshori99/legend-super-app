@@ -25,7 +25,17 @@
 // pos_daily_closes insert + outbox + audit, all in one withTenant transaction.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, gte, inArray, lt, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  inArray,
+  lt,
+  lte,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { maskAuditChanges } from "@starter/shared/audit";
 import type { PermissionCode } from "@starter/shared/access";
@@ -644,7 +654,7 @@ export async function closePosDay(
         and(
           eq(posShifts.tenantId, tenantId),
           eq(posShifts.outletId, outletId),
-          eq(posShifts.businessDate, body.businessDate),
+          lte(posShifts.businessDate, body.businessDate),
           eq(posShifts.status, "open"),
         ),
       )

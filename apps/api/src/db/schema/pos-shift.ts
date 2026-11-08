@@ -84,6 +84,8 @@ export const posShifts = pgTable(
       jsonb("counts").$type<
         Array<{ denominationIdr: number; quantity: number }>
       >(),
+    /** The pos_shift_counts submission the close used (set in the close UPDATE). */
+    countId: uuid("count_id"),
     approvedBy: text("approved_by").references(() => user.id),
     approvalRequestId: uuid("approval_request_id"),
     /** pos_overrides.id of the supervisor decision; single use per tenant. */
@@ -171,8 +173,87 @@ export const posShifts = pgTable(
         AND (${table.varianceIdr} = 0 OR ${table.varianceNote} IS NOT NULL))`,
     ),
     check(
+      "pos_shifts_closed_count_check",
+      sql`${table.status} <> 'closed' OR ${table.countId} IS NOT NULL`,
+    ),
+    check(
       "pos_shifts_approver_check",
       sql`${table.approvedBy} IS NULL OR lower(${table.approvedBy}) <> lower(${table.cashierId})`,
+    ),
+  ],
+);
+
+/**
+ * `pos_shift_counts` (T, O): append-only blind count submissions of a shift.
+ * The close references one submission (`pos_shifts.count_id`); the server
+ * derives the variance from it, so the cashier cannot change the numbers
+ * after the supervisor approved.
+ */
+export const posShiftCounts = pgTable(
+  "pos_shift_counts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    shiftId: uuid("shift_id").notNull(),
+    /** 1, 2, 3 ... per shift. */
+    sequence: integer("sequence").notNull(),
+    counts: jsonb("counts")
+      .$type<Array<{ denominationIdr: number; quantity: number }>>()
+      .notNull(),
+    countsFingerprint: varchar("counts_fingerprint", { length: 64 }).notNull(),
+    countedIdr: idrColumn("counted_idr").notNull(),
+    expectedIdr: idrColumn("expected_idr").notNull(),
+    /** Signed: counted - expected. */
+    varianceIdr: idrColumn("variance_idr").notNull(),
+    submittedBy: text("submitted_by")
+      .notNull()
+      .references(() => user.id),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
+    requestFingerprint: varchar("request_fingerprint", {
+      length: 64,
+    }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("pos_shift_counts_tenant_id_id_key").on(table.tenantId, table.id),
+    unique("pos_shift_counts_sequence_key").on(
+      table.tenantId,
+      table.shiftId,
+      table.sequence,
+    ),
+    unique("pos_shift_counts_idempotency_key").on(
+      table.tenantId,
+      table.shiftId,
+      table.idempotencyKey,
+    ),
+    foreignKey({
+      name: "pos_shift_counts_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
+    foreignKey({
+      name: "pos_shift_counts_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("pos_shift_counts_shift_idx").on(
+      table.tenantId,
+      table.shiftId,
+      table.sequence,
+    ),
+    check("pos_shift_counts_sequence_check", sql`${table.sequence} >= 1`),
+    check("pos_shift_counts_counted_check", sql`${table.countedIdr} >= 0`),
+    check(
+      "pos_shift_counts_variance_check",
+      sql`${table.varianceIdr} = ${table.countedIdr} - ${table.expectedIdr}`,
+    ),
+    check(
+      "pos_shift_counts_counts_check",
+      sql`jsonb_typeof(${table.counts}) = 'array'`,
     ),
   ],
 );

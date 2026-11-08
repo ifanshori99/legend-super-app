@@ -12,12 +12,18 @@
 // service code.
 //
 // Assumptions (the brief leaves them open):
+//  - Round 2 (findings 3 and 4): the cashier first submits a blind count
+//    (POST .../shifts/:id/counts, stored append-only), the supervisor approves
+//    that count, and the close names it (`countId`). The approval is bound to
+//    the count and to |variance| of that count.
 //  - A supervisor approval is an approved `supervisor_pin` pos_overrides row
-//    (action `cash_shift_close`, objectType `pos_shift`, objectId = shift id,
-//    requested_by = cashier) inserted directly with a UUID id; the close body
-//    sends `approvedBy` + `approvalRequestId` = that id. One test goes through
-//    the real staff-override service and exposes a contract gap: its ULID id
-//    is not a valid UUID for `approvalRequestId`.
+//    (action `cash_shift_close`, objectType `pos_shift_count`, objectId = count
+//    id, requested_by = cashier, value_idr = |variance| of the count, as the
+//    staff-override service stores it) inserted directly with a UUID id; the
+//    close body sends `approvedBy` + `approvalRequestId` = that id. Some tests
+//    go through the real staff-override service (ULID id, PIN fallback).
+//  - The approval matrix (§3.7) is exercised with `approval_policies` rows for
+//    `cash_shift_close` inserted as the owner and removed in the same test.
 //  - Idempotent replays answer 200 or 201 with the stored result.
 //  - A refused request answers with `{ error: { code } }` and the HTTP status
 //    of the contract error table (packages/shared/src/pos/errors.ts).
@@ -46,6 +52,10 @@ import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
+import {
+  posShiftCountReceiptSchema,
+  posShiftCountSchema,
+} from "@starter/shared/pos";
 import { getPosShiftReport } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -197,6 +207,65 @@ function close(who: Member, shiftId: string, body: Record<string, unknown>) {
     .send({ idempotencyKey: randomUUID(), ...body });
 }
 
+/** POST a blind count submission (round 2: the close names its id). */
+function submitCount(
+  who: Member,
+  shiftId: string,
+  body: Record<string, unknown>,
+) {
+  return who.client
+    .post(`${SHIFTS()}/${shiftId}/counts`)
+    .set(headers)
+    .set(originHeader)
+    .send({ idempotencyKey: randomUUID(), ...body });
+}
+
+/** GET the count trail of a shift (supervisors only). */
+function listCounts(who: Member, shiftId: string) {
+  return who.client
+    .get(`${SHIFTS()}/${shiftId}/counts`)
+    .set(headers)
+    .set(originHeader);
+}
+
+type CountReceipt = {
+  id: string;
+  shiftId: string;
+  sequence: number;
+  countedIdr: number;
+  noteRequired: boolean;
+  submittedAt: string;
+};
+
+/** The cashier counts the drawer blind; the notes add up to `countedIdr`. */
+async function countDrawer(
+  cashier: Member,
+  shiftId: string,
+  countedIdr: number,
+): Promise<CountReceipt> {
+  const response = await submitCount(cashier, shiftId, {
+    counts: countsFor(countedIdr),
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return posShiftCountReceiptSchema.parse(response.body.data) as CountReceipt;
+}
+
+/** The stored count submission, read as the database owner. */
+async function countRow(countId: string) {
+  const { rows } = await owner.query<{
+    sequence: number;
+    counted: number;
+    expected: number;
+    variance: number;
+  }>(
+    `SELECT sequence, counted_idr::int AS counted, expected_idr::int AS expected,
+            variance_idr::int AS variance
+     FROM pos_shift_counts WHERE tenant_id = $1 AND id = $2`,
+    [tenant.tenantId, countId],
+  );
+  return rows[0];
+}
+
 function report(who: Member, shiftId: string) {
   return who.client
     .get(`${SHIFTS()}/${shiftId}`)
@@ -234,30 +303,35 @@ function countsFor(
 }
 
 /**
- * An approved `supervisor_pin` override row for closing `shiftId`, written
- * directly (the staff-override service issues a ULID id that the contract's
- * UUID `approvalRequestId` cannot carry; see the gap test below). The row is
- * exactly what an approved PIN decision stores; its id is the approval id.
+ * An approved `supervisor_pin` override row for closing with the count
+ * submission `countId`, written directly (the staff-override service issues a
+ * ULID id that the contract's UUID `approvalRequestId` rarely carries). The
+ * row is exactly what an approved PIN decision stores: it names the count and
+ * is worth |variance| of that count (the service ignores the device's value
+ * for `cash_shift_close`). `valueIdr` forges another value.
  */
 async function approvalFor(
   cashier: Member,
-  shiftId: string,
+  countId: string,
   overrides: {
     approver?: string;
     objectId?: string;
     action?: string;
     objectType?: string;
+    valueIdr?: number;
   } = {},
 ): Promise<{ approvedBy: string; approvalRequestId: string }> {
   const approver = overrides.approver ?? supervisor.userId;
   const id = randomUUID();
+  const valueIdr =
+    overrides.valueIdr ?? Math.abs((await countRow(countId))?.variance ?? 0);
   await asOwnerTenant(tenant.tenantId, (client) =>
     client.query(
       `INSERT INTO pos_overrides
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
           reason, value_idr, object_type, object_id, request_fingerprint, created_at, resolved_at)
        VALUES ($1, $2, $3, $4, 'supervisor_pin', 'approved', $5, $6,
-               'Hitung kas akhir shift', 0, $7, $8, $9, now() - interval '5 seconds', now() - interval '5 seconds')`,
+               'Hitung kas akhir shift', $10, $7, $8, $9, now() - interval '5 seconds', now() - interval '5 seconds')`,
       [
         id,
         tenant.tenantId,
@@ -265,9 +339,10 @@ async function approvalFor(
         overrides.action ?? "cash_shift_close",
         cashier.userId,
         approver,
-        overrides.objectType ?? "pos_shift",
-        overrides.objectId ?? shiftId,
+        overrides.objectType ?? "pos_shift_count",
+        overrides.objectId ?? countId,
         randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+        valueIdr,
       ],
     ),
   );
@@ -283,19 +358,16 @@ async function openShift(
   return response.body.data as { id: string; businessDate: string };
 }
 
-/** Close with a real approval and a count that equals `countedIdr`. */
+/** Count `countedIdr`, approve that count, and close with it. */
 async function closeShift(
   cashier: Member,
   shiftId: string,
   countedIdr: number,
   extra: Record<string, unknown> = {},
 ) {
-  const approval = await approvalFor(cashier, shiftId);
-  return close(cashier, shiftId, {
-    counts: countsFor(countedIdr),
-    ...approval,
-    ...extra,
-  });
+  const count = await countDrawer(cashier, shiftId, countedIdr);
+  const approval = await approvalFor(cashier, count.id);
+  return close(cashier, shiftId, { countId: count.id, ...approval, ...extra });
 }
 
 /**
@@ -789,73 +861,90 @@ describe("POS-03 cash in, cash out and drops", () => {
 // ---- Close ------------------------------------------------------------------------
 
 describe("POS-03 close with blind count and supervisor approval", () => {
-  it("rejects a body that carries expected, counted or variance (strict, VALIDATION_ERROR) and leaves the shift open", async () => {
+  it("rejects a count or close body that carries expected, counted or variance (strict, VALIDATION_ERROR) and leaves the shift open", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const approval = await approvalFor(cashier, shift.id);
     for (const secret of [
       { expectedIdr: 100_000 },
       { countedIdr: 100_000 },
       { varianceIdr: 0 },
     ]) {
-      const response = await close(cashier, shift.id, {
+      const response = await submitCount(cashier, shift.id, {
         counts: countsFor(FLOAT_IDR),
+        ...secret,
+      });
+      expect(response.status, JSON.stringify(secret)).toBe(VALIDATION_STATUS);
+    }
+    const emptyCounts = await submitCount(cashier, shift.id, { counts: [] });
+    expect(emptyCounts.status).toBe(VALIDATION_STATUS);
+
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const approval = await approvalFor(cashier, count.id);
+    for (const secret of [
+      { expectedIdr: 100_000 },
+      { countedIdr: 100_000 },
+      { varianceIdr: 0 },
+      // Round 2: the close names a stored count; it no longer takes one.
+      { counts: countsFor(FLOAT_IDR) },
+    ]) {
+      const response = await close(cashier, shift.id, {
+        countId: count.id,
         ...approval,
         ...secret,
       });
       expect(response.status, JSON.stringify(secret)).toBe(VALIDATION_STATUS);
     }
-    const emptyCounts = await close(cashier, shift.id, {
-      counts: [],
-      ...approval,
-    });
-    expect(emptyCounts.status).toBe(VALIDATION_STATUS);
+    const noCount = await close(cashier, shift.id, { ...approval });
+    expect(noCount.status).toBe(VALIDATION_STATUS);
     expect((await shiftRow(shift.id))?.status).toBe("open");
   });
 
-  it("refuses a count line that is not a Rupiah denomination or repeats one (Q8, VALIDATION_ERROR) and leaves the shift open", async () => {
+  it("refuses a count line that is not a Rupiah denomination or repeats one (Q8, VALIDATION_ERROR) and stores no count", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const approval = await approvalFor(cashier, shift.id);
-    const notListed = await close(cashier, shift.id, {
+    const notListed = await submitCount(cashier, shift.id, {
       counts: [{ denominationIdr: 75_000, quantity: 1 }],
-      ...approval,
     });
     expect(notListed.status).toBe(VALIDATION_STATUS);
     expect(notListed.body.error.code).toBe("VALIDATION_ERROR");
-    const duplicate = await close(cashier, shift.id, {
+    const duplicate = await submitCount(cashier, shift.id, {
       counts: [
         { denominationIdr: 50_000, quantity: 1 },
         { denominationIdr: 50_000, quantity: 2 },
       ],
-      ...approval,
     });
     expect(duplicate.status).toBe(VALIDATION_STATUS);
     expect(duplicate.body.error.code).toBe("VALIDATION_ERROR");
     expect((await shiftRow(shift.id))?.status).toBe("open");
+    const { rows } = await owner.query(
+      "SELECT 1 FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows).toHaveLength(0);
   });
 
   it("refuses a missing, unknown, self-issued, foreign-shift or mismatched approval (403) and the shift stays open", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const counts = countsFor(FLOAT_IDR);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const countId = count.id;
 
     // No approval fields at all: contract validation.
-    const none = await close(cashier, shift.id, { counts });
+    const none = await close(cashier, shift.id, { countId });
     expect(none.status).toBe(VALIDATION_STATUS);
 
     // An approval id nobody issued.
     const invalid = await close(cashier, shift.id, {
-      counts,
+      countId,
       approvedBy: supervisor.userId,
       approvalRequestId: randomUUID(),
     });
     expect(invalid.status).toBe(403);
 
     // The cashier names themself as the approver.
-    const real = await approvalFor(cashier, shift.id);
+    const real = await approvalFor(cashier, countId);
     const self = await close(cashier, shift.id, {
-      counts,
+      countId,
       approvedBy: cashier.userId,
       approvalRequestId: real.approvalRequestId,
     });
@@ -863,65 +952,108 @@ describe("POS-03 close with blind count and supervisor approval", () => {
 
     // A real approval, but the body names another person as approver.
     const mismatched = await close(cashier, shift.id, {
-      counts,
+      countId,
       approvedBy: viewAllUser.userId,
       approvalRequestId: real.approvalRequestId,
     });
     expect(mismatched.status).toBe(403);
 
-    // An approval issued for another shift.
+    // An approval issued for another shift's count.
     const otherCashier = await newCashier("Kasir B");
     const otherShift = await openShift(otherCashier);
-    const foreign = await approvalFor(cashier, otherShift.id);
-    const wrongShift = await close(cashier, shift.id, { counts, ...foreign });
+    const otherCount = await countDrawer(
+      otherCashier,
+      otherShift.id,
+      FLOAT_IDR,
+    );
+    const foreign = await approvalFor(cashier, otherCount.id);
+    const wrongShift = await close(cashier, shift.id, { countId, ...foreign });
     expect(wrongShift.status).toBe(403);
 
     // An approval issued for another action (a void) on this object.
-    const wrongAction = await approvalFor(cashier, shift.id, {
+    const wrongAction = await approvalFor(cashier, countId, {
       action: "void",
       objectType: "order",
     });
     const refusedAction = await close(cashier, shift.id, {
-      counts,
+      countId,
       ...wrongAction,
     });
     expect(refusedAction.status).toBe(403);
+
+    // A pre-round-2 approval that names the shift instead of the count.
+    const wholeShift = await approvalFor(cashier, countId, {
+      objectType: "pos_shift",
+      objectId: shift.id,
+    });
+    const refusedShift = await close(cashier, shift.id, {
+      countId,
+      ...wholeShift,
+    });
+    expect(refusedShift.status).toBe(403);
 
     expect((await shiftRow(shift.id))?.status).toBe("open");
     expect(await outboxNames(shift.id)).toEqual(["cashier_shift.opened"]);
   });
 
-  it("refuses to close a shift of another cashier (403)", async () => {
+  it("refuses a count or a close by a cashier other than the shift cashier (403)", async () => {
     const owningCashier = await newCashier();
     const shift = await openShift(owningCashier);
     const intruder = await newCashier("Kasir Lain");
-    const approval = await approvalFor(owningCashier, shift.id);
-    const denied = await close(intruder, shift.id, {
+    const foreignCount = await submitCount(intruder, shift.id, {
       counts: countsFor(FLOAT_IDR),
+    });
+    expect(foreignCount.status).toBe(403);
+    const bySupervisor = await submitCount(supervisor, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(bySupervisor.status).toBe(403);
+
+    const count = await countDrawer(owningCashier, shift.id, FLOAT_IDR);
+    const approval = await approvalFor(owningCashier, count.id);
+    const denied = await close(intruder, shift.id, {
+      countId: count.id,
       ...approval,
     });
     expect(denied.status).toBe(403);
     expect((await shiftRow(shift.id))?.status).toBe("open");
   });
 
-  it("a cash difference needs a written note (422 SHIFT_VARIANCE_NOTE_REQUIRED); the refused attempt does not burn the approval", async () => {
+  it("a cash difference needs a written note (422 SHIFT_VARIANCE_NOTE_REQUIRED); the refused attempt keeps the count on the trail and does not burn the approval", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const approval = await approvalFor(cashier, shift.id);
-    const counts = countsFor(FLOAT_IDR - 5_000);
-    const missingNote = await close(cashier, shift.id, { counts, ...approval });
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    // The receipt says a note is needed, without saying how much is missing.
+    expect(count.noteRequired).toBe(true);
+    const approval = await approvalFor(cashier, count.id);
+    const missingNote = await close(cashier, shift.id, {
+      countId: count.id,
+      ...approval,
+    });
     expect(missingNote.status).toBe(422);
     expect(missingNote.body.error.code).toBe("SHIFT_VARIANCE_NOTE_REQUIRED");
     const shortNote = await close(cashier, shift.id, {
-      counts,
+      countId: count.id,
       ...approval,
       varianceNote: "abc",
     });
     expect(shortNote.status).toBe(VALIDATION_STATUS);
     expect((await shiftRow(shift.id))?.status).toBe("open");
 
+    // Finding 4: the submission is not discarded with the refused close.
+    const trail = await listCounts(supervisor, shift.id);
+    expect(trail.status, JSON.stringify(trail.body)).toBe(200);
+    expect(trail.body.data).toHaveLength(1);
+    expect(trail.body.data[0]).toMatchObject({
+      id: count.id,
+      sequence: 1,
+      countedIdr: FLOAT_IDR - 5_000,
+      expectedIdr: FLOAT_IDR,
+      varianceIdr: -5_000,
+    });
+
     const ok = await close(cashier, shift.id, {
-      counts,
+      countId: count.id,
       ...approval,
       varianceNote: "Uang kembalian terselip, kurang Rp5.000",
     });
@@ -932,6 +1064,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       countedIdr: FLOAT_IDR - 5_000,
       varianceIdr: -5_000,
       varianceNote: "Uang kembalian terselip, kurang Rp5.000",
+      countId: count.id,
     });
   });
 
@@ -1089,9 +1222,18 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       { denominationIdr: 10_000, quantity: 1 },
       { denominationIdr: 5_000, quantity: 1 },
     ];
-    const approval = await approvalFor(cashier, shift.id);
+    const submitted = await submitCount(cashier, shift.id, { counts });
+    expect(submitted.status, JSON.stringify(submitted.body)).toBe(201);
+    const countId = submitted.body.data.id as string;
+    expect(submitted.body.data).toMatchObject({
+      shiftId: shift.id,
+      sequence: 1,
+      countedIdr: expected,
+      noteRequired: false,
+    });
+    const approval = await approvalFor(cashier, countId);
     const idempotencyKey = randomUUID();
-    const body = { counts, ...approval, idempotencyKey };
+    const body = { countId, ...approval, idempotencyKey };
     const response = await close(cashier, shift.id, body);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data).toMatchObject({
@@ -1108,6 +1250,7 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       varianceIdr: 0,
       approvedBy: supervisor.userId,
       approvalRequestId: approval.approvalRequestId,
+      countId,
     });
     expect(response.body.data.closedAt).toEqual(expect.any(String));
     expect(response.body.data.approvedAt).toEqual(expect.any(String));
@@ -1146,23 +1289,40 @@ describe("POS-03 close with blind count and supervisor approval", () => {
     // Same key, another count: refused, never applied.
     const tampered = await close(cashier, shift.id, {
       ...body,
-      counts: countsFor(expected + 50_000),
+      countId: randomUUID(),
     });
     expect(tampered.status).toBe(409);
     expect(tampered.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    // Nor can a new count land on the closed shift.
+    const late = await submitCount(cashier, shift.id, {
+      counts: countsFor(expected + 50_000),
+    });
+    expect(late.status).toBe(409);
+    expect(late.body.error.code).toBe("SHIFT_ALREADY_CLOSED");
     expect((await shiftRow(shift.id))?.counted).toBe(expected);
   });
 
   it("a second close of a closed shift is 409 SHIFT_ALREADY_CLOSED and changes nothing", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const first = await closeShift(cashier, shift.id, FLOAT_IDR);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const first = await close(cashier, shift.id, {
+      countId: count.id,
+      ...(await approvalFor(cashier, count.id)),
+    });
     expect(first.status, JSON.stringify(first.body)).toBe(200);
-    const second = await closeShift(cashier, shift.id, FLOAT_IDR + 20_000, {
+    const second = await close(cashier, shift.id, {
+      countId: count.id,
+      ...(await approvalFor(cashier, count.id)),
       varianceNote: "Mencoba mengubah hitungan",
     });
     expect(second.status).toBe(409);
     expect(second.body.error.code).toBe("SHIFT_ALREADY_CLOSED");
+    const recount = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR + 20_000),
+    });
+    expect(recount.status).toBe(409);
+    expect(recount.body.error.code).toBe("SHIFT_ALREADY_CLOSED");
     expect(await shiftRow(shift.id)).toMatchObject({
       counted: FLOAT_IDR,
       variance: 0,
@@ -1172,17 +1332,19 @@ describe("POS-03 close with blind count and supervisor approval", () => {
   it("an approval is used once: a closed shift's approval cannot close the cashier's next shift (403)", async () => {
     const cashier = await newCashier();
     const first = await openShift(cashier);
-    const approval = await approvalFor(cashier, first.id);
+    const firstCount = await countDrawer(cashier, first.id, FLOAT_IDR);
+    const approval = await approvalFor(cashier, firstCount.id);
     const closed = await close(cashier, first.id, {
-      counts: countsFor(FLOAT_IDR),
+      countId: firstCount.id,
       ...approval,
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
 
     const next = await openShift(cashier);
     expect(next.id).not.toBe(first.id);
+    const nextCount = await countDrawer(cashier, next.id, FLOAT_IDR);
     const reused = await close(cashier, next.id, {
-      counts: countsFor(FLOAT_IDR),
+      countId: nextCount.id,
       ...approval,
     });
     expect(reused.status).toBe(403);
@@ -1191,56 +1353,642 @@ describe("POS-03 close with blind count and supervisor approval", () => {
 
   it("a supervisor PIN approval made through the staff-override service can close the shift (fresh request id, bound by the PIN fallback)", async () => {
     // Spec §3.10: the supervisor approves through the existing staff-override
-    // service (PIN on the device). The close body types `approvalRequestId` as
-    // a UUID, but a PIN override's id is a ULID that is not an RFC UUID, so the
-    // cashier has nothing valid to send. This test fails until the contract or
-    // the service resolves that.
+    // service (PIN on the device). A PIN override's id is a ULID that is
+    // rarely an RFC UUID, so the device sends a fresh request id and the API
+    // binds the newest PIN override for this very count, cashier and approver.
     const cashier = await newCashier();
     const shift = await openShift(cashier);
-    const { override } = await createPosOverride(
-      establishTenantContext({
-        tenantId: tenantIdSchema.parse(tenant.tenantId),
-        brandId: null,
-        source: "session",
-      }),
-      cashier.userId,
-      {
-        outletId: tenant.outletId,
-        action: "cash_shift_close",
-        valueIdr: 0,
-        reason: "Hitung kas akhir shift",
-        objectType: "pos_shift",
-        objectId: shift.id,
-        approval: {
-          method: "supervisor_pin",
-          approverUserId: userIdSchema.parse(supervisor.userId),
-          pin: PIN,
-        },
-      } as Parameters<typeof createPosOverride>[2],
-      { idempotencyKey: randomUUID() },
-    );
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const override = await pinOverride(cashier, count.id, 0);
     expect(override.status).toBe("approved");
     const response = await close(cashier, shift.id, {
-      counts: countsFor(FLOAT_IDR),
+      countId: count.id,
       approvedBy: supervisor.userId,
-      // Contract gap shared with pos-order consumeApproval: a PIN override has
-      // no approval request and its ULID id rarely parses as an RFC UUID, so
-      // the device sends a fresh request id and the API binds the newest PIN
-      // override for this very shift, cashier and approver.
       approvalRequestId: randomUUID(),
     });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data.status).toBe("closed");
   });
 
-  it("answers 404 when closing an unknown shift", async () => {
+  it("answers 404 when closing an unknown shift, and when the count is unknown", async () => {
     const cashier = await newCashier();
     const response = await close(cashier, randomUUID(), {
-      counts: countsFor(FLOAT_IDR),
+      countId: randomUUID(),
       approvedBy: supervisor.userId,
       approvalRequestId: randomUUID(),
     });
     expect(response.status).toBe(404);
+    const countOnUnknown = await submitCount(cashier, randomUUID(), {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(countOnUnknown.status).toBe(404);
+    const shift = await openShift(cashier);
+    const unknownCount = await close(cashier, shift.id, {
+      countId: randomUUID(),
+      approvedBy: supervisor.userId,
+      approvalRequestId: randomUUID(),
+    });
+    expect(unknownCount.status).toBe(404);
+  });
+});
+
+// ---- Round 2: the approval is bound to the count and its variance -------------------
+
+/** The real staff-override service: the supervisor's PIN on the device. */
+async function pinOverride(
+  cashier: Member,
+  countId: string,
+  valueIdr: number,
+  approver: string = supervisor.userId,
+) {
+  const { override } = await createPosOverride(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    cashier.userId,
+    {
+      outletId: tenant.outletId,
+      action: "cash_shift_close",
+      valueIdr,
+      reason: "Hitung kas akhir shift",
+      objectType: "pos_shift_count",
+      objectId: countId,
+      approval: {
+        method: "supervisor_pin",
+        approverUserId: userIdSchema.parse(approver),
+        pin: PIN,
+      },
+    } as Parameters<typeof createPosOverride>[2],
+    { idempotencyKey: randomUUID() },
+  );
+  return override;
+}
+
+/**
+ * §3.7 matrix rows for `cash_shift_close`, inserted as the owner for the
+ * duration of `run` only (the rest of the file relies on "no rule").
+ */
+async function withShiftClosePolicies(
+  rows: { thresholdIdr: number | null; roleId: string; level: number }[],
+  run: () => Promise<void>,
+): Promise<void> {
+  const ids: string[] = [];
+  try {
+    for (const row of rows) {
+      const { rows: inserted } = await owner.query<{ id: string }>(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+         VALUES ($1, 'cash_shift_close', $2, $3, $4) RETURNING id`,
+        [tenant.tenantId, row.thresholdIdr, row.roleId, row.level],
+      );
+      ids.push(inserted[0]!.id);
+    }
+    await run();
+  } finally {
+    await owner.query(
+      "DELETE FROM approval_policies WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenant.tenantId, ids],
+    );
+  }
+}
+
+/**
+ * An approved phone decision: a one-level `pos_override` approval chain for
+ * `chainAmountIdr` and the approved `supervisor_phone` override that points at
+ * it, worth |variance| of the count. Written as the owner (deciding a chain
+ * through the inbox needs a second session; the rows are what it stores).
+ */
+async function phoneApprovalFor(
+  cashier: Member,
+  countId: string,
+  chainAmountIdr: number,
+): Promise<{ approvedBy: string; approvalRequestId: string }> {
+  const chainId = randomUUID();
+  const overrideId = randomUUID();
+  const valueIdr = Math.abs((await countRow(countId))?.variance ?? 0);
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO approval_requests
+         (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type, object_id,
+          requested_by, source, level, required_levels, required_steps, amount_idr, status,
+          decided_by, decided_at, reason, request_reason, deadline_at, created_at)
+       VALUES ($1, $2, $3, $1, 'pos_override', 'cash_shift_close', 'pos_override', $4,
+               $5, 'user', 1, 1, $6::jsonb, $7, 'approved',
+               $8, now() - interval '4 seconds', 'Disetujui lewat ponsel', 'Hitung kas akhir shift',
+               now() + interval '1 hour', now() - interval '6 seconds')`,
+      [
+        chainId,
+        tenant.tenantId,
+        tenant.outletId,
+        overrideId,
+        cashier.userId,
+        JSON.stringify([{ level: 1, approverRoleIds: [roleIds.supervisor] }]),
+        chainAmountIdr,
+        supervisor.userId,
+      ],
+    );
+    await client.query(
+      `INSERT INTO pos_overrides
+         (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
+          reason, value_idr, object_type, object_id, approval_request_id, request_fingerprint,
+          created_at, resolved_at)
+       VALUES ($1, $2, $3, 'cash_shift_close', 'supervisor_phone', 'approved', $4, $5,
+               'Hitung kas akhir shift', $6, 'pos_shift_count', $7, $8, $9,
+               now() - interval '6 seconds', now() - interval '4 seconds')`,
+      [
+        overrideId,
+        tenant.tenantId,
+        tenant.outletId,
+        cashier.userId,
+        supervisor.userId,
+        valueIdr,
+        countId,
+        chainId,
+        randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""),
+      ],
+    );
+  });
+  return { approvedBy: supervisor.userId, approvalRequestId: chainId };
+}
+
+describe("POS-03 round 2: a close approval is bound to one count and its variance (legend-6c0 findings 3 and 4)", () => {
+  it("finding 3: an approval for a Rp0 count cannot close the shift with a later Rp1.000.000 count; the override for that count is worth Rp1.000.000 even when the device sent Rp0", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const balanced = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const rp0 = await approvalFor(cashier, balanced.id);
+    expect((await countRow(balanced.id))?.variance).toBe(0);
+
+    const big = await countDrawer(cashier, shift.id, FLOAT_IDR + 1_000_000);
+    expect(big.sequence).toBe(2);
+    expect(big.noteRequired).toBe(true);
+    const note = { varianceNote: "Uang titipan pelanggan ikut terhitung" };
+
+    // The approved count is no longer the latest one.
+    const superseded = await close(cashier, shift.id, {
+      countId: balanced.id,
+      ...rp0,
+      ...note,
+    });
+    expect(superseded.status, JSON.stringify(superseded.body)).toBe(409);
+    expect(superseded.body.error.code).toBe("SHIFT_COUNT_SUPERSEDED");
+    // The Rp0 approval does not cover the new count.
+    const swapped = await close(cashier, shift.id, {
+      countId: big.id,
+      ...rp0,
+      ...note,
+    });
+    expect(swapped.status, JSON.stringify(swapped.body)).toBe(403);
+    // Nor does an approval for this count recorded at Rp0.
+    const forged = await approvalFor(cashier, big.id, { valueIdr: 0 });
+    const underValued = await close(cashier, shift.id, {
+      countId: big.id,
+      ...forged,
+      ...note,
+    });
+    expect(underValued.status, JSON.stringify(underValued.body)).toBe(403);
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+
+    // The service never takes a superseded count…
+    await expect(pinOverride(cashier, balanced.id, 0)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+    });
+    // …and values the latest one itself: the device sent Rp0.
+    const override = await pinOverride(cashier, big.id, 0);
+    expect(override.status).toBe("approved");
+    // The cashier (requester) never reads the value back: blind count.
+    expect(override.valueIdr).toBeNull();
+    const { rows } = await owner.query<{ value: number }>(
+      "SELECT value_idr::int AS value FROM pos_overrides WHERE tenant_id = $1 AND object_id = $2 AND method = 'supervisor_pin' ORDER BY created_at DESC LIMIT 1",
+      [tenant.tenantId, big.id],
+    );
+    expect(rows[0]?.value).toBe(1_000_000);
+
+    const closed = await close(cashier, shift.id, {
+      countId: big.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: randomUUID(),
+      ...note,
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data).toMatchObject({
+      status: "closed",
+      countId: big.id,
+      countedIdr: FLOAT_IDR + 1_000_000,
+      varianceIdr: 1_000_000,
+    });
+  });
+
+  it("finding 4: a recount with other numbers makes the earlier approval unusable (409 superseded, 403 on the new count) and both counts stay on the trail", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const first = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const approval = await approvalFor(cashier, first.id);
+    const note = { varianceNote: "Uang kembalian terselip" };
+    const noNote = await close(cashier, shift.id, {
+      countId: first.id,
+      ...approval,
+    });
+    expect(noNote.status).toBe(422);
+    expect(noNote.body.error.code).toBe("SHIFT_VARIANCE_NOTE_REQUIRED");
+
+    // The cashier changes the numbers instead of writing the note.
+    const second = await countDrawer(cashier, shift.id, FLOAT_IDR - 10_000);
+    const old = await close(cashier, shift.id, {
+      countId: first.id,
+      ...approval,
+      ...note,
+    });
+    expect(old.status).toBe(409);
+    expect(old.body.error.code).toBe("SHIFT_COUNT_SUPERSEDED");
+    const reused = await close(cashier, shift.id, {
+      countId: second.id,
+      ...approval,
+      ...note,
+    });
+    expect(reused.status).toBe(403);
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+
+    const trail = await listCounts(supervisor, shift.id);
+    expect(trail.status).toBe(200);
+    expect(
+      trail.body.data.map((c: { id: string; varianceIdr: number }) => [
+        c.id,
+        c.varianceIdr,
+      ]),
+    ).toEqual([
+      [first.id, -5_000],
+      [second.id, -10_000],
+    ]);
+
+    // A fresh approval for the new count closes it.
+    const fresh = await close(cashier, shift.id, {
+      countId: second.id,
+      ...(await approvalFor(cashier, second.id)),
+      ...note,
+    });
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect(fresh.body.data).toMatchObject({
+      countId: second.id,
+      varianceIdr: -10_000,
+    });
+  });
+
+  it("the supervisor's trail lists every submission in order with expected and variance; the shift's cashier gets 403 and the receipt never shows expected or variance", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    await seedSale({ shift, cashier, totalIdr: 55_000 }); // expected 155.000
+    const short = await countDrawer(cashier, shift.id, 150_000);
+    const even = await countDrawer(cashier, shift.id, 155_000);
+    const over = await countDrawer(cashier, shift.id, 160_000);
+
+    for (const receipt of [short, even, over])
+      expect(Object.keys(receipt).sort()).toEqual([
+        "countedIdr",
+        "id",
+        "noteRequired",
+        "sequence",
+        "shiftId",
+        "submittedAt",
+      ]);
+    expect(
+      [short, even, over].map((r) => [
+        r.sequence,
+        r.countedIdr,
+        r.noteRequired,
+      ]),
+    ).toEqual([
+      [1, 150_000, true],
+      [2, 155_000, false],
+      [3, 160_000, true],
+    ]);
+
+    for (const viewer of [supervisor, viewAllUser]) {
+      const trail = await listCounts(viewer, shift.id);
+      expect(trail.status, JSON.stringify(trail.body)).toBe(200);
+      const rows = (trail.body.data as unknown[]).map((row) =>
+        posShiftCountSchema.parse(row),
+      );
+      expect(
+        rows.map((row) => [
+          row.id,
+          row.sequence,
+          row.countedIdr,
+          row.expectedIdr,
+          row.varianceIdr,
+          row.submittedBy,
+        ]),
+      ).toEqual([
+        [short.id, 1, 150_000, 155_000, -5_000, cashier.userId],
+        [even.id, 2, 155_000, 155_000, 0, cashier.userId],
+        [over.id, 3, 160_000, 155_000, 5_000, cashier.userId],
+      ]);
+      expect(rows[0]?.counts).toEqual(countsFor(150_000));
+    }
+
+    expect((await listCounts(cashier, shift.id)).status).toBe(403);
+    const otherCashier = await newCashier("Kasir Lain");
+    expect((await listCounts(otherCashier, shift.id)).status).toBe(403);
+    expect((await listCounts(noShiftUser, shift.id)).status).toBe(403);
+    const anonymous = await agent(app)
+      .get(`${SHIFTS()}/${shift.id}/counts`)
+      .set(headers)
+      .set(originHeader);
+    expect(anonymous.status).toBe(401);
+  });
+
+  it("a count is idempotent per key: a retry returns the same submission, another body under the same key is 409", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const idempotencyKey = randomUUID();
+    const counts = countsFor(FLOAT_IDR);
+    const first = await submitCount(cashier, shift.id, {
+      counts,
+      idempotencyKey,
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const replay = await submitCount(cashier, shift.id, {
+      counts,
+      idempotencyKey,
+    });
+    expect([200, 201]).toContain(replay.status);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const changed = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR + 1_000),
+      idempotencyKey,
+    });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    const { rows } = await owner.query(
+      "SELECT 1 FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a count goes stale when the drawer moves after it (409 SHIFT_COUNT_STALE); a recount closes", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const approval = await approvalFor(cashier, count.id);
+    const moved = await move(cashier, shift.id, {
+      type: "cash_in",
+      amountIdr: 20_000,
+    });
+    expect(moved.status).toBe(201);
+    const stale = await close(cashier, shift.id, {
+      countId: count.id,
+      ...approval,
+    });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+
+    const closed = await closeShift(cashier, shift.id, FLOAT_IDR + 20_000);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data).toMatchObject({
+      expectedIdr: FLOAT_IDR + 20_000,
+      varianceIdr: 0,
+    });
+  });
+
+  it("the approval matrix tier is checked when the approval is used: a two-level tier refuses a PIN; a one-level tier needs its role", async () => {
+    const seniorRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Supervisor Senior Uji', false, NULL, $3, false, '["tenant"]')`,
+      [
+        seniorRole,
+        tenant.tenantId,
+        JSON.stringify(["shift.cash.approve_close"]),
+      ],
+    );
+    const senior = await member(tenant, seniorRole, "Supervisor Senior");
+    const note = { varianceNote: "Selisih besar, dicek ulang" };
+
+    await withShiftClosePolicies(
+      [
+        // Rp50.000 and up: one level, the senior role.
+        { thresholdIdr: 50_000, roleId: seniorRole, level: 1 },
+        // Rp500.000 and up: two levels.
+        { thresholdIdr: 500_000, roleId: roleIds.supervisor, level: 1 },
+        { thresholdIdr: 500_000, roleId: seniorRole, level: 2 },
+      ],
+      async () => {
+        // Two-level tier: no single PIN closes it, whoever approves.
+        const a = await newCashier("Kasir Matriks A");
+        const bigShift = await openShift(a);
+        const big = await countDrawer(a, bigShift.id, FLOAT_IDR + 600_000);
+        for (const approver of [supervisor.userId, senior.userId]) {
+          const refused = await close(a, bigShift.id, {
+            countId: big.id,
+            ...(await approvalFor(a, big.id, { approver })),
+            ...note,
+          });
+          expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        }
+        expect((await shiftRow(bigShift.id))?.status).toBe("open");
+
+        // One-level tier with the senior role: the plain supervisor is refused,
+        // the senior closes.
+        const b = await newCashier("Kasir Matriks B");
+        const midShift = await openShift(b);
+        const mid = await countDrawer(b, midShift.id, FLOAT_IDR + 60_000);
+        const wrongRole = await close(b, midShift.id, {
+          countId: mid.id,
+          ...(await approvalFor(b, mid.id)),
+          ...note,
+        });
+        expect(wrongRole.status, JSON.stringify(wrongRole.body)).toBe(403);
+        expect((await shiftRow(midShift.id))?.status).toBe("open");
+        const rightRole = await close(b, midShift.id, {
+          countId: mid.id,
+          ...(await approvalFor(b, mid.id, { approver: senior.userId })),
+          ...note,
+        });
+        expect(rightRole.status, JSON.stringify(rightRole.body)).toBe(200);
+        expect(rightRole.body.data).toMatchObject({
+          varianceIdr: 60_000,
+          approvedBy: senior.userId,
+        });
+
+        // Below every threshold: the approve permission alone is enough.
+        const c = await newCashier("Kasir Matriks C");
+        const smallShift = await openShift(c);
+        const small = await closeShift(c, smallShift.id, FLOAT_IDR);
+        expect(small.status, JSON.stringify(small.body)).toBe(200);
+      },
+    );
+  });
+
+  it("a phone approval is refused when its chain was opened for another amount than the variance", async () => {
+    await withShiftClosePolicies(
+      [{ thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 }],
+      async () => {
+        const cashier = await newCashier("Kasir Ponsel");
+        const shift = await openShift(cashier);
+        const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 60_000);
+        const note = { varianceNote: "Selisih dicek supervisor lewat ponsel" };
+        const cheap = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(cashier, count.id, 1_000)),
+          ...note,
+        });
+        expect(cheap.status, JSON.stringify(cheap.body)).toBe(403);
+        expect((await shiftRow(shift.id))?.status).toBe("open");
+        // Control: the same chain for the real amount closes.
+        const exact = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await phoneApprovalFor(cashier, count.id, 60_000)),
+          ...note,
+        });
+        expect(exact.status, JSON.stringify(exact.body)).toBe(200);
+        expect(exact.body.data.varianceIdr).toBe(60_000);
+      },
+    );
+  });
+
+  it("blind count: the cashier never reads the variance from the override or the approval request; the approver and an inbox viewer do, and the close still works", async () => {
+    const inboxRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Penyetuju Ponsel Uji', false, NULL, $3, false, '["tenant"]')`,
+      [
+        inboxRole,
+        tenant.tenantId,
+        JSON.stringify(["shift.cash.approve_close", "approval.inbox.view"]),
+      ],
+    );
+    const inboxViewer = await member(tenant, inboxRole, "Penyetuju Ponsel");
+    const cashier = await newCashier("Kasir Buta");
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 60_000);
+    const postOverride = (approval: Record<string, unknown>, key: string) =>
+      cashier.client
+        .post("/api/pos-overrides")
+        .set(headers)
+        .set(originHeader)
+        .set("Idempotency-Key", key)
+        .send({
+          outletId: tenant.outletId,
+          action: "cash_shift_close",
+          valueIdr: 0,
+          reason: "Hitung kas akhir shift",
+          objectType: "pos_shift_count",
+          objectId: count.id,
+          approval,
+        });
+    const getOverride = (who: Member, id: string) =>
+      who.client.get(`/api/pos-overrides/${id}`).set(headers).set(originHeader);
+    const getApproval = (who: Member, id: string) =>
+      who.client.get(`/api/approvals/${id}`).set(headers).set(originHeader);
+
+    // Phone approval: the chain carries |variance| for the approver only.
+    await withShiftClosePolicies(
+      [{ thresholdIdr: 50_000, roleId: inboxRole, level: 1 }],
+      async () => {
+        const key = randomUUID();
+        const created = await postOverride({ method: "supervisor_phone" }, key);
+        expect(created.status, JSON.stringify(created.body)).toBe(201);
+        expect(created.body.data).toMatchObject({
+          status: "pending",
+          valueIdr: null,
+        });
+        const overrideId = created.body.data.id as string;
+        const replay = await postOverride({ method: "supervisor_phone" }, key);
+        expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+        expect(replay.body.data).toMatchObject({
+          id: overrideId,
+          valueIdr: null,
+        });
+        const polled = await getOverride(cashier, overrideId);
+        expect(polled.status, JSON.stringify(polled.body)).toBe(200);
+        expect(polled.body.data.valueIdr).toBeNull();
+        const { rows } = await owner.query<{ value: number }>(
+          "SELECT value_idr::int AS value FROM pos_overrides WHERE tenant_id = $1 AND approval_request_id = $2",
+          [tenant.tenantId, created.body.data.approvalRequestId],
+        );
+        expect(rows[0]?.value).toBe(60_000);
+
+        // The cashier's own approval list and detail hide the amount.
+        const own = await cashier.client
+          .get("/api/approvals")
+          .set(headers)
+          .set(originHeader);
+        expect(own.status, JSON.stringify(own.body)).toBe(200);
+        const mine = (
+          own.body.data as {
+            id: string;
+            objectId: string;
+            amountIdr: number | null;
+            payload: Record<string, unknown>;
+          }[]
+        ).find((row) => row.objectId === overrideId);
+        expect(mine).toBeDefined();
+        expect(mine?.amountIdr).toBeNull();
+        expect(mine?.payload).not.toHaveProperty("valueIdr");
+        expect(JSON.stringify(own.body)).not.toContain("60000");
+        const detail = await getApproval(cashier, mine!.id);
+        expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+        expect(detail.body.data.amountIdr).toBeNull();
+        expect(detail.body.data.payload).not.toHaveProperty("valueIdr");
+        expect(detail.body.data.payload).toMatchObject({
+          action: "cash_shift_close",
+          objectId: count.id,
+        });
+
+        // The inbox viewer (the approver role) still sees the amount.
+        const inbox = await getApproval(inboxViewer, mine!.id);
+        expect(inbox.status, JSON.stringify(inbox.body)).toBe(200);
+        expect(inbox.body.data.amountIdr).toBe(60_000);
+        expect(inbox.body.data.payload.valueIdr).toBe(60_000);
+        const inboxList = await inboxViewer.client
+          .get("/api/approvals")
+          .set(headers)
+          .set(originHeader);
+        expect(inboxList.status, JSON.stringify(inboxList.body)).toBe(200);
+        expect(
+          (
+            inboxList.body.data as { id: string; amountIdr: number | null }[]
+          ).find((row) => row.id === mine!.id)?.amountIdr,
+        ).toBe(60_000);
+      },
+    );
+
+    // PIN approval: the cashier's response hides it, the approver reads it.
+    const pin = await postOverride(
+      {
+        method: "supervisor_pin",
+        approverUserId: supervisor.userId,
+        pin: PIN,
+      },
+      randomUUID(),
+    );
+    expect(pin.status, JSON.stringify(pin.body)).toBe(201);
+    expect(pin.body.data).toMatchObject({
+      status: "approved",
+      valueIdr: null,
+    });
+    const pinId = pin.body.data.id as string;
+    expect((await getOverride(cashier, pinId)).body.data.valueIdr).toBeNull();
+    const asApprover = await getOverride(supervisor, pinId);
+    expect(asApprover.status, JSON.stringify(asApprover.body)).toBe(200);
+    expect(asApprover.body.data.valueIdr).toBe(60_000);
+
+    // The close still binds the approval to the variance and succeeds.
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: randomUUID(),
+      varianceNote: "Selisih dicek supervisor",
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data).toMatchObject({
+      status: "closed",
+      countId: count.id,
+      varianceIdr: 60_000,
+    });
   });
 });
 
@@ -1308,6 +2056,51 @@ describe("POS-03 a closed shift and its cash movements cannot be changed", () =>
             cashier.userId,
             randomUUID(),
             "a".repeat(64),
+          ],
+        ),
+      ),
+    ).rejects.toThrow(/POS-03/);
+  });
+
+  it("a count submission is history: direct SQL UPDATE and DELETE are refused, and no count lands on a closed shift", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    for (const statement of [
+      "UPDATE pos_shift_counts SET counted_idr = counted_idr + 1000, variance_idr = variance_idr + 1000 WHERE tenant_id = $1 AND id = $2",
+      "DELETE FROM pos_shift_counts WHERE tenant_id = $1 AND id = $2",
+    ])
+      await expect(
+        asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(statement, [tenant.tenantId, count.id]),
+        ),
+        statement,
+      ).rejects.toThrow(/POS-03/);
+    expect(await countRow(count.id)).toMatchObject({
+      counted: FLOAT_IDR,
+      variance: 0,
+    });
+
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      ...(await approvalFor(cashier, count.id)),
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `INSERT INTO pos_shift_counts
+             (tenant_id, outlet_id, shift_id, sequence, counts, counts_fingerprint,
+              counted_idr, expected_idr, variance_idr, submitted_by, submitted_at,
+              idempotency_key, request_fingerprint)
+           VALUES ($1, $2, $3, 2, '[]'::jsonb, $4, 0, 100000, -100000, $5, now(), $6, $4)`,
+          [
+            tenant.tenantId,
+            tenant.outletId,
+            shift.id,
+            "b".repeat(64),
+            cashier.userId,
+            randomUUID(),
           ],
         ),
       ),
@@ -1421,7 +2214,8 @@ describe("TEN-01 shifts are isolated per tenant", () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
     await move(cashier, shift.id);
-    const approval = await approvalFor(cashier, shift.id);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 20_000);
+    const approval = await approvalFor(cashier, count.id);
     const counts = countsFor(FLOAT_IDR + 20_000);
     const send = (path: string, method: "get" | "post", body?: object) => {
       // Once on the other tenant's host, once on this tenant's host.
@@ -1445,8 +2239,13 @@ describe("TEN-01 shifts are isolated per tenant", () => {
         reasonNote: "Mengambil uang",
         idempotencyKey: randomUUID(),
       })),
-      ...(await send(`/${shift.id}/close`, "post", {
+      ...(await send(`/${shift.id}/counts`, "get")),
+      ...(await send(`/${shift.id}/counts`, "post", {
         counts,
+        idempotencyKey: randomUUID(),
+      })),
+      ...(await send(`/${shift.id}/close`, "post", {
+        countId: count.id,
         ...approval,
         idempotencyKey: randomUUID(),
       })),
@@ -1468,6 +2267,11 @@ describe("TEN-01 shifts are isolated per tenant", () => {
       [tenant.tenantId, shift.id],
     );
     expect(rows).toHaveLength(1);
+    const { rows: countRows } = await owner.query(
+      "SELECT 1 FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(countRows).toHaveLength(1);
   });
 
   it("the shift service refuses a context of another tenant", async () => {
@@ -1495,10 +2299,11 @@ describe("TEN-01 shifts are isolated per tenant", () => {
     });
   });
 
-  it("RLS hides shifts and cash movements from another tenant and from another outlet", async () => {
+  it("RLS hides shifts, cash movements and count submissions from another tenant and from another outlet", async () => {
     const cashier = await newCashier();
     const shift = await openShift(cashier);
     await move(cashier, shift.id);
+    await countDrawer(cashier, shift.id, FLOAT_IDR + 20_000);
 
     const count = async (
       tenantId: string,
@@ -1525,7 +2330,7 @@ describe("TEN-01 shifts are isolated per tenant", () => {
       }
     };
 
-    for (const table of ["pos_shifts", "cash_movements"]) {
+    for (const table of ["pos_shifts", "cash_movements", "pos_shift_counts"]) {
       // Control: the owning tenant sees the row, so the zeroes below mean something.
       expect(await count(tenant.tenantId, "*", table), table).toBe("1");
       expect(await count(seededTenantId, "*", table), table).toBe("0");

@@ -40,12 +40,18 @@ import { db } from "../db/index.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
+import {
+  assertBusinessDayOpen,
+  lockCashierShiftForCash,
+} from "./pos-cash-guard.ts";
 import { posReceiptPort } from "./pos-order-ports.ts";
 import {
   appendOrderEvent,
   appendPosEvent,
   auditPos,
+  businessDateFor,
   consumeApproval,
+  loadOutlet,
   lockPosOrder,
   posIdempotent,
   tenderDto,
@@ -215,6 +221,22 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Struk transaksi ini tidak ditemukan; void tertaut memerlukan nomor struk.",
         );
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      if (
+        (await tendersOf(tx, context, order.id)).some(
+          (tender) => tender.method === "cash" && tender.status === "captured",
+        )
+      )
+        await lockCashierShiftForCash(tx, context, {
+          outletId,
+          cashierId: caller.userId,
+          at: now,
+        });
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -415,6 +437,18 @@ export async function refundPosOrder(
         amountIdr: Number(line.amountIdr),
         reference: null,
       }));
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+      if (lines.some((line) => tenderBucket(line.method as never) === "cash"))
+        await lockCashierShiftForCash(tx, context, {
+          outletId,
+          cashierId: caller.userId,
+          at: now,
+        });
       const [row] = await tx
         .insert(posOrderRefunds)
         .values({

@@ -19,9 +19,10 @@
 // - A sale made before any shift is open is attributed to the nil-uuid device;
 //   a sale made while the cashier's shift is open is attributed to the shift's
 //   device (the order service wires the shift lookup through app.ts).
-// - A supervisor's PIN override for `cash_shift_close` is named in the close
-//   body by the UUID form of the override id (`ulidToUuid(override.id)`);
-//   see the KNOWN GAP note in `pinApproval`.
+// - A supervisor's PIN override for `cash_shift_close` names the cashier's
+//   blind count submission (objectType `pos_shift_count`, round 2) and is
+//   named in the close body by the UUID form of the override id
+//   (`ulidToUuid(override.id)`); see the KNOWN GAP note in `pinApproval`.
 // - A day close blocked by a rule is 409 (CoreError CONFLICT / PosError 409);
 //   an unavailable inventory port is 503; permission failures are 403;
 //   strict-schema validation failures are 422 (the API error handler's
@@ -247,6 +248,8 @@ function pos(who: Member = cashier) {
 /** create → submit → cash → complete, paid in cash. */
 async function cashSale(
   body: Record<string, unknown> = {},
+  /** Runs after create/submit, before the cash is taken (cash needs a shift). */
+  beforeCash?: () => Promise<void>,
 ): Promise<{ orderId: string; totalIdr: number; shiftId: string | null }> {
   const created = await pos().create(body);
   expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -258,6 +261,7 @@ async function cashSale(
     status = submitted.body.data.status as string;
   }
   const totalIdr = created.body.data.totalIdr as number;
+  await beforeCash?.();
   const paid = await pos().cash(orderId, status, totalIdr + 5_000);
   expect(paid.status, JSON.stringify(paid.body)).toBe(201);
   status = paid.body.data.order.status as string;
@@ -276,7 +280,7 @@ const RFC_UUID =
 /** The supervisor's own tile + PIN, as the POS does it (staff-override service). */
 async function pinApproval(input: {
   action: "void" | "refund" | "cash_shift_close";
-  objectType: "order" | "pos_shift";
+  objectType: "order" | "pos_shift_count";
   objectId: string;
   valueIdr: number;
   approver?: string;
@@ -342,6 +346,16 @@ function shiftApi(who: Member = cashier) {
           idempotencyKey: randomUUID(),
           ...body,
         }),
+    /** The blind count submission (round 2): the close names its id. */
+    count: (
+      id: string,
+      counts: { denominationIdr: number; quantity: number }[],
+    ) =>
+      who.client
+        .post(`${base}/${id}/counts`)
+        .set(headers)
+        .set(originHeader)
+        .send({ counts, idempotencyKey: randomUUID() }),
     close: (id: string, body: Record<string, unknown>) =>
       who.client
         .post(`${base}/${id}/close`)
@@ -413,8 +427,15 @@ function parseRecap(body: { data: unknown }): EndOfDayRecap {
 // ---- Seed: sales, one refund, one void, one open shift -----------------------------
 
 async function seedDay() {
-  // Sale A: before any shift is open -> nil-uuid device.
-  const a = await cashSale();
+  // Sale A: made before any shift is open -> nil-uuid device. Cash needs the
+  // cashier's open shift (finding 2), so the order is created and submitted
+  // with no shift, then the shift opens just before the cash is taken.
+  const first: {
+    opened?: Awaited<ReturnType<ReturnType<typeof shiftApi>["open"]>>;
+  } = {};
+  const a = await cashSale({}, async () => {
+    first.opened = await shiftApi().open();
+  });
   sales.a = a;
   const rows = await owner.query<{ business_date: string }>(
     `SELECT business_date::text AS business_date FROM orders
@@ -424,9 +445,10 @@ async function seedDay() {
   today = rows.rows[0]?.business_date ?? "";
   expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-  const opened = await shiftApi().open();
-  expect(opened.status, JSON.stringify(opened.body)).toBe(201);
-  shiftId = opened.body.data.id as string;
+  const shiftOpened = first.opened;
+  if (!shiftOpened) throw new Error("the shift opens before sale A is paid");
+  expect(shiftOpened.status, JSON.stringify(shiftOpened.body)).toBe(201);
+  shiftId = shiftOpened.body.data.id as string;
 
   // Sales B, C, D (pos) and E (gofood, a different price list) on the shift.
   for (const key of ["b", "c", "d"] as const) {
@@ -881,13 +903,19 @@ describe("POS-05 the day cannot be closed while something is unfinished (legend-
   });
 
   it("POS-03 closing the cashier shift with a supervisor approval turns the terminal closed and carries its variance into the recap", async () => {
+    const counted = await shiftApi().count(shiftId, [
+      { denominationIdr: 100_000, quantity: 5 },
+    ]);
+    expect(counted.status, JSON.stringify(counted.body)).toBe(201);
+    const countId = counted.body.data.id as string;
     const closed = await shiftApi().close(shiftId, {
-      counts: [{ denominationIdr: 100_000, quantity: 5 }],
+      countId,
       varianceNote: "Selisih hitung kas pada uji tutup hari",
       ...(await pinApproval({
         action: "cash_shift_close",
-        objectType: "pos_shift",
-        objectId: shiftId,
+        objectType: "pos_shift_count",
+        objectId: countId,
+        // Ignored for a shift close: the server stores |variance| of the count.
         valueIdr: 0,
       })),
     });
@@ -899,6 +927,7 @@ describe("POS-05 the day cannot be closed while something is unfinished (legend-
     };
     expect(shift.status).toBe("closed");
     expect(shift.countedIdr).toBe(500_000);
+    expect(closed.body.data.countId).toBe(countId);
     // The drawer cannot balance by accident, so there is a variance to carry.
     expect(shift.varianceIdr).not.toBe(0);
 
@@ -1160,6 +1189,7 @@ describe("TEN-01 end-of-day isolation (legend-6c0)", () => {
       for (const table of [
         "pos_daily_closes",
         "pos_shifts",
+        "pos_shift_counts",
         "cash_movements",
       ]) {
         const { rows } = await client.query<{ count: string }>(
