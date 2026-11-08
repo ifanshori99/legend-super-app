@@ -353,7 +353,7 @@ describe("9yz-SUP-1 suppliers and contacts", () => {
       .set(originHeader)
       .send(body({ name: String(input.name).toUpperCase() }));
     expect(duplicate.status).toBe(409);
-    expect(duplicate.body.error.code).toBe("CONFLICT");
+    expect(duplicate.body.error.code).toBe("SUPPLIER_NAME_TAKEN");
   });
 
   it("[9yz-SUP-1] validates bodies strictly", async () => {
@@ -723,5 +723,126 @@ describe("9yz-ISO-1 tenant isolation", () => {
       c.query("SELECT 1 FROM suppliers WHERE id = $1", [supplier.id]),
     );
     expect(own.rows).toHaveLength(1);
+  });
+});
+
+describe("25a7 supplier contract gaps", () => {
+  const emailOf = (length: number) =>
+    `${"a".repeat(length - "@x.example".length)}@x.example`;
+
+  it("[25a7-SUP-1] email of 255 chars is 422 on create, update and contact; 254 is accepted", async () => {
+    const { client } = await signedInAs("Buyer 25a7-SUP-1", "purchasing");
+    const supplier = await createViaHttp(client);
+    const tooLong = emailOf(255);
+    const longest = emailOf(254);
+    const contact = (email: string) =>
+      client
+        .post(`/api/inventory/suppliers/${supplier.id}/contacts`)
+        .set(originHeader)
+        .send({
+          name: "Budi",
+          phone: "081234567890",
+          isPrimary: false,
+          email,
+          idempotencyKey: `con-${randomUUID()}`,
+        });
+
+    const createLong = await client
+      .post("/api/inventory/suppliers")
+      .set(originHeader)
+      .send(body({ email: tooLong }));
+    expect(createLong.status).toBe(422);
+    expect(createLong.body.error.code).toBe("VALIDATION_ERROR");
+    const updateLong = await client
+      .patch(`/api/inventory/suppliers/${supplier.id}`)
+      .set(originHeader)
+      .send({ email: tooLong, expectedUpdatedAt: supplier.updatedAt });
+    expect(updateLong.status).toBe(422);
+    expect(updateLong.body.error.code).toBe("VALIDATION_ERROR");
+    const contactLong = await contact(tooLong);
+    expect(contactLong.status).toBe(422);
+    expect(contactLong.body.error.code).toBe("VALIDATION_ERROR");
+
+    const created = await createViaHttp(client, { email: longest });
+    expect(created).toBeDefined();
+    const updated = await client
+      .patch(`/api/inventory/suppliers/${supplier.id}`)
+      .set(originHeader)
+      .send({ email: longest, expectedUpdatedAt: supplier.updatedAt });
+    expect(updated.status).toBe(200);
+    expect(updated.body.data.email).toBe(longest);
+    expect((await contact(longest)).status).toBe(201);
+  });
+
+  it("[25a7-SUP-2] cursor pagination with limit 1 walks every supplier once in lower(name) order", async () => {
+    const { client } = await signedInAs("Buyer 25a7-SUP-2", "purchasing");
+    const tag = randomUUID().slice(0, 6);
+    const ids: string[] = [];
+    for (const base of ["Zeta", "alpha", "Beta", "ÉCLAIR", "éclair-2"])
+      ids.push((await createViaHttp(client, { name: `${base} ${tag}` })).id);
+
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 5000; page += 1) {
+      const response = await client.get(
+        `/api/inventory/suppliers?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.body.data.length).toBeLessThanOrEqual(1);
+      for (const row of response.body.data as { id: string }[])
+        walked.push(row.id);
+      cursor = response.body.meta.nextCursor;
+      if (!cursor) break;
+    }
+    expect(cursor).toBeNull();
+    expect(new Set(walked).size).toBe(walked.length);
+
+    const expected = await owner.query<{ id: string }>(
+      "SELECT id FROM suppliers WHERE id = ANY($1::uuid[]) ORDER BY lower(name), id",
+      [ids],
+    );
+    expect(walked.filter((id) => ids.includes(id))).toEqual(
+      expected.rows.map((row) => row.id),
+    );
+  });
+
+  it("[25a7-SUP-3] SUPPLIER_INACTIVE on a catalog write, SUPPLIER_NAME_TAKEN on create and rename", async () => {
+    const { client } = await signedInAs("Buyer 25a7-SUP-3", "purchasing");
+    const supplier = await createViaHttp(client);
+    const other = await createViaHttp(client);
+
+    const taken = await client
+      .post("/api/inventory/suppliers")
+      .set(originHeader)
+      .send(body({ name: supplier.name.toUpperCase() }));
+    expect(taken.status).toBe(409);
+    expect(taken.body.error.code).toBe("SUPPLIER_NAME_TAKEN");
+    const rename = await client
+      .patch(`/api/inventory/suppliers/${other.id}`)
+      .set(originHeader)
+      .send({
+        name: supplier.name.toLowerCase(),
+        expectedUpdatedAt: other.updatedAt,
+      });
+    expect(rename.status).toBe(409);
+    expect(rename.body.error.code).toBe("SUPPLIER_NAME_TAKEN");
+
+    const deactivated = await client
+      .patch(`/api/inventory/suppliers/${supplier.id}`)
+      .set(originHeader)
+      .send({ isActive: false, expectedUpdatedAt: supplier.updatedAt });
+    expect(deactivated.status).toBe(200);
+    const price = await client
+      .post(`/api/inventory/suppliers/${supplier.id}/catalog`)
+      .set(originHeader)
+      .send({
+        inventoryItemId: itemA,
+        purchaseUomId: uomKg,
+        priceIdr: "1000.0000",
+        effectiveFrom: "2025-01-01",
+        idempotencyKey: `price-${randomUUID()}`,
+      });
+    expect(price.status).toBe(409);
+    expect(price.body.error.code).toBe("SUPPLIER_INACTIVE");
   });
 });

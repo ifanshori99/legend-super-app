@@ -9,6 +9,8 @@
 // - 9yz-SEND-3 email queue, sent PO, worker job, no address in logs
 // - 9yz-SEND-4 only approved (or already sent) orders can be sent
 // - 9yz-ISO-3 tenant isolation of send and of the public link
+// - 25a7-PO-2 emailDeliveryStatus on the order DTO (detail and list)
+// - 25a7-SEND-1 send refusals carry their own purchasing codes
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
 import { Pool, type Client } from "pg";
@@ -28,6 +30,10 @@ import {
   createPurchasingSendRouter,
   publicPurchaseOrderRouter,
 } from "../routes/purchasing-send.routes.ts";
+import {
+  getPurchaseOrder,
+  listPurchaseOrders,
+} from "../services/purchasing-order.service.ts";
 import { runPurchasingPoEmailJob } from "../worker/purchasing-po-email.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -368,7 +374,7 @@ describe("9yz-SEND-1 share link", () => {
     expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
   });
 
-  it("[9yz-SEND-1] a replay whose link expired, was revoked or was removed is a 409, not a dead URL", async () => {
+  it("[9yz-SEND-1] [25a7-SEND-1] a replay whose link expired, was revoked or was removed is a 409, not a dead URL", async () => {
     const order = await seedOrder("approved");
     const body = {
       channel: "share_link",
@@ -387,7 +393,9 @@ describe("9yz-SEND-1 share link", () => {
       );
       const response = await replay();
       expect(response.status).toBe(409);
-      expect(response.body.error.code).toBe("CONFLICT");
+      expect(response.body.error.code).toBe(
+        "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+      );
     }
     await owner.query(
       "DELETE FROM purchase_order_share_links WHERE purchase_order_id = $1",
@@ -395,7 +403,7 @@ describe("9yz-SEND-1 share link", () => {
     );
     const gone = await replay();
     expect(gone.status).toBe(409);
-    expect(gone.body.error.code).toBe("CONFLICT");
+    expect(gone.body.error.code).toBe("PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE");
   });
 
   it("[9yz-SEND-1] refuses a caller without the send permission", async () => {
@@ -606,7 +614,7 @@ describe("9yz-SEND-3 email", () => {
 
 describe("9yz-SEND-4 status gate", () => {
   it.each(["draft", "pending_approval", "cancelled", "closed"])(
-    "[9yz-SEND-4] refuses to send a %s order",
+    "[9yz-SEND-4] [25a7-SEND-1] refuses to send a %s order",
     async (status) => {
       const order = await seedOrder(status);
       for (const body of [
@@ -615,9 +623,7 @@ describe("9yz-SEND-4 status gate", () => {
       ]) {
         const response = await send(sender.client, order.id, body);
         expect(response.status).toBe(409);
-        expect(response.body.error.code).toBe(
-          "PURCHASE_ORDER_INVALID_TRANSITION",
-        );
+        expect(response.body.error.code).toBe("PURCHASE_ORDER_NOT_SENDABLE");
       }
       const { rows } = await owner.query<{ n: string }>(
         `SELECT (SELECT count(*) FROM purchase_order_share_links WHERE purchase_order_id = $1)
@@ -632,6 +638,80 @@ describe("9yz-SEND-4 status gate", () => {
     const order = await seedOrder("approved");
     const response = await send(sender.client, order.id, { channel: "email" });
     expect(response.status).toBe(422);
+  });
+});
+
+describe("25a7-PO-2 emailDeliveryStatus", () => {
+  it("[25a7-PO-2] is null before a send, then queued, sent and failed, in detail and in the list", async () => {
+    const status = async (id: string) => {
+      const detail = await getPurchaseOrder(tenantContext(), sender.userId, id);
+      const list = await listPurchaseOrders(tenantContext(), sender.userId, {
+        outletId: outletA,
+        supplierId,
+        limit: 100,
+      } as never);
+      const listed = list.data.find((item) => item.id === id)!;
+      expect(listed.emailDeliveryStatus).toBe(
+        detail.purchaseOrder.emailDeliveryStatus,
+      );
+      return detail.purchaseOrder.emailDeliveryStatus;
+    };
+    const address = `status-${randomBytes(4).toString("hex")}@supplier-test.example`;
+
+    const delivered = await seedOrder("approved");
+    expect(await status(delivered.id)).toBeNull();
+    const sentResponse = await send(sender.client, delivered.id, {
+      channel: "email",
+      email: address,
+    });
+    expect(sentResponse.body.data.purchaseOrder.emailDeliveryStatus).toBe(
+      "queued",
+    );
+    expect(await status(delivered.id)).toBe("queued");
+    await runPurchasingPoEmailJob([tenantContext()], {
+      email: new FakeEmailProvider(),
+    });
+    expect(await status(delivered.id)).toBe("sent");
+
+    const broken = await seedOrder("approved");
+    await send(sender.client, broken.id, { channel: "email", email: address });
+    expect(await status(broken.id)).toBe("queued");
+    const failing = {
+      send: async () => {
+        throw new Error("smtp down");
+      },
+    };
+    // Six failures are final; each step waits past the longest backoff.
+    let now = new Date();
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await runPurchasingPoEmailJob([tenantContext()], { email: failing }, now);
+      now = new Date(now.getTime() + 22000 * 1000);
+    }
+    expect(await status(broken.id)).toBe("failed");
+
+    // A share link is no email: status stays null.
+    const shared = await seedOrder("approved");
+    await send(sender.client, shared.id, { channel: "share_link" });
+    expect(await status(shared.id)).toBeNull();
+  });
+});
+
+describe("25a7-PO-3 updatedAt", () => {
+  it("[25a7-PO-3] updatedAt strictly increases after a send", async () => {
+    const stamp = async (id: string) => {
+      const { rows } = await owner.query<{ updated_at: Date }>(
+        "SELECT updated_at FROM purchase_orders WHERE id = $1",
+        [id],
+      );
+      return rows[0]!.updated_at.getTime();
+    };
+    const order = await seedOrder("approved");
+    const before = await stamp(order.id);
+    const response = await send(sender.client, order.id, {
+      channel: "share_link",
+    });
+    expect(response.status).toBe(200);
+    expect(await stamp(order.id)).toBeGreaterThan(before);
   });
 });
 

@@ -23,6 +23,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  PurchasingError,
   supplierCatalogItemSchema,
   supplierContactSchema,
   supplierDetailSchema,
@@ -50,6 +51,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { auditSetupChange } from "./inventory-setup.service.ts";
+import { translatePurchasingError } from "./purchasing-flow.shared.ts";
 import {
   cursorKeys,
   cursorUuid,
@@ -153,15 +155,6 @@ function toPrice(row: PriceRow): SupplierCatalogItem {
 const notFound = (what: string) =>
   new HttpError(404, "NOT_FOUND", `${what} not found.`);
 
-/** `email` columns are varchar(254): longer is a 400, not a DB 500. */
-function assertEmailLength(email: string | null | undefined): void {
-  if (email != null && email.length > 254)
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Email must be at most 254 characters.",
-    );
-}
-
 /** PostgreSQL unique violation, directly or wrapped by drizzle's cause chain. */
 function uniqueViolation(error: unknown, depth = 0): boolean {
   if (depth > 4 || typeof error !== "object" || error === null) return false;
@@ -174,15 +167,23 @@ function uniqueViolation(error: unknown, depth = 0): boolean {
 /** A unique constraint is the backstop of the pre-checks: same 409. */
 async function insertOrConflict<T>(
   insert: () => Promise<T>,
-  message: string,
+  conflict: () => unknown,
 ): Promise<T> {
   try {
     return await insert();
   } catch (error) {
-    if (uniqueViolation(error)) throw new HttpError(409, "CONFLICT", message);
+    if (uniqueViolation(error)) throw conflict();
     throw error;
   }
 }
+
+const nameTaken = () =>
+  translatePurchasingError(
+    new PurchasingError(
+      "SUPPLIER_NAME_TAKEN",
+      "A supplier with that name already exists.",
+    ),
+  );
 
 // ------------------------------------------------------------------- access
 
@@ -327,12 +328,7 @@ async function assertNameFree(
     .select({ id: suppliers.id })
     .from(suppliers)
     .where(and(...filters));
-  if (clash)
-    throw new HttpError(
-      409,
-      "CONFLICT",
-      "A supplier with that name already exists.",
-    );
+  if (clash) throw nameTaken();
 }
 
 async function loadSupplier(
@@ -354,7 +350,6 @@ export async function createSupplier(
 ): Promise<Supplier> {
   const operation = "supplier.create";
   const { idempotencyKey, ...fields } = input;
-  assertEmailLength(fields.email);
   const claim = {
     operation,
     key: idempotencyKey,
@@ -394,7 +389,7 @@ export async function createSupplier(
             createdBy: actorUserId,
           })
           .returning(),
-      "A supplier with that name already exists.",
+      nameTaken,
     );
     const supplier = toSupplier(row!);
     await auditSetupChange(tx, context, actorUserId, {
@@ -486,7 +481,6 @@ export async function updateSupplier(
   supplierId: string,
   input: UpdateSupplierInput,
 ): Promise<Supplier> {
-  assertEmailLength(input.email);
   return withTenant(db, context, async (tx) => {
     await requireSupplierWrite(tx, context, actorUserId);
     const current = await loadSupplier(tx, supplierId, true);
@@ -509,7 +503,7 @@ export async function updateSupplier(
           .set({ ...patch, updatedAt: new Date() })
           .where(eq(suppliers.id, supplierId))
           .returning(),
-      "A supplier with that name already exists.",
+      nameTaken,
     );
     const before = toSupplier(current);
     const after = toSupplier(row!);
@@ -536,7 +530,6 @@ export async function createSupplierContact(
   input: CreateSupplierContactInput,
 ): Promise<SupplierContact> {
   const operation = "supplier.contact.create";
-  assertEmailLength(input.email);
   const claim = {
     operation,
     key: input.idempotencyKey,
@@ -580,7 +573,12 @@ export async function createSupplierContact(
             isPrimary: input.isPrimary,
           })
           .returning(),
-      "This supplier already has a primary contact.",
+      () =>
+        new HttpError(
+          409,
+          "CONFLICT",
+          "This supplier already has a primary contact.",
+        ),
     );
     const contact = toContact(row!);
     await auditSetupChange(tx, context, actorUserId, {
@@ -625,10 +623,11 @@ export async function createSupplierCatalogItem(
 
     const supplier = await loadSupplier(tx, supplierId, true);
     if (!supplier.isActive)
-      throw new HttpError(
-        409,
-        "CONFLICT",
-        "This supplier is inactive. Activate it before adding prices.",
+      throw translatePurchasingError(
+        new PurchasingError(
+          "SUPPLIER_INACTIVE",
+          "This supplier is inactive. Activate it before adding prices.",
+        ),
       );
     const [item] = await tx
       .select({ id: inventoryItems.id })

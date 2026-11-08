@@ -4,7 +4,7 @@
 // - Allowed when the PO is `approved` (moves to `sent`, stamps sentAt and, for
 //   email, sentTo) or already `sent` / `partially_received` (a resend: a new
 //   link or email, no state change). Anything else is a 409
-//   PURCHASE_ORDER_INVALID_TRANSITION.
+//   PURCHASE_ORDER_NOT_SENDABLE.
 // - Share link: the token is an HMAC of (tenant, order, idempotency key), so a
 //   replay recomputes the same URL and the idempotency table never holds a
 //   token. Only the SHA-256 of the token is stored. It expires after 7 days.
@@ -56,6 +56,11 @@ import {
   requireOpsPermission,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import {
+  loadPurchaseOrder,
+  translatePurchasingError,
+  type PurchaseOrderRow,
+} from "./purchasing-flow.shared.ts";
 import { renderPurchaseOrderPdf } from "./purchasing-po-pdf.ts";
 
 export type SendPurchaseOrderInput = z.infer<
@@ -70,8 +75,6 @@ const OPERATION = "purchase_order.send";
 const LINK_KEY_CONTEXT = "legend:purchase-order-link:v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,100}$/;
 const AUDIT_FIELDS = ["channel", "status", "resend"] as const;
-
-type PurchaseOrderRow = typeof purchaseOrders.$inferSelect;
 
 // ---- Link token -----------------------------------------------------------
 
@@ -181,7 +184,10 @@ export async function ensurePurchaseOrderShareLink(
     link.revokedAt !== null ||
     link.expiresAt <= now
   )
-    throw new HttpError(409, "CONFLICT", "The share link could not be issued.");
+    throw new PurchasingError(
+      "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+      "The share link could not be issued.",
+    );
   return {
     token,
     url: await purchaseOrderLinkUrl(tx, tenantId, token),
@@ -190,31 +196,6 @@ export async function ensurePurchaseOrderShareLink(
 }
 
 // ---- DTO mapping ----------------------------------------------------------
-
-function toPurchaseOrder(row: PurchaseOrderRow): PurchaseOrder {
-  return purchaseOrderSchema.parse({
-    id: row.id,
-    tenantId: row.tenantId,
-    outletId: row.outletId,
-    supplierId: row.supplierId,
-    number: row.number,
-    purchaseRequestId: row.purchaseRequestId,
-    status: row.status,
-    expectedDate: row.expectedDate,
-    subtotalIdr: row.subtotalIdr,
-    taxIdr: row.taxIdr,
-    totalIdr: row.totalIdr,
-    source: row.source,
-    createdBy: row.createdBy,
-    createdAt: row.createdAt.toISOString(),
-    approvedBy: row.approvedBy,
-    approvedAt: row.approvedAt?.toISOString() ?? null,
-    sentAt: row.sentAt?.toISOString() ?? null,
-    sentTo: row.sentTo,
-    closedAt: row.closedAt?.toISOString() ?? null,
-    note: row.note,
-  });
-}
 
 // ---- Idempotency (purchasing_idempotency, tenant-level RLS) ---------------
 
@@ -320,168 +301,175 @@ export async function sendPurchaseOrder(
   assertTrustedScopedContext(context);
   const now = new Date();
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(purchaseOrders)
-      .where(
-        and(
-          eq(purchaseOrders.tenantId, tenantId),
-          eq(purchaseOrders.id, purchaseOrderId),
-        ),
-      )
-      .for("update");
-    // Another tenant's order, or an outlet outside the caller's reach (RLS),
-    // is simply not found.
-    if (!row)
-      throw new HttpError(404, "NOT_FOUND", "Purchase order not found.");
-    await requireOpsPermission(
-      tx,
-      context,
-      actorUserId,
-      PURCHASE_ORDER_SEND_PERMISSION,
-      row.outletId,
-    );
-    const claim: Claim = {
-      operation: OPERATION,
-      key: input.idempotencyKey,
-      outletId: row.outletId,
-      fingerprint: requestFingerprint(OPERATION, actorUserId, {
-        purchaseOrderId,
-        channel: input.channel,
-        email: input.email?.toLowerCase() ?? null,
-        note: input.note ?? null,
-      }),
-    };
-    const replay = await claimIdempotency(tx, context, claim);
-    if (replay) {
-      const stored = replay.replay as StoredSend;
-      let shareUrl: string | null = null;
-      if (stored.channel === "share_link") {
-        // The URL is recomputed, never stored. A replay must not hand out a
-        // dead link: the stored hash has to exist, be live and be this order's.
-        const token = purchaseOrderLinkToken(
-          tenantId,
-          purchaseOrderId,
-          input.idempotencyKey,
-        );
-        const [link] = await tx
-          .select({
-            expiresAt: purchaseOrderShareLinks.expiresAt,
-            revokedAt: purchaseOrderShareLinks.revokedAt,
-            purchaseOrderId: purchaseOrderShareLinks.purchaseOrderId,
-          })
-          .from(purchaseOrderShareLinks)
-          .where(
-            and(
-              eq(purchaseOrderShareLinks.tenantId, tenantId),
-              eq(
-                purchaseOrderShareLinks.tokenHash,
-                purchaseOrderLinkTokenHash(token),
-              ),
-            ),
-          );
-        if (
-          !link ||
-          link.purchaseOrderId !== purchaseOrderId ||
-          link.revokedAt !== null ||
-          link.expiresAt <= now
-        )
-          throw new HttpError(
-            409,
-            "CONFLICT",
-            "The share link is no longer valid. Send again with a new idempotency key.",
-          );
-        shareUrl = await purchaseOrderLinkUrl(tx, tenantId, token);
-      }
-      return toResult(
-        {
-          ...stored,
-          purchaseOrder: purchaseOrderSchema.parse(stored.purchaseOrder),
-        },
-        shareUrl,
-      );
-    }
+  try {
+    return await sendInTransaction();
+  } catch (error) {
+    throw translatePurchasingError(error);
+  }
 
-    const resend = row.status === "sent" || row.status === "partially_received";
-    if (!resend && row.status !== "approved")
-      throw new HttpError(
-        409,
-        "PURCHASE_ORDER_INVALID_TRANSITION",
-        `Cannot send a purchase order in ${row.status}`,
-      );
-    let order = row;
-    if (!resend) {
-      let next: PurchaseOrderRow["status"];
-      try {
-        next = transitionPurchaseOrder(row.status, "send");
-      } catch (error) {
-        if (error instanceof PurchasingError)
-          throw new HttpError(409, error.code, error.message);
-        throw error;
-      }
-      const [updated] = await tx
-        .update(purchaseOrders)
-        .set({
-          status: next,
-          sentAt: now,
-          sentTo: input.channel === "email" ? input.email! : null,
-          updatedAt: now,
-        })
+  function sendInTransaction() {
+    return withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(purchaseOrders)
         .where(
           and(
             eq(purchaseOrders.tenantId, tenantId),
-            eq(purchaseOrders.id, row.id),
+            eq(purchaseOrders.id, purchaseOrderId),
           ),
         )
-        .returning();
-      order = updated!;
-    }
-
-    let shareUrl: string | null = null;
-    let expiresAt: Date | null = null;
-    if (input.channel === "share_link") {
-      const link = await ensurePurchaseOrderShareLink(
+        .for("update");
+      // Another tenant's order, or an outlet outside the caller's reach (RLS),
+      // is simply not found.
+      if (!row)
+        throw new HttpError(404, "NOT_FOUND", "Purchase order not found.");
+      await requireOpsPermission(
         tx,
         context,
-        order,
-        input.idempotencyKey,
         actorUserId,
-        now,
+        PURCHASE_ORDER_SEND_PERMISSION,
+        row.outletId,
       );
-      shareUrl = link.url;
-      expiresAt = link.expiresAt;
-    } else {
-      await tx.insert(purchaseOrderEmailDeliveries).values({
-        tenantId,
-        outletId: order.outletId,
-        purchaseOrderId: order.id,
-        recipientEmail: input.email!,
-        createdBy: actorUserId,
-      });
-    }
+      const claim: Claim = {
+        operation: OPERATION,
+        key: input.idempotencyKey,
+        outletId: row.outletId,
+        fingerprint: requestFingerprint(OPERATION, actorUserId, {
+          purchaseOrderId,
+          channel: input.channel,
+          email: input.email?.toLowerCase() ?? null,
+          note: input.note ?? null,
+        }),
+      };
+      const replay = await claimIdempotency(tx, context, claim);
+      if (replay) {
+        const stored = replay.replay as StoredSend;
+        let shareUrl: string | null = null;
+        if (stored.channel === "share_link") {
+          // The URL is recomputed, never stored. A replay must not hand out a
+          // dead link: the stored hash has to exist, be live and be this order's.
+          const token = purchaseOrderLinkToken(
+            tenantId,
+            purchaseOrderId,
+            input.idempotencyKey,
+          );
+          const [link] = await tx
+            .select({
+              expiresAt: purchaseOrderShareLinks.expiresAt,
+              revokedAt: purchaseOrderShareLinks.revokedAt,
+              purchaseOrderId: purchaseOrderShareLinks.purchaseOrderId,
+            })
+            .from(purchaseOrderShareLinks)
+            .where(
+              and(
+                eq(purchaseOrderShareLinks.tenantId, tenantId),
+                eq(
+                  purchaseOrderShareLinks.tokenHash,
+                  purchaseOrderLinkTokenHash(token),
+                ),
+              ),
+            );
+          if (
+            !link ||
+            link.purchaseOrderId !== purchaseOrderId ||
+            link.revokedAt !== null ||
+            link.expiresAt <= now
+          )
+            throw new PurchasingError(
+              "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+              "The share link is no longer valid. Send again with a new idempotency key.",
+            );
+          shareUrl = await purchaseOrderLinkUrl(tx, tenantId, token);
+        }
+        return toResult(
+          {
+            ...stored,
+            purchaseOrder: purchaseOrderSchema.parse(stored.purchaseOrder),
+          },
+          shareUrl,
+        );
+      }
 
-    const purchaseOrder = toPurchaseOrder(order);
-    await recordOpsAudit(tx, context, {
-      actorUserId,
-      outletId: order.outletId,
-      action: "purchasing.order_sent",
-      objectType: "purchase_order",
-      objectId: order.id,
-      before: { status: row.status },
-      after: { channel: input.channel, status: order.status, resend },
-      safeFields: AUDIT_FIELDS,
-      reason: input.note ?? null,
+      const resend =
+        row.status === "sent" || row.status === "partially_received";
+      if (!resend && row.status !== "approved")
+        throw new PurchasingError(
+          "PURCHASE_ORDER_NOT_SENDABLE",
+          `Cannot send a purchase order in ${row.status}`,
+        );
+      let order = row;
+      if (!resend) {
+        let next: PurchaseOrderRow["status"];
+        try {
+          next = transitionPurchaseOrder(row.status, "send");
+        } catch (error) {
+          if (error instanceof PurchasingError)
+            throw new HttpError(409, error.code, error.message);
+          throw error;
+        }
+        const [updated] = await tx
+          .update(purchaseOrders)
+          .set({
+            status: next,
+            sentAt: now,
+            sentTo: input.channel === "email" ? input.email! : null,
+            updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
+          })
+          .where(
+            and(
+              eq(purchaseOrders.tenantId, tenantId),
+              eq(purchaseOrders.id, row.id),
+            ),
+          )
+          .returning();
+        order = updated!;
+      }
+
+      let shareUrl: string | null = null;
+      let expiresAt: Date | null = null;
+      if (input.channel === "share_link") {
+        const link = await ensurePurchaseOrderShareLink(
+          tx,
+          context,
+          order,
+          input.idempotencyKey,
+          actorUserId,
+          now,
+        );
+        shareUrl = link.url;
+        expiresAt = link.expiresAt;
+      } else {
+        await tx.insert(purchaseOrderEmailDeliveries).values({
+          tenantId,
+          outletId: order.outletId,
+          purchaseOrderId: order.id,
+          recipientEmail: input.email!,
+          createdBy: actorUserId,
+        });
+      }
+
+      const purchaseOrder = await loadPurchaseOrder(tx, order);
+      await recordOpsAudit(tx, context, {
+        actorUserId,
+        outletId: order.outletId,
+        action: "purchasing.order_sent",
+        objectType: "purchase_order",
+        objectId: order.id,
+        before: { status: row.status },
+        after: { channel: input.channel, status: order.status, resend },
+        safeFields: AUDIT_FIELDS,
+        reason: input.note ?? null,
+      });
+      const stored: StoredSend = {
+        purchaseOrder,
+        channel: input.channel,
+        sentTo: input.channel === "email" ? input.email! : null,
+        expiresAt: expiresAt === null ? null : toIsoDateTime(expiresAt),
+      };
+      await completeIdempotency(tx, context, claim, stored);
+      return toResult(stored, shareUrl);
     });
-    const stored: StoredSend = {
-      purchaseOrder,
-      channel: input.channel,
-      sentTo: input.channel === "email" ? input.email! : null,
-      expiresAt: expiresAt === null ? null : toIsoDateTime(expiresAt),
-    };
-    await completeIdempotency(tx, context, claim, stored);
-    return toResult(stored, shareUrl);
-  });
+  }
 }
 
 // ---- Public PDF -----------------------------------------------------------
@@ -528,7 +516,7 @@ export async function getPublicPurchaseOrderPdf(
         ),
       );
     if (!row || row.status === "cancelled") throw documentNotFound();
-    const order = toPurchaseOrder(row);
+    const order = await loadPurchaseOrder(tx, row);
     const [supplier] = await tx
       .select({
         name: suppliers.name,

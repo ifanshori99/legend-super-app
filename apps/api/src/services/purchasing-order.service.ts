@@ -36,6 +36,7 @@ import {
   purchaseOrderLineTotalIdr,
   purchaseOrderSchema,
   purchaseOrderTotals,
+  PurchasingError,
   transitionPurchaseOrder,
   transitionPurchaseRequest,
   type createPurchaseOrderInputSchema,
@@ -81,11 +82,14 @@ import {
   assertDocumentOwner,
   claimPurchasingIdempotency,
   completePurchasingIdempotency,
+  loadEmailDeliveryStatuses,
+  loadPurchaseOrder,
   openPurchasingApproval,
   PURCHASING_SOURCE_MODULE,
   recordSystemPurchasingAudit,
   refuseWhenChainOpen,
   requireAnyPurchasingPermission,
+  toPurchaseOrder,
   translatePurchasingError,
 } from "./purchasing-flow.shared.ts";
 import {
@@ -124,31 +128,9 @@ const TAX_IDR = idr(0);
 
 type OrderRow = typeof purchaseOrders.$inferSelect;
 type LineRow = typeof purchaseOrderLines.$inferSelect;
-
-export function toPurchaseOrder(row: OrderRow): PurchaseOrder {
-  return purchaseOrderSchema.parse({
-    id: row.id,
-    tenantId: row.tenantId,
-    outletId: row.outletId,
-    supplierId: row.supplierId,
-    number: row.number,
-    purchaseRequestId: row.purchaseRequestId,
-    status: row.status,
-    expectedDate: row.expectedDate,
-    subtotalIdr: row.subtotalIdr,
-    taxIdr: row.taxIdr,
-    totalIdr: row.totalIdr,
-    source: row.source,
-    createdBy: row.createdBy,
-    createdAt: row.createdAt.toISOString(),
-    approvedBy: row.approvedBy,
-    approvedAt: row.approvedAt?.toISOString() ?? null,
-    sentAt: row.sentAt?.toISOString() ?? null,
-    sentTo: row.sentTo,
-    closedAt: row.closedAt?.toISOString() ?? null,
-    note: row.note,
-  });
-}
+type PurchaseOrderPatch = Partial<
+  Omit<typeof purchaseOrders.$inferInsert, "updatedAt">
+> & { updatedAt: SQL };
 
 function toLine(row: LineRow) {
   return {
@@ -173,7 +155,7 @@ async function loadLines(tx: Tx, orderId: string): Promise<LineRow[]> {
 
 async function detailOf(tx: Tx, row: OrderRow): Promise<PurchaseOrderDetail> {
   return purchaseOrderDetailSchema.parse({
-    purchaseOrder: toPurchaseOrder(row),
+    purchaseOrder: await loadPurchaseOrder(tx, row),
     lines: (await loadLines(tx, row.id)).map(toLine),
   });
 }
@@ -185,7 +167,7 @@ async function requireActiveSupplier(tx: Tx, supplierId: string) {
     .where(eq(suppliers.id, supplierId));
   if (!supplier) throw new HttpError(404, "NOT_FOUND", "Supplier not found.");
   if (!supplier.isActive)
-    throw new HttpError(422, "VALIDATION_ERROR", "Supplier is not active.");
+    throw new PurchasingError("SUPPLIER_INACTIVE", "Supplier is not active.");
 }
 
 type LineInput = CreatePurchaseOrderInput["lines"][number];
@@ -399,9 +381,11 @@ export async function updatePurchaseOrder(
           "PURCHASE_ORDER_INVALID_TRANSITION",
           `Only a draft purchase order can change, not ${row.status}`,
         );
-      const now = new Date();
-      const patch: Partial<typeof purchaseOrders.$inferInsert> = {
-        updatedAt: now,
+      // `updated_at` is the optimistic-lock token: it takes the database clock
+      // (clock_timestamp, not the frozen transaction now()) but never less than
+      // the previous value plus 1 ms, so it strictly increases on every write.
+      const patch: PurchaseOrderPatch = {
+        updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
       };
       if (input.supplierId !== undefined) {
         await requireActiveSupplier(tx, input.supplierId);
@@ -441,7 +425,7 @@ export async function updatePurchaseOrder(
         action: "purchasing.order_updated",
         objectType: "purchase_order",
         objectId: row.id,
-        before: toPurchaseOrder(row),
+        before: toPurchaseOrder(row, detail.purchaseOrder.emailDeliveryStatus),
         after: detail.purchaseOrder,
         safeFields: AUDIT_FIELDS,
       });
@@ -508,8 +492,15 @@ export async function listPurchaseOrders(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const emailStatuses = await loadEmailDeliveryStatuses(
+      tx,
+      context.tenant.tenantId,
+      page.map((row) => row.id),
+    );
     return {
-      data: page.map(toPurchaseOrder),
+      data: page.map((row) =>
+        toPurchaseOrder(row, emailStatuses.get(row.id) ?? null),
+      ),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -622,8 +613,8 @@ export async function transitionPurchaseOrderStatus(
       );
       const now = new Date();
       const action: PurchaseOrderAction = input.action;
-      const patch: Partial<typeof purchaseOrders.$inferInsert> = {
-        updatedAt: now,
+      const patch: PurchaseOrderPatch = {
+        updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
       };
       let approvedNow = false;
       switch (input.action) {
@@ -698,7 +689,7 @@ export async function transitionPurchaseOrderStatus(
         .returning();
       if (!updated)
         throw new HttpError(409, "CONFLICT", "The order changed; retry.");
-      const result = toPurchaseOrder(updated);
+      const result = await loadPurchaseOrder(tx, updated);
       if (approvedNow)
         await appendApproved(tx, context, updated, actorUserId, now);
       await recordOpsAudit(tx, context, {
@@ -746,12 +737,12 @@ export async function settlePurchaseOrderForApproval(
       )
       .for("update");
     if (!row) return null;
-    if (row.status !== "pending_approval") return toPurchaseOrder(row);
+    if (row.status !== "pending_approval") return loadPurchaseOrder(tx, row);
     const outcome = await getApprovalChainOutcome(tx, {
       chainId,
       sourceModule: PURCHASING_SOURCE_MODULE,
     });
-    if (outcome === "pending") return toPurchaseOrder(row);
+    if (outcome === "pending") return loadPurchaseOrder(tx, row);
     // Every level's decider is checked: a creator who decided any level
     // taints the chain (fail closed, the PO returns to draft).
     const levels = await tx
@@ -791,12 +782,12 @@ export async function settlePurchaseOrderForApproval(
               status: transitionPurchaseOrder(row.status, "approve"),
               approvedBy: approver,
               approvedAt: now,
-              updatedAt: now,
+              updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
             }
           : {
               status: transitionPurchaseOrder(row.status, "reject"),
               approvalChainId: null,
-              updatedAt: now,
+              updatedAt: sql`GREATEST(clock_timestamp(), ${purchaseOrders.updatedAt} + interval '1 millisecond')`,
             },
       )
       .where(
@@ -809,7 +800,7 @@ export async function settlePurchaseOrderForApproval(
     if (!updated) throw new Error("purchase order changed under its lock");
     if (approved && approver !== null)
       await appendApproved(tx, context, updated, approver, now);
-    const result = toPurchaseOrder(updated);
+    const result = await loadPurchaseOrder(tx, updated);
     const audit = {
       outletId: row.outletId,
       action: approved ? "purchasing.order_approve" : "purchasing.order_reject",

@@ -882,3 +882,108 @@ test("purchasing endpoints are unique and write inputs reject tenant fields and 
     "the photo is mandatory",
   );
 });
+
+test("[25a7-CT-1] a purchase order carries a required updatedAt and a nullable emailDeliveryStatus", () => {
+  const { purchaseOrder } = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(purchaseOrder).success,
+    true,
+  );
+  const { updatedAt, ...withoutUpdatedAt } = purchaseOrder;
+  assert.ok(updatedAt);
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(withoutUpdatedAt).success,
+    false,
+    "updatedAt is required",
+  );
+  const { emailDeliveryStatus, ...withoutStatus } = purchaseOrder;
+  assert.ok(emailDeliveryStatus);
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse(withoutStatus).success,
+    false,
+    "emailDeliveryStatus is required, null means never emailed",
+  );
+  for (const status of ["queued", "sent", "failed", null]) {
+    assert.equal(
+      shared.purchaseOrderSchema.safeParse({
+        ...purchaseOrder,
+        emailDeliveryStatus: status,
+      }).success,
+      true,
+      String(status),
+    );
+  }
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse({
+      ...purchaseOrder,
+      emailDeliveryStatus: "bounced",
+    }).success,
+    false,
+  );
+});
+
+test("[25a7-CT-2] an email longer than 254 characters is rejected in every input", () => {
+  const longEmail = `${"a".repeat(243)}@example.com`;
+  const okEmail = `${"a".repeat(242)}@example.com`;
+  assert.equal(longEmail.length, 255);
+  assert.equal(okEmail.length, 254);
+  const supplierBody = (email) => ({
+    name: "CV Sumber Rejeki",
+    paymentTermsDays: 14,
+    email,
+    idempotencyKey: "fixture-supplier-0002",
+  });
+  const contactBody = (email) => ({
+    name: "Budi",
+    phone: "+6281234567890",
+    email,
+    isPrimary: true,
+    idempotencyKey: "fixture-contact-0001",
+  });
+  const sendBody = (email) => ({
+    channel: "email",
+    email,
+    idempotencyKey: "fixture-send-0002",
+  });
+  const updateBody = (email) => ({
+    email,
+    expectedUpdatedAt: "2026-10-20T03:00:00.000Z",
+  });
+  const cases = [
+    [shared.createSupplierInputSchema, supplierBody],
+    [shared.updateSupplierInputSchema, updateBody],
+    [shared.createSupplierContactInputSchema, contactBody],
+    [shared.sendPurchaseOrderInputSchema, sendBody],
+  ];
+  for (const [schema, body] of cases) {
+    assert.equal(schema.safeParse(body(okEmail)).success, true, "254 accepted");
+    assert.equal(
+      schema.safeParse(body(longEmail)).success,
+      false,
+      "255 rejected",
+    );
+  }
+  const { purchaseOrder } = purchaseOrderByNumber("PO/BDG/2026/10/0042");
+  assert.equal(
+    shared.purchaseOrderSchema.safeParse({
+      ...purchaseOrder,
+      sentTo: longEmail,
+    }).success,
+    false,
+  );
+});
+
+test("[25a7-CT-3] the follow-up purchasing error codes exist", () => {
+  for (const code of [
+    "SUPPLIER_INACTIVE",
+    "SUPPLIER_NAME_TAKEN",
+    "PURCHASE_ORDER_NOT_SENDABLE",
+    "PURCHASE_ORDER_SHARE_LINK_UNAVAILABLE",
+  ]) {
+    assert.ok(shared.PURCHASING_ERROR_CODES.includes(code), code);
+    assert.equal(
+      shared.purchasingErrorCodeSchema.safeParse(code).success,
+      true,
+    );
+  }
+});

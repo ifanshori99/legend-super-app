@@ -12,6 +12,7 @@
 // - 9yz-FLOW-5 PR estimate from supplier prices tiers the matrix
 // - 9yz-FLOW-6 idempotency, draft-only update, stale expectedUpdatedAt
 // - 9yz-ISO-2 tenant and outlet isolation
+// - 25a7-PO-1 updatedAt on the order DTO is the PATCH precondition
 import { randomUUID } from "node:crypto";
 import { Pool, type Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -854,7 +855,7 @@ describe("9yz-FLOW purchase request and order flow", () => {
         purchaser,
         poInput({ supplierId: inactive }),
       ),
-      { status: 422, code: "VALIDATION_ERROR" },
+      { status: 409, code: "SUPPLIER_INACTIVE" },
     );
     await rejectsWith(
       createPurchaseOrder(
@@ -891,6 +892,110 @@ describe("9yz-FLOW purchase request and order flow", () => {
       limit: 50,
     } as never);
     expect(prs.data.length).toBeGreaterThan(0);
+  });
+});
+
+describe("25a7-PO updatedAt", () => {
+  it("[25a7-PO-1] GET returns updatedAt, PATCH with it succeeds and moves it, the old value is refused", async () => {
+    const created = await createPurchaseOrder(
+      tenantContext(),
+      purchaser,
+      poInput(),
+    );
+    const id = created.purchaseOrder.id as string;
+    const read = await getPurchaseOrder(tenantContext(), purchaser, id);
+    const first = read.purchaseOrder.updatedAt;
+    expect(first).toBe(((await poRow(id)).updated_at as Date).toISOString());
+    const changed = await updatePurchaseOrder(tenantContext(), purchaser, id, {
+      note: "first edit",
+      expectedUpdatedAt: first,
+    } as never);
+    const second = changed.purchaseOrder.updatedAt;
+    expect(Date.parse(second)).toBeGreaterThan(Date.parse(first));
+    await rejectsWith(
+      updatePurchaseOrder(tenantContext(), purchaser, id, {
+        note: "stale edit",
+        expectedUpdatedAt: first,
+      } as never),
+      { status: 412, code: "PRECONDITION_FAILED" },
+    );
+    // The new value is accepted, and a transition moves it again.
+    await updatePurchaseOrder(tenantContext(), purchaser, id, {
+      note: "second edit",
+      expectedUpdatedAt: second,
+    } as never);
+    const submitted = await transitionPurchaseOrderStatus(
+      tenantContext(),
+      purchaser,
+      id,
+      act("submit"),
+    );
+    expect(Date.parse(submitted.updatedAt)).toBeGreaterThan(Date.parse(second));
+    expect(submitted.emailDeliveryStatus).toBeNull();
+  });
+
+  it("[25a7-PO-3] updatedAt strictly increases after approve, reject, cancel and an approval-consumer settle", async () => {
+    const stamp = async (id: string) =>
+      ((await poRow(id)).updated_at as Date).getTime();
+    const moved = async (
+      id: string,
+      change: () => Promise<unknown>,
+    ): Promise<void> => {
+      const before = await stamp(id);
+      await change();
+      expect(await stamp(id)).toBeGreaterThan(before);
+    };
+
+    const approvedId = await pendingPo();
+    await moved(approvedId, () =>
+      transitionPurchaseOrderStatus(
+        tenantContext(),
+        approver,
+        approvedId,
+        act("approve"),
+      ),
+    );
+
+    const rejectedId = await pendingPo();
+    await moved(rejectedId, () =>
+      transitionPurchaseOrderStatus(
+        tenantContext(),
+        approver,
+        rejectedId,
+        act("reject", "Harga terlalu tinggi"),
+      ),
+    );
+
+    const cancelledId = await pendingPo();
+    await moved(cancelledId, () =>
+      transitionPurchaseOrderStatus(
+        tenantContext(),
+        purchaser,
+        cancelledId,
+        act("cancel"),
+      ),
+    );
+
+    await setPolicy("purchase_order", null);
+    try {
+      for (const decision of ["approved", "rejected"] as const) {
+        const settledId = await pendingPo();
+        const chainId = (await poRow(settledId)).approval_chain_id as string;
+        await decideApprovalRequest(
+          tenant,
+          approver,
+          chainId,
+          { decision, reason: "Keputusan inbox." },
+          { mfaVerified: true, idempotencyKey: null },
+        );
+        const resolved = await resolvedEventOf(chainId);
+        await moved(settledId, () =>
+          handlePurchasingApprovalResolved(tenantContext(), resolved),
+        );
+      }
+    } finally {
+      await resetPolicies();
+    }
   });
 });
 

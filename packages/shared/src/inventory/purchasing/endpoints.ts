@@ -151,7 +151,7 @@ export const createSupplierInputSchema = clientInputSchema({
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),
-  email: z.email().nullable().optional(),
+  email: z.email().max(254).nullable().optional(),
   address: z.string().trim().min(1).max(300).nullable().optional(),
   /** PRD §6.E suppliers.payment_terms (days). */
   paymentTermsDays: z.number().int().min(0).max(365),
@@ -164,7 +164,7 @@ export const updateSupplierInputSchema = clientInputSchema({
   legalName: z.string().trim().min(1).max(200).nullable().optional(),
   contactName: z.string().trim().min(1).max(150).nullable().optional(),
   phone: supplierPhoneSchema.nullable().optional(),
-  email: z.email().nullable().optional(),
+  email: z.email().max(254).nullable().optional(),
   address: z.string().trim().min(1).max(300).nullable().optional(),
   paymentTermsDays: z.number().int().min(0).max(365).optional(),
   rating: supplierRatingSchema.nullable().optional(),
@@ -177,7 +177,7 @@ export const createSupplierContactInputSchema = clientInputSchema({
   name: z.string().trim().min(1).max(150),
   role: z.string().trim().min(1).max(60).nullable().optional(),
   phone: supplierPhoneSchema,
-  email: z.email().nullable().optional(),
+  email: z.email().max(254).nullable().optional(),
   isPrimary: z.boolean(),
   idempotencyKey: idempotencyKeySchema,
 });
@@ -262,7 +262,7 @@ export const transitionPurchaseOrderInputSchema = clientInputSchema({
 /** PRD §3.18 "Kirim PO": email the PO or return a shareable PDF link. */
 export const sendPurchaseOrderInputSchema = clientInputSchema({
   channel: z.enum(["email", "share_link"]),
-  email: z.email().optional(),
+  email: z.email().max(254).optional(),
   note: z.string().trim().max(300).nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
 }).refine((input) => input.channel !== "email" || input.email !== undefined, {

@@ -20,12 +20,19 @@ import {
 } from "@starter/shared/core";
 import {
   PurchasingError,
+  purchaseOrderSchema,
   purchasingEvents,
+  type PurchaseOrder,
+  type PurchaseOrderEmailDeliveryStatus,
   type PurchasingEventName,
 } from "@starter/shared/inventory";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
-import { purchasingIdempotency } from "../db/schema/purchasing.ts";
+import {
+  purchaseOrderEmailDeliveries,
+  purchaseOrders,
+  purchasingIdempotency,
+} from "../db/schema/purchasing.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -54,6 +61,85 @@ export function translatePurchasingError(error: unknown): unknown {
   if (error instanceof PurchasingError)
     return new HttpError(409, error.code, error.message);
   return error;
+}
+
+// ---------------------------------------------------------- PO DTO
+
+export type PurchaseOrderRow = typeof purchaseOrders.$inferSelect;
+
+/**
+ * Latest email delivery status per order (by created time, id as tiebreak) in
+ * one query. An order never emailed has no entry.
+ */
+export async function loadEmailDeliveryStatuses(
+  tx: Tx,
+  tenantId: PurchaseOrderRow["tenantId"],
+  orderIds: readonly string[],
+): Promise<Map<string, PurchaseOrderEmailDeliveryStatus>> {
+  const statuses = new Map<string, PurchaseOrderEmailDeliveryStatus>();
+  if (orderIds.length === 0) return statuses;
+  const rows = await tx
+    .selectDistinctOn([purchaseOrderEmailDeliveries.purchaseOrderId], {
+      purchaseOrderId: purchaseOrderEmailDeliveries.purchaseOrderId,
+      status: purchaseOrderEmailDeliveries.status,
+    })
+    .from(purchaseOrderEmailDeliveries)
+    .where(
+      and(
+        eq(purchaseOrderEmailDeliveries.tenantId, tenantId),
+        inArray(purchaseOrderEmailDeliveries.purchaseOrderId, [...orderIds]),
+      ),
+    )
+    .orderBy(
+      purchaseOrderEmailDeliveries.purchaseOrderId,
+      desc(purchaseOrderEmailDeliveries.createdAt),
+      desc(purchaseOrderEmailDeliveries.id),
+    );
+  for (const row of rows)
+    statuses.set(
+      row.purchaseOrderId,
+      row.status as PurchaseOrderEmailDeliveryStatus,
+    );
+  return statuses;
+}
+
+export function toPurchaseOrder(
+  row: PurchaseOrderRow,
+  emailDeliveryStatus: PurchaseOrderEmailDeliveryStatus | null,
+): PurchaseOrder {
+  return purchaseOrderSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    supplierId: row.supplierId,
+    number: row.number,
+    purchaseRequestId: row.purchaseRequestId,
+    status: row.status,
+    expectedDate: row.expectedDate,
+    subtotalIdr: row.subtotalIdr,
+    taxIdr: row.taxIdr,
+    totalIdr: row.totalIdr,
+    source: row.source,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    approvedBy: row.approvedBy,
+    approvedAt: row.approvedAt?.toISOString() ?? null,
+    sentAt: row.sentAt?.toISOString() ?? null,
+    sentTo: row.sentTo,
+    closedAt: row.closedAt?.toISOString() ?? null,
+    note: row.note,
+    emailDeliveryStatus,
+  });
+}
+
+/** One order DTO with its latest email delivery status. */
+export async function loadPurchaseOrder(
+  tx: Tx,
+  row: PurchaseOrderRow,
+): Promise<PurchaseOrder> {
+  const statuses = await loadEmailDeliveryStatuses(tx, row.tenantId, [row.id]);
+  return toPurchaseOrder(row, statuses.get(row.id) ?? null);
 }
 
 /** Reads: any purchasing permission at the outlet, else PERMISSION_DENIED. */
