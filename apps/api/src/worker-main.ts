@@ -30,6 +30,8 @@ import {
   handleRefundApprovalResolved,
   sweepApprovedRefundPayouts,
 } from "./services/payment-refund.service.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
@@ -127,6 +129,9 @@ const runtime = createWorkerRuntime({
           // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
           // the payout itself runs from the approve call or the payout sweep.
           await handleRefundApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
           // Manual/recurring journals (legend-vmyg): settle from the chain.
           await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
@@ -171,6 +176,14 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
