@@ -6,9 +6,11 @@
 //   - expiry: `expiresAt` (Unix seconds) is inside the signed payload;
 //   - tenant status: checked by the caller against `tenants` (fail closed).
 //
-// Device registration, issuance and revocation live in WS-02 (legend-165).
-// Until then nothing in the product issues a token, so this verifier cannot be
-// reached with a token the server did not sign.
+// The signed payload also carries `issuedAt` (Unix seconds). A valid signature
+// is only half of acceptance: the device registry (services/device.service.ts
+// mints, services/device-registry-check.ts reads) must still list the device as
+// active with `token_issued_at <= issuedAt`, so revocation and reissue take
+// effect even though a token cannot be recalled.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   deviceTokenPayloadSchema,
