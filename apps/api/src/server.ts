@@ -25,6 +25,7 @@ import {
   type EdgeLinkHandle,
   type EdgeRuntimeHandle,
 } from "./edge/runtime.ts";
+import { startEdgePrintAgent } from "./edge/print/runtime.ts";
 
 const app = createApp();
 // RSV-02 (legend-t8bz): DP links through WS-05 (fails closed without a gateway).
@@ -87,11 +88,16 @@ const stopQrWakeups = listenQrCartWakeups(pool, qrRealtime.dispatch).catch(
 // /api/edge-link; an edge node runs its boot guards and opens the link to the
 // cloud. A misconfigured or unprovisioned edge node refuses to keep running.
 let edgeRuntime: EdgeRuntimeHandle | null = null;
+// Print Agent (legend-46p, PRD §3 F5, EDG-05): edge mode only, bound to the
+// node's own tenant + outlet once the edge runtime has its identity.
+let printAgent: { stop(): Promise<void> } | null = null;
 let edgeLink: EdgeLinkHandle | null = null;
 const edgeReady = (async () => {
   try {
-    if (env.EDGE_MODE) edgeRuntime = await startEdgeRuntime();
-    else edgeLink = await registerEdgeLink(server);
+    if (env.EDGE_MODE) {
+      edgeRuntime = await startEdgeRuntime();
+      printAgent = startEdgePrintAgent();
+    } else edgeLink = await registerEdgeLink(server);
   } catch (error) {
     if (error instanceof EdgeBootError) {
       // The message names settings and tables only, never their values.
@@ -125,6 +131,7 @@ async function shutdown(signal: string) {
     await stopQrWakeups
   )();
   await edgeReady.catch(() => {});
+  await printAgent?.stop();
   await edgeRuntime?.stop();
   await edgeLink?.close();
   server.closeIdleConnections();
