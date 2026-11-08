@@ -42,6 +42,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Format wire DOIT (path, payload, header tanda tangan `t=,v1=`) masih ASUMSI di `payment-doit-wire.ts` sampai dokumen sandbox DOIT ada (legend-saov, legend-s5c).
 - Brief subagent: `docs/briefs/sub-doit-provider.md`. Smoke test sandbox opsional `apps/api/src/test/payment-doit-sandbox.test.ts` (dilewati tanpa `DOIT_API_KEY` + `DOIT_SANDBOX_BASE_URL`).
 - Metrik gelombang (17.22-18.03): biaya* sesi 6064k (Opus utama 1819k, Opus subagent 238k, Sonnet subagent 4007k), 20 subagent (Claude saja, 0 Codex), puncak konteks 228k, 0 compact. Satu review lagi menemukan 5 temuan setelah fix wave 1; dua gelombang perbaikan.
+- Gate akhir (setelah merge `main` c9e0c62): vitest API 1436 lulus / 0 gagal; test root 1384 lulus (gabungan dua run, satu kegagalan `api-client` akibat symlink `node_modules` ke checkout utama, sudah dibuktikan lulus); build, format, color, tenant-hardcode lulus. Status: review CTO.
 
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 
