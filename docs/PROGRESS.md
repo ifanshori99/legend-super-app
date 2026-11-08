@@ -16,7 +16,7 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 
 - 2026-11-08 malam (CTO G6ifq): tes integrasi `ws/pos-payment-fixes` 2f68a5c LULUS: `heavy pnpm test` API 1227 lulus/0 gagal (141 file), root 1384/0; fokus payment-lifecycle 12, qris-lifecycle 14, qris-round2 3, approval 9, deposit-lock 6, pos-order 13. Siap gerbang merge.
 - Brief second-opinion Codex 59–63 ditulis (commit d376a5a).
-- Refund approval `ws/refund-approval` 5b6a707 SELESAI (gerbang penuh hijau, 43 test). Second-opinion Codex brief 65; urutan antrean Codex: 59 shift, 65 refund, 68 struk putaran 2 (ws/pos-receipt e11caae), jurnal (ws/journals, brief menyusul), 60 EDC, 61 procurement, 62 DOIT, 63 KDS.
+- Refund approval `ws/refund-approval` 5b6a707 SELESAI (gerbang penuh hijau, 43 test). Second-opinion Codex brief 65; urutan antrean Codex: 59 shift, 65 refund, 68 struk putaran 2 (ws/pos-receipt e11caae), jurnal (ws/journals, brief menyusul), PPh21 putaran 2 (ws/payroll-pph21-tests a0bf212, brief menyusul), HRIS cuti (ws/hris-leave 576cb1e, brief menyusul), 60 EDC, 61 procurement, 62 DOIT, 63 KDS.
 - Thread baru G1u8c legend-2lp.7 (brief 64): cabang `ws/edge-registry-pull` = edge-hardening + device-registry + tarik berkala; merge cabang ini menggantikan urutan merge edge 3 langkah.
 
 - Struk `ws/pos-receipt` e11caae SELESAI putaran 2 (gerbang hijau). Thread UI kasir alur shift G0prp (brief 67, `ui/pos-kasir-shift`). Merge 5 cabang (brief 66) via subagent. Founder Q1 setuju UI kasir, Q2 Rp0 boleh + 1 konfirmasi, Q3 merge semua.
