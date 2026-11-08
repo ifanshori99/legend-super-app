@@ -81,9 +81,9 @@ services:
     restart: unless-stopped
     env_file: ["${WORKER_ENV_FILE:?Set WORKER_ENV_FILE}"]
     environment:
-      WORKER_TRANSPORT_MODULE: /opt/legend/worker-transport.mjs
-    volumes:
-      - ${WORKER_TRANSPORT_PATH:?Set WORKER_TRANSPORT_PATH}:/opt/legend/worker-transport.mjs:ro
+      # Built-in outbox transport (legend-18qw); notification channel providers
+      # come from worker.env and are required (disabled is an explicit value).
+      WORKER_TRANSPORT: builtin
     depends_on:
       postgres: { condition: service_healthy }
     mem_limit: 384m

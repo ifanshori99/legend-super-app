@@ -618,6 +618,36 @@ describe("Operations checklist runs (legend-btha)", () => {
     expect(alert?.destination).toBe("notification");
   });
 
+  it("legend-18qw [OPS-01] numbers the notification stream on its own, so the supervisor alert is claimable (sequence 1)", async () => {
+    const run = await postRun(staff, baseTemplateId);
+    await startRun(staff, run.id);
+    const missed = await postTransition(staff, run.id, "miss");
+    expect(missed.status, JSON.stringify(missed.body)).toBe(200);
+    const rows = await asTenant(async (client) => {
+      const result = await client.query<{
+        destination: string;
+        sequence: string;
+      }>(
+        `SELECT destination, sequence FROM domain_event_outbox
+          WHERE tenant_id = $1 AND event->>'aggregateId' = $2
+          ORDER BY destination, sequence`,
+        [tenant.id, run.id],
+      );
+      return result.rows;
+    });
+    const byDestination = new Map<string, number[]>();
+    for (const row of rows)
+      byDestination.set(row.destination, [
+        ...(byDestination.get(row.destination) ?? []),
+        Number(row.sequence),
+      ]);
+    // Each destination's stream is gap-free from 1; a shared count used to
+    // give the alert sequence > 1 and block it forever in the relay.
+    expect(byDestination.get("notification")).toEqual([1]);
+    for (const sequences of byDestination.values())
+      expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+  });
+
   it("[legend-btha][D-CORE-5] replays a miss with the same key instead of answering 409, and alerts once", async () => {
     const run = await postRun(staff, baseTemplateId);
     const body = { action: "miss", idempotencyKey: key() };
