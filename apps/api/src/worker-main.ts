@@ -25,6 +25,7 @@ import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -112,6 +113,9 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },

@@ -41,6 +41,8 @@ export * from "./qr-order";
 export * from "./reservation";
 export * from "./facility";
 export * from "./hris";
+// WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
+export * from "./hris-leave";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
 // WS-06 inventory setup writes (legend-gjmk).

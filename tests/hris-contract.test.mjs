@@ -520,14 +520,16 @@ test("leave balances cannot overdraw and overtime hours stay exact", () => {
   assert.equal(hris.leaveDaysRemaining(balance), "11.0000");
   assert.equal(hris.canApproveLeave(balance, "11.0000"), true);
   assert.equal(hris.canApproveLeave(balance, "11.0001"), false);
-  assert.equal(
-    hris.leaveBalanceSchema.safeParse({
-      ...balance,
-      usedDays: "13.0000",
-      pendingDays: "2.0000",
-    }).success,
-    false,
-  );
+  // legend-hggk: a leave type's policy.negativeAllowanceDays lets a balance go
+  // below zero; the API enforces that limit under a row lock, so the DTO
+  // itself carries an overdrawn balance instead of refusing it.
+  const overdrawn = {
+    ...balance,
+    usedDays: "13.0000",
+    pendingDays: "2.0000",
+  };
+  assert.equal(hris.leaveBalanceSchema.safeParse(overdrawn).success, true);
+  assert.equal(hris.leaveDaysRemaining(overdrawn), "-1.0000");
   assert.equal(hris.overtimeHours(90), "1.5000");
   assert.equal(hris.overtimeHours(45), "0.7500");
   assert.throws(() => hris.overtimeHours(0));
@@ -555,6 +557,23 @@ test("attendance corrections and leave decisions reject inconsistent rows", () =
       status: "approved",
       decidedBy: null,
       decidedAt: null,
+    }).success,
+    false,
+  );
+  // An approval always has a deciding user, even with a decision time.
+  assert.equal(
+    hris.leaveRequestSchema.safeParse({
+      ...fixtures.leaveRequests[0],
+      status: "approved",
+      decidedBy: null,
+      decidedAt: "2026-10-25T02:00:00.000Z",
+    }).success,
+    false,
+  );
+  assert.equal(
+    hris.overtimeRequestSchema.safeParse({
+      ...fixtures.overtimeRequests[1],
+      decidedBy: null,
     }).success,
     false,
   );

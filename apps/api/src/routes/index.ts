@@ -40,6 +40,7 @@ import { reservationRouter } from "./reservation.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { hrisLeaveRouter } from "./hris-leave.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -135,6 +136,7 @@ apiRouter.use("/facility", facilityRouter);
 apiRouter.use("/wifi", wifiConfigRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
+apiRouter.use("/hris", hrisLeaveRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.
