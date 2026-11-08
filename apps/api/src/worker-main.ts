@@ -25,6 +25,7 @@ import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -43,6 +44,7 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
 
 assertDeploymentEnv(process.env);
 
@@ -112,6 +114,8 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // Manual/recurring journals (legend-vmyg): settle from the chain.
+          await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -191,6 +195,13 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+    // templates, one transaction per period. Fail closed, next tick resumes.
+    try {
+      await runDueRecurringJournals(context, new Date());
+    } catch {
+      console.error("Recurring journal sweep failed");
     }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
