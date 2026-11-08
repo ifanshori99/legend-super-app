@@ -8,14 +8,15 @@
 // Real Express app, Better Auth, RBAC and PostgreSQL with RLS (disposable
 // server from `pnpm test`) in a fresh isolated tenant. The REAL receipt port
 // is installed (no in-memory double). Each scenario uses its own outlet so
-// "first receipt is C-000001" does not depend on test order.
+// "first receipt is #1" does not depend on test order.
 //
 // Run just this file (from the repo root):
 //   LEGEND_TEST_FILES="src/test/pos-receipt.test.ts" heavy pnpm test
 //
 // Assumptions (spec/brief ambiguous):
-//  - HTTP sales have deviceId null, so they use the outlet's cloud sequence (prefix C)
-//    (device key = outlet id); other devices are exercised through the service.
+//  - HTTP cash sales carry a verified device and the cashier's open shift (pos-shift),
+//    so they use that device's sequence (first device of an outlet: prefix P1); the
+//    cloud sequence (prefix C, device key = outlet id) is exercised through the service.
 //  - Cash tender lines on a document carry the amount applied to the bill
 //    (the contract requires tenders to sum to the total).
 //  - Domain errors map to HTTP 409 (CONFLICT / RECEIPT_ALREADY_VOIDED) and a
@@ -54,9 +55,13 @@ import {
   receiptDocumentSchema,
   type PosReceipt,
 } from "@starter/shared/pos";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { signDeviceToken } from "../lib/device-token.ts";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
+import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { setPosReceiptPort } from "../services/pos-order-ports.ts";
 import {
   allocateReceipt,
@@ -245,6 +250,64 @@ function api(outletId: string, who: Member = cashier) {
   };
 }
 
+type CashDevice = { deviceId: string; headers: Record<string, string> };
+/** One registered device per (outlet, cashier), each with the cashier's open shift. */
+const cashDevices = new Map<string, Promise<CashDevice>>();
+
+/**
+ * A cash tender needs a verified device and the paying cashier's open shift on
+ * it (pos-shift), so HTTP cash sales take the device sequence (prefix P1), not C.
+ */
+function cashDeviceFor(outletId: string, who: Member): Promise<CashDevice> {
+  const key = `${outletId}:${who.userId}`;
+  let device = cashDevices.get(key);
+  if (!device) {
+    device = (async () => {
+      const deviceId = randomUUID();
+      const issuedAt = Math.floor(Date.now() / 1000);
+      await asOwnerTenant(tenant.tenantId, async (client) => {
+        await client.query(
+          `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+           VALUES ($1, $2, $3, 'pos', 'Kasir uji', $4)`,
+          [deviceId, tenant.tenantId, outletId, new Date(issuedAt * 1000)],
+        );
+      });
+      const token = signDeviceToken({
+        version: 1,
+        tenantId: tenant.tenantId,
+        brandId: tenant.brandId,
+        deviceId,
+        issuedAt,
+      });
+      const headers = { Host: "localhost", [DEVICE_TOKEN_HEADER]: token };
+      const opened = await who.client
+        .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/shifts`)
+        .set(headers)
+        .set(originHeader)
+        .send({ openingFloatIdr: 100_000, idempotencyKey: randomUUID() });
+      expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+      return { deviceId, headers };
+    })();
+    cashDevices.set(key, device);
+  }
+  return device;
+}
+
+/** `api` for the sale flow: sends the device token after opening the shift. */
+function cashApi(outletId: string, who: Member = cashier) {
+  const base = `/api/outlets/${encodeURIComponent(outletId)}/pos`;
+  return {
+    post: async (path: string, body: Record<string, unknown> = {}) => {
+      const { headers: deviceHeaders } = await cashDeviceFor(outletId, who);
+      return who.client
+        .post(`${base}${path}`)
+        .set(deviceHeaders)
+        .set(originHeader)
+        .send({ idempotencyKey: randomUUID(), ...body });
+    },
+  };
+}
+
 /** Parse a binary body (PDF) instead of letting superagent guess. */
 function binary(
   res: NodeJS.ReadableStream,
@@ -264,7 +327,7 @@ async function paidOrder(
   outletId: string,
   tenderReference?: string,
 ): Promise<{ orderId: string; status: string; totalIdr: number }> {
-  const created = await api(outletId).post("/orders", {
+  const created = await cashApi(outletId).post("/orders", {
     channel: "pos",
     serviceType: "takeaway",
     items: [{ menuItemId: ids.kopi, quantity: 2, modifierIds: [] }],
@@ -273,14 +336,17 @@ async function paidOrder(
   const orderId = created.body.data.id as string;
   let status = created.body.data.status as string;
   if (status === "draft") {
-    const submitted = await api(outletId).post(`/orders/${orderId}/submit`, {
-      expectedStatus: status,
-    });
+    const submitted = await cashApi(outletId).post(
+      `/orders/${orderId}/submit`,
+      {
+        expectedStatus: status,
+      },
+    );
     expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
     status = submitted.body.data.status as string;
   }
   const totalIdr = created.body.data.totalIdr as number;
-  const paid = await api(outletId).post(`/orders/${orderId}/tenders`, {
+  const paid = await cashApi(outletId).post(`/orders/${orderId}/tenders`, {
     method: "cash",
     receivedIdr: totalIdr + 5_000,
     ...(tenderReference ? { reference: tenderReference } : {}),
@@ -299,9 +365,12 @@ async function completedSale(
     outletId,
     tenderReference,
   );
-  const completed = await api(outletId).post(`/orders/${orderId}/complete`, {
-    expectedStatus: status,
-  });
+  const completed = await cashApi(outletId).post(
+    `/orders/${orderId}/complete`,
+    {
+      expectedStatus: status,
+    },
+  );
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
   expect(completed.body.data.status).toBe("completed");
   return { orderId, totalIdr };
@@ -533,6 +602,8 @@ beforeAll(async () => {
   setPosReceiptPort(createPosReceiptPort());
   tenant = await createIsolatedTenant(`rcp-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  // Production resolver: a shift opens only on a device row in `devices` (pos-shift).
+  setDeviceOutletResolver(createDeviceOutletResolver());
   const roles: [string, string, string[]][] = [
     [
       ids.cashierRole,
@@ -542,6 +613,7 @@ beforeAll(async () => {
         "pos.sale.create",
         "pos.payment.accept",
         "pos.discount.apply",
+        "shift.cash.operate",
       ],
     ],
     [ids.readerRole, "Receipt Pembaca Uji", ["order.view"]],
@@ -594,6 +666,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setPosReceiptPort(null);
+  setDeviceOutletResolver(null);
   // Receipts, links and final orders are append-only, so the isolated tenant
   // stays in the disposable database; give it a valid creator so the platform
   // tenant list still parses it.
@@ -607,7 +680,7 @@ afterAll(async () => {
 // ---- POS-06: numbering ----------------------------------------------------------
 
 describe("POS-06 gapless receipt numbers (legend-93a)", () => {
-  it("POS-06 completed sales get numbers 1..n on the outlet sequence, with no gap", async () => {
+  it("POS-06 completed sales get numbers 1..n on the device sequence, with no gap", async () => {
     const outletId = await freshOutlet();
     const orderIds: string[] = [];
     for (let i = 0; i < 4; i += 1)
@@ -615,23 +688,28 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
 
     const receipts = await receiptRows(outletId);
     expect(receipts.map((row) => row.number)).toEqual([
-      "C-000001",
-      "C-000002",
-      "C-000003",
-      "C-000004",
+      "P1-000001",
+      "P1-000002",
+      "P1-000003",
+      "P1-000004",
     ]);
-    // A sale without a device (cloud / back-office POS) uses the outlet id as
-    // its device key.
-    for (const row of receipts) expect(row.device_id).toBe(outletId);
+    // A cash sale over HTTP carries a verified device (pos-shift), so it takes
+    // that device's sequence, not the outlet's cloud one.
+    const { deviceId } = await cashDeviceFor(outletId, cashier);
+    for (const row of receipts) expect(row.device_id).toBe(deviceId);
     const sequences = await sequenceRows(outletId);
     expect(sequences).toHaveLength(1);
-    expect(sequences[0]).toMatchObject({ prefix: "C", last_number: 4 });
+    expect(sequences[0]).toMatchObject({
+      prefix: "P1",
+      device_id: deviceId,
+      last_number: 4,
+    });
 
     // The cashier screen shows the number of each order, in sale order.
     const detail = await api(outletId).get(`/orders/${orderIds[2]}`);
     expect(detail.status).toBe(200);
     expect(detail.body.data.receipt).toMatchObject({
-      number: "C-000003",
+      number: "P1-000003",
       status: "issued",
     });
     expect(
@@ -645,7 +723,7 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
     for (let i = 0; i < 6; i += 1) pending.push(await paidOrder(outletId));
     const results = await Promise.all(
       pending.map(({ orderId, status }) =>
-        api(outletId).post(`/orders/${orderId}/complete`, {
+        cashApi(outletId).post(`/orders/${orderId}/complete`, {
           expectedStatus: status,
         }),
       ),
@@ -1590,7 +1668,7 @@ describe("POS-07 receipt document (legend-93a)", () => {
     expect(() => posReceiptIssueResultSchema.parse(s.issued)).not.toThrow();
     const { receipt, document } = s.issued;
     expect(receipt).toMatchObject({
-      number: "C-000001",
+      number: "P1-000001",
       status: "issued",
       orderId: s.orderId,
       outletId: s.outletId,
@@ -1733,7 +1811,7 @@ describe("POS-07 receipt document (legend-93a)", () => {
     const { orderId } = await completedSale(outletId);
     // The sale itself completed and has its number...
     const [stored] = await receiptRows(outletId);
-    expect(stored?.number).toBe("C-000001");
+    expect(stored?.number).toBe("P1-000001");
     // ...but no document is produced until the outlet has a real address.
     const refused = await api(outletId).post(`/orders/${orderId}/receipts`);
     expect(refused.status).toBe(409);
@@ -2842,7 +2920,7 @@ describe("Q4 a tax-free order prints with no tax rows (legend-93a)", () => {
       );
     });
 
-    const created = await api(outletId).post("/orders", {
+    const created = await cashApi(outletId).post("/orders", {
       channel: "pos",
       serviceType: "takeaway",
       items: [
@@ -2854,25 +2932,31 @@ describe("Q4 a tax-free order prints with no tax rows (legend-93a)", () => {
     const orderId = created.body.data.id as string;
     let status = created.body.data.status as string;
     if (status === "draft") {
-      const submitted = await api(outletId).post(`/orders/${orderId}/submit`, {
-        expectedStatus: status,
-      });
+      const submitted = await cashApi(outletId).post(
+        `/orders/${orderId}/submit`,
+        {
+          expectedStatus: status,
+        },
+      );
       expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
       status = submitted.body.data.status as string;
     }
     const totalIdr = created.body.data.totalIdr as number;
-    const paid = await api(outletId).post(`/orders/${orderId}/tenders`, {
+    const paid = await cashApi(outletId).post(`/orders/${orderId}/tenders`, {
       method: "cash",
       receivedIdr: totalIdr,
       expectedStatus: status,
     });
     expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-    const completed = await api(outletId).post(`/orders/${orderId}/complete`, {
-      expectedStatus: paid.body.data.order.status,
-    });
+    const completed = await cashApi(outletId).post(
+      `/orders/${orderId}/complete`,
+      {
+        expectedStatus: paid.body.data.order.status,
+      },
+    );
     expect(completed.status, JSON.stringify(completed.body)).toBe(200);
 
-    const issued = await api(outletId).post(`/orders/${orderId}/receipts`, {
+    const issued = await cashApi(outletId).post(`/orders/${orderId}/receipts`, {
       deliveries: ["print"],
     });
     expect(issued.status, JSON.stringify(issued.body)).toBe(200);
@@ -2911,7 +2995,7 @@ describe("Q4 a tax-free order prints with no tax rows (legend-93a)", () => {
 
 /** A sale rung up by a specific member (the limited-outlet cashier). */
 async function completedSaleAs(who: Member, outletId: string): Promise<string> {
-  const created = await api(outletId, who).post("/orders", {
+  const created = await cashApi(outletId, who).post("/orders", {
     channel: "pos",
     serviceType: "takeaway",
     items: [{ menuItemId: ids.kopi, quantity: 2, modifierIds: [] }],
@@ -2920,7 +3004,7 @@ async function completedSaleAs(who: Member, outletId: string): Promise<string> {
   const orderId = created.body.data.id as string;
   let status = created.body.data.status as string;
   if (status === "draft") {
-    const submitted = await api(outletId, who).post(
+    const submitted = await cashApi(outletId, who).post(
       `/orders/${orderId}/submit`,
       {
         expectedStatus: status,
@@ -2928,13 +3012,13 @@ async function completedSaleAs(who: Member, outletId: string): Promise<string> {
     );
     status = submitted.body.data.status as string;
   }
-  const paid = await api(outletId, who).post(`/orders/${orderId}/tenders`, {
+  const paid = await cashApi(outletId, who).post(`/orders/${orderId}/tenders`, {
     method: "cash",
     receivedIdr: (created.body.data.totalIdr as number) + 5_000,
     expectedStatus: status,
   });
   expect(paid.status, JSON.stringify(paid.body)).toBe(201);
-  const completed = await api(outletId, who).post(
+  const completed = await cashApi(outletId, who).post(
     `/orders/${orderId}/complete`,
     {
       expectedStatus: paid.body.data.order.status as string,

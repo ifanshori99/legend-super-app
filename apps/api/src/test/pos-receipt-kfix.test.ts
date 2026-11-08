@@ -29,13 +29,16 @@
 //    immutable, so this is done before it is final).
 //  - Edge mode is flipped with setEdgeRuntimeStateForTests and always restored.
 //  - Route level: a request carrying a valid signed device token and an unmapped
-//    Host (tenant source "device") has a verified device id; without the token
-//    the sale has no device, so the receipt sits on the cloud sequence.
+//    Host (tenant source "device") has a verified device id. A cash sale without
+//    the token is refused (SHIFT_NOT_OPEN, pos-shift); the cloud sequence C is
+//    reached through service calls with deviceId null.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
+import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import {
   tenantIdSchema,
   ulidToUuid,
@@ -219,6 +222,14 @@ async function deviceTokenFor(
     deviceId,
     issuedAt,
   });
+}
+
+/** The cashier opens a shift on the device: cash needs that drawer (pos-shift). */
+async function openShiftOn(outletId: string, deviceToken: string) {
+  const opened = await api(outletId, deviceToken).post("/shifts", {
+    openingFloatIdr: 100_000,
+  });
+  expect(opened.status, JSON.stringify(opened.body)).toBe(201);
 }
 
 async function draftOrder(
@@ -471,6 +482,8 @@ beforeAll(async () => {
   setPosReceiptPort(createPosReceiptPort());
   tenant = await createIsolatedTenant(`rkf-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  // Production resolver: a shift opens only on a device row in `devices` (pos-shift).
+  setDeviceOutletResolver(createDeviceOutletResolver());
   await owner.query(
     `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
      VALUES ($1, $2, 'Receipt K Kasir', false, NULL, $3, false, '["tenant","outlet"]')`,
@@ -482,6 +495,7 @@ beforeAll(async () => {
         "pos.sale.create",
         "pos.payment.accept",
         "pos.discount.apply",
+        "shift.cash.operate",
       ]),
     ],
   );
@@ -521,6 +535,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  setDeviceOutletResolver(null);
   setPosReceiptPort(null);
   // Final orders and receipts are append-only: the tenant stays in the
   // disposable database; give it a valid creator (as pos-receipt.test.ts does).
@@ -580,30 +595,38 @@ describe("POS-06 K F1 cloud sequence C and device sequences P1.. (legend-93a)", 
     expect(receipt).toMatchObject({ number: "P1-000001", deviceId: device });
   });
 
-  it("POS-06 a sale finished over HTTP without a device token is on the cloud sequence: C-000001, no device on the order", async () => {
+  it("POS-06 a cash sale over HTTP without a device token is refused (SHIFT_NOT_OPEN) and takes no receipt number", async () => {
+    // pos-shift (m1): cash goes into the drawer of a verified device's open
+    // shift, so a cash sale over HTTP always carries a device. The cloud
+    // sequence C stays for sales without a device (covered above).
     const outletId = await freshOutlet();
-    const orderId = await completedSale(outletId);
-    const stored = await receiptRows(outletId);
-    expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({
-      order_id: ulidToUuid(orderId),
-      number: "C-000001",
-      device_id: outletId,
+    const draft = await draftOrder(outletId);
+    let status = draft.status;
+    if (status === "draft") {
+      const submitted = await api(outletId).post(
+        `/orders/${draft.orderId}/submit`,
+        { expectedStatus: status },
+      );
+      expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+      status = submitted.body.data.status as string;
+    }
+    const paid = await api(outletId).post(`/orders/${draft.orderId}/tenders`, {
+      method: "cash",
+      receivedIdr: draft.totalIdr + 5_000,
+      expectedStatus: status,
     });
-    const [order] = await rows<{ device_id: string | null }>(
-      `SELECT device_id FROM pos_orders WHERE tenant_id = $1 AND order_id = $2::uuid`,
-      [tenant.tenantId, ulidToUuid(orderId)],
-    );
-    expect(order?.device_id).toBeNull();
+    expect(paid.status, JSON.stringify(paid.body)).toBeGreaterThanOrEqual(400);
+    expect(paid.body.error.code).toBe("SHIFT_NOT_OPEN");
+    expect(await receiptRows(outletId)).toHaveLength(0);
+    expect(await sequenceRows(outletId)).toHaveLength(0);
   });
 
   it("POS-06 a sale finished over HTTP with a valid device token stores that device on the order and receipt", async () => {
     const outletId = await freshOutlet();
     const device = randomUUID();
-    const orderId = await completedSale(
-      outletId,
-      await deviceTokenFor(device, outletId),
-    );
+    const token = await deviceTokenFor(device, outletId);
+    await openShiftOn(outletId, token);
+    const orderId = await completedSale(outletId, token);
     const stored = await receiptRows(outletId);
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({
