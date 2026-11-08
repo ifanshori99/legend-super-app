@@ -37,6 +37,8 @@ export const posKasirEdcMessages = {
     locked: "Nominal terkunci",
     matchesRemaining: "Sesuai sisa tagihan",
     paidPill: "Lunas",
+    pickTerminal: "Pilih terminal EDC",
+    pickTerminalDetail: "Kartu atau QRIS melalui mesin bank",
     selectNote:
       "Nominal otomatis dari sisa tagihan setelah DP reservasi dipakai.",
     lockedNote:
@@ -150,7 +152,7 @@ export const posKasirEdcMessages = {
     noticeBody:
       "Hanya jika belum ada permintaan pembayaran atau transaksi sebelumnya dipastikan gagal/batal. Jangan catat ulang transaksi berhasil.",
     bankRef: "Nomor referensi bank · wajib",
-    bankRefHint: "Salin dari struk pembayaran EDC.",
+    bankRefHint: "Salin dari struk pembayaran EDC, minimal 6 karakter.",
     bankRefRequired: "Isi nomor referensi bank dari struk EDC.",
     approval: "Kode persetujuan",
     supervisor: "Supervisor yang menyetujui",

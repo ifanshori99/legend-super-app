@@ -27,7 +27,8 @@ export function CashPanel({
   const change = Math.max(0, received - amountIdr);
   const sequence = bill ? nextSequence(bill) : "01";
   const roundUp = roundUpIdr(amountIdr);
-  const quick = roundUp > amountIdr ? [amountIdr, roundUp] : [amountIdr];
+  const exact = { amount: amountIdr, label: t("posKasirPayment.cash.exact") };
+  const quick = roundUp > amountIdr ? [exact, roundUp] : [exact];
 
   return (
     <PosPanel

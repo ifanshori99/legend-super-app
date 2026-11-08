@@ -27,6 +27,17 @@ export function ShiftOpenScreen() {
   const terminals = useRegisteredTerminals();
   const openShift = useOpenShift();
   const [floatIdr, setFloatIdr] = useState(0);
+  // An empty drawer is valid: a zero float needs one explicit confirmation.
+  const [zeroArmed, setZeroArmed] = useState(false);
+  const confirmingZero = floatIdr === 0 && zeroArmed;
+
+  function submit() {
+    if (floatIdr === 0 && !zeroArmed) {
+      setZeroArmed(true);
+      return;
+    }
+    openShift.mutate({ openingFloatIdr: floatIdr });
+  }
   const terminal = terminals.data?.[0];
 
   return (
@@ -89,25 +100,43 @@ export function ShiftOpenScreen() {
               </Button>
               <Button
                 loading={openShift.isPending}
-                disabled={floatIdr <= 0}
-                onClick={() => openShift.mutate({ openingFloatIdr: floatIdr })}
+                aria-describedby={confirmingZero ? "open-zero-hint" : undefined}
+                onClick={submit}
               >
                 {openShift.isPending
                   ? t("posKasirShift.open.submitting")
-                  : t("posKasirShift.open.submit", {
-                      amount: formatRupiah(floatIdr),
-                    })}
+                  : confirmingZero
+                    ? t("posKasirShift.open.zeroSubmit")
+                    : t("posKasirShift.open.submit", {
+                        amount: formatRupiah(floatIdr),
+                      })}
               </Button>
             </>
           }
         >
-          <div className="grid max-w-xl content-start gap-4">
+          {/* Two columns from md: the amount field, hint and notices on the
+              left, the keypad on the right. The keypad component renders
+              `contents`, so its field, keypad and hint become grid items of
+              this wrapper. */}
+          <div className="grid content-start gap-x-6 gap-y-4 md:grid-cols-[minmax(0,1fr)_17rem] md:[&_[data-slot=amount-keypad]>div:last-of-type]:col-start-2 md:[&_[data-slot=amount-keypad]>div:last-of-type]:row-span-5 md:[&_[data-slot=amount-keypad]>div:last-of-type]:row-start-1 md:[&>*:not([data-slot=amount-keypad])]:col-start-1">
             <AmountKeypad
+              className="contents"
               value={floatIdr}
-              onChange={setFloatIdr}
+              onChange={(value) => {
+                setZeroArmed(false);
+                setFloatIdr(value);
+              }}
               label={t("posKasirShift.open.floatLabel")}
               hint={t("posKasirShift.open.floatHint")}
             />
+            {confirmingZero && (
+              <p
+                id="open-zero-hint"
+                className="text-base text-muted-foreground"
+              >
+                {t("posKasirShift.open.zeroConfirm")}
+              </p>
+            )}
             <Notice tone="warning" title={t("posKasirShift.open.checkTitle")}>
               {t("posKasirShift.open.checkBody")}
             </Notice>
@@ -115,7 +144,7 @@ export function ShiftOpenScreen() {
               <ActionError
                 title={t("posKasirShift.open.errorTitle")}
                 error={openShift.error}
-                onRetry={() => openShift.mutate({ openingFloatIdr: floatIdr })}
+                onRetry={submit}
               />
             )}
           </div>

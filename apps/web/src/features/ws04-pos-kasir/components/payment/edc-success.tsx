@@ -1,4 +1,4 @@
-import { Check, Printer } from "lucide-react";
+import { Check, CircleCheck, Printer } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
@@ -131,15 +131,25 @@ export function EdcSuccess({
             </Notice>
           )}
           {receiptNo && (
-            <Notice tone="info" title={t("posKasirEdc.success.receiptTitle")}>
-              {bill.deposit
-                ? t("posKasirEdc.success.receiptDeposit", {
-                    receiptNo,
-                    deposit: formatRupiah(bill.deposit.amountIdr),
-                    amount: amountText,
-                  })
-                : t("posKasirEdc.success.receiptBody", { receiptNo })}
-            </Notice>
+            <div
+              data-slot="notice"
+              data-tone="success"
+              className="rounded-control border-(length:--border-w) border-success bg-success-subtle px-4 py-3 text-success"
+            >
+              <p className="flex items-center gap-2 text-(length:--density-text) leading-6 font-semibold">
+                <CircleCheck className="size-5 shrink-0" aria-hidden="true" />
+                {t("posKasirEdc.success.receiptTitle")}
+              </p>
+              <p className="mt-1 text-base leading-6 text-foreground">
+                {bill.deposit
+                  ? t("posKasirEdc.success.receiptDeposit", {
+                      receiptNo,
+                      deposit: formatRupiah(bill.deposit.amountIdr),
+                      amount: amountText,
+                    })
+                  : t("posKasirEdc.success.receiptBody", { receiptNo })}
+              </p>
+            </div>
           )}
           <div aria-live="polite">
             {print.isSuccess && (

@@ -51,29 +51,8 @@ function ActiveShiftView({ shift }: { shift: ActiveShift }) {
               cashier: shift.cashierName,
               terminal: shift.terminalLabel,
             })}
-          >
-            <div className="flex h-full flex-col justify-between gap-6">
-              <div className="grid gap-4">
-                <ContextBlock label={t("posKasirShift.active.opened")}>
-                  <span className="tabular">
-                    {formatShiftDateTime(shift.openedAt, timeZone)}
-                  </span>
-                </ContextBlock>
-                <ContextBlock label={t("posKasirShift.active.openingFloat")}>
-                  <Money amount={shift.openingFloatIdr} size="stat" />
-                </ContextBlock>
-                <ContextBlock label={t("posKasirShift.active.duration")}>
-                  <span className="tabular">
-                    {duration
-                      ? t("posKasirShift.active.durationValue", {
-                          hours: duration.hours,
-                          minutes: duration.minutes,
-                        })
-                      : "–"}
-                  </span>
-                </ContextBlock>
-              </div>
-              <div className="grid gap-3">
+            footer={
+              <div className="grid w-full gap-3">
                 <p className="text-base text-muted-foreground">
                   {t("posKasirShift.active.closeNote")}
                 </p>
@@ -83,6 +62,27 @@ function ActiveShiftView({ shift }: { shift: ActiveShift }) {
                   </Link>
                 </Button>
               </div>
+            }
+          >
+            <div className="grid gap-4">
+              <ContextBlock label={t("posKasirShift.active.opened")}>
+                <span className="tabular">
+                  {formatShiftDateTime(shift.openedAt, timeZone)}
+                </span>
+              </ContextBlock>
+              <ContextBlock label={t("posKasirShift.active.openingFloat")}>
+                <Money amount={shift.openingFloatIdr} size="stat" />
+              </ContextBlock>
+              <ContextBlock label={t("posKasirShift.active.duration")}>
+                <span className="tabular">
+                  {duration
+                    ? t("posKasirShift.active.durationValue", {
+                        hours: duration.hours,
+                        minutes: duration.minutes,
+                      })
+                    : "–"}
+                </span>
+              </ContextBlock>
             </div>
           </PosPanel>
         }

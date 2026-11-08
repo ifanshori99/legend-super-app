@@ -21,6 +21,9 @@ const ROWS: readonly (readonly KeypadKey[])[] = [
   ["000", "0", "back"],
 ];
 
+/** A quick-pick amount; `label` replaces the rupiah text (the amount stays in the accessible name). */
+export type QuickAmount = number | { amount: number; label: string };
+
 // A large amount field with a touch keypad under it (whole rupiah). The field
 // is a real input (`inputmode="numeric"`) so a hardware keyboard works too;
 // its label stays visible. Controlled: the parent owns the amount.
@@ -41,7 +44,7 @@ export function AmountKeypad({
   /** Under the keypad, e.g. "Nominal yang dialokasikan ke tagihan." */
   hint?: string;
   /** Quick-pick buttons (exact, round-up), whole rupiah. */
-  quickAmounts?: readonly number[];
+  quickAmounts?: readonly QuickAmount[];
   max?: number;
   className?: string;
 }) {
@@ -72,18 +75,23 @@ export function AmountKeypad({
           aria-label={t("posKasirCommon.keypad.quickAmounts")}
           className="flex flex-wrap gap-2"
         >
-          {quickAmounts.map((amount) => (
-            <Button
-              key={amount}
-              type="button"
-              variant="outline"
-              size="sm"
-              className="tabular"
-              onClick={() => onChange(Math.min(amount, max))}
-            >
-              {formatRupiah(amount)}
-            </Button>
-          ))}
+          {quickAmounts.map((quick) => {
+            const amount = typeof quick === "number" ? quick : quick.amount;
+            const text = formatRupiah(amount);
+            const label = typeof quick === "number" ? text : quick.label;
+            return (
+              <Button
+                key={amount}
+                type="button"
+                variant="outline"
+                className="min-w-0 flex-1 tabular"
+                aria-label={label === text ? undefined : `${label} ${text}`}
+                onClick={() => onChange(Math.min(amount, max))}
+              >
+                {label}
+              </Button>
+            );
+          })}
         </div>
       )}
       <div className="grid grid-cols-3 gap-2">

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
+import { ApiError } from "@/lib/api/errors";
 import {
   Select,
   SelectContent,
@@ -21,6 +22,8 @@ import { Notice, PosPanel, StatusPill } from "../shared";
 import { EdcLayout, useEdcErrorText } from "./edc-side";
 
 const PIN_LENGTH = 6;
+/** Same minimum the record endpoint enforces (mock engine). */
+const BANK_REF_MIN_LENGTH = 6;
 
 // Last resort when the ECR link is down and no request is open: copy the bank
 // slip and let a supervisor approve with a PIN. The record is marked for
@@ -46,15 +49,16 @@ export function EdcStandalone({
   const [approverId, setApproverId] = useState<string>();
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState<string>();
+  const approvalRef = useRef<{ key: string; overrideId: string } | null>(null);
 
   const amountIdr = bill.remainingIdr;
   // Radix Select can report "" (no matching item yet): treat it as no choice.
-  const approver = approverId || supervisors.data?.[0]?.userId || undefined;
+  const approver = approverId || undefined;
   const pending = override.isPending || record.isPending;
   const canSubmit =
     terminal !== undefined &&
     approver !== undefined &&
-    bankRef.trim() !== "" &&
+    bankRef.trim().length >= BANK_REF_MIN_LENGTH &&
     pin.length === PIN_LENGTH &&
     !pending;
 
@@ -62,22 +66,31 @@ export function EdcStandalone({
     if (!canSubmit || !terminal || !approver) return;
     setPinError(undefined);
     record.reset();
+    // An approval the record did not consume is reused for the same order,
+    // terminal and amount, so a refused record never costs a second PIN.
+    const approvalKey = `${orderId}:${terminal.id}:${amountIdr}:${approver}`;
+    const kept = approvalRef.current;
     let overrideId: string;
-    try {
-      const approval = await override.mutateAsync({
-        action: "edc_standalone",
-        valueIdr: amountIdr,
-        reason: t("posKasirEdc.standalone.reason", { ref: bankRef.trim() }),
-        objectType: "pos_order",
-        objectId: orderId,
-        approverUserId: approver,
-        pin,
-      });
-      overrideId = approval.overrideId;
-    } catch (error) {
-      setPin("");
-      setPinError(errorText(error));
-      return;
+    if (kept && kept.key === approvalKey) {
+      overrideId = kept.overrideId;
+    } else {
+      try {
+        const approval = await override.mutateAsync({
+          action: "edc_standalone",
+          valueIdr: amountIdr,
+          reason: t("posKasirEdc.standalone.reason", { ref: bankRef.trim() }),
+          objectType: "pos_order",
+          objectId: orderId,
+          approverUserId: approver,
+          pin,
+        });
+        overrideId = approval.overrideId;
+        approvalRef.current = { key: approvalKey, overrideId };
+      } catch (error) {
+        setPin("");
+        setPinError(errorText(error));
+        return;
+      }
     }
     // A refused record shows below; the session updates itself on success.
     await record
@@ -88,7 +101,17 @@ export function EdcStandalone({
         ...(approvalCode.trim() ? { approvalCode: approvalCode.trim() } : {}),
         overrideId,
       })
-      .catch(() => undefined);
+      .then(() => {
+        approvalRef.current = null;
+      })
+      .catch((error: unknown) => {
+        // A spent or mismatched approval cannot be reused: ask for a new PIN.
+        const code = error instanceof ApiError ? error.code : undefined;
+        if (code === "OVERRIDE_USED" || code === "OVERRIDE_INVALID") {
+          approvalRef.current = null;
+          setPin("");
+        }
+      });
   }
 
   return (
@@ -154,10 +177,12 @@ export function EdcStandalone({
                 required
               >
                 <Input
+                  name="bankRef"
                   value={bankRef}
                   onChange={(event) => setBankRef(event.target.value)}
                   inputMode="numeric"
                   autoComplete="off"
+                  spellCheck={false}
                   className="tabular"
                 />
               </FormField>
@@ -188,9 +213,11 @@ export function EdcStandalone({
               </FormField>
               <FormField label={t("posKasirEdc.standalone.approval")}>
                 <Input
+                  name="approvalCode"
                   value={approvalCode}
                   onChange={(event) => setApprovalCode(event.target.value)}
                   autoComplete="off"
+                  spellCheck={false}
                   className="tabular"
                 />
               </FormField>

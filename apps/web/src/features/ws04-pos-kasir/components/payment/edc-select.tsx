@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { cn } from "cn";
 import { Circle, CircleDot } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
@@ -96,6 +96,9 @@ export function EdcSelect({
   const errorText = useEdcErrorText();
   const group = useId();
   const start = useStartPayment();
+  // The terminal in effect may be the automatic first-ready one: the side card
+  // names a terminal only after the cashier chose one.
+  const [picked, setPicked] = useState(false);
   const canSend = terminal !== undefined && terminal.status === "ready";
   const amountText = formatRupiah(amountIdr);
 
@@ -108,10 +111,15 @@ export function EdcSelect({
       sideAmountIdr={amountIdr}
       sidePill={{ tone: "neutral", label: t("posKasirEdc.side.fromBill") }}
       sideTerminal={
-        terminal && {
-          title: terminal.label,
-          detail: t(`posKasirEdc.side.mode.${mode}`),
-        }
+        picked && terminal
+          ? {
+              title: terminal.label,
+              detail: t(`posKasirEdc.side.mode.${mode}`),
+            }
+          : {
+              title: t("posKasirEdc.side.pickTerminal"),
+              detail: t("posKasirEdc.side.pickTerminalDetail"),
+            }
       }
       sideNote={t("posKasirEdc.side.selectNote")}
     >
@@ -121,14 +129,6 @@ export function EdcSelect({
           <>
             <Button type="button" variant="outline" onClick={onBack}>
               {t("posKasirEdc.select.back")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onStandalone}
-              disabled={start.isPending}
-            >
-              {t("posKasirEdc.select.standalone")}
             </Button>
             <Button
               type="button"
@@ -201,7 +201,10 @@ export function EdcSelect({
                       value={item.id}
                       checked={terminal?.id === item.id}
                       disabled={item.status !== "ready"}
-                      onChange={() => onTerminalChange(item.id)}
+                      onChange={() => {
+                        setPicked(true);
+                        onTerminalChange(item.id);
+                      }}
                     >
                       <span className="grid min-w-0 flex-1 gap-0.5">
                         <span>{item.label}</span>
@@ -226,6 +229,15 @@ export function EdcSelect({
           <Notice tone="info" title={t("posKasirEdc.select.autoTitle")}>
             {t("posKasirEdc.select.autoBody")}
           </Notice>
+          <Button
+            type="button"
+            variant="link"
+            className="justify-self-start"
+            onClick={onStandalone}
+            disabled={start.isPending}
+          >
+            {t("posKasirEdc.select.standalone")}
+          </Button>
           {start.error && (
             <Notice tone="danger" title={t("posKasirEdc.select.sendError")}>
               {errorText(start.error)}

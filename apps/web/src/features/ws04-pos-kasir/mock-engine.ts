@@ -164,7 +164,9 @@ export function countedTotalIdr(
 const pad = (value: number, length: number) =>
   String(value).padStart(length, "0");
 const iso = (ms: number) => new Date(ms).toISOString();
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 function validation(message: string): never {
   throw new ApiError(400, "VALIDATION_ERROR", message);
@@ -391,7 +393,8 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         inventoryDeduction: false,
         standaloneUnmatched: dayFixture.standaloneUnmatched,
         result: {
-          closedAt: "2026-11-09T00:10:00.000Z",
+          // A few minutes before now, so the closed state matches the clock.
+          closedAt: iso(clock() - 5 * 60_000),
           closedByName: dayFixture.managerName,
           localRecapSaved: true,
           batches: dayFixture.settlement.map((row) => ({
@@ -918,6 +921,14 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       if (!terminal) validation("Pilih terminal EDC.");
       const bankRef = input.bankRef.trim();
       if (bankRef.length < 6) validation("Nomor referensi bank wajib diisi.");
+      // The supervisor approved one amount: refuse to record a different one.
+      const approved = state.overrides[input.overrideId];
+      if (approved && approved.valueIdr !== remainingOf(order))
+        throw new ApiError(
+          403,
+          "OVERRIDE_INVALID",
+          "Sisa tagihan berubah sejak persetujuan. Minta persetujuan ulang.",
+        );
       consumeOverride(input.overrideId, "edc_standalone", order.id);
       archiveStale(order);
       const amountIdr = remainingOf(order);

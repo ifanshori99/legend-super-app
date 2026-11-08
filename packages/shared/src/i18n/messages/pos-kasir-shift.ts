@@ -33,6 +33,9 @@ export const posKasirShiftMessages = {
     back: "Kembali",
     submit: "Buka shift · {amount}",
     submitting: "Membuka shift…",
+    zeroConfirm:
+      "Laci kosong? Shift akan dibuka dengan modal Rp 0. Lanjutkan hanya bila memang tidak ada uang tunai di laci.",
+    zeroSubmit: "Ya, laci kosong, buka shift",
     errorTitle: "Shift belum bisa dibuka",
   },
   active: {

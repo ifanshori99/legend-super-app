@@ -137,6 +137,8 @@ export function CashierCodeScreen() {
               onClear={() => edit("")}
             />
             <Button
+              // Remount on the primary/outline switch so no color fade shows.
+              key={view.kind === "found" ? "again" : "search"}
               type="submit"
               size="lg"
               variant={view.kind === "found" ? "outline" : "default"}

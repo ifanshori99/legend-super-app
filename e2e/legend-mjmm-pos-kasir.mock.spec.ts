@@ -4,7 +4,7 @@
 // Run: pnpm test:e2e:mock e2e/legend-mjmm-pos-kasir.mock.spec.ts
 //
 // Source of expected behavior: design/mockups/pos/*.html + README.md (founder
-// decisions Q7-Q10, 8 Nov 2026) and docs/briefs/sub-pos-kasir.md (demo ids and
+// decisions Q7-Q10, 8 Nov 2026) and the sub-pos-kasir.md brief (demo ids and
 // `?demo=` seeds). Never backend code.
 //
 // Assumptions (the mockup or brief leaves these open):
@@ -40,7 +40,7 @@ import { captureScreenshot } from "./screenshots.ts";
 
 const expect = baseExpect.configure({ timeout: 15_000 });
 
-// Demo ids from docs/briefs/sub-pos-kasir.md.
+// Demo ids from the sub-pos-kasir.md brief.
 const DEMO_ORDER_ID = "0b0b0048-0000-4000-8000-000000000048";
 const DEMO_CODE_ORDER_ID = "0b0b0044-0000-4000-8000-000000000044";
 const DEMO_SHIFT_ID = "0c0c0001-0000-4000-8000-000000000001";
@@ -82,6 +82,11 @@ const main = (page: Page) => page.locator("#main-content");
 
 /** Evidence screenshot 1280x800, named after the mockup PNG. */
 async function shot(page: Page, mockupName: string): Promise<void> {
+  // The mock tenant has an active support-access session from WS-01; a real
+  // cashier session has none, so hide that banner in the evidence shots only.
+  await page.addStyleTag({
+    content: '[data-slot="support-session-banner"]{display:none !important}',
+  });
   await captureScreenshot(page, `legend-mjmm/${mockupName}.png`, {
     fullPage: false,
   });
@@ -530,8 +535,15 @@ test("legend-mjmm EDC-04 standalone needs a bank reference and a supervisor PIN,
   await expect(heading(page, "Catat pembayaran EDC standalone")).toBeVisible();
   await expect(reference).toHaveValue("");
 
-  // Reference + PIN: recorded and the bill is paid.
+  // Reference + PIN without a chosen supervisor: still cannot record.
   await reference.fill("736214805192");
+  await expect(enabledSubmit).toHaveCount(0);
+
+  // Reference + supervisor + PIN: recorded and the bill is paid.
+  await page
+    .getByRole("combobox", { name: /Supervisor yang menyetujui/ })
+    .click();
+  await page.getByRole("option", { name: "Supervisor 01" }).click();
   await expect(enabledSubmit).toHaveCount(1);
   await submit.click();
   await expect(

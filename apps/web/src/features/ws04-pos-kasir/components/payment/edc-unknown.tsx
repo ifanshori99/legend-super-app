@@ -78,6 +78,9 @@ export function EdcUnknown({
             >
               {t("posKasirEdc.unknown.check")}
             </Button>
+            <p className="basis-full text-left text-base text-muted-foreground">
+              {t("posKasirEdc.unknown.footnote")}
+            </p>
           </>
         }
       >
@@ -126,9 +129,6 @@ export function EdcUnknown({
               {errorText(check.error)}
             </Notice>
           )}
-          <p className="text-base text-muted-foreground">
-            {t("posKasirEdc.unknown.footnote")}
-          </p>
         </div>
       </PosPanel>
     </EdcLayout>
