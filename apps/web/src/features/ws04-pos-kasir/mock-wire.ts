@@ -164,6 +164,7 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
     voidReasonNote: null,
     voidApprovedBy: null,
     voidApprovalRequestId: null,
+    voidOverrideId: null,
     items: lines(order).map((item, index) => ({
       id: `01JBQ9C1${pad(idTail * 10 + index, 18)}`,
       tenantId,
@@ -186,6 +187,7 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
       voidedBy: null,
       voidApprovedBy: null,
       voidApprovalRequestId: null,
+      voidOverrideId: null,
       costSnapshotIdr: 0,
       createdAt: AT,
     })),
