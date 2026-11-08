@@ -1,12 +1,86 @@
-# Dua arah visual — QR order pelanggan Legend
+# Mockup QR order pelanggan Legend
 
-Studi arah, 8 November 2026. Cabang `ux/customer-order-benchmark`. **10 gambar utama + 1 layar kode kasir tambahan**. Mobile selebar 390 px: menu dan detail A setinggi 960 px untuk mempertahankan foto 1:1 / 3:2 serta teks 16 px; layar mobile lain 844 px. Desktop 1440 × 900. PNG pada skala 1× agar lebar ekspor sesuai brief. Semua data adalah contoh, bukan transaksi nyata. Belum ada arah yang dipilih founder; tidak ada perubahan aplikasi.
+Cabang `ux/customer-order-benchmark`, 8 November 2026. Artefak ini untuk review desain; semua menu, harga, kode dan status adalah contoh. Tidak ada perubahan aplikasi atau transaksi nyata. Arah aktif adalah **A + liquid glass** berdasarkan keputusan founder Q4 dan Q5. Studi A/B di bawah disimpan sebagai arsip proses, bukan pilihan yang masih menunggu keputusan.
 
-## Arah A — Katalog foto
+## Final arah A + liquid glass
+
+**Keputusan founder:** Q4 memilih Arah A, katalog foto. Q5 menyetujui jumlah tamu inline di chip/bar kecil di atas menu, wajib diisi sebelum item pertama ditambah; browsing tersedia tanpa jendela sambutan. Q3 tetap berlaku: Bayar di kasir tersedia, pelanggan menunjukkan kode, kasir menerima uang, lalu pesanan masuk dapur. Keputusan ini tidak perlu diminta ulang. Dasar: [brief lanjutan](../../docs/briefs/04-designer-arah-a-liquid-glass.md).
+
+### Sepuluh gambar final dan kondisi
+
+Semua ekspor berskala 1×. Mobile **390 × 844 px**, kecuali kontrol jumlah tamu terbuka **390 × 960 px** agar katalog tetap terlihat. Desktop **1440 × 900 px**. Menu sesudah scroll adalah komposisi statis yang menunjukkan posisi header/kategori menempel dan foto lewat di belakang kaca; PNG tidak membuktikan perilaku scroll aplikasi.
+
+| Gambar | Tujuan dan kondisi yang ditampilkan |
+|---|---|
+| [final-a-menu-mobile.png](final-a-menu-mobile.png) | Menelusuri katalog sesudah sedikit scroll; header dan kategori dalam satu wilayah kaca, 2 tamu dikonfirmasi, 1 espresso di keranjang, bar kaca gelap menunjukkan subtotal Rp 23.000. |
+| [final-a-menu-awal-mobile.png](final-a-menu-awal-mobile.png) | Scan pertama; “Jumlah tamu · Pilih” belum diisi, katalog dapat dilihat, keranjang kosong tanpa bar subtotal. |
+| [final-a-jumlah-tamu-mobile.png](final-a-jumlah-tamu-mobile.png) | Kontrol inline terbuka; jumlah 2 sedang dipilih dan belum disimpan, instruksi wajib sebelum tambah pertama, tanpa modal sambutan. Tinggi 960 px. |
+| [final-a-detail-mobile.png](final-a-detail-mobile.png) | Detail espresso, foto hero 3:2, suhu Dingin dipilih; gula wajib belum dipilih setelah percobaan tambah. Error lokal, tambahan/catatan opsional, stepper dan CTA dalam footer kaca. |
+| [final-a-checkout-mobile.png](final-a-checkout-mobile.png) | Keranjang dan bayar satu halaman; rincian biaya solid, QRIS dipilih, E-wallet dan Bayar di kasir tersedia inline. Footer kaca menampilkan total Rp 26.600 dan satu CTA bayar. |
+| [final-a-qris-menunggu-mobile.png](final-a-qris-menunggu-mobile.png) | Menunggu pembayaran, total Rp 26.600, QR contoh berlabel bukan untuk pembayaran, sisa waktu contoh 04:58, aksi simpan QR dan ganti metode. |
+| [final-a-kode-kasir-mobile.png](final-a-kode-kasir-mobile.png) | Menunggu pembayaran kasir; kode contoh LG–0044, total dan langkah bayar, penjelasan pesanan belum masuk dapur, aksi periksa pembayaran. |
+| [final-a-berhasil-mobile.png](final-a-berhasil-mobile.png) | Status contoh pembayaran QRIS berhasil; ringkasan, kode pesanan, estimasi, akses status/struk. Ajakan klaim poin baru tampil setelah pembayaran. |
+| [final-a-stok-habis-mobile.png](final-a-stok-habis-mobile.png) | Kondisi gabungan: cappuccino “Habis hari ini” tanpa aksi tambah; pemberitahuan menu belum diperbarui dengan Coba lagi, sementara 1 item keranjang tetap terlihat. |
+| [final-a-menu-desktop.png](final-a-menu-desktop.png) | Katalog dua kolom foto besar, indeks kategori kiri dan nota keranjang tetap kanan. Header kaca terang dan nota mengambang kaca gelap di atas foto; 2 tamu dan 1 espresso. |
+
+### Aturan kaca yang dipakai
+
+- Material web: `backdrop-filter: blur(18px) saturate(1.15)`, beserta prefiks WebKit. Tint terang `rgba(251,250,249,.72)`, tint gelap `rgba(8,45,50,.78)`. Tinta gelap di kaca terang, teks putih di kaca gelap; muted pada kaca terang dibuat lebih gelap (`#3d3a35`).
+- Kaca hanya di elemen mengambang: header/kategori, navigasi detail/pembayaran, bar keranjang, footer aksi dan panel nota desktop. Maksimal **2 wilayah blur per layar**; header dan kategori dihitung satu wilayah. Foto katalog, form, pilihan, rincian harga dan isi nota tetap solid, tanpa kaca bertumpuk di belakang teks panjang.
+- Border terang 1 px memberi tepi material: putih alpha .70 pada mobile / .65 desktop; kaca gelap memakai alpha .34 / .28. Bayangan dan highlight inset terbatas pada lapisan mengambang. Foto di bawah kaca memperlihatkan material; area baca tetap tenang.
+- `prefers-reduced-transparency: reduce` serta `@supports not (backdrop-filter: blur(1px))` mengganti kaca menjadi solid: terang `#fbfaf9`, gelap `#082d32`, blur dimatikan. `prefers-contrast: more` juga memakai permukaan solid, blur mati dan border 2 px yang tegas. Reduced motion mematikan transisi/animasi. Cabang solid dan kontras tinggi telah dirender pada menu mobile/desktop; batas pembuktiannya dicatat di bawah.
+- Kontras tint dihitung terhadap hitam/putih ekstrem: terang + tinta utama 8,31–16,70:1; terang + sekunder 5,47–10,99:1; gelap + putih 7,30–16,42:1. Ini membuktikan pasangan teks/kaca pada sumber mockup, bukan seluruh aksesibilitas aplikasi. Implementasi perlu mempertahankan alpha, warna teks opaque dan pengujian atas konten nyata.
+
+### Lima perubahan anti-slop yang konkret
+
+1. Katalog foto 1:1 mendapat ruang sendiri tanpa bingkai kartu berlapis; jumlah dan harga mengikuti makanan, bukan komposisi dashboard generik.
+2. Tombol outline “+ Tambah” diganti kontrol tambah bulat 44 px di sudut foto; item terpilih berubah menjadi stepper dan penanda jumlah sehingga perubahan keadaan terlihat.
+3. Hierarki angka diperjelas: subtotal di bar 24 px, total QRIS 40 px, nominal bukti bayar 36 px; nama makanan dan teks baca tetap terbaca, angka tabular dipertahankan.
+4. Canvas abu hangat menggantikan putih polos; kedalaman muncul dari foto meja kafe, permukaan solid dan dua lapisan kaca fungsional, tanpa glow atau gradien dekoratif.
+5. Desktop ditata khusus menjadi indeks, foto besar dan nota kanan; checkout menjadi aliran biaya/metode dengan satu aksi utama, sementara poin ditunda sampai berhasil. Tidak ditambahkan rating, promo, testimoni atau urgensi rekaan.
+
+### Usulan perubahan DESIGN.md untuk implementasi
+
+Founder sudah mengizinkan eksplorasi liquid glass dan foto latar melalui brief ini. **DESIGN.md belum diubah oleh mockup ini**; tim perlu mencatat perubahan berikut sebelum mengubah aplikasi, agar larangan kaca dan aturan canvas putih pada versi lama tidak dibawa sebagai aturan arah final.
+
+| Aturan lama | Usulan arah final dan batas |
+|---|---|
+| Media pelanggan radius 12 px | Media katalog 16 px; thumbnail kecil tetap 8/12 px sesuai konteks. Foto menu 1:1 dan hero detail 3:2 dipertahankan. |
+| Shell radius 18 px, CTA pelanggan pill | Wilayah mengambang utama radius 24 px; navigasi ringkas 20/22 px sesuai komposisi. CTA primer mobile radius 14 px, menggantikan pill; sumber desktop saat ini memakai varian 12 px. Radius varian perlu dijadikan token, bukan aturan seragam untuk semua kontrol. |
+| Halaman pelanggan putih | Canvas abu hangat `#f7f6f4`, isi/form/biaya tetap solid terang. |
+| Tanpa glassmorphism dan foto latar dekoratif | Foto meja kafe ilustratif dibatasi sebagai underlay material pada header/panel mengambang; kaca mengikuti aturan hemat dan fallback di atas. Izin eksplorasi founder bukan klaim bahwa kontras/performa aplikasi sudah teruji. |
+| Plus Jakarta Sans dan palet Legend | Tetap: satu keluarga Plus Jakarta Sans lokal, petrol `#0f5e68`, tinta `#1c1b19`, abu hangat. Tidak ada merek, font, atau hue aksi baru. |
+
+### Sumber, provenance dan asumsi
+
+- Sumber final statis: [final-a-mobile.html](final-a-mobile.html), [final-a-mobile.css](final-a-mobile.css), [final-a-desktop.html](final-a-desktop.html). Teks/kontrol dirender dari HTML/CSS, bukan teks dari gambar generatif; ini bukan komponen aplikasi yang sudah tersambung backend.
+- Foto menu memakai ulang [assets/menu-illustrative.png](assets/menu-illustrative.png), generated melalui built-in image generation pada studi A/B. Foto meja kafe [assets/cafe-table-final.png](assets/cafe-table-final.png) adalah aset generated/ilustratif untuk latar material, bukan foto outlet yang terverifikasi. Keduanya bukan representasi menu atau lokasi nyata. Prompt foto latar: “Wide editorial Indonesian cafe tabletop, iced black espresso on the left and butter croissant on an ivory plate on the right, broad warm oat-beige tabletop, soft daylight, realistic condensation and pastry texture; no people, typography, logos, watermark, gradients or illustrations.” Built-in image generation dipakai; tidak ada edit foto lewat script. Prompt foto menu dan lisensi font tetap tercatat pada arsip di bawah.
+- [assets/qris-contoh.svg](assets/qris-contoh.svg) adalah pola contoh untuk review desain, berlabel “QR contoh · Tidak untuk pembayaran”; tidak memakai payload pembayaran merchant. Tidak ada transaksi dibuat. Timer **04:58** adalah keadaan statis, bukan janji masa berlaku QR atau countdown yang telah berjalan.
+- Contoh biaya tetap Rp 23.000 + service Rp 1.150 + PBJT Rp 2.415 + pembulatan Rp 35 = Rp 26.600. Quote server (ORD-03), termasuk konfigurasi pajak/service/pembulatan outlet, menjadi sumber harga final. Estimasi 10–16 menit bukan SLA; angka, menu dan status adalah data contoh.
+- Format LG–0044 / QR-0044, masa berlaku, waktu pembuatan order, sinkronisasi keranjang, stok dan konfirmasi bayar mengikuti kontrak backend. Aksi Simpan QR merupakan usulan UX untuk pembayaran dari ponsel yang sama; kemampuan ekspor gambar dan pergantian metode perlu ditambahkan/diverifikasi tim saat implementasi, bukan diasumsikan sudah tersedia. Status sukses hanya boleh berasal dari server terkonfirmasi; polling, simpan QR, ganti metode, submit tamu dan kontrol lainnya belum merupakan interaksi aplikasi yang diuji.
+- Gambar `arah-a-*` dan `arah-b-*`, [source.html](source.html), [capture.mjs](capture.mjs) serta [verification.json](verification.json) tetap disimpan sebagai bukti perbandingan dan riwayat keputusan. Gambar itu tidak diganti namanya menjadi final. Klaim/gate pada arsip hanya berlaku untuk ekspor lama.
+
+### Render dan batas verifikasi final
+
+Render ulang dari root repo: `heavy node design/mockups/capture-final-a.mjs`. [capture-final-a.mjs](capture-final-a.mjs) membuka sumber lokal di Chromium Playwright, menunggu font, lalu mengekspor sepuluh PNG tanpa dev server, database atau koneksi pembayaran. Perintah ini menimpa PNG final dan [verification-final-a.json](verification-final-a.json).
+
+`verification-final-a.json` merekam ukuran viewport/dokumen, font termuat, error runtime/request, gambar hilang, teks keluar viewport atau beririsan panel mengambang, jumlah wilayah blur, tint/blur terhitung dan irisan geometri foto di bawah kaca. Catatan geometri ini membantu memeriksa ekspor; irisan foto tidak membuktikan kualitas efek kaca atau kontras piksel. Hasil capture terakhir: 10/10 ukuran sesuai, font termuat, tanpa error runtime/request, gambar hilang, teks terpotong sebagian, atau teks tertutup panel tanpa sengaja. Setiap layar memiliki 1–2 wilayah blur dan setidaknya satu foto di bawah kaca. Bagian katalog yang sepenuhnya di luar jendela scroll tidak dihitung sebagai teks terpotong. Semua 10 PNG dibuka satu per satu oleh designer dan reviewer; tidak ada blocker konkret tersisa pada scope gambar.
+
+Pemeriksaan material: `heavy node design/mockups/check-final-a-glass.mjs`; [verification-final-a-glass.json](verification-final-a-glass.json) menyimpan perhitungan kontras dan computed styles. Emulasi Chromium `prefers-reduced-transparency: reduce` serta `prefers-contrast: more` menghasilkan permukaan solid, blur mati, dan border 2 px pada mode kontras tinggi. Keduanya dijalankan pada menu mobile/desktop, lalu keempat PNG di [qa/](qa/) dibuka. Cabang CSS tanpa dukungan backdrop-filter juga dipaksa aktif dan computed style dicek; ini **bukan** pengujian browser lama sesungguhnya.
+
+Gate final pada scope mockup: Product/UX/UI/design system/visual QA/anti-slop **PASS untuk kanvas dan keadaan yang diminta**; responsive **PASS hanya lebar ekspor 390 dan 1440**; edge cases **PASS untuk yang diekspor**. Code quality aplikasi **N/A**. Accessibility aplikasi **NOT VERIFIED** di luar kontras serta keterbacaan gambar, sehingga gate produk keseluruhan tetap **NOT VERIFIED**. Siap untuk review visual, belum hasil validasi pengguna atau aplikasi siap produksi.
+
+PNG dan sumber statis belum membuktikan interaksi aplikasi, transaksi, countdown, pemulihan jaringan, sinkronisasi sesi, uji pengguna, keyboard/fokus/screen reader, zoom 200%, lebar 320 px, semua tema atau performa perangkat. Tidak ada klaim seluruh aksesibilitas maupun responsivitas aplikasi telah diuji.
+
+## Arsip studi A/B — sebelum keputusan Q4 dan Q5
+
+Studi awal berisi **10 gambar utama + 1 layar kode kasir tambahan**. Mobile selebar 390 px: menu dan detail A setinggi 960 px; layar mobile lain 844 px. Desktop 1440 × 900, skala 1×. Deskripsi, gate dan rekomendasi berikut merekam keadaan studi awal; keputusan pending di tahap itu sudah digantikan Q4 dan Q5 di atas.
+
+### Arah A — Katalog foto
 
 Menu menjadi katalog foto dua kolom di mobile, dengan kategori berbentuk pill, nama dan harga tepat di bawah gambar, lalu kontrol jumlah. Susunan ini mendahulukan pengenalan makanan secara visual dan memberi ruang untuk menelusuri menu sambil duduk di meja. Detail memakai foto lebar, kelompok opsi berbingkai, dan error lokal; hasil pembayaran terpusat dengan ringkasan di permukaan netral. Desktop memperluas katalog menjadi empat kolom foto persegi di samping keranjang tetap. A mempertahankan karakter foto yang paling dekat dengan mode **Hangat & Visual**, sambil memangkas lapisan header dan semua ajakan sebelum pembayaran.
 
-## Arah B — Menu & nota meja
+### Arah B — Menu & nota meja
 
 Menu menjadi daftar dengan nama, deskripsi, harga, dan kontrol di kiri, serta foto persegi di kanan. Pelanggan dapat membandingkan isi minuman dan makanan sambil melihat item yang sudah dipesan tanpa membuka detail. Kategori memakai garis bawah; detail menempatkan thumbnail dan ringkasan berdampingan sehingga opsi muncul lebih awal. Checkout dan bukti bayar memakai aliran nota dengan pemisah garis putus, bukan kartu bulat berlapis; hasil pembayaran rata kiri. Desktop menggunakan indeks kategori, daftar menu, dan nota keranjang dalam tiga wilayah. B mengutamakan pembacaan dan kustomisasi, dengan biaya berupa jumlah menu yang terlihat lebih sedikit daripada grid A.
 
@@ -14,7 +88,7 @@ Menu menjadi daftar dengan nama, deskripsi, harga, dan kontrol di kiri, serta fo
 
 Kedua arah berbeda pada model katalog, urutan informasi detail, navigasi kategori, komposisi desktop, serta bentuk ringkasan pembayaran. Palet, keluarga font, harga, dan aturan transaksi sengaja sama agar founder membandingkan struktur, bukan pergantian merek.
 
-## Daftar gambar dan kondisi
+### Daftar gambar dan kondisi
 
 Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Legend”.
 
@@ -27,13 +101,13 @@ Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Le
 | Menu desktop | Menelusuri menu pada lebar 1440 dengan keranjang tetap di kanan; tidak membentangkan kolom mobile. | [arah-a-menu-desktop.png](arah-a-menu-desktop.png) | [arah-b-menu-desktop.png](arah-b-menu-desktop.png) | #1, #4, #5, #7; juga #12–14 |
 | Kode kasir, tambahan | Menunggu uang diterima kasir. Kode LG–0044, total, dan instruksi jelas; pesanan belum masuk dapur. | — | [arah-b-kode-kasir-mobile.png](arah-b-kode-kasir-mobile.png) | #10, sesuai persetujuan founder Q3 |
 
-## Keputusan desain
+### Keputusan desain
 
 1. **Satu akses keranjang yang terlihat.** Total pada bar menu adalah **subtotal menu**, diberi label eksplisit karena harga belum termasuk pajak dan service. Bar menjadi CTA tunggal di menu mobile; desktop menampilkan subtotal dan CTA di nota kanan. Kartu berisi item menampilkan jumlah. Alternatif tab keranjang saja ditolak berdasarkan screenshot Legend `06-after-add-mobile.jpg` dan ESB `06-menu-with-cart-bar-mobile.jpg` (bukti kuat: dua layar yang dijalani).
 2. **Checkout adalah satu halaman keputusan.** Keranjang, harga, pilihan pembayaran dan satu tombol akhir berada pada layar yang sama; tidak ada dialog metode setelah tombol Bayar. Footer menampilkan total dan CTA metode terpilih, tanpa tab bar. Promo dan split bill tetap sekunder; tawaran member hanya setelah sukses. Dasar: perbandingan checkout ESB dan Legend dalam REPORT (bukti kuat untuk perbedaan struktur, belum diuji pada pelanggan Legend).
 3. **Opsi wajib dan status pembayaran tidak disamarkan.** Radio untuk pilihan tunggal, pesan error langsung pada kelompok gula, footer detail menempel di bawah, dan harga tombol mengikuti pilihan. QRIS adalah bawaan; **Bayar di kasir tetap tersedia dan sudah disetujui founder Q3**. Saat kasir dipilih, CTA berubah menjadi “Buat kode bayar di kasir”; halaman kode menjelaskan bahwa dapur menunggu kasir menerima uang. Tidak ada label “opsional / dapat dihapus” pada metode kasir.
 
-## Pemetaan seluruh prioritas 1–9
+### Pemetaan seluruh prioritas 1–9
 
 | Celah | Keputusan pada mockup / kontrak desain |
 |---|---|
@@ -47,7 +121,7 @@ Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Le
 | #8 Tab bar berlebihan | Checkout dan hasil pembayaran hanya memiliki kembali / aksi kontekstual, tanpa tab bar. Halaman berhasil menggantikan tahap pembayaran dan tidak mengirim ulang transaksi saat kembali. |
 | #9 Bacaan sebelum bayar | Rincian biaya rata dengan pemisah sederhana, tanpa kartu dalam kartu. Klaim poin berada setelah pembayaran, bukan checkout. |
 
-## Harga dan aturan contoh
+### Harga dan aturan contoh
 
 - Semua item katalog contoh memakai format `Rp 23.000`, termasuk espresso yang konsisten pada menu, detail, keranjang dan struk. Ekstra espresso opsional `+ Rp 5.000` belum dipilih; bila dipilih, harga tombol menjadi `Rp 28.000`.
 - Rincian contoh mengikuti hasil benchmark Legend: Rp 23.000 + service 5% Rp 1.150 + PBJT 10% Rp 2.415 + pembulatan Rp 35 = **Rp 26.600**. Dasar pajak pada contoh termasuk service; angka ini **bukan penetapan kebijakan pajak baru**. Implementasi harus menggunakan quote server (ORD-03), termasuk bila konfigurasi outlet berbeda.
@@ -55,7 +129,7 @@ Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Le
 - Mode contoh bayar di muka: pembayaran terkonfirmasi dahulu, baru diteruskan ke dapur. Khusus metode kasir: founder sudah menyetujui pelanggan menunjukkan kode, kasir menerima uang, kemudian pesanan masuk dapur.
 - Sesi bersama: “Ditambahkan Anda” dipertahankan. Item milik tamu lain, harga berubah, stok habis, dan konflik versi perlu mengikuti sumber server pada implementasi.
 
-## Arah visual dan aset
+### Arah visual dan aset
 
 - Mengikuti palet dan tipografi `DESIGN.md`: Plus Jakarta Sans, body utama 16 px, judul 26 px mobile / 40 px desktop, teks bantu 12–14 px, angka tabular, tinta `#1c1b19`, abu hangat, satu area CTA petrol `#0f5e68`. Pilihan kategori netral. Foto menu tanpa bingkai kartu. Tidak ada kaca, gradien, toggle tema atau dekorasi merek baru.
 - Foto **generated / ilustratif**, bukan foto menu outlet: [assets/menu-illustrative.png](assets/menu-illustrative.png). Dibuat melalui built-in image generation; teks dan kontrol dirender deterministik dari [source.html](source.html), sehingga tidak bergantung pada teks acak dari gambar generatif. PNG adalah artefak review; HTML adalah sumber desain statis, bukan kode aplikasi.
@@ -63,7 +137,7 @@ Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Le
 - Font berasal dari paket Plus Jakarta Sans yang sudah ada di repo; lisensi OFL disalin ke [assets/FONT-LICENSE.txt](assets/FONT-LICENSE.txt). Tidak ada font jaringan saat render.
 - Provenance: **Observed** — REPORT, REFERENCES, PRD §10, DESIGN.md; screenshot ESB cart bar, Legend detail / checkout. **Inferred** — pilihan struktur A/B dan susunan desktop. **Generated** — foto ilustratif. Rujukan Starbucks, GoFood/GrabFood dan McDonald's dari REFERENCES tidak diperlakukan sebagai alur yang sudah diuji.
 
-## Interaksi lanjutan untuk implementasi
+### Interaksi lanjutan untuk implementasi
 
 - Pencarian: lintas seluruh menu, reset kategori ke Semua, tanpa hasil palsu dari filter kategori. Filter label dibuka dari tombol Filter dan harus memperlihatkan status filter aktif.
 - Item: saat Tambah ditekan tanpa gula, pertahankan suhu dan catatan, tampilkan error, fokuskan kelompok gula. Setelah semua wajib valid, tambah ke keranjang bersama, update stepper dan bar; cegah tambah berulang saat request berlangsung.
@@ -72,7 +146,7 @@ Nomor celah mengacu pada [REPORT.md](../benchmark/REPORT.md), bagian “Celah Le
 - Keranjang kosong: teks “Keranjang meja masih kosong” + “Pilih menu”. Loading: skeleton mengikuti ukuran foto, item dan bar harga. Stok habis: label Habis dan tombol tidak dapat tambah, dengan alasan; stok habis saat checkout menampilkan perubahan sebelum quote baru dikonfirmasi. Sesi habis: “Sesi meja berakhir” + instruksi scan QR meja lagi. Keadaan ini dideskripsikan untuk handoff, belum diekspor sebagai layar tambahan pada tahap arah visual.
 - Jeda gerak yang disarankan 150–250 ms hanya untuk feedback jumlah, error, serta masuk / keluar overlay; hormati reduced motion. PNG tidak membuktikan gerak, keyboard, fokus, live region atau sinkronisasi sesi.
 
-## Pemeriksaan dan batas
+### Pemeriksaan dan batas
 
 Render ulang: `heavy node design/mockups/capture.mjs` dari root repo. Script menggunakan Chromium dari Playwright yang sudah terpasang, tanpa dev server, database, atau koneksi pembayaran. [verification.json](verification.json) menyimpan ukuran, error runtime dan deteksi teks keluar viewport / tertutup footer untuk semua 11 ekspor.
 
@@ -92,8 +166,8 @@ Gate RYUX disesuaikan tahap arah visual:
 | Anti-slop | PASS | Tanpa klaim rating / promosi / urgensi rekaan; data serta provenance ilustratif disebut jelas. |
 | Final | NOT VERIFIED sebagai produk | Gambar siap untuk memilih arah; belum implementasi atau validasi pengguna. |
 
-## Asumsi untuk review founder melalui CTO
+### Catatan keputusan studi awal (historis)
 
-1. Pilih A atau B sebagai arah lanjut; keduanya belum disetujui. Memilih B juga memerlukan persetujuan eksplisit atas pola daftar menu dan detail thumbnail yang berbeda dari DESIGN.md §4. Rekomendasi designer **A** bila prioritasnya pengalaman Hangat & Visual berbasis foto; pilih B bila deskripsi dan pilihan menu lebih penting daripada jumlah foto per layar. Ini penilaian desain, bukan hasil uji konversi.
-2. Konfirmasi cara mengisi jumlah tamu inline pada konteks meja sebelum penambahan pertama. Kewajiban isi jumlah tamu tetap mengikuti PRD; yang diusulkan berubah hanya penempatan kontrol, tanpa sheet sambutan.
-3. Format kode kasir, masa berlaku, quote biaya, dan waktu pembuatan order harus ditentukan tim teknis dari konfigurasi / kontrak. Persetujuan “Bayar di kasir” **tidak perlu ditanyakan lagi**.
+1. Studi awal merekomendasikan A untuk katalog foto Hangat & Visual, dengan B sebagai alternatif baca/kustomisasi. Founder kemudian **memilih A pada Q4**; tidak ada pilihan A/B yang masih pending. Penilaian ini bukan hasil uji konversi.
+2. Usulan jumlah tamu inline kemudian **disetujui pada Q5**: wajib sebelum item pertama, tanpa sheet sambutan.
+3. Format kode kasir, masa berlaku, quote biaya dan waktu pembuatan order tetap urusan kontrak teknis. Persetujuan Bayar di kasir pada Q3 tetap berlaku.

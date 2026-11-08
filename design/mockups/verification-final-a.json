@@ -1,0 +1,368 @@
+[
+  {
+    "filename": "final-a-menu-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light floating-header",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 116
+        }
+      },
+      {
+        "className": "glass glass-dark cart-bar",
+        "background": "rgba(8, 45, 50, 0.78)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 748,
+          "width": 358,
+          "height": 80
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-menu-awal-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 1,
+    "glasses": [
+      {
+        "className": "glass glass-light floating-header",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 116
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-jumlah-tamu-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 960,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 1,
+    "glasses": [
+      {
+        "className": "glass glass-light floating-header",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 116
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-detail-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light nav-glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 56
+        }
+      },
+      {
+        "className": "glass glass-light float-footer detail-footer",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": false,
+        "bounds": {
+          "x": 16,
+          "y": 754,
+          "width": 358,
+          "height": 74
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-checkout-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light nav-glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 56
+        }
+      },
+      {
+        "className": "glass glass-light float-footer checkout-footer",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": false,
+        "bounds": {
+          "x": 16,
+          "y": 715,
+          "width": 358,
+          "height": 113
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-qris-menunggu-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light nav-glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 56
+        }
+      },
+      {
+        "className": "glass glass-light float-footer pay-footer",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": false,
+        "bounds": {
+          "x": 16,
+          "y": 714,
+          "width": 358,
+          "height": 114
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-kode-kasir-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light nav-glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 56
+        }
+      },
+      {
+        "className": "glass glass-light float-footer cashier-footer",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": false,
+        "bounds": {
+          "x": 16,
+          "y": 754,
+          "width": 358,
+          "height": 74
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-berhasil-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light nav-glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 56
+        }
+      },
+      {
+        "className": "glass glass-light float-footer success-footer",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": false,
+        "bounds": {
+          "x": 16,
+          "y": 716,
+          "width": 358,
+          "height": 112
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-stok-habis-mobile.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 390,
+    "height": 844,
+    "documentWidth": 390,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass glass-light floating-header",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 32,
+          "width": 358,
+          "height": 116
+        }
+      },
+      {
+        "className": "glass glass-dark cart-bar",
+        "background": "rgba(8, 45, 50, 0.78)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 16,
+          "y": 748,
+          "width": 358,
+          "height": 80
+        }
+      }
+    ],
+    "missingImages": []
+  },
+  {
+    "filename": "final-a-menu-desktop.png",
+    "errors": [],
+    "failedRequests": [],
+    "width": 1440,
+    "height": 900,
+    "documentWidth": 1440,
+    "fontLoaded": true,
+    "clipped": [],
+    "hiddenByFloating": [],
+    "blurRegions": 2,
+    "glasses": [
+      {
+        "className": "glass",
+        "background": "rgba(251, 250, 249, 0.72)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 32,
+          "y": 20,
+          "width": 1376,
+          "height": 72
+        }
+      },
+      {
+        "className": "glass cart",
+        "background": "rgba(8, 45, 50, 0.78)",
+        "blur": "blur(18px) saturate(1.15)",
+        "photoUnderlay": true,
+        "bounds": {
+          "x": 940,
+          "y": 264,
+          "width": 424,
+          "height": 530
+        }
+      }
+    ],
+    "missingImages": []
+  }
+]
