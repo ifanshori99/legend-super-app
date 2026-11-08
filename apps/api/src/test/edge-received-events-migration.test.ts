@@ -1,15 +1,15 @@
-// Upgrade test for migration 0063 (beads legend-wg5t item 7). The first draft
-// of 0063 added a partial UNIQUE index on edge_inbound_events and failed with
-// 23505 on real pre-0063 data where the primary and the standby both hold a
-// receipt for the same edge_to_cloud event. 0063 now creates the tenant-wide
+// Upgrade test for migration 0065 (beads legend-wg5t item 7). The first draft
+// (then numbered 0063) added a partial UNIQUE index on edge_inbound_events and failed with
+// 23505 on real pre-0065 data where the primary and the standby both hold a
+// receipt for the same edge_to_cloud event. 0065 now creates the tenant-wide
 // registry edge_received_events and backfills it with one row per event.
 // This suite proves the upgrade path on such data: it migrates a scratch
-// database to 0062, seeds the duplicate shape, then applies the full folder.
+// database to 0064, seeds the duplicate shape, then applies the full folder.
 // The scratch database lives on the disposable test server and is dropped in
 // afterAll; the shared test database and the real journal are never touched.
 // A second suite repeats the upgrade with a NON-superuser table owner, like
 // production (drizzle/0001: the migration connection is a separate owner with
-// CREATEROLE), because 0063 lifts and restores FORCE ROW LEVEL SECURITY and
+// CREATEROLE), because 0065 lifts and restores FORCE ROW LEVEL SECURITY and
 // the test server's default user is a superuser that bypasses RLS anyway.
 import { randomBytes, randomUUID } from "node:crypto";
 import {
@@ -73,19 +73,20 @@ function assertDisposableServer() {
     );
 }
 
-// Temp copy of the migrations, journal cut at idx 62. The real folder and
+// Temp copy of the migrations, journal cut at idx 64 (the last migration
+// before 0065). The real folder and
 // journal stay untouched.
-function copyMigrationsUpTo0062() {
-  const dir = mkdtempSync(join(tmpdir(), "legend-mig-0062-"));
-  const upTo0062 = join(dir, "drizzle");
-  cpSync(drizzleFolder, upTo0062, { recursive: true });
-  const journalPath = join(upTo0062, "meta", "_journal.json");
+function copyMigrationsUpTo0064() {
+  const dir = mkdtempSync(join(tmpdir(), "legend-mig-0064-"));
+  const upTo0064 = join(dir, "drizzle");
+  cpSync(drizzleFolder, upTo0064, { recursive: true });
+  const journalPath = join(upTo0064, "meta", "_journal.json");
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: { idx: number }[];
   };
-  journal.entries = journal.entries.filter((entry) => entry.idx <= 62);
+  journal.entries = journal.entries.filter((entry) => entry.idx <= 64);
   writeFileSync(journalPath, JSON.stringify(journal));
-  return { dir, upTo0062 };
+  return { dir, upTo0064 };
 }
 
 async function seedTenant(
@@ -97,7 +98,7 @@ async function seedTenant(
   const entity = randomUUID();
   const suffix = randomBytes(4).toString("hex");
   // Minimum columns the table constraints require (no seed tenant exists in a
-  // database that stops at migration 0062).
+  // database that stops at migration 0064).
   await scratch.query(
     `INSERT INTO tenants (id, slug, name, plan, deployment_mode, limits, created_by)
      VALUES ($1, $2, 'Tenant Upgrade Uji', 'starter', 'shared', '{}'::jsonb, $3)`,
@@ -157,7 +158,7 @@ function receipt(
   );
 }
 
-// Pre-0063 data. Receipt times are explicit: the standby holds the EARLIEST
+// Pre-0065 data. Receipt times are explicit: the standby holds the EARLIEST
 // receipt of the duplicated event, so the backfill must pick the standby,
 // not simply the first node inserted. Seeded by the superuser, which
 // bypasses RLS on the owner's tables.
@@ -221,8 +222,8 @@ async function expectReceiptsKept(scratch: Pool) {
 }
 
 async function expectRlsStillForced(scratch: Pool) {
-  // 0063 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
-  // FKs and backfill; 0064 lifts it on outlets and stations; 0065 on outlets
+  // 0065 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
+  // FKs and backfill; 0068 lifts it on outlets and stations; 0069 on outlets
   // and edge_nodes. Each must restore it before it commits, and the tables the
   // three migrations create must end with RLS forced.
   const tables = [
@@ -247,7 +248,7 @@ async function expectRlsStillForced(scratch: Pool) {
   }
 }
 
-describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
+describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
   let admin: Pool;
   let scratch: Pool;
   let workDir: string;
@@ -257,11 +258,11 @@ describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
     admin = new Pool({ connectionString: adminUrl, max: 1 });
     await admin.query(`CREATE DATABASE ${scratchName}`);
     scratch = new Pool({ connectionString: urlFor(scratchName), max: 2 });
-    const copy = copyMigrationsUpTo0062();
+    const copy = copyMigrationsUpTo0064();
     workDir = copy.dir;
-    await migrate(drizzle(scratch), { migrationsFolder: copy.upTo0062 });
+    await migrate(drizzle(scratch), { migrationsFolder: copy.upTo0064 });
     await seedDuplicateShape(scratch);
-    // 62 migrations into a fresh database outlast the default hook timeout on a
+    // 65 migrations into a fresh database outlast the default hook timeout on a
     // slow disposable Postgres.
   }, 120_000);
 
@@ -319,7 +320,7 @@ describe("legend-wg5t migration 0063 on pre-0063 duplicate receipts", () => {
   });
 });
 
-describe("legend-wg5t migration 0063 run by a non-superuser table owner", () => {
+describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => {
   const ownerRole = `edge_rcv_owner_${randomBytes(6).toString("hex")}`;
   const ownerPassword = randomBytes(16).toString("hex");
   const ownerDatabase = `edge_rcv_own_${randomBytes(6).toString("hex")}`;
@@ -333,12 +334,13 @@ describe("legend-wg5t migration 0063 run by a non-superuser table owner", () => 
     admin = new Pool({ connectionString: adminUrl, max: 1 });
     // Role names and the hex password are generated here, so interpolation
     // into DDL (which takes no bind parameters) is safe.
-    // Only 0063 is under test here. Migrations 0000..0062 need BYPASSRLS for
+    // Only 0065 is under test here. Migrations 0000..0064 need BYPASSRLS for
     // a non-superuser owner: adding a foreign key to a table with FORCE ROW
     // LEVEL SECURITY validates existing rows under the tenant policy, which
     // raises "tenant context is required" without app.tenant_id (first hit
-    // in 0004, domain_event_replays). That is older than 0063 and out of
-    // scope, so the role starts with BYPASSRLS and loses it before 0063 runs.
+    // in 0004, domain_event_replays; again in 0063,
+    // fiscal_period_snapshot_lines). That is older than 0065 and out of scope,
+    // so the role starts with BYPASSRLS and loses it before 0065 runs.
     await admin.query(
       `CREATE ROLE ${ownerRole} LOGIN PASSWORD '${ownerPassword}' NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB`,
     );
@@ -351,9 +353,9 @@ describe("legend-wg5t migration 0063 run by a non-superuser table owner", () => 
       connectionString: urlFor(ownerDatabase),
       max: 1,
     });
-    const copy = copyMigrationsUpTo0062();
+    const copy = copyMigrationsUpTo0064();
     workDir = copy.dir;
-    await migrate(drizzle(owner), { migrationsFolder: copy.upTo0062 });
+    await migrate(drizzle(owner), { migrationsFolder: copy.upTo0064 });
     await seedDuplicateShape(adminInScratch);
     // Production shape from here on (drizzle/0001): a plain table owner with
     // CREATEROLE, subject to RLS. ALTER ROLE only applies to new sessions, so

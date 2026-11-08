@@ -119,7 +119,7 @@ CREATE TRIGGER edge_sync_conflicts_append_only BEFORE UPDATE OR DELETE ON public
 FOR EACH ROW EXECUTE FUNCTION app.reject_edge_sync_log_mutation();
 --> statement-breakpoint
 
--- legend-wg5t (migration 0063): tenant-wide registry of edge_to_cloud event
+-- legend-wg5t (migration 0065): tenant-wide registry of edge_to_cloud event
 -- ids. Tenant + outlet owned, append-only like the receipts it summarises.
 SELECT app.enforce_tenant_rls('public.edge_received_events'::regclass);
 --> statement-breakpoint

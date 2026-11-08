@@ -314,7 +314,7 @@ export const edgeInboundEvents = pgTable(
 // primary's outbox); receipts in edge_inbound_events stay per node and
 // append-only, so the tenant-wide "already received" check and its race
 // guard (primary key) live here instead of in a unique index on the
-// receipts, which pre-existing duplicate receipts would break. Migration 0063
+// receipts, which pre-existing duplicate receipts would break. Migration 0065
 // backfills it from the receipts. Append-only like the receipts.
 export const edgeReceivedEvents = pgTable(
   "edge_received_events",

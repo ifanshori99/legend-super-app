@@ -119,6 +119,7 @@ import {
 } from "./pos-order-support.ts";
 import { recordTaxSnapshots } from "./tax.service.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
+import { voidPendingQrisTenders } from "./pos-order-payment.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
 
 type CreateInput = z.output<typeof createPosOrderEndpoint.body>;
@@ -1094,6 +1095,15 @@ export async function completePosOrder(
           "CONFLICT",
           "Tagihan dengan deposit reservasi belum dapat diselesaikan di POS.",
         );
+      // legend-b0au: a pending QRIS tender is voided and its WS-05 link
+      // cancelled in this transaction (no new intent, pending intents
+      // expired); a payment the gateway still lands later is refunded by
+      // handlePosPaymentPaid. Any other authorized tender is voided as before.
+      await voidPendingQrisTenders(tx, context, {
+        orderId: order.id,
+        now,
+        caller,
+      });
       await tx
         .update(posOrderTenders)
         .set({ status: "voided", resolvedAt: now, updatedAt: now })
@@ -1212,7 +1222,9 @@ async function voidLines(
     reasonNote: string;
     voidedBy: string;
     approvedBy: string;
-    approvalRequestId: string;
+    /** legend-0gy1: the consumed override and its WS-01 chain id (null for a PIN). */
+    overrideId: string;
+    approvalRequestId: string | null;
     now: Date;
   },
 ): Promise<number> {
@@ -1252,6 +1264,7 @@ async function voidLines(
         voidedAt: input.now,
         voidReasonNote: input.reasonNote,
         voidApprovalRequestId: input.approvalRequestId,
+        voidOverrideId: input.overrideId,
         updatedAt: input.now,
       })
       .where(
@@ -1302,7 +1315,7 @@ export async function voidPosOrder(
           "CONFLICT",
           "Pesanan sudah dibayar sebagian; selesaikan lalu koreksi dengan void/refund tertaut.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "order_void",
         outletId,
@@ -1311,8 +1324,9 @@ export async function voidPosOrder(
         objectId: order.id,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: order.totalIdr,
+        now,
       });
       const outlet = await loadOutlet(tx, context, outletId);
       const lineCount = await voidLines(tx, context, order, {
@@ -1321,8 +1335,21 @@ export async function voidPosOrder(
         reasonNote: input.reasonNote,
         voidedBy: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         now,
+      });
+      // legend-b0au: a pending QRIS tender is voided and its WS-05 link
+      // cancelled in this transaction (no new intent, pending intents
+      // expired); a payment the gateway still lands later is refunded by
+      // handlePosPaymentPaid. Any other authorized tender is voided as before.
+      await voidPendingQrisTenders(tx, context, {
+        orderId: order.id,
+        now,
+        caller,
+        // Money already in for the pending QRIS: wait for its confirmation
+        // rather than void the order and refund it.
+        refuseWhenPaid: true,
       });
       await tx
         .update(posOrderTenders)
@@ -1351,13 +1378,18 @@ export async function voidPosOrder(
           allLines: true,
           releaseDeposit: true,
         });
-      } catch {
+      } catch (error) {
+        // Only a contract refusal (e.g. a discount no longer fitting the
+        // frozen lines) keeps the stored money; a SQL error has already
+        // aborted the transaction and must surface (legend-94qt).
+        if (!(error instanceof PosError)) throw error;
         priced = order;
       }
       await bumpPos(tx, context, pos, now, {
         voidReasonNote: input.reasonNote,
         voidApprovedBy: input.approvedBy,
-        voidApprovalRequestId: input.approvalRequestId,
+        voidApprovalRequestId: override.approvalRequestId,
+        voidOverrideId: override.id,
       });
       const [voided] = await tx
         .update(orders)
@@ -1379,7 +1411,8 @@ export async function voidPosOrder(
         reason: input.reason,
         reasonNote: input.reasonNote,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         voidedFinalOrder: false,
         voidId: null,
         receiptNumber: null,
@@ -1416,7 +1449,8 @@ export async function voidPosOrder(
             itemCount: lineCount,
             reason: input.reason,
             approvedBy: input.approvedBy,
-            approvalRequestId: input.approvalRequestId,
+            approvalRequestId: override.approvalRequestId,
+            overrideId: override.id,
           },
           reason: input.reasonNote,
         },
@@ -1476,7 +1510,7 @@ export async function voidPosOrderItem(
           "CONFLICT",
           "Lepas promo/voucher dulu sebelum mem-void item.",
         );
-      await consumeApproval(tx, context, {
+      const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "item_void",
         outletId,
@@ -1485,8 +1519,9 @@ export async function voidPosOrderItem(
         objectId: itemId,
         requesterId: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        overrideId: input.overrideId,
         minValueIdr: target.item.lineTotalIdr,
+        now,
       });
       await voidLines(tx, context, order, {
         itemIds: [itemId],
@@ -1494,7 +1529,8 @@ export async function voidPosOrderItem(
         reasonNote: input.reasonNote,
         voidedBy: caller.userId,
         approvedBy: input.approvedBy,
-        approvalRequestId: input.approvalRequestId,
+        approvalRequestId: override.approvalRequestId,
+        overrideId: override.id,
         now,
       });
       const outlet = await loadOutlet(tx, context, outletId);
@@ -1514,7 +1550,8 @@ export async function voidPosOrderItem(
           wasFired: target.item.fireStatus === "fired",
           reason: input.reason,
           approvedBy: input.approvedBy,
-          approvalRequestId: input.approvalRequestId,
+          approvalRequestId: override.approvalRequestId,
+          overrideId: override.id,
           totalIdr: repriced.totalIdr,
         },
         caller,
@@ -1535,7 +1572,8 @@ export async function voidPosOrderItem(
             status: "voided",
             reason: input.reason,
             approvedBy: input.approvedBy,
-            approvalRequestId: input.approvalRequestId,
+            approvalRequestId: override.approvalRequestId,
+            overrideId: override.id,
             totalIdr: repriced.totalIdr,
           },
           reason: input.reasonNote,

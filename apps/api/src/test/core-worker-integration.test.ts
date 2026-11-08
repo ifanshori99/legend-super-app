@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { PgBoss } from "pg-boss";
 import { Client } from "pg";
@@ -26,15 +27,27 @@ it("runs real jobs, dead-letters exhausted delivery, and replays through authori
   const url = process.env.STARTER_TEST_DATABASE_URL;
   const setup = new Client({ connectionString: url });
   await setup.connect();
-  await setup.query("CREATE SCHEMA IF NOT EXISTS pgboss");
+  // The queue verify refuses the owner login, so the worker uses a restricted
+  // login that owns only the pgboss schema.
+  const queueRole = `legend_queue_it_${randomBytes(6).toString("hex")}`;
+  const queuePassword = randomBytes(16).toString("hex");
+  await setup.query(
+    `CREATE ROLE ${queueRole} LOGIN PASSWORD '${queuePassword}' NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION`,
+  );
+  await setup.query(
+    `CREATE SCHEMA IF NOT EXISTS pgboss AUTHORIZATION ${queueRole}`,
+  );
   await setup.end();
+  const queueUrl = new URL(url);
+  queueUrl.username = queueRole;
+  queueUrl.password = queuePassword;
   const inspector = new PgBoss(url);
   inspector.on("error", () => {});
   let permitted = false;
   let deliveries = 0;
   let dead = 0;
   const runtime = createWorkerRuntime({
-    boss: createPgBoss(url),
+    boss: createPgBoss(queueUrl.toString()),
     resolveContext: async (tenantId) => ({ tenantId }),
     authorize: async () => permitted,
     deliver: async () => {
@@ -82,5 +95,10 @@ it("runs real jobs, dead-letters exhausted delivery, and replays through authori
   } finally {
     await runtime.stop();
     await inspector.stop();
+    const cleanup = new Client({ connectionString: url });
+    await cleanup.connect();
+    await cleanup.query(`DROP OWNED BY ${queueRole}`);
+    await cleanup.query(`DROP ROLE ${queueRole}`);
+    await cleanup.end();
   }
 }, 40000);

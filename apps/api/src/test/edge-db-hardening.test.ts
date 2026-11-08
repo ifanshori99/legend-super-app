@@ -491,7 +491,7 @@ describe("legend-wg5t cross-node dedupe", () => {
     const node = await authenticateEdgeCredential(primary1.credential);
     const standby = await authenticateEdgeCredential(standby1.credential);
     const shared = randomUUID();
-    // Pre-0063 data holds both receipts; no unique index may refuse them.
+    // Pre-0065 data holds both receipts; no unique index may refuse them.
     await receiptRow(node!.scope.edgeNodeId, "edge_to_cloud", shared);
     await receiptRow(standby!.scope.edgeNodeId, "edge_to_cloud", shared);
     await receiptRow(node!.scope.edgeNodeId, "cloud_to_edge", shared);
