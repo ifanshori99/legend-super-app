@@ -1,7 +1,7 @@
 # Brief: engineer — legend-18qw worker event transport dan gap replay
 
 ## Peran
-Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (kerja berat, definisi selesai), lalu ikuti. Aturan repo yang mengikat: `docs/plan/AGENT_PLAYBOOK.md`, `docs/plan/contracts.md`. Baca juga `../HANDOFF.md` bagian 2 (aturan tetap: claude-mem mati, Colima untuk `pnpm check`/`pnpm test`, jangan push).
+Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (kerja berat, definisi selesai), lalu ikuti. Aturan repo yang mengikat: `docs/plan/AGENT_PLAYBOOK.md`, `docs/plan/contracts.md`. Baca juga `/Users/ifanshori99/Projects/legend super app/HANDOFF.md` bagian 2 (aturan tetap: claude-mem mati, Colima untuk `pnpm check`/`pnpm test`, jangan push).
 
 ## Repo
 `/Users/ifanshori99/Projects/legend super app/legend`. Kamu dijalankan di worktree sendiri dari `main`; kerja di cabang worktree itu. Worktree baru butuh `.claude/settings.local.json` yang mematikan claude-mem (lihat HANDOFF §2).
