@@ -13,6 +13,7 @@ PRD D14 (`:260`) says: "refund wajib PIN supervisor".
 The supervisor, outlet_manager, general_manager and owner roles hold it. Finance does not.
 
 New rules:
+
 - Single-approver path (matrix `required:false`): the decider must hold `payment.reconcile` AND `pos.refund.approve`.
   Otherwise the call throws `AccessError("PERMISSION_DENIED")`, and the refund stays `pending` with no chain row.
 - Chain settle (`settleFromChain`, svc ~455-490): each approved row's decider must hold `payment.reconcile` OR `pos.refund.approve`.
@@ -25,6 +26,7 @@ New rules:
 Files: svc `runRefundPayout` claim (~913-944), svc `retryRefundPayout` (~1185-1210), and `packages/shared/src/payment/admin.ts` (`retryRefundPayoutInputSchema`).
 
 Source evidence rule, for a refund with `unallocatedFundId`:
+
 - If `fund.evidenceId` is set, select exactly that evidence (tenant + intent + id).
   If no row is found, HOLD. Never fall back to `intent.providerRef`.
 - If `fund.evidenceId` is null, count the evidence rows of the intent (`limit 2`).
@@ -54,6 +56,7 @@ Source evidence rule, for a refund with `unallocatedFundId`:
 Copy the seeding helpers from `payment-refund-review-fix.test.ts` (`signedIn`, `roleIdOf`, `setPolicy`, `seedPaid`, `insertPendingRefund`, `seedApprovedRefund`) and the `FakeRefundGateway`.
 
 Scenarios:
+
 1. Finance A requests Rp50.000, below every tier. Finance B approves and is refused with 403 PERMISSION_DENIED. The refund stays pending and the gateway is never called.
 2. Same setup, but a user holding both `payment.reconcile` and `pos.refund.approve` (owner) approves. The refund pays out.
 3. A matrix chain where every approver is finance resolves approved. The refund fails with `approver_unauthorized` and the gateway is not called.
@@ -68,6 +71,7 @@ Tests for F1 and F2 may fail until the code lands. Write them against this spec,
 ## Test update after F1 (round 2)
 
 F1 changes the rule: a finance-only approval no longer pays out. Older tests that expect a finance approver to pay out now encode the old rule.
+
 - Update them: give the deciding approver supervisor authority too. Add an extra role assignment, for example the `supervisor` template scoped to the outlet, next to finance.
   Keep every assertion. Do not delete, skip, or weaken any test.
 - When a test checks the finance-only behaviour itself, flip its expectation to the new rule: 403 PERMISSION_DENIED on the direct path, or `approver_unauthorized` with note `supervisor_required` on a chain.

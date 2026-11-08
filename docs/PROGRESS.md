@@ -195,7 +195,6 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
   - Test: `payment-refund-codex-fix.test.ts` (11 skenario baru). Test approval dan review-fix disesuaikan: penyetuju finance diberi role supervisor di outlet. Review F diubah ke aturan baru, ditambah kasus negatif outlet lain.
   - Dampak operasional: refund di bawah tier kini hanya bisa disetujui owner (atau finance yang juga supervisor). Saran kartu: tier matriks refund mulai Rp0 dengan langkah supervisor lewat inbox.
 
-
 ## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
 
 - Selesai: tabel `devices` + `device_training_periods` (RLS tenant + outlet, trigger pencabutan final), migration `0068_closed_tiger_shark` (semula `0063_slim_nekra`, di-renumber di `ws/edge-registry-pull` setelah main; ditambah angkat FORCE RLS sementara untuk migrator pemilik tabel biasa). Route cloud `/api/devices` (daftar, daftarkan + token sekali tampil, terbit ulang token, cabut, mode latihan, heartbeat), edge `/api/edge/devices` (daftar, heartbeat), `/api/edge-sync/device-records` (ekspor replika untuk edge).
