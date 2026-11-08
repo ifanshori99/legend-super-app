@@ -398,7 +398,11 @@ migrations (PRD §3 F3, TEN-02):
    different databases. It also refuses when the shell exports
    `API_ENV_FILE`, `WEB_ENV_FILE`, `WORKER_ENV_FILE` or `MIGRATOR_ENV_FILE`
    with a value other than the one in `compose.env` (Compose would prefer the
-   shell's), and pins the checked paths for every Compose call. Compose output
+   shell's), and pins the checked paths for every Compose call. Any env file
+   with a non-ASCII character before a key on some line (a byte-order mark or
+   a no-break space, which Compose silently skips, so a hidden
+   `MIGRATION_DATABASE_URL` would reach the service) is refused with only the
+   line number shown; save such files as plain text. Compose output
    is hidden during validation because Compose echoes an unparsable env line,
    secrets included. It then starts
    PostgreSQL, applies migrations, and runs the `provision-roles` service (the
@@ -434,6 +438,17 @@ or if a login:
 - may run a built-in function that `PUBLIC` cannot (such as `pg_read_file`),
   or holds rights on a system catalog beyond `PUBLIC`'s (such as reading
   `pg_authid`);
+- can reach, by any path including a grant to `PUBLIC`, an object on the fixed
+  sensitive list: `pg_authid`, `pg_shadow`, `pg_user_mapping`, `pg_statistic`,
+  `pg_statistic_ext_data`, `pg_largeobject`, `pg_subscription.subconninfo`,
+  the file and server functions (`pg_read_file`, `pg_read_binary_file`,
+  `pg_ls_dir` and the other `pg_ls_*dir`, `pg_stat_file`, `lo_import`,
+  `lo_export`, `pg_reload_conf`, `pg_rotate_logfile`, `pg_promote`) and any
+  `dblink*` function. This is an explicit denylist, not a comparison with
+  PostgreSQL's default catalog privileges per major version: such a baseline
+  would have to be copied and kept for every release, while the denylist is
+  short, reviewable and version-independent. Other catalog grants to `PUBLIC`
+  are not detected;
 - can create objects in the database or any schema outside its own;
 - belongs, directly or through `legend_app`, to any role other than
   `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);
@@ -443,10 +458,26 @@ or if a login:
   `REFERENCES`, `TRIGGER` and, on PostgreSQL 17, `MAINTAIN`. Extension views
   readable by everyone (such as `pg_stat_statements`) are not counted;
   application tables granted to `PUBLIC` are;
-- would receive such rights on tables created later through default
-  privileges (`ALTER DEFAULT PRIVILEGES`), any default table right granted to
-  `PUBLIC`, or a default `CREATE` on schemas. Remove them with
-  `ALTER DEFAULT PRIVILEGES ... REVOKE` and re-run.
+- holds sequence rights beyond `USAGE/SELECT` (application) or any sequence
+  right outside `pgboss` (queue). `UPDATE` allows `setval()`, which can push a
+  sequence to its end and break every insert that uses it;
+- would receive such rights on tables or sequences created later through
+  default privileges (`ALTER DEFAULT PRIVILEGES`), any default table or
+  sequence right granted to `PUBLIC`, or a default `CREATE` on schemas. Remove
+  them with `ALTER DEFAULT PRIVILEGES ... REVOKE` and re-run.
+
+The same run (and every audit) also checks tenant isolation itself (TEN-02):
+every table with a `tenant_id` column (in `pgboss` only if the application can
+reach it) must have row-level security enabled and forced, and a restrictive
+policy for all commands and roles whose `USING` and `WITH CHECK` are exactly
+`tenant_id = app.require_tenant_id()`, as `app.enforce_tenant_rls` creates it.
+Five tables are documented exceptions, the same list as
+`apps/api/src/db/rls.test.ts`: `tenant_domains` and `payment_link_tokens`
+(must keep row-level security enabled; reads are open, writes are
+tenant-checked), and `session`, `login_challenges` and `wa_inbound_messages`
+(read before a tenant is known; scoped by the services). A table that fails
+the check stops the job; restore it with
+`SELECT app.enforce_tenant_rls('<table>'::regclass)` as the migration owner.
 
 After committing, the job signs in with each URL exactly as given and checks
 that PostgreSQL reports that login (not a superuser) on the same database. URLs
@@ -455,10 +486,15 @@ may carry only TLS and timeout parameters after `?` (`sslmode`, `sslrootcert`,
 `connect_timeout`); `user`, `password`, `host`, `options` and the like would
 override the login and are refused. PostgreSQL 16 or newer is required.
 
-Renaming the queue login: the `pgboss` schema still belongs to the old name,
-so the job stops with "The pg-boss schema is owned by ...". As the migration
-owner run `ALTER SCHEMA pgboss OWNER TO "<new login>"`, re-run the job, then
-drop the old role.
+Changing the queue login name: pg-boss keeps its jobs in tables the old login
+owns, so the new name must be the same role, renamed. With a new name in
+`worker.env` the job stops, creating nothing, with "The pg-boss schema is owned
+by <old>, not <new>". As the migration owner run
+`ALTER ROLE "<old login>" RENAME TO "<new login>"` (the role keeps its OID, so
+it keeps the schema and every table in it), then re-run the job: it re-keys the
+password from `worker.env`. Do not create a separate login and move only the
+schema: the queue tables would stay with the old role and the worker could not
+read them.
 
 An existing role with unsafe attributes is never adopted; fix or drop it by
 hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the

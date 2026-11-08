@@ -582,6 +582,64 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
           "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM legend_app",
           /may run built-in functions PUBLIC cannot: pg_read_file/,
         ],
+        // Sensitive objects are refused even when granted to PUBLIC.
+        [
+          "GRANT SELECT ON pg_catalog.pg_authid TO PUBLIC",
+          "REVOKE SELECT ON pg_catalog.pg_authid FROM PUBLIC",
+          /application role can reach sensitive server objects \(directly or through PUBLIC\): SELECT on pg_catalog\.pg_authid/,
+        ],
+        [
+          "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO PUBLIC",
+          "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM PUBLIC",
+          /application role can reach sensitive server objects \(directly or through PUBLIC\): EXECUTE on pg_catalog\.pg_read_file/,
+        ],
+        // Tenant tables keep forced RLS and the restrictive tenant policy.
+        [
+          "ALTER TABLE zoqc_fixture DISABLE ROW LEVEL SECURITY",
+          "ALTER TABLE zoqc_fixture ENABLE ROW LEVEL SECURITY",
+          /TEN-02.*public\.zoqc_fixture \(row-level security disabled\)/,
+        ],
+        [
+          "ALTER TABLE zoqc_fixture NO FORCE ROW LEVEL SECURITY",
+          "ALTER TABLE zoqc_fixture FORCE ROW LEVEL SECURITY",
+          /TEN-02.*public\.zoqc_fixture \(not forced\)/,
+        ],
+        [
+          "DROP POLICY tenant_isolation ON zoqc_fixture",
+          "CREATE POLICY tenant_isolation ON zoqc_fixture AS RESTRICTIVE FOR ALL USING (tenant_id = app.require_tenant_id()) WITH CHECK (tenant_id = app.require_tenant_id())",
+          /TEN-02.*public\.zoqc_fixture \(no restrictive tenant_isolation policy\)/,
+        ],
+        [
+          "ALTER POLICY tenant_isolation ON zoqc_fixture USING (true)",
+          "ALTER POLICY tenant_isolation ON zoqc_fixture USING (tenant_id = app.require_tenant_id())",
+          /TEN-02.*public\.zoqc_fixture \(no restrictive tenant_isolation policy\)/,
+        ],
+        [
+          "ALTER TABLE public.tenant_domains DISABLE ROW LEVEL SECURITY",
+          "ALTER TABLE public.tenant_domains ENABLE ROW LEVEL SECURITY",
+          /TEN-02.*public\.tenant_domains \(row-level security disabled\)/,
+        ],
+        // Sequences: setval() is refused, and so are such defaults.
+        [
+          `GRANT UPDATE ON SEQUENCE public.consents_seq_seq TO "${roles[1]}"`,
+          `REVOKE UPDATE ON SEQUENCE public.consents_seq_seq FROM "${roles[1]}"`,
+          /queue role has sequence rights it must not have: UPDATE on public\.consents_seq_seq/,
+        ],
+        [
+          "GRANT UPDATE ON SEQUENCE public.consents_seq_seq TO legend_app",
+          "REVOKE UPDATE ON SEQUENCE public.consents_seq_seq FROM legend_app",
+          /application role has sequence rights it must not have: UPDATE on public\.consents_seq_seq/,
+        ],
+        [
+          "ALTER DEFAULT PRIVILEGES GRANT UPDATE ON SEQUENCES TO legend_app",
+          "ALTER DEFAULT PRIVILEGES REVOKE UPDATE ON SEQUENCES FROM legend_app",
+          /application role would get default privileges it must not have: UPDATE on new sequences created by/,
+        ],
+        [
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO "${roles[1]}"`,
+          `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE USAGE ON SEQUENCES FROM "${roles[1]}"`,
+          /queue role would get default privileges it must not have: USAGE on new sequences/,
+        ],
         // Roles reached directly or through legend_app, with or without ADMIN.
         [
           `GRANT ${aux} TO "${roles[0]}"`,
@@ -865,6 +923,46 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
     } finally {
       await admin.query("REVOKE TRUNCATE ON zoqc_fixture FROM legend_app");
     }
+    // The audit (what deploy.sh runs after every migration) catches the same
+    // sensitive grants to PUBLIC and tenant tables without RLS.
+    for (const [grant, revoke, message] of [
+      [
+        "GRANT SELECT ON pg_catalog.pg_authid TO PUBLIC",
+        "REVOKE SELECT ON pg_catalog.pg_authid FROM PUBLIC",
+        /Role audit failed: .*sensitive server objects .*SELECT on pg_catalog\.pg_authid/,
+      ],
+      [
+        "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO PUBLIC",
+        "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM PUBLIC",
+        /Role audit failed: .*sensitive server objects .*EXECUTE on pg_catalog\.pg_read_file/,
+      ],
+      [
+        "ALTER TABLE zoqc_fixture DISABLE ROW LEVEL SECURITY",
+        "ALTER TABLE zoqc_fixture ENABLE ROW LEVEL SECURITY",
+        /Role audit failed: .*TEN-02.*public\.zoqc_fixture \(row-level security disabled\)/,
+      ],
+      [
+        `GRANT UPDATE ON SEQUENCE public.consents_seq_seq TO "${roles[1]}"`,
+        `REVOKE UPDATE ON SEQUENCE public.consents_seq_seq FROM "${roles[1]}"`,
+        /Role audit failed: .*sequence rights .*UPDATE on public\.consents_seq_seq/,
+      ],
+    ]) {
+      await admin.query(grant);
+      try {
+        const drifted = runJob(
+          {
+            MIGRATION_DATABASE_URL: adminUrl,
+            APP_DATABASE_URL: appUrl,
+            WORKER_DATABASE_URL: workerUrl,
+          },
+          ["--audit"],
+        );
+        assert.equal(drifted.status, 1, grant);
+        assert.match(drifted.stderr, message, grant);
+      } finally {
+        await admin.query(revoke);
+      }
+    }
   });
 
   await t.test("rotation and concurrent runs", async () => {
@@ -934,6 +1032,56 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
       );
     }
   });
+
+  await t.test(
+    "changing the queue login: the documented rename keeps the queue's tables",
+    async () => {
+      // pg-boss state lives in tables the queue login owns.
+      const old = quietPool({ connectionString: workerUrl, max: 1 });
+      try {
+        await old.query("CREATE TABLE pgboss.zoqc_queue (id integer)");
+        await old.query("INSERT INTO pgboss.zoqc_queue VALUES (1)");
+      } finally {
+        await old.end();
+      }
+      const renamed = `legend_worker_${hex(8)}`;
+      extraRoles.push(renamed);
+      const renamedUrl = login(adminUrl, renamed);
+      // A new name alone is refused, rolled back, with the rename to run.
+      const refused = job({ WORKER_DATABASE_URL: renamedUrl });
+      assert.equal(refused.status, 1);
+      assert.match(
+        refused.stderr,
+        new RegExp(`ALTER ROLE "${roles[1]}" RENAME TO "${renamed}"`),
+      );
+      const created = await admin.query(
+        "SELECT count(*)::int AS n FROM pg_roles WHERE rolname = $1",
+        [renamed],
+      );
+      assert.equal(created.rows[0].n, 0, "the refused run left a login behind");
+      // Following the hint, then re-running, works; the new login reads the
+      // old login's queue table and passes the audit.
+      await admin.query(`ALTER ROLE "${roles[1]}" RENAME TO "${renamed}"`);
+      const moved = job({ WORKER_DATABASE_URL: renamedUrl });
+      assert.equal(moved.status, 0, moved.stderr);
+      assert.match(moved.stdout, new RegExp(`${renamed} updated`));
+      const queue = open(renamedUrl);
+      assert.equal(
+        (await queue.query("SELECT count(*)::int AS n FROM pgboss.zoqc_queue"))
+          .rows[0].n,
+        1,
+      );
+      const audit = runJob(
+        {
+          MIGRATION_DATABASE_URL: adminUrl,
+          APP_DATABASE_URL: liveAppUrl,
+          WORKER_DATABASE_URL: renamedUrl,
+        },
+        ["--audit"],
+      );
+      assert.equal(audit.status, 0, audit.stderr);
+    },
+  );
 });
 
 test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", async (t) => {
@@ -1261,6 +1409,20 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
         { migrator: "OTHER=1\n" },
         /migrator\.env must set MIGRATION_DATABASE_URL/,
       ],
+      // Compose reads a key behind a byte-order mark or no-break space; the
+      // wrapper refuses such lines instead of missing them.
+      [
+        {
+          api: `﻿MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n${files.api}`,
+        },
+        /api\.env has a non-ASCII character .* before a key on line 1;/,
+      ],
+      [
+        {
+          worker: `${files.worker} MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n`,
+        },
+        /worker\.env has a non-ASCII character .* before a key on line 4;/,
+      ],
     ];
     for (const [overrides, message] of refusals) {
       write(overrides);
@@ -1273,6 +1435,10 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     write({ migrator: "MIGRATION_DATABASE_URL_FILE=/run/secrets/migration\n" });
     const fromFile = run(["--dry-run"]);
     assert.equal(fromFile.status, 0, fromFile.stderr);
+    // Non-ASCII in a value or a comment is fine.
+    write({ web: `${files.web}# café\nBRAND=Café\n` });
+    const accented = run(["--dry-run"]);
+    assert.equal(accented.status, 0, accented.stderr);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1316,6 +1482,64 @@ test("legend-zoqc wrapper hides docker compose output that can contain secrets",
       /docker compose could not read the configuration/,
     );
     assertNoSecrets(broken);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legend-zoqc wrapper refuses a key Compose would read behind a BOM or no-break space", (t) => {
+  const probe = spawnSync("docker", ["compose", "version"], {
+    encoding: "utf8",
+  });
+  if (probe.status !== 0) {
+    t.skip("docker compose is not installed");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "legend-zoqc-bom-"));
+  try {
+    const { files, write } = wrapperFixture(dir);
+    const admin = remember(
+      `postgresql://owner:${hex(24)}@postgres:5432/legend`,
+    );
+    const env = { PATH: process.env.PATH, HOME: process.env.HOME };
+    for (const [name, api] of [
+      ["BOM", `﻿MIGRATION_DATABASE_URL=${admin}\n${files.api}`],
+      ["NBSP", `${files.api} MIGRATION_DATABASE_URL=${admin}\n`],
+    ]) {
+      write({ api });
+      // Real Compose really hands this key to the API service (the output
+      // holds secrets: parsed here, never printed).
+      const config = spawnSync(
+        "docker",
+        [
+          "compose",
+          "--env-file",
+          join(dir, "compose.env"),
+          "-f",
+          resolve(root, "deploy/single-vm/compose.yaml"),
+          "config",
+          "--format",
+          "json",
+        ],
+        { env, encoding: "utf8" },
+      );
+      assert.equal(config.status, 0, `${name}: docker compose config failed`);
+      const environment = JSON.parse(config.stdout).services.api.environment;
+      assert.ok(
+        Object.keys(environment).some((key) =>
+          key.endsWith("MIGRATION_DATABASE_URL"),
+        ),
+        `${name}: Compose no longer reads the hidden key`,
+      );
+      const refused = spawnSync(
+        wrapper,
+        ["--env-file", join(dir, "compose.env"), "--dry-run"],
+        { env, encoding: "utf8" },
+      );
+      assert.equal(refused.status, 1, `${name}: the wrapper accepted it`);
+      assert.match(refused.stderr, /api\.env has a non-ASCII character/);
+      assertNoSecrets(refused);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

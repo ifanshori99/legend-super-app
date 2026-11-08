@@ -42,6 +42,8 @@ const URL_PARAMS = new Set([
   "connect_timeout",
 ]);
 const APP_TABLE_RIGHTS = ["SELECT", "INSERT", "UPDATE", "DELETE"];
+// nextval()/currval() for serial columns; never UPDATE (setval).
+const APP_SEQUENCE_RIGHTS = ["USAGE", "SELECT"];
 // Catalogs with an owner column: [catalog, owner column, namespace column].
 const OWNED_CATALOGS: [string, string, string | null][] = [
   ["pg_class", "relowner", "relnamespace"],
@@ -62,6 +64,49 @@ const OWNED_CATALOGS: [string, string, string | null][] = [
   ["pg_largeobject_metadata", "lomowner", null],
   ["pg_publication", "pubowner", null],
 ];
+// Objects no restricted login may reach by any path, PUBLIC included: the
+// password verifiers, foreign-server passwords, raw statistics and large
+// objects, and functions that read the server's files or control the server.
+// An explicit list instead of a per-version copy of PostgreSQL's default
+// catalog ACLs: short, reviewable, and the same on every major version.
+const SENSITIVE_TABLES = [
+  "pg_authid",
+  "pg_shadow",
+  "pg_user_mapping",
+  "pg_statistic",
+  "pg_statistic_ext_data",
+  "pg_largeobject",
+];
+const SENSITIVE_FUNCTIONS = [
+  "pg_read_file",
+  "pg_read_binary_file",
+  "pg_ls_dir",
+  "pg_stat_file",
+  "pg_ls_logdir",
+  "pg_ls_waldir",
+  "pg_ls_tmpdir",
+  "pg_ls_archive_statusdir",
+  "pg_ls_logicalsnapdir",
+  "pg_ls_logicalmapdir",
+  "pg_ls_replslotdir",
+  "lo_import",
+  "lo_export",
+  "pg_reload_conf",
+  "pg_rotate_logfile",
+  "pg_promote",
+];
+// Tables with a tenant_id that are deliberately not under the restrictive
+// tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
+// each). The first two must still keep row-level security enabled: their
+// write policies are what stop cross-tenant writes.
+const TENANT_RLS_EXCEPTIONS: Record<string, { rowSecurity: boolean }> = {
+  "public.tenant_domains": { rowSecurity: true },
+  "public.payment_link_tokens": { rowSecurity: true },
+  "public.session": { rowSecurity: false },
+  "public.login_challenges": { rowSecurity: false },
+  "public.wa_inbound_messages": { rowSecurity: false },
+};
+const TENANT_PREDICATE = "(tenant_id = app.require_tenant_id())";
 
 /** An operator-facing failure. Its message never contains a credential. */
 export class ProvisionError extends Error {
@@ -439,11 +484,139 @@ async function assertTableRights(
 }
 
 /**
- * Default privileges (ALTER DEFAULT PRIVILEGES) are applied to every table or
- * schema created later, for example by the next migration, so they get the
- * same limits as existing tables: `allowedTable` for grants this login
- * inherits (none through PUBLIC), never CREATE on schemas. Grants inside
- * `ownSchemas` to the login itself are its own business.
+ * Sequence rights outside `ownSchemas` must stay within `allowed`. UPDATE
+ * means setval(), which can push a sequence to its end and break every
+ * insert that draws from it.
+ */
+async function assertSequenceRights(
+  client: ClientBase,
+  user: string,
+  label: string,
+  ownSchemas: string[],
+  allowed: string[],
+) {
+  const rights = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['USAGE', 'SELECT', 'UPDATE']) AS p(privilege)
+     WHERE c.relkind = 'S'
+       AND n.nspname <> ALL($2::text[])
+       AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+       AND has_sequence_privilege($1, c.oid, p.privilege)
+     ORDER BY 1, 2`,
+    [user, ownSchemas],
+  );
+  const extra = rights.rows
+    .filter((row: { privilege: string }) => !allowed.includes(row.privilege))
+    .map(
+      (row: { relation: string; privilege: string }) =>
+        `${row.privilege} on ${row.relation}`,
+    );
+  if (extra.length)
+    throw new ProvisionError(
+      `The ${label} role has sequence rights it must not have: ${extra.slice(0, 5).join(", ")}${extra.length > 5 ? ", ..." : ""}.`,
+    );
+}
+
+/**
+ * The fixed denylist above, checked on the login's effective rights, so a
+ * grant to PUBLIC counts the same as a grant to the login.
+ */
+async function assertNoSensitive(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
+  const reached = await client.query(
+    `SELECT ARRAY(
+       SELECT format('%s on pg_catalog.%I', p.privilege, c.relname)
+       FROM pg_class c
+       CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS p(privilege)
+       WHERE c.relnamespace = 'pg_catalog'::regnamespace AND c.relname = ANY($2::text[])
+         AND CASE WHEN p.privilege = 'DELETE'
+                  THEN has_table_privilege($1, c.oid, 'DELETE')
+                  ELSE has_any_column_privilege($1, c.oid, p.privilege) END
+       UNION ALL
+       SELECT 'SELECT on pg_catalog.pg_subscription.subconninfo'
+       WHERE has_column_privilege($1, 'pg_catalog.pg_subscription', 'subconninfo', 'SELECT')
+       UNION ALL
+       SELECT DISTINCT format('EXECUTE on %I.%I', n.nspname, f.proname)
+       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+       WHERE ((n.nspname = 'pg_catalog' AND f.proname = ANY($3::text[]))
+              OR f.proname LIKE 'dblink%')
+         AND has_function_privilege($1, f.oid, 'EXECUTE')
+       ORDER BY 1
+     ) AS objects`,
+    [user, SENSITIVE_TABLES, SENSITIVE_FUNCTIONS],
+  );
+  const objects: string[] = reached.rows[0].objects;
+  if (objects.length)
+    throw new ProvisionError(
+      `The ${label} role can reach sensitive server objects (directly or through PUBLIC): ${objects.slice(0, 5).join(", ")}${objects.length > 5 ? ", ..." : ""}. Revoke the grant, then re-run.`,
+    );
+}
+
+/**
+ * TEN-02: every table with a tenant_id (outside the queue schema, or inside
+ * it when the application can reach it) enables and forces row-level
+ * security and keeps a restrictive policy, for every command and every role,
+ * that matches app.require_tenant_id() on reads and writes. Only the
+ * documented exceptions are exempt.
+ */
+async function assertTenantRls(client: ClientBase, user: string) {
+  const tables = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation,
+            c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
+            EXISTS (
+              SELECT 1 FROM pg_policy p
+              WHERE p.polrelid = c.oid AND NOT p.polpermissive AND p.polcmd = '*'
+                AND p.polroles = '{0}'::oid[]
+                AND pg_get_expr(p.polqual, p.polrelid) = $2
+                AND pg_get_expr(p.polwithcheck, p.polrelid) = $2
+            ) AS policy
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+     WHERE c.relkind IN ('r', 'p')
+       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+       AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
+       AND (n.nspname <> $3 OR has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE'))
+     ORDER BY 1`,
+    [user, TENANT_PREDICATE, QUEUE_SCHEMA],
+  );
+  type Row = {
+    relation: string;
+    enabled: boolean;
+    forced: boolean;
+    policy: boolean;
+  };
+  const broken = (tables.rows as Row[]).flatMap((row) => {
+    const exception = TENANT_RLS_EXCEPTIONS[row.relation];
+    if (exception)
+      return exception.rowSecurity && !row.enabled
+        ? [`${row.relation} (row-level security disabled)`]
+        : [];
+    const problems = [
+      ...(row.enabled ? [] : ["row-level security disabled"]),
+      ...(row.forced ? [] : ["not forced"]),
+      ...(row.policy ? [] : ["no restrictive tenant_isolation policy"]),
+    ];
+    return problems.length ? [`${row.relation} (${problems.join(", ")})`] : [];
+  });
+  if (broken.length)
+    throw new ProvisionError(
+      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. Restore them (SELECT app.enforce_tenant_rls('<table>'::regclass) as the migration owner), then re-run.`,
+    );
+}
+
+/**
+ * Default privileges (ALTER DEFAULT PRIVILEGES) are applied to every table,
+ * sequence or schema created later, for example by the next migration, so
+ * they get the same limits as existing objects: `allowedTable` and
+ * `allowedSequence` for grants this login inherits (none through PUBLIC),
+ * never CREATE on schemas. Grants inside `ownSchemas` to the login itself are
+ * its own business.
  */
 async function assertDefaultPrivileges(
   client: ClientBase,
@@ -451,6 +624,7 @@ async function assertDefaultPrivileges(
   label: string,
   ownSchemas: string[],
   allowedTable: string[],
+  allowedSequence: string[],
 ) {
   const rows = await client.query(
     `SELECT a.grantee = 0 AS public,
@@ -461,7 +635,7 @@ async function assertDefaultPrivileges(
      FROM pg_default_acl d
      LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
      CROSS JOIN LATERAL aclexplode(d.defaclacl) a
-     WHERE d.defaclobjtype IN ('r', 'n')
+     WHERE d.defaclobjtype IN ('r', 'S', 'n')
        AND a.grantee <> d.defaclrole
        AND CASE WHEN a.grantee = 0 THEN true ELSE pg_has_role($1, a.grantee, 'MEMBER') END
      ORDER BY 3, 4, 5, 6`,
@@ -479,11 +653,12 @@ async function assertDefaultPrivileges(
     .filter((row) => {
       if (row.type === "n") return row.privilege === "CREATE";
       if (!row.public && ownSchemas.includes(row.schema)) return false;
-      return row.public || !allowedTable.includes(row.privilege);
+      const allowed = row.type === "S" ? allowedSequence : allowedTable;
+      return row.public || !allowed.includes(row.privilege);
     })
     .map(
       (row) =>
-        `${row.privilege} on new ${row.type === "n" ? "schemas" : "tables"} created by ${row.owner}${row.schema ? ` in ${row.schema}` : ""} (granted to ${row.grantee})`,
+        `${row.privilege} on new ${{ n: "schemas", S: "sequences" }[row.type] ?? "tables"} created by ${row.owner}${row.schema ? ` in ${row.schema}` : ""} (granted to ${row.grantee})`,
     );
   if (extra.length)
     throw new ProvisionError(
@@ -632,13 +807,23 @@ async function auditApp(client: ClientBase, user: string) {
   await assertTableRights(client, user, "application", [], {
     "*": APP_TABLE_RIGHTS,
   });
+  await assertSequenceRights(
+    client,
+    user,
+    "application",
+    [],
+    APP_SEQUENCE_RIGHTS,
+  );
   await assertDefaultPrivileges(
     client,
     user,
     "application",
     [],
     APP_TABLE_RIGHTS,
+    APP_SEQUENCE_RIGHTS,
   );
+  await assertNoSensitive(client, user, "application");
+  await assertTenantRls(client, user);
 }
 
 async function auditWorker(client: ClientBase, user: string) {
@@ -646,7 +831,9 @@ async function auditWorker(client: ClientBase, user: string) {
   await assertTableRights(client, user, "queue", [QUEUE_SCHEMA], {
     "app.active_tenant_registry": ["SELECT"],
   });
-  await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], []);
+  await assertSequenceRights(client, user, "queue", [QUEUE_SCHEMA], []);
+  await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], [], []);
+  await assertNoSensitive(client, user, "queue");
 }
 
 async function assertRegistry(client: ClientBase) {
@@ -665,7 +852,7 @@ async function provisionWorker(client: ClientBase, login: Login) {
   const owner = await queueSchemaOwner(client);
   if (owner && owner !== login.user)
     throw new ProvisionError(
-      `The pg-boss schema is owned by ${owner}, not ${login.user}. If the queue login was renamed, run ALTER SCHEMA ${QUEUE_SCHEMA} OWNER TO "${login.user}" as the migration owner, then re-run.`,
+      `The pg-boss schema is owned by ${owner}, not ${login.user}. To change the queue login, rename the existing role so it keeps the queue's tables: as the migration owner run ALTER ROLE "${owner}" RENAME TO "${login.user}", then re-run (the job re-keys the password from worker.env).`,
     );
   if (!owner) {
     // A non-superuser CREATEROLE admin may only hand an object to a role it

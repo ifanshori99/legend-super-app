@@ -38,6 +38,16 @@ value_of() {
 }
 # A bare KEY line also counts: Compose then copies the value from its shell.
 defines() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*([=:]|\$)" "$1"; }
+# Compose's env parser skips a byte-order mark or a no-break space in front
+# of a key; the checks below would not, so a hidden MIGRATION_DATABASE_URL
+# could slip past them. Refuse any byte outside printable ASCII (tab and CR
+# aside) before the first =, : or # of a line. Only the line number is shown.
+# (awk, not grep: BSD grep skips a leading byte-order mark.)
+ascii_keys() {
+  line=$(LC_ALL=C awk '{ k = $0; sub(/[#=:].*/, "", k); gsub(/[\t\r -~]/, "", k); if (k != "") { print NR; exit } }' "$1")
+  [ -z "$line" ] ||
+    fail "$(basename "$1") has a non-ASCII character (byte-order mark, no-break space, ...) before a key on line $line; save it as plain text without them."
+}
 service_file() {
   path=$(value_of "$env_file" "$1")
   case "$path" in /*) ;; *) fail "$1 in the compose env file must be an absolute path." ;; esac
@@ -58,6 +68,7 @@ endpoint_of() {
 # Compose lets the shell override compose.env, so an exported API_ENV_FILE
 # (or the others) would swap in a file this script never checked. Refuse a
 # conflicting export, then pin the checked paths for every Compose call.
+ascii_keys "$env_file"
 for key in MIGRATOR_ENV_FILE API_ENV_FILE WEB_ENV_FILE WORKER_ENV_FILE; do
   if shell_value=$(printenv "$key"); then
     [ "$shell_value" = "$(value_of "$env_file" "$key")" ] ||
@@ -73,6 +84,9 @@ API_ENV_FILE=$api_env
 WEB_ENV_FILE=$web_env
 WORKER_ENV_FILE=$worker_env
 export MIGRATOR_ENV_FILE API_ENV_FILE WEB_ENV_FILE WORKER_ENV_FILE
+for file in "$migrator_env" "$api_env" "$web_env" "$worker_env"; do
+  ascii_keys "$file"
+done
 for file in "$api_env" "$web_env" "$worker_env"; do
   defines "$file" MIGRATION_DATABASE_URL &&
     fail "an application env file ($(basename "$file")) contains MIGRATION_DATABASE_URL; keep it in migrator.env only."
