@@ -10,14 +10,16 @@
 //
 // A verified event is also bound to the intent it names: provider ref, intent
 // id (`data.reference`), amount and the integration that signed it must all
-// agree, otherwise the row is `ignored` and nothing settles. Failures before
-// the signature is verified all answer with the same UNAUTHORIZED error.
+// agree, otherwise the row is `ignored` and nothing settles; a paid `amount`
+// that differs from the intent goes the AMOUNT_MISMATCH way (money parked).
+// Only `payment.paid` and `payment.expired` move an intent: any other event
+// type (`webhook.test`, `invoice.created`, refunds, ...) is stored `ignored`.
+// Failures before the signature is verified all answer with the same
+// UNAUTHORIZED error.
 
 import { createHash } from "node:crypto";
 import {
   CoreError,
-  createUlid,
-  idr,
   isoDateTimeSchema,
   tenantIdSchema,
   uuidSchema,
@@ -31,24 +33,29 @@ import { and, asc, eq, gt, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   gatewayWebhookEvents,
-  paymentEvidence,
   paymentIntents,
-  paymentUnallocatedFunds,
   tenants,
   type GatewayWebhookEvent,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
-import { recordAudit } from "./core-audit";
-import { applyGatewayFailure, confirmPayment } from "./payment.service";
+import { logger } from "../lib/logger";
+import {
+  applyGatewayFailure,
+  confirmPayment,
+  recordUnsettledGatewayFunds,
+} from "./payment.service";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
 import {
+  doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
+  isDoitPaymentEvent,
   verifyDoitSignature,
 } from "./payment-doit-wire";
 import {
   listIntegrations,
   loadActiveIntegrationCredentials,
+  loadIntegrationCredentialsById,
 } from "./platform-integration.service";
 
 const PROVIDER = "doit";
@@ -70,7 +77,6 @@ type DoitWebhookEvent = ReturnType<typeof doitWebhookEventSchema.parse>;
 type ProcessOutcome = "processed" | "ignored" | "failed";
 type PaymentIntentRow = typeof paymentIntents.$inferSelect;
 type WebhookSecretEntry = { secret: string; integrationId: string };
-type RowConflict = "event" | "rejected_hash";
 
 function unauthorized(): CoreError {
   return new CoreError("UNAUTHORIZED", SIGNATURE_MESSAGE);
@@ -139,10 +145,20 @@ const secretCache = new Map<
   string,
   { entries: WebhookSecretEntry[]; expiresAt: number }
 >();
+/** Bumped by every clear. A load that started before a clear (it may have
+ * read the secrets before the integration change committed) must not put its
+ * stale result back into the cache, so it stores only if this is unchanged. */
+let secretCacheGeneration = 0;
 
-/** Tests rotate or add secrets between calls; production relies on the TTL. */
-export function clearDoitWebhookSecretCache(): void {
-  secretCache.clear();
+/** Drops the cached secrets of one tenant (no argument: every tenant). Called
+ * when an integration changes so a rotated or disabled secret takes effect at
+ * once instead of after the TTL; tests also use it between calls. The clear
+ * is per process: another process (the worker, a second API instance) keeps
+ * its copy until its 60 s TTL runs out. */
+export function clearDoitWebhookSecretCache(tenantId?: string): void {
+  secretCacheGeneration += 1;
+  if (tenantId === undefined) secretCache.clear();
+  else secretCache.delete(tenantId);
 }
 
 /** Secrets cached 60 s per tenant so an unsigned flood does not hit the
@@ -153,7 +169,10 @@ async function cachedWebhookSecrets(
   const key = context.tenant.tenantId;
   const hit = secretCache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.entries;
+  const generation = secretCacheGeneration;
   const entries = await loadWebhookSecrets(context);
+  // A clear ran while loading: serve this request, cache nothing.
+  if (generation !== secretCacheGeneration) return entries;
   if (entries.length > 0)
     secretCache.set(key, {
       entries,
@@ -161,6 +180,57 @@ async function cachedWebhookSecrets(
     });
   else secretCache.delete(key);
   return entries;
+}
+
+/**
+ * Secret of the integration that minted the intent a delivery names, when that
+ * row is no longer among the active ones (disabled since): a payment already
+ * in flight on it must still be verifiable. The body is not trusted here; it
+ * only picks which stored secret to try, and the signature still decides.
+ */
+async function mintingIntegrationSecret(
+  context: ScopedTenantContext,
+  json: unknown,
+  tried: readonly WebhookSecretEntry[],
+): Promise<WebhookSecretEntry | null> {
+  const data =
+    typeof json === "object" && json !== null
+      ? (json as { data?: unknown }).data
+      : undefined;
+  const reference = uuidSchema.safeParse(
+    typeof data === "object" && data !== null
+      ? (data as { reference?: unknown }).reference
+      : undefined,
+  );
+  if (!reference.success) return null;
+  const integrationId = await withTenant(db, context, async (tx) => {
+    const [found] = await tx
+      .select({ integrationId: paymentIntents.gatewayIntegrationId })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, reference.data),
+          eq(paymentIntents.provider, PROVIDER),
+        ),
+      )
+      .limit(1);
+    return found?.integrationId ?? null;
+  });
+  if (
+    integrationId === null ||
+    tried.some((entry) => entry.integrationId === integrationId)
+  )
+    return null;
+  const loaded = await loadIntegrationCredentialsById(
+    context,
+    PROVIDER,
+    integrationId,
+  );
+  const secret = loaded?.credentials.webhookSecret;
+  return typeof secret === "string" && secret.length > 0
+    ? { secret, integrationId }
+    : null;
 }
 
 function readableEventId(value: unknown): string | null {
@@ -171,49 +241,25 @@ function readableEventId(value: unknown): string | null {
     : null;
 }
 
-function readPaidAt(event: DoitWebhookEvent): string {
-  const paidAt = (event.data as { paid_at?: unknown }).paid_at;
-  for (const candidate of [paidAt, event.created_at]) {
+/** Provider payment time; falls back to the injected `now` (never the wall
+ * clock) so an old retry is not mistaken for a late payment. */
+function readPaidAt(event: DoitWebhookEvent, now: Date): string {
+  for (const candidate of [event.data.paid_at, event.created_at]) {
     const parsed = isoDateTimeSchema.safeParse(candidate);
     if (parsed.success) return parsed.data;
   }
-  return new Date().toISOString();
+  return now.toISOString();
 }
 
 /**
- * Amount the intent was settled for. The intent amount when the provider paid
- * exactly it, or, for a bank transfer, when it paid the transfer total and the
- * difference is exactly the unique code (3-6 digits, equal to the one stored
- * on the intent): the code is absorbed, not owed by the bill. Any other paid
- * amount is reported raw so the lifecycle flags the mismatch. `null` fails
- * closed.
+ * Amount a paid event credits the bill: DOIT's `amount` (`total_amount` adds
+ * the transfer unique code or a customer-borne fee and is not the bill's).
+ * The lifecycle compares it with the intent and flags a mismatch. `null`
+ * (zero) fails closed.
  */
-function settledAmount(
-  event: DoitWebhookEvent,
-  intent: PaymentIntentRow,
-): number | null {
-  const paid = event.data.paid_amount;
-  if (paid === null || paid === undefined || !(paid > 0)) return null;
-  const billed = Number(intent.amountIdr);
-  if (paid === billed) return billed;
-  const { transfer_amount: transfer, unique_code: code } = event.data;
-  if (
-    intent.method === "bank_transfer" &&
-    typeof transfer === "number" &&
-    paid === transfer &&
-    typeof code === "string" &&
-    /^\d{3,6}$/.test(code) &&
-    transfer - billed === Number(code)
-  ) {
-    const stored = (intent.instructions as { uniqueCode?: unknown }).uniqueCode;
-    if (
-      stored === undefined ||
-      stored === null ||
-      Number(stored) === Number(code)
-    )
-      return billed;
-  }
-  return paid;
+function settledAmount(event: DoitWebhookEvent): number | null {
+  const paid = event.data.amount;
+  return paid > 0 ? paid : null;
 }
 
 async function markRow(
@@ -272,19 +318,27 @@ async function findBoundIntent(
   return { kind: "found", intent };
 }
 
-/** The integration that verified the signature must be the one that owns the
- * outlet of the intent (outlet row wins over tenant row). */
+/** The integration that verified the signature must be the one that minted
+ * the intent (`gateway_integration_id`), even when an outlet row has been
+ * added or that row disabled since. Older intents without it fall back to the
+ * integration that owns the intent's outlet now (outlet row wins over tenant
+ * row). */
 async function signedByIntentIntegration(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   row: GatewayWebhookEvent,
   verifiedSecret: string | undefined,
 ): Promise<boolean> {
-  const loaded = await loadActiveIntegrationCredentials(
-    context,
-    PROVIDER,
-    intent.outletId,
-  );
+  const minted = intent.gatewayIntegrationId;
+  if (minted !== null && row.integrationId === minted) return true;
+  const loaded =
+    minted !== null
+      ? await loadIntegrationCredentialsById(context, PROVIDER, minted)
+      : await loadActiveIntegrationCredentials(
+          context,
+          PROVIDER,
+          intent.outletId,
+        );
   if (!loaded) return false;
   if (row.integrationId !== null && loaded.integration.id === row.integrationId)
     return true;
@@ -297,13 +351,10 @@ async function signedByIntentIntegration(
 }
 
 /**
- * Money arrived that cannot settle the intent: the intent is already closed as
- * failed (nothing revives it, lifecycle rule) or the paid amount does not match
- * the bill (AMOUNT_MISMATCH). The funds are recorded once, keyed by the
- * provider transaction, as unallocated funds for the existing refund or credit
- * review. Reason: `overpayment` when more than the bill was paid, otherwise
- * `double_payment` (the closest existing value: money that cannot be
- * allocated to this bill). The payment evidence row makes a replay a no-op.
+ * Money arrived that cannot settle the intent (closed as failed, or
+ * AMOUNT_MISMATCH): parked once as unallocated funds, keyed by the provider
+ * transaction. The shared core lives in `recordUnsettledGatewayFunds`, which
+ * the polling fallback uses too, so webhook and poll write one row.
  */
 async function recordUnsettledFunds(
   context: ScopedTenantContext,
@@ -311,71 +362,20 @@ async function recordUnsettledFunds(
   event: DoitWebhookEvent,
   now: Date,
 ): Promise<void> {
-  const paid = event.data.paid_amount;
-  if (paid === null || paid === undefined || !(paid > 0)) return;
-  const receivedAt = new Date(readPaidAt(event));
-  const reason =
-    paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
-  await withTenant(db, context, async (tx) => {
-    const [inserted] = await tx
-      .insert(paymentEvidence)
-      .values({
-        tenantId: context.tenant.tenantId,
-        outletId: intent.outletId,
-        paymentIntentId: intent.id,
-        provider: PROVIDER,
-        providerRef: event.data.id,
-        method: intent.method,
-        source: "verified_webhook",
-        amountIdr: idr(paid),
-        receivedAt,
-      })
-      .onConflictDoNothing({
-        target: [
-          paymentEvidence.tenantId,
-          paymentEvidence.provider,
-          paymentEvidence.providerRef,
-        ],
-      })
-      .returning({ id: paymentEvidence.id });
-    if (!inserted) return;
-    await tx.insert(paymentUnallocatedFunds).values({
-      tenantId: context.tenant.tenantId,
-      outletId: intent.outletId,
-      paymentIntentId: intent.id,
-      amountIdr: idr(paid),
-      reason,
-    });
-    await recordAudit(
-      tx,
-      context,
-      {
-        id: createUlid(now.getTime()),
-        tenantId: context.tenant.tenantId,
-        outletId: intent.outletId,
-        actorType: "system",
-        actorId: null,
-        deviceId: null,
-        action: "payment.closed_intent_funds_flagged",
-        objectType: "payment_intent",
-        objectId: intent.id,
-        reason: null,
-        maskedChanges: {
-          before: { status: intent.status },
-          after: {
-            status: intent.status,
-            unallocatedIdr: paid,
-            providerRef: event.data.id,
-          },
-        },
-        ipHash: null,
-        sensitiveAccess: false,
-        retentionClass: "audit_2y",
-        createdAt: now.toISOString(),
-      },
-      ["status", "unallocatedIdr", "providerRef"],
-    );
-  });
+  const paid = settledAmount(event);
+  if (paid === null) return;
+  await recordUnsettledGatewayFunds(
+    context,
+    intent,
+    {
+      provider: PROVIDER,
+      providerRef: event.data.id,
+      source: "verified_webhook",
+      paidAmountIdr: paid,
+      receivedAt: new Date(readPaidAt(event, now)),
+    },
+    now,
+  );
 }
 
 /** A 409 from `confirmPayment` is a deterministic lifecycle decision, never
@@ -470,7 +470,6 @@ async function processStoredEvent(
     const intent = bound.kind === "found" ? bound.intent : null;
     if (
       !intent ||
-      event.data.amount !== Number(intent.amountIdr) ||
       !(await signedByIntentIntegration(context, intent, row, verifiedSecret))
     ) {
       await markRow(
@@ -489,15 +488,15 @@ async function processStoredEvent(
     let code: string | null = null;
     const status = event.data.status;
     if (status === "paid") {
-      const amountIdr = settledAmount(event, intent);
+      const amountIdr = settledAmount(event);
       if (amountIdr === null) {
-        // Fail closed: no paid amount proves nothing about the money. Kept
-        // `failed` (visible for manual review, retried by the worker) because
-        // DOIT may resend the event with an amount.
+        // Fail closed: a zero amount proves nothing about the money. Kept
+        // `failed` (visible for manual review, retried by the worker) and
+        // answered with a 5xx by the route so DOIT resends the event.
         outcome = "failed";
         code = "AMOUNT_MISSING";
       } else {
-        const at = readPaidAt(event);
+        const at = readPaidAt(event, now);
         try {
           await confirmPayment(
             context,
@@ -527,9 +526,11 @@ async function processStoredEvent(
       }
     } else if (status === "expired") {
       await applyGatewayFailure(context, intent.id, "expired", now);
-    } else if (status === "failed" || status === "cancelled") {
+    } else if (status === "failed") {
       await applyGatewayFailure(context, intent.id, "failed", now);
     }
+    // `pending` and `refunded` change nothing (a refund is not booked
+    // automatically).
     await markRow(
       context,
       row.id,
@@ -566,7 +567,6 @@ async function insertRow(
     typeof gatewayWebhookEvents.$inferInsert,
     "tenantId" | "provider"
   >,
-  conflict: RowConflict = "event",
 ): Promise<GatewayWebhookEvent | null> {
   return withTenant(db, context, async (tx) => {
     const [inserted] = await tx
@@ -576,28 +576,69 @@ async function insertRow(
         tenantId: context.tenant.tenantId,
         provider: PROVIDER,
       })
-      // Verified rows dedupe by provider event id; rejected rows (no event
-      // id) by payload hash, so replayed garbage stores one row only.
-      .onConflictDoNothing(
-        conflict === "event"
-          ? {
-              target: [
-                gatewayWebhookEvents.tenantId,
-                gatewayWebhookEvents.provider,
-                gatewayWebhookEvents.eventId,
-              ],
-              where: sql`${gatewayWebhookEvents.signatureValid} AND ${gatewayWebhookEvents.eventId} IS NOT NULL`,
-            }
-          : {
-              target: [
-                gatewayWebhookEvents.tenantId,
-                gatewayWebhookEvents.payloadHash,
-              ],
-              where: sql`NOT ${gatewayWebhookEvents.signatureValid}`,
-            },
-      )
+      // Verified rows dedupe by provider event id.
+      .onConflictDoNothing({
+        target: [
+          gatewayWebhookEvents.tenantId,
+          gatewayWebhookEvents.provider,
+          gatewayWebhookEvents.eventId,
+        ],
+        where: sql`${gatewayWebhookEvents.signatureValid} AND ${gatewayWebhookEvents.eventId} IS NOT NULL`,
+      })
       .returning();
     return inserted ?? null;
+  });
+}
+
+/**
+ * Audit trail of deliveries whose signature did not verify. One counter row
+ * per tenant per minute (not one per distinct body), so an unsigned flood
+ * cannot bloat the table. The body is never stored; its hash only goes to the
+ * log. The row reuses the unique index on (tenant, payload_hash) for rows
+ * that are not signature-valid.
+ */
+async function recordRejectedAttempt(
+  context: ScopedTenantContext,
+  bodyHash: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const bucket = new Date(Math.floor(now.getTime() / 60_000) * 60_000);
+  const bucketHash = createHash("sha256")
+    .update(`rejected:${tenantId}:${bucket.toISOString()}`)
+    .digest("hex");
+  logger.warn(
+    { module: "payment-webhook", tenantId, payloadHash: bodyHash },
+    "DOIT webhook signature rejected",
+  );
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .insert(gatewayWebhookEvents)
+      .values({
+        tenantId,
+        provider: PROVIDER,
+        signatureValid: false,
+        status: "rejected",
+        lastErrorCode: "SIGNATURE_INVALID",
+        payloadHash: bucketHash,
+        eventId: null,
+        payload: null,
+        receivedAt: now,
+        attempts: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          gatewayWebhookEvents.tenantId,
+          gatewayWebhookEvents.payloadHash,
+        ],
+        targetWhere: sql`NOT ${gatewayWebhookEvents.signatureValid}`,
+        set: {
+          attempts: sql`${gatewayWebhookEvents.attempts} + 1`,
+          updatedAt: now,
+        },
+      });
   });
 }
 
@@ -625,9 +666,9 @@ async function loadVerifiedRow(
 /**
  * Receives one DOIT webhook. Throws UNAUTHORIZED (one message, no oracle) for
  * every failure before the signature is verified (unknown or inactive tenant,
- * tenant without a DOIT secret, bad signature), VALIDATION_ERROR for a
- * verified but malformed payload and a 500 when processing failed (the stored
- * row is retried; DOIT retries as well).
+ * tenant without a DOIT secret, bad signature) and a 500 when a verified
+ * payload cannot be parsed or processing failed (DOIT retries on a 5xx; a
+ * stored, parsed row is retried by the worker as well).
  */
 export async function receiveDoitWebhook(input: {
   tenantId: string;
@@ -642,43 +683,60 @@ export async function receiveDoitWebhook(input: {
   if (!(await tenantIsActive(context))) throw unauthorized();
 
   const entries = await cachedWebhookSecrets(context);
-  if (entries.length === 0) throw unauthorized();
-
   const payloadHash = createHash("sha256").update(input.rawBody).digest("hex");
-  const verified = entries.find((entry) =>
-    verifyDoitSignature({
-      rawBody: input.rawBody,
-      header: input.signatureHeader,
-      secrets: [entry.secret],
-      now,
-    }),
-  );
-  if (!verified) {
-    await insertRow(
-      context,
-      {
-        signatureValid: false,
-        status: "rejected",
-        payloadHash,
-        eventId: null,
-        payload: null,
-        receivedAt: now,
-        attempts: 1,
-        createdAt: now,
-        updatedAt: now,
-      },
-      "rejected_hash",
-    );
-    throw unauthorized();
-  }
-
   let json: unknown;
   try {
     json = JSON.parse(input.rawBody.toString("utf8"));
   } catch {
     json = undefined;
   }
-  const parsed = doitWebhookEventSchema.safeParse(json);
+  const signedWith = (entry: WebhookSecretEntry) =>
+    verifyDoitSignature({
+      rawBody: input.rawBody,
+      header: input.signatureHeader,
+      secrets: [entry.secret],
+      now,
+    });
+  let verified = entries.find(signedWith);
+  if (!verified) {
+    // Money in flight on an integration disabled since it minted the intent.
+    const minting =
+      input.signatureHeader === undefined
+        ? null
+        : await mintingIntegrationSecret(context, json, entries);
+    if (minting && signedWith(minting)) verified = minting;
+  }
+  if (!verified) {
+    // A tenant without any DOIT secret has nothing to audit against.
+    if (entries.length > 0)
+      await recordRejectedAttempt(context, payloadHash, now);
+    throw unauthorized();
+  }
+  const envelope = doitWebhookEnvelopeSchema.safeParse(json);
+  if (envelope.success && !isDoitPaymentEvent(envelope.data.type)) {
+    // Not a payment event: stored (deduped by event id) and ignored, 200.
+    const { id, type, created_at } = envelope.data;
+    const stored = await insertRow(context, {
+      integrationId: verified.integrationId,
+      signatureValid: true,
+      eventId: id,
+      eventType: type,
+      payloadHash,
+      // Envelope only: `data` of other event types is not validated.
+      payload: { id, type, created_at },
+      status: "ignored",
+      lastErrorCode: "EVENT_TYPE_IGNORED",
+      processedAt: now,
+      receivedAt: now,
+      attempts: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { status: stored ? "ignored" : "duplicate", eventId: id };
+  }
+  const parsed = envelope.success
+    ? doitWebhookEventSchema.safeParse(json)
+    : envelope;
   if (!parsed.success) {
     await insertRow(context, {
       integrationId: verified.integrationId,
@@ -693,7 +751,14 @@ export async function receiveDoitWebhook(input: {
       createdAt: now,
       updatedAt: now,
     });
-    throw new CoreError("VALIDATION_ERROR", "Payload webhook tidak valid.");
+    // Signed by DOIT but not readable here (a field we are too strict
+    // about): a 5xx makes DOIT resend it, so a fixed parser still gets the
+    // event within DOIT's retry window instead of the money being dropped.
+    throw new HttpError(
+      500,
+      "INTERNAL_ERROR",
+      "Webhook belum dapat diproses. Coba lagi.",
+    );
   }
   const event = parsed.data;
 
@@ -718,6 +783,27 @@ export async function receiveDoitWebhook(input: {
     if (row.status === "processed" || row.status === "ignored")
       return { status: "duplicate", eventId: event.id };
     // `received` or `failed`: the earlier delivery never finished, retry it.
+    if (row.payload === null) {
+      // An earlier delivery could not be parsed: keep the parsed event now
+      // so the worker can retry this row too.
+      const stored = row;
+      await withTenant(db, context, async (tx) => {
+        await tx
+          .update(gatewayWebhookEvents)
+          .set({
+            payload: event as unknown as Record<string, unknown>,
+            eventType: event.type.slice(0, 60),
+            providerRef: event.data.id.slice(0, 100),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+              eq(gatewayWebhookEvents.id, stored.id),
+            ),
+          );
+      });
+    }
   }
   const outcome = await processStoredEvent(
     context,

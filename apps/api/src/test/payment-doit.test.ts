@@ -6,11 +6,10 @@
 // http is allowed because NODE_ENV=test). Credentials come through the
 // `loadCredentials` option, so no database is needed.
 //
-// The DOIT wire format and the webhook signature header are ASSUMED until the
-// sandbox docs land (bead legend-s5c); the fake server below speaks exactly
-// the assumed format from the brief. When the real format is confirmed, change
-// the `payment()` / `signatureHeader()` helpers here together with
-// payment-doit-wire.ts.
+// The fake server speaks the wire format of the official DOIT docs
+// (https://doit.id/docs/en/): GET /v1/methods, POST /v1/payments and
+// GET /v1/payments/{id}, payment objects without a paid amount. Change the
+// `payment()` helpers here together with payment-doit-wire.ts.
 //
 // Assumptions where the brief is silent:
 // - `signDoitWebhook` returns the full header string `t=<unix>,v1=<hex>`.
@@ -48,7 +47,10 @@ import {
   parseDoitBaseUrl,
 } from "../services/payment-doit";
 import {
+  DOIT_BASE_URL,
+  doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
+  isDoitPaymentEvent,
   signDoitWebhook,
   verifyDoitSignature,
 } from "../services/payment-doit-wire";
@@ -58,6 +60,9 @@ const WEBHOOK_SECRET = "test-webhook-secret-8d2e4a6c";
 const INTEGRATION_ID = "5b0b3f7e-2f4a-4c0e-9a55-5d3c1a7e9f01";
 const OUTLET_ID = "0c4f1c8e-4d6b-4a3e-8f0a-1b2c3d4e5f60" as OutletId;
 const TENANT_ID = "7a1e2d3c-4b5a-4968-8776-655443322110";
+// Default clock of the gateway under test: 15 minutes before the intent
+// expiry used by `intentRequest()`.
+const NOW = new Date("2026-11-08T10:00:00.000Z");
 // Marker the fake DOIT puts in every error body; it must never reach an error
 // or a log line (PAY-06).
 const BODY_MARKER = "DOIT-ERROR-BODY-MARKER-91ac";
@@ -187,48 +192,60 @@ function makeGateway(
   );
   const gateway = createDoitGateway({
     loadCredentials,
-    ...(options.now ? { now: options.now } : {}),
+    now: options.now ?? (() => NOW),
   });
   return { gateway, loadCredentials };
 }
 
 type PaymentOverrides = Record<string, unknown>;
 
-/** A DOIT payment object in the assumed wire format. */
+/** A DOIT payment object as the docs describe it (no paid amount). */
 function payment(overrides: PaymentOverrides = {}) {
   return {
     id: "pay_0001",
-    reference: "11111111-1111-4111-8111-111111111111",
     status: "pending",
     amount: 50_000,
-    paid_amount: null,
+    rail: null,
+    reference: "11111111-1111-4111-8111-111111111111",
+    qr_content: null,
+    va_number: null,
+    va_bank: null,
+    hosted_url: "https://pay.doit.id/p/pay_0001",
+    return_url: null,
+    provider: "pjp",
+    provider_ref: "A48957157",
+    fee_amount: 0,
+    fee_payer: "merchant",
+    total_amount: 50_000,
     expires_at: "2026-11-08T10:15:00.000Z",
+    paid_at: null,
+    metadata: null,
+    created_at: "2026-11-08T10:00:00.000Z",
     ...overrides,
   };
 }
 
 const qrisPayment = (overrides: PaymentOverrides = {}) =>
   payment({
-    qr_string: "00020101021226610014ID.CO.DOIT.WWW0215ID1234567890123",
+    rail: "qris",
+    qr_content: "00020101021226610014ID.CO.DOIT.WWW0215ID1234567890123",
     ...overrides,
   });
 
 const vaPayment = (overrides: PaymentOverrides = {}) =>
   payment({
+    rail: "va",
     va_number: "8808123456789012",
-    channel_code: "bca",
-    channel_name: "BCA",
+    va_bank: "bmri",
     ...overrides,
   });
 
+/** Bank transfer (Account Mutation): total_amount adds a unique code. */
 const transferPayment = (overrides: PaymentOverrides = {}) =>
   payment({
-    channel_code: "bri",
-    channel_name: "BRI",
-    account_number: "123456789012",
-    account_name: "PT Legend Kopi",
-    unique_code: "417",
-    transfer_amount: 50_417,
+    rail: "transfer",
+    va_bank: "bca",
+    total_amount: 50_417,
     ...overrides,
   });
 
@@ -250,35 +267,47 @@ function intentRequest(
   };
 }
 
+function methodRow(
+  code: string,
+  label: string,
+  rail: string,
+  bank: string | null,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    code,
+    label,
+    rail,
+    bank,
+    fee_flat: 0,
+    fee_pct: 0,
+    fee_payer: "merchant",
+    min_amount: null,
+    max_amount: null,
+    fee_amount: 0,
+    total_amount: null,
+    within_limits: true,
+    limit: null,
+    ...overrides,
+  };
+}
+
 const METHODS_REPLY = {
+  environment: "sandbox",
+  amount: null,
   data: [
-    { method: "qris", channel_code: null, channel_name: null, enabled: true },
-    {
-      method: "virtual_account",
-      channel_code: "bca",
-      channel_name: "BCA",
-      enabled: true,
-    },
-    {
-      method: "virtual_account",
-      channel_code: "mandiri",
-      channel_name: "Mandiri",
-      enabled: true,
-    },
-    {
-      method: "bank_transfer",
-      channel_code: "bri",
-      channel_name: "BRI",
-      enabled: true,
-    },
-    {
-      method: "crypto",
-      channel_code: "btc",
-      channel_name: "Bitcoin",
-      enabled: true,
-    },
+    methodRow("qris", "QRIS", "qris", null),
+    methodRow("va_bmri", "Mandiri Virtual Account", "va", "bmri"),
+    methodRow("va_bnia", "BNI Virtual Account", "va", "bnia"),
+    // BCA VA is not served by DOIT: ignored even if listed.
+    methodRow("va_bca", "BCA Virtual Account", "va", "bca"),
+    methodRow("transfer_bca", "BCA Bank Transfer", "transfer", "bca"),
+    methodRow("crypto_btc", "Bitcoin", "crypto", "btc"),
   ],
 };
+
+const MANDIRI = { code: "bmri", name: "Mandiri Virtual Account" };
+const BNI = { code: "bnia", name: "BNI Virtual Account" };
 
 function methodsAndPayments(handlers: {
   methods?: Reply;
@@ -286,7 +315,7 @@ function methodsAndPayments(handlers: {
   get?: (req: Recorded) => Reply;
 }): Route {
   return (req) => {
-    if (req.method === "GET" && req.path === "/v1/payment-methods")
+    if (req.method === "GET" && req.path === "/v1/methods")
       return handlers.methods ?? { json: METHODS_REPLY };
     if (req.method === "POST" && req.path === "/v1/payments")
       return handlers.create?.(req) ?? { status: 404 };
@@ -383,7 +412,7 @@ describe("DOIT adapter: payment methods", () => {
     expect(makeGateway().gateway.provider).toBe("doit");
   });
 
-  it("maps the provider list: virtual_account to va, channels grouped, unknown ignored", async () => {
+  it("maps the provider list by rail: VA banks grouped, unknown rails and banks ignored", async () => {
     route = methodsAndPayments({});
     const { gateway } = makeGateway();
 
@@ -392,18 +421,50 @@ describe("DOIT adapter: payment methods", () => {
     const byMethod = new Map(methods.map((m) => [m.method as string, m]));
     expect(byMethod.get("qris")).toMatchObject({ enabled: true, channels: [] });
     expect(byMethod.get("va")).toMatchObject({ enabled: true });
-    expect(byMethod.get("va")!.channels).toEqual(
-      expect.arrayContaining([
-        { code: "bca", name: "BCA" },
-        { code: "mandiri", name: "Mandiri" },
-      ]),
-    );
-    expect(byMethod.get("va")!.channels).toHaveLength(2);
-    expect(byMethod.get("bank_transfer")!.channels).toEqual([
-      { code: "bri", name: "BRI" },
-    ]);
-    expect(byMethod.has("virtual_account")).toBe(false);
+    expect(byMethod.get("va")!.channels).toEqual([MANDIRI, BNI]);
+    // The payment object carries no transfer account: never offered.
+    expect(byMethod.get("bank_transfer")).toEqual({
+      method: "bank_transfer",
+      enabled: false,
+      channels: [],
+    });
     expect(byMethod.has("crypto")).toBe(false);
+    // DOIT has no e-wallet or card rail.
+    expect(byMethod.has("ewallet")).toBe(false);
+    expect(byMethod.has("card")).toBe(false);
+  });
+
+  it("reads the documented methods endpoint", async () => {
+    route = methodsAndPayments({});
+    await makeGateway().gateway.methods!(tenantContext);
+    expect(requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /v1/methods",
+    ]);
+  });
+
+  it("disables a row outside its amount limits", async () => {
+    route = methodsAndPayments({
+      methods: {
+        json: {
+          ...METHODS_REPLY,
+          data: [
+            methodRow("qris", "QRIS", "qris", null, {
+              within_limits: false,
+              limit: "max_amount",
+            }),
+            methodRow("va_bmri", "Mandiri Virtual Account", "va", "bmri", {
+              within_limits: false,
+            }),
+            methodRow("va_bnia", "BNI Virtual Account", "va", "bnia"),
+          ],
+        },
+      },
+    });
+    const methods = await makeGateway().gateway.methods!(tenantContext);
+    expect(methods).toEqual([
+      { method: "qris", enabled: false, channels: [] },
+      { method: "va", enabled: true, channels: [BNI] },
+    ]);
   });
 
   it("sends Bearer auth, JSON accept and no idempotency key on GET", async () => {
@@ -420,15 +481,8 @@ describe("DOIT adapter: payment methods", () => {
     route = methodsAndPayments({});
     const { gateway } = makeGateway();
 
-    expect(await gateway.channels(tenantContext, "va")).toEqual(
-      expect.arrayContaining([
-        { code: "bca", name: "BCA" },
-        { code: "mandiri", name: "Mandiri" },
-      ]),
-    );
-    expect(await gateway.channels(tenantContext, "bank_transfer")).toEqual([
-      { code: "bri", name: "BRI" },
-    ]);
+    expect(await gateway.channels(tenantContext, "va")).toEqual([MANDIRI, BNI]);
+    expect(await gateway.channels(tenantContext, "bank_transfer")).toEqual([]);
     expect(await gateway.channels(tenantContext, "qris")).toEqual([]);
   });
 
@@ -486,6 +540,164 @@ describe("DOIT adapter: payment methods", () => {
     loadCredentials.mockClear();
     await gateway.createIntent(intentRequest({ context: tenantContext }));
     expect(loadCredentials).toHaveBeenCalledWith(tenantContext, null);
+  });
+
+  describe("tenant-scoped caller with a per-outlet integration (QR order)", () => {
+    const OUTLET_KEY = "outlet-api-key-0002";
+    const outletCreds = () =>
+      creds({
+        integration: {
+          id: "9e1f2a3b-4c5d-4e6f-8a7b-0c1d2e3f4a5b",
+          outletId: OUTLET_ID,
+          config: { baseUrl },
+        },
+        credentials: { apiKey: OUTLET_KEY, webhookSecret: WEBHOOK_SECRET },
+      });
+    const makeLoader = () =>
+      vi.fn(async (_context: ScopedTenantContext, outletId: string | null) =>
+        outletId === OUTLET_ID ? outletCreds() : creds(),
+      );
+
+    it("creates the intent with the bill's outlet credentials, not the tenant's", async () => {
+      route = methodsAndPayments({ create: () => ({ json: qrisPayment() }) });
+      const loadCredentials = makeLoader();
+      const gateway = createDoitGateway({ loadCredentials });
+
+      await gateway.createIntent(
+        intentRequest({ context: tenantContext, outletId: OUTLET_ID }),
+      );
+
+      expect(loadCredentials).toHaveBeenCalledWith(tenantContext, OUTLET_ID);
+      expect(loadCredentials).not.toHaveBeenCalledWith(tenantContext, null);
+      expect(posts()).toHaveLength(1);
+      expect(posts()[0]!.headers.authorization).toBe(`Bearer ${OUTLET_KEY}`);
+    });
+
+    it("reads the status with the bill's outlet credentials", async () => {
+      route = methodsAndPayments({ get: () => ({ json: qrisPayment() }) });
+      const loadCredentials = makeLoader();
+      const gateway = createDoitGateway({ loadCredentials });
+
+      await gateway.getStatus({
+        context: tenantContext,
+        outletId: OUTLET_ID,
+        providerRef: "pay_0001",
+      });
+
+      expect(loadCredentials).toHaveBeenCalledWith(tenantContext, OUTLET_ID);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.headers.authorization).toBe(`Bearer ${OUTLET_KEY}`);
+    });
+
+    it("uses the outlet credentials for health, methods and channels", async () => {
+      route = methodsAndPayments({});
+      const loadCredentials = makeLoader();
+      const gateway = createDoitGateway({ loadCredentials });
+
+      expect(await gateway.health(tenantContext, OUTLET_ID)).toEqual({
+        status: "available",
+      });
+      await gateway.methods!(tenantContext, OUTLET_ID);
+      await gateway.channels(tenantContext, "va", OUTLET_ID);
+
+      expect(loadCredentials).toHaveBeenCalledTimes(3);
+      for (const call of loadCredentials.mock.calls)
+        expect(call[1]).toBe(OUTLET_ID);
+      expect(requests[0]!.headers.authorization).toBe(`Bearer ${OUTLET_KEY}`);
+    });
+
+    it("prefers the explicit outlet over the context's single outlet", async () => {
+      route = methodsAndPayments({});
+      const { gateway, loadCredentials } = makeGateway();
+      const otherOutlet = "5d6e7f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f";
+
+      await gateway.health(outletContext, otherOutlet);
+
+      expect(loadCredentials).toHaveBeenCalledWith(outletContext, otherOutlet);
+    });
+  });
+
+  describe("the integration that minted a payment is remembered", () => {
+    const MINTING_KEY = "minting-api-key-0003";
+    const MINTING_ID = "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+
+    it("createIntent reports the integration whose credentials it used", async () => {
+      route = methodsAndPayments({ create: () => ({ json: qrisPayment() }) });
+      const intent = await makeGateway().gateway.createIntent(intentRequest());
+      expect(intent.integrationId).toBe(INTEGRATION_ID);
+    });
+
+    it("getStatus with an integration id loads that row, not the outlet's current one", async () => {
+      route = methodsAndPayments({ get: () => ({ json: qrisPayment() }) });
+      const loadCredentials = vi.fn(async () => creds());
+      const loadCredentialsById = vi.fn(
+        async (_context: ScopedTenantContext, id: string) =>
+          creds({
+            integration: { id, outletId: null, config: { baseUrl } },
+            credentials: {
+              apiKey: MINTING_KEY,
+              webhookSecret: WEBHOOK_SECRET,
+            },
+          }),
+      );
+      const gateway = createDoitGateway({
+        loadCredentials,
+        loadCredentialsById,
+        now: () => NOW,
+      });
+
+      await gateway.getStatus({
+        context: tenantContext,
+        outletId: OUTLET_ID,
+        integrationId: MINTING_ID,
+        providerRef: "pay_0001",
+      });
+
+      expect(loadCredentialsById).toHaveBeenCalledWith(
+        tenantContext,
+        MINTING_ID,
+      );
+      expect(loadCredentials).not.toHaveBeenCalled();
+      expect(requests[0]!.headers.authorization).toBe(`Bearer ${MINTING_KEY}`);
+    });
+
+    it("getStatus without an integration id (older intents) resolves by outlet", async () => {
+      route = methodsAndPayments({ get: () => ({ json: qrisPayment() }) });
+      const loadCredentialsById = vi.fn(async () => creds());
+      const { loadCredentials } = makeGateway();
+      const gateway = createDoitGateway({
+        loadCredentials,
+        loadCredentialsById,
+        now: () => NOW,
+      });
+
+      await gateway.getStatus({
+        context: tenantContext,
+        outletId: OUTLET_ID,
+        integrationId: null,
+        providerRef: "pay_0001",
+      });
+
+      expect(loadCredentials).toHaveBeenCalledWith(tenantContext, OUTLET_ID);
+      expect(loadCredentialsById).not.toHaveBeenCalled();
+    });
+
+    it("a minting row that is gone fails closed (503)", async () => {
+      route = methodsAndPayments({ get: () => ({ json: qrisPayment() }) });
+      const gateway = createDoitGateway({
+        loadCredentials: async () => creds(),
+        loadCredentialsById: async () => null,
+        now: () => NOW,
+      });
+      await expect(
+        gateway.getStatus({
+          context: tenantContext,
+          integrationId: MINTING_ID,
+          providerRef: "pay_0001",
+        }),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      expect(requests).toHaveLength(0);
+    });
   });
 });
 
@@ -557,12 +769,6 @@ describe("DOIT adapter: fails closed without usable credentials", () => {
       creds({ credentials: { apiKey: "", webhookSecret: WEBHOOK_SECRET } }),
     ],
     [
-      "missing baseUrl",
-      creds({
-        integration: { id: INTEGRATION_ID, outletId: null, config: {} },
-      }),
-    ],
-    [
       "baseUrl that is not a url",
       creds({
         integration: {
@@ -607,6 +813,34 @@ describe("DOIT adapter: fails closed without usable credentials", () => {
   );
 });
 
+describe("DOIT adapter: base URL", () => {
+  it.each([
+    ["no override", {}],
+    ["a null override", { baseUrl: null }],
+  ])("calls %s at https://pay.doit.id", async (_name, config) => {
+    const fetchSpy = vi.fn(async (url: string) => {
+      void url;
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const gateway = createDoitGateway({
+      fetch: fetchSpy as unknown as typeof fetch,
+      loadCredentials: async () =>
+        creds({ integration: { id: INTEGRATION_ID, outletId: null, config } }),
+    });
+
+    expect(await gateway.health(tenantContext)).toEqual({
+      status: "available",
+    });
+    expect(DOIT_BASE_URL).toBe("https://pay.doit.id");
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe(
+      "https://pay.doit.id/v1/methods",
+    );
+  });
+});
+
 // --------------------------------------------------------------------------
 // createIntent
 // --------------------------------------------------------------------------
@@ -641,54 +875,71 @@ describe("DOIT adapter: createIntent", () => {
     expect(post.path).toBe("/v1/payments");
     expect(post.headers["content-type"]).toContain("application/json");
     expect(post.headers.accept).toContain("application/json");
+    // Whole rupiah, rail, our reference and a lifetime in seconds; never
+    // method/channel_code/expires_at/currency.
     expect(JSON.parse(post.body)).toEqual({
-      reference: "11111111-1111-4111-8111-111111111111",
       amount: 50_000,
-      currency: "IDR",
-      method: "qris",
-      channel_code: null,
-      expires_at: "2026-11-08T10:15:00.000Z",
+      rail: "qris",
+      reference: "11111111-1111-4111-8111-111111111111",
+      expires_in: 900,
     });
   });
 
-  it("creates a virtual account payment (va is sent as virtual_account)", async () => {
+  it("asks for at least 60 seconds", async () => {
+    route = methodsAndPayments({ create: () => ({ json: qrisPayment() }) });
+    await makeGateway({
+      now: () => new Date("2026-11-08T10:14:30.000Z"),
+    }).gateway.createIntent(intentRequest());
+    expect(JSON.parse(posts()[0]!.body).expires_in).toBe(60);
+  });
+
+  it("creates a virtual account payment with the bank as va_bank", async () => {
     route = methodsAndPayments({ create: () => ({ json: vaPayment() }) });
     const intent = await makeGateway().gateway.createIntent(
-      intentRequest({ method: "va", channelCode: "bca" }),
+      intentRequest({ method: "va", channelCode: "bmri" }),
     );
 
     expect(intent.instructions).toEqual({
       method: "va",
-      channelCode: "bca",
-      channelName: "BCA",
+      channelCode: "bmri",
+      channelName: "Mandiri Virtual Account",
       virtualAccountNumber: "8808123456789012",
     });
-    expect(JSON.parse(posts()[0]!.body)).toMatchObject({
-      method: "virtual_account",
-      channel_code: "bca",
+    expect(JSON.parse(posts()[0]!.body)).toEqual({
       amount: 50_000,
+      rail: "va",
+      va_bank: "bmri",
+      reference: "11111111-1111-4111-8111-111111111111",
+      expires_in: 900,
     });
   });
 
-  it("creates a bank transfer payment with the unique code and transfer total", async () => {
-    route = methodsAndPayments({ create: () => ({ json: transferPayment() }) });
-    const intent = await makeGateway().gateway.createIntent(
-      intentRequest({ method: "bank_transfer", channelCode: "bri" }),
-    );
+  it.each([
+    ["no bank", null],
+    ["a bank DOIT does not list", "bca"],
+  ])(
+    "refuses a VA with %s before creating a payment",
+    async (_name, channelCode) => {
+      route = methodsAndPayments({ create: () => ({ json: vaPayment() }) });
+      await expectCoreError(
+        makeGateway().gateway.createIntent(
+          intentRequest({ method: "va", channelCode }),
+        ),
+        "VALIDATION_ERROR",
+      );
+      expect(posts()).toHaveLength(0);
+    },
+  );
 
-    expect(intent.instructions).toEqual({
-      method: "bank_transfer",
-      channelCode: "bri",
-      channelName: "BRI",
-      accountNumber: "123456789012",
-      accountHolder: "PT Legend Kopi",
-      uniqueCode: "417",
-      transferTotalIdr: 50_417,
-    });
-    expect(JSON.parse(posts()[0]!.body)).toMatchObject({
-      method: "bank_transfer",
-      channel_code: "bri",
-    });
+  it("refuses bank transfer before creating a payment (no account data on the wire)", async () => {
+    route = methodsAndPayments({ create: () => ({ json: transferPayment() }) });
+    await expectCoreError(
+      makeGateway().gateway.createIntent(
+        intentRequest({ method: "bank_transfer", channelCode: "bca" }),
+      ),
+      "VALIDATION_ERROR",
+    );
+    expect(requests).toHaveLength(0);
   });
 
   it("sends Bearer auth and the idempotency key on POST", async () => {
@@ -733,19 +984,10 @@ describe("DOIT adapter: createIntent", () => {
     route = methodsAndPayments({
       methods: {
         json: {
+          ...METHODS_REPLY,
           data: [
-            {
-              method: "qris",
-              channel_code: null,
-              channel_name: null,
-              enabled: false,
-            },
-            {
-              method: "virtual_account",
-              channel_code: "bca",
-              channel_name: "BCA",
-              enabled: true,
-            },
+            methodRow("qris", "QRIS", "qris", null, { within_limits: false }),
+            methodRow("va_bmri", "Mandiri Virtual Account", "va", "bmri"),
           ],
         },
       },
@@ -790,8 +1032,29 @@ describe("DOIT adapter: createIntent", () => {
     ["an empty object", { json: {} }],
     ["an unknown status", { json: qrisPayment({ status: "weird" }) }],
     ["a missing payment id", { json: qrisPayment({ id: undefined }) }],
+    [
+      "the removed cancelled status",
+      { json: qrisPayment({ status: "cancelled" }) },
+    ],
+    ["a missing payment id", { json: qrisPayment({ id: undefined }) }],
     ["a QRIS payment without a QR string", { json: payment() }],
+    ["another reference", { json: qrisPayment({ reference: "other" }) }],
+    ["another amount", { json: qrisPayment({ amount: 49_000 }) }],
+    [
+      "a payment that is no longer pending",
+      { json: qrisPayment({ status: "paid" }) },
+    ],
+    [
+      "a fee charged to the customer",
+      { json: qrisPayment({ fee_payer: "customer", total_amount: 50_350 }) },
+    ],
     ["an invalid VA number", { json: vaPayment({ va_number: "abc" }) }],
+    ["a VA without a number", { json: vaPayment({ va_number: null }) }],
+    ["a VA at another bank", { json: vaPayment({ va_bank: "bnia" }) }],
+    [
+      "a VA fee charged to the customer",
+      { json: vaPayment({ fee_payer: "customer", total_amount: 54_000 }) },
+    ],
   ] as const)("answers SERVICE_UNAVAILABLE for %s", async (_name, reply) => {
     route = methodsAndPayments({ create: () => reply as Reply });
     const method = _name.includes("VA") ? "va" : "qris";
@@ -799,20 +1062,8 @@ describe("DOIT adapter: createIntent", () => {
       makeGateway().gateway.createIntent(
         intentRequest({
           method,
-          channelCode: method === "va" ? "bca" : null,
+          channelCode: method === "va" ? "bmri" : null,
         }),
-      ),
-      "SERVICE_UNAVAILABLE",
-    );
-  });
-
-  it("answers SERVICE_UNAVAILABLE for a bank transfer without its account data", async () => {
-    route = methodsAndPayments({
-      create: () => ({ json: transferPayment({ account_number: undefined }) }),
-    });
-    await expectCoreError(
-      makeGateway().gateway.createIntent(
-        intentRequest({ method: "bank_transfer", channelCode: "bri" }),
       ),
       "SERVICE_UNAVAILABLE",
     );
@@ -870,6 +1121,33 @@ describe("DOIT adapter: getStatus", () => {
     expect(requests[0]!.headers["idempotency-key"]).toBeUndefined();
   });
 
+  it("a paid payment whose expiry, QR or paid time is missing or malformed still reads as paid", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: payment({
+          status: "paid",
+          expires_at: undefined,
+          qr_content: 42,
+          paid_at: "not a time",
+        }),
+      }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+    });
+  });
+
+  it("createIntent still requires the expiry of the new payment", async () => {
+    route = methodsAndPayments({
+      create: () => ({ json: qrisPayment({ expires_at: null }) }),
+    });
+    await expect(
+      makeGateway().gateway.createIntent(intentRequest()),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+  });
+
   it("encodes the provider reference in the path", async () => {
     route = methodsAndPayments({
       get: (req) => ({
@@ -888,18 +1166,33 @@ describe("DOIT adapter: getStatus", () => {
     ["pending", "pending"],
     ["expired", "expired"],
     ["failed", "failed"],
-    ["cancelled", "failed"],
+    // Money went back: nothing in the books changes automatically.
+    ["refunded", "pending"],
   ] as const)("maps provider status %s to %s", async (provider, expected) => {
     route = methodsAndPayments({
       get: () => ({ json: qrisPayment({ status: provider }) }),
     });
-    expect((await status()).status).toBe(expected);
+    expect(await status()).toEqual({
+      status: expected,
+      providerRef: "pay_0001",
+      amountIdr: null,
+    });
   });
 
-  it("reports the intent amount for a QRIS payment settled in full", async () => {
+  it("refuses a status the docs do not define", async () => {
+    route = methodsAndPayments({
+      get: () => ({ json: qrisPayment({ status: "cancelled" }) }),
+    });
+    await expectCoreError(status(), "SERVICE_UNAVAILABLE");
+  });
+
+  it("reports `amount` for a paid QRIS payment", async () => {
     route = methodsAndPayments({
       get: () => ({
-        json: qrisPayment({ status: "paid", paid_amount: 50_000 }),
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08T10:05:00.000Z",
+        }),
       }),
     });
     expect(await status()).toEqual({
@@ -909,63 +1202,54 @@ describe("DOIT adapter: getStatus", () => {
     });
   });
 
-  it("reports the intent amount for a VA payment settled in full", async () => {
+  it("reports `amount` for a paid VA, also once its QR/VA instrument is released", async () => {
+    route = methodsAndPayments({
+      get: () => ({ json: vaPayment({ status: "paid", rail: null }) }),
+    });
+    expect((await status()).amountIdr).toBe(50_000);
+  });
+
+  it("credits `amount`, not total_amount, when a transfer adds a unique code", async () => {
+    route = methodsAndPayments({
+      get: () => ({ json: transferPayment({ status: "paid" }) }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+    });
+  });
+
+  it("credits `amount`, not total_amount, when the customer bore a fee", async () => {
     route = methodsAndPayments({
       get: () => ({
-        json: vaPayment({ status: "paid", paid_amount: 50_000 }),
+        json: vaPayment({
+          status: "paid",
+          fee_payer: "customer",
+          fee_amount: 4_000,
+          total_amount: 54_000,
+        }),
       }),
     });
     expect((await status()).amountIdr).toBe(50_000);
   });
 
-  it("absorbs the unique code when a bank transfer pays the transfer total", async () => {
-    route = methodsAndPayments({
-      get: () => ({
-        json: transferPayment({ status: "paid", paid_amount: 50_417 }),
-      }),
-    });
-    expect(await status()).toEqual({
-      status: "paid",
-      providerRef: "pay_0001",
-      amountIdr: 50_000,
-    });
+  it("reports a different `amount` raw, so the lifecycle flags the mismatch", async () => {
+    for (const amount of [40_000, 60_000]) {
+      route = methodsAndPayments({
+        get: () => ({ json: qrisPayment({ status: "paid", amount }) }),
+      });
+      expect((await status()).amountIdr).toBe(amount);
+    }
   });
 
-  it("reports the raw amount when the paid amount does not match, so the mismatch is flagged", async () => {
+  it("keeps the flags on a late payment without changing the mapping", async () => {
     route = methodsAndPayments({
       get: () => ({
-        json: qrisPayment({ status: "paid", paid_amount: 40_000 }),
+        json: qrisPayment({ status: "paid", flags: ["bayar_telat"] }),
       }),
     });
-    expect((await status()).amountIdr).toBe(40_000);
-
-    route = methodsAndPayments({
-      get: () => ({
-        json: transferPayment({ status: "paid", paid_amount: 50_000 + 1 }),
-      }),
-    });
-    // Neither the bill amount nor the transfer total: raw.
-    expect((await status()).amountIdr).toBe(50_001);
-  });
-
-  it("reports an overpayment raw", async () => {
-    route = methodsAndPayments({
-      get: () => ({
-        json: qrisPayment({ status: "paid", paid_amount: 60_000 }),
-      }),
-    });
-    expect((await status()).amountIdr).toBe(60_000);
-  });
-
-  it("fails closed with a null amount when a paid payment has no paid_amount", async () => {
-    route = methodsAndPayments({
-      get: () => ({ json: qrisPayment({ status: "paid", paid_amount: null }) }),
-    });
-    expect(await status()).toEqual({
-      status: "paid",
-      providerRef: "pay_0001",
-      amountIdr: null,
-    });
+    expect((await status()).status).toBe("paid");
   });
 
   it("accepts a payment whose reference is the intent id", async () => {
@@ -980,9 +1264,7 @@ describe("DOIT adapter: getStatus", () => {
 
   it("refuses a payment that belongs to another intent (nothing settles)", async () => {
     route = methodsAndPayments({
-      get: () => ({
-        json: qrisPayment({ status: "paid", paid_amount: 50_000 }),
-      }),
+      get: () => ({ json: qrisPayment({ status: "paid" }) }),
     });
     await expectCoreError(
       makeGateway().gateway.getStatus({
@@ -993,30 +1275,6 @@ describe("DOIT adapter: getStatus", () => {
       "SERVICE_UNAVAILABLE",
     );
   });
-
-  it.each([
-    [
-      "transfer total does not equal amount + code",
-      { transfer_amount: 50_500 },
-    ],
-    ["code is not numeric", { unique_code: "abc" }],
-    ["code is too short", { unique_code: "17", transfer_amount: 50_017 }],
-    ["code is missing", { unique_code: null }],
-  ] as const)(
-    "reports the raw paid amount when the %s",
-    async (_name, overrides) => {
-      route = methodsAndPayments({
-        get: () => ({
-          json: transferPayment({
-            status: "paid",
-            paid_amount: 50_500,
-            ...overrides,
-          }),
-        }),
-      });
-      expect((await status()).amountIdr).toBe(50_500);
-    },
-  );
 
   it.each([
     [400, "VALIDATION_ERROR"],
@@ -1034,6 +1292,12 @@ describe("DOIT adapter: getStatus", () => {
   it("answers SERVICE_UNAVAILABLE for a malformed payment", async () => {
     route = methodsAndPayments({
       get: () => ({ json: { id: "pay_0001", status: "paid" } }),
+    });
+    await expectCoreError(status(), "SERVICE_UNAVAILABLE");
+
+    // A paid payment without its amount proves nothing.
+    route = methodsAndPayments({
+      get: () => ({ json: qrisPayment({ status: "paid", amount: undefined }) }),
     });
     await expectCoreError(status(), "SERVICE_UNAVAILABLE");
 
@@ -1136,9 +1400,7 @@ describe("DOIT adapter: secrets never leak (PAY-06)", () => {
     const output = captureOutput();
     route = methodsAndPayments({
       create: () => ({ json: qrisPayment() }),
-      get: () => ({
-        json: qrisPayment({ status: "paid", paid_amount: 50_000 }),
-      }),
+      get: () => ({ json: qrisPayment({ status: "paid" }) }),
     });
     const { gateway } = makeGateway();
     await gateway.health(tenantContext);
@@ -1194,7 +1456,7 @@ describe("verifyDoitSignature", () => {
       id: "evt_0001",
       type: "payment.paid",
       created_at: "2026-11-08T09:59:50.000Z",
-      data: qrisPayment({ status: "paid", paid_amount: 50_000 }),
+      data: qrisPayment({ status: "paid" }),
     }),
   );
 
@@ -1268,17 +1530,25 @@ describe("verifyDoitSignature", () => {
     ).toBe(false);
   });
 
-  it("accepts a timestamp up to 300 seconds away and rejects beyond", () => {
-    for (const offset of [-300, 300, -299, 299])
+  it("accepts a timestamp up to 25 hours old or 5 minutes ahead, and rejects beyond", () => {
+    const past = 25 * 3600;
+    for (const offset of [-past, -past + 1, -86_400, -3600, -301, 0, 299, 300])
       expect(verify(header(WEBHOOK_SECRET, rawBody, unix + offset))).toBe(true);
-    for (const offset of [-301, 301, -3600, 3600, -86_400])
+    for (const offset of [-past - 1, -30 * 3600, 301, 3600])
       expect(verify(header(WEBHOOK_SECRET, rawBody, unix + offset))).toBe(
         false,
       );
   });
 
+  it("accepts a retry that carries the original timestamp (24 h schedule)", () => {
+    const retry = new Date(now.getTime() + 24 * 3600_000);
+    expect(
+      verify(header(WEBHOOK_SECRET), [WEBHOOK_SECRET], { at: retry }),
+    ).toBe(true);
+  });
+
   it("rejects a stale signature even if the MAC is correct", () => {
-    const later = new Date(now.getTime() + 20 * 60_000);
+    const later = new Date(now.getTime() + 26 * 3600_000);
     expect(
       verify(header(WEBHOOK_SECRET), [WEBHOOK_SECRET], { at: later }),
     ).toBe(false);
@@ -1324,15 +1594,48 @@ describe("doitWebhookEventSchema", () => {
     id: "evt_0001",
     type: "payment.paid",
     created_at: "2026-11-08T09:59:50.000Z",
-    data: qrisPayment({ status: "paid", paid_amount: 50_000 }),
+    data: qrisPayment({ status: "paid", flags: ["bayar_telat"] }),
   };
 
-  it("parses a payment event", () => {
+  it("parses a payment event in the documented shape", () => {
     const parsed = doitWebhookEventSchema.parse(event);
     expect(parsed.id).toBe("evt_0001");
     expect(parsed.type).toBe("payment.paid");
     expect(parsed.data.id).toBe("pay_0001");
     expect(parsed.data.status).toBe("paid");
+    expect(parsed.data.amount).toBe(50_000);
+    expect(parsed.data.total_amount).toBe(50_000);
+    expect(parsed.data.flags).toEqual(["bayar_telat"]);
+    expect(parsed.data).not.toHaveProperty("paid_amount");
+  });
+
+  it("parses a refunded payment", () => {
+    const refunded = {
+      ...event,
+      type: "refund.succeeded",
+      data: qrisPayment({ status: "refunded" }),
+    };
+    expect(doitWebhookEventSchema.parse(refunded).data.status).toBe("refunded");
+  });
+
+  it("reads the envelope of an event without a payment (webhook.test)", () => {
+    const test = { ...event, type: "webhook.test", data: { hello: "world" } };
+    expect(doitWebhookEventSchema.safeParse(test).success).toBe(false);
+    expect(doitWebhookEnvelopeSchema.parse(test).type).toBe("webhook.test");
+  });
+
+  it("only payment.paid and payment.expired are payment events", () => {
+    expect(isDoitPaymentEvent("payment.paid")).toBe(true);
+    expect(isDoitPaymentEvent("payment.expired")).toBe(true);
+    for (const type of [
+      "invoice.created",
+      "payment.proof_uploaded",
+      "refund.succeeded",
+      "refund.failed",
+      "webhook.test",
+      "payment.cancelled",
+    ])
+      expect(isDoitPaymentEvent(type)).toBe(false);
   });
 
   it("accepts an event type it does not know", () => {
@@ -1350,6 +1653,10 @@ describe("doitWebhookEventSchema", () => {
       { ...event, data: { status: "paid" } },
     ],
     ["an unknown payment status", { ...event, data: payment({ status: "?" }) }],
+    [
+      "the removed cancelled status",
+      { ...event, data: payment({ status: "cancelled" }) },
+    ],
     ["a non-object", "payment.paid"],
   ])("rejects an event with %s", (_name, value) => {
     expect(doitWebhookEventSchema.safeParse(value).success).toBe(false);

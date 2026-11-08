@@ -21,6 +21,7 @@ import {
   idr,
   outletIdSchema,
   tenantIdSchema,
+  createUlid,
   ulidToUuid,
   userIdSchema,
   type ScopedTenantContext,
@@ -247,7 +248,7 @@ async function pinApproval(input: {
   orderId: string;
   valueIdr: number;
   approver?: string;
-}): Promise<{ approvedBy: string; approvalRequestId: string }> {
+}): Promise<{ approvedBy: string; overrideId: string }> {
   const approver = input.approver ?? supervisor.userId;
   const { override } = await createPosOverride(
     establishTenantContext({
@@ -272,11 +273,8 @@ async function pinApproval(input: {
     { idempotencyKey: randomUUID() },
   );
   expect(override.status).toBe("approved");
-  // Contract gap (pos-order-support.ts consumeApproval): a PIN override has
-  // no approval chain and its ULID id is not an RFC UUID, so the POS names
-  // any request id and the service matches the newest unused PIN override of
-  // exactly this action, object, requester and approver (single use, 15 min).
-  return { approvedBy: approver, approvalRequestId: randomUUID() };
+  // legend-0gy1: the POS names the exact override row it was approved by.
+  return { approvedBy: approver, overrideId: override.id };
 }
 
 beforeAll(async () => {
@@ -492,7 +490,7 @@ describe("POS order service (legend-kk7)", () => {
       reason: "customer_cancelled",
       reasonNote: "Pelanggan batal",
       approvedBy: supervisor.userId,
-      approvalRequestId: randomUUID(),
+      overrideId: createUlid(),
       expectedStatus: "completed",
     });
     expect(voided.status).toBeGreaterThanOrEqual(400);
@@ -510,7 +508,7 @@ describe("POS order service (legend-kk7)", () => {
     const unapproved = await pos().correctionVoid(orderId, {
       ...body,
       approvedBy: supervisor.userId,
-      approvalRequestId: randomUUID(),
+      overrideId: createUlid(),
     });
     expect(unapproved.status).toBeGreaterThanOrEqual(400);
     expect(unapproved.body.error?.code ?? unapproved.body.code).toMatch(
@@ -521,7 +519,7 @@ describe("POS order service (legend-kk7)", () => {
     const self = await pos().correctionVoid(orderId, {
       ...body,
       approvedBy: cashier.userId,
-      approvalRequestId: randomUUID(),
+      overrideId: createUlid(),
     });
     expect(self.status).toBeGreaterThanOrEqual(400);
 

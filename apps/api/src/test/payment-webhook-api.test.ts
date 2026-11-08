@@ -4,11 +4,15 @@
 //
 // Setup: a fake DOIT is a real http server on 127.0.0.1. The real DOIT adapter
 // talks to it, so intents are created through the existing payment-link flow
-// exactly as in production. Webhooks are signed here with Node crypto using the
-// header format of the contract (assumption until DOIT sandbox docs, bead
-// legend-s5c): `PayBridge-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret,
-// "<t>." + raw bytes)>`. The route is `POST /api/webhooks/payments/doit/:tenantId`
-// and answers `200 { received: true, status }` (contract S4).
+// exactly as in production. Fixtures follow the official DOIT docs
+// (https://doit.id/docs/en/): `GET /v1/methods`, `POST /v1/payments` with
+// `rail` and `expires_in`, payment objects without a paid amount, webhook
+// bodies `{ id, type, created_at, data }`. Webhooks are signed here with Node
+// crypto: `PayBridge-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret,
+// "<t>." + raw bytes)>`, accepted 25 h back and 5 min ahead. Only
+// `payment.paid` / `payment.expired` move an intent; other types are stored
+// `ignored`. The route is `POST /api/webhooks/payments/doit/:tenantId` and
+// answers `200 { received: true, status }` (contract S4).
 //
 // Assumptions where the contract is silent:
 // - A 401 carries one fixed body for every verification failure (no oracle), so
@@ -21,10 +25,13 @@
 //   never revived, so a paid event after failed answers 200, leaves the intent
 //   `failed` and parks the money as an unallocated-funds row (reason
 //   `double_payment`) plus one evidence row. An event whose provider payment id
-//   and `reference` do not name the same intent, or whose amount differs from
-//   the intent's, is `ignored` with `REFERENCE_MISMATCH` (200, no side effect).
-//   A payment unknown to the tenant is answered 200 `{received:true,
-//   status:"failed"}` and retried by the worker for 15 minutes, then ignored.
+//   and `reference` do not name the same intent is `ignored` with
+//   `REFERENCE_MISMATCH` (200, no side effect); a bound event whose `amount`
+//   differs from the intent's is parked as unallocated funds (AMOUNT_MISMATCH).
+//   A payment unknown to the tenant is stored `failed`, answered 500 (so DOIT
+//   retries) and retried by the worker for 15 minutes, then ignored. Any event
+//   that ends `failed` answers 500; a rejected (bad signature) delivery is one
+//   counter row per tenant per minute, not one row per body.
 //   The limiter only counts failed verifications (401): more than 30 per IP and
 //   minute answer 429 `RATE_LIMITED`; valid deliveries never consume it.
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -73,6 +80,7 @@ import {
 import {
   clearDoitWebhookSecretCache,
   purgeRejectedWebhookEvents,
+  receiveDoitWebhook,
   reprocessStoredWebhookEvents,
 } from "../services/payment-webhook.service";
 import { agent } from "./helpers";
@@ -131,15 +139,63 @@ function outletContext(outletIds: readonly OutletId[]): ScopedTenantContext {
 // Fake DOIT server
 // ---------------------------------------------------------------------------
 
+/** A DOIT payment object as the official docs describe it: no paid amount
+ * (`paid` means DOIT collected `total_amount`; the bill is credited
+ * `amount`), status one of pending|paid|refunded|expired|failed. */
 type DoitPayment = {
   id: string;
-  reference: string;
-  status: "pending" | "paid" | "expired" | "failed" | "cancelled";
+  status: "pending" | "paid" | "refunded" | "expired" | "failed";
   amount: number;
-  paid_amount: number | null;
+  rail: string | null;
+  reference: string;
+  qr_content: string | null;
+  va_number: string | null;
+  va_bank: string | null;
+  hosted_url: string | null;
+  return_url: string | null;
+  provider: string;
+  provider_ref: string | null;
+  fee_amount: number;
+  fee_payer: string;
+  total_amount: number;
   expires_at: string;
-  qr_string: string;
+  paid_at: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
 };
+
+type DoitEvent = {
+  id: string;
+  type: string;
+  created_at: string;
+  data: DoitPayment;
+};
+
+const newEventId = () => `evt_${randomBytes(8).toString("hex")}`;
+
+/** Official method row of `GET /v1/methods`. */
+function methodRow(
+  code: string,
+  label: string,
+  rail: string,
+  bank: string | null,
+) {
+  return {
+    code,
+    label,
+    rail,
+    bank,
+    fee_flat: 0,
+    fee_pct: 0,
+    fee_payer: "merchant",
+    min_amount: null,
+    max_amount: null,
+    fee_amount: 0,
+    total_amount: null,
+    within_limits: true,
+    limit: null,
+  };
+}
 
 class FakeDoit {
   readonly payments = new Map<string, DoitPayment>();
@@ -161,31 +217,46 @@ class FakeDoit {
     );
   }
 
-  /** The provider reports the payment as paid (the whole bill by default). */
-  settle(id: string, paidAmount: number = BILL_TOTAL): void {
+  /** The provider reports the payment as paid, crediting `amount` (the whole
+   * bill by default; another figure models a mismatch). */
+  settle(id: string, amount: number = BILL_TOTAL): void {
     const payment = this.payments.get(id);
     if (!payment) throw new Error(`No fake DOIT payment ${id}`);
     payment.status = "paid";
-    payment.paid_amount = paidAmount;
+    payment.amount = amount;
+    payment.total_amount = amount;
   }
 
-  /** A webhook body for the payment's current provider state. */
+  /** A `payment.paid` / `payment.expired` webhook body for the payment, with
+   * `data` in the given status. No `paid_at` unless the test sets one. */
   eventFor(
     id: string,
-    status: DoitPayment["status"],
-    eventId = `evt_${randomBytes(8).toString("hex")}`,
-  ): { id: string; type: string; created_at: string; data: DoitPayment } {
+    status: "paid" | "expired",
+    eventId = newEventId(),
+  ): DoitEvent {
     const payment = this.payments.get(id);
     if (!payment) throw new Error(`No fake DOIT payment ${id}`);
     return {
       id: eventId,
-      type: `payment.${status === "cancelled" ? "failed" : status}`,
+      type: `payment.${status}`,
       created_at: new Date().toISOString(),
-      data: {
-        ...payment,
-        status,
-        paid_amount: status === "paid" ? payment.amount : null,
-      },
+      data: { ...payment, status },
+    };
+  }
+
+  /** An event of another type for the payment (stored and ignored). */
+  otherEvent(
+    id: string,
+    type: string,
+    status: DoitPayment["status"] = "pending",
+  ): DoitEvent {
+    const payment = this.payments.get(id);
+    if (!payment) throw new Error(`No fake DOIT payment ${id}`);
+    return {
+      id: newEventId(),
+      type,
+      created_at: new Date().toISOString(),
+      data: { ...payment, status },
     };
   }
 
@@ -200,28 +271,17 @@ class FakeDoit {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
     if (req.headers.authorization !== `Bearer ${apiKeyA}`)
-      return send(401, { error: "unauthorized" });
-    if (req.method === "GET" && url.pathname === "/v1/payment-methods")
+      return send(401, {
+        error: { code: "unauthorized", message: "Invalid API key" },
+      });
+    if (req.method === "GET" && url.pathname === "/v1/methods")
       return send(200, {
+        environment: "sandbox",
+        amount: null,
         data: [
-          {
-            method: "qris",
-            channel_code: null,
-            channel_name: null,
-            enabled: true,
-          },
-          {
-            method: "virtual_account",
-            channel_code: "bca",
-            channel_name: "BCA",
-            enabled: true,
-          },
-          {
-            method: "bank_transfer",
-            channel_code: "bca",
-            channel_name: "BCA",
-            enabled: true,
-          },
+          methodRow("qris", "QRIS", "qris", null),
+          methodRow("va_bmri", "Mandiri Virtual Account", "va", "bmri"),
+          methodRow("transfer_bca", "Transfer BCA", "transfer", "bca"),
         ],
       });
     if (req.method === "POST" && url.pathname === "/v1/payments") {
@@ -229,18 +289,37 @@ class FakeDoit {
       const known = this.byIdempotencyKey.get(key);
       if (known) return send(200, known);
       const input = JSON.parse(body) as {
-        reference: string;
         amount: number;
-        expires_at: string;
+        rail: string;
+        va_bank?: string;
+        reference: string;
+        expires_in: number;
       };
+      const id = `dp_${randomBytes(8).toString("hex")}`;
+      const createdAt = new Date();
       const payment: DoitPayment = {
-        id: `dp_${randomBytes(8).toString("hex")}`,
-        reference: input.reference,
+        id,
         status: "pending",
         amount: input.amount,
-        paid_amount: null,
-        expires_at: input.expires_at,
-        qr_string: "00020101021226FAKEDOIT",
+        rail: input.rail,
+        reference: input.reference,
+        qr_content:
+          input.rail === "qris" ? "00020101021226610014ID.CO.DOIT.FAKE" : null,
+        va_number: input.rail === "va" ? "8808123456789012" : null,
+        va_bank: input.va_bank ?? null,
+        hosted_url: `https://pay.doit.id/p/${id}`,
+        return_url: null,
+        provider: "pjp",
+        provider_ref: null,
+        fee_amount: 0,
+        fee_payer: "merchant",
+        total_amount: input.amount,
+        expires_at: new Date(
+          createdAt.getTime() + input.expires_in * 1000,
+        ).toISOString(),
+        paid_at: null,
+        metadata: null,
+        created_at: createdAt.toISOString(),
       };
       this.payments.set(payment.id, payment);
       if (key) this.byIdempotencyKey.set(key, payment);
@@ -373,7 +452,7 @@ beforeEach(async () => {
   resetPaymentWebhookRateLimits();
   clearDoitWebhookSecretCache();
   await owner.query(
-    "DELETE FROM gateway_webhook_events WHERE tenant_id = ANY($1::uuid[]) AND payment_intent_id IS NULL",
+    "DELETE FROM gateway_webhook_events WHERE tenant_id = ANY($1::uuid[]) AND (payment_intent_id IS NULL OR NOT signature_valid)",
     [[tenantA, tenantB, tenantC]],
   );
 });
@@ -545,13 +624,27 @@ async function eventRows(tenantId: string, eventId: string | null) {
   return rows;
 }
 
-async function rejectedRows(tenantId: string, raw: string) {
+/** Stored rows of a body by its hash (verified-but-malformed deliveries). */
+async function rowsByBodyHash(tenantId: string, raw: string) {
   const { rows } = await owner.query<EventRow>(
     `SELECT tenant_id, provider, event_id, signature_valid, status, payload_hash,
             payload, payment_intent_id, provider_ref, last_error_code, attempts, processed_at
      FROM gateway_webhook_events
      WHERE tenant_id = $1 AND payload_hash = $2`,
     [tenantId, sha256(raw)],
+  );
+  return rows;
+}
+
+/** Rejected deliveries are one counter row per tenant per minute bucket. */
+async function rejectedRows(tenantId: string) {
+  const { rows } = await owner.query<EventRow>(
+    `SELECT tenant_id, provider, event_id, signature_valid, status, payload_hash,
+            payload, payment_intent_id, provider_ref, last_error_code, attempts, processed_at
+     FROM gateway_webhook_events
+     WHERE tenant_id = $1 AND NOT signature_valid
+     ORDER BY received_at`,
+    [tenantId],
   );
   return rows;
 }
@@ -613,14 +706,63 @@ describe("PAY-02 a verified webhook settles the intent", () => {
     await expectPaidOnce(bill);
   });
 
-  it("PAY-02 a pending event changes nothing and is recorded as processed", async () => {
+  it("PAY-02 a payment event whose payment is still pending changes nothing and is recorded as processed", async () => {
     const bill = await openIntent();
-    const body = doit.eventFor(bill.providerRef, "pending");
+    const body = doit.otherEvent(bill.providerRef, "payment.paid", "pending");
     const response = await deliver(body);
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ received: true, status: "processed" });
     await expectUntouched(bill);
     expect((await eventRows(tenantA, body.id))[0]?.status).toBe("processed");
+  });
+
+  it("PAY-02 event types other than payment.paid and payment.expired are stored ignored and change nothing", async () => {
+    const bill = await openIntent();
+    for (const [type, status] of [
+      ["webhook.test", "pending"],
+      ["invoice.created", "pending"],
+      ["payment.proof_uploaded", "pending"],
+      ["refund.succeeded", "refunded"],
+      ["refund.failed", "paid"],
+      // Not in the docs: never moves an intent either.
+      ["payment.failed", "failed"],
+    ] as const) {
+      const body = doit.otherEvent(bill.providerRef, type, status);
+      const response = await deliver(body);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ received: true, status: "ignored" });
+      const [row, ...rest] = await eventRows(tenantA, body.id);
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({
+        status: "ignored",
+        last_error_code: "EVENT_TYPE_IGNORED",
+      });
+      // The same event again is a duplicate.
+      expect((await deliver(body)).body.status).toBe("duplicate");
+    }
+    await expectUntouched(bill);
+    expect(await unallocatedCount(bill.intentId)).toBe(0);
+  });
+
+  it("PAY-02 a webhook.test event without a payment object is accepted and ignored", async () => {
+    const body = {
+      id: newEventId(),
+      type: "webhook.test",
+      created_at: new Date().toISOString(),
+      data: { message: "ping" },
+    };
+    const response = await deliver(body);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ received: true, status: "ignored" });
+  });
+
+  it("PAY-02 a payment event whose payment was refunded changes nothing", async () => {
+    const bill = await openIntent();
+    const body = doit.otherEvent(bill.providerRef, "payment.paid", "refunded");
+    const response = await deliver(body);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("processed");
+    await expectUntouched(bill);
   });
 
   it("PAY-02 an expired event expires a pending intent", async () => {
@@ -632,24 +774,22 @@ describe("PAY-02 a verified webhook settles the intent", () => {
     expect(await evidenceCount(bill.intentId)).toBe(0);
   });
 
-  it("PAY-02 failed and cancelled events fail a pending intent", async () => {
+  it("PAY-02 a payment event whose payment failed fails a pending intent", async () => {
     const failed = await openIntent();
     expect(
-      (await deliver(doit.eventFor(failed.providerRef, "failed"))).status,
+      (
+        await deliver(
+          doit.otherEvent(failed.providerRef, "payment.expired", "failed"),
+        )
+      ).status,
     ).toBe(200);
     expect((await intentRow(failed.intentId)).status).toBe("failed");
-
-    const cancelled = await openIntent();
-    expect(
-      (await deliver(doit.eventFor(cancelled.providerRef, "cancelled"))).status,
-    ).toBe(200);
-    expect((await intentRow(cancelled.intentId)).status).toBe("failed");
   });
 
   it("PAY-02 a paid amount that differs from the bill is not settled as a full payment", async () => {
     const bill = await openIntent();
     const body = doit.eventFor(bill.providerRef, "paid");
-    body.data.paid_amount = BILL_TOTAL - 1_000;
+    body.data.amount = BILL_TOTAL - 1_000;
     await deliver(body);
     // Assumption: the contract does not fix the HTTP answer for an amount the
     // lifecycle refuses (200 or a retryable 5xx), only that nothing settles.
@@ -665,11 +805,15 @@ describe("PAY-02 a verified webhook settles the intent", () => {
     expect(await evidenceCount(bill.intentId)).toBe(1);
   });
 
-  it("PAY-02 a paid event without a paid amount does not settle (fail closed)", async () => {
+  it("PAY-02 a paid event with a zero amount does not settle (fail closed)", async () => {
     const bill = await openIntent();
     const body = doit.eventFor(bill.providerRef, "paid");
-    body.data.paid_amount = null;
-    await deliver(body);
+    body.data.amount = 0;
+    const response = await deliver(body);
+    // Stored failed, so the route answers 5xx and DOIT retries.
+    expect(response.status).toBe(500);
+    expect(response.body.error.code).toBe("INTERNAL_ERROR");
+    expect(JSON.stringify(response.body)).not.toContain("AMOUNT_MISSING");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
     expect((await intentRow(bill.intentId)).status).not.toBe("paid");
     // Wave 2: stays visible for manual review and retry (DOIT may resend with
@@ -680,6 +824,59 @@ describe("PAY-02 a verified webhook settles the intent", () => {
       last_error_code: "AMOUNT_MISSING",
     });
     expect(await unallocatedCount(bill.intentId)).toBe(0);
+  });
+
+  it("PAY-02 a failed zero-amount paid event answers 5xx again on redelivery, and a resend with the amount settles once", async () => {
+    const bill = await openIntent();
+    const body = doit.eventFor(bill.providerRef, "paid");
+    body.data.amount = 0;
+    expect((await deliver(body)).status).toBe(500);
+    // DOIT retries the same event: still failed, still 5xx, one stored row.
+    expect((await deliver(body)).status).toBe(500);
+    const rows = await eventRows(tenantA, body.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: "failed",
+      last_error_code: "AMOUNT_MISSING",
+    });
+    await expectUntouched(bill);
+    // DOIT later resends with the amount (new event id): settles exactly once.
+    const resend = await deliver(doit.eventFor(bill.providerRef, "paid"));
+    expect(resend.status).toBe(200);
+    expect(resend.body.status).toBe("processed");
+    await expectPaidOnce(bill);
+    // And a further redelivery is idempotent.
+    const again = await deliver(doit.eventFor(bill.providerRef, "paid"));
+    expect(again.status).toBe(200);
+    await expectPaidOnce(bill);
+  });
+
+  it("PAY-02 a paid event without paid_at uses the injected clock, so an old retry is not a late payment", async () => {
+    const bill = await openIntent();
+    // The intent expired an hour ago by the wall clock; the retry is handled
+    // as of 90 minutes ago, before the expiry.
+    await owner.query(
+      "UPDATE payment_intents SET expires_at = now() - interval '1 hour' WHERE id = $1",
+      [bill.intentId],
+    );
+    const now = new Date(Date.now() - 90 * 60_000);
+    const body = doit.eventFor(bill.providerRef, "paid");
+    body.created_at = "2026-11-08 10:00:00"; // parses, but is not strict ISO
+    const raw = JSON.stringify(body);
+    const result = await receiveDoitWebhook({
+      tenantId: tenantA,
+      rawBody: Buffer.from(raw),
+      signatureHeader: signatureHeader(raw, secretA, now),
+      now,
+    });
+    expect(result.status).toBe("processed");
+    const { rows } = await owner.query<{ status: string; flags: string[] }>(
+      "SELECT status, flags FROM payment_intents WHERE id = $1",
+      [bill.intentId],
+    );
+    expect(rows[0]?.status).toBe("paid");
+    expect(rows[0]?.flags).not.toContain("late_payment");
+    expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
   });
 });
 
@@ -728,7 +925,11 @@ describe("PAY-03 duplicate and out-of-order webhooks never double-settle", () =>
       (await deliver(doit.eventFor(bill.providerRef, "expired"))).status,
     ).toBe(200);
     expect(
-      (await deliver(doit.eventFor(bill.providerRef, "failed"))).status,
+      (
+        await deliver(
+          doit.otherEvent(bill.providerRef, "payment.expired", "failed"),
+        )
+      ).status,
     ).toBe(200);
     await expectPaidOnce(bill);
   });
@@ -751,32 +952,34 @@ describe("PAY-03 duplicate and out-of-order webhooks never double-settle", () =>
     expect(guest.body.data.paidAfterExpiry).toBe(true);
   });
 
-  // Fix wave 1: a failed intent is never revived (payment-lifecycle). Money DOIT
-  // reports as paid after an earlier failed event is still recorded, but for
-  // manual follow-up: the intent stays failed, the bill is not settled, one
-  // evidence row and one unallocated row (reason double_payment) exist.
-  it("PAY-03 failed then paid answers 200, keeps the intent failed and parks the money once", async () => {
+  // legend-b0au (main): a verified gateway settlement may land after the
+  // intent failed (the guest paid the code DOIT had reported failed). The
+  // money is accepted like a late payment: the intent becomes paid, flagged
+  // late_payment, the bill is settled once and nothing is parked.
+  it("PAY-03 failed then paid answers 200, settles once and flags a late payment", async () => {
     const bill = await openIntent();
-    await deliver(doit.eventFor(bill.providerRef, "failed"));
+    await deliver(
+      doit.otherEvent(bill.providerRef, "payment.expired", "failed"),
+    );
+    expect((await intentRow(bill.intentId)).status).toBe("failed");
     const paid = doit.eventFor(bill.providerRef, "paid");
     const late = await deliver(paid);
     expect(late.status).toBe(200);
+    expect(late.body.status).toBe("processed");
 
-    expect((await intentRow(bill.intentId)).status).toBe("failed");
-    expect(await linkPaidIdr(bill.linkId)).toBe(0);
-    expect(await evidenceCount(bill.intentId)).toBe(1);
-    expect(await unallocatedRows(bill.intentId)).toEqual([
-      { reason: "double_payment", amountIdr: BILL_TOTAL },
-    ]);
+    await expectPaidOnce(bill);
+    const { rows } = await owner.query<{ flags: string[] }>(
+      "SELECT flags FROM payment_intents WHERE id = $1",
+      [bill.intentId],
+    );
+    expect(rows[0]?.flags).toContain("late_payment");
 
     // The same event again, and another event for the same payment: still once.
     expect((await deliver(paid)).status).toBe(200);
     expect(
       (await deliver(doit.eventFor(bill.providerRef, "paid"))).status,
     ).toBe(200);
-    expect(await evidenceCount(bill.intentId)).toBe(1);
-    expect(await unallocatedCount(bill.intentId)).toBe(1);
-    expect((await intentRow(bill.intentId)).status).toBe("failed");
+    await expectPaidOnce(bill);
   });
 });
 
@@ -794,7 +997,7 @@ describe("PAY-03 forged webhooks are rejected", () => {
     const response = await deliver(raw, { secret: "not-the-tenant-secret" });
     expect(response.status).toBe(401);
     await expectUntouched(bill);
-    const rows = await rejectedRows(tenantA, raw);
+    const rows = await rejectedRows(tenantA);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       signature_valid: false,
@@ -802,7 +1005,10 @@ describe("PAY-03 forged webhooks are rejected", () => {
       event_id: null,
       payload: null,
       payment_intent_id: null,
+      attempts: 1,
     });
+    // The body is not stored; not even its hash is the row key.
+    expect(rows[0]?.payload_hash).not.toBe(sha256(raw));
   });
 
   it("PAY-03 a missing signature header answers 401", async () => {
@@ -826,13 +1032,24 @@ describe("PAY-03 forged webhooks are rejected", () => {
     await expectUntouched(bill);
   });
 
-  it("PAY-03 a stale timestamp answers 401 even with the right secret", async () => {
+  it("PAY-03 a timestamp older than 25 hours or more than 5 minutes ahead answers 401 even with the right secret", async () => {
     const { bill, raw } = await generic();
-    const stale = new Date(Date.now() - 10 * 60 * 1000);
+    const stale = new Date(Date.now() - 26 * 3_600_000);
     expect((await deliver(raw, { signedAt: stale })).status).toBe(401);
-    const future = new Date(Date.now() + 10 * 60 * 1000);
+    const future = new Date(Date.now() + 6 * 60 * 1000);
     expect((await deliver(raw, { signedAt: future })).status).toBe(401);
     await expectUntouched(bill);
+  });
+
+  it("PAY-03 a DOIT retry signed 24 hours ago is still accepted (retries run up to 24 h)", async () => {
+    const bill = await openIntent();
+    const body = doit.eventFor(bill.providerRef, "paid");
+    const response = await deliver(body, {
+      signedAt: new Date(Date.now() - 24 * 3_600_000),
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("processed");
+    await expectPaidOnce(bill);
   });
 
   it("PAY-03 a body changed after signing answers 401", async () => {
@@ -850,7 +1067,7 @@ describe("PAY-03 forged webhooks are rejected", () => {
     const wrongSecret = await deliver(raw, { secret: "nope" });
     const missing = await deliver(raw, { header: null });
     const stale = await deliver(raw, {
-      signedAt: new Date(Date.now() - 3_600_000),
+      signedAt: new Date(Date.now() - 26 * 3_600_000),
     });
     const unknownTenant = await deliver(raw, { tenantId: randomUUID() });
     // A real, active tenant that never configured DOIT: no secret to check
@@ -887,16 +1104,16 @@ describe("PAY-03 forged webhooks are rejected", () => {
     await expectUntouched(bill);
   });
 
-  it("PAY-03 a validly signed but malformed event answers 400 and stores a failed row", async () => {
+  it("PAY-03 a validly signed but unreadable event answers 500 (DOIT retries) and stores a failed row", async () => {
     const bill = await openIntent();
     for (const raw of [
       "this is not json",
       JSON.stringify({ hello: "world" }),
     ]) {
       const response = await deliver(raw);
-      expect(response.status).toBe(400);
-      expect(response.body.error.code).toBe("VALIDATION_ERROR");
-      const rows = await rejectedRows(tenantA, raw);
+      expect(response.status).toBe(500);
+      expect(response.body.error.code).toBe("INTERNAL_ERROR");
+      const rows = await rowsByBodyHash(tenantA, raw);
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         signature_valid: true,
@@ -908,37 +1125,223 @@ describe("PAY-03 forged webhooks are rejected", () => {
   });
 });
 
-describe("PAY-03 rejected deliveries are stored once per payload", () => {
-  it("PAY-03 the same forged payload sent twice keeps one rejected row, a different payload adds one", async () => {
-    const { bill, raw } = await (async () => {
-      const bill = await openIntent();
-      return {
-        bill,
-        raw: JSON.stringify(doit.eventFor(bill.providerRef, "paid")),
-      };
-    })();
-    expect((await deliver(raw, { secret: "forged-1" })).status).toBe(401);
-    expect((await deliver(raw, { secret: "forged-2" })).status).toBe(401);
-    const rows = await rejectedRows(tenantA, raw);
+describe("PAY-03 a verified event the parser refuses is retried, not dropped", () => {
+  it("PAY-03 a paid event without expires_at or a usable QR still settles", async () => {
+    const bill = await openIntent();
+    const body = doit.eventFor(bill.providerRef, "paid") as unknown as {
+      data: Record<string, unknown>;
+    };
+    delete body.data.expires_at;
+    body.data.qr_content = null;
+    body.data.paid_at = "not a time";
+    const response = await deliver(body);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("processed");
+    await expectPaidOnce(bill);
+  });
+
+  it("PAY-03 a verified paid event that fails the schema answers 500, and DOIT's resend of the same event settles once", async () => {
+    const bill = await openIntent();
+    const good = doit.eventFor(bill.providerRef, "paid");
+    const broken = {
+      ...good,
+      data: { ...good.data, amount: String(good.data.amount) },
+    };
+    const first = await deliver(broken);
+    expect(first.status).toBe(500);
+    expect(first.body.error.code).toBe("INTERNAL_ERROR");
+    expect((await eventRows(tenantA, good.id))[0]).toMatchObject({
+      status: "failed",
+      last_error_code: "MALFORMED",
+      payload: null,
+    });
+    await expectUntouched(bill);
+
+    // The resend (same event id) parses: the stored row is completed.
+    const resend = await deliver(good);
+    expect(resend.status).toBe(200);
+    expect(resend.body.status).toBe("processed");
+    await expectPaidOnce(bill);
+    const rows = await eventRows(tenantA, good.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "processed" });
+    expect(rows[0]?.payload).not.toBeNull();
+  });
+});
+
+describe("PAY-03 an intent keeps the DOIT integration that minted it", () => {
+  async function addOutletIntegration(apiKey: string, webhookSecret: string) {
+    const context = contextFor(tenantA, "session");
+    const created = await upsertIntegration(
+      context,
+      {
+        outletId: outletA,
+        provider: "doit",
+        config: { baseUrl: doit.baseUrl },
+        credentials: { apiKey, webhookSecret },
+      },
+      actor,
+    );
+    integrationIds.push(created.id);
+    await setIntegrationStatus(
+      context,
+      created.id,
+      { status: "active" },
+      actor,
+    );
+    return created.id;
+  }
+
+  async function mintedBy(intentId: string): Promise<string | null> {
+    const { rows } = await owner.query<{ id: string | null }>(
+      "SELECT gateway_integration_id AS id FROM payment_intents WHERE id = $1",
+      [intentId],
+    );
+    return rows[0]?.id ?? null;
+  }
+
+  it("PAY-03 a code minted on the tenant account still settles by the tenant-signed webhook after the outlet gets its own integration", async () => {
+    const bill = await openIntent();
+    expect(await mintedBy(bill.intentId)).toBe(integrationAId);
+    const outletSecret = `whsec-outlet-a-${randomBytes(12).toString("hex")}`;
+    const outletIntegration = await addOutletIntegration(
+      `doit-key-outlet-${randomBytes(8).toString("hex")}`,
+      outletSecret,
+    );
+    try {
+      const response = await deliver(doit.eventFor(bill.providerRef, "paid"));
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe("processed");
+      await expectPaidOnce(bill);
+    } finally {
+      await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
+        outletIntegration,
+      ]);
+      clearDoitWebhookSecretCache();
+    }
+  });
+
+  it("PAY-03 the outlet's new secret cannot settle a code minted on the tenant account", async () => {
+    const bill = await openIntent();
+    const outletSecret = `whsec-outlet-a-${randomBytes(12).toString("hex")}`;
+    const outletIntegration = await addOutletIntegration(apiKeyA, outletSecret);
+    try {
+      const body = doit.eventFor(bill.providerRef, "paid");
+      const response = await deliver(body, { secret: outletSecret });
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe("ignored");
+      await expectUntouched(bill);
+      expect((await eventRows(tenantA, body.id))[0]).toMatchObject({
+        last_error_code: "REFERENCE_MISMATCH",
+      });
+    } finally {
+      await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
+        outletIntegration,
+      ]);
+      clearDoitWebhookSecretCache();
+    }
+  });
+
+  it("PAY-02 the poll asks DOIT with the minting account's key after the outlet gets its own integration", async () => {
+    const bill = await openIntent();
+    // The fake DOIT only knows apiKeyA: the outlet key would answer 401.
+    const outletIntegration = await addOutletIntegration(
+      `doit-key-outlet-${randomBytes(8).toString("hex")}`,
+      `whsec-outlet-a-${randomBytes(12).toString("hex")}`,
+    );
+    try {
+      doit.settle(bill.providerRef);
+      const later = new Date(Date.now() + 120_000);
+      await pollPendingGatewayIntents(contextFor(tenantA), later, 100);
+      await expectPaidOnce(bill);
+    } finally {
+      await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
+        outletIntegration,
+      ]);
+      clearDoitWebhookSecretCache();
+    }
+  });
+
+  it("PAY-03 money in flight on an integration disabled since is still verified and settled", async () => {
+    const bill = await openIntent();
+    const context = contextFor(tenantA, "session");
+    await setIntegrationStatus(
+      context,
+      integrationAId,
+      { status: "disabled" },
+      actor,
+    );
+    try {
+      const response = await deliver(doit.eventFor(bill.providerRef, "paid"));
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe("processed");
+      await expectPaidOnce(bill);
+      // A forged body naming the same intent is still refused.
+      const forged = await deliver(doit.eventFor(bill.providerRef, "paid"), {
+        secret: "forged",
+      });
+      expect(forged.status).toBe(401);
+    } finally {
+      await setIntegrationStatus(
+        context,
+        integrationAId,
+        { status: "active" },
+        actor,
+      );
+      clearDoitWebhookSecretCache();
+    }
+  });
+});
+
+describe("PAY-03 rejected deliveries are one counter row per tenant per minute", () => {
+  it("PAY-03 many forged payloads in one minute keep one rejected row that counts the attempts", async () => {
+    const bill = await openIntent();
+    const bodies = [1, 2, 3].map(() =>
+      JSON.stringify(doit.eventFor(bill.providerRef, "paid")),
+    );
+    expect(new Set(bodies).size).toBe(3);
+    for (const raw of bodies)
+      expect((await deliver(raw, { secret: "forged" })).status).toBe(401);
+    expect((await deliver(bodies[0]!, { secret: "forged-2" })).status).toBe(
+      401,
+    );
+    const rows = await rejectedRows(tenantA);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       status: "rejected",
       signature_valid: false,
+      payload: null,
+      attempts: 4,
     });
-
-    const other = JSON.stringify(doit.eventFor(bill.providerRef, "paid"));
-    expect(other).not.toBe(raw);
-    expect((await deliver(other, { secret: "forged-1" })).status).toBe(401);
-    expect(await rejectedRows(tenantA, other)).toHaveLength(1);
+    for (const raw of bodies)
+      expect(rows[0]?.payload_hash).not.toBe(sha256(raw));
     await expectUntouched(bill);
   });
 
-  it("PAY-03 the same forged payload is a separate row in another tenant", async () => {
+  it("PAY-03 a forged payload in the next minute opens a new counter row", async () => {
+    const raw = JSON.stringify({ forged: randomBytes(6).toString("hex") });
+    const first = new Date("2026-11-08T10:00:20.000Z");
+    const sameMinute = new Date("2026-11-08T10:00:50.000Z");
+    const nextMinute = new Date("2026-11-08T10:01:05.000Z");
+    for (const now of [first, sameMinute, nextMinute])
+      await expect(
+        receiveDoitWebhook({
+          tenantId: tenantA,
+          rawBody: Buffer.from(raw),
+          signatureHeader: signatureHeader(raw, "forged", now),
+          now,
+        }),
+      ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    const rows = await rejectedRows(tenantA);
+    expect(rows.map((row) => row.attempts)).toEqual([2, 1]);
+  });
+
+  it("PAY-03 the same forged payload is a separate counter row in another tenant", async () => {
     const raw = JSON.stringify({ forged: randomBytes(6).toString("hex") });
     await deliver(raw, { secret: "forged" });
     await deliver(raw, { tenantId: tenantB, secret: "forged" });
-    expect(await rejectedRows(tenantA, raw)).toHaveLength(1);
-    expect(await rejectedRows(tenantB, raw)).toHaveLength(1);
+    expect(await rejectedRows(tenantA)).toHaveLength(1);
+    expect(await rejectedRows(tenantB)).toHaveLength(1);
   });
 });
 
@@ -977,12 +1380,27 @@ describe("PAY-03 a verified event must name the intent it settles", () => {
     await ignoredMismatch(bill, body);
   });
 
-  it("PAY-03 an event amount that differs from the intent amount is ignored", async () => {
+  it("PAY-03 a bound event whose amount differs from the intent is not a reference mismatch: the money is parked", async () => {
+    // DOIT has no separate paid amount: a paid `amount` other than the
+    // intent's takes the AMOUNT_MISMATCH way, like the poll does.
     const bill = await openIntent();
     const body = doit.eventFor(bill.providerRef, "paid");
     body.data.amount = BILL_TOTAL - 5_000;
-    body.data.paid_amount = BILL_TOTAL - 5_000;
-    await ignoredMismatch(bill, body);
+    const response = await deliver(body);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("ignored");
+    // Not settled, but the parked money keeps its one evidence row (as in the
+    // PAY-02 underpayment case).
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    expect((await eventRows(tenantA, body.id))[0]).toMatchObject({
+      status: "ignored",
+      last_error_code: "REJECTED_AMOUNT_MISMATCH",
+    });
+    expect(await unallocatedRows(bill.intentId)).toEqual([
+      expect.objectContaining({ amountIdr: BILL_TOTAL - 5_000 }),
+    ]);
   });
 
   it("TEN-01 a secret of outlet B cannot settle an intent of outlet A", async () => {
@@ -1031,6 +1449,64 @@ describe("PAY-03 a verified event must name the intent it settles", () => {
   });
 });
 
+describe("PAY-03 an integration change reaches the webhook secret cache at once", () => {
+  it("PAY-03 rotating or disabling a secret applies immediately, without clearing the cache by hand", async () => {
+    const oldSecret = `whsec-rot-old-${randomBytes(12).toString("hex")}`;
+    const newSecret = `whsec-rot-new-${randomBytes(12).toString("hex")}`;
+    const context = contextFor(tenantA, "session");
+    const created = await upsertIntegration(
+      context,
+      {
+        outletId: outletB,
+        provider: "doit",
+        config: { baseUrl: doit.baseUrl },
+        credentials: { apiKey: apiKeyA, webhookSecret: oldSecret },
+      },
+      actor,
+    );
+    integrationIds.push(created.id);
+    try {
+      await setIntegrationStatus(
+        context,
+        created.id,
+        { status: "active" },
+        actor,
+      );
+      const bill = await openIntent();
+      const send = (secret: string) =>
+        deliver(doit.otherEvent(bill.providerRef, "webhook.test"), { secret });
+      // Warm the 60 s cache with the old secret.
+      expect((await send(oldSecret)).status).toBe(200);
+
+      await upsertIntegration(
+        context,
+        {
+          outletId: outletB,
+          provider: "doit",
+          config: { baseUrl: doit.baseUrl },
+          credentials: { apiKey: apiKeyA, webhookSecret: newSecret },
+        },
+        actor,
+      );
+      expect((await send(newSecret)).status).toBe(200);
+      expect((await send(oldSecret)).status).toBe(401);
+
+      await setIntegrationStatus(
+        context,
+        created.id,
+        { status: "disabled" },
+        actor,
+      );
+      expect((await send(newSecret)).status).toBe(401);
+    } finally {
+      await owner.query("DELETE FROM tenant_integrations WHERE id = $1", [
+        created.id,
+      ]);
+      clearDoitWebhookSecretCache();
+    }
+  });
+});
+
 describe("TEN-01 webhooks are isolated per tenant", () => {
   it("TEN-01 tenant B's URL with tenant A's secret answers 401", async () => {
     const bill = await openIntent();
@@ -1039,8 +1515,8 @@ describe("TEN-01 webhooks are isolated per tenant", () => {
     expect(response.status).toBe(401);
     await expectUntouched(bill);
     // The rejected attempt is logged under the tenant of the URL only.
-    expect(await rejectedRows(tenantB, raw)).toHaveLength(1);
-    expect(await rejectedRows(tenantA, raw)).toHaveLength(0);
+    expect(await rejectedRows(tenantB)).toHaveLength(1);
+    expect(await rejectedRows(tenantA)).toHaveLength(0);
   });
 
   it("TEN-01 tenant A's URL with tenant B's secret answers 401", async () => {
@@ -1061,9 +1537,9 @@ describe("TEN-01 webhooks are isolated per tenant", () => {
       secret: secretB,
     });
     // Tenant B has no such payment: unknown to it, so it is retryable for 15
-    // minutes (wave 1 item 4) and answered 200 so DOIT does not also retry.
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ received: true, status: "failed" });
+    // minutes (wave 1 item 4); the 5xx makes DOIT retry as well.
+    expect(response.status).toBe(500);
+    expect(response.body.error.code).toBe("INTERNAL_ERROR");
     await expectUntouched(bill);
     const [row] = await eventRows(tenantB, body.id);
     expect(row).toMatchObject({
@@ -1081,8 +1557,8 @@ describe("TEN-01 webhooks are isolated per tenant", () => {
     body.data.id = `dp_${randomBytes(8).toString("hex")}`;
     body.data.reference = randomUUID();
     const response = await deliver(body);
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ received: true, status: "failed" });
+    expect(response.status).toBe(500);
+    expect(response.body.error.code).toBe("INTERNAL_ERROR");
     await expectUntouched(bill);
     expect(await eventRows(tenantA, body.id)).toEqual([
       expect.objectContaining({
@@ -1096,10 +1572,17 @@ describe("TEN-01 webhooks are isolated per tenant", () => {
   it("TEN-01 the same event id in two tenants is two independent events", async () => {
     const bill = await openIntent();
     const body = doit.eventFor(bill.providerRef, "paid");
-    // Unknown to tenant B (parked for retry there), nothing happens to A's bill.
+    // Unknown to tenant B (stored failed and answered 5xx so DOIT retries
+    // there), nothing happens to A's bill.
     expect(
-      (await deliver(body, { tenantId: tenantB, secret: secretB })).body.status,
-    ).toBe("failed");
+      (await deliver(body, { tenantId: tenantB, secret: secretB })).status,
+    ).toBe(500);
+    expect(await eventRows(tenantB, body.id)).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        last_error_code: "UNKNOWN_REFERENCE",
+      }),
+    ]);
     const response = await deliver(body);
     expect(response.body.status).toBe("processed");
     await expectPaidOnce(bill);
@@ -1298,8 +1781,7 @@ describe("PAY-03 stored events are retried", () => {
 
     it("PAY-03 an event that overtakes its intent is retried and settles once the intent is known", async () => {
       const { bill, body, response } = await deliverUnknown();
-      expect(response.status).toBe(200);
-      expect(response.body.status).toBe("failed");
+      expect(response.status).toBe(500);
       expect((await eventRows(tenantA, body.id))[0]).toMatchObject({
         status: "failed",
         last_error_code: "UNKNOWN_REFERENCE",
@@ -1575,6 +2057,127 @@ describe("PAY-02 an intent past its expiry asks DOIT before it expires", () => {
     expect(view.status).toBe(200);
     expect(view.body.data.status).toBe("expired");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
+  });
+});
+
+/** A paid webhook crediting `paidAmount` (the fake's default is the bill). */
+function paidEventWithAmount(providerRef: string, paidAmount: number) {
+  const event = doit.eventFor(providerRef, "paid");
+  return { ...event, data: { ...event.data, amount: paidAmount } };
+}
+
+const evidenceSources = async (intentId: string) =>
+  (
+    await owner.query<{ source: string }>(
+      "SELECT source FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantA, intentId],
+    )
+  ).rows.map((row) => row.source);
+
+describe("PAY-02 the poll parks an underpayment whose webhook was lost", () => {
+  const underpaid = BILL_TOTAL - 1_000;
+  const pollLater = () =>
+    pollPendingGatewayIntents(
+      contextFor(tenantA),
+      new Date(Date.now() + 120_000),
+      100,
+    );
+
+  it("PAY-02 a past-expiry underpayment is parked once, then the intent expires", async () => {
+    const bill = await openIntent();
+    await owner.query(
+      "UPDATE payment_intents SET expires_at = now() - interval '1 hour' WHERE id = $1",
+      [bill.intentId],
+    );
+    doit.settle(bill.providerRef, underpaid);
+    await pollLater();
+    expect((await intentRow(bill.intentId)).status).toBe("expired");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedRows(bill.intentId)).toEqual([
+      { reason: "double_payment", amountIdr: underpaid },
+    ]);
+    expect(await evidenceSources(bill.intentId)).toEqual(["gateway_status"]);
+    // Polling again, and the late webhook of the same DOIT payment, add nothing.
+    await pollLater();
+    const late = await deliver(
+      paidEventWithAmount(bill.providerRef, underpaid),
+    );
+    expect(late.status).toBe(200);
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    expect(await unallocatedRows(bill.intentId)).toHaveLength(1);
+  });
+
+  it("PAY-02 an underpayment on a still-valid intent is parked once and the intent stays pending", async () => {
+    const bill = await openIntent();
+    doit.settle(bill.providerRef, underpaid);
+    await pollLater();
+    await pollLater();
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await linkPaidIdr(bill.linkId)).toBe(0);
+    expect(await unallocatedRows(bill.intentId)).toEqual([
+      { reason: "double_payment", amountIdr: underpaid },
+    ]);
+  });
+
+  it("PAY-02 the webhook first, then the poll of the same payment: still one row", async () => {
+    const bill = await openIntent();
+    doit.settle(bill.providerRef, underpaid);
+    const first = await deliver(
+      paidEventWithAmount(bill.providerRef, underpaid),
+    );
+    expect(first.status).toBe(200);
+    expect(await unallocatedRows(bill.intentId)).toHaveLength(1);
+    await pollLater();
+    expect(await evidenceCount(bill.intentId)).toBe(1);
+    expect(await unallocatedRows(bill.intentId)).toHaveLength(1);
+  });
+
+  it("PAY-02 an overpaid poll settles and parks only the remainder as overpayment", async () => {
+    // An amount above the bill settles normally (the remainder is parked by
+    // the lifecycle), so no AMOUNT_MISMATCH row is written by the poller.
+    const bill = await openIntent();
+    doit.settle(bill.providerRef, BILL_TOTAL + 5_000);
+    await pollLater();
+    expect((await intentRow(bill.intentId)).status).toBe("paid");
+    expect(await unallocatedRows(bill.intentId)).toEqual([
+      { reason: "overpayment", amountIdr: 5_000 },
+    ]);
+  });
+});
+
+describe("PAY-02 the poll rotates so failing intents cannot starve the rest", () => {
+  it("PAY-02 three erroring intents do not hide a healthy newer one on the next run", async () => {
+    // Park every other tenant A intent far in the future of the rotation so
+    // only this test's four rows compete for the front of the queue.
+    const failing = [
+      await openIntent(),
+      await openIntent(),
+      await openIntent(),
+    ];
+    const healthy = await openIntent();
+    const ids = [...failing, healthy].map((bill) => bill.intentId);
+    await owner.query(
+      `UPDATE payment_intents SET gateway_polled_at = now() + interval '1 day'
+       WHERE tenant_id = $1 AND NOT (id = ANY($2::uuid[]))`,
+      [tenantA, ids],
+    );
+    doit.settle(healthy.providerRef);
+    // DOIT is unreachable for the failing ones (the fake answers 404).
+    const hidden = failing.map(
+      (bill) =>
+        [bill.providerRef, doit.payments.get(bill.providerRef)!] as const,
+    );
+    for (const [ref] of hidden) doit.payments.delete(ref);
+    try {
+      const later = new Date(Date.now() + 120_000);
+      await pollPendingGatewayIntents(contextFor(tenantA), later, 100);
+      // The breaker ended run one before the healthy intent was reached.
+      expect((await intentRow(healthy.intentId)).status).toBe("pending");
+      await pollPendingGatewayIntents(contextFor(tenantA), later, 100);
+      await expectPaidOnce(healthy);
+    } finally {
+      for (const [ref, payment] of hidden) doit.payments.set(ref, payment);
+    }
   });
 });
 

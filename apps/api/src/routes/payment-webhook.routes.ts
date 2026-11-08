@@ -19,13 +19,20 @@ const UNAUTHORIZED_MESSAGE = "Tanda tangan webhook tidak valid.";
 const RATE_LIMITED_MESSAGE = "Terlalu banyak permintaan. Coba lagi sebentar.";
 const tenantIdSchema = z.string().uuid();
 
-/** Failed verifications (401) allowed per IP per minute before 429. */
+/** Failed verifications (401) allowed per IP and tenant per minute before 429. */
 export const WEBHOOK_FAILED_VERIFICATIONS_PER_IP = 30;
 const RATE_LIMIT_CAPACITY = 20_000;
 
-// Process-local fixed window of failed verifications per IP. A correctly
-// signed delivery never consumes it and is never rate-limited: the bucket is
-// only read before the body, and only a 401 answer is counted.
+// Process-local fixed window of failed verifications per (IP, tenant). Only a
+// 401 answer is counted, so a correctly signed delivery never consumes it. DOIT
+// delivers every tenant's webhooks from the same egress IP, so a bucket keyed
+// by IP alone would let one tenant with a mismatched secret lock every tenant
+// out. The tenant id from the URL is part of the key: a tenant's own failures
+// only throttle that tenant on that IP. The bucket is checked before the body
+// is read and before any signature check, so a (IP, tenant) pair that already
+// failed more than the limit gets 429 even for a correctly signed request until
+// its window ends. A caller rotating tenant ids gets a fresh bucket per id; the
+// map is capped (RATE_LIMIT_CAPACITY) and each id costs one tenant lookup.
 type FailureWindow = { windowStart: number; count: number };
 const failedByIp = new Map<string, FailureWindow>();
 let limiterNow: () => number = Date.now;
@@ -36,10 +43,12 @@ export function resetPaymentWebhookRateLimits(now?: () => number) {
   failedByIp.clear();
 }
 
-function ipKey(req: Parameters<RequestHandler>[0]) {
+function limiterKey(req: Parameters<RequestHandler>[0], tenantId: string) {
   // req.ip honours the app's trust proxy setting; a raw X-Forwarded-For is
-  // never read.
-  return req.ip || req.socket.remoteAddress || "unknown";
+  // never read. Only called with a validated tenant UUID, lower-cased so the
+  // letter case of the URL cannot open a second bucket.
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  return `${ip}|${tenantId.toLowerCase()}`;
 }
 
 /** Seconds left in the window when the IP is over its limit, else null. */
@@ -84,16 +93,18 @@ export function createPaymentWebhookRouter(options?: {
   const receive = options?.receive ?? receiveDoitWebhook;
 
   const rawBody: RequestHandler = (req, res, next) => {
-    // Throttle IPs with too many failed verifications before the body is read.
-    const ipRetry = failedRetryAfter(ipKey(req), limiterNow());
-    if (ipRetry !== null) rejectRateLimited(res, ipRetry);
     // A malformed tenant id is a plain 404 with no body echo.
-    if (!tenantIdSchema.safeParse(req.params.tenantId).success) {
+    const tenant = tenantIdSchema.safeParse(req.params.tenantId);
+    if (!tenant.success) {
       res.status(404).json({
         error: { code: "NOT_FOUND", message: "Tidak ditemukan." },
       });
       return;
     }
+    // Throttle (IP, tenant) pairs with too many failed verifications before
+    // the body is read.
+    const retry = failedRetryAfter(limiterKey(req, tenant.data), limiterNow());
+    if (retry !== null) rejectRateLimited(res, retry);
     const contentType = req
       .get("content-type")
       ?.split(";")[0]
@@ -117,11 +128,22 @@ export function createPaymentWebhookRouter(options?: {
         // Only the one header the verification reads.
         signatureHeader: req.get(DOIT_SIGNATURE_HEADER) ?? undefined,
       });
+      // A stored `failed` row (e.g. paid without an amount, reference not
+      // known yet) answers 500 so DOIT retries; the row stays for the worker.
+      if (result.status === "failed")
+        throw new HttpError(
+          500,
+          "INTERNAL_ERROR",
+          "Webhook belum dapat diproses. Coba lagi.",
+        );
       res.status(200).json({ received: true, status: result.status });
     } catch (error) {
       // One fixed message for every verification failure (no oracle).
       if (error instanceof CoreError && error.code === "UNAUTHORIZED") {
-        recordFailedVerification(ipKey(req), limiterNow());
+        recordFailedVerification(
+          limiterKey(req, String(req.params.tenantId)),
+          limiterNow(),
+        );
         throw new HttpError(401, "UNAUTHORIZED", UNAUTHORIZED_MESSAGE);
       }
       throw error;

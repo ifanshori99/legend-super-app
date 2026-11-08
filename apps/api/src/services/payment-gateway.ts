@@ -48,6 +48,10 @@ export type GatewayHealth = {
 
 export type GatewayIntentRequest = {
   readonly context: ScopedTenantContext;
+  /** Outlet of the bill. A tenant-scoped caller (guest QR order) carries no
+   * outlet in its context, so the adapter picks that outlet's own credentials
+   * from here; absent, it falls back to the context's single outlet. */
+  readonly outletId?: string;
   readonly provider: string;
   readonly intentId: string;
   /** A gateway refuses (CoreError VALIDATION_ERROR) a method it does not
@@ -65,6 +69,10 @@ export type GatewayIntent = {
   readonly instructions: PaymentInstructions;
   /** The provider may shorten the lifetime (QRIS is about 10 minutes). */
   readonly expiresAt: string;
+  /** Integration row whose credentials created the payment; stored on the
+   * intent so status checks and webhooks use the same account later. Absent
+   * for a gateway without per-tenant integrations. */
+  readonly integrationId?: string | null;
 };
 
 export type GatewayPaymentStatus = {
@@ -77,10 +85,19 @@ export type GatewayPaymentStatus = {
 export interface PaymentGatewayPort {
   /** Provider code of the configured gateway (PRD default: DOIT). */
   readonly provider: string;
-  health(context: ScopedTenantContext): Promise<GatewayHealth>;
+  health(
+    context: ScopedTenantContext,
+    outletId?: string,
+  ): Promise<GatewayHealth>;
   createIntent(input: GatewayIntentRequest): Promise<GatewayIntent>;
   getStatus(input: {
     context: ScopedTenantContext;
+    /** Outlet of the bill the payment belongs to (see GatewayIntentRequest). */
+    outletId?: string;
+    /** Integration that created the payment (`GatewayIntent.integrationId`).
+     * When given it wins over the outlet resolution, even if that row has
+     * been disabled since (money already in flight). */
+    integrationId?: string | null;
     providerRef: string;
     /** When given, the adapter refuses (as a gateway error) a provider
      * payment that was not created for this intent. */
@@ -90,12 +107,14 @@ export interface PaymentGatewayPort {
   channels(
     context: ScopedTenantContext,
     method: OnlinePaymentMethod,
+    outletId?: string,
   ): Promise<PaymentChannel[]>;
   /** Active methods from the provider's own endpoint. Optional so test
    * doubles written before it stay valid; a missing method means "use
    * `channels()` per online method". */
   methods?(
     context: ScopedTenantContext,
+    outletId?: string,
   ): Promise<readonly GatewayMethodAvailability[]>;
 }
 

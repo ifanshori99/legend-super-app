@@ -1,6 +1,9 @@
 // DOIT payment gateway adapter (bead legend-b9i; PRD v1.7 §3.13 F13,
-// PAY-02/03/06). Implements `PaymentGatewayPort`; the wire format is assumed
-// and lives in payment-doit-wire.ts (legend-s5c confirms it).
+// PAY-02/03/06). Implements `PaymentGatewayPort`; the wire format follows the
+// official DOIT docs and lives in payment-doit-wire.ts.
+//
+// The base URL is https://pay.doit.id; an integration's `config.baseUrl` is
+// only an override (tests, a local fake).
 //
 // Fails closed: no integration row, a missing field or a bad base URL means
 // `health()` is `down` and create/getStatus answer 503. Credentials come from
@@ -16,14 +19,15 @@ import type { z } from "zod";
 import { env } from "../config/env";
 import { logger } from "../lib/logger";
 import {
+  DOIT_BASE_URL,
   DOIT_CREATABLE_METHODS,
+  type DoitCreatableMethod,
   doitPaymentMethodsSchema,
   doitPaymentSchema,
   doitPaymentToGatewayStatus,
   doitPaymentToInstructions,
   malformedProviderAnswer,
   mapDoitMethods,
-  toDoitWireMethod,
   verifyDoitSignature,
 } from "./payment-doit-wire";
 import type {
@@ -36,7 +40,10 @@ import type {
   OnlinePaymentMethod,
   PaymentGatewayPort,
 } from "./payment-gateway";
-import { loadActiveIntegrationCredentials } from "./platform-integration.service";
+import {
+  loadActiveIntegrationCredentials,
+  loadIntegrationCredentialsById,
+} from "./platform-integration.service";
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const METHODS_CACHE_MS = 60_000;
@@ -53,6 +60,13 @@ export type DoitCredentialLoader = (
   credentials: Record<string, string>;
 } | null>;
 
+/** Loads one integration row by id, whatever its status (see
+ * `loadIntegrationCredentialsById`). */
+export type DoitCredentialByIdLoader = (
+  context: ScopedTenantContext,
+  integrationId: string,
+) => ReturnType<DoitCredentialLoader>;
+
 export type DoitLookup = (
   hostname: string,
 ) => Promise<ReadonlyArray<{ address: string }>>;
@@ -64,6 +78,7 @@ export type DoitGatewayOptions = {
    * NODE_ENV=test unless a lookup is injected. */
   lookup?: DoitLookup;
   loadCredentials?: DoitCredentialLoader;
+  loadCredentialsById?: DoitCredentialByIdLoader;
   now?: () => Date;
 };
 
@@ -86,6 +101,9 @@ type Resolved = {
 
 const defaultLoader: DoitCredentialLoader = (context, outletId) =>
   loadActiveIntegrationCredentials(context, "doit", outletId);
+
+const defaultByIdLoader: DoitCredentialByIdLoader = (context, integrationId) =>
+  loadIntegrationCredentialsById(context, "doit", integrationId);
 
 function unavailable(message: string): CoreError {
   return new CoreError("SERVICE_UNAVAILABLE", message);
@@ -204,6 +222,7 @@ export function createDoitGateway(
 ): DoitGateway {
   const doFetch = options.fetch ?? fetch;
   const loadCredentials = options.loadCredentials ?? defaultLoader;
+  const loadCredentialsById = options.loadCredentialsById ?? defaultByIdLoader;
   const now = options.now ?? (() => new Date());
   const resolveHost: DoitLookup | null =
     options.lookup ??
@@ -217,10 +236,17 @@ export function createDoitGateway(
 
   async function resolve(
     context: ScopedTenantContext,
+    outletId?: string,
+    integrationId?: string | null,
   ): Promise<Resolved | null> {
     let loaded: Awaited<ReturnType<DoitCredentialLoader>>;
     try {
-      loaded = await loadCredentials(context, singleOutletId(context));
+      // A payment already minted is checked with the account that minted it.
+      // Otherwise the bill's outlet wins over the caller's scope: a
+      // tenant-scoped guest request must still use the outlet's own account.
+      loaded = integrationId
+        ? await loadCredentialsById(context, integrationId)
+        : await loadCredentials(context, outletId ?? singleOutletId(context));
     } catch (error) {
       logger.warn(
         { errName: error instanceof Error ? error.name : "unknown" },
@@ -230,15 +256,22 @@ export function createDoitGateway(
     }
     if (!loaded) return null;
     const { apiKey } = loaded.credentials;
-    const baseUrl = parseDoitBaseUrl(loaded.integration.config.baseUrl);
+    const override = loaded.integration.config.baseUrl;
+    // No override means the one DOIT host; a malformed override fails closed.
+    const baseUrl =
+      override === undefined || override === null || override === ""
+        ? DOIT_BASE_URL
+        : parseDoitBaseUrl(override);
     if (!apiKey || !loaded.credentials.webhookSecret || !baseUrl) return null;
     return { integrationId: loaded.integration.id, baseUrl, apiKey };
   }
 
   async function requireCredentials(
     context: ScopedTenantContext,
+    outletId?: string,
+    integrationId?: string | null,
   ): Promise<Resolved> {
-    const resolved = await resolve(context);
+    const resolved = await resolve(context, outletId, integrationId);
     if (!resolved)
       throw unavailable(
         "Gateway pembayaran belum dikonfigurasi. Bayar di kasir.",
@@ -354,7 +387,7 @@ export function createDoitGateway(
       return cached.value;
     const answer = await call(
       resolved,
-      { method: "GET", path: "/v1/payment-methods" },
+      { method: "GET", path: "/v1/methods" },
       doitPaymentMethodsSchema,
     );
     const value = mapDoitMethods(answer.data);
@@ -365,8 +398,8 @@ export function createDoitGateway(
   return {
     provider: "doit",
 
-    async health(context): Promise<GatewayHealth> {
-      const resolved = await resolve(context);
+    async health(context, outletId): Promise<GatewayHealth> {
+      const resolved = await resolve(context, outletId);
       if (!resolved) return { status: "down" };
       try {
         await loadMethods(resolved);
@@ -376,39 +409,53 @@ export function createDoitGateway(
       }
     },
 
-    async methods(context) {
-      return loadMethods(await requireCredentials(context));
+    async methods(context, outletId) {
+      return loadMethods(await requireCredentials(context, outletId));
     },
 
     async channels(
       context,
       method: OnlinePaymentMethod,
+      outletId?: string,
     ): Promise<PaymentChannel[]> {
       if (method === "qris") return [];
-      const methods = await loadMethods(await requireCredentials(context));
+      const methods = await loadMethods(
+        await requireCredentials(context, outletId),
+      );
       const entry = methods.find((candidate) => candidate.method === method);
       return entry?.enabled ? [...entry.channels] : [];
     },
 
     async createIntent(input: GatewayIntentRequest): Promise<GatewayIntent> {
       const method: GatewayPaymentMethod = input.method;
-      // This adapter serves QRIS, VA and bank transfer only.
+      // This adapter serves QRIS and VA only (see DOIT_CREATABLE_METHODS).
       if (!(DOIT_CREATABLE_METHODS as readonly string[]).includes(method))
         throw new CoreError(
           "VALIDATION_ERROR",
           "Metode pembayaran ini belum tersedia.",
         );
-      const creatable = method as (typeof DOIT_CREATABLE_METHODS)[number];
-      const resolved = await requireCredentials(input.context);
+      const creatable = method as DoitCreatableMethod;
+      const resolved = await requireCredentials(input.context, input.outletId);
       const available = (await loadMethods(resolved)).find(
         (candidate) => candidate.method === creatable,
       );
-      if (!available?.enabled)
+      const channel =
+        creatable === "va"
+          ? (available?.channels.find(
+              (candidate) => candidate.code === input.channelCode,
+            ) ?? null)
+          : null;
+      if (!available?.enabled || (creatable === "va" && !channel))
         throw new CoreError(
           "VALIDATION_ERROR",
           "Metode pembayaran ini sedang tidak tersedia.",
         );
 
+      // DOIT takes a lifetime in seconds (at least 60), not a timestamp.
+      const lifetimeMs = Date.parse(input.expiresAt) - now().getTime();
+      if (!Number.isFinite(lifetimeMs))
+        throw new CoreError("VALIDATION_ERROR", "Batas waktu tidak valid.");
+      const expiresIn = Math.max(60, Math.ceil(lifetimeMs / 1000));
       const payment = await call(
         resolved,
         {
@@ -416,12 +463,11 @@ export function createDoitGateway(
           path: "/v1/payments",
           idempotencyKey: input.idempotencyKey,
           body: {
-            reference: input.intentId,
             amount: input.amountIdr,
-            currency: "IDR",
-            method: toDoitWireMethod(creatable),
-            channel_code: input.channelCode,
-            expires_at: input.expiresAt,
+            rail: creatable,
+            ...(channel ? { va_bank: channel.code } : {}),
+            reference: input.intentId,
+            expires_in: expiresIn,
           },
         },
         doitPaymentSchema,
@@ -429,22 +475,41 @@ export function createDoitGateway(
       // The answer must describe the payment we asked for.
       if (
         payment.reference !== input.intentId ||
-        payment.amount !== input.amountIdr
+        payment.amount !== input.amountIdr ||
+        payment.status !== "pending"
       )
         throw malformedProviderAnswer();
+      // The guest pays total_amount. A fee DOIT adds on the customer's side
+      // would charge more than the bill shows: the fee must be borne by the
+      // merchant (portal setting).
+      if (
+        payment.total_amount !== null &&
+        payment.total_amount !== payment.amount
+      ) {
+        logger.warn(
+          { integrationId: resolved.integrationId },
+          "DOIT charges the customer more than the bill; set the fee to the merchant",
+        );
+        throw unavailable(
+          "Gateway pembayaran menambah biaya ke pembeli. Bayar di kasir.",
+        );
+      }
+      // A pending payment always carries its expiry.
+      if (payment.expires_at === null) throw malformedProviderAnswer();
       return {
         providerRef: payment.id,
-        instructions: doitPaymentToInstructions(
-          payment,
-          creatable,
-          input.channelCode,
-        ),
+        instructions: doitPaymentToInstructions(payment, creatable, channel),
         expiresAt: new Date(payment.expires_at).toISOString(),
+        integrationId: resolved.integrationId,
       };
     },
 
     async getStatus(input): Promise<GatewayPaymentStatus> {
-      const resolved = await requireCredentials(input.context);
+      const resolved = await requireCredentials(
+        input.context,
+        input.outletId,
+        input.integrationId,
+      );
       const payment = await call(
         resolved,
         {

@@ -22,10 +22,14 @@ CREATE TABLE "gateway_webhook_events" (
 	CONSTRAINT "gateway_webhook_events_status_check" CHECK ("gateway_webhook_events"."status" IN ('received', 'processed', 'ignored', 'failed', 'rejected'))
 );
 --> statement-breakpoint
+ALTER TABLE "payment_intents" ADD COLUMN "gateway_integration_id" uuid;--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD COLUMN "gateway_polled_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "gateway_webhook_events" ADD CONSTRAINT "gateway_webhook_events_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "gateway_webhook_events" ADD CONSTRAINT "gateway_webhook_events_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "gateway_webhook_events" ADD CONSTRAINT "gateway_webhook_events_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "gateway_webhook_events" ADD CONSTRAINT "gateway_webhook_events_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "gateway_webhook_events_event_key" ON "gateway_webhook_events" USING btree ("tenant_id","provider","event_id") WHERE "gateway_webhook_events"."signature_valid" AND "gateway_webhook_events"."event_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "gateway_webhook_events_rejected_hash_uq" ON "gateway_webhook_events" USING btree ("tenant_id","payload_hash") WHERE NOT "gateway_webhook_events"."signature_valid";--> statement-breakpoint
 CREATE INDEX "gateway_webhook_events_status_idx" ON "gateway_webhook_events" USING btree ("tenant_id","status","received_at");--> statement-breakpoint
-CREATE INDEX "gateway_webhook_events_provider_ref_idx" ON "gateway_webhook_events" USING btree ("tenant_id","provider","provider_ref");
+CREATE INDEX "gateway_webhook_events_provider_ref_idx" ON "gateway_webhook_events" USING btree ("tenant_id","provider","provider_ref");--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_gateway_integration_fk" FOREIGN KEY ("gateway_integration_id") REFERENCES "public"."tenant_integrations"("id") ON DELETE no action ON UPDATE no action;

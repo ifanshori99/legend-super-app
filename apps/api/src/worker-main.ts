@@ -10,6 +10,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
+import { verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -63,7 +64,11 @@ setReservationDepositPort(createPaymentReservationDepositPort());
 // PAY-02/03 (legend-b9i): the polling fallback asks DOIT for the status of
 // pending intents whose webhook never arrived.
 setPaymentGateway(createDoitGateway());
-const registry = new Pool({ connectionString: workerUrl, max: 1 });
+const registry = new Pool({
+  connectionString: workerUrl,
+  max: 1,
+  verify: verifyQueueConnection,
+});
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
   const parsed = tenantIdSchema.parse(tenantId);
