@@ -27,7 +27,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
 | ws/hris-leave | 1db3cd05 | S | cuti (Opus: domain rumit) | Opus reviewer PERLU FIX (2 Tinggi, 2 Sedang) → brief 85 ke G5klp 22:06 | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
-| ws/hris-sop | 50e6eba4 | S | SOP | thread: 3 reviewer + architect + reviewer akhir; Sonnet reviewer CTO jalan 22:35; migration 0068/0069 → regen | gabung milestone |
+| ws/hris-sop | 37aa5cd9 | S | SOP | Sonnet reviewer PERLU FIX → brief 86 selesai 37aa5cd9 (gate hijau); siap merge (regen) | gabung milestone |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
 | fix/worktree-shared | 4ab45cc | S | tooling | Sonnet: LOLOS | DIGABUNG milestone 4478360 |
 | ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
