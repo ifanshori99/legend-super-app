@@ -23,6 +23,7 @@ import { consentRouter, textOverridesRouter } from "./text-consent.routes";
 import { platformBrandRouter } from "./platform-brand.routes";
 import { internalRouter } from "./platform-tls.routes";
 import { platformRouter } from "./platform.routes";
+import { platformConfigRouter } from "./platform-config.routes";
 import { createNotificationRouter } from "./notification.routes";
 import { taxRouter } from "./tax.routes";
 import { createMenuRouter } from "./menu.routes";
@@ -65,6 +66,7 @@ apiRouter.use("/admin", adminRouter);
 // Panel Platform (Super Admin) and tenant organisation settings (WS-01).
 apiRouter.use("/platform", platformUsageRouter);
 apiRouter.use("/platform", platformRouter);
+apiRouter.use("/platform", platformConfigRouter);
 apiRouter.use("/org", orgIntegrationsRouter);
 apiRouter.use("/org", orgRouter);
 apiRouter.use("/org", orgThemesRouter);

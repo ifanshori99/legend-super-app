@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// TEN-09 tenant config templates + import runs (legend-34c).
+export * from "./platform-config";

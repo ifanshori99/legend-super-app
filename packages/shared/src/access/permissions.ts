@@ -52,6 +52,7 @@ const entries = [
   ["platform.integration.manage", ["platform"]],
   ["platform.health.view", ["platform"]],
   ["platform.support_access.request", ["platform"]],
+  ["platform.config_template.manage", ["platform"]],
 
   // Organisation & configuration (§3.1, §3.7, F46)
   ["org.structure.manage", []],

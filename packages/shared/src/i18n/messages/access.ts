@@ -330,6 +330,7 @@ const accessBaseMessages = {
       integration: { manage: "Kelola integrasi platform" },
       health: { view: "Lihat kesehatan platform" },
       support_access: { request: "Minta akses dukungan ke tenant" },
+      config_template: { manage: "Kelola template konfigurasi tenant" },
     },
     org: {
       structure: { manage: "Kelola struktur organisasi" },

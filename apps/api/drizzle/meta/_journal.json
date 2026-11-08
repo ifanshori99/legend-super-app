@@ -442,6 +442,20 @@
       "when": 1794120949179,
       "tag": "0062_outbox_gap_requests_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794137098245,
+      "tag": "0063_tenant_config_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1794137101625,
+      "tag": "0064_tenant_config_rls",
+      "breakpoints": true
     }
   ]
 }

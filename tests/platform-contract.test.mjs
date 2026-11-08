@@ -5,6 +5,7 @@ import {
   CoreError,
   cafeLegendFixtures,
 } from "../packages/shared/src/core/index.ts";
+import * as access from "../packages/shared/src/access/index.ts";
 import * as accounting from "../packages/shared/src/accounting/index.ts";
 import * as audit from "../packages/shared/src/audit/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
@@ -604,6 +605,271 @@ test("TEN-09 a template imports into a new tenant as a working configuration", (
     false,
   );
   assert.equal(platform.canTransitionConfigImport("failed", "applying"), false);
+});
+
+test("TEN-09 every config section has a strict item schema keyed by reference, not id", () => {
+  const sample = {
+    roles: [
+      {
+        key: "tpl.tenant_admin",
+        kind: "template",
+        templateKey: "tenant_admin",
+        name: "Admin Tenant",
+        permissions: ["org.settings.manage"],
+        mfaRequired: true,
+        allowedScopeTypes: ["tenant"],
+      },
+    ],
+    approval_policies: [
+      {
+        key: "ap.void.any.1.tpl.tenant_admin",
+        kind: "approval",
+        actionType: "void",
+        thresholdIdr: null,
+        approverRoleKey: "tpl.tenant_admin",
+        levels: 1,
+        requiresDistinctActor: true,
+      },
+      {
+        key: "pos.bdg-01",
+        kind: "pos_discount",
+        outletKey: "bdg-01",
+        discountThresholdBp: 1000,
+      },
+    ],
+    chart_of_accounts: [
+      {
+        key: "acct.1100",
+        kind: "account",
+        code: "1100",
+        name: "Kas",
+        type: "asset",
+        reportGroup: "cash_and_equivalents",
+        parentKey: null,
+        isActive: true,
+      },
+      {
+        key: "map.cash_on_hand",
+        kind: "mapping",
+        role: "cash_on_hand",
+        accountKey: "acct.1100",
+      },
+    ],
+    tax_rules: [
+      {
+        key: "tenant.pb1",
+        kind: "rule",
+        outletKey: null,
+        code: "PB1",
+        name: "PB1 10%",
+        taxType: "pbjt",
+        rateBp: 1000,
+        regionCode: null,
+        channels: [],
+        appliesTo: { itemClasses: ["food_beverage"] },
+        priceIncludesTax: false,
+        includeServiceInBase: true,
+        isActive: true,
+      },
+      {
+        key: "settings.tenant",
+        kind: "settings",
+        outletKey: null,
+        calculationOrder: "discount_service_tax",
+        pricesIncludeTax: false,
+        serviceRoundingMode: "half_up",
+        taxRoundingMode: "half_up",
+        inclusiveBaseRoundingMode: "half_up",
+        billRounding: { incrementIdr: 100, mode: "half_up" },
+        packageAllocation: "fixed_bp",
+      },
+    ],
+    service_charge_rules: [
+      {
+        key: "bdg-01.sc",
+        outletKey: "bdg-01",
+        code: "SC",
+        name: "Service 5%",
+        rateBp: 500,
+        zoneKey: "bdg-01.indoor",
+        orderTypes: [],
+        itemClasses: ["food_beverage"],
+        isActive: true,
+      },
+    ],
+    checklists: [
+      {
+        key: "bdg-01.chk.buka",
+        outletKey: "bdg-01",
+        name: "Buka toko",
+        type: "opening",
+        items: [
+          { label: "Nyalakan mesin", instruction: null, requiredEvidence: [] },
+        ],
+        schedule: { dueTime: "07:30", zoneKey: null },
+        roleKey: null,
+      },
+    ],
+    facilities: [
+      {
+        key: "bdg-01.shower",
+        kind: "facility",
+        outletKey: "bdg-01",
+        name: "Shower",
+        type: "shower",
+        sessionMinutes: 20,
+        cleaningMinutes: 10,
+        arrivalGraceMinutes: 10,
+        operatingHours: [
+          { daysOfWeek: [1], opensAt: "06:00", closesAt: "10:00" },
+        ],
+        overtimePolicy: {
+          graceMinutes: 5,
+          blockMinutes: 10,
+          feePerBlockIdr: 5000,
+        },
+        cancellationPolicy: {
+          freeCancelMinutesBefore: 30,
+          lateCancelResolution: "no_refund",
+          lateCancelFeeIdr: 0,
+          noShowResolution: "no_refund",
+        },
+      },
+      {
+        key: "bdg-01.shower.area",
+        kind: "area",
+        facilityKey: "bdg-01.shower",
+        name: "Lantai 1",
+        sortOrder: 0,
+      },
+    ],
+  };
+  const schemas = platform.configSectionItemSchemas;
+  assert.deepEqual(
+    Object.keys(schemas).sort(),
+    [...platform.GENERIC_CONFIG_SECTIONS].sort(),
+  );
+  for (const [section, items] of Object.entries(sample))
+    for (const item of items) {
+      const parsed = schemas[section].safeParse(item);
+      assert.equal(
+        parsed.success,
+        true,
+        `${section}: ${JSON.stringify(parsed.error?.issues)}`,
+      );
+      // Strict: an unknown field or a missing key never passes.
+      assert.equal(
+        schemas[section].safeParse({ ...item, extra: 1 }).success,
+        false,
+      );
+      const withoutKey = { ...item };
+      delete withoutKey.key;
+      assert.equal(schemas[section].safeParse(withoutKey).success, false);
+    }
+  // Unknown kind fails the discriminated sections.
+  assert.equal(
+    schemas.facilities.safeParse({ key: "x", kind: "nope" }).success,
+    false,
+  );
+
+  // The bundle validates items with their section schema, and duplicate keys fail.
+  const bundle = (sections) => ({
+    formatVersion: 1,
+    exportedAt: fx.now,
+    sections,
+  });
+  const whole = platform.strictConfigBundleSchema.safeParse(
+    bundle(
+      Object.fromEntries(
+        Object.entries(sample).map(([section, items]) => [
+          section,
+          { version: 1, items },
+        ]),
+      ),
+    ),
+  );
+  assert.equal(whole.success, true, JSON.stringify(whole.error?.issues));
+  assert.equal(
+    platform.strictConfigBundleSchema.safeParse(
+      bundle({ zones: { version: 1, items: [{ key: "a", name: "x" }] } }),
+    ).success,
+    false,
+  );
+  // The browser preview stays loose: it diffs any keyed item.
+  assert.equal(
+    platform.configBundleSchema.safeParse(
+      bundle({ zones: { version: 1, items: [{ key: "a", name: "x" }] } }),
+    ).success,
+    true,
+  );
+  assert.equal(
+    platform.configBundleSchema.safeParse(
+      bundle({
+        roles: { version: 1, items: [sample.roles[0], sample.roles[0]] },
+      }),
+    ).success,
+    false,
+  );
+  // Loyalty and payroll keep the generic JSON item until their tables exist.
+  assert.equal(
+    platform.configBundleSchema.safeParse(
+      bundle({
+        loyalty_policy: { version: 1, items: [{ key: "tier", any: 1 }] },
+      }),
+    ).success,
+    true,
+  );
+  // An item carrying an id is refused by the identifier scan.
+  const leaked = bundle({
+    wifi_policies: { version: 1, items: [{ key: "w", zoneId: "x", id: "y" }] },
+  });
+  assert.equal(platform.parseConfigBundle(leaked).ok, false);
+});
+
+test("TEN-09 config readiness, platform-only permission and endpoints", () => {
+  assert.equal(
+    platform.configReadinessSchema.safeParse({
+      tenantId: fx.tenant.id,
+      ready: false,
+      checks: [
+        { check: "zones", ok: false, detail: "Outlet BDG-02 tanpa zona" },
+      ],
+    }).success,
+    true,
+  );
+  assert.equal(
+    platform.configReadinessSchema.safeParse({
+      tenantId: fx.tenant.id,
+      ready: true,
+      checks: [{ check: "nope", ok: true, detail: "" }],
+    }).success,
+    false,
+  );
+  const imported = platform.configImportSchema.shape.warnings;
+  assert.equal(imported.safeParse(["Outlet X dilewati"]).success, true);
+  assert.equal(imported.safeParse(["x".repeat(501)]).success, false);
+  const code = "platform.config_template.manage";
+  assert.ok(access.PERMISSION_CODES.includes(code));
+  assert.ok(access.permissionHasTag(code, "platform"));
+  assert.equal(
+    access.tenantPermissionCodeSchema.safeParse(code).success,
+    false,
+  );
+  const { platformEndpoints: ep } = platform;
+  assert.equal(
+    ep.getConfigTemplate.path,
+    "/api/platform/config-templates/:templateId",
+  );
+  assert.equal(ep.exportConfig.method, "GET");
+  assert.equal(
+    ep.exportConfig.path,
+    "/api/platform/tenants/:tenantId/config-export",
+  );
+  assert.equal(
+    ep.getConfigReadiness.path,
+    "/api/platform/tenants/:tenantId/config-readiness",
+  );
+  assert.equal(platform.platformErrorHttpStatus.CONFIG_IMPORT_FAILED, 422);
 });
 
 test("TEN-02 hostnames resolve to the tenant only when verified and active", () => {
