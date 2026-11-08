@@ -136,3 +136,4 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Keputusan: NPWP dan regionId kosong di edge setelah bootstrap; link "up" = heartbeat < 45 dtk; izin konflik = `device.registry.manage`, rotasi = `device.registry.revoke`; cek outlet lintas dokumen di s4r6 baca transaksi tenant-wide (hanya baris committed).
 - Review: reviewer 2 putaran + architect (tingkat K). Second-opinion Codex wajib sebelum gerbang rilis.
 - Berikut: test DB gabungan, `heavy pnpm check`, commit lokal, laporan ke CTO.
+- Gelombang (05:30–06:31, 61 menit): 21 subagent (Claude saja: Opus 295 req, Sonnet 313 req, Haiku 8 req), maks 8 berjalan sekaligus, rata-rata 1,1. Biaya* 14.242k (utama 3.288k, subagent 10.954k). 1 compact.

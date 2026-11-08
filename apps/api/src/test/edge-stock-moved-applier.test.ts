@@ -230,6 +230,14 @@ async function refusedConflicts(eventId: string) {
   return rows[0]!.n;
 }
 
+async function conflictReasons(eventId: string) {
+  const { rows } = await owner.query<{ reason: string }>(
+    "SELECT reason FROM edge_sync_conflicts WHERE tenant_id = $1 AND event_id = $2::uuid",
+    [tenantId, ulidToUuid(eventId)],
+  );
+  return rows.map((row) => row.reason);
+}
+
 async function balanceOf(locationId: string) {
   const { rows } = await owner.query<{ quantity: string }>(
     "SELECT quantity::text FROM stock_balances WHERE tenant_id = $1 AND location_id = $2 AND inventory_item_id = $3",
@@ -348,9 +356,10 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
         applyEdgeStockMoved(tx, colliding, meta()),
       ),
     ).rejects.toThrow();
-    // Through the link the refusal becomes a reviewable conflict.
+    // Through the link the same aggregate sequence is already taken, so the
+    // sequencer records a reviewable conflict before the applier runs.
     await deliver([colliding]);
-    expect(await refusedConflicts(colliding.id)).toBe(1);
+    expect(await conflictReasons(colliding.id)).toHaveLength(1);
     const ledger = await ledgerRows(ledgerEntryId);
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.quantity).toBe("-2.0000");
@@ -368,6 +377,9 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
     await expect(
       withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
     ).rejects.toMatchObject({ status: 422 });
+    // Through the link the refusal becomes a reviewable conflict.
+    await deliver([event]);
+    expect(await refusedConflicts(event.id)).toBe(1);
     expect(await ledgerRows(ledgerEntryId)).toHaveLength(0);
   });
 
