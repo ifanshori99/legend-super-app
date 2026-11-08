@@ -20,8 +20,11 @@ import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  idr,
+  outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -38,6 +41,7 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openSecret } from "../lib/secrets.ts";
+import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
 import {
   setPaymentGateway,
@@ -53,6 +57,9 @@ import {
   setPosReceiptPort,
   type PosReceiptPort,
 } from "../services/pos-order-ports.ts";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { signDeviceToken } from "../lib/device-token.ts";
+import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -216,6 +223,16 @@ function pos() {
       .post(`${base}${path}`)
       .set(headers)
       .set(originHeader)
+      // The till: cash goes into the drawer of the shift open on this device.
+      .set(
+        DEVICE_TOKEN_HEADER,
+        signDeviceToken({
+          version: 1,
+          tenantId: tenant.tenantId,
+          brandId: null,
+          deviceId: ids.device,
+        }),
+      )
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
     create: () =>
@@ -386,6 +403,11 @@ beforeAll(async () => {
   setPosReceiptPort(memoryReceiptPort());
   tenant = await createIsolatedTenant(`qrl-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
+  setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
+    tenantId === tenant.tenantId && deviceId === ids.device
+      ? tenant.outletId
+      : null,
+  );
   const roles: [string, string, string[]][] = [
     [
       ids.cashierRole,
@@ -397,6 +419,7 @@ beforeAll(async () => {
         "pos.discount.apply",
         "pos.void.request",
         "pos.refund.request",
+        "shift.cash.operate",
       ],
     ],
     [
@@ -413,6 +436,15 @@ beforeAll(async () => {
     );
   cashier = await member(ids.cashierRole, "QRIS Kasir");
   supervisor = await member(ids.supervisorRole, "QRIS Supervisor");
+  // Cash tenders, refunds and voids of cash-paid orders need the acting
+  // cashier's open shift (409 SHIFT_NOT_OPEN otherwise): one shift on the
+  // registered device covers every sale here.
+  await openPosShift(
+    contextOf(tenant.tenantId),
+    { userId: userIdSchema.parse(cashier.userId), deviceId: ids.device },
+    outletIdSchema.parse(tenant.outletId),
+    { openingFloatIdr: idr(100_000), idempotencyKey: randomUUID() },
+  );
   await asOwnerTenant(tenant.tenantId, async (client) => {
     await client.query(
       `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)

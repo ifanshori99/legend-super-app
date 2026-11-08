@@ -210,16 +210,18 @@ function tenantContext(tenantId: string): ScopedTenantContext {
 const errorCode = (body: { error?: { code?: string }; code?: string }) =>
   body.error?.code ?? body.code;
 
-function pos(who: Member = cashier) {
+function pos(who: Member = cashier, withDevice = true) {
   const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`;
-  const send = (path: string, body: Record<string, unknown>) =>
-    who.client
+  const send = (path: string, body: Record<string, unknown>) => {
+    const request = who.client
       .post(`${base}${path}`)
       .set(headers)
-      .set(originHeader)
-      // The till: cash goes into the drawer of the shift open on this device.
-      .set("X-Device-Token", deviceToken())
-      .send({ idempotencyKey: randomUUID(), ...body });
+      .set(originHeader);
+    // The till: cash goes into the drawer of the shift open on this device.
+    // An order made without the device header belongs to no terminal.
+    if (withDevice) request.set("X-Device-Token", deviceToken());
+    return request.send({ idempotencyKey: randomUUID(), ...body });
+  };
   return {
     create: (body: Record<string, unknown> = {}) =>
       send("", {
@@ -253,12 +255,16 @@ async function cashSale(
   /** Runs after create/submit, before the cash is taken (cash needs a shift). */
   beforeCash?: () => Promise<void>,
 ): Promise<{ orderId: string; totalIdr: number; shiftId: string | null }> {
-  const created = await pos().create(body);
+  // The order carries the device it was made on; a sale made before any shift
+  // is open (`beforeCash`) is rung up with no device, so it stays on the nil
+  // device. Only the cash tender below needs the till.
+  const ring = pos(cashier, !beforeCash);
+  const created = await ring.create(body);
   expect(created.status, JSON.stringify(created.body)).toBe(201);
   const orderId = created.body.data.id as string;
   let status = created.body.data.status as string;
   if (status === "draft") {
-    const submitted = await pos().submit(orderId, status);
+    const submitted = await ring.submit(orderId, status);
     expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
     status = submitted.body.data.status as string;
   }
