@@ -43,14 +43,18 @@ defines() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*([=:]|\$)"
 # could slip past them. Refuse any byte outside printable ASCII (tab and CR
 # aside) before the first =, : or # of a line. Only the line number is shown.
 # (awk, not grep: BSD grep skips a leading byte-order mark.)
-# Lines inside a double-quoted value that spans lines are value text, not keys.
+# Lines inside a quoted value that spans lines (double quotes, with \
+# escapes, or single quotes) are value text, not keys. This is a first,
+# line-based screen; the Compose check below sees what Compose really reads.
 ascii_keys() {
   line=$(LC_ALL=C awk '
-    inq { v = $0; gsub(/\\./, "", v); if (v ~ /"/) inq = 0; next }
+    q == "d" { v = $0; gsub(/\\./, "", v); if (v ~ /"/) q = ""; next }
+    q == "s" { if ($0 ~ /\047/) q = ""; next }
     { k = $0; sub(/[#=:].*/, "", k); gsub(/[\t\r -~]/, "", k); if (k != "") { print NR; exit } }
     /^[^#=:]*[=:]/ {
       v = $0; sub(/^[^=:]*[=:][ \t]*/, "", v)
-      if (v ~ /^"/) { v = substr(v, 2); gsub(/\\./, "", v); if (v !~ /"/) inq = 1 }
+      if (v ~ /^"/) { v = substr(v, 2); gsub(/\\./, "", v); if (v !~ /"/) q = "d" }
+      else if (v ~ /^\047/) { if (substr(v, 2) !~ /\047/) q = "s" }
     }' "$1")
   [ -z "$line" ] ||
     fail "$(basename "$1") has a non-ASCII character (byte-order mark, no-break space, ...) before a key on line $line; save it as plain text without them."
@@ -143,12 +147,26 @@ fi
 compose config --quiet >/dev/null 2>&1 ||
   fail "docker compose could not read the configuration (output hidden because it can contain secrets). Check compose.env and the env files for unbalanced quotes or invalid lines."
 if [ "$mode" = dry-run ]; then
-  echo 'Validated env files; would start database, run migrations, then provision restricted roles.'
+  echo 'Validated env files; would start database, run migrations, then provision restricted roles. (The check of the configuration Compose really applies needs the migrator image and runs with --audit and when provisioning.)'
   exit 0
 fi
 APP_DATABASE_URL=$app_url
 WORKER_DATABASE_URL=$worker_url
 export APP_DATABASE_URL WORKER_DATABASE_URL
+# Compose reads more than the line starts checked above (text after a closing
+# quote is a new KEY=value, for one), so compare what it will really hand each
+# service with the checked URLs. The JSON holds secrets: it goes straight into
+# check-compose-env.mjs, run with node from the migrator image in a container
+# with no network and no env file (the two URLs come from this environment),
+# which prints only fixed messages naming services and keys. The image is
+# resolved as Compose does: an exported MIGRATOR_IMAGE wins over compose.env.
+migrator_image=${MIGRATOR_IMAGE:-$(value_of "$env_file" MIGRATOR_IMAGE)}
+[ -n "$migrator_image" ] || fail "compose.env must set MIGRATOR_IMAGE."
+compose config --format json 2>/dev/null |
+  docker run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL \
+    -v "$script_dir/check-compose-env.mjs:/tmp/check-compose-env.mjs:ro" \
+    --entrypoint node "$migrator_image" /tmp/check-compose-env.mjs ||
+  fail "the configuration docker compose would apply does not match the checked env files (reason above)."
 if [ "$mode" = audit ]; then
   compose --profile provisioning run --rm provision-roles node dist/provision-roles.js --audit
   exit 0

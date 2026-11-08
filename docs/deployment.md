@@ -402,10 +402,24 @@ migrations (PRD §3 F3, TEN-02):
    with a non-ASCII character before a key on some line (a byte-order mark or
    a no-break space, which Compose silently skips, so a hidden
    `MIGRATION_DATABASE_URL` would reach the service) is refused with only the
-   line number shown (lines inside a double-quoted value that spans lines are
-   not keys and may hold any text); save such files as plain text. Compose output
+   line number shown (lines inside a quoted value that spans lines are not
+   keys and may hold any text); save such files as plain text. Compose output
    is hidden during validation because Compose echoes an unparsable env line,
-   secrets included. It then starts
+   secrets included.
+
+   Those checks read line starts, and Compose reads more: text after a closing
+   quote is a new `KEY=value` (`A="x" MIGRATION_DATABASE_URL=...`), and a
+   quoted value can span lines and swallow a later line. So, except with
+   `--dry-run`, the script also checks the configuration Compose will really
+   apply: `docker compose config --format json` is piped straight into
+   `deploy/single-vm/check-compose-env.mjs`, run with `node` from the
+   migrator image in a container with no network and no env file. It refuses
+   unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
+   (or `_FILE`), `web` receives no database URL, and the URLs `api` and
+   `worker` receive equal the ones just validated. Its messages name only
+   services and keys, never values. `--dry-run` skips this check (it needs
+   the migrator image); `deploy.sh` always runs it through `--audit` before
+   any service starts. It then starts
    PostgreSQL, applies migrations, and runs the `provision-roles` service (the
    migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
    two restricted URLs taken from the services' own env files. The URLs reach

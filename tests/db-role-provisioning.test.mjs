@@ -1212,7 +1212,10 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
 
 // A complete single-VM env layout with valid placeholder values, so real
 // `docker compose config` accepts it. Returns paths and the URLs used.
-function wrapperFixture(dir) {
+function wrapperFixture(
+  dir,
+  { migratorImage = "example.invalid/migrator:1" } = {},
+) {
   const app = remember(
     `postgresql://legend_runtime_${hex(8)}:${hex(24)}@postgres:5432/legend`,
   );
@@ -1240,7 +1243,7 @@ function wrapperFixture(dir) {
         "POSTGRES_USER=owner",
         `POSTGRES_PASSWORD=${hex(8)}`,
         `PGBACKREST_CONFIG=${join(dir, "pgbackrest.conf")}`,
-        "MIGRATOR_IMAGE=example.invalid/migrator:1",
+        `MIGRATOR_IMAGE=${migratorImage}`,
         "API_IMAGE=example.invalid/api:1",
         "WEB_IMAGE=example.invalid/web:1",
         "WORKER_IMAGE=example.invalid/worker:1",
@@ -1310,13 +1313,28 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     assert.equal(dry.calls.length, 1);
     assert.match(dry.calls[0], /config --quiet\|\|\|/);
 
+    // After the static checks, the effective configuration goes from
+    // `config --format json` straight into check-compose-env.mjs (a pipe, so
+    // the two calls may log in either order).
+    const checkedEffective = (calls) => {
+      const piped = calls.slice(1, 3);
+      assert.ok(piped.some((call) => /config --format json\|/.test(call)));
+      const check = piped.find((call) => /check-compose-env\.mjs/.test(call));
+      assert.ok(check, "check-compose-env.mjs did not run");
+      assert.match(
+        check,
+        /^run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -v .*check-compose-env\.mjs:\/tmp\/check-compose-env\.mjs:ro --entrypoint node example\.invalid\/migrator:1 \/tmp\/check-compose-env\.mjs\|/,
+      );
+      assert.deepEqual(check.split("|").slice(1, 3), [app, worker]);
+    };
     const real = run();
     assert.equal(real.status, 0, real.stderr);
     assertNoSecrets(real);
-    assert.equal(real.calls.length, 4);
-    assert.match(real.calls[1], /up -d --wait postgres\|/);
-    assert.match(real.calls[2], /--profile migration run --rm migrate\|/);
-    const [args, appEnv, workerEnv, apiFile] = real.calls[3].split("|");
+    assert.equal(real.calls.length, 6);
+    checkedEffective(real.calls);
+    assert.match(real.calls[3], /up -d --wait postgres\|/);
+    assert.match(real.calls[4], /--profile migration run --rm migrate\|/);
+    const [args, appEnv, workerEnv, apiFile] = real.calls[5].split("|");
     assert.match(args, /--profile provisioning run --rm provision-roles$/);
     assert.equal(appEnv, app);
     assert.equal(workerEnv, worker);
@@ -1326,11 +1344,29 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     const audit = run(["--audit"]);
     assert.equal(audit.status, 0, audit.stderr);
     assertNoSecrets(audit);
-    assert.equal(audit.calls.length, 2);
+    assert.equal(audit.calls.length, 4);
+    checkedEffective(audit.calls);
     assert.match(
-      audit.calls[1],
+      audit.calls[3],
       /--profile provisioning run --rm provision-roles node dist\/provision-roles\.js --audit\|/,
     );
+
+    // A mismatch found in the effective configuration stops the wrapper
+    // before any migration, provisioning or audit job runs.
+    stub(
+      'case "$*" in *check-compose-env*) echo "Effective Compose configuration refused: worker receives X" >&2; exit 1 ;; esac\n',
+    );
+    for (const args of [[], ["--audit"]]) {
+      const mismatch = run(args);
+      assert.equal(mismatch.status, 1, `${args}`);
+      assert.match(
+        mismatch.stderr,
+        /Effective Compose configuration refused: worker receives X\n.*configuration docker compose would apply does not match/s,
+      );
+      assertNoSecrets(mismatch);
+      assert.equal(mismatch.calls.length, 3, `${args}: a job ran anyway`);
+    }
+    stub();
 
     // An exported path the script did not check is refused, not followed.
     writeFileSync(
@@ -1442,6 +1478,12 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
         },
         /worker\.env has a non-ASCII character .* before a key on line 6;/,
       ],
+      [
+        {
+          worker: `${files.worker}NOTE='a\nb'\n\u00A0MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n`,
+        },
+        /worker\.env has a non-ASCII character .* before a key on line 6;/,
+      ],
     ];
     for (const [overrides, message] of refusals) {
       write(overrides);
@@ -1456,7 +1498,7 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     assert.equal(fromFile.status, 0, fromFile.stderr);
     // Non-ASCII in a value (also one spanning lines) or a comment is fine.
     write({
-      web: `${files.web}# caf\u00E9\nBRAND=Caf\u00E9\nWELCOME="Halo\nSelamat datang \u2014 \\" ok"\n`,
+      web: `${files.web}# caf\u00E9\nBRAND=Caf\u00E9\nWELCOME="Halo\nSelamat datang \u2014 \\" ok"\nBYE='Sampai\njumpa \u2014 lagi'\n`,
     });
     const accented = run(["--dry-run"]);
     assert.equal(accented.status, 0, accented.stderr);
@@ -1561,6 +1603,166 @@ test("legend-zoqc wrapper refuses a key Compose would read behind a BOM or no-br
       assert.match(refused.stderr, /api\.env has a non-ASCII character/);
       assertNoSecrets(refused);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legend-zoqc Compose check catches keys the line-based checks cannot see", (t) => {
+  const probe = spawnSync("docker", ["compose", "version"], {
+    encoding: "utf8",
+  });
+  if (probe.status !== 0) {
+    t.skip("docker compose is not installed");
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), "legend-zoqc-effective-"));
+  try {
+    const image = "node:22-slim";
+    const { app, worker, files, write } = wrapperFixture(dir, {
+      migratorImage: image,
+    });
+    const admin = remember(
+      `postgresql://owner:${hex(24)}@postgres:5432/legend`,
+    );
+    const env = { PATH: process.env.PATH, HOME: process.env.HOME };
+    const composeArgs = [
+      "compose",
+      "--env-file",
+      join(dir, "compose.env"),
+      "-f",
+      resolve(root, "deploy/single-vm/compose.yaml"),
+    ];
+    // Real `docker compose config --format json` piped into the checker, the
+    // way provision-roles.sh does (here with the host's node).
+    const check = () => {
+      const config = spawnSync(
+        "docker",
+        [...composeArgs, "config", "--format", "json"],
+        {
+          env,
+          encoding: "utf8",
+        },
+      );
+      assert.equal(config.status, 0, "docker compose config failed");
+      const result = spawnSync(
+        process.execPath,
+        [resolve(root, "deploy/single-vm/check-compose-env.mjs")],
+        {
+          input: config.stdout,
+          env: { ...env, APP_DATABASE_URL: app, WORKER_DATABASE_URL: worker },
+          encoding: "utf8",
+        },
+      );
+      assertNoSecrets(result);
+      return result;
+    };
+    const dryRun = () =>
+      spawnSync(
+        wrapper,
+        ["--env-file", join(dir, "compose.env"), "--dry-run"],
+        {
+          env,
+          encoding: "utf8",
+        },
+      );
+    write();
+    const clean = check();
+    assert.equal(clean.status, 0, clean.stderr);
+    const cases = [
+      [
+        "text after a closing double quote",
+        { api: `${files.api}A="x" MIGRATION_DATABASE_URL=${admin}\n` },
+        /api receives MIGRATION_DATABASE_URL/,
+      ],
+      [
+        "text after a closing single quote",
+        { api: `${files.api}A='x' MIGRATION_DATABASE_URL=${admin}\n` },
+        /api receives MIGRATION_DATABASE_URL/,
+      ],
+      [
+        "an empty quoted value, then the API URL",
+        { api: `${files.api}NOTE="" APP_DATABASE_URL=${admin}\n` },
+        /api receives an APP_DATABASE_URL other than the checked one/,
+      ],
+      [
+        "an empty quoted value, then the queue URL",
+        { worker: `${files.worker}X="" WORKER_DATABASE_URL=${admin}\n` },
+        /worker receives a WORKER_DATABASE_URL other than the checked one/,
+      ],
+      [
+        "a double-quoted value spanning lines hides the real queue URL",
+        {
+          worker: `APP_DATABASE_URL=${app}\nWORKER_DATABASE_URL=${admin}\nNOTE="\nWORKER_DATABASE_URL=${worker}\n"\n`,
+        },
+        /worker receives a WORKER_DATABASE_URL other than the checked one/,
+      ],
+      [
+        "a single-quoted value spanning lines hides the real queue URL",
+        {
+          worker: `APP_DATABASE_URL=${app}\nWORKER_DATABASE_URL=${admin}\nNOTE='\nWORKER_DATABASE_URL=${worker}\n'\n`,
+        },
+        /worker receives a WORKER_DATABASE_URL other than the checked one/,
+      ],
+    ];
+    for (const [name, overrides, message] of cases) {
+      write(overrides);
+      // The line-based checks really miss it: only the Compose check sees it.
+      const lexical = dryRun();
+      assert.equal(lexical.status, 0, `${name}: ${lexical.stderr}`);
+      const refused = check();
+      assert.equal(refused.status, 1, `${name}: the check accepted it`);
+      assert.match(refused.stderr, message, name);
+    }
+    // The wrapper's own pipeline, end to end: Compose pipes the JSON into
+    // node in the migrator image (no network) with the checker mounted
+    // read-only. An accepted configuration exits 0; a refused one stops the
+    // audit before the audit job runs (no postgres is started).
+    const local = spawnSync("docker", ["image", "inspect", image], {
+      encoding: "utf8",
+    });
+    if (local.status !== 0) {
+      t.diagnostic(`${image} is not pulled; skipped the in-image run`);
+      return;
+    }
+    write();
+    const pipeline = spawnSync(
+      "sh",
+      [
+        "-c",
+        'docker "$@" config --format json 2>/dev/null | docker run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -v "$CHECK:/tmp/check-compose-env.mjs:ro" --entrypoint node "$IMAGE" /tmp/check-compose-env.mjs',
+        "sh",
+        ...composeArgs,
+      ],
+      {
+        env: {
+          ...env,
+          CHECK: resolve(root, "deploy/single-vm/check-compose-env.mjs"),
+          IMAGE: image,
+          APP_DATABASE_URL: app,
+          WORKER_DATABASE_URL: worker,
+        },
+        encoding: "utf8",
+      },
+    );
+    assertNoSecrets(pipeline);
+    assert.equal(pipeline.status, 0, pipeline.stderr);
+    write(cases[3][1]);
+    const audit = spawnSync(
+      wrapper,
+      ["--env-file", join(dir, "compose.env"), "--audit"],
+      { env, encoding: "utf8" },
+    );
+    assertNoSecrets(audit);
+    assert.equal(audit.status, 1);
+    assert.match(
+      audit.stderr,
+      /Effective Compose configuration refused: worker receives a WORKER_DATABASE_URL other than the checked one/,
+    );
+    assert.doesNotMatch(
+      audit.stderr + audit.stdout,
+      /provision-roles\.js|Role audit/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
