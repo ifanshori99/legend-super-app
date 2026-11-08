@@ -2,6 +2,7 @@ import { Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../app";
+import { errorHandler } from "../middleware/error-handler";
 import { createLogger } from "../lib/logger";
 import { seededHostname } from "./floor-test-helpers";
 
@@ -54,4 +55,32 @@ describe("malformed percent-encoding in a route param", () => {
       );
     });
   }
+});
+
+// Only the router's decode error is downgraded: a URIError thrown by
+// application code is a server bug and keeps the logged 500 path.
+describe("a URIError from application code", () => {
+  it("stays a logged 500", () => {
+    const sent: { status?: number; body?: unknown } = {};
+    const res = {
+      headersSent: false,
+      err: undefined as Error | undefined,
+      status(code: number) {
+        sent.status = code;
+        return this;
+      },
+      json(body: unknown) {
+        sent.body = body;
+        return this;
+      },
+    };
+    errorHandler(
+      new URIError("URI malformed"),
+      {} as Parameters<typeof errorHandler>[1],
+      res as unknown as Parameters<typeof errorHandler>[2],
+      () => undefined,
+    );
+    expect(sent.status).toBe(500);
+    expect(res.err).toBeInstanceOf(URIError);
+  });
 });

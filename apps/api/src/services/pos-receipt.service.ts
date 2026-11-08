@@ -27,6 +27,7 @@ import {
 import {
   assertReceiptMatchesSequence,
   formatReceiptNumber,
+  RECEIPT_MAX_ORDINAL,
   posReceiptSchema,
   PosError,
   receiptGaps,
@@ -237,6 +238,28 @@ export async function findReceiptByNumber(
  * time. Stored on the receipt so later outlet edits never rewrite a printed
  * document.
  */
+const optionalText = (value: unknown) =>
+  value === null || typeof value === "string";
+
+/** Shape check for a device-supplied header (the DB checks name/address only). */
+function isOutletSnapshot(value: unknown): value is PosReceiptOutletSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Object.keys(v).every((key) =>
+      ["outletName", "outletAddress", "legalName", "npwpLast4"].includes(key),
+    ) &&
+    typeof v.outletName === "string" &&
+    v.outletName.length > 0 &&
+    v.outletName.length <= 200 &&
+    typeof v.outletAddress === "string" &&
+    v.outletAddress.length <= 500 &&
+    optionalText(v.legalName ?? null) &&
+    optionalText(v.npwpLast4 ?? null)
+  );
+}
+
 export async function outletSnapshotFor(
   tx: Tx,
   context: ScopedTenantContext,
@@ -468,6 +491,24 @@ export async function mergeDeviceReceiptRun(
   const outletId = input.sequence.outletId as OutletId;
   // The outlet id is the key of the cloud-owned sequence; a device never owns it.
   if (deviceId === outletId) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  // The sync boundary validates too; the service still refuses a last number
+  // that is not a receipt ordinal so the completeness walk stays bounded.
+  const lastNumber = input.sequence.lastNumber;
+  if (
+    !Number.isInteger(lastNumber) ||
+    lastNumber < 0 ||
+    lastNumber > RECEIPT_MAX_ORDINAL
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Nomor terakhir perangkat tidak valid.",
+    );
+  for (const receipt of input.receipts)
+    if (receipt.outletSnapshot && !isOutletSnapshot(receipt.outletSnapshot))
+      throw new CoreError(
+        "VALIDATION_ERROR",
+        "Kepala struk dari perangkat tidak valid.",
+      );
   await lockOutletSequences(tx, tenantId, outletId);
   const cloudRow = await findSequenceRow(tx, tenantId, outletId, deviceId);
   if (cloudRow) {
@@ -580,12 +621,13 @@ export async function mergeDeviceReceiptRun(
   // batch (device.last <= cloud.last) never moves it and is never refused.
   const newLast = Math.max(cloudLast, input.sequence.lastNumber);
   if (input.sequence.lastNumber > cloudLast) {
+    // Stops after 21 holes: the walk is bounded by the rows present plus 21.
     const missing: number[] = [];
-    for (let n = 1; n <= newLast; n += 1)
+    for (let n = 1; n <= newLast && missing.length <= 20; n += 1)
       if (!cloudOrdinals.has(n) && !ordinals.has(n)) missing.push(n);
     if (missing.length > 0) {
       const shown = missing.slice(0, 20).join(", ");
-      const more = missing.length > 20 ? ` (+${missing.length - 20} lagi)` : "";
+      const more = missing.length > 20 ? " dan lainnya" : "";
       throw new PosError(
         "RECEIPT_SEQUENCE_GAP",
         `Ada nomor struk yang hilang pada perangkat ini: ${shown}${more}.`,
@@ -620,7 +662,17 @@ export async function mergeDeviceReceiptRun(
 
   let fallbackSnapshot: PosReceiptOutletSnapshot | undefined;
   for (const receipt of toInsert) {
-    let snapshot = receipt.outletSnapshot;
+    // The device's own copy is the header printed at the sale. Without one,
+    // the outlet at merge time is the closest record (a rename between the
+    // offline sale and this sync is not seen; bead legend-zy43).
+    let snapshot: PosReceiptOutletSnapshot | undefined = receipt.outletSnapshot
+      ? {
+          outletName: receipt.outletSnapshot.outletName,
+          outletAddress: receipt.outletSnapshot.outletAddress,
+          legalName: receipt.outletSnapshot.legalName ?? null,
+          npwpLast4: receipt.outletSnapshot.npwpLast4 ?? null,
+        }
+      : undefined;
     if (!snapshot) {
       fallbackSnapshot ??= await outletSnapshotFor(tx, context, outletId);
       snapshot = fallbackSnapshot;
@@ -657,6 +709,8 @@ export async function mergeDeviceReceiptRun(
         and(
           eq(posReceipts.tenantId, tenantId),
           eq(posReceipts.id, existing.id),
+          // A cashier void between the read and this write wins; no-op then.
+          eq(posReceipts.status, "issued"),
         ),
       );
   return {

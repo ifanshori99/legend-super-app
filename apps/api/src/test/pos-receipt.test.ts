@@ -1166,6 +1166,28 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
       (gap) => gap.deviceId === device,
     )?.missing ?? [];
 
+  it("POS-06 a last number that is not a receipt ordinal or a malformed device header is refused before any write", async () => {
+    const outletId = await freshOutlet();
+    const [o1] = await drafts(outletId, 1);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "BAD1" };
+    for (const lastNumber of [1e12, 1.5, -1])
+      await expect(
+        mergeRun(outletId, device, "BAD1", lastNumber, [
+          offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+        ]),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const badHeader = {
+      ...offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+      outletSnapshot: { outletName: "", outletAddress: 7 },
+    } as unknown as PosReceipt;
+    await expect(
+      mergeRun(outletId, device, "BAD1", 1, [badHeader]),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(await receiptRows(outletId)).toEqual([]);
+    expect(await sequenceRows(outletId)).toEqual([]);
+  });
+
   it("POS-06 a sparse batch is refused with RECEIPT_SEQUENCE_GAP and writes nothing; the missing numbers then merge in order", async () => {
     const outletId = await freshOutlet();
     const [o1, o2, o3] = await drafts(outletId, 3);
@@ -1290,6 +1312,51 @@ describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
       "BACK-000001",
       "BACK-000002",
       "BACK-000003",
+    ]);
+    expect(await gapsOf(outletId, device)).toEqual([]);
+  });
+
+  it("POS-06 a late batch #2,#1 with a lower lastNumber backfills a cloud that already holds only #3 (second-opinion P1)", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o3] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "LATE" };
+    const sequenceId = randomUUID();
+    // The state an earlier merge left behind: last_number 3, only #3 stored.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO receipt_sequences (id, tenant_id, outlet_id, device_id, prefix, last_number)
+         VALUES ($1, $2, $3, $4, 'LATE', 3)`,
+        [sequenceId, tenant.tenantId, outletId, device],
+      );
+      await client.query(
+        `INSERT INTO pos_receipts
+           (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+         VALUES ($1, $2, $3::uuid, $4, $5, $6, 3, 'issued', now(), $7::jsonb)`,
+        [
+          tenant.tenantId,
+          outletId,
+          ulidToUuid(o3!),
+          sequenceId,
+          device,
+          formatReceiptNumber("LATE", 3),
+          SEED_SNAPSHOT,
+        ],
+      );
+    });
+    expect(await gapsOf(outletId, device)).toEqual([1, 2]);
+
+    // The late batch, in reverse order, with the device's lastNumber 2 < 3.
+    const merged = await mergeRun(outletId, device, "LATE", 2, [
+      offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
+      offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+    ]);
+    expect(merged.inserted).toBe(2);
+    expect(merged.sequence.lastNumber).toBe(3);
+    expect((await receiptRows(outletId)).map((row) => row.number)).toEqual([
+      "LATE-000001",
+      "LATE-000002",
+      "LATE-000003",
     ]);
     expect(await gapsOf(outletId, device)).toEqual([]);
   });
