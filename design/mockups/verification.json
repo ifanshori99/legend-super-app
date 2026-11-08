@@ -1,0 +1,123 @@
+[
+  {
+    "filename": "arah-a-menu-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 960
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-a-detail-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 960
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-a-checkout-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-a-pembayaran-berhasil-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-a-menu-desktop.png",
+    "errors": [],
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "documentWidth": 1440,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-menu-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-detail-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-checkout-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-pembayaran-berhasil-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-menu-desktop.png",
+    "errors": [],
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "documentWidth": 1440,
+    "textOutside": [],
+    "hiddenByFooter": []
+  },
+  {
+    "filename": "arah-b-kode-kasir-mobile.png",
+    "errors": [],
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "documentWidth": 390,
+    "textOutside": [],
+    "hiddenByFooter": []
+  }
+]

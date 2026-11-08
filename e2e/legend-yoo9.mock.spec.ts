@@ -39,12 +39,15 @@ async function waitForHydration(page: Page, selector: string) {
   );
 }
 
-/** Scan the table and confirm the guest count (PRD §3 "Scan & Sesi Meja"). */
+/** Scan the table and save the inline guest count (PRD §3 "Scan & Sesi Meja"). */
 async function joinTable(page: Page, token: string) {
   await page.goto(`/t/${token}`);
-  await waitForHydration(page, "#main-content button");
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  await waitForHydration(page, "main button");
+  await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+  await page.getByRole("button", { name: "Simpan" }).click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 }
 
 /** Put one Espresso in the shared cart (variant and sugar are required). */
@@ -54,15 +57,15 @@ async function addEspresso(page: Page) {
   const sheet = page.getByRole("dialog");
   await sheet.getByRole("radio", { name: /Dingin/ }).click();
   await sheet.getByRole("radio", { name: "Normal" }).click();
-  await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+  await sheet.getByRole("button", { name: /^Tambah · / }).click();
   await expect(sheet).toBeHidden();
 }
 
 async function goToCheckout(page: Page) {
-  await page.getByRole("link", { name: /Keranjang/ }).click();
-  await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
+  // Cart and checkout are one page now ("Keranjang & bayar").
+  await page.getByRole("link", { name: "Lihat keranjang" }).click();
   await expect(
-    page.getByRole("heading", { name: "Checkout", level: 1 }),
+    page.getByRole("heading", { name: "Keranjang & bayar", level: 1 }),
   ).toBeVisible();
 }
 
@@ -87,9 +90,9 @@ test.describe("Legacy /sign-in links resume the page after /masuk", () => {
     await goToCheckout(page);
 
     const expected = `/t/${payFirstTable}/checkout`;
-    // The shell's own sign-in button sits outside #main-content (CustomerShell
-    // header); the checkout card's link is the one inside the page.
-    const signIn = page.locator("#main-content a[href^='/masuk?redirect=']");
+    // The table frame has no sign-in button of its own now; the checkout
+    // card's link is the only `/masuk?redirect=` link on the page.
+    const signIn = page.locator("main a[href^='/masuk?redirect=']");
     await expect(signIn).toHaveCount(1);
     await expect(signIn).toHaveAttribute(
       "href",

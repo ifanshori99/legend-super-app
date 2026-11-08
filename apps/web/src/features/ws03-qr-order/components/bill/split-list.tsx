@@ -33,6 +33,12 @@ export function SplitList({
       ? bill.orders.find((order) => order.id === orderId)
       : undefined;
   const expected = splitOrder?.totalIdr ?? bill.totals.totalIdr;
+  // One rust action: the first share the guest pays; the rest are outline.
+  const firstPayable = splits.find(
+    (split) =>
+      split.status === "pending" &&
+      (split.participantId === null || split.participantId === myParticipantId),
+  );
   const guestName = (participantId: string) => {
     const n = participantIds.indexOf(participantId) + 1;
     return participantId === myParticipantId
@@ -44,7 +50,7 @@ export function SplitList({
       <h2 id="bill-shares" className="type-title">
         {t("qrOrders.bill.listTitle")}
       </h2>
-      <ul className="divide-y rounded-container border-(length:--border-w)">
+      <ul className="qr-paper divide-y divide-border">
         {splits.map((split) => {
           const mine =
             split.participantId === null ||
@@ -74,11 +80,7 @@ export function SplitList({
                 (mine ? (
                   <Button
                     type="button"
-                    variant={
-                      split.participantId === myParticipantId
-                        ? "default"
-                        : "secondary"
-                    }
+                    variant={split === firstPayable ? "default" : "outline"}
                     onClick={() => onPay(split)}
                   >
                     {t("qrOrders.bill.payShare")}

@@ -9,9 +9,11 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QrSubPage } from "@/features/ws03-qr-order/components/session-states";
 import { useTableJourney } from "@/features/ws03-qr-order/context";
 import { useOrderEtas, useSessionView } from "@/features/ws03-qr-order/hooks";
 import { useOnline } from "@/lib/use-online";
+import { orderPhase } from "../../domain";
 import { OrderCard, type OrderEta } from "./order-card";
 import { WaiterActions } from "./waiter-actions";
 
@@ -23,10 +25,7 @@ function OrdersSkeleton() {
         {t("common.loading")}
       </span>
       {[0, 1].map((key) => (
-        <div
-          key={key}
-          className="grid gap-4 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
-        >
+        <div key={key} className="qr-paper grid gap-4 p-4">
           <div className="flex justify-between gap-3">
             <div className="grid gap-2">
               <Skeleton className="h-6 w-32" />
@@ -68,11 +67,16 @@ export function OrdersPage() {
     [view.data],
   );
 
+  const firstAwaitingPaymentId = orders.find(
+    (order) => orderPhase(order) === "awaiting_payment",
+  )?.id;
+
   let body: React.ReactNode;
   if (guest === null || sessionId === null) {
     body = (
       <EmptyState
         icon={ClipboardList}
+        className="qr-paper"
         title={t("qrOrders.status.notJoined.title")}
         description={t("qrOrders.status.notJoined.description")}
         action={
@@ -87,6 +91,7 @@ export function OrdersPage() {
   } else if (view.isError || !view.data) {
     body = (
       <ErrorState
+        className="qr-paper"
         title={t("qrOrders.status.error.title")}
         description={t("qrOrders.status.error.description")}
         onRetry={() => void view.refetch()}
@@ -105,6 +110,7 @@ export function OrdersPage() {
         {orders.length === 0 ? (
           <EmptyState
             icon={ClipboardList}
+            className="qr-paper"
             title={t("qrOrders.status.empty.title")}
             description={t("qrOrders.status.empty.description")}
             action={
@@ -123,6 +129,7 @@ export function OrdersPage() {
               qrToken={qrToken}
               timeZone={menu?.outlet.timeZone ?? DEFAULT_TIME_ZONE}
               etaByOrderId={etaByOrderId}
+              isPrimaryPay={order.id === firstAwaitingPaymentId}
             />
           ))
         )}
@@ -136,28 +143,25 @@ export function OrdersPage() {
     "pay_first";
 
   return (
-    <section className="grid gap-4">
-      <header className="grid gap-1">
-        <h1 className="type-display-xl">{t("qrOrders.status.title")}</h1>
-        <p className="text-sm leading-5 text-muted-foreground">
-          {t(
-            paymentMode === "pay_first"
-              ? "qrOrders.status.contextPayFirst"
-              : "qrOrders.status.contextOpenBill",
-            { table: menu?.table.code ?? "-" },
-          )}
-        </p>
-      </header>
+    <QrSubPage title={t("qrOrders.status.title")}>
+      <p className="px-1 leading-6 text-muted-foreground">
+        {t(
+          paymentMode === "pay_first"
+            ? "qrOrders.status.contextPayFirst"
+            : "qrOrders.status.contextOpenBill",
+          { table: menu?.table.code ?? "-" },
+        )}
+      </p>
       {!online && (
         <p
           role="status"
-          className="flex items-start gap-2 rounded-container bg-surface-2 p-3 text-sm leading-5"
+          className="flex items-start gap-2 rounded-qr-media bg-surface-2 p-3 text-sm leading-5"
         >
           <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           {t("qrOrders.status.offlineNotice")}
         </p>
       )}
       {body}
-    </section>
+    </QrSubPage>
   );
 }

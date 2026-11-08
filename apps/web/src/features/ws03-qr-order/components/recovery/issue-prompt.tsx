@@ -23,7 +23,7 @@ export function IssuePrompt() {
   return (
     <div
       role="status"
-      className="flex items-start gap-3 rounded-container border-(length:--border-w) border-warning bg-warning-subtle p-3"
+      className="flex items-start gap-3 rounded-qr-media border-l-[3px] border-warning bg-warning-subtle p-3"
     >
       <TriangleAlert
         className="mt-0.5 size-icon shrink-0 text-warning"
@@ -35,9 +35,9 @@ export function IssuePrompt() {
             ? t("qrRecovery.prompt.one", { item: first.itemName })
             : t("qrRecovery.prompt.many", { count: open.length })}
         </p>
-        {/* Ink action: the page's one filled accent stays the cart bar or the
-            primary CTA underneath (DESIGN.md §2 accent budget). */}
-        <Button asChild size="sm" variant="secondary" className="w-fit">
+        {/* Outline action: the page's one rust CTA stays the cart bar or the
+            primary action underneath (DESIGN.md §2 accent budget). */}
+        <Button asChild size="sm" variant="outline" className="w-fit">
           <Link
             to="/t/$token/issue/$issueId"
             params={{ token: qrToken, issueId: first.id }}
