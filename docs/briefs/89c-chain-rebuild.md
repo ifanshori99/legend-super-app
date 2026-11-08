@@ -20,3 +20,6 @@ Referensi worktree lama prep-procurement/prep-kds dari rantai doit tetap ada di 
 - Nanti: ws/fix-sharp (legend-vj37, prioritas: build produksi crash), ws/fix-whitelabel (ozud, ww29).
 - ws11-reports (WS-11 laporan): `.worktrees/prep-ws11-reports`, cabang `prep/ws11-reports` (dari ws/ws11-reports 53e6b484). Tanpa migration. Tahap A: merge 4a040820. Masuk rantai setelah e2e-az. Gate gagal (bukan konflik merge) → reopen G2lso.
 - pos-shift siap (ws 69ddb9a4, legend-xvyr): `prep/pos-shift` 2ae64750 = m1 4a040820 + pos-shift (0086-0088, tanpa regen ulang) + fix ULID + fix nama migration pos-day. Bila gate-nya hijau sebelum inventory-gl digabung: pos-shift digabung dulu (jalur kritis struk dan e2e-az), inventory-gl diregen ulang ke 0089+.
+- fix-whitelabel (legend-ozud, legend-ww29): `.worktrees/prep-fix-whitelabel`, cabang `prep/fix-whitelabel` (dari ws/fix-whitelabel 47bcf9c1). Web saja, tanpa migration. Tahap A: merge head m1 terbaru.
+- fix-sharp (legend-vj37, prioritas tinggi: build produksi crash): SHA menyusul.
+- `pnpm check` tidak menjalankan `format:check`: jalankan `pnpm -s format:check` di prep sebelum tiap merge ke m1 (m1 b49202b5 sudah dibetulkan untuk 2 file refund).

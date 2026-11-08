@@ -206,3 +206,9 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - DOIT tidak punya rail kartu (rail: qris, va, transfer, any; docs doit.id/docs/en). Kartu online butuh keputusan founder: tunda (kartu hanya EDC di kasir) atau Duitku sekarang. PRD baris 223/257/680/1754 perlu dirapikan (transfer bank dihapus) setelah jawaban itu.
 - DOIT G8x09 selesai: 96df32a8 + PROGRESS 6b5c67c0, sisa temuan legend-3wpf (P2).
 - 07:10 WS-11 laporan (G2lso selesai): ws/ws11-reports 53e6b484, 11 kartu ditutup, 21 subagent (puncak 7). Tanpa migrasi. Gate penuh → merge train. Codex R11: 981abe32 (metrik GL + akses shareholder, ~800 baris, high). legend-5bjh: rute laporan agregat sendiri di area shareholder (keputusan CTO).
+
+### Merge train 89 (lanjutan, 09-11)
+- m1 `982c2e0a` inventory-gl (0086/0087, gate API 2165 / root 1426, w1vo ditutup).
+- m1 `b49202b5` prettier 2 file refund (format:check tidak termasuk `pnpm check`; kini dijalankan per merge).
+- m1 `f77e18d8` deploy-prep (tanpa migration; gate prep 97f008cc API 2177 / root 1427 termasuk legend-zoqc DB; jtnd k1np ditutup).
+- Rantai dibangun ulang (brief 89c): fix-sharp → pos-shift (0088-0090) → refund fix (0091) → procurement → kds → doit → e2e-az → ws11-reports → fix-whitelabel → struk (cherry-pick 85723463).
