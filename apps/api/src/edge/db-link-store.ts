@@ -32,6 +32,7 @@ import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
   classifyEdgeEvent,
+  EdgeEventUnclassifiedError,
   edgeEventApplier,
   type EdgeApplyMeta,
   type EdgeEventApplier,
@@ -48,6 +49,7 @@ export type DbLinkStoreOptions = {
   outboundDirection: SyncDirection;
   /** Test seams; production uses the installed ports. */
   applier?: EdgeEventApplier<EdgeTx>;
+  /** Must return a kind; null/throw refuses the batch (ports.ts, fail closed). */
   classify?: EdgeEventClassifier;
 };
 
@@ -138,7 +140,13 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
     async applyInbound({ fromSeq, toSeq, events }) {
       const applier: EdgeEventApplier<EdgeTx> =
         options.applier ?? edgeEventApplier(inbound);
-      const classify = options.classify ?? classifyEdgeEvent;
+      const classifyOption = options.classify;
+      const classify = (event: EventEnvelope): EdgeEventKind => {
+        if (!classifyOption) return classifyEdgeEvent(event);
+        const kind = classifyOption(event);
+        if (!kind) throw new EdgeEventUnclassifiedError(event.aggregateType);
+        return kind;
+      };
       await run(async (tx) => {
         const cursor = await lockSyncCursor(tx, node, inbound);
         if (cursor.received_in_seq !== fromSeq)
@@ -151,9 +159,24 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
           )
             throw new Error("Inbound event outside the node scope");
           const eventUuid = ulidToUuid(event.id);
-          const seen = await tx.execute(
-            sql`SELECT 1 FROM edge_inbound_events WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
-          );
+          // edge_to_cloud: primary and standby of one outlet may both send the
+          // same event id (the standby took over with the primary's outbox,
+          // legend-wg5t), so "received" is tenant-wide and read from the
+          // edge_received_events registry. It is a separate table (PK tenant,
+          // event) instead of a unique index on edge_inbound_events because old
+          // data already holds receipts for one event on two nodes, which
+          // would fail such an index. The registry insert below has no ON
+          // CONFLICT on purpose: a concurrent duplicate fails the PK, the
+          // batch rolls back and the retry skips the event. cloud_to_edge
+          // stays per node (each edge node has its own database).
+          const seen =
+            inbound === "edge_to_cloud"
+              ? await tx.execute(
+                  sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
+                )
+              : await tx.execute(
+                  sql`SELECT 1 FROM edge_inbound_events WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
+                );
           const kind = classify(event);
           const meta: EdgeApplyMeta = {
             edgeNodeId: nodeId,
@@ -197,6 +220,10 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
               sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, event) VALUES (${ulidToUuid(createUlid())}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${decision.reason}, ${decision.resolution}, ${lastSequence}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING`,
             );
           }
+          if (inbound === "edge_to_cloud")
+            await tx.execute(
+              sql`INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${eventUuid}::uuid, ${nodeId}::uuid)`,
+            );
           await tx.execute(
             sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
           );

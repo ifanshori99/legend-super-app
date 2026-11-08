@@ -400,8 +400,11 @@ describe("EDG-01 offline queue and Postgres link store", () => {
       context: node!.context,
       node: node!.scope,
       outboundDirection: "edge_to_cloud" as const,
+      // The default classifier fails closed (legend-wg5t); install one so
+      // this test still reaches the unwired applier.
+      classify: () => "transaction_event" as const,
     };
-    const refusing = createDbLinkStore(base); // default port: fail closed
+    const refusing = createDbLinkStore(base); // default applier: fail closed
     const aggregate = randomUUID();
     const one = orderEvent(outletA, aggregate, 1);
     const two = orderEvent(outletA, aggregate, 2);

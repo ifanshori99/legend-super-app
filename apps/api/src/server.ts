@@ -1,5 +1,7 @@
 import "./load-env";
 import { createApp } from "./app";
+import { guardEdgeUpgrades } from "./edge/mode.ts";
+import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, pool } from "./db";
 import { logger } from "./lib/logger";
@@ -58,6 +60,12 @@ const server = app.listen(env.PORT, env.HOST, async (error) => {
   );
 });
 
+// The EDGE_MODE route split for WebSocket upgrades (legend-zinn): Express
+// never sees an upgrade, so without this the edge would still open cloud-only
+// streams such as /api/notifications/realtime. Installed before any upgrade
+// listener; it refuses before every listener, attached now or later.
+guardEdgeUpgrades(server, { edgeMode: env.EDGE_MODE });
+
 // Until the tenant membership and scoped role resolvers are wired, realtime
 // subscriptions deny by default. Wakeups contain IDs only and follow commit.
 const realtime = attachNotificationRealtime(server, {
@@ -91,15 +99,32 @@ let edgeLink: EdgeLinkHandle | null = null;
 const edgeReady = (async () => {
   try {
     if (env.EDGE_MODE) edgeRuntime = await startEdgeRuntime();
-    else edgeLink = await registerEdgeLink(server);
+    else
+      edgeLink = await registerEdgeLink(server, {
+        // Upgrade rate limit per real client, not per proxy (legend-wg5t).
+        clientAddress: expressClientAddress(app),
+      });
   } catch (error) {
     if (error instanceof EdgeBootError) {
       // The message names settings and tables only, never their values.
       logger.fatal({ errName: error.name }, error.message);
-      logger.flush();
-      process.exit(1);
+    } else {
+      // Any other failure (database down at boot, LISTEN refused) used to be
+      // rethrown into an unhandled rejection; exit explicitly instead. Name
+      // and code only: driver errors can carry SQL parameters (legend-wg5t).
+      const failure = error as { name?: unknown; code?: unknown };
+      logger.fatal(
+        {
+          errName: typeof failure?.name === "string" ? failure.name : "Error",
+          code: typeof failure?.code === "string" ? failure.code : undefined,
+        },
+        env.EDGE_MODE
+          ? "The edge runtime could not start."
+          : "The edge link server could not start.",
+      );
     }
-    throw error;
+    logger.flush();
+    process.exit(1);
   }
 })();
 

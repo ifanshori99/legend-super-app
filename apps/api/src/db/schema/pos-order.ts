@@ -92,6 +92,8 @@ export const posOrders = pgTable(
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
     voidApprovedBy: text("void_approved_by"),
     voidApprovalRequestId: uuid("void_approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved the void (ULID). */
+    voidOverrideId: ulidInUuid("void_override_id"),
     /** Optimistic concurrency (legend-63l6): bumped by every write. */
     version: integer("version").notNull().default(0),
     createdAt,
@@ -144,6 +146,8 @@ export const posOrderItems = pgTable(
     voidedAt: timestamp("voided_at", { withTimezone: true }),
     voidReasonNote: varchar("void_reason_note", { length: 500 }),
     voidApprovalRequestId: uuid("void_approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved the void (ULID). */
+    voidOverrideId: ulidInUuid("void_override_id"),
     createdAt,
     updatedAt,
   },
@@ -315,7 +319,10 @@ export const posOrderDiscounts = pgTable(
     reasonNote: varchar("reason_note", { length: 500 }),
     appliedBy: text("applied_by").notNull(),
     approvedBy: text("approved_by"),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN. */
     approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this discount. */
+    overrideId: ulidInUuid("override_id"),
     removedAt: timestamp("removed_at", { withTimezone: true }),
     removedBy: text("removed_by"),
     createdAt,
@@ -364,7 +371,7 @@ export const posOrderDiscounts = pgTable(
     ),
     check(
       "pos_order_discounts_approval_pair_check",
-      sql`(${table.approvedBy} IS NULL) = (${table.approvalRequestId} IS NULL)`,
+      sql`(${table.approvedBy} IS NULL) = (${table.approvalRequestId} IS NULL AND ${table.overrideId} IS NULL)`,
     ),
     check(
       "pos_order_discounts_removed_pair_check",
@@ -388,7 +395,10 @@ export const posOrderVoids = pgTable(
     reasonNote: varchar("reason_note", { length: 500 }).notNull(),
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by").notNull(),
-    approvalRequestId: uuid("approval_request_id").notNull(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN (legend-0gy1). */
+    approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this action. */
+    overrideId: ulidInUuid("override_id"),
     voidedAt: timestamp("voided_at", { withTimezone: true }).notNull(),
     createdAt,
   },
@@ -407,6 +417,12 @@ export const posOrderVoids = pgTable(
       foreignColumns: [outlets.tenantId, outlets.id],
     }),
     check("pos_order_voids_amount_check", sql`${table.amountIdr} > 0`),
+    // legend-0gy1: every correction names its approval (override row, or the
+    // phone chain id on rows written before the override id was recorded).
+    check(
+      "pos_order_voids_approval_check",
+      sql`${table.overrideId} IS NOT NULL OR ${table.approvalRequestId} IS NOT NULL`,
+    ),
     check(
       "pos_order_voids_approver_check",
       sql`lower(${table.requestedBy}) <> lower(${table.approvedBy})`,
@@ -428,7 +444,10 @@ export const posOrderRefunds = pgTable(
     lines: jsonb("lines").$type<PosRefundLineRow[]>().notNull(),
     requestedBy: text("requested_by").notNull(),
     approvedBy: text("approved_by").notNull(),
-    approvalRequestId: uuid("approval_request_id").notNull(),
+    /** WS-01 chain id of a phone approval; null for a supervisor PIN (legend-0gy1). */
+    approvalRequestId: uuid("approval_request_id"),
+    /** legend-0gy1: the `pos_overrides` row that approved this action. */
+    overrideId: ulidInUuid("override_id"),
     refundedAt: timestamp("refunded_at", { withTimezone: true }).notNull(),
     createdAt,
   },
@@ -446,6 +465,12 @@ export const posOrderRefunds = pgTable(
     }),
     index("pos_order_refunds_order_idx").on(table.tenantId, table.orderId),
     check("pos_order_refunds_amount_check", sql`${table.amountIdr} > 0`),
+    // legend-0gy1: every correction names its approval (override row, or the
+    // phone chain id on rows written before the override id was recorded).
+    check(
+      "pos_order_refunds_approval_check",
+      sql`${table.overrideId} IS NOT NULL OR ${table.approvalRequestId} IS NOT NULL`,
+    ),
     check(
       "pos_order_refunds_lines_check",
       sql`jsonb_typeof(${table.lines}) = 'array' AND jsonb_array_length(${table.lines}) > 0`,
