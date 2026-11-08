@@ -8,17 +8,19 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import type { QrMenu, TableSessionView } from "@starter/shared/qr-order";
 import { ApiError } from "@/lib/api/errors";
 import { useSessionView, useStoredGuestSession } from "./hooks";
 import { menuQuery } from "./queries";
 import { forgetGuestSession } from "./session-store";
 import type { StoredGuestSession } from "./lib/guest-session.ts";
+import type { Selection } from "./lib/item-options.ts";
 
 export type TableJourney = {
   qrToken: string;
@@ -41,13 +43,16 @@ export type TableJourney = {
   /** Item to open once the guest has joined (the one they tapped). */
   pendingItemId: string | null;
   clearPendingItem: () => void;
+  /**
+   * An unjoined guest's item choices, kept while they fill in the guest count
+   * so the item sheet reopens as they left it. Read with peek, drop with clear.
+   */
+  stashSelection: (itemId: string, selection: Selection) => void;
+  peekSelection: (itemId: string) => Selection | null;
+  clearSelection: () => void;
   /** Drops the stored credential so the next scan opens a fresh session. */
   startOver: () => void;
 };
-
-function subscribeNever() {
-  return () => {};
-}
 
 const Context = createContext<TableJourney | null>(null);
 
@@ -83,34 +88,48 @@ export function TableJourneyProvider({
       (view.session.status === "closed" || view.session.status === "voided")) ||
       viewError?.status === 404);
 
-  // The first scanner fills in the guest count: ask once per tab after the
-  // page has hydrated, never blocking the server-rendered menu.
-  const hydrated = useSyncExternalStore(
-    subscribeNever,
-    () => true,
-    () => false,
-  );
-  const [dismissed, setDismissed] = useState(false);
-  const joinOpen =
-    joinRequested ||
-    (hydrated &&
-      !dismissed &&
-      guest === null &&
-      menuResult.data?.data.orderingOpen === true);
+  // Founder Q5 (legend-2re1): no welcome dialog. The menu is browsable
+  // straight away; the guest count is an inline control in the menu header,
+  // required before the first item. openJoin() opens that control (and
+  // brings the guest back to the menu from any other table page).
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const menuPath = `/t/${encodeURIComponent(qrToken)}`;
+  const joinOpen = joinRequested && guest === null;
 
-  const openJoin = useCallback((afterItemId?: string) => {
-    setPendingItemId(afterItemId ?? null);
-    setJoinRequested(true);
-  }, []);
+  const openJoin = useCallback(
+    (afterItemId?: string) => {
+      setPendingItemId(afterItemId ?? null);
+      setJoinRequested(true);
+      if (pathname !== menuPath && pathname !== `${menuPath}/`)
+        void navigate({ to: "/t/$token", params: { token: qrToken } });
+    },
+    [navigate, pathname, menuPath, qrToken],
+  );
   const closeJoin = useCallback(() => {
     setJoinRequested(false);
-    setDismissed(true);
   }, []);
   const clearPendingItem = useCallback(() => setPendingItemId(null), []);
+  // A ref, not state: the menu clears the pending item the moment it reopens
+  // the sheet, and the sheet reads the choices after that.
+  const stashed = useRef<{ itemId: string; selection: Selection } | null>(null);
+  const stashSelection = useCallback((itemId: string, selection: Selection) => {
+    stashed.current = { itemId, selection };
+  }, []);
+  const peekSelection = useCallback(
+    (itemId: string) =>
+      stashed.current?.itemId === itemId ? stashed.current.selection : null,
+    [],
+  );
+  const clearSelection = useCallback(() => {
+    stashed.current = null;
+  }, []);
   const startOver = useCallback(() => {
     forgetGuestSession(qrToken);
     setJoinRequested(true);
-  }, [qrToken]);
+    if (pathname !== menuPath && pathname !== `${menuPath}/`)
+      void navigate({ to: "/t/$token", params: { token: qrToken } });
+  }, [navigate, pathname, menuPath, qrToken]);
 
   const value = useMemo<TableJourney>(
     () => ({
@@ -133,6 +152,9 @@ export function TableJourneyProvider({
       joinOpen,
       pendingItemId,
       clearPendingItem,
+      stashSelection,
+      peekSelection,
+      clearSelection,
       startOver,
     }),
     [
@@ -149,6 +171,9 @@ export function TableJourneyProvider({
       joinOpen,
       pendingItemId,
       clearPendingItem,
+      stashSelection,
+      peekSelection,
+      clearSelection,
       startOver,
     ],
   );

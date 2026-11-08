@@ -71,6 +71,11 @@ petrol accent, warm dark ladder, and every v2 behavioural decision stay.
 - **v3 coordinator decision (2026-11-02, Opus review of legend-ujxl):** the KDS bump action
   ("Selesai") is a full-width **neutral** (`secondary`) button, not primary: a board shows many
   tickets, and a primary per ticket would break the one-accent rule (Q21).
+- **QR customer theme (founder Q3–Q6, 2026-11-08, legend-2re1):** table QR ordering
+  (`/t/$token/*`) follows the approved "final arah A + liquid glass" mockup
+  (`design/mockups/README.md`, `design/COLOR-RESEARCH.md`): photo catalog, warm ivory canvas,
+  coffee ink, rust action, glass only on floating layers. Scoped to that journey; POS, KDS,
+  management, member and website keep the Base Theme. Rules in §9 "Tema QR pelanggan".
 
 ## 2. Color Palette & Roles
 
@@ -422,7 +427,8 @@ continuity, or feedback. Under `prefers-reduced-motion: reduce` every duration b
 
 - Use tokens and shared components only; if something is missing, add a token or variant here
   first (one place), then use it.
-- Keep customer pages white in light mode; put management work areas on the `surface-2` canvas
+- Keep customer pages white in light mode (the table QR journey uses its ivory canvas, §9);
+  put management work areas on the `surface-2` canvas
   with big cards in a `CardShell` / `StatStrip` / `DataTableShell`.
 - Show every list's loading, empty, and error state (PRD); give every error a fix hint.
 - Pair every status color with an icon and text.
@@ -436,7 +442,8 @@ continuity, or feedback. Under `prefers-reduced-motion: reduce` every duration b
   `node scripts/ci/color.mjs` fails the build. Never Metoric purple.
 - No tenant-specific code or branches on tenant id/name/domain (R27).
 - No gradients for decoration (incl. Metoric's gradient avatar and chart fills), glassmorphism,
-  glow, emoji icons, decorative illustrations, bento grids, or fake app mockups.
+  glow, emoji icons, decorative illustrations, bento grids, or fake app mockups. Only exception:
+  the QR customer theme's floating glass layers (§9 "Tema QR pelanggan").
 - No invented numbers, ratings, testimonials, people, urgency, or business rules; no lorem.
 - No cards inside cards except the shell → card pair; no large shadow on resting surfaces; no
   second primary button in a view; no accent fill on chips, tabs, or station filters.
@@ -454,6 +461,61 @@ continuity, or feedback. Under `prefers-reduced-motion: reduce` every duration b
    pair); `logoUrl`. `buildTenantThemeCss(config)` validates it (AA in both modes, safe id) and
    emits a CSS layer scoped to `[data-tenant="<id>"]`. Status colors, neutrals (incl. `shell`),
    the focus ring, and the ops/management font are not overridable. Files: `themes/<tenant>.md`.
+
+### Tema QR pelanggan (table QR order, legend-2re1)
+
+Founder Q3–Q6 approved this for the table QR journey only. It is a **theme scope**, not a new
+Base Theme: `TableCustomerFrame` renders `<ThemeScope data-surface="qr" mode="light"
+density="hangat">`, and `tokens.css` `[data-surface="qr"]` remaps the standard token names, so
+components keep using `bg-background`, `bg-card`, `bg-primary`, etc. Nothing outside that scope
+changes; never copy these values into POS/KDS/management.
+
+| Role                               | Token                                               | Value                                                          | Allowed pair (WCAG 2.2)                                       |
+| ---------------------------------- | --------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| Canvas                             | `background`                                        | `#faf6f0`                                                      | ink 14.60:1, muted 6.33:1                                     |
+| Paper (forms, price rows, cards)   | `card`                                              | `#fffcf7`                                                      | ink 15.36:1, muted 6.66:1                                     |
+| Ink (names, prices, totals)        | `foreground`                                        | `#2b211b`                                                      | —                                                             |
+| Secondary text                     | `muted-foreground`                                  | `#67584e`                                                      | canvas / paper only                                           |
+| Action (one per screen)            | `primary` / `-hover`                                | `#a83a17` / `#8c2e12`                                          | white 6.40 / 8.35:1; rust on paper 6.25:1 (secondary outline) |
+| Selected option                    | `surface-2` / `qr-selection`                        | `#f3e9dd`                                                      | ink 13.11:1, plus a radio/check mark                          |
+| Control edge (radios, inputs)      | `input`                                             | `#8b7765`                                                      | 4.17:1 on paper; borders only, never text                     |
+| Divider                            | `border`                                            | `#e5d8ca`                                                      | decorative only                                               |
+| Coffee (dark glass fallback, nota) | `qr-coffee`, `qr-coffee-panel`, `qr-coffee-control` | `#39251b`, `#4b3327`, `#654635`                                | white 14.44 / 11.65 / 8.46:1                                  |
+| Status                             | `success`/`warning`/`danger` + `-subtle`            | `#246443`/`#765000`/`#a51d2d` on `#e8f3eb`/`#fff0cc`/`#fff0f0` | ≥ 6.19:1, always with icon + text                             |
+
+- **Light only.** The palette and its glass contrast were verified on light; the scope forces
+  `data-theme="light"`. A dark variant needs its own table and checks first.
+- **Glass (`qr-glass`, `qr-glass-dark` utilities).** Only on floating layers: menu header with
+  category chips (one region), page nav (`QrTopBar`), cart bar, action footer (`QrFooter`), the
+  desktop frame header and nota panel. Max two blur regions per screen. Tints keep alpha ≥ .88
+  (light) / .90 (dark); blur `18px saturate(1.15)`; 1px light edge. Forms, options, price rows,
+  suggestions and cards stay solid. `prefers-reduced-transparency`, no `backdrop-filter`
+  support, and `prefers-contrast: more` switch to solid paper / coffee (more contrast adds a 2px
+  edge). Never animate `backdrop-filter`. Never lower alpha or add opacity to text on glass
+  without recomputing contrast against black and white photo extremes.
+- **Photo under glass.** The material shows one of the outlet's own menu photos as a band
+  behind the top glass (`QrPhotoBand`); no stock art. A missing photo leaves the canvas.
+- **Radius.** Media 16px (`rounded-qr-media`), floating glass 24px (`rounded-qr-float`), page
+  nav 22px, CTA 14px (the scope sets `--control-radius`; CTAs are no longer pills here). Chips
+  and round icon controls stay round.
+- **Catalog.** 2-column 1:1 photos, no card frame; a 44px round **paper** add button (never
+  rust per card); an item in the cart turns into a stepper on the photo. Sold out: neutral
+  "Habis hari ini" label, no add.
+- **Action.** Rust solid + white for Tambah / Bayar / Simpan / payment steps, one per screen. On
+  the coffee nota a rust CTA always sits on a solid paper landing, never directly on coffee.
+- **Companion suggestion.** At most one, server-picked (`useMenuSuggestions`), labelled
+  "Opsional" with the added price, rust outline + paper, never pre-selected, never on empty
+  cart / error / payment-in-progress / success screens.
+- **Guest count (Q5).** Inline in the menu header, required before the first item; no welcome
+  dialog. **Bayar di kasir (Q3)** is a payment method beside QRIS / E-wallet: the order waits,
+  the guest shows the code, the cashier takes the money, then the kitchen gets it.
+- **Payment methods.** One radio list in this order: QRIS, Virtual Account, E-wallet, Kartu
+  kredit/debit, Bayar di kasir (founder, 2026-11-08). Same row style for all. A method the
+  table contract cannot take yet stays visible but disabled with its reason ("Belum tersedia
+  untuk pesanan meja"), never a fake success. Card data is always typed on the payment
+  provider's hosted page: Legend never renders a card number form.
+- **Prices.** Ink + `tabular`; never red/green or struck through to fake a discount. Promo
+  amber only for a real configured promo with its terms.
 
 The theme preference script runs before first paint (`ThemeBootScript` in `Providers`), so
 dark-mode users never see a white flash.
