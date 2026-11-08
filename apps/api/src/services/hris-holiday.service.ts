@@ -369,6 +369,7 @@ async function reverseDeductions(
   const reversed = await reverseCollectiveLeaveDeductions(
     tx,
     context,
+    actor,
     previous.date,
     now,
   );

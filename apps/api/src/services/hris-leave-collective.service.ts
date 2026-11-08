@@ -72,6 +72,7 @@ import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
   forbidden,
+  hrisAuditEntry,
   loadHrisAccess,
   type Tx,
 } from "./hris-access.ts";
@@ -79,6 +80,7 @@ import { idempotentHrisWrite } from "./hris-holiday.service.ts";
 import {
   expireBalanceCarryOver,
   lockBalanceForUpdate,
+  usableCarriedOverDays,
   type LeaveJobActor,
 } from "./hris-leave.service.ts";
 
@@ -308,9 +310,11 @@ export async function updateLeaveSettings(
 
 /**
  * `employeeId|date` pairs whose collective day a pending or approved request
- * already counts as a leave day: the date is inside the request's range and
- * not among the holiday dates it excluded at filing
- * (`excluded_holiday_dates`), whatever happened to the calendar since.
+ * (of ANY leave type) already counts as a leave day: the day is already
+ * charged to that request, so the deduction is skipped (brief 85 item 1). The
+ * date is inside the request's range and not among the holiday dates it
+ * excluded at filing (`excluded_holiday_dates`), whatever happened to the
+ * calendar since.
  */
 async function datesCountedByRequests(
   tx: Tx,
@@ -546,14 +550,18 @@ export async function applyCollectiveLeaveDeductions(
           periodYear,
         );
         if (!locked) throw new Error("Leave balance row missing after upsert");
-        // A day after the carry-over expiry date cannot hold carried days:
+        // A day on or after the carry-over expiry date cannot hold carried days
+        // (carry is usable only before that date, usableCarriedOverDays):
         // write off the expired carry not held by the days taken so far
         // (once, through the ledger, as the expiry job would) before adding
-        // it. Dates run ascending, so days on or before the expiry date are
-        // already in `used` and keep their carried part.
+        // it. Dates run ascending, so days before the expiry date are already
+        // in `used` and keep their carried part. Accepted: a day on/before the
+        // expiry date added after the expiry job ran charges entitled days
+        // (the carry was already written off; the closed-year check blocks
+        // adding days to a year whose carry-over ran).
         if (
           locked.carryOverExpiresOn !== null &&
-          holiday.date > locked.carryOverExpiresOn
+          holiday.date >= locked.carryOverExpiresOn
         )
           await expireBalanceCarryOver(
             tx,
@@ -653,15 +661,20 @@ export async function assertCollectiveYearOpen(
  * the rows FOR SHARE). Deleting the ledger row returns the day to `used`
  * once, so a retry reverses nothing more and a re-added day deducts again.
  * A reversal in a year whose carry-over ran for that employee is refused
- * (422 `LEAVE_YEAR_CARRIED_OVER`). Returns the number of days reversed.
+ * (422 `LEAVE_YEAR_CARRIED_OVER`). Past the carry-over expiry date the carry
+ * is clamped to the days still used or pending and the rest is forfeited and
+ * audited, as `moveBalance` does for a released request. Returns the number
+ * of days reversed.
  */
 export async function reverseCollectiveLeaveDeductions(
   tx: Tx,
   context: ScopedTenantContext,
+  actor: string,
   date: string,
   now: Date,
 ): Promise<number> {
   const tenantId = context.tenant.tenantId;
+  const today = localDateOf(now, DEFAULT_TIME_ZONE);
   // Two writes on different collective rows of one date (tenant-wide and an
   // outlet row) each see the other as remaining: serialize them per date.
   await tx.execute(
@@ -739,9 +752,21 @@ export async function reverseCollectiveLeaveDeductions(
       leaveTypeId: leaveAccruals.leaveTypeId,
       days: leaveAccruals.days,
     });
-  for (const row of removed)
+  const homeOutlet = new Map(
+    uncovered.map((row) => [row.employeeId, row.homeOutletId]),
+  );
+  for (const row of removed) {
+    // Lock the balance first: a concurrent request or job serializes behind us.
+    const locked = await lockBalanceForUpdate(
+      tx,
+      tenantId,
+      row.employeeId,
+      row.leaveTypeId,
+      year,
+    );
+    if (!locked) continue;
     // `days` is the signed ledger amount (-1): adding it gives the day back.
-    await tx
+    const [balance] = await tx
       .update(leaveBalances)
       .set({
         usedDays: sql`${leaveBalances.usedDays} + ${row.days}::numeric`,
@@ -750,10 +775,46 @@ export async function reverseCollectiveLeaveDeductions(
       .where(
         and(
           eq(leaveBalances.tenantId, tenantId),
-          eq(leaveBalances.employeeId, row.employeeId),
-          eq(leaveBalances.leaveTypeId, row.leaveTypeId),
-          eq(leaveBalances.periodYear, year),
+          eq(leaveBalances.id, locked.id),
+        ),
+      )
+      .returning();
+    if (!balance) continue;
+    // Past the expiry date the returned day must not bring forfeited carry
+    // back: clamp the carry to what is still used or pending.
+    const carried = parseDecimal4(balance.carriedOverDays);
+    if (
+      balance.carryOverExpiresOn === null ||
+      balance.carryOverExpiresOn > today
+    )
+      continue;
+    const keep = usableCarriedOverDays(balance, today);
+    if (carried <= keep) continue;
+    await tx
+      .update(leaveBalances)
+      .set({ carriedOverDays: formatDecimal4(keep), updatedAt: now })
+      .where(
+        and(
+          eq(leaveBalances.tenantId, tenantId),
+          eq(leaveBalances.id, balance.id),
         ),
       );
+    await recordAudit(
+      tx,
+      context,
+      hrisAuditEntry(context, actor, now, {
+        outletId: homeOutlet.get(row.employeeId)!,
+        action: "hris.leave_carry_over.forfeited",
+        objectType: "leave_balance",
+        objectId: balance.id,
+        after: {
+          periodYear: balance.periodYear,
+          forfeitedDays: formatDecimal4(carried - keep),
+          carriedOverDays: formatDecimal4(keep),
+        },
+      }),
+      COLLECTIVE_AUDIT_SAFE_FIELDS,
+    );
+  }
   return removed.length;
 }

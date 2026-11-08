@@ -1082,4 +1082,75 @@ describe("collective day and carry-over expiry", () => {
       expiry: ["-3.0000"],
     });
   });
+
+  it("a collective day exactly on the expiry date, processed late, writes off the carry first", async () => {
+    const e = await employee(outletB, "2044-11-01");
+    await carried(e.id, "2044-11-30");
+    await holiday("2044-11-30", "collective", outletB);
+    await applyCollectiveLeaveDeductions(
+      workerContext(),
+      new Date("2044-12-02T05:00:00Z"),
+      SYSTEM,
+    );
+    // Carry is usable only before the expiry date: all 5 go, then 2 − 1 left.
+    expect(await balance2044(e.id)).toEqual({
+      carried_over_days: "0.0000",
+      used_days: "1.0000",
+      expiry: ["-5.0000"],
+    });
+  });
+
+  it("reversing a collective day after the expiry date clamps the carry and audits the forfeit", async () => {
+    const e = await employee(outletB, "2043-12-01");
+    const jan = await holiday("2044-01-20", "collective", outletB);
+    await sql(
+      `INSERT INTO leave_balances
+         (tenant_id, employee_id, leave_type_id, period_year, entitled_days,
+          carried_over_days, used_days, carry_over_expires_on)
+       VALUES ($1, $2, $3, 2044, '2', '3', '3', '2044-04-01')`,
+      [tenantId, e.id, annualTypeId],
+    );
+    for (const [kind, period, days] of [
+      ["collective_leave", "2044-01-20", "-1"],
+      ["collective_leave", "2044-02-21", "-1"],
+      ["collective_leave", "2044-03-22", "-1"],
+      ["carry_over_expiry", "2044", "0"],
+    ] as const)
+      await sql(
+        `INSERT INTO leave_accruals (tenant_id, employee_id, leave_type_id, kind, period, days)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [tenantId, e.id, annualTypeId, kind, period, days],
+      );
+
+    await deleteHoliday(
+      tenantScope(),
+      hr,
+      jan.id,
+      new Date("2044-04-10T05:00:00Z"),
+    );
+
+    const [after] = await sql<{ carried: string; used: string; avail: string }>(
+      `SELECT carried_over_days AS carried, used_days AS used,
+              (entitled_days + carried_over_days - used_days - pending_days)::text AS avail
+         FROM leave_balances
+        WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+          AND period_year = 2044`,
+      [tenantId, e.id, annualTypeId],
+    );
+    expect(Number(after!.used)).toBe(2);
+    expect(Number(after!.carried)).toBe(2);
+    expect(Number(after!.avail)).toBe(2);
+    const forfeits = await sql<{ after: { forfeitedDays: string } }>(
+      `SELECT event->'maskedChanges'->'after' AS after FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'hris.leave_carry_over.forfeited'
+          AND event->'maskedChanges'->'after'->>'periodYear' = '2044'
+          AND event->>'objectId' = (
+            SELECT id::text FROM leave_balances
+             WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3
+               AND period_year = 2044)`,
+      [tenantId, e.id, annualTypeId],
+    );
+    expect(forfeits).toHaveLength(1);
+    expect(Number(forfeits[0]!.after.forfeitedDays)).toBe(1);
+  });
 });
