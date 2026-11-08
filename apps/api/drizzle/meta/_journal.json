@@ -526,6 +526,20 @@
       "when": 1794153034313,
       "tag": "0074_reservation_guest_links",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1794154532821,
+      "tag": "0075_inventory_gl_bridge",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1794154539584,
+      "tag": "0076_inventory_gl_bridge_rls",
+      "breakpoints": true
     }
   ]
 }

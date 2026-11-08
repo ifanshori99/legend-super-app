@@ -1,0 +1,489 @@
+// Inventory -> GL bridge (PRD v1.7 §3.19 Jurnal Otomatis, Alur J.4; bead
+// legend-w1vo). Wired in worker-main.ts next to the order-payment consumer, on
+// the cloud only (an edge node never posts the GL): a `stock.moved` event
+// posts the journal of the stock source (stock count, waste log, POS sale /
+// sales return) inside the outbox consumption transaction. Only tenants with
+// the accounting module on are bridged; others are `ignored`.
+//
+// Money rules (INV-01, INV-03):
+// - The value is what the ledger row itself recorded (`quantity` x
+//   `unit_cost_idr` of that row), never a recomputation from the current
+//   average cost, so a later receipt cannot change an old journal.
+// - Rounding follows the emitting module: stock count lines round per row
+//   (equals `stock_count_lines.posted_value_idr`), waste rounds once over the
+//   untracked rows of a business date (equals `waste_logs.value_idr` for a log
+//   inside one business date), sales round per row.
+// - Negative amounts are never written as negative journal lines: the posting
+//   rule flips debit and credit for a negative amount.
+// - The untracked rows of a source are grouped by outlet business date and each
+//   group posts one journal on its own date, so a backlog never posts a later
+//   movement on an earlier date.
+//
+// Decoupled from cloud-sync: the posting runs in a savepoint. An expected
+// accounting failure (closed period, missing or unusable account mapping)
+// rolls the savepoint back, records the source in `inventory_gl_blocked` and
+// returns `blocked`; the outbox consumption itself still commits, so the
+// cloud-sync delivery is never held back by the GL. `retryBlockedInventoryGl`
+// (worker sweep) retries blocked sources; it only retries, nothing is ever
+// posted into another period. Every other error propagates and rolls the
+// consumption back (retry, dead letter, `replayOutbox`).
+//
+// `inventory_gl_postings` tracks every consumed ledger row, so a replay (or
+// the event of another row of the same document) is a no-op. A per-source
+// advisory lock serializes concurrent consumers and the sweep of one document.
+
+import { createHash } from "node:crypto";
+import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { AccountingError } from "@starter/shared/accounting";
+import {
+  businessDateOf,
+  assertTrustedScopedContext,
+  extendCostIdr,
+  parseDecimal4,
+  type BusinessDate,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import type { EventEnvelope } from "@starter/shared/events";
+import {
+  stockMovedEventPayloadSchema,
+  type StockMovementType,
+  type StockSourceType,
+} from "@starter/shared/inventory";
+import { isModuleEnabled } from "@starter/shared/platform";
+import { db } from "../db/index.ts";
+import {
+  inventoryGlBlocked,
+  inventoryGlPostings,
+  outlets,
+  stockLedger,
+  tenants,
+} from "../db/schema/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import { sourceIdFromDb, sourceIdToDb } from "./inventory.service.ts";
+import { scaledCostToIdr, type Tx } from "./inventory-ops.shared.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
+
+export type InventoryGlResult =
+  | { status: "ignored" }
+  | { status: "already_posted" }
+  | { status: "blocked"; code: BlockingCode }
+  | { status: "zero_value"; ledgerEntryIds: string[] }
+  | {
+      status: "posted";
+      /** The first journal; a source spanning business dates posts several. */
+      journalEntryId: string;
+      journalEntryIds: string[];
+      ledgerEntryIds: string[];
+    };
+
+/** Expected accounting failures that park a source instead of failing it. */
+const BLOCKING_CODES = [
+  "PERIOD_CLOSED",
+  "ACCOUNT_MAPPING_MISSING",
+  "ACCOUNT_INACTIVE",
+  "ACCOUNT_NOT_POSTABLE",
+  "ACCOUNT_ENTITY_MISMATCH",
+] as const;
+type BlockingCode = (typeof BLOCKING_CODES)[number];
+
+function blockingCodeOf(error: unknown): BlockingCode | null {
+  if (!(error instanceof AccountingError)) return null;
+  return (BLOCKING_CODES as readonly string[]).includes(error.code)
+    ? (error.code as BlockingCode)
+    : null;
+}
+
+type GlMapping = {
+  readonly sourceType: StockSourceType;
+  readonly movementTypes: readonly StockMovementType[];
+  readonly eventName: "stock.adjusted" | "stock.deducted";
+  readonly variant: "count" | "waste" | null;
+  readonly amountKey: "differenceIdr" | "costIdr";
+};
+
+/** Sources the bridge posts; every other (movementType, sourceType) is ignored. */
+const MAPPINGS: readonly GlMapping[] = [
+  {
+    sourceType: "stock_count",
+    movementTypes: ["adjustment"],
+    eventName: "stock.adjusted",
+    variant: "count",
+    amountKey: "differenceIdr",
+  },
+  {
+    sourceType: "waste_log",
+    movementTypes: ["waste"],
+    eventName: "stock.adjusted",
+    variant: "waste",
+    amountKey: "costIdr",
+  },
+  {
+    sourceType: "order",
+    movementTypes: ["sale", "return"],
+    eventName: "stock.deducted",
+    variant: null,
+    amountKey: "costIdr",
+  },
+];
+
+const IDEMPOTENCY_KEY_MAX = 100;
+const RETRY_BATCH = 100;
+/**
+ * Backoff between retries of one blocked source: the sweep runs on every relay
+ * tick, and a closed period can stay closed for weeks.
+ */
+export const RETRY_AFTER_MS = 10 * 60 * 1000;
+
+function mappingOf(
+  sourceType: string,
+  movementType?: string,
+): GlMapping | undefined {
+  return MAPPINGS.find(
+    (mapping) =>
+      mapping.sourceType === sourceType &&
+      (movementType === undefined ||
+        (mapping.movementTypes as readonly string[]).includes(movementType)),
+  );
+}
+
+/** DB (uuid) form for ledger queries, domain form (ULID for orders) for the rest. */
+function normalizeSource(source: {
+  sourceType: StockSourceType;
+  sourceId: string;
+}) {
+  const dbId = sourceIdToDb(source.sourceId);
+  return {
+    sourceType: source.sourceType,
+    dbId,
+    domainId: sourceIdFromDb(source.sourceType, dbId),
+  };
+}
+
+async function accountingEnabled(
+  tx: Tx,
+  context: ScopedTenantContext,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, context.tenant.tenantId))
+    .limit(1);
+  return isModuleEnabled(row?.featureFlags ?? null, "accounting");
+}
+
+export async function deliverInventoryGlEvent(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+  now = new Date(),
+): Promise<InventoryGlResult> {
+  if (event.name !== "stock.moved") return { status: "ignored" };
+  if (event.tenantId !== context.tenant.tenantId) return { status: "ignored" };
+  const payload = stockMovedEventPayloadSchema.parse(event.payload);
+  if (!mappingOf(payload.sourceType, payload.movementType))
+    return { status: "ignored" };
+  if (!(await accountingEnabled(tx, context))) return { status: "ignored" };
+  return settleStockSource(
+    tx,
+    context,
+    { sourceType: payload.sourceType, sourceId: payload.sourceId },
+    now,
+  );
+}
+
+/**
+ * One source through the savepoint path: post, or park it in
+ * `inventory_gl_blocked` on an expected accounting failure.
+ */
+async function settleStockSource(
+  tx: Tx,
+  context: ScopedTenantContext,
+  source: { sourceType: StockSourceType; sourceId: string },
+  now: Date,
+): Promise<InventoryGlResult> {
+  const tenantId = context.tenant.tenantId;
+  const target = normalizeSource(source);
+  await lockSource(tx, tenantId, target);
+  let result: InventoryGlResult;
+  try {
+    result = await tx.transaction((savepoint) =>
+      postStockSourceToGl(savepoint, context, source, now),
+    );
+  } catch (error) {
+    const code = blockingCodeOf(error);
+    if (!code) throw error;
+    const [ledger] = await tx
+      .select({ outletId: stockLedger.outletId })
+      .from(stockLedger)
+      .where(
+        and(
+          eq(stockLedger.tenantId, tenantId),
+          eq(stockLedger.sourceType, target.sourceType),
+          eq(stockLedger.sourceId, target.dbId),
+        ),
+      )
+      .limit(1);
+    if (!ledger) throw error;
+    await tx
+      .insert(inventoryGlBlocked)
+      .values({
+        tenantId,
+        outletId: ledger.outletId,
+        sourceType: target.sourceType,
+        sourceId: target.domainId,
+        errorCode: code,
+        firstFailedAt: now,
+        lastFailedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [
+          inventoryGlBlocked.tenantId,
+          inventoryGlBlocked.sourceType,
+          inventoryGlBlocked.sourceId,
+        ],
+        set: {
+          errorCode: code,
+          attempts: sql`${inventoryGlBlocked.attempts} + 1`,
+          lastFailedAt: now,
+        },
+      });
+    return { status: "blocked", code };
+  }
+  if (result.status !== "ignored") await clearBlocked(tx, tenantId, target);
+  return result;
+}
+
+async function clearBlocked(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  target: ReturnType<typeof normalizeSource>,
+): Promise<void> {
+  await tx
+    .delete(inventoryGlBlocked)
+    .where(
+      and(
+        eq(inventoryGlBlocked.tenantId, tenantId),
+        eq(inventoryGlBlocked.sourceType, target.sourceType),
+        eq(inventoryGlBlocked.sourceId, target.domainId),
+      ),
+    );
+}
+
+async function lockSource(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  target: ReturnType<typeof normalizeSource>,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`stock-gl:${tenantId}:${target.sourceType}:${target.dbId}`}, 0))`,
+  );
+}
+
+export type RetryBlockedResult = {
+  readonly posted: number;
+  readonly stillBlocked: number;
+  readonly failed: number;
+};
+
+/**
+ * Worker sweep: retry the oldest blocked sources of one tenant (bounded
+ * batch). Each source runs in its own transaction, so one failure never holds
+ * the others. A tenant without the accounting module is skipped.
+ */
+export async function retryBlockedInventoryGl(
+  context: ScopedTenantContext,
+  now = new Date(),
+): Promise<RetryBlockedResult> {
+  assertTrustedScopedContext(context);
+  if (context.outletScope.kind !== "tenant")
+    throw new Error("Inventory GL retry requires tenant-wide scope");
+  const tenantId = context.tenant.tenantId;
+  const blocked = await withTenant(db, context, async (tx) => {
+    if (!(await accountingEnabled(tx, context))) return [];
+    return tx
+      .select({
+        sourceType: inventoryGlBlocked.sourceType,
+        sourceId: inventoryGlBlocked.sourceId,
+      })
+      .from(inventoryGlBlocked)
+      .where(
+        and(
+          eq(inventoryGlBlocked.tenantId, tenantId),
+          lte(
+            inventoryGlBlocked.lastFailedAt,
+            new Date(now.getTime() - RETRY_AFTER_MS),
+          ),
+        ),
+      )
+      .orderBy(
+        asc(inventoryGlBlocked.firstFailedAt),
+        asc(inventoryGlBlocked.sourceId),
+      )
+      .limit(RETRY_BATCH);
+  });
+  let posted = 0;
+  let stillBlocked = 0;
+  let failed = 0;
+  for (const source of blocked) {
+    try {
+      const result = await withTenant(db, context, (tx) =>
+        settleStockSource(tx, context, source, now),
+      );
+      if (result.status === "blocked") stillBlocked += 1;
+      else posted += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { posted, stillBlocked, failed };
+}
+
+function idempotencyKeyOf(
+  sourceType: string,
+  sourceId: string,
+  firstLedgerId: string,
+): string {
+  const key = `stock-gl:${sourceType}:${sourceId}:${firstLedgerId}`;
+  if (key.length <= IDEMPOTENCY_KEY_MAX) return key;
+  return `stock-gl:${createHash("sha256").update(key).digest("hex")}`;
+}
+
+export async function postStockSourceToGl(
+  tx: Tx,
+  context: ScopedTenantContext,
+  source: { sourceType: StockSourceType; sourceId: string },
+  now = new Date(),
+): Promise<InventoryGlResult> {
+  const mapping = mappingOf(source.sourceType);
+  if (!mapping) return { status: "ignored" };
+  const tenantId = context.tenant.tenantId;
+  const target = normalizeSource(source);
+  await lockSource(tx, tenantId, target);
+  const rows = await tx
+    .select({
+      id: stockLedger.id,
+      outletId: stockLedger.outletId,
+      quantity: stockLedger.quantity,
+      unitCostIdr: stockLedger.unitCostIdr,
+      occurredAt: stockLedger.occurredAt,
+    })
+    .from(stockLedger)
+    .leftJoin(
+      inventoryGlPostings,
+      and(
+        eq(inventoryGlPostings.tenantId, stockLedger.tenantId),
+        eq(inventoryGlPostings.ledgerEntryId, stockLedger.id),
+      ),
+    )
+    .where(
+      and(
+        eq(stockLedger.tenantId, tenantId),
+        eq(stockLedger.sourceType, target.sourceType),
+        eq(stockLedger.sourceId, target.dbId),
+        inArray(stockLedger.movementType, [...mapping.movementTypes]),
+        isNull(inventoryGlPostings.ledgerEntryId),
+      ),
+    )
+    .orderBy(asc(stockLedger.occurredAt), asc(stockLedger.id));
+  const first = rows[0];
+  if (!first) return { status: "already_posted" };
+  if (rows.some((row) => row.outletId !== first.outletId))
+    throw new Error("Stock source spans more than one outlet");
+
+  const [outlet] = await tx
+    .select({
+      legalEntityId: outlets.legalEntityId,
+      timezone: outlets.timezone,
+      businessDayCutoff: outlets.businessDayCutoff,
+    })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, first.outletId)));
+  if (!outlet) throw new Error("Outlet of the stock ledger row not found");
+  const clock = outletBusinessDayClock(outlet);
+
+  // One group per outlet business date, oldest first (rows are time ordered).
+  const groups = new Map<BusinessDate, typeof rows>();
+  for (const row of rows) {
+    const date = businessDateOf(row.occurredAt, clock);
+    groups.set(date, [...(groups.get(date) ?? []), row]);
+  }
+
+  const journalEntryIds: string[] = [];
+  for (const [entryDate, group] of groups) {
+    // Signed stock effect of each row in whole rupiah (positive = stock in).
+    const rowValues = group.map((row) =>
+      Number(extendCostIdr(row.quantity, row.unitCostIdr, "half_up")),
+    );
+    const rowSum = rowValues.reduce((sum, value) => sum + value, 0);
+    let amount: number;
+    if (mapping.variant === "waste") {
+      // Waste rounds once over the whole log (equals waste_logs.value_idr).
+      amount = scaledCostToIdr(
+        group.reduce(
+          (sum, row) =>
+            sum - parseDecimal4(row.quantity) * parseDecimal4(row.unitCostIdr),
+          0n,
+        ),
+      );
+    } else if (mapping.variant === "count") {
+      amount = rowSum;
+    } else {
+      amount = -rowSum;
+    }
+
+    let journalEntryId: string | null = null;
+    if (amount !== 0) {
+      const journal = await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: mapping.eventName,
+          variant: mapping.variant,
+          amounts: { [mapping.amountKey]: amount },
+          legalEntityId: outlet.legalEntityId,
+          outletId: first.outletId,
+          entryDate,
+          sourceId: target.domainId,
+          postedBy: null,
+          idempotencyKey: idempotencyKeyOf(
+            target.sourceType,
+            target.domainId,
+            group[0]!.id,
+          ),
+        },
+        now,
+      );
+      journalEntryId = journal.id;
+      journalEntryIds.push(journal.id);
+    }
+    const inserted = await tx
+      .insert(inventoryGlPostings)
+      .values(
+        group.map((row, index) => ({
+          tenantId,
+          ledgerEntryId: row.id,
+          outletId: row.outletId,
+          sourceType: target.sourceType,
+          sourceId: target.domainId,
+          journalEntryId,
+          valueIdr: rowValues[index]!,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ id: inventoryGlPostings.ledgerEntryId });
+    if (inserted.length !== group.length)
+      throw new Error("Inventory GL tracking rows were not all inserted");
+  }
+
+  const ledgerEntryIds = rows.map((row) => row.id);
+  const [firstJournal] = journalEntryIds;
+  return firstJournal === undefined
+    ? { status: "zero_value", ledgerEntryIds }
+    : {
+        status: "posted",
+        journalEntryId: firstJournal,
+        journalEntryIds,
+        ledgerEntryIds,
+      };
+}
