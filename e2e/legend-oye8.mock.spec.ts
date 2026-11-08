@@ -6,6 +6,15 @@ import { expect, test } from "@playwright/test";
 
 const DESK = "/pos/reservasi";
 
+// The mock server's fixtures are dated around 1 Nov 2026 and the desk filters
+// "upcoming" by the browser's today, so the clock is pinned to the fixture day
+// (pattern: legend-nv3y). Without it these specs fail once the real date moves.
+const FIXTURE_NOW = new Date("2026-11-01T12:10:00.000+07:00");
+
+test.beforeEach(async ({ page }) => {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+});
+
 test("RSV-01 the desk lists upcoming reservations grouped by day", async ({
   page,
 }) => {

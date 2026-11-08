@@ -74,7 +74,7 @@ describe("legend-lmk menu tenant isolation (TEN-01/02)", () => {
     await asOwnerTenant(tenantB, async (client) => {
       await client.query(
         `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-         VALUES ($1, $2, 'Tenant Menu B', 'lengkap', 'active', 'shared', '{"modules":[]}', $3, $4)`,
+         VALUES ($1, $2, 'Tenant Menu B', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
         [
           tenantB,
           `menu-b-${randomBytes(3).toString("hex")}`,
