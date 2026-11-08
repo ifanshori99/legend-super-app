@@ -247,5 +247,6 @@ export const edgeStatusFixture = {
   edgeNode: edgeNodeFixture,
   pendingEventCount: 0,
   lastSyncedAt: time,
+  deviceRegistry: { lastPulledAt: time, stale: false },
   thisDevice: deviceFixture,
 };

@@ -1,5 +1,5 @@
 {
-  "id": "5e7a9353-5dc1-4743-a661-b7ae7480a10f",
+  "id": "1f32d9ee-baef-49bc-bddc-961f5dc6fb43",
   "prevId": "9f3025cb-6511-4980-ba17-9fcb38761c7f",
   "version": "7",
   "dialect": "postgresql",
@@ -32919,8 +32919,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.edc_transactions": {
-      "name": "edc_transactions",
+    "public.device_training_periods": {
+      "name": "device_training_periods",
       "schema": "",
       "columns": {
         "id": {
@@ -32942,150 +32942,245 @@
           "primaryKey": false,
           "notNull": true
         },
-        "terminal_id": {
-          "name": "terminal_id",
+        "device_id": {
+          "name": "device_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "bank": {
-          "name": "bank",
-          "type": "varchar(20)",
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
         },
-        "reference": {
-          "name": "reference",
-          "type": "varchar(100)",
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by": {
+          "name": "started_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "device_training_periods_open_key": {
+          "name": "device_training_periods_open_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"device_training_periods\".\"ended_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "device_training_periods_device_idx": {
+          "name": "device_training_periods_device_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "device_training_periods_tenant_id_tenants_id_fk": {
+          "name": "device_training_periods_tenant_id_tenants_id_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "device_training_periods_outlet_id_outlets_id_fk": {
+          "name": "device_training_periods_outlet_id_outlets_id_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "device_training_periods_device_fk": {
+          "name": "device_training_periods_device_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "device_training_periods_range_check": {
+          "name": "device_training_periods_range_check",
+          "value": "\"device_training_periods\".\"ended_at\" IS NULL OR \"device_training_periods\".\"ended_at\" > \"device_training_periods\".\"started_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.devices": {
+      "name": "devices",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "amount_idr": {
-          "name": "amount_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "method": {
-          "name": "method",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
         "type": {
           "name": "type",
-          "type": "varchar(10)",
+          "type": "varchar(20)",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'sale'"
+          "notNull": true
         },
-        "mode": {
-          "name": "mode",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ecr'"
-        },
-        "payment_intent_id": {
-          "name": "payment_intent_id",
+        "station_id": {
+          "name": "station_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "trace": {
-          "name": "trace",
-          "type": "varchar(32)",
+        "label": {
+          "name": "label",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
         },
-        "approval_code": {
-          "name": "approval_code",
-          "type": "varchar(12)",
+        "version": {
+          "name": "version",
+          "type": "varchar(255)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'unknown'"
         },
-        "rrn": {
-          "name": "rrn",
-          "type": "varchar(24)",
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
-        "card_type": {
-          "name": "card_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "masked_pan": {
-          "name": "masked_pan",
-          "type": "varchar(23)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "response_code": {
-          "name": "response_code",
-          "type": "varchar(8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "message": {
-          "name": "message",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "invoice_no": {
-          "name": "invoice_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "batch_no": {
-          "name": "batch_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dispatched_at": {
-          "name": "dispatched_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "needs_reconciliation": {
-          "name": "needs_reconciliation",
+        "training_mode": {
+          "name": "training_mode",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": false
         },
-        "inquiry_count": {
-          "name": "inquiry_count",
-          "type": "integer",
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
           "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "default": "'active'"
         },
-        "last_inquiry_at": {
-          "name": "last_inquiry_at",
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by": {
+          "name": "revoked_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoke_reason": {
+          "name": "revoke_reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enrolled_by": {
+          "name": "enrolled_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token_issued_at": {
+          "name": "token_issued_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -33103,17 +33198,11 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "edc_transactions_approved_reference_key": {
-          "name": "edc_transactions_approved_reference_key",
+        "devices_sync_idx": {
+          "name": "devices_sync_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -33128,62 +33217,13 @@
               "nulls": "last"
             },
             {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"edc_transactions\".\"status\" = 'approved' AND \"edc_transactions\".\"type\" = 'sale'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_reference_idx": {
-          "name": "edc_transactions_reference_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
+              "expression": "updated_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_terminal_status_idx": {
-          "name": "edc_transactions_terminal_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "terminal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33196,9 +33236,9 @@
         }
       },
       "foreignKeys": {
-        "edc_transactions_tenant_id_tenants_id_fk": {
-          "name": "edc_transactions_tenant_id_tenants_id_fk",
-          "tableFrom": "edc_transactions",
+        "devices_tenant_id_tenants_id_fk": {
+          "name": "devices_tenant_id_tenants_id_fk",
+          "tableFrom": "devices",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -33209,9 +33249,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "edc_transactions_outlet_id_outlets_id_fk": {
-          "name": "edc_transactions_outlet_id_outlets_id_fk",
-          "tableFrom": "edc_transactions",
+        "devices_outlet_id_outlets_id_fk": {
+          "name": "devices_outlet_id_outlets_id_fk",
+          "tableFrom": "devices",
           "tableTo": "outlets",
           "columnsFrom": [
             "outlet_id"
@@ -33222,9 +33262,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "edc_transactions_outlet_fk": {
-          "name": "edc_transactions_outlet_fk",
-          "tableFrom": "edc_transactions",
+        "devices_outlet_fk": {
+          "name": "devices_outlet_fk",
+          "tableFrom": "devices",
           "tableTo": "outlets",
           "columnsFrom": [
             "tenant_id",
@@ -33237,30 +33277,13 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "edc_transactions_terminal_fk": {
-          "name": "edc_transactions_terminal_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "payment_edc_terminals",
+        "devices_station_fk": {
+          "name": "devices_station_fk",
+          "tableFrom": "devices",
+          "tableTo": "stations",
           "columnsFrom": [
             "tenant_id",
-            "outlet_id",
-            "terminal_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edc_transactions_payment_intent_fk": {
-          "name": "edc_transactions_payment_intent_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "payment_intents",
-          "columnsFrom": [
-            "tenant_id",
-            "payment_intent_id"
+            "station_id"
           ],
           "columnsTo": [
             "tenant_id",
@@ -33272,57 +33295,33 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "edc_transactions_tenant_idempotency_key": {
-          "name": "edc_transactions_tenant_idempotency_key",
+        "devices_tenant_id_id_key": {
+          "name": "devices_tenant_id_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "idempotency_key"
+            "id"
           ]
         },
-        "edc_transactions_tenant_terminal_trace_key": {
-          "name": "edc_transactions_tenant_terminal_trace_key",
+        "devices_tenant_outlet_id_key": {
+          "name": "devices_tenant_outlet_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "terminal_id",
-            "trace"
+            "outlet_id",
+            "id"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "edc_transactions_bank_check": {
-          "name": "edc_transactions_bank_check",
-          "value": "\"edc_transactions\".\"bank\" IN ('bca','mandiri','bni','bjb')"
+        "devices_type_check": {
+          "name": "devices_type_check",
+          "value": "\"devices\".\"type\" IN ('pos', 'kds', 'waiter_phone', 'printer', 'display', 'smart_lock', 'panic_button', 'edc')"
         },
-        "edc_transactions_amount_check": {
-          "name": "edc_transactions_amount_check",
-          "value": "\"edc_transactions\".\"amount_idr\" > 0"
-        },
-        "edc_transactions_method_check": {
-          "name": "edc_transactions_method_check",
-          "value": "\"edc_transactions\".\"method\" IN ('card','qris')"
-        },
-        "edc_transactions_status_check": {
-          "name": "edc_transactions_status_check",
-          "value": "\"edc_transactions\".\"status\" IN ('pending','unknown','approved','declined','cancelled','failed')"
-        },
-        "edc_transactions_type_check": {
-          "name": "edc_transactions_type_check",
-          "value": "\"edc_transactions\".\"type\" IN ('sale','void','refund')"
-        },
-        "edc_transactions_mode_check": {
-          "name": "edc_transactions_mode_check",
-          "value": "\"edc_transactions\".\"mode\" IN ('ecr','standalone')"
-        },
-        "edc_transactions_inquiry_count_check": {
-          "name": "edc_transactions_inquiry_count_check",
-          "value": "\"edc_transactions\".\"inquiry_count\" >= 0"
-        },
-        "edc_transactions_completed_check": {
-          "name": "edc_transactions_completed_check",
-          "value": "(\"edc_transactions\".\"completed_at\" IS NOT NULL) = (\"edc_transactions\".\"status\" IN ('approved','declined','cancelled','failed'))"
+        "devices_status_check": {
+          "name": "devices_status_check",
+          "value": "(\"devices\".\"status\" = 'active' AND \"devices\".\"revoked_at\" IS NULL) OR (\"devices\".\"status\" = 'revoked' AND \"devices\".\"revoked_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

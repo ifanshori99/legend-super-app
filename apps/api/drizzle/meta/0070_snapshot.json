@@ -1,6 +1,6 @@
 {
-  "id": "20d0e0c9-e488-482b-908c-0bccd14c2692",
-  "prevId": "de6bfda0-f93a-4520-9737-c956575e70dd",
+  "id": "d7e91d60-ea1f-4ecc-af6d-e6a8f3a2e249",
+  "prevId": "fd368e93-096c-4b1c-99b5-83f8f436fbe1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -30506,6 +30506,120 @@
       },
       "isRLSEnabled": false
     },
+    "public.edge_pull_checkpoints": {
+      "name": "edge_pull_checkpoints",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stream": {
+          "name": "stream",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "watermark": {
+          "name": "watermark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_success_at": {
+          "name": "last_success_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_pull_checkpoints_tenant_id_tenants_id_fk": {
+          "name": "edge_pull_checkpoints_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_pull_checkpoints",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_pull_checkpoints_outlet_id_outlets_id_fk": {
+          "name": "edge_pull_checkpoints_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_pull_checkpoints",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_pull_checkpoints_edge_node_fk": {
+          "name": "edge_pull_checkpoints_edge_node_fk",
+          "tableFrom": "edge_pull_checkpoints",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_pull_checkpoints_tenant_id_edge_node_id_stream_pk": {
+          "name": "edge_pull_checkpoints_tenant_id_edge_node_id_stream_pk",
+          "columns": [
+            "tenant_id",
+            "edge_node_id",
+            "stream"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_pull_checkpoints_stream_check": {
+          "name": "edge_pull_checkpoints_stream_check",
+          "value": "\"edge_pull_checkpoints\".\"stream\" IN ('device_registry')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.edge_received_events": {
       "name": "edge_received_events",
       "schema": "",
@@ -32919,8 +33033,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.edc_transactions": {
-      "name": "edc_transactions",
+    "public.stock_count_lines": {
+      "name": "stock_count_lines",
       "schema": "",
       "columns": {
         "id": {
@@ -32942,156 +33056,62 @@
           "primaryKey": false,
           "notNull": true
         },
-        "terminal_id": {
-          "name": "terminal_id",
+        "stock_count_id": {
+          "name": "stock_count_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "bank": {
-          "name": "bank",
-          "type": "varchar(20)",
+        "inventory_item_id": {
+          "name": "inventory_item_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "reference": {
-          "name": "reference",
-          "type": "varchar(100)",
+        "system_qty": {
+          "name": "system_qty",
+          "type": "numeric(14,4)",
           "primaryKey": false,
           "notNull": true
         },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
+        "unit_cost_idr": {
+          "name": "unit_cost_idr",
+          "type": "numeric(14,4)",
           "primaryKey": false,
           "notNull": true
         },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(128)",
+        "counted_qty": {
+          "name": "counted_qty",
+          "type": "numeric(14,4)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "amount_idr": {
-          "name": "amount_idr",
+        "variance_qty": {
+          "name": "variance_qty",
+          "type": "numeric(14,4)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "variance_idr": {
+          "name": "variance_idr",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "method": {
-          "name": "method",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "type": {
-          "name": "type",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'sale'"
-        },
-        "mode": {
-          "name": "mode",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'ecr'"
-        },
-        "payment_intent_id": {
-          "name": "payment_intent_id",
-          "type": "uuid",
+        "posted_value_idr": {
+          "name": "posted_value_idr",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
-        "trace": {
-          "name": "trace",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval_code": {
-          "name": "approval_code",
-          "type": "varchar(12)",
+        "counted_by": {
+          "name": "counted_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "rrn": {
-          "name": "rrn",
-          "type": "varchar(24)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "card_type": {
-          "name": "card_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "masked_pan": {
-          "name": "masked_pan",
-          "type": "varchar(23)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "response_code": {
-          "name": "response_code",
-          "type": "varchar(8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "message": {
-          "name": "message",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "invoice_no": {
-          "name": "invoice_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "batch_no": {
-          "name": "batch_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dispatched_at": {
-          "name": "dispatched_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dispatch_batch_no": {
-          "name": "dispatch_batch_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "needs_reconciliation": {
-          "name": "needs_reconciliation",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "inquiry_count": {
-          "name": "inquiry_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_inquiry_at": {
-          "name": "last_inquiry_at",
+        "counted_at": {
+          "name": "counted_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -33109,17 +33129,11 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
-        "edc_transactions_approved_reference_key": {
-          "name": "edc_transactions_approved_reference_key",
+        "stock_count_lines_tenant_count_idx": {
+          "name": "stock_count_lines_tenant_count_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -33128,68 +33142,7 @@
               "nulls": "last"
             },
             {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"edc_transactions\".\"status\" = 'approved' AND \"edc_transactions\".\"type\" = 'sale'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_reference_idx": {
-          "name": "edc_transactions_reference_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_terminal_status_idx": {
-          "name": "edc_transactions_terminal_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "terminal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
+              "expression": "stock_count_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33202,9 +33155,9 @@
         }
       },
       "foreignKeys": {
-        "edc_transactions_tenant_id_tenants_id_fk": {
-          "name": "edc_transactions_tenant_id_tenants_id_fk",
-          "tableFrom": "edc_transactions",
+        "stock_count_lines_tenant_id_tenants_id_fk": {
+          "name": "stock_count_lines_tenant_id_tenants_id_fk",
+          "tableFrom": "stock_count_lines",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -33215,12 +33168,12 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "edc_transactions_outlet_id_outlets_id_fk": {
-          "name": "edc_transactions_outlet_id_outlets_id_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "outlets",
+        "stock_count_lines_counted_by_user_id_fk": {
+          "name": "stock_count_lines_counted_by_user_id_fk",
+          "tableFrom": "stock_count_lines",
+          "tableTo": "user",
           "columnsFrom": [
-            "outlet_id"
+            "counted_by"
           ],
           "columnsTo": [
             "id"
@@ -33228,45 +33181,30 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "edc_transactions_outlet_fk": {
-          "name": "edc_transactions_outlet_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edc_transactions_terminal_fk": {
-          "name": "edc_transactions_terminal_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "payment_edc_terminals",
+        "stock_count_lines_count_fk": {
+          "name": "stock_count_lines_count_fk",
+          "tableFrom": "stock_count_lines",
+          "tableTo": "stock_counts",
           "columnsFrom": [
             "tenant_id",
             "outlet_id",
-            "terminal_id"
+            "stock_count_id"
           ],
           "columnsTo": [
             "tenant_id",
             "outlet_id",
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "edc_transactions_payment_intent_fk": {
-          "name": "edc_transactions_payment_intent_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "payment_intents",
+        "stock_count_lines_item_fk": {
+          "name": "stock_count_lines_item_fk",
+          "tableFrom": "stock_count_lines",
+          "tableTo": "inventory_items",
           "columnsFrom": [
             "tenant_id",
-            "payment_intent_id"
+            "inventory_item_id"
           ],
           "columnsTo": [
             "tenant_id",
@@ -33278,57 +33216,798 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "edc_transactions_tenant_idempotency_key": {
-          "name": "edc_transactions_tenant_idempotency_key",
+        "stock_count_lines_tenant_id_id_key": {
+          "name": "stock_count_lines_tenant_id_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "idempotency_key"
+            "id"
           ]
         },
-        "edc_transactions_tenant_terminal_trace_key": {
-          "name": "edc_transactions_tenant_terminal_trace_key",
+        "stock_count_lines_tenant_count_item_key": {
+          "name": "stock_count_lines_tenant_count_item_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "terminal_id",
-            "trace"
+            "stock_count_id",
+            "inventory_item_id"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "edc_transactions_bank_check": {
-          "name": "edc_transactions_bank_check",
-          "value": "\"edc_transactions\".\"bank\" IN ('bca','mandiri','bni','bjb')"
+        "stock_count_lines_counted_check": {
+          "name": "stock_count_lines_counted_check",
+          "value": "\"stock_count_lines\".\"counted_qty\" IS NULL OR \"stock_count_lines\".\"counted_qty\" >= 0"
         },
-        "edc_transactions_amount_check": {
-          "name": "edc_transactions_amount_check",
-          "value": "\"edc_transactions\".\"amount_idr\" > 0"
+        "stock_count_lines_counter_check": {
+          "name": "stock_count_lines_counter_check",
+          "value": "(\"stock_count_lines\".\"counted_by\" IS NULL) = (\"stock_count_lines\".\"counted_at\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.stock_counts": {
+      "name": "stock_counts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "edc_transactions_method_check": {
-          "name": "edc_transactions_method_check",
-          "value": "\"edc_transactions\".\"method\" IN ('card','qris')"
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
-        "edc_transactions_status_check": {
-          "name": "edc_transactions_status_check",
-          "value": "\"edc_transactions\".\"status\" IN ('pending','unknown','approved','declined','cancelled','failed')"
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
-        "edc_transactions_type_check": {
-          "name": "edc_transactions_type_check",
-          "value": "\"edc_transactions\".\"type\" IN ('sale','void','refund')"
+        "location_id": {
+          "name": "location_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
-        "edc_transactions_mode_check": {
-          "name": "edc_transactions_mode_check",
-          "value": "\"edc_transactions\".\"mode\" IN ('ecr','standalone')"
+        "type": {
+          "name": "type",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
         },
-        "edc_transactions_inquiry_count_check": {
-          "name": "edc_transactions_inquiry_count_check",
-          "value": "\"edc_transactions\".\"inquiry_count\" >= 0"
+        "status": {
+          "name": "status",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
         },
-        "edc_transactions_completed_check": {
-          "name": "edc_transactions_completed_check",
-          "value": "(\"edc_transactions\".\"completed_at\" IS NOT NULL) = (\"edc_transactions\".\"status\" IN ('approved','declined','cancelled','failed'))"
+        "blind": {
+          "name": "blind",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "business_date": {
+          "name": "business_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "counted_by": {
+          "name": "counted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counter_ids": {
+          "name": "counter_ids",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "decider_ids": {
+          "name": "decider_ids",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "viewer_ids": {
+          "name": "viewer_ids",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "count_version": {
+          "name": "count_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "snapshot_at": {
+          "name": "snapshot_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "counted_at": {
+          "name": "counted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approval_chain_id": {
+          "name": "approval_chain_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approval_version": {
+          "name": "approval_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lines_hash": {
+          "name": "lines_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "total_variance_idr": {
+          "name": "total_variance_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "gross_variance_idr": {
+          "name": "gross_variance_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_by": {
+          "name": "approved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "posted_at": {
+          "name": "posted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "create_idempotency_key": {
+          "name": "create_idempotency_key",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "create_fingerprint": {
+          "name": "create_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "stock_counts_open_location_idx": {
+          "name": "stock_counts_open_location_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"stock_counts\".\"status\" IN ('draft', 'counting', 'pending_approval', 'approved')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "stock_counts_tenant_outlet_created_idx": {
+          "name": "stock_counts_tenant_outlet_created_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "stock_counts_tenant_id_tenants_id_fk": {
+          "name": "stock_counts_tenant_id_tenants_id_fk",
+          "tableFrom": "stock_counts",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "stock_counts_counted_by_user_id_fk": {
+          "name": "stock_counts_counted_by_user_id_fk",
+          "tableFrom": "stock_counts",
+          "tableTo": "user",
+          "columnsFrom": [
+            "counted_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "stock_counts_approved_by_user_id_fk": {
+          "name": "stock_counts_approved_by_user_id_fk",
+          "tableFrom": "stock_counts",
+          "tableTo": "user",
+          "columnsFrom": [
+            "approved_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "stock_counts_location_fk": {
+          "name": "stock_counts_location_fk",
+          "tableFrom": "stock_counts",
+          "tableTo": "stock_locations",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "location_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "stock_counts_tenant_id_id_key": {
+          "name": "stock_counts_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "stock_counts_tenant_outlet_id_key": {
+          "name": "stock_counts_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ]
+        },
+        "stock_counts_tenant_create_idempotency_key": {
+          "name": "stock_counts_tenant_create_idempotency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "create_idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "stock_counts_type_check": {
+          "name": "stock_counts_type_check",
+          "value": "\"stock_counts\".\"type\" IN ('full', 'cycle')"
+        },
+        "stock_counts_status_check": {
+          "name": "stock_counts_status_check",
+          "value": "\"stock_counts\".\"status\" IN ('draft', 'counting', 'pending_approval', 'approved', 'posted', 'cancelled')"
+        },
+        "stock_counts_version_check": {
+          "name": "stock_counts_version_check",
+          "value": "\"stock_counts\".\"count_version\" >= 0"
+        },
+        "stock_counts_approved_check": {
+          "name": "stock_counts_approved_check",
+          "value": "\"stock_counts\".\"status\" NOT IN ('approved', 'posted') OR (\"stock_counts\".\"approved_by\" IS NOT NULL AND \"stock_counts\".\"approved_at\" IS NOT NULL)"
+        },
+        "stock_counts_posted_check": {
+          "name": "stock_counts_posted_check",
+          "value": "\"stock_counts\".\"status\" <> 'posted' OR \"stock_counts\".\"posted_at\" IS NOT NULL"
+        },
+        "stock_counts_approval_bound_check": {
+          "name": "stock_counts_approval_bound_check",
+          "value": "\"stock_counts\".\"status\" NOT IN ('pending_approval', 'approved', 'posted') OR (\"stock_counts\".\"approval_chain_id\" IS NOT NULL AND \"stock_counts\".\"approval_version\" IS NOT NULL AND \"stock_counts\".\"lines_hash\" IS NOT NULL AND \"stock_counts\".\"counted_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.device_training_periods": {
+      "name": "device_training_periods",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by": {
+          "name": "started_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "device_training_periods_open_key": {
+          "name": "device_training_periods_open_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"device_training_periods\".\"ended_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "device_training_periods_device_idx": {
+          "name": "device_training_periods_device_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "device_training_periods_tenant_id_tenants_id_fk": {
+          "name": "device_training_periods_tenant_id_tenants_id_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "device_training_periods_outlet_id_outlets_id_fk": {
+          "name": "device_training_periods_outlet_id_outlets_id_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "device_training_periods_device_fk": {
+          "name": "device_training_periods_device_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "device_training_periods_range_check": {
+          "name": "device_training_periods_range_check",
+          "value": "\"device_training_periods\".\"ended_at\" IS NULL OR \"device_training_periods\".\"ended_at\" > \"device_training_periods\".\"started_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.devices": {
+      "name": "devices",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "station_id": {
+          "name": "station_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "label": {
+          "name": "label",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "training_mode": {
+          "name": "training_mode",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by": {
+          "name": "revoked_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoke_reason": {
+          "name": "revoke_reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enrolled_by": {
+          "name": "enrolled_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token_issued_at": {
+          "name": "token_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "devices_sync_idx": {
+          "name": "devices_sync_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "devices_tenant_id_tenants_id_fk": {
+          "name": "devices_tenant_id_tenants_id_fk",
+          "tableFrom": "devices",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "devices_outlet_id_outlets_id_fk": {
+          "name": "devices_outlet_id_outlets_id_fk",
+          "tableFrom": "devices",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "devices_outlet_fk": {
+          "name": "devices_outlet_fk",
+          "tableFrom": "devices",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "devices_station_fk": {
+          "name": "devices_station_fk",
+          "tableFrom": "devices",
+          "tableTo": "stations",
+          "columnsFrom": [
+            "tenant_id",
+            "station_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "devices_tenant_id_id_key": {
+          "name": "devices_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "devices_tenant_outlet_id_key": {
+          "name": "devices_tenant_outlet_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "devices_type_check": {
+          "name": "devices_type_check",
+          "value": "\"devices\".\"type\" IN ('pos', 'kds', 'waiter_phone', 'printer', 'display', 'smart_lock', 'panic_button', 'edc')"
+        },
+        "devices_status_check": {
+          "name": "devices_status_check",
+          "value": "(\"devices\".\"status\" = 'active' AND \"devices\".\"revoked_at\" IS NULL) OR (\"devices\".\"status\" = 'revoked' AND \"devices\".\"revoked_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
