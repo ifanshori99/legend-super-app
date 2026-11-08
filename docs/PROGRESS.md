@@ -21,6 +21,8 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 
 - Struk `ws/pos-receipt` e11caae SELESAI putaran 2 (gerbang hijau). Thread UI kasir alur shift G0prp (brief 67, `ui/pos-kasir-shift`). Merge 5 cabang (brief 66) via subagent. Founder Q1 setuju UI kasir, Q2 Rp0 boleh + 1 konfirmasi, Q3 merge semua.
 
+- Founder Q10: second opinion campuran. Codex: uang/auth/migration/data pribadi (59 shift, 65 refund, 68 struk, 70 jurnal, PPh21, 62 DOIT, 60 EDC). Architect Claude subagent: 63 KDS, 61 procurement, stok opname, cuti HRIS, SOP. Founder Q4 struk tanpa pajak boleh; Q5/Q6 jurnal; Q7 cuti bersama memotong saldo (per tenant).
+
 ### Thread berjalan
 | Thread | Kerja | Cabang |
 |---|---|---|
