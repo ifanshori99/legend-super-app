@@ -10,19 +10,49 @@ cat > "$tmp/bin/docker" <<'STUB'
 printf '%s\n' "$*" >> "$TEST_LOG"
 STUB
 chmod +x "$tmp/bin/docker"
-: > "$tmp/compose.env"
+password=0123456789abcdef0123456789abcdef0123456789abcdef
+app="postgresql://legend_runtime_0123456789abcdef:$password@postgres:5432/legend"
+worker="postgresql://legend_worker_0123456789abcdef:$password@postgres:5432/legend"
+printf 'MIGRATION_DATABASE_URL=postgresql://owner:secret@postgres:5432/legend\n' > "$tmp/migrator.env"
+printf 'APP_DATABASE_URL=%s\n' "$app" > "$tmp/api.env"
+: > "$tmp/web.env"
+printf 'APP_DATABASE_URL=%s\nWORKER_DATABASE_URL=%s\n' "$app" "$worker" > "$tmp/worker.env"
+for name in MIGRATOR API WEB WORKER; do
+  printf '%s_ENV_FILE=%s/%s.env\n' "$name" "$tmp" "$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
+done > "$tmp/compose.env"
 export TEST_LOG="$tmp/log"
 PATH="$tmp/bin:$PATH"
 export PATH
-"$root/deploy.sh" --env-file "$tmp/compose.env" --dry-run >/dev/null
-[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 1 ]
-grep -F 'config --quiet' "$TEST_LOG" >/dev/null
 : > "$TEST_LOG"
-"$root/deploy.sh" --env-file "$tmp/compose.env"
-[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 4 ]
+"$root/deploy.sh" --env-file "$tmp/compose.env" --dry-run >/dev/null
+[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 2 ]
+[ "$(grep -c 'config --quiet' "$TEST_LOG")" -eq 2 ]
+: > "$TEST_LOG"
+"$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null
+[ "$(wc -l < "$TEST_LOG" | tr -d ' ')" -eq 6 ]
 sed -n '2p' "$TEST_LOG" | grep -F 'up -d --wait postgres' >/dev/null
 sed -n '3p' "$TEST_LOG" | grep -F -- '--profile migration run --rm migrate' >/dev/null
-sed -n '4p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
+sed -n '5p' "$TEST_LOG" | grep -F -- '--profile provisioning run --rm provision-roles node dist/provision-roles.js --audit' >/dev/null
+sed -n '6p' "$TEST_LOG" | grep -F 'up -d --wait api web worker caddy' >/dev/null
+if grep -F "$password" "$TEST_LOG" >/dev/null; then
+  echo 'legend-zoqc: a password reached the docker command line' >&2
+  exit 1
+fi
+# A failed role audit stops the deploy before any service starts.
+cat > "$tmp/bin/docker" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+case "$*" in *--audit*) exit 1 ;; esac
+STUB
+: > "$TEST_LOG"
+if "$root/deploy.sh" --env-file "$tmp/compose.env" >/dev/null 2>&1; then
+  echo 'legend-zoqc: deploy continued after a failed role audit' >&2
+  exit 1
+fi
+if grep -F 'api web worker caddy' "$TEST_LOG" >/dev/null; then
+  echo 'legend-zoqc: services started after a failed role audit' >&2
+  exit 1
+fi
 if "$root/deploy.sh" --env-file relative --dry-run >/dev/null 2>&1; then
   echo 'legend-8br: relative environment file was accepted' >&2
   exit 1

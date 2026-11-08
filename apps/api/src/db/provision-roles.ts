@@ -10,6 +10,9 @@
 // outside its own schema. Every run re-verifies that, so the job is safe to
 // repeat and doubles as an audit.
 //
+// PostgreSQL 16 or newer is required: role memberships record INHERIT, SET
+// and ADMIN per grant there, and the audit relies on that.
+//
 // Passwords are sent as SCRAM-SHA-256 verifiers computed here, so the plaintext
 // never reaches the server and cannot appear in its statement or error logs.
 // This module imports only `pg` and Node built-ins so the root scripts can load
@@ -24,6 +27,21 @@ const APP_GROUP = "legend_app";
 const QUEUE_SCHEMA = "pgboss";
 // Serialises concurrent runs against one database (hashtext is stable).
 const LOCK_KEY = "legend.provision-roles";
+const MIN_SERVER_VERSION = 160000;
+// pg lets query parameters override the URL's authority (user, password,
+// host, port, database, options). Only transport settings may appear, so the
+// login and endpoint validated below are the ones pg actually uses.
+const URL_PARAMS = new Set([
+  "sslmode",
+  "sslrootcert",
+  "sslcert",
+  "sslkey",
+  "ssl",
+  "channel_binding",
+  "application_name",
+  "connect_timeout",
+]);
+const APP_TABLE_RIGHTS = ["SELECT", "INSERT", "UPDATE", "DELETE"];
 
 /** An operator-facing failure. Its message never contains a credential. */
 export class ProvisionError extends Error {
@@ -33,7 +51,30 @@ export class ProvisionError extends Error {
   }
 }
 
-type Login = { user: string; password: string };
+type Login = { user: string; password: string; url: string };
+
+function parseUrl(raw: string, label: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ProvisionError(`The ${label} connection URL is not valid.`);
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:")
+    throw new ProvisionError(
+      `The ${label} connection URL must start with postgresql://.`,
+    );
+  if (url.hash)
+    throw new ProvisionError(
+      `The ${label} connection URL must not contain a # fragment.`,
+    );
+  for (const key of url.searchParams.keys())
+    if (!URL_PARAMS.has(key))
+      throw new ProvisionError(
+        `The ${label} connection URL has a query parameter that is not allowed (${/^[a-z_]{1,40}$/.test(key) ? key : "unrecognised"}); only TLS and timeout settings may follow "?". Put the login, host and database in the URL itself.`,
+      );
+  return url;
+}
 
 function parseLogin(
   adminUrl: string,
@@ -41,14 +82,8 @@ function parseLogin(
   pattern: RegExp,
   label: string,
 ): Login {
-  let url: URL;
-  let admin: URL;
-  try {
-    url = new URL(loginUrl);
-    admin = new URL(adminUrl);
-  } catch {
-    throw new ProvisionError(`The ${label} connection URL is not valid.`);
-  }
+  const url = parseUrl(loginUrl, label);
+  const admin = parseUrl(adminUrl, "migration");
   if (url.host !== admin.host || url.pathname !== admin.pathname)
     throw new ProvisionError(
       `The ${label} and migration URLs must point to the same database.`,
@@ -63,7 +98,7 @@ function parseLogin(
     throw new ProvisionError(
       `The ${label} login has an invalid name or password format.`,
     );
-  return { user, password };
+  return { user, password, url: loginUrl };
 }
 
 /**
@@ -117,7 +152,7 @@ async function upsertLogin(client: ClientBase, login: Login, label: string) {
   const verifier = quoteVerifier(scramSha256Verifier(login.password));
   if (!existing.rows.length) {
     await client.query(
-      `CREATE ROLE "${login.user}" LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT PASSWORD ${verifier}`,
+      `CREATE ROLE "${login.user}" LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT VALID UNTIL 'infinity' CONNECTION LIMIT -1 PASSWORD ${verifier}`,
     );
     return "created";
   }
@@ -144,19 +179,27 @@ async function upsertLogin(client: ClientBase, login: Login, label: string) {
   await client.query(
     `ALTER ROLE "${login.user}" IN DATABASE "${await currentDatabase(client)}" RESET ALL`,
   );
-  // A non-superuser admin silently keeps superuser-only settings (for example
-  // session_replication_role), so prove the reset took effect.
+  await assertNoSettings(client, login.user, label);
+  return "updated";
+}
+
+// A non-superuser admin silently keeps superuser-only settings (for example
+// session_replication_role) after RESET ALL, so prove none are left.
+async function assertNoSettings(
+  client: ClientBase,
+  user: string,
+  label: string,
+) {
   const left = await client.query(
     `SELECT count(*)::int AS count FROM pg_db_role_setting s
      WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = $1)
        AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`,
-    [login.user],
+    [user],
   );
   if (left.rows[0].count)
     throw new ProvisionError(
       `The ${label} role has role-level settings this login cannot reset; a superuser must run ALTER ROLE ... RESET ALL.`,
     );
-  return "updated";
 }
 
 /**
@@ -198,12 +241,27 @@ async function assertRestricted(
     throw new ProvisionError(
       `The ${label} role has or inherits predefined roles: ${predefined.rows[0].roles.join(", ")}.`,
     );
-  // PostgreSQL 16+ records INHERIT per grant: a membership without it gives
-  // the login no privileges. ADMIN would let the login hand the group out.
-  const inherit =
-    (await serverVersion(client)) >= 160000 ? "m.inherit_option" : "true";
+  // Any role reached directly or through a group (legend_app granted some
+  // other role, with or without ADMIN OPTION) widens the login beyond its
+  // lane. ADMIN OPTION always rides on a membership, so this also rules out
+  // inherited ADMIN.
+  const reached = await client.query(
+    `SELECT ARRAY(
+       SELECT r.rolname::text FROM pg_roles r
+       WHERE r.rolname <> $1 AND r.rolname <> ALL($2::text[])
+         AND pg_has_role($1, r.oid, 'MEMBER')
+       ORDER BY 1
+     ) AS roles`,
+    [user, allowedGroups],
+  );
+  if (reached.rows[0].roles.length)
+    throw new ProvisionError(
+      `The ${label} role is a member of unexpected roles (directly or through a group): ${reached.rows[0].roles.join(", ")}.`,
+    );
+  // INHERIT is recorded per grant: a membership without it gives the login
+  // no privileges. ADMIN would let the login hand the group out.
   const groups = await client.query(
-    `SELECT g.rolname, pg_get_userbyid(m.grantor) AS grantor, m.admin_option, ${inherit} AS inherit
+    `SELECT g.rolname, pg_get_userbyid(m.grantor) AS grantor, m.admin_option, m.inherit_option AS inherit
      FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member
      WHERE u.rolname = $1`,
     [user],
@@ -220,13 +278,6 @@ async function assertRestricted(
   if (flawed.length)
     throw new ProvisionError(
       `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION; a superuser can remove it with REVOKE <group> FROM <login> GRANTED BY <grantor>, then re-run.`,
-    );
-  const extra = groups.rows
-    .map((row: { rolname: string }) => row.rolname)
-    .filter((name: string) => !allowedGroups.includes(name));
-  if (extra.length)
-    throw new ProvisionError(
-      `The ${label} role is a member of unexpected roles: ${extra.join(", ")}.`,
     );
   const owned = await client.query(
     `SELECT EXISTS (
@@ -278,8 +329,10 @@ async function assertRestricted(
 
 /**
  * Table rights outside `ownSchemas` must stay within `allowed` (privilege
- * names per relation, "*" for any relation). TRUNCATE ignores RLS, and
- * TRIGGER/REFERENCES are DDL-adjacent, so none of them may appear.
+ * names per relation, "*" for any relation). TRUNCATE ignores RLS,
+ * TRIGGER/REFERENCES are DDL-adjacent and MAINTAIN (PostgreSQL 17+) runs
+ * REINDEX/CLUSTER/REFRESH, so none of them may appear. A grant on a single
+ * column counts as the privilege on its table.
  */
 async function assertTableRights(
   client: ClientBase,
@@ -288,16 +341,28 @@ async function assertTableRights(
   ownSchemas: string[],
   allowed: Record<string, string[]>,
 ) {
+  const privileges = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+    ...((await serverVersion(client)) >= 170000 ? ["MAINTAIN"] : []),
+  ];
   const rights = await client.query(
     `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
-     CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) AS p(privilege)
+     CROSS JOIN unnest($3::text[]) AS p(privilege)
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND n.nspname <> ALL($2::text[])
        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-       AND has_table_privilege($1, c.oid, p.privilege)
+       AND CASE WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                THEN has_any_column_privilege($1, c.oid, p.privilege)
+                ELSE has_table_privilege($1, c.oid, p.privilege) END
        -- Extension views such as pg_stat_statements are readable by PUBLIC by
        -- design; that is not a right of this login. Only extension-owned
        -- relations are exempt, never application tables granted to PUBLIC.
@@ -307,7 +372,7 @@ async function assertTableRights(
          AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
        )
      ORDER BY 1, 2`,
-    [user, ownSchemas],
+    [user, ownSchemas, privileges],
   );
   const extra = rights.rows
     .filter(
@@ -324,9 +389,68 @@ async function assertTableRights(
     );
 }
 
+/**
+ * Default privileges (ALTER DEFAULT PRIVILEGES) are applied to every table or
+ * schema created later, for example by the next migration, so they get the
+ * same limits as existing tables: `allowedTable` for grants this login
+ * inherits (none through PUBLIC), never CREATE on schemas. Grants inside
+ * `ownSchemas` to the login itself are its own business.
+ */
+async function assertDefaultPrivileges(
+  client: ClientBase,
+  user: string,
+  label: string,
+  ownSchemas: string[],
+  allowedTable: string[],
+) {
+  const rows = await client.query(
+    `SELECT a.grantee = 0 AS public,
+            CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+            pg_get_userbyid(d.defaclrole) AS owner,
+            COALESCE(n.nspname::text, '') AS schema,
+            d.defaclobjtype AS type, a.privilege_type AS privilege
+     FROM pg_default_acl d
+     LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+     CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+     WHERE d.defaclobjtype IN ('r', 'n')
+       AND a.grantee <> d.defaclrole
+       AND CASE WHEN a.grantee = 0 THEN true ELSE pg_has_role($1, a.grantee, 'MEMBER') END
+     ORDER BY 3, 4, 5, 6`,
+    [user],
+  );
+  type Row = {
+    public: boolean;
+    grantee: string;
+    owner: string;
+    schema: string;
+    type: string;
+    privilege: string;
+  };
+  const extra = (rows.rows as Row[])
+    .filter((row) => {
+      if (row.type === "n") return row.privilege === "CREATE";
+      if (!row.public && ownSchemas.includes(row.schema)) return false;
+      return row.public || !allowedTable.includes(row.privilege);
+    })
+    .map(
+      (row) =>
+        `${row.privilege} on new ${row.type === "n" ? "schemas" : "tables"} created by ${row.owner}${row.schema ? ` in ${row.schema}` : ""} (granted to ${row.grantee})`,
+    );
+  if (extra.length)
+    throw new ProvisionError(
+      `The ${label} role would get default privileges it must not have: ${extra.slice(0, 5).join(", ")}${extra.length > 5 ? ", ..." : ""}. Remove them with ALTER DEFAULT PRIVILEGES ... REVOKE, then re-run.`,
+    );
+}
+
+/**
+ * Opens one admin connection and runs `work` in a single transaction under
+ * an advisory lock, so concurrent runs serialise. `commit: false` always
+ * rolls back (audit mode).
+ */
 async function withAdmin<T>(
   adminUrl: string,
   work: (client: ClientBase) => Promise<T>,
+  commit = true,
 ) {
   const client = new Client({
     connectionString: adminUrl,
@@ -334,12 +458,17 @@ async function withAdmin<T>(
   });
   await client.connect();
   try {
+    const version = await serverVersion(client);
+    if (version < MIN_SERVER_VERSION)
+      throw new ProvisionError(
+        `PostgreSQL 16 or newer is required; this server reports version ${Math.floor(version / 10000)}.`,
+      );
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
       LOCK_KEY,
     ]);
     const result = await work(client);
-    await client.query("COMMIT");
+    await client.query(commit ? "COMMIT" : "ROLLBACK");
     return result;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -349,7 +478,45 @@ async function withAdmin<T>(
   }
 }
 
-async function provisionApp(client: ClientBase, login: Login) {
+/**
+ * After the transaction commits, sign in with the URL exactly as given and
+ * confirm who PostgreSQL says we are. This is the check that cannot be fooled
+ * by URL parsing differences.
+ */
+async function verifyIdentity(login: Login, label: string, database: string) {
+  const client = new Client({
+    connectionString: login.url,
+    connectionTimeoutMillis: 5000,
+  });
+  try {
+    await client.connect();
+    const row = (
+      await client.query(
+        `SELECT current_user AS current, session_user AS session, current_database() AS database,
+                (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS elevated`,
+      )
+    ).rows[0];
+    if (
+      row.current !== login.user ||
+      row.session !== login.user ||
+      row.database !== database ||
+      row.elevated !== false
+    )
+      throw new ProvisionError(
+        `The ${label} URL does not sign in as ${login.user} on ${database}; refusing it.`,
+      );
+  } catch (error) {
+    if (error instanceof ProvisionError) throw error;
+    const code = (error as { code?: unknown }).code;
+    throw new ProvisionError(
+      `Could not sign in with the ${label} URL as ${login.user}${typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? ` (SQLSTATE ${code})` : ""}; check its password and host.`,
+    );
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function assertGroup(client: ClientBase) {
   const group = await client.query(
     "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
     [APP_GROUP],
@@ -370,22 +537,24 @@ async function provisionApp(client: ClientBase, login: Login) {
     throw new ProvisionError(
       `The ${APP_GROUP} group role must be NOLOGIN without elevated attributes.`,
     );
+}
+
+async function provisionApp(client: ClientBase, login: Login) {
+  await assertGroup(client);
   // Before PostgreSQL 15 every role could create in `public`. Revoking is a
   // no-op on newer servers and is verified below either way.
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
   const outcome = await upsertLogin(client, login, "application");
-  // Normalise existing memberships: drop any grant without INHERIT (16+) or
-  // with ADMIN OPTION, then grant cleanly. PostgreSQL 16+ keeps one row per
-  // grantor; a superuser can revoke each by name, anyone can revoke their own
-  // (or, before 16, the single row). Rows it cannot revoke stay and make
-  // assertRestricted refuse with the grantor named.
-  const version = await serverVersion(client);
+  // Normalise existing memberships: drop any grant without INHERIT or with
+  // ADMIN OPTION, then grant cleanly. PostgreSQL keeps one row per grantor; a
+  // superuser can revoke each by name, anyone can revoke their own. Rows it
+  // cannot revoke stay and make assertRestricted refuse with the grantor named.
   const admin = await client.query(
     "SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user",
   );
   const rows = await client.query(
     `SELECT pg_get_userbyid(m.grantor) AS grantor, m.admin_option,
-            ${version >= 160000 ? "m.inherit_option" : "true"} AS inherit
+            m.inherit_option AS inherit
      FROM pg_auth_members m
      WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
        AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)`,
@@ -397,26 +566,41 @@ async function provisionApp(client: ClientBase, login: Login) {
     inherit: boolean;
   }[]) {
     if (!row.admin_option && row.inherit) continue;
-    if (version < 160000 || row.grantor === admin.rows[0].name)
+    if (row.grantor === admin.rows[0].name)
       await client.query(`REVOKE ${APP_GROUP} FROM "${login.user}"`);
     else if (admin.rows[0].rolsuper && !row.grantor.includes('"'))
       await client.query(
         `REVOKE ${APP_GROUP} FROM "${login.user}" GRANTED BY "${row.grantor}"`,
       );
   }
-  await client.query(
-    version >= 160000
-      ? `GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`
-      : `GRANT ${APP_GROUP} TO "${login.user}"`,
-  );
-  await assertRestricted(client, login.user, "application", [APP_GROUP], []);
-  await assertTableRights(client, login.user, "application", [], {
-    "*": ["SELECT", "INSERT", "UPDATE", "DELETE"],
-  });
+  await client.query(`GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`);
+  await auditApp(client, login.user);
   return outcome;
 }
 
-async function provisionWorker(client: ClientBase, login: Login) {
+async function auditApp(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "application", [APP_GROUP], []);
+  await assertTableRights(client, user, "application", [], {
+    "*": APP_TABLE_RIGHTS,
+  });
+  await assertDefaultPrivileges(
+    client,
+    user,
+    "application",
+    [],
+    APP_TABLE_RIGHTS,
+  );
+}
+
+async function auditWorker(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "queue", [], [QUEUE_SCHEMA]);
+  await assertTableRights(client, user, "queue", [QUEUE_SCHEMA], {
+    "app.active_tenant_registry": ["SELECT"],
+  });
+  await assertDefaultPrivileges(client, user, "queue", [QUEUE_SCHEMA], []);
+}
+
+async function assertRegistry(client: ClientBase) {
   const registry = await client.query(
     "SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relname = 'active_tenant_registry'",
   );
@@ -424,27 +608,26 @@ async function provisionWorker(client: ClientBase, login: Login) {
     throw new ProvisionError(
       "Run the migrations first: the trusted app.active_tenant_registry view does not exist.",
     );
+}
+
+async function provisionWorker(client: ClientBase, login: Login) {
+  await assertRegistry(client);
   const outcome = await upsertLogin(client, login, "queue");
-  const owner = await client.query(
-    "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1",
-    [QUEUE_SCHEMA],
-  );
-  if (owner.rows.length && owner.rows[0].owner !== login.user)
+  const owner = await queueSchemaOwner(client);
+  if (owner && owner !== login.user)
     throw new ProvisionError(
-      "The pg-boss schema is owned by a different role.",
+      `The pg-boss schema is owned by ${owner}, not ${login.user}. If the queue login was renamed, run ALTER SCHEMA ${QUEUE_SCHEMA} OWNER TO "${login.user}" as the migration owner, then re-run.`,
     );
-  if (!owner.rows.length) {
+  if (!owner) {
     // A non-superuser CREATEROLE admin may only hand an object to a role it
-    // can SET ROLE to. On PostgreSQL 16+ creating a role grants ADMIN without
-    // SET, so grant SET (never INHERIT) first. Older servers need membership.
+    // can SET ROLE to, and creating a role grants ADMIN without SET, so grant
+    // SET (never INHERIT) first.
     const admin = await client.query(
-      "SELECT rolsuper, current_setting('server_version_num')::int AS version FROM pg_roles WHERE rolname = current_user",
+      "SELECT rolsuper FROM pg_roles WHERE rolname = current_user",
     );
     if (!admin.rows[0].rolsuper)
       await client.query(
-        admin.rows[0].version >= 160000
-          ? `GRANT "${login.user}" TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`
-          : `GRANT "${login.user}" TO CURRENT_USER`,
+        `GRANT "${login.user}" TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
       );
     await client.query(
       `CREATE SCHEMA ${QUEUE_SCHEMA} AUTHORIZATION "${login.user}"`,
@@ -455,11 +638,18 @@ async function provisionWorker(client: ClientBase, login: Login) {
   await client.query(
     `GRANT SELECT ON app.active_tenant_registry TO "${login.user}"`,
   );
-  await assertRestricted(client, login.user, "queue", [], [QUEUE_SCHEMA]);
-  await assertTableRights(client, login.user, "queue", [QUEUE_SCHEMA], {
-    "app.active_tenant_registry": ["SELECT"],
-  });
+  await auditWorker(client, login.user);
   return outcome;
+}
+
+async function queueSchemaOwner(
+  client: ClientBase,
+): Promise<string | undefined> {
+  const owner = await client.query(
+    "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = $1",
+    [QUEUE_SCHEMA],
+  );
+  return owner.rows[0]?.owner;
 }
 
 export type ProvisionResult = {
@@ -468,9 +658,10 @@ export type ProvisionResult = {
 };
 
 /**
- * Creates or re-keys the restricted logins in one transaction, then verifies
- * them. Idempotent: a second run with the same URLs succeeds and changes only
- * the stored verifier salt.
+ * Creates or re-keys the restricted logins in one transaction, verifies them,
+ * then signs in with each URL to confirm the identity PostgreSQL sees.
+ * Idempotent: a second run with the same URLs succeeds and changes only the
+ * stored verifier salt.
  */
 export async function provisionRoles(options: {
   adminUrl: string;
@@ -486,17 +677,99 @@ export async function provisionRoles(options: {
   const worker = options.workerUrl
     ? parseLogin(options.adminUrl, options.workerUrl, WORKER_LOGIN, "queue")
     : undefined;
-  return withAdmin(options.adminUrl, async (client) => {
-    const result: ProvisionResult = {
-      app: { user: app.user, outcome: await provisionApp(client, app) },
-    };
-    if (worker)
-      result.worker = {
-        user: worker.user,
-        outcome: await provisionWorker(client, worker),
+  const { result, database } = await withAdmin(
+    options.adminUrl,
+    async (client) => {
+      const result: ProvisionResult = {
+        app: { user: app.user, outcome: await provisionApp(client, app) },
       };
-    return result;
-  });
+      if (worker)
+        result.worker = {
+          user: worker.user,
+          outcome: await provisionWorker(client, worker),
+        };
+      return { result, database: await currentDatabase(client) };
+    },
+  );
+  await verifyIdentity(app, "application", database);
+  if (worker) await verifyIdentity(worker, "queue", database);
+  return result;
+}
+
+async function assertLogin(client: ClientBase, user: string, label: string) {
+  const role = await client.query(
+    "SELECT rolcanlogin AND rolinherit AS usable FROM pg_roles WHERE rolname = $1",
+    [user],
+  );
+  if (!role.rows.length)
+    throw new ProvisionError(
+      `The ${label} login ${user} does not exist yet; run deploy/single-vm/provision-roles.sh before starting the services.`,
+    );
+  if (!role.rows[0].usable)
+    throw new ProvisionError(
+      `The ${label} login ${user} cannot log in or does not inherit its group; re-run provision-roles.sh.`,
+    );
+  await assertNoSettings(client, user, label);
+}
+
+/**
+ * Verifies the provisioned state without changing anything (deploy.sh runs
+ * it after every migration): both logins exist, keep their limits, and the
+ * URLs sign in as them. Fails with the same messages as provisioning.
+ */
+export async function auditRoles(options: {
+  adminUrl: string;
+  appUrl: string;
+  workerUrl: string;
+}) {
+  const app = parseLogin(
+    options.adminUrl,
+    options.appUrl,
+    APP_LOGIN,
+    "application",
+  );
+  const worker = parseLogin(
+    options.adminUrl,
+    options.workerUrl,
+    WORKER_LOGIN,
+    "queue",
+  );
+  const database = await withAdmin(
+    options.adminUrl,
+    async (client) => {
+      await assertGroup(client);
+      await assertRegistry(client);
+      await assertLogin(client, app.user, "application");
+      const member = await client.query(
+        "SELECT pg_has_role($1, $2, 'USAGE') AS member",
+        [app.user, APP_GROUP],
+      );
+      if (!member.rows[0].member)
+        throw new ProvisionError(
+          `The application login ${app.user} does not inherit ${APP_GROUP}; re-run provision-roles.sh.`,
+        );
+      await auditApp(client, app.user);
+      await assertLogin(client, worker.user, "queue");
+      if ((await queueSchemaOwner(client)) !== worker.user)
+        throw new ProvisionError(
+          `The pg-boss schema is not owned by ${worker.user}; re-run provision-roles.sh.`,
+        );
+      const registry = await client.query(
+        "SELECT has_table_privilege($1, 'app.active_tenant_registry', 'SELECT') AS granted",
+        [worker.user],
+      );
+      if (!registry.rows[0].granted)
+        throw new ProvisionError(
+          `The queue login ${worker.user} cannot read app.active_tenant_registry; re-run provision-roles.sh.`,
+        );
+      await auditWorker(client, worker.user);
+      return currentDatabase(client);
+    },
+    false,
+  );
+  await verifyIdentity(app, "application", database);
+  await verifyIdentity(worker, "queue", database);
+  return { app: app.user, worker: worker.user };
 }
 
 /** Local development and test harness entry point (scripts/*.mjs). */
@@ -511,5 +784,9 @@ export async function provisionAppRole(adminUrl: string, appUrl: string) {
 /** Queue login only, for callers that manage the application login apart. */
 export async function provisionWorkerRole(adminUrl: string, workerUrl: string) {
   const worker = parseLogin(adminUrl, workerUrl, WORKER_LOGIN, "queue");
-  await withAdmin(adminUrl, (client) => provisionWorker(client, worker));
+  const database = await withAdmin(adminUrl, async (client) => {
+    await provisionWorker(client, worker);
+    return currentDatabase(client);
+  });
+  await verifyIdentity(worker, "queue", database);
 }
