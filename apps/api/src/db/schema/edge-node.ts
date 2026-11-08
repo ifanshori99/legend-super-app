@@ -281,12 +281,6 @@ export const edgeInboundEvents = pgTable(
         table.eventId,
       ],
     }),
-    // Cross-node dedupe on the cloud (legend-wg5t): primary and standby of one
-    // outlet may send the same event id. Partial, so cloud_to_edge stays per
-    // node. Backs the tenant-wide "already received" check in db-link-store.
-    uniqueIndex("edge_inbound_events_edge_to_cloud_event_key")
-      .on(table.tenantId, table.direction, table.eventId)
-      .where(sql`${table.direction} = 'edge_to_cloud'`),
     index("edge_inbound_events_aggregate_idx").on(
       table.tenantId,
       table.edgeNodeId,
@@ -308,6 +302,35 @@ export const edgeInboundEvents = pgTable(
       "edge_inbound_events_outcome_check",
       sql`${table.outcome} IN ('applied', 'superseded', 'conflict')`,
     ),
+  ],
+);
+
+// Cloud-side registry of edge_to_cloud event ids, one row per (tenant, event)
+// whichever node delivered it first (legend-wg5t). Primary and standby of one
+// outlet may both send the same event id (the standby took over with the
+// primary's outbox); receipts in edge_inbound_events stay per node and
+// append-only, so the tenant-wide "already received" check and its race
+// guard (primary key) live here instead of in a unique index on the
+// receipts, which pre-existing duplicate receipts would break. Migration 0063
+// backfills it from the receipts. Append-only like the receipts.
+export const edgeReceivedEvents = pgTable(
+  "edge_received_events",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    firstEdgeNodeId: uuid("first_edge_node_id").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.eventId] }),
+    foreignKey({
+      name: "edge_received_events_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.firstEdgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
   ],
 );
 

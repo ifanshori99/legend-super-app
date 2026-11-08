@@ -161,15 +161,18 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
           const eventUuid = ulidToUuid(event.id);
           // edge_to_cloud: primary and standby of one outlet may both send the
           // same event id (the standby took over with the primary's outbox,
-          // legend-wg5t), so "received" is tenant-wide. The partial unique
-          // index edge_inbound_events_edge_to_cloud_event_key makes that
-          // race-safe: a concurrent duplicate fails its insert, the batch
-          // rolls back and the retry skips the event. cloud_to_edge stays per
-          // node (each edge node has its own database).
+          // legend-wg5t), so "received" is tenant-wide and read from the
+          // edge_received_events registry. It is a separate table (PK tenant,
+          // event) instead of a unique index on edge_inbound_events because old
+          // data already holds receipts for one event on two nodes, which
+          // would fail such an index. The registry insert below has no ON
+          // CONFLICT on purpose: a concurrent duplicate fails the PK, the
+          // batch rolls back and the retry skips the event. cloud_to_edge
+          // stays per node (each edge node has its own database).
           const seen =
             inbound === "edge_to_cloud"
               ? await tx.execute(
-                  sql`SELECT 1 FROM edge_inbound_events WHERE tenant_id = ${node.tenantId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
+                  sql`SELECT 1 FROM edge_received_events WHERE tenant_id = ${node.tenantId}::uuid AND event_id = ${eventUuid}::uuid`,
                 )
               : await tx.execute(
                   sql`SELECT 1 FROM edge_inbound_events WHERE edge_node_id = ${nodeId}::uuid AND direction = ${inbound} AND event_id = ${eventUuid}::uuid`,
@@ -217,6 +220,10 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
               sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, event) VALUES (${ulidToUuid(createUlid())}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${decision.reason}, ${decision.resolution}, ${lastSequence}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING`,
             );
           }
+          if (inbound === "edge_to_cloud")
+            await tx.execute(
+              sql`INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${eventUuid}::uuid, ${nodeId}::uuid)`,
+            );
           await tx.execute(
             sql`INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome) VALUES (${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${linkSeq}, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${outcome})`,
           );

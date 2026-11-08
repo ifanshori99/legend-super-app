@@ -180,6 +180,7 @@ afterAll(async () => {
     await client.query("SET LOCAL session_replication_role = replica");
     for (const table of [
       "edge_inbound_events",
+      "edge_received_events",
       "edge_sync_conflicts",
       "edge_outbound_queue",
       "sync_cursors",
@@ -372,7 +373,7 @@ describe("legend-wg5t cross-node dedupe", () => {
       fromPrimary.applyInbound(batch(await fromPrimary.lastReceivedInbound())),
       fromStandby.applyInbound(batch(await fromStandby.lastReceivedInbound())),
     ]);
-    // The loser rolled back (unique index) or ran after the winner and
+    // The loser rolled back (registry primary key) or ran after the winner and
     // skipped; the sender retries whichever failed.
     for (const [index, result] of results.entries()) {
       if (result.status === "fulfilled") continue;
@@ -383,22 +384,154 @@ describe("legend-wg5t cross-node dedupe", () => {
     expect(await inboundCount(one.tenantId, event.id)).toBe(1);
   });
 
-  it("the unique index refuses a second edge_to_cloud row at the database, but not cloud_to_edge", async () => {
+  it("edge_to_cloud: a duplicate racing an uncommitted registry row fails on the primary key, then the retry skips it", async () => {
+    // Forces the interleaving the test above may not hit: the primary's
+    // registry row is written but not committed when the standby checks
+    // "seen", so the standby's own registry insert must block and then fail.
+    const applied: string[] = [];
+    const fromStandby = await storesFor(
+      standby1.credential,
+      "cloud_to_edge",
+      applied,
+    );
+    const event = orderEvent(one, randomUUID(), 1);
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        `INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES ($1, $2, $3, $4)`,
+        [
+          one.tenantId,
+          one.outletId,
+          ulidToUuid(event.id),
+          primary1.edgeNode.id,
+        ],
+      );
+      const from = await fromStandby.lastReceivedInbound();
+      const racing = fromStandby.applyInbound({
+        fromSeq: from,
+        toSeq: from + 1,
+        events: [{ linkSeq: from + 1, event }],
+      });
+      racing.catch(() => undefined);
+      // Commit only once the standby is waiting on the primary-key lock.
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const waiting = await owner.query(
+          `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE 'INSERT INTO edge_received_events%'`,
+        );
+        if (waiting.rows.length > 0) break;
+        if (Date.now() > deadline)
+          throw new Error("standby never blocked on the registry");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await holder.query("COMMIT");
+      const failure: unknown = await racing.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const code =
+        (failure as { code?: string; cause?: { code?: string } })?.cause
+          ?.code ?? (failure as { code?: string })?.code;
+      expect(code).toBe("23505");
+    } finally {
+      holder.release();
+    }
+    expect(await inboundCount(one.tenantId, event.id)).toBe(0);
+    // The sender retries the same batch: now "seen", skipped, cursor moves.
+    const from = await fromStandby.lastReceivedInbound();
+    await fromStandby.applyInbound({
+      fromSeq: from,
+      toSeq: from + 1,
+      events: [{ linkSeq: from + 1, event }],
+    });
+    expect(await inboundCount(one.tenantId, event.id)).toBe(0);
+    expect(await fromStandby.lastReceivedInbound()).toBe(from + 1);
+  });
+
+  const receiptRow = (
+    nodeId: string,
+    direction: string,
+    eventId: string,
+    fixture: Fixture = one,
+  ) =>
+    owner.query(
+      `INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome)
+       VALUES ($1, $2, $3, $4, $5, 1, 'order', $6, 1, 'transaction_event', 'applied')`,
+      [
+        fixture.tenantId,
+        fixture.outletId,
+        nodeId,
+        direction,
+        eventId,
+        randomUUID(),
+      ],
+    );
+  const registryRow = (
+    nodeId: string,
+    eventId: string,
+    fixture: Fixture = one,
+  ) =>
+    owner.query(
+      `INSERT INTO edge_received_events (tenant_id, outlet_id, event_id, first_edge_node_id) VALUES ($1, $2, $3, $4)`,
+      [fixture.tenantId, fixture.outletId, eventId, nodeId],
+    );
+
+  it("the registry primary key refuses a second (tenant, event) row", async () => {
     const node = await authenticateEdgeCredential(primary1.credential);
     const standby = await authenticateEdgeCredential(standby1.credential);
     const shared = randomUUID();
-    const row = (nodeId: string, direction: string) =>
-      owner.query(
-        `INSERT INTO edge_inbound_events (tenant_id, outlet_id, edge_node_id, direction, event_id, link_seq, aggregate_type, aggregate_id, aggregate_sequence, kind, outcome)
-         VALUES ($1, $2, $3, $4, $5, 1, 'order', $6, 1, 'transaction_event', 'applied')`,
-        [one.tenantId, one.outletId, nodeId, direction, shared, randomUUID()],
-      );
-    await row(node!.scope.edgeNodeId, "edge_to_cloud");
+    await registryRow(node!.scope.edgeNodeId, shared);
     await expect(
-      row(standby!.scope.edgeNodeId, "edge_to_cloud"),
-    ).rejects.toThrow(/edge_inbound_events_edge_to_cloud_event_key/);
-    await row(node!.scope.edgeNodeId, "cloud_to_edge");
-    await row(standby!.scope.edgeNodeId, "cloud_to_edge");
+      registryRow(standby!.scope.edgeNodeId, shared),
+    ).rejects.toThrow(/edge_received_events_tenant_id_event_id_pk/);
+  });
+
+  it("receipts of one event on two nodes are allowed in edge_inbound_events (old data shape)", async () => {
+    const node = await authenticateEdgeCredential(primary1.credential);
+    const standby = await authenticateEdgeCredential(standby1.credential);
+    const shared = randomUUID();
+    // Pre-0063 data holds both receipts; no unique index may refuse them.
+    await receiptRow(node!.scope.edgeNodeId, "edge_to_cloud", shared);
+    await receiptRow(standby!.scope.edgeNodeId, "edge_to_cloud", shared);
+    await receiptRow(node!.scope.edgeNodeId, "cloud_to_edge", shared);
+    await receiptRow(standby!.scope.edgeNodeId, "cloud_to_edge", shared);
+    const count = await owner.query(
+      `SELECT count(*)::int AS n FROM edge_inbound_events WHERE tenant_id = $1 AND event_id = $2`,
+      [one.tenantId, shared],
+    );
+    expect(count.rows[0].n).toBe(4);
+  });
+
+  it("registry rows are append-only: UPDATE and DELETE are refused", async () => {
+    const node = await authenticateEdgeCredential(primary1.credential);
+    const eventId = randomUUID();
+    await registryRow(node!.scope.edgeNodeId, eventId);
+    await expect(
+      owner.query(
+        `UPDATE edge_received_events SET received_at = now() WHERE tenant_id = $1 AND event_id = $2`,
+        [one.tenantId, eventId],
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query(
+        `DELETE FROM edge_received_events WHERE tenant_id = $1 AND event_id = $2`,
+        [one.tenantId, eventId],
+      ),
+    ).rejects.toThrow();
+    const still = await owner.query(
+      `SELECT count(*)::int AS n FROM edge_received_events WHERE tenant_id = $1 AND event_id = $2`,
+      [one.tenantId, eventId],
+    );
+    expect(still.rows[0].n).toBe(1);
+  });
+
+  it("another tenant can reuse an event id in the registry", async () => {
+    const node = await authenticateEdgeCredential(primary1.credential);
+    const other = await authenticateEdgeCredential(primary2.credential);
+    const shared = randomUUID();
+    await registryRow(node!.scope.edgeNodeId, shared);
+    await registryRow(other!.scope.edgeNodeId, shared, two);
   });
 
   it("cloud_to_edge stays per node, and another tenant may reuse an event id", async () => {

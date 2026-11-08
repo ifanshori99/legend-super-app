@@ -1,5 +1,5 @@
 {
-  "id": "c0c8309c-d3d8-4d7d-81dc-1ee258dc4c8d",
+  "id": "18aff59e-81f5-4c18-9897-4e978d52add4",
   "prevId": "72500ebb-2ca7-4201-928e-db949562135e",
   "version": "7",
   "dialect": "postgresql",
@@ -29431,34 +29431,6 @@
         }
       },
       "indexes": {
-        "edge_inbound_events_edge_to_cloud_event_key": {
-          "name": "edge_inbound_events_edge_to_cloud_event_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "direction",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"edge_inbound_events\".\"direction\" = 'edge_to_cloud'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "edge_inbound_events_aggregate_idx": {
           "name": "edge_inbound_events_aggregate_idx",
           "columns": [
@@ -30031,6 +30003,102 @@
           "value": "(\"edge_outbound_queue\".\"status\" = 'pending' AND \"edge_outbound_queue\".\"acked_at\" IS NULL) OR (\"edge_outbound_queue\".\"status\" = 'acked' AND \"edge_outbound_queue\".\"acked_at\" IS NOT NULL)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.edge_received_events": {
+      "name": "edge_received_events",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "first_edge_node_id": {
+          "name": "first_edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_received_events_tenant_id_tenants_id_fk": {
+          "name": "edge_received_events_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_received_events",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_received_events_outlet_id_outlets_id_fk": {
+          "name": "edge_received_events_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_received_events",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_received_events_edge_node_fk": {
+          "name": "edge_received_events_edge_node_fk",
+          "tableFrom": "edge_received_events",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "first_edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_received_events_tenant_id_event_id_pk": {
+          "name": "edge_received_events_tenant_id_event_id_pk",
+          "columns": [
+            "tenant_id",
+            "event_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.edge_sync_conflicts": {

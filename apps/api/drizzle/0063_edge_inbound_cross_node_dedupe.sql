@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "edge_inbound_events_edge_to_cloud_event_key" ON "edge_inbound_events" USING btree ("tenant_id","direction","event_id") WHERE "edge_inbound_events"."direction" = 'edge_to_cloud';
