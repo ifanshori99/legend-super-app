@@ -129,3 +129,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Watermark disimpan di tabel baru `edge_pull_checkpoints` (migration `0069_hesitant_smiling_tiger`, RLS tenant + outlet), bukan dari replika: heartbeat edge menaikkan `updated_at` lokal.
 - Gagal tarik: replika lama tetap dipakai, tidak ada akses device yang dibuka. Basi bila tarik sukses terakhir lebih tua dari `EDGE_DEVICE_SYNC_STALE_SECONDS` (default 900): log error, `deviceRegistry.stale` di `/api/edge/status` dan `/api/edge/health` (status HTTP health tidak berubah).
 - Kontrak: `edgeStatusSchema.deviceRegistry` opsional (edge lama tidak mengirimnya). Lanjutan web: tampilkan status basi di panel edge dan isi mock `apps/web/src/features/ws02-edge/mock.ts`.
+
+## WS-13 alur bisnis A–Z (qa/test-writer, cabang `ws/e2e-az`, brief 91, 2026-11-09)
+
+- Sudah: 7 berkas tes integrasi `apps/api/src/test/e2e-az/` (A/Y, E/W, D, J, K+cuti, H, R) + `e2e/az-whitelabel.spec.ts`. API: 57 lulus, 64 skip (`PENDING-BRANCH`/`PENDING-CARD`/`PENDING-DECISION`), 0 gagal. Laporan: `docs/qa/2026-11-09-e2e-az.md`.
+- Bug P1 dibuat: legend-vj37 (bundel API crash di boot karena `sharp`, `pnpm test:e2e` m1 merah), legend-ozud (manifest PWA nama platform), legend-ww29 (`/design-system` nama platform).
+- Langkah berikut: tiap merge train menggabungkan cabang di daftar `PENDING-BRANCH`, ganti `describeUntilMerged` → `describe` di berkas terkait lalu jalankan. Spec Playwright jalan setelah legend-vj37 fix.
+- Keputusan perlu CTO: kartu online (PRD 223: P1 Duitku, bukan DOIT); teks transfer bank di PRD 223/257/680/1754; aksi approval EDC-04 berdiri sendiri.
+- Biaya sesi: utama Opus 95 req, subagent Sonnet 443 req, total biaya* 8008k; 18 subagent, maks ~8 bersamaan.
