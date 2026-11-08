@@ -93,6 +93,15 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Biaya sesi ui-engineer (transkrip 5d27428b, 1 compact, 40+ subagent): Opus utama 3694k, Sonnet 8474k, Haiku 223k; total sekitar 12391k unit biaya (sebelum gelombang audit terakhir).
 - Sisa (saran): tab terpilih "Kas keluar" masih hitam pekat (ui-auditor: pakai gaya netral), chip, ikon dan perataan kecil vs mockup, header shell tanpa nama kasir.
 
+## legend-apt EDC agent: perbaikan review K (engineer, cabang `ws/edc-framework`)
+
+- `main` di-merge; migrasi EDC lama 0063/0064 dibuang, dibuat ulang dengan drizzle-kit dari 0067 jadi `0068_edc_transactions.sql` + `0069_edc_rls.sql`. 0068 melepas FORCE RLS di outlets, payment_edc_terminals, payment_intents selama validasi FK (pola 0065, migrator owner non-superuser).
+- Agent: retry ditolak `EDC_NEEDS_RECONCILIATION` bila ada baris referensi itu yang ditandai rekonsiliasi (approved late), `EDC_STATUS_UNKNOWN` bila masih in-flight; `not_found` dipercaya hanya 15 menit sejak dispatch (`notFoundTrustWindowMs`); cancel lewat antrean terminal kecuali sale-nya sendiri sedang memegang kunci, ditolak saat terminal stuck; jawaban trace salah: inquiry tidak menulis hasil, sale/cancel simpan bukti + tandai rekonsiliasi; recoverPending hanya outlet yang baru diambil.
+- Outbox: `edc_transaction.created/approved/declined/failed/cancelled/flagged` ditulis di transaksi yang sama (EDC-05). `settled` disisakan untuk settlement bank (EDC-06).
+- Skema: kolom `type`, `mode`, `payment_intent_id`; `EdcProvider.void` + simulator; registry menolak simulator di production. Unique approved per referensi kini hanya `type = 'sale'`.
+- Batch check (lanjutan CTO): `dispatch_batch_no` (migrasi 0070) = batch terakhir terminal saat dispatch; `not_found` hanya jadi `failed` bila batch di jawaban sama dengan batch saat dispatch, selain itu `unknown` + rekonsiliasi (bank tutup batch dalam 15 menit tidak lagi memicu tagih dobel). Kontrak `EdcProvider`: frame sale terkirim sinkron saat `sale()` dipanggil; `not_found` wajib membawa `batchNo`.
+- Sisa risiko: sale pertama di terminal (batch belum diketahui) atau sesudah settlement malam selalu masuk rekonsiliasi manual bila hasilnya tak pasti; race kecil di `recoverInFlight` publik (baris yang dispatch di tick yang sama bisa sempat `unknown`, jawaban akhir tetap tercatat).
+
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
@@ -127,6 +136,33 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
   - Feed dipangkas tiap sequence ke-500: hanya baris > 24 jam DAN > 2000 di belakang cursor; trigger DB hanya mengizinkan delete itu (legend_app dapat DELETE lagi di tabel feed saja).
   - POS fire tidak pernah gagal karena stasiun kosong (skip + audit `kitchen_ticket.unrouted` + warn).
   - Bukti: test per bagian lulus (kds + kds-realtime 63/63, menu-api 17/17). Gerbang penuh pertama gagal lint saja (helper tak terpakai, dibetulkan). Gerbang penuh setelah commit terakhir BELUM selesai: dihentikan sistem karena memori Mac kritis.
+## legend-5cnk + legend-y4wp PPh 21 round 2 (engineer, cabang `ws/payroll-pph21-tests`)
+
+- Selesai: engine PPh 21 v2 (`apps/api/src/services/payroll-pph21.ts`) membetulkan 3 P1 + 3 P2 temuan Codex, ditambah 2 bug dari reviewer (Desember tanpa bayaran, gross_first menagih karyawan atas kurang bayar riwayat net). Kebijakan PPh 21 per tenant: kontrak `packages/shared/src/hris/payroll/pph21-policy.ts`, tabel `payroll_pph21_policies` (migrasi 0068/0069 setelah dinomori ulang, RLS FORCE, append-only), service + route `/api/hris/payroll/pph21-policies` (payroll.view / payroll.run, idempotency, audit).
+- Test: 108 test engine PPh 21 (R01-R65 + guard) + 5 kontrak kebijakan + test DB + test API. Gerbang penuh hijau setelah perubahan terakhir (141 file, 1332 test; build; format; color; tenant-hardcode).
+- Berikut: `legend-oo3q` (pin versi kebijakan di snapshot run + sambung engine ke payslip builder). Migrasi 0063/0064 bentrok nomor dengan cabang lain: nomori ulang saat merge.
+
+## legend-oo3q + legend-iwgb engine PPh 21 tersambung ke slip gaji dan payroll run (engineer, cabang `ws/payroll-pph21-tests`)
+
+- Selesai: engine pindah ke `packages/shared/src/hris/payroll/pph21.ts`; satu langkah pajak slip `payslip-tax.ts` (`computePayslipTax`) dipakai builder slip mock (`fixtures.ts`) dan service run API (`payroll-run-pph21.service.ts`). Snapshot run menyimpan `pph21Policy` (id, versi, tanggal berlaku; null = default); `pph21PolicyForRun` memakai versi tersimpan setelah lock, beda versi = PAYROLL_SNAPSHOT_MISMATCH. `annualTaxableIncome` dihapus. Tabel TER fixture diganti tabel PP 58 lengkap (bukan hanya kategori B 1,5%).
+- Test: run end-to-end di test DB (`payroll-run-pph21-db.test.ts`: 5 karyawan + Desember, v1 down / v2 half_up, lock, tamper, tenant lain). Gerbang penuh hijau (142 file, 1340 test; build; format; color; tenant-hardcode) + 6 spec e2e mock payroll (66 lulus).
+- Belum: tabel `payroll_runs` belum ada (legend-gfcr / legend-07eg); run belum disimpan, service menerima data run dari pemanggil.
+
+## Perbaikan review K PPh 21 (engineer, cabang `ws/payroll-pph21-tests`, 2026-11-08)
+
+- Selesai: main di-merge; migrasi 0063/0064 lama (bentrok dengan `fiscal_close_lock`, `when` lebih tua dari 0067) dihapus dan di-generate ulang jadi `0068_payroll_pph21_policy` + `0069_payroll_pph21_policy_rls` (RLS + REVOKE disalin). Engine: `gross_first` dengan `priorTax = 0` membagi kekurangan Jan–Nov menurut campuran skema (R69–R71). Keputusan founder 2026-11-08: pajak atas BPJS pemberi kerja untuk karyawan net/gross-up ditanggung perusahaan (R66–R68); karyawan campuran yang punya baris gross tetap seperti R17b. Lock: `lockPayrollRunTax` membaca kebijakan di transaksi lock dan menolak `PAYROLL_SNAPSHOT_MISMATCH` bila beda dari ref saat approve. `Pph21PolicyRef.parametersHash` (SHA-256 JSON kanonik) dibandingkan di `pph21PolicyForRun`.
+- Test: upgrade migrasi (DB baru + DB di 0067), test ref/hash, 4 test DB lock.
+- Belum: pemanggil lock belum ada (tabel `payroll_runs` belum dibangun) — run service wajib memanggil `lockPayrollRunTax` dengan ref saat approve.
+- Lanjutan (keputusan CTO 2026-11-08): karyawan campuran — pajak atas BPJS pemberi kerja dibagi menurut porsi gross per skema bulan itu (basis karyawan = baris gross + floor(benefit x gross / semua baris)); di mode `proportional` seluruh T, termasuk kekurangan Jan–Nov, mengikuti porsi itu. Baris gross Rp1 hanya memindahkan porsinya. R17b diubah; test batas R77–R82 + R62b. Commit 1bda9807.
+
+## legend-hvvn + legend-rbjw persetujuan refund dan refund ke provider (engineer, cabang `ws/refund-approval`)
+
+- Refund (biasa, dana tak teralokasi, refund sistem reservasi/POS) disetujui atau ditolak lewat `approval_requests` (matriks approval, dibuka saat keputusan pertama). Approver bukan peminta, rantai sekali pakai dan terikat ke refund + nominal. Refund sistem: orang pertama mengajukan, orang lain menyetujui; tolak langsung oleh pemegang `payment.reconcile`.
+- Status: `pending` → `approved` → `completed` | `failed` (`failure_reason`: rejected, approval_expired, provider_declined, cap_exceeded, source_document, approver_unauthorized). Enum status tidak diubah (web memakai Record lengkap).
+- Port baru `PaymentRefundPort` (`payment-refund-gateway.ts`), terpisah dari `PaymentGatewayPort` supaya fake lama dan cabang DOIT tidak rusak. Kunci idempotensi `refund:<id>`, klaim berlease + token, timeout 30 detik, cek status sebelum kirim ulang, sweep worker `sweepApprovedRefundPayouts` (backoff, berhenti di 8 percobaan → `MANUAL_RECONCILIATION`). `applyRefundProviderUpdate` siap untuk webhook DOIT.
+- Migrasi `0068_refund_approval_payout` (dulu 0063, digenerate ulang setelah merge main 0063–0067).
+- Bead lanjutan: `legend-0ogy` (adapter + webhook DOIT), `legend-kfkt` (UI tolak/ulangi + alasan gagal), `legend-n9kn` (refund pending yang tak pernah diputuskan).
+- Perbaikan review K (8 Nov 2026): main digabung, migration lama 0063 dihapus dan digenerate ulang jadi `0068_refund_approval_payout`. Refund admin atas pembayaran yang terikat dokumen penjualan (`orderId`, `accessTicketId`, `subscriptionInvoiceId`) ditolak 409 `REFUND_SOURCE_DOCUMENT`; refund penjualan lewat modul pemilik (`order.refunded`, yang memposting jurnal). Pengecualian: peminta `system:*` (dana telat/DP yang tidak pernah dijurnal) dan dana tak teralokasi. Refund lama yang terlanjur pending gagal `source_document`. Approve/tolak idempoten per kunci di transaksi langkah pertama (`refund.approved` / `refund.rejected` di `payment_admin_idempotency`). Approver rantai tanpa `payment.reconcile` di outlet → refund `failed` `approver_unauthorized`, tidak dibayar. Sweep payout keluar dari tick relay ke loop sendiri (30 detik, anggaran 20 detik per tenant, berhenti saat shutdown). Jawaban provider `pending` tidak menghabiskan 8 percobaan (`payout_pending_polls`); tandai manual hanya bila pending lebih dari 72 jam. Refund dana memakai evidence milik dana (`payment_unallocated_funds.evidence_id`, baris lama memakai perilaku lama).
 
 ## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
 
