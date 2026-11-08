@@ -208,7 +208,12 @@ const hasTenantRows = async (fixture: Fixture) =>
 
 // ---- bundle helpers --------------------------------------------------------
 
-type Bundle = Record<string, any>;
+type Bundle = Record<string, unknown> & {
+  tenant: Record<string, unknown>;
+  outlet: Record<string, unknown>;
+  legalEntity: Record<string, unknown>;
+  issuedAt: string;
+};
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -230,11 +235,13 @@ const sign = (bundle: unknown, credential: string) =>
     .update(canonical(bundle))
     .digest("hex");
 
-const unwrap = (body: any): { bundle: Bundle; signature: string } =>
-  body?.data ?? body;
+type Signed = { bundle: Bundle; signature: string };
+const unwrap = (body: unknown): Signed =>
+  ((body as { data?: Signed } | undefined)?.data ?? body) as Signed;
 
 const brandsOf = (bundle: Bundle): { id: string }[] =>
-  bundle.brands ?? (bundle.brand ? [bundle.brand] : []);
+  (bundle.brands as { id: string }[] | undefined) ??
+  (bundle.brand ? [bundle.brand as { id: string }] : []);
 
 async function cloudBundle(fixture: Fixture) {
   const response = await request(app)

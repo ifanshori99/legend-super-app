@@ -17,6 +17,7 @@ CREATE TABLE "edge_sync_conflict_resolutions" (
 --> statement-breakpoint
 ALTER TABLE "edge_nodes" ADD COLUMN "previous_credential_hash" varchar(64);--> statement-breakpoint
 ALTER TABLE "edge_nodes" ADD COLUMN "previous_credential_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "edge_sync_conflicts" ADD COLUMN "detail" varchar(500);--> statement-breakpoint
 ALTER TABLE "pos_orders" ADD COLUMN "is_training" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "edge_sync_conflict_resolutions" ADD CONSTRAINT "edge_sync_conflict_resolutions_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "edge_sync_conflict_resolutions" ADD CONSTRAINT "edge_sync_conflict_resolutions_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

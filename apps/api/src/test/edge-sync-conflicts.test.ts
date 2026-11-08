@@ -25,6 +25,7 @@ import type { PoolClient } from "pg";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  CoreError,
   createUlid,
   outletIdSchema,
   tenantIdSchema,
@@ -40,15 +41,18 @@ import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import {
+  EdgeApplierUnavailableError,
   setEdgeEventApplier,
   type EdgeApplyMeta,
   type EdgeEventApplier,
 } from "../edge/ports.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
   authenticateEdgeCredential,
   registerEdgeNode,
+  revokeEdgeNode,
 } from "../services/edge-node.service.ts";
 import {
   getEdgeSyncConflict,
@@ -1252,5 +1256,320 @@ describe("legend-wqc6 replay guards", () => {
       [tenantA.tenantId, aggregateId],
     );
     expect(rows.map((row) => row.outcome)).toEqual(["applied"]);
+  });
+});
+
+// ---- applier refusal becomes a conflict; replay order; revoked node -------------------
+
+describe("legend-wqc6 applier refusal and replay preconditions", () => {
+  const context = () => contextOf(tenantA.tenantId, "tenant");
+  let ms = Date.parse("2026-11-08T14:00:00.000Z");
+  const eventOf = (aggregateId: string, sequence: number): EventEnvelope => {
+    ms += 10;
+    return {
+      id: createUlid(ms),
+      tenantId: tenantA.tenantId as EventEnvelope["tenantId"],
+      outletId: outletA1 as EventEnvelope["outletId"],
+      name: "order.item_added",
+      version: 1,
+      aggregateType: "order",
+      aggregateId,
+      sequence,
+      occurredAt: new Date(ms).toISOString(),
+      actor: { type: "system" },
+      deviceId: null,
+      idempotencyKey: `refuse-${ms}`,
+      payloadSchemaRef: "order.item_added.v1",
+      payload: {},
+    };
+  };
+
+  async function deliverBatch(
+    events: EventEnvelope[],
+    apply: EdgeEventApplier["apply"],
+  ) {
+    const node = await authenticateEdgeCredential(nodeA1.credential);
+    const link = createDbLinkStore({
+      database: db,
+      context: node!.context,
+      node: node!.scope,
+      outboundDirection: "cloud_to_edge",
+      applier: { apply },
+      classify: () => "transaction_event",
+    });
+    const from = await link.lastReceivedInbound();
+    await link.applyInbound({
+      fromSeq: from,
+      toSeq: from + events.length,
+      events: events.map((event, index) => ({
+        linkSeq: from + index + 1,
+        event,
+      })),
+    });
+    return { link, from, to: from + events.length };
+  }
+
+  const conflictsOf = async (aggregateId: string) =>
+    (
+      await owner.query<{
+        id: string;
+        aggregate_sequence: number;
+        reason: string;
+        detail: string | null;
+        kind: string;
+      }>(
+        `SELECT id, aggregate_sequence, reason, detail, kind FROM edge_sync_conflicts
+          WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence`,
+        [tenantA.tenantId, aggregateId],
+      )
+    ).rows;
+  const receiptOutcomes = async (aggregateId: string) =>
+    (
+      await owner.query<{ aggregate_sequence: number; outcome: string }>(
+        `SELECT aggregate_sequence, outcome FROM edge_inbound_events
+          WHERE tenant_id = $1 AND aggregate_id = $2 ORDER BY aggregate_sequence`,
+        [tenantA.tenantId, aggregateId],
+      )
+    ).rows;
+  const alertsFor = async (conflictId: string) =>
+    (
+      await owner.query<{ n: number }>(
+        "SELECT count(*)::int AS n FROM notification_outbox WHERE tenant_id = $1 AND source_event_id = $2::uuid",
+        [tenantA.tenantId, ulidToUuid(conflictId)],
+      )
+    ).rows[0]!.n;
+
+  it.each([
+    [
+      "CoreError",
+      () => new CoreError("NOT_FOUND", "Item pesanan tidak ditemukan."),
+    ],
+    [
+      "HttpError 4xx",
+      () =>
+        new HttpError(422, "VALIDATION_ERROR", "Item pesanan tidak ditemukan."),
+    ],
+  ])(
+    "a domain refusal (%s) is recorded as an applier_refused conflict, alerted, and the rest of the batch goes on",
+    async (_name, refusal) => {
+      const [aggA, aggB, aggC] = [randomUUID(), randomUUID(), randomUUID()];
+      const events = [eventOf(aggA, 1), eventOf(aggB, 1), eventOf(aggC, 1)];
+      const applied: string[] = [];
+
+      const { link, to } = await deliverBatch(events, async (_tx, event) => {
+        if (event.aggregateId === aggB) throw refusal();
+        applied.push(event.aggregateId);
+      });
+
+      // The batch committed: the cursor moved, so the sender can ack it.
+      expect(await link.lastReceivedInbound()).toBe(to);
+      expect(applied).toEqual([aggA, aggC]);
+      const [conflict, ...rest] = await conflictsOf(aggB);
+      expect(rest).toEqual([]);
+      expect(conflict).toMatchObject({
+        reason: "applier_refused",
+        aggregate_sequence: 1,
+        kind: "transaction_event",
+        detail: "Item pesanan tidak ditemukan.",
+      });
+      expect(await conflictsOf(aggA)).toEqual([]);
+      expect(await receiptOutcomes(aggB)).toEqual([
+        { aggregate_sequence: 1, outcome: "conflict" },
+      ]);
+      expect(await receiptOutcomes(aggA)).toEqual([
+        { aggregate_sequence: 1, outcome: "applied" },
+      ]);
+      expect(await alertsFor(conflict!.id)).toBe(1);
+      const open = await listEdgeSyncConflicts(context(), {
+        status: "open",
+        limit: 100,
+      });
+      expect(idsOf(open).some((id) => sameId(id, conflict!.id))).toBe(true);
+      const shown = rowsOf(open).find((row) =>
+        sameId(String(row.id), conflict!.id),
+      );
+      expect(shown).toMatchObject({
+        reason: "applier_refused",
+        detail: "Item pesanan tidak ditemukan.",
+      });
+    },
+  );
+
+  it("an applier_refused conflict replays through the normal path and the next sequence then applies", async () => {
+    const aggregateId = randomUUID();
+    const first = eventOf(aggregateId, 1);
+    await deliverBatch([first], async () => {
+      throw new CoreError("NOT_FOUND", "Batch tidak ditemukan.");
+    });
+    const [conflict] = await conflictsOf(aggregateId);
+    expect(conflict).toMatchObject({ reason: "applier_refused" });
+
+    // The cause was fixed; the supervisor replays.
+    const calls: Array<{ event: EventEnvelope; meta: EdgeApplyMeta }> = [];
+    setEdgeEventApplier("edge_to_cloud", recordingApplier(calls));
+    await resolveEdgeSyncConflict(context(), actor, conflict!.id, {
+      action: "replay",
+      note: "Batch sudah dibuat",
+    });
+    expect(calls.map((call) => call.event.id)).toEqual([first.id]);
+
+    const applied: string[] = [];
+    await deliverBatch([eventOf(aggregateId, 2)], async (_tx, event) => {
+      applied.push(event.id);
+    });
+    expect(applied).toHaveLength(1);
+    expect(await conflictsOf(aggregateId)).toHaveLength(1);
+  });
+
+  it("anything that is not a domain refusal still aborts the batch: nothing recorded, cursor unmoved", async () => {
+    const failures: Array<[string, () => Error]> = [
+      ["plain Error", () => new Error("database terputus")],
+      [
+        "EdgeApplierUnavailableError",
+        () => new EdgeApplierUnavailableError("edge_to_cloud"),
+      ],
+      [
+        "CoreError 5xx",
+        () => new CoreError("INTERNAL_ERROR", "Gagal internal."),
+      ],
+      [
+        "HttpError 5xx",
+        () => new HttpError(503, "SERVICE_UNAVAILABLE", "Tidak tersedia."),
+      ],
+    ];
+    for (const [, make] of failures) {
+      const aggregateId = randomUUID();
+      const node = await authenticateEdgeCredential(nodeA1.credential);
+      const probe = createDbLinkStore({
+        database: db,
+        context: node!.context,
+        node: node!.scope,
+        outboundDirection: "cloud_to_edge",
+        applier: { async apply() {} },
+        classify: () => "transaction_event",
+      });
+      const before = await probe.lastReceivedInbound();
+      await expect(
+        deliverBatch([eventOf(aggregateId, 1)], async () => {
+          throw make();
+        }),
+      ).rejects.toBeTruthy();
+      expect(await conflictsOf(aggregateId)).toEqual([]);
+      expect(await receiptOutcomes(aggregateId)).toEqual([]);
+      expect(await probe.lastReceivedInbound()).toBe(before);
+    }
+  });
+
+  it("refuses to replay while a lower-sequence conflict of the same aggregate is open (409), then allows it in order", async () => {
+    const aggregateId = randomUUID();
+    // 3 and 4 both arrive before 1 and 2: two sequence_gap conflicts.
+    await deliverBatch(
+      [eventOf(aggregateId, 3), eventOf(aggregateId, 4)],
+      async () => {},
+    );
+    const [c3, c4] = await conflictsOf(aggregateId);
+    expect([c3?.aggregate_sequence, c4?.aggregate_sequence]).toEqual([3, 4]);
+
+    const calls: Array<{ event: EventEnvelope; meta: EdgeApplyMeta }> = [];
+    setEdgeEventApplier("edge_to_cloud", recordingApplier(calls));
+    await expect(
+      resolveEdgeSyncConflict(context(), actor, c4!.id, {
+        action: "replay",
+        note: "Terlalu dini",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const http409 = await http.resolve(managerTenantA, headersA, c4!.id, {
+      action: "replay",
+      note: "Terlalu dini",
+    });
+    expect(http409.status).toBe(409);
+    expect(calls).toEqual([]);
+    expect(
+      (
+        await owner.query(
+          "SELECT 1 FROM edge_sync_conflict_resolutions WHERE tenant_id = $1 AND conflict_id = $2::uuid",
+          [tenantA.tenantId, ulidToUuid(c4!.id)],
+        )
+      ).rows,
+    ).toEqual([]);
+
+    // Dismissing is not ordered; the lower conflict replays; then 4 may.
+    await resolveEdgeSyncConflict(context(), actor, c3!.id, {
+      action: "replay",
+      note: "Urutan 3",
+    });
+    await resolveEdgeSyncConflict(context(), actor, c4!.id, {
+      action: "replay",
+      note: "Urutan 4",
+    });
+    expect(calls.map((call) => call.event.sequence)).toEqual([3, 4]);
+  });
+
+  it("a lower open conflict does not block dismissing, and a closed one does not block replay", async () => {
+    const aggregateId = randomUUID();
+    await deliverBatch(
+      [eventOf(aggregateId, 3), eventOf(aggregateId, 4)],
+      async () => {},
+    );
+    const [c3, c4] = await conflictsOf(aggregateId);
+    setEdgeEventApplier("edge_to_cloud", recordingApplier([]));
+    // Dismiss the later one while the lower is open: allowed.
+    await resolveEdgeSyncConflict(context(), actor, c4!.id, {
+      action: "dismiss",
+      note: "Abaikan 4",
+    });
+    // Close the lower by dismissal, then a (new) higher one is replayable.
+    await resolveEdgeSyncConflict(context(), actor, c3!.id, {
+      action: "dismiss",
+      note: "Abaikan 3",
+    });
+    const open = await listEdgeSyncConflicts(context(), {
+      status: "open",
+      limit: 100,
+    });
+    expect(
+      idsOf(open).some((id) => sameId(id, c3!.id) || sameId(id, c4!.id)),
+    ).toBe(false);
+  });
+
+  it("refuses to replay a conflict of a revoked node (409) but still lets it be dismissed", async () => {
+    const standby = await registerEdgeNode(
+      contextOf(tenantA.tenantId, [outletA1]),
+      actor,
+      { outletId: outletA1, role: "standby", label: "Cadangan A1" },
+    );
+    const replayed = await seedConflict({
+      tenantId: tenantA.tenantId,
+      outletId: outletA1,
+      edgeNodeId: standby.edgeNode.id,
+    });
+    const dismissed = await seedConflict({
+      tenantId: tenantA.tenantId,
+      outletId: outletA1,
+      edgeNodeId: standby.edgeNode.id,
+    });
+    await revokeEdgeNode(contextOf(tenantA.tenantId, [outletA1]), actor, {
+      edgeNodeId: standby.edgeNode.id,
+      reason: "Perangkat hilang",
+    });
+    const calls: Array<{ event: EventEnvelope; meta: EdgeApplyMeta }> = [];
+    setEdgeEventApplier("edge_to_cloud", recordingApplier(calls));
+
+    await expect(
+      resolveEdgeSyncConflict(context(), actor, replayed.id, {
+        action: "replay",
+        note: "Node dicabut",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(calls).toEqual([]);
+    expect(await resolutionRows(replayed)).toEqual([]);
+
+    await resolveEdgeSyncConflict(context(), actor, dismissed.id, {
+      action: "dismiss",
+      note: "Node dicabut",
+    });
+    expect(await resolutionRows(dismissed)).toEqual([
+      expect.objectContaining({ action: "dismissed", outcome: "dismissed" }),
+    ]);
   });
 });

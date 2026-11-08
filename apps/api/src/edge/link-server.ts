@@ -20,6 +20,13 @@
 // otherwise lock the real node out, and the 32-byte secret makes per-node
 // guessing pointless. A success never resets a counter.
 //
+// Shared address (outlet Wi-Fi, carrier NAT): junk upgrades from a neighbour
+// must not lock the real edge out. Each credential that authenticated
+// successfully is remembered by digest (bounded, TTL
+// LINK_KNOWN_CREDENTIAL_TTL_MS); presenting it skips the address lockout. It
+// is still subject to the per-credential upgrade limit and is still
+// authenticated (and forgotten if refused).
+//
 // Every dependency is injected (runtime.ts wires the Postgres ones), so this
 // module has no database or env import.
 import { createHash } from "node:crypto";
@@ -59,6 +66,9 @@ const LINK_UPGRADE_CAPACITY = 10_000;
 /** Failed authentications per client address per window (legend-x3lv). */
 export const LINK_AUTH_FAILURE_LIMIT = 10;
 export const LINK_AUTH_FAILURE_WINDOW_MS = 300_000;
+/** How long a successfully used credential skips the address lockout. */
+export const LINK_KNOWN_CREDENTIAL_TTL_MS = 24 * 3_600_000;
+const LINK_KNOWN_CREDENTIAL_CAPACITY = 10_000;
 /** Heartbeat DB writes per link: the client sends one every 15 s. */
 export const LINK_HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 
@@ -91,6 +101,8 @@ export type EdgeLinkServerDeps<Identity extends EdgeLinkIdentity> = {
   authFailureLimit?: {
     limit?: number;
     windowMs?: number;
+    /** TTL of the known-good credential bypass. */
+    knownCredentialTtlMs?: number;
   };
   /**
    * The client address for the per-address upgrade limit. Production passes
@@ -166,6 +178,28 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
     windowMs: deps.authFailureLimit?.windowMs ?? LINK_AUTH_FAILURE_WINDOW_MS,
     capacity: LINK_UPGRADE_CAPACITY,
   });
+  // Digest of a credential that authenticated -> expiry (epoch ms). Insertion
+  // order doubles as LRU: a refreshed key moves to the end.
+  const knownCredentials = new Map<string, number>();
+  const knownTtlMs =
+    deps.authFailureLimit?.knownCredentialTtlMs ?? LINK_KNOWN_CREDENTIAL_TTL_MS;
+  const isKnownCredential = (key: string | null, at: number) => {
+    if (!key) return false;
+    const expiresAt = knownCredentials.get(key);
+    if (expiresAt === undefined) return false;
+    if (expiresAt > at) return true;
+    knownCredentials.delete(key);
+    return false;
+  };
+  const rememberCredential = (key: string | null, at: number) => {
+    if (!key) return;
+    knownCredentials.delete(key);
+    if (knownCredentials.size >= LINK_KNOWN_CREDENTIAL_CAPACITY) {
+      const oldest = knownCredentials.keys().next().value;
+      if (oldest !== undefined) knownCredentials.delete(oldest);
+    }
+    knownCredentials.set(key, at + knownTtlMs);
+  };
   const links = new Map<
     string,
     { ws: WebSocket; peer: LinkPeer; identity: Identity; timer: NodeJS.Timeout }
@@ -269,20 +303,24 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
           });
         // Per-address failure lockout, checked before authenticate
         // (legend-x3lv).
+        // A credential that authenticated before skips it (shared address).
         const failureKey = `ip:${address}`;
-        const lockedFor = failures.peek(failureKey, at);
+        const known = isKnownCredential(credentialKey, at);
+        const lockedFor = known ? null : failures.peek(failureKey, at);
         if (lockedFor !== null)
           return refuse(socket, 429, {
             "retry-after": String(lockedFor),
             "cache-control": "no-store",
           });
         const failed = () => {
+          if (credentialKey) knownCredentials.delete(credentialKey);
           failures.take(failureKey, now());
           refuseCredential(socket);
         };
         if (!token) return failed();
         const identity = await deps.authenticate(token);
         if (!identity) return failed();
+        rememberCredential(credentialKey, now());
         if (socket.destroyed) return;
         wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));
       } catch (error) {

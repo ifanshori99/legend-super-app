@@ -42,9 +42,9 @@ export function DeviceTokenDialog({
     setResult(null);
     onClose();
   };
-  React.useEffect(() => {
-    if (token === null) setResult(null);
-  }, [token]);
+  // The parent can also drop the token without going through close(); clear
+  // the stored copy while rendering (React's "adjust state on prop change").
+  if (token === null && result !== null) setResult(null);
 
   const copyToken = async () => {
     if (!token) return;

@@ -58,9 +58,15 @@ export const revokeEdgeNodeSchema = z.strictObject({
   outletId: outletIdSchema,
   reason: z.string().trim().min(1).max(500),
 });
-/** Optional: the outlet comes from the node; a given one must match it. */
+/**
+ * `outletId` optional (the outlet comes from the node; a given one must
+ * match). `graceHours` 0..EDGE_CREDENTIAL_ROTATION_GRACE_HOURS (the service
+ * enforces the upper bound); `force` rotates inside an open grace.
+ */
 export const rotateEdgeNodeCredentialSchema = z.strictObject({
   outletId: outletIdSchema.optional(),
+  graceHours: z.number().int().min(0).max(720).optional(),
+  force: z.boolean().optional(),
 });
 const edgeNodeParamsSchema = z.strictObject({ edgeNodeId: uuidSchema });
 
@@ -178,6 +184,8 @@ edgeNodesRouter.post(
       getScopedTenantContext(req),
       getAuth(req).user.id,
       edgeNodeId,
+      new Date(),
+      { graceHours: input.graceHours, force: input.force },
     );
     res.setHeader("Cache-Control", "private, no-store");
     res.json({ data: result });

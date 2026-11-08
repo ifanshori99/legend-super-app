@@ -133,6 +133,9 @@ function stockMoved(
     locationId?: string;
     ledgerEntryId?: string;
     quantity?: string;
+    movementType?: string;
+    sourceType?: string;
+    sourceId?: string;
   } = {},
 ): { event: EventEnvelope; ledgerEntryId: string } {
   clock += 1_000;
@@ -156,13 +159,13 @@ function stockMoved(
       ledgerEntryId,
       inventoryItemId: itemId,
       locationId: overrides.locationId ?? locationA,
-      movementType: "sale",
+      movementType: overrides.movementType ?? "sale",
       quantity: overrides.quantity ?? "-2.0000",
       // Not the cloud's average cost: the edge's own value must be kept.
       unitCostIdr: "1234.5678",
       batchId: null,
-      sourceType: "order",
-      sourceId: createUlid(clock),
+      sourceType: overrides.sourceType ?? "order",
+      sourceId: overrides.sourceId ?? createUlid(clock),
       occurredAt,
     },
   }) as EventEnvelope;
@@ -217,6 +220,14 @@ async function outboxRows(ledgerEntryId: string) {
     [tenantId, ulidToUuid(ledgerEntryId)],
   );
   return rows;
+}
+
+async function refusedConflicts(eventId: string) {
+  const { rows } = await owner.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM edge_sync_conflicts WHERE tenant_id = $1 AND event_id = $2::uuid AND reason = 'applier_refused'",
+    [tenantId, ulidToUuid(eventId)],
+  );
+  return rows[0]!.n;
 }
 
 async function balanceOf(locationId: string) {
@@ -337,16 +348,50 @@ describe("legend-s4r6 edge -> cloud stock.moved", () => {
         applyEdgeStockMoved(tx, colliding, meta()),
       ),
     ).rejects.toThrow();
-    // Through the link the receipt fails: nothing acknowledged, edge keeps it.
-    const link = store();
-    const before = await link.lastReceivedInbound();
-    await expect(deliver([colliding])).rejects.toThrow();
-    expect(await link.lastReceivedInbound()).toBe(before);
+    // Through the link the refusal becomes a reviewable conflict.
+    await deliver([colliding]);
+    expect(await refusedConflicts(colliding.id)).toBe(1);
     const ledger = await ledgerRows(ledgerEntryId);
     expect(ledger).toHaveLength(1);
     expect(ledger[0]!.quantity).toBe("-2.0000");
     expect(await outboxRows(ledgerEntryId)).toHaveLength(1);
     expect(await balanceOf(locationA)).toBe(balance);
+  });
+
+  it("refuses a stock source an edge never produces (goods receipt)", async () => {
+    const { event, ledgerEntryId } = stockMoved({
+      movementType: "receipt",
+      sourceType: "goods_receipt",
+      sourceId: randomUUID(),
+      quantity: "3.0000",
+    });
+    await expect(
+      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(await ledgerRows(ledgerEntryId)).toHaveLength(0);
+  });
+
+  it("refuses rows for a source document that another outlet already posted", async () => {
+    const sourceId = createUlid(clock);
+    // A cloud row of outlet B for the same order document.
+    await owner.query(
+      `INSERT INTO stock_ledger (id, tenant_id, outlet_id, location_id, inventory_item_id, movement_type,
+         quantity, unit_cost_idr, batch_id, source_type, source_id, occurred_at)
+       VALUES ($1::uuid, $2, $3, $4, $5, 'sale', -1, 1000, NULL, 'order', $6::uuid, now())`,
+      [ulidToUuid(createUlid(clock + 1)), tenantId, outletB, locationB, itemId, ulidToUuid(sourceId)],
+    );
+    const { event, ledgerEntryId } = stockMoved({ sourceId });
+    await expect(
+      withTenant(db, node.context, (tx) => applyEdgeStockMoved(tx, event, meta())),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await ledgerRows(ledgerEntryId)).toHaveLength(0);
+    expect(await outboxRows(ledgerEntryId)).toHaveLength(0);
+    // The same document on the node's own outlet is fine (more lines).
+    const first = stockMoved({ sourceId: createUlid(clock + 2) });
+    const second = stockMoved({ sourceId: first.event.payload.sourceId as string });
+    await deliver([first.event, second.event]);
+    expect(await ledgerRows(first.ledgerEntryId)).toHaveLength(1);
+    expect(await ledgerRows(second.ledgerEntryId)).toHaveLength(1);
   });
 
   it("refuses an event of another tenant", async () => {

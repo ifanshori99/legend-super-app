@@ -9,9 +9,11 @@
 // sink, so the movement is never queued back to the edge.
 //
 // Fail closed: a payload that does not parse, an event outside the node's
-// tenant/outlet, or a location/item/batch the cloud does not hold throws; the
-// receive transaction rolls back and the edge keeps the batch queued. Replays
-// are no-ops (ledger insert ON CONFLICT (id) DO NOTHING).
+// tenant/outlet, a source an edge never posts, a source of another outlet, a
+// different movement under a recorded ledger id, or a location/item/batch the
+// cloud does not hold throws a CoreError / 4xx HttpError; the link records it
+// as an `applier_refused` conflict (db-link-store.ts). Identical replays are
+// no-ops.
 import { and, eq } from "drizzle-orm";
 import { CoreError, isOutletInScope } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
@@ -52,7 +54,10 @@ export async function applyEdgeStockMoved(
   if (!node || node.outletId !== outletId)
     throw new CoreError("FORBIDDEN", "Event outlet does not match the edge node");
 
-  const payload = stockMovedEventPayloadSchema.parse(event.payload);
+  const parsed = stockMovedEventPayloadSchema.safeParse(event.payload);
+  if (!parsed.success)
+    throw new CoreError("VALIDATION_ERROR", "Invalid stock.moved payload");
+  const payload = parsed.data;
   if (
     event.aggregateType !== STOCK_AGGREGATE ||
     event.aggregateId !== payload.ledgerEntryId

@@ -50,7 +50,7 @@ import {
 } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
-import { edgeSyncConflicts } from "../db/schema/edge-node.ts";
+import { edgeNodes, edgeSyncConflicts } from "../db/schema/edge-node.ts";
 import { edgeSyncConflictResolutions } from "../db/schema/edge-sync-conflict.ts";
 import { withTenant } from "../db/tenant.ts";
 import { decideInbound } from "../edge/conflict.ts";
@@ -105,6 +105,7 @@ function summaryFields(row: ConflictRow, resolutions: ResolutionRow[]) {
     aggregateSequence: row.aggregateSequence,
     kind: row.kind,
     reason: row.reason,
+    detail: row.detail,
     resolution: row.resolution,
     existingSequence: row.existingSequence,
     status: resolutions.some(isClosing) ? "resolved" : "open",
@@ -375,6 +376,38 @@ async function guardReplay(
 }
 
 /**
+ * Replay preconditions beyond the sequence rule (guardReplay): a revoked
+ * node's data is never applied, and a conflict is replayed only after the
+ * open conflicts before it on the same aggregate, so the order of the
+ * aggregate's events is kept. Dismissing has neither limit. Both refuse with
+ * a 409 and record nothing.
+ */
+async function assertReplayAllowed(tx: EdgeTx, row: ConflictRow) {
+  const [node] = await tx
+    .select({ status: edgeNodes.status })
+    .from(edgeNodes)
+    .where(
+      and(
+        eq(edgeNodes.tenantId, row.tenantId),
+        eq(edgeNodes.id, row.edgeNodeId),
+      ),
+    );
+  if (node?.status === "revoked")
+    throw new CoreError(
+      "CONFLICT",
+      "Edge node sudah dicabut; konflik hanya dapat diabaikan, tidak diulang.",
+    );
+  const lower = await tx.execute(
+    sql`SELECT 1 FROM edge_sync_conflicts c WHERE c.tenant_id = ${row.tenantId}::uuid AND c.edge_node_id = ${row.edgeNodeId}::uuid AND c.direction = ${row.direction} AND c.aggregate_type = ${row.aggregateType} AND c.aggregate_id = ${row.aggregateId} AND c.aggregate_sequence < ${row.aggregateSequence} AND NOT EXISTS (SELECT 1 FROM edge_sync_conflict_resolutions r WHERE r.tenant_id = c.tenant_id AND r.conflict_id = c.id AND r.outcome IN ('applied', 'dismissed')) LIMIT 1`,
+  );
+  if (lower.rows.length > 0)
+    throw new CoreError(
+      "CONFLICT",
+      "Ada konflik dengan urutan lebih rendah yang masih terbuka; selesaikan itu lebih dulu.",
+    );
+}
+
+/**
  * Replay or dismiss one conflict. Idempotent: a conflict that already has an
  * `applied` or `dismissed` resolution is returned unchanged. A throwing
  * applier is NOT an HTTP error: the failure is recorded, the conflict stays
@@ -434,6 +467,7 @@ export async function resolveEdgeSyncConflict(
       };
       // A refused replay (409) throws here: nothing is recorded, the
       // conflict stays open.
+      await assertReplayAllowed(tx, row);
       const alreadyHeld = await guardReplay(tx, row, event, meta);
       try {
         // Savepoint: a failing applier undoes only its own writes.

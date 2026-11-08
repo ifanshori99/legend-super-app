@@ -13,6 +13,14 @@
 //   by the route). During a rotation grace period that is the previous
 //   credential, which is the one the edge holds and verifies with; the
 //   stored current hash would make its check fail.
+// - What the signature does NOT prove: the key is the credential digest,
+//   which the cloud database stores and which anyone holding (or able to
+//   tamper with a response for) the bearer token can derive. So it only catches
+//   corruption and misrouting (a bundle meant for another node). Authenticity
+//   comes from TLS: EDGE_CLOUD_URL must be wss:// (fetched over https://)
+//   outside development. Do not reuse this pattern for cloud->edge commands;
+//   real authenticity there needs an Ed25519 cloud signing key pinned on the
+//   edge.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { CoreError } from "@starter/shared/core";

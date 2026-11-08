@@ -14,26 +14,32 @@ import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertTrustedScopedContext,
+  CoreError,
   createUlid,
   outletIdSchema,
   tenantIdSchema,
   ulidToUuid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { conflictResolution } from "@starter/shared/edge";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
   type SyncDirection,
 } from "@starter/shared/events";
 import type * as schema from "../db/schema/index.ts";
-import type { EdgeEventKind } from "../db/schema/edge-node.ts";
+import type {
+  EdgeConflictResolution,
+  EdgeEventKind,
+} from "../db/schema/edge-node.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   notifyEdgeSyncConflictRecorded,
   type NewEdgeSyncConflict,
 } from "../services/edge-sync-conflict-alert.ts";
 import { lockSyncCursor, type EdgeTx } from "../services/edge-queue.service.ts";
-import { decideInbound } from "./conflict.ts";
+import { decideInbound, type EdgeConflictReason } from "./conflict.ts";
 import type { LinkStore, QueuedEdgeEvent } from "./link-peer.ts";
 import { oppositeDirection } from "./protocol.ts";
 import {
@@ -96,6 +102,43 @@ export async function defaultLastSequence(
   return Number(result.rows[0]?.last ?? 0);
 }
 
+/**
+ * A refusal by the domain itself: a CoreError or HttpError that is a client
+ * error (4xx). Rate limits and timeouts are transient, so they are not.
+ */
+function isDomainRefusal(error: unknown): boolean {
+  const status =
+    error instanceof CoreError || error instanceof HttpError
+      ? error.status
+      : null;
+  return (
+    status !== null &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 429
+  );
+}
+
+/**
+ * Runs the applier in a savepoint. Returns null when it applied, or the
+ * refusal text (max 500 characters) after rolling the savepoint back.
+ */
+async function applyOrRefuse(
+  tx: EdgeTx,
+  applier: EdgeEventApplier<EdgeTx>,
+  event: EventEnvelope,
+  meta: EdgeApplyMeta,
+): Promise<string | null> {
+  try {
+    await tx.transaction((savepoint) => applier.apply(savepoint, event, meta));
+    return null;
+  } catch (error) {
+    if (!isDomainRefusal(error)) throw error;
+    return (error as Error).message.slice(0, 500);
+  }
+}
+
 export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
   const { database, context, node } = options;
   assertTrustedScopedContext(context);
@@ -130,6 +173,37 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
     } catch {
       // Intentionally silent: no payload or ids in logs (ports.ts rule).
     }
+  }
+
+  /** Records a conflict (idempotent) and alerts only when it is NEW. */
+  async function recordConflict(
+    tx: EdgeTx,
+    input: {
+      event: EventEnvelope;
+      eventUuid: string;
+      kind: EdgeEventKind;
+      reason: EdgeConflictReason;
+      resolution: EdgeConflictResolution;
+      lastSequence: number;
+      detail: string | null;
+    },
+  ) {
+    const { event } = input;
+    const conflictId = createUlid();
+    const inserted = await tx.execute(
+      sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, detail, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${input.eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${input.kind}, ${input.reason}, ${input.resolution}, ${input.lastSequence}, ${input.detail}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+    );
+    // Cloud side only (the edge database has no staff to alert), and only
+    // when this call really inserted the row (legend-wqc6).
+    if (inbound === "edge_to_cloud" && inserted.rows.length > 0)
+      await alertNewConflict(tx, {
+        id: conflictId,
+        tenantId: tenantIdSchema.parse(node.tenantId),
+        outletId: outletIdSchema.parse(node.outletId),
+        edgeNodeId: nodeId,
+        aggregateType: event.aggregateType,
+        reason: input.reason,
+      });
   }
 
   return {
@@ -243,27 +317,39 @@ export function createDbLinkStore(options: DbLinkStoreOptions): LinkStore {
             continue;
           let outcome: "applied" | "superseded" | "conflict";
           if (decision.action === "apply") {
-            await applier.apply(tx, event, meta);
-            outcome = "applied";
+            // Savepoint: a domain refusal (CoreError / 4xx) must not roll
+            // back the whole batch and stall the node's sync forever
+            // (legend-wqc6). It becomes a conflict a supervisor can review;
+            // anything else (unwired applier, unclassified event, database
+            // failure) still aborts the batch so the sender keeps it queued.
+            const refusal = await applyOrRefuse(tx, applier, event, meta);
+            if (refusal === null) {
+              outcome = "applied";
+            } else {
+              outcome = "conflict";
+              await recordConflict(tx, {
+                event,
+                eventUuid,
+                kind,
+                reason: "applier_refused",
+                resolution: conflictResolution(kind),
+                lastSequence,
+                detail: refusal,
+              });
+            }
           } else if (decision.action === "skip") {
             outcome = "superseded";
           } else {
             outcome = "conflict";
-            const conflictId = createUlid();
-            const inserted = await tx.execute(
-              sql`INSERT INTO edge_sync_conflicts (id, tenant_id, outlet_id, edge_node_id, direction, event_id, aggregate_type, aggregate_id, aggregate_sequence, kind, reason, resolution, existing_sequence, event) VALUES (${ulidToUuid(conflictId)}::uuid, ${node.tenantId}::uuid, ${node.outletId}::uuid, ${nodeId}::uuid, ${inbound}, ${eventUuid}::uuid, ${event.aggregateType}, ${event.aggregateId}, ${event.sequence}, ${kind}, ${decision.reason}, ${decision.resolution}, ${lastSequence}, ${JSON.stringify(event)}::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
-            );
-            // Cloud side only (the edge database has no staff to alert), and
-            // only when this call really inserted the row (legend-wqc6).
-            if (inbound === "edge_to_cloud" && inserted.rows.length > 0)
-              await alertNewConflict(tx, {
-                id: conflictId,
-                tenantId: tenantIdSchema.parse(node.tenantId),
-                outletId: outletIdSchema.parse(node.outletId),
-                edgeNodeId: nodeId,
-                aggregateType: event.aggregateType,
-                reason: decision.reason,
-              });
+            await recordConflict(tx, {
+              event,
+              eventUuid,
+              kind,
+              reason: decision.reason,
+              resolution: decision.resolution,
+              lastSequence,
+              detail: null,
+            });
           }
           if (inbound === "edge_to_cloud")
             await tx.execute(

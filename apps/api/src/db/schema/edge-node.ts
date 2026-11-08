@@ -374,6 +374,11 @@ export const edgeSyncConflicts = pgTable(
       .notNull(),
     /** Highest aggregate sequence this side already held. */
     existingSequence: bigint("existing_sequence", { mode: "number" }).notNull(),
+    /**
+     * Why the applier refused (reason `applier_refused`: the domain's own
+     * message, max 500 characters); null for the rule-based reasons.
+     */
+    detail: varchar("detail", { length: 500 }),
     event: jsonb("event").$type<EventEnvelope>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

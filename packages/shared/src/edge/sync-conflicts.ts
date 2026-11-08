@@ -69,7 +69,13 @@ const conflictFields = {
   aggregateId: z.string().min(1).max(36),
   aggregateSequence: z.number().int().nonnegative(),
   kind: z.enum(["master_data", "transaction_event"]),
+  /**
+   * `edge_master_data`, `sequence_collision`, `sequence_gap` (the link's
+   * rules) or `applier_refused` (the domain refused the event; see `detail`).
+   */
   reason: z.string().min(1).max(50),
+  /** The domain's refusal message for `applier_refused`; otherwise null. */
+  detail: z.string().max(500).nullable(),
   resolution: z.enum(["cloud_wins", "append_only"]),
   existingSequence: z.number().int().nonnegative(),
   status: edgeSyncConflictStatusSchema,

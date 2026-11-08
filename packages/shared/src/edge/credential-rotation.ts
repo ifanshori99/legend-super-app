@@ -9,6 +9,12 @@
 // Permission `device.registry.revoke` on the node's own outlet (resolved from
 // the node, like the device routes); `outletId` is optional and, when given,
 // must be that outlet. The tenant comes from the domain (TEN-02).
+//
+// `graceHours` (0..EDGE_CREDENTIAL_ROTATION_GRACE_HOURS, default that env
+// value; 0 = cut the old credential off at once, e.g. a suspected leak). A
+// rotation while the previous credential's grace is still open is refused
+// (409) unless `force: true`, so a retried request cannot silently kill the
+// credential the edge has just installed.
 
 import {
   z,
@@ -39,8 +45,8 @@ export const rotateEdgeNodeCredentialResultSchema = z.strictObject({
   edgeNode: edgeNodeAdminViewSchema,
   /** The new credential, shown ONCE (`Cache-Control: no-store`). */
   credential: edgeNodeCredentialSchema,
-  /** Until when the replaced credential is still accepted. */
-  previousCredentialExpiresAt: isoDateTimeSchema,
+  /** Until when the replaced credential is accepted; null = cut off now. */
+  previousCredentialExpiresAt: isoDateTimeSchema.nullable(),
 });
 export type RotateEdgeNodeCredentialResult = z.infer<
   typeof rotateEdgeNodeCredentialResultSchema
@@ -50,6 +56,10 @@ export const rotateEdgeNodeCredential = defineEndpoint({
   method: "POST",
   path: "/api/edge-nodes/:edgeNodeId/rotate-credential",
   params: z.strictObject({ edgeNodeId: uuidSchema }),
-  body: clientInputSchema({ outletId: outletIdSchema.optional() }),
+  body: clientInputSchema({
+    outletId: outletIdSchema.optional(),
+    graceHours: z.number().int().min(0).max(720).optional(),
+    force: z.boolean().optional(),
+  }),
   response: dataResponseSchema(rotateEdgeNodeCredentialResultSchema),
 });

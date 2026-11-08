@@ -9,6 +9,12 @@
 //   time, key = the credential's own digest), then its shape, then that its
 //   tenant/outlet are the credential's claims. Anything else -> EdgeBootError
 //   and the node stays down, as it did before this bead.
+//   The signature is an integrity check against corruption and misrouting,
+//   not proof of origin: see "What the signature does NOT prove" in
+//   packages/shared/src/edge/bootstrap.ts. Authenticity comes from TLS
+//   (config.ts requires wss:// outside development; cloud-http.ts fetches
+//   over https://). Not a pattern for cloud->edge commands (those need an
+//   Ed25519 cloud key pinned on the edge).
 // - One transaction, FK order tenant -> legal entity -> brand -> outlet,
 //   `onConflictDoNothing` (an existing row is never overwritten).
 //

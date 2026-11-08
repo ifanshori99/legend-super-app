@@ -17,6 +17,15 @@
 // stores, which the edge derives from its own credential). The edge verifies
 // it over the bundle exactly as received, before any parsing.
 //
+// What the signature does NOT prove: the key is the credential digest,
+// which the cloud database stores and which anyone holding (or able to
+// tamper with a response for) the bearer token can derive. So it only catches
+// corruption and misrouting (a bundle meant for another node). Authenticity
+// comes from TLS: EDGE_CLOUD_URL must be wss:// (fetched over https://)
+// outside development. Do not reuse this pattern for cloud->edge commands;
+// real authenticity there needs an Ed25519 cloud signing key pinned on the
+// edge.
+//
 // JSONB columns (feature flags, limits, geofence, opening hours) travel as
 // the plain JSON objects the cloud row holds: the bundle copies rows, so it
 // must not refuse a row the cloud database accepted.

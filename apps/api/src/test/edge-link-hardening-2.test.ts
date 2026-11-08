@@ -326,7 +326,13 @@ describe("legend-x3lv #1 credential rotation (service)", () => {
       await rotateEdgeNodeCredential(node.context, actor, node.id),
     );
     const third = credentialOf(
-      await rotateEdgeNodeCredential(node.context, actor, node.id),
+      await rotateEdgeNodeCredential(
+        node.context,
+        actor,
+        node.id,
+        new Date(),
+        { force: true },
+      ),
     );
     // v1 (the registration credential) is no longer the previous one.
     expect(await authenticateEdgeCredential(node.credential)).toBeNull();
@@ -336,6 +342,62 @@ describe("legend-x3lv #1 credential rotation (service)", () => {
     const row = await nodeRow(node.id);
     expect(row.previous_credential_hash).not.toBeNull();
     expect(new Set([third, second, node.credential]).size).toBe(3);
+  });
+
+  it("rotation: a second rotation inside an open grace is refused (409) unless forced, and changes nothing", async () => {
+    const node = await makeNode();
+    const second = credentialOf(
+      await rotateEdgeNodeCredential(node.context, actor, node.id),
+    );
+    const before = await nodeRow(node.id);
+    await expect(
+      rotateEdgeNodeCredential(node.context, actor, node.id),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await nodeRow(node.id)).toEqual(before);
+    expect(await authenticateEdgeCredential(second)).not.toBeNull();
+    expect(await authenticateEdgeCredential(node.credential)).not.toBeNull();
+    // Once the grace has ended a plain rotation is allowed again.
+    const later = new Date(Date.now() + DAY + HOUR);
+    await expect(
+      rotateEdgeNodeCredential(node.context, actor, node.id, later),
+    ).resolves.toBeTruthy();
+  });
+
+  it("rotation: graceHours 0 cuts the old credential off at once; above the env maximum is refused", async () => {
+    const node = await makeNode();
+    const rotated = await rotateEdgeNodeCredential(
+      node.context,
+      actor,
+      node.id,
+      new Date(),
+      { graceHours: 0 },
+    );
+    expect(rotated.previousCredentialExpiresAt).toBeNull();
+    expect(await authenticateEdgeCredential(node.credential)).toBeNull();
+    expect(
+      await authenticateEdgeCredential(credentialOf(rotated)),
+    ).not.toBeNull();
+    const row = await nodeRow(node.id);
+    expect(row.previous_credential_hash).toBeNull();
+    // No grace open, so the next rotation needs no force; 25 h > 24 h max.
+    await expect(
+      rotateEdgeNodeCredential(node.context, actor, node.id, new Date(), {
+        graceHours: 25,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const shorter = await rotateEdgeNodeCredential(
+      node.context,
+      actor,
+      node.id,
+      new Date(),
+      { graceHours: 2 },
+    );
+    expect(
+      Math.abs(
+        new Date(shorter.previousCredentialExpiresAt!).getTime() -
+          (Date.now() + 2 * HOUR),
+      ),
+    ).toBeLessThan(5000);
   });
 
   it("rotation: the credential is returned once and never listed or stored in clear", async () => {
@@ -494,6 +556,33 @@ describe("legend-x3lv #1 credential rotation (route)", () => {
     expect(listed).not.toContain(fresh);
   });
 
+  it("rotation: the route takes graceHours and force; a retried rotate is 409", async () => {
+    const node = await seededNode();
+    const admin = await staffWithRole(app, { template: "owner" });
+    await verifySessionMfa(admin.email);
+    const post = (body: object) =>
+      admin.client
+        .post(`/api/edge-nodes/${node.id}/rotate-credential`)
+        .set(originHeader)
+        .send(body);
+    const first = await post({});
+    expect(first.status).toBe(200);
+    expect((await post({})).status).toBe(409);
+    expect((await post({ graceHours: 999 })).status).toBeGreaterThanOrEqual(
+      400,
+    );
+    const forced = await post({ force: true, graceHours: 0 });
+    expect(forced.status).toBe(200);
+    expect(forced.body.data.previousCredentialExpiresAt).toBeNull();
+    expect(await authenticateEdgeCredential(node.credential)).toBeNull();
+    expect(
+      await authenticateEdgeCredential(credentialOf(first.body)),
+    ).toBeNull();
+    expect(
+      await authenticateEdgeCredential(credentialOf(forced.body)),
+    ).not.toBeNull();
+  });
+
   it("rotation: anonymous callers get 401", async () => {
     const node = await seededNode();
     const response = await rotate(agent(app), node.id);
@@ -567,7 +656,11 @@ describe("legend-x3lv #2 failed-authentication rate limit on the link upgrade", 
   /** Link server behind a trusted proxy so the test picks the client address. */
   async function start(
     accepted: ReadonlySet<string>,
-    authFailureLimit?: { limit?: number; windowMs?: number },
+    authFailureLimit?: {
+      limit?: number;
+      windowMs?: number;
+      knownCredentialTtlMs?: number;
+    },
   ) {
     const clock = { at: BASE };
     const calls = { authenticate: 0 };
@@ -657,13 +750,57 @@ describe("legend-x3lv #2 failed-authentication rate limit on the link upgrade", 
 
   it("a successful login from another address does not clear a blocked address, and failures stay per address", async () => {
     const good = mintEdgeCredential(scope).token;
-    const { calls, linkServer, url } = await start(new Set([good]));
+    // Never used successfully, so it gets no known-credential bypass.
+    const unseen = mintEdgeCredential(scope).token;
+    const { calls, linkServer, url } = await start(new Set([good, unseen]));
     for (let i = 0; i < 10; i += 1) await attempt(url, forged(), "203.0.113.7");
     expect(await attempt(url, good, "203.0.113.8")).toBe(101);
     expect(await attempt(url, forged(), "203.0.113.8")).toBe(401);
     const seen = calls.authenticate;
-    expect(await attempt(url, good, "203.0.113.7")).toBe(429);
+    expect(await attempt(url, unseen, "203.0.113.7")).toBe(429);
     expect(calls.authenticate).toBe(seen);
+    await linkServer.close();
+  });
+
+  it("shared address (outlet Wi-Fi / NAT): junk from a neighbour does not lock out an edge whose credential already authenticated", async () => {
+    const real = mintEdgeCredential(scope).token;
+    const unseen = mintEdgeCredential(scope).token;
+    const { calls, linkServer, url } = await start(new Set([real, unseen]));
+    const shared = "203.0.113.20";
+    expect(await attempt(url, real, shared)).toBe(101);
+    for (let i = 0; i < 10; i += 1)
+      expect(await attempt(url, forged(), shared)).toBe(401);
+    // Locked for everything else from that address...
+    expect(await attempt(url, forged(), shared)).toBe(429);
+    expect(await attempt(url, unseen, shared)).toBe(429);
+    // ...but the known credential still reaches authenticate and connects.
+    const seen = calls.authenticate;
+    expect(await attempt(url, real, shared)).toBe(101);
+    expect(calls.authenticate).toBe(seen + 1);
+    await linkServer.close();
+  });
+
+  it("the known-credential bypass expires after its TTL and is dropped when the credential is refused", async () => {
+    const real = mintEdgeCredential(scope).token;
+    const accepted = new Set([real]);
+    const { clock, linkServer, url } = await start(accepted, {
+      knownCredentialTtlMs: 60_000,
+    });
+    const shared = "203.0.113.21";
+    expect(await attempt(url, real, shared)).toBe(101);
+    // TTL over: the same credential is subject to the lockout again.
+    clock.at = BASE + 61_000;
+    for (let i = 0; i < 10; i += 1) await attempt(url, forged(), shared);
+    expect(await attempt(url, real, shared)).toBe(429);
+
+    // A credential that stops authenticating loses the bypass at once.
+    const other = "203.0.113.22";
+    clock.at = BASE + 400_000;
+    expect(await attempt(url, real, other)).toBe(101);
+    accepted.delete(real);
+    for (let i = 0; i < 9; i += 1) await attempt(url, forged(), other);
+    expect(await attempt(url, real, other)).toBe(401);
+    expect(await attempt(url, real, other)).toBe(429);
     await linkServer.close();
   });
 

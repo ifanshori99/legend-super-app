@@ -1,5 +1,5 @@
 {
-  "id": "526e57bb-7c12-4a28-9c4a-363563329ab2",
+  "id": "70a22d3d-d7c6-40ac-a800-b77904167127",
   "prevId": "c8f3cd0f-4373-4aae-a6d9-070e00e0b135",
   "version": "7",
   "dialect": "postgresql",
@@ -33246,6 +33246,12 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
         },
         "event": {
           "name": "event",

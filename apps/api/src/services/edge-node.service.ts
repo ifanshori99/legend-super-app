@@ -261,10 +261,25 @@ export async function findEdgeNodeOutletId(
   return row?.outletId ?? null;
 }
 
+export type RotateEdgeNodeCredentialOptions = {
+  /**
+   * Grace for the replaced credential, 0..EDGE_CREDENTIAL_ROTATION_GRACE_HOURS
+   * (the default). 0 cuts it off at once (suspected leak).
+   */
+  graceHours?: number;
+  /**
+   * Rotate even while the previous credential's grace is still open. Without
+   * it that is a 409: a retried rotate must not silently kill the credential
+   * the edge has just installed.
+   */
+  force?: boolean;
+};
+
 /**
  * Credential rotation (legend-x3lv). Only an active node; the new credential
  * is returned ONCE and never logged or audited. The replaced digest stays
- * valid until `previousCredentialExpiresAt`; rotating again replaces it (the
+ * valid until `previousCredentialExpiresAt` (null when the grace is 0: cut
+ * off at once); a forced rotation inside an open grace replaces it (the
  * credential before that stops working at once).
  */
 export async function rotateEdgeNodeCredential(
@@ -272,16 +287,28 @@ export async function rotateEdgeNodeCredential(
   actorUserId: string,
   edgeNodeId: string,
   now: Date = new Date(),
+  options: RotateEdgeNodeCredentialOptions = {},
 ): Promise<{
   edgeNode: EdgeNodeAdminView;
   credential: string;
-  previousCredentialExpiresAt: string;
+  previousCredentialExpiresAt: string | null;
 }> {
   assertTrustedScopedContext(context);
-  const graceHours = parseEdgeHardeningEnv(
+  const maxGraceHours = parseEdgeHardeningEnv(
     process.env,
   ).EDGE_CREDENTIAL_ROTATION_GRACE_HOURS;
-  const expiresAt = new Date(now.getTime() + graceHours * 3_600_000);
+  const graceHours = options.graceHours ?? maxGraceHours;
+  if (
+    !Number.isFinite(graceHours) ||
+    graceHours < 0 ||
+    graceHours > maxGraceHours
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      `Masa tenggang harus antara 0 dan ${maxGraceHours} jam.`,
+    );
+  const expiresAt =
+    graceHours > 0 ? new Date(now.getTime() + graceHours * 3_600_000) : null;
   const result = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
@@ -301,6 +328,15 @@ export async function rotateEdgeNodeCredential(
         "CONFLICT",
         "Edge node sudah dicabut; kredensialnya tidak dapat diganti.",
       );
+    if (
+      !options.force &&
+      current.previousCredentialExpiresAt &&
+      current.previousCredentialExpiresAt.getTime() > now.getTime()
+    )
+      throw new CoreError(
+        "CONFLICT",
+        "Kredensial edge node baru saja diganti dan masa tenggangnya masih berjalan. Ganti lagi hanya dengan konfirmasi paksa.",
+      );
     const { token, hash } = mintEdgeCredential({
       tenantId: current.tenantId,
       outletId: current.outletId,
@@ -311,7 +347,7 @@ export async function rotateEdgeNodeCredential(
       .set({
         credentialHash: hash,
         credentialIssuedAt: now,
-        previousCredentialHash: current.credentialHash,
+        previousCredentialHash: expiresAt ? current.credentialHash : null,
         previousCredentialExpiresAt: expiresAt,
         updatedAt: now,
       })
@@ -341,7 +377,8 @@ export async function rotateEdgeNodeCredential(
         },
         after: {
           credentialIssuedAt: now.toISOString(),
-          previousCredentialExpiresAt: expiresAt.toISOString(),
+          previousCredentialExpiresAt: expiresAt?.toISOString() ?? null,
+          forced: options.force === true,
         },
         sensitiveAccess: false,
       },
@@ -352,7 +389,7 @@ export async function rotateEdgeNodeCredential(
   return {
     edgeNode: toAdminView(result.row),
     credential: result.token,
-    previousCredentialExpiresAt: expiresAt.toISOString(),
+    previousCredentialExpiresAt: expiresAt?.toISOString() ?? null,
   };
 }
 

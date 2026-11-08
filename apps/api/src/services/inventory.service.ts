@@ -29,6 +29,7 @@ import {
   gt,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -55,6 +56,10 @@ import {
   type PermissionCode,
 } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { outletBusinessDayClock } from "./outlet-clock";
 import type {
   BusinessDate,
@@ -1122,6 +1127,56 @@ async function appendStockMovedEvent(
   });
 }
 
+/**
+ * Stock sources an edge node may post (bead legend-s4r6): the outlet flows the
+ * edge runs, all single-outlet: POS / QR sales and sales returns (`order`),
+ * waste logs, stock counts, transfers between locations of one outlet and
+ * production batches. Purchasing (`goods_receipt`, `purchase_return`) and
+ * `duty_meal` have no edge-side producer, so the cloud refuses them.
+ */
+export const EDGE_STOCK_SOURCE_TYPES: ReadonlySet<StockSourceType> = new Set([
+  "order",
+  "waste_log",
+  "stock_count",
+  "stock_transfer",
+  "production_order",
+]);
+
+/**
+ * Whether another outlet already holds ledger rows of this source document.
+ * The node's own context only sees its outlet (outlet RLS), so this reads
+ * through a tenant-wide trusted job context in its own short transaction,
+ * like the worker jobs. It sees committed rows only; a concurrent posting of
+ * the same document by two outlets is not caught here.
+ */
+async function sourcePostedByOtherOutlet(
+  entry: StockLedgerEntry,
+): Promise<boolean> {
+  const tenantWide = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: entry.tenantId,
+      brandId: null,
+      source: "job",
+    }),
+    { kind: "tenant" },
+  );
+  const rows = await withTenant(db, tenantWide, (tx) =>
+    tx
+      .select({ id: stockLedger.id })
+      .from(stockLedger)
+      .where(
+        and(
+          eq(stockLedger.tenantId, entry.tenantId),
+          eq(stockLedger.sourceType, entry.sourceType),
+          eq(stockLedger.sourceId, sourceIdToDb(entry.sourceId)),
+          ne(stockLedger.outletId, entry.outletId),
+        ),
+      )
+      .limit(1),
+  );
+  return rows.length > 0;
+}
+
 /** True when the stored ledger row is exactly the replicated movement. */
 function sameReplicatedMovement(
   row: LedgerRow,
@@ -1162,8 +1217,14 @@ export async function recordReplicatedStockMovementInTransaction(
   if (!event.outletId)
     throw new HttpError(422, "VALIDATION_ERROR", "Stock event needs an outlet.");
   assertOutlet(context, event.outletId);
+  if (!EDGE_STOCK_SOURCE_TYPES.has(payload.sourceType))
+    throw new HttpError(
+      422,
+      "VALIDATION_ERROR",
+      "An edge node cannot post this stock source.",
+    );
   const tenantId = context.tenant.tenantId;
-  const entry = stockLedgerEntrySchema.parse({
+  const parsed = stockLedgerEntrySchema.safeParse({
     id: payload.ledgerEntryId,
     tenantId,
     outletId: event.outletId,
@@ -1177,12 +1238,26 @@ export async function recordReplicatedStockMovementInTransaction(
     sourceId: payload.sourceId,
     occurredAt: payload.occurredAt,
   });
+  // A 4xx, not a ZodError: the link records a reviewable conflict instead of
+  // stalling the node's sync (db-link-store.ts applyOrRefuse).
+  if (!parsed.success)
+    throw new HttpError(422, "VALIDATION_ERROR", "Invalid stock movement.");
+  const entry = parsed.data;
   await requireLocation(tx, entry.outletId, entry.locationId);
   await requireItem(tx, entry.inventoryItemId);
   if (entry.batchId !== null)
     await requireBatch(tx, entry.outletId, entry.batchId, entry);
 
   await lockInventoryLocations(tx, tenantId, [entry.locationId]);
+  // The GL bridge re-reads a document's rows by (tenant, sourceType,
+  // sourceId) across outlets: a source already posted by another outlet is
+  // never extended from this edge.
+  if (await sourcePostedByOtherOutlet(entry))
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "This stock source belongs to another outlet.",
+    );
   const inserted = await tx
     .insert(stockLedger)
     .values({
