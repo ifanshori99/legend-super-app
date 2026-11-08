@@ -55,7 +55,7 @@ describe("TEN-01 cross-tenant isolation on the platform tables", () => {
       throw new Error("Requires the disposable test database");
     await owner.query(
       `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-       VALUES ($1, 'uji-tenant-b', ' Tenant B', 'lengkap', 'active', 'shared', '{"modules":[]}', $2, $3)`,
+       VALUES ($1, 'uji-tenant-b', ' Tenant B', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $2, $3)`,
       [
         tenantB,
         JSON.stringify({
@@ -323,7 +323,7 @@ describe("worker tenant registry", () => {
     try {
       await owner.query(
         `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-         VALUES ($1, $2, 'Tenant C', 'lengkap', 'active', 'shared', '{"modules":[]}', $3, $4)`,
+         VALUES ($1, $2, 'Tenant C', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
         [
           tenantC,
           `uji-tenant-c-${randomBytes(3).toString("hex")}`,

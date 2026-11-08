@@ -39,10 +39,10 @@ function ConfirmBody({
         {send.isError && (
           <p
             role="alert"
-            className="flex items-start gap-1.5 text-sm leading-5 font-medium text-danger"
+            className="flex items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm leading-5 font-medium text-foreground"
           >
             <CircleAlert
-              className="mt-0.5 size-4 shrink-0"
+              className="mt-0.5 size-4 shrink-0 text-danger"
               aria-hidden="true"
             />
             {t("qrOrders.status.bill.sendError")}
