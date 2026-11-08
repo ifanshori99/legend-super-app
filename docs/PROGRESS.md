@@ -33,6 +33,37 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - zoqc: second-opinion putaran 2 = 3 Tinggi + 2 Sedang baru (PUBLIC baseline katalog, BOM/NBSP env, RLS tabel tenant tak diaudit, sequence ACL, docs ganti login queue). Fix: brief 18.
 - Berikutnya saat slot Claude kosong: ui-engineer POS kasir dari `design/mockups/pos/`, engineer KDS legend-4d5, engineer EDC legend-m0k.
 
+## legend-hggk cuti, saldo, libur, lembur (engineer, cabang `ws/hris-leave`)
+
+- Selesai (BE, PRD §3 "29. Cuti, Izin & Lembur", F27): 7 tabel baru (`leave_types`, `leave_balances`, `leave_accruals`, `leave_requests`, `holidays`, `overtime_formulas`, `overtime_requests`), migrasi `0063`/`0064` (RLS tenant semua tabel, RLS outlet untuk `leave_requests`/`overtime_requests`). Service + route `/api/hris/leave/*`, `/api/hris/holidays*`, `/api/hris/overtime-*`.
+- Keputusan: saldo dikunci per baris (`FOR UPDATE`) + advisory lock per karyawan, saldo minus hanya sampai `policy.negativeAllowanceDays`; akrual/carry-over/kedaluwarsa idempoten lewat buku `leave_accruals`; persetujuan lewat matriks (`openApprovalRequest`, consumer `approval.resolved` di worker, settle idempoten); hari libur tidak memotong saldo; rumus lembur berversi (`overtime_formulas`, dipin per pengajuan), upah lembur integer IDR via `computeOvertimePay`, batas 720 menit/hari; kontrak saldo boleh minus, keputusan sistem (kedaluwarsa) `decidedBy` null.
+- Bukti: `heavy pnpm check` 1284 lulus / 1 skip (138 berkas), `heavy pnpm build`, `pnpm format:check`, color, tenant-hardcode lulus. 3 putaran reviewer subagent, temuan nyata dibetulkan (urutan lock, idempotensi, batas lembur 720 menit/hari, tarif hari dipilih karyawan tampil di inbox, tanggal WIB, keputusan sistem tanpa pemutus).
+- Biaya sesi engineer (d11154ca, 12:23–13:07 UTC, 0 compact, 22 subagent): Opus utama 2016k, Sonnet 5084k, Haiku 106k; total 7205k unit biaya. Vendor: Claude saja (8 implementer/test-writer paralel di gelombang 1).
+- Lanjutan: `legend-arj.1` (jadwal job akrual), `legend-arj.2` (jenis hari lembur dari jadwal), `legend-arj.3` (batal cuti setelah carry-over kedaluwarsa), `legend-arj.4` (URL lampiran + event `leave.approved`).
+
+### legend-arj.1 / .3 / .4 + keputusan founder Q7 cuti bersama (engineer, `ws/hris-leave`)
+
+- arj.1: `services/hris-leave-jobs.ts` `runScheduledLeaveJobs` dipanggil dari sweep worker tiap tenant. Urutan: potong cuti bersama, akrual bulan berjalan, carry-over tahun lalu, kedaluwarsa carry-over, semua tanggal WIB. Penanda harian `hris_idempotency` `leave-jobs/YYYY-MM-DD` (tanda `/` agar tidak bisa dipalsukan lewat Idempotency-Key pengguna), ditulis hanya bila semua langkah sukses. Aktor sistem (audit `system`, ledger `createdBy` null); jalur HTTP tetap sama.
+- arj.3: melepas hari (tolak/batal/kedaluwarsa) setelah tanggal kedaluwarsa carry-over memotong carry-over ke sisa terpakai, audit `hris.leave_carry_over.forfeited`.
+- arj.4: event `leave.approved` ke outbox `cloud-sync` saja (adapter notifikasi menolak nama tak dikenal), dalam transaksi yang sama, sekali per pengajuan, tanpa alasan/lampiran. Lampiran: `attachmentUploadRef` = objek `core_storage_objects` purpose `document`, outlet rumah pemohon, umur ≤ 24 jam, belum dipakai dokumen karyawan atau pengajuan lain (indeks unik `leave_requests_tenant_attachment_key`). URL bertanda tangan lewat `HrisFileSigner` (`createHrisLeaveRouter({ fileSigner })`), hanya untuk pemohon/HR/penyetuju, audit `hris.leave_request.attachment_url_issued`.
+- Q7 (founder): tabel `hris_leave_settings` per tenant (`collective_leave_deducts_annual` default true, `annual_leave_type_id`, `collective_leave_effective_from`), `GET/PUT /api/hris/leave/settings`. Cuti bersama memotong 1 hari saldo cuti tahunan (ledger `collective_leave`, unik per karyawan+tanggal, tidak dipotong ulang bila jenis cuti tahunan diganti), dilewati bila tanggal itu juga libur nasional/perusahaan. Lembur di hari cuti bersama = tarif hari kerja; libur nasional/perusahaan tetap tarif hari istirahat.
+- Default aman, menunggu founder: potongan cuti bersama berlaku untuk tanggal ≥ 2027-01-01 (tidak mundur ke 2026). HR bisa mengubah lewat setelan.
+- Migrasi putaran ini sudah diganti di brief 85 (lihat bawah).
+- Review: reviewer (4 temuan) + architect (2 temuan + 1 keputusan founder) dibetulkan; review ulang bersih.
+- Bead baru: `legend-fgob` (migrasi vs main), `legend-ei32` (balik potongan cuti bersama), `legend-2ect` (signer storage produksi), `legend-0pth` (pengunggah objek storage), `legend-qmte` (cuti bersama vs absensi).
+- Biaya putaran ini (d11154ca, 13:07–14:14 UTC, 1 compact, 14 subagent): sekitar 5951k unit biaya (total sesi 13156k). Vendor: Claude saja.
+
+### Brief 85: perbaikan review Opus (engineer, `ws/hris-leave`)
+
+- Item 1: job cuti bersama melewati pasangan karyawan+tanggal yang sudah dihitung pengajuan cuti pending/disetujui (jenis apa pun). Pengajuan menyimpan `excluded_holiday_dates` saat diajukan, sehingga job tahu hari mana yang sudah dihitung walau kalender berubah sesudahnya.
+- Item 2: lewat tanggal kedaluwarsa, carry-over yang tidak dipegang hari terpakai/pending tidak bisa dipakai (`usableCarriedOverDays`), job kedaluwarsa menghanguskan `carried − (used+pending)` walau ada pending. Pengajuan baru menghanguskan carry kedaluwarsa di saldo terkunci sebelum cek sisa. Job cuti bersama menghanguskan carry dulu untuk hari pada/sesudah tanggal kedaluwarsa, lalu menambah hari terpakai. Test skenario 30 Mar / 1 Apr / 2 Apr.
+- Item 3: hapus/pindah/ubah jenis libur cuti bersama membalik potongan (idempoten, diaudit, kunci per tanggal). Lewat tanggal kedaluwarsa, pembalikan memotong carry ke yang masih terpakai dan mengaudit `hris.leave_carry_over.forfeited`. Bead `legend-ei32` ditutup.
+- Item 4: membuat/memindah cuti bersama ke tahun yang carry-over-nya sudah jalan ditolak 422 `LEAVE_YEAR_CARRIED_OVER`.
+- Item 5: `milestone/m1` digabung. Migrasi cabang lama dibuang (`0063_workable_shard` 1794141116246, `0064_hris_leave_rls` 1794141117464, `0065_hris_leave_settings` 1794143913551, `0066_hris_leave_settings_rls` 1794143923628, `0067_hris_leave_attachment_unique` 1794145347324, `0068_pink_bug` 1794145819981) dan dibuat ulang lewat drizzle-kit: `0072_hris_leave` 1794151260820, `0073_hris_leave_rls` (custom) 1794151270783, `0074_hris_leave_excluded_holidays` 1794151613858. Semua di atas kepala milestone `0071_stock_count_rls` 1794149399815. `0072` memasang cakupan tenant kosong + outlet `*` lokal transaksi di sekitar foreign key, karena pemeriksaan FK menjalankan kebijakan RLS saat pemilik tabel NOBYPASSRLS (test edge non-superuser). Bead `legend-fgob` ditutup.
+- Bukti: migrasi lulus di DB kosong (75 migrasi) dan DB di kepala milestone (72 → 75), RLS aktif+paksa di 8 tabel HRIS. Gerbang penuh di `dbab69a2`: format, color, tenant-hardcode, `heavy pnpm check` 162 berkas / 1645 lulus / 1 skip, `heavy pnpm build` lulus. Reviewer konteks segar 2 putaran (3 temuan dibetulkan, review ulang bersih).
+- Masih menunggu founder: potongan cuti bersama mundur ke 2026 atau mulai 2027-01-01 (default sekarang 2027-01-01, bisa diubah HR).
+- Biaya putaran ini (d11154ca, 14:14–15:52 UTC, 2 compact, 45 subagent total sesi): sekitar 5239k unit biaya (total sesi 18395k). Vendor: Claude saja.
+
 ## legend-2re1 UI order pelanggan (ui-engineer, cabang `ui/customer-order`)
 
 - Selesai di worktree `.worktrees/customer-order-ui`: semua layar `/t/$token/*` dibangun ulang ke tema QR (`[data-surface="qr"]`, palet Q6, kaca hanya di lapisan mengambang, maks 2 blur), jumlah tamu inline (Q5), "Bayar di kasir" (Q3) via route `/t/$token/kasir/$orderId`, satu saran pendamping. `DESIGN.md` §9 baru.
@@ -42,6 +73,16 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti akhir: `heavy pnpm build` lulus; e2e mock `/t/` 33/33; suite mock penuh 739 lulus, 4 gagal di luar `/t/` (d6g5, er32, oye8, uq2; diff cabang ini di luar QR hanya tambahan); capture 52 state, 0 serious/critical kecuali 1 artefak posisi scroll (target-size link tertutup bar atas saat capture), tanpa overflow, maks 2 blur.
 - Biaya sesi ui-engineer (transkrip fe7d1815, 07:57–09:41 UTC, 2 compact, 19 subagent): Opus utama 6128k, Sonnet 5723k, Opus subagent 257k, Haiku 114k; total 12223k unit biaya.
 - Kebutuhan kontrak (belum dikerjakan): metode bayar kasir / kode bayar eksplisit + POS terima pembayaran order tertahan; ubah pax sesi; foto cover outlet; patch opsi baris keranjang; kode promo/voucher ikut `placeOrder`; metode guest `va` dan `card` (nomor VA + channel + kedaluwarsa, URL halaman kartu penyedia di `guestPaymentSchema`).
+
+## legend-vmyg jurnal manual & berulang (engineer, cabang `ws/journals`)
+
+- Selesai di worktree `.worktrees/journals`: tabel `manual_journals`, `recurring_journals`, `recurring_journal_runs` (migrasi 0063 + RLS FORCE 0064), service manual (draf, ajukan, setujui, tolak, tarik, batal), service berulang + job `runDueRecurringJournals` (satu transaksi per bulan, kunci unik template+periode), route `/api/accounting/manual-journals` dan `/recurring-journals`, consumer `approval.resolved`, job di `worker-main.ts`.
+- Persetujuan lewat `approval_requests` (aksi `manual_journal`); pembuat tidak bisa menyetujui (service, state machine, check constraint DB). Ledger hanya ditulis setelah disetujui.
+- Titik cek periode tunggal: `apps/api/src/services/accounting-journal-period-gate.ts` (disambung ke kunci `ws/fiscal-close-lock` saat merge).
+- Kontrak: `manualJournalSchema` dilonggarkan, penolakan sistem (rantai kedaluwarsa) boleh tanpa `decidedBy`.
+- Keputusan founder legend-j4ko (Q5/Q6) dikerjakan: template yang dilanjutkan setelah jeda melewati bulan selama jeda (mulai bulan berjalan); aksi operator `POST /api/accounting/recurring-journals/:id/skip-period` melewati bulan tutup buku (izin `accounting.journal.post`, audit, idempoten, migrasi 0065).
+- Fix keamanan: efek persetujuan dari inbox mengecek ulang bahwa penyetuju memegang `accounting.journal.post` atas outlet header dan semua outlet baris; bila tidak, jurnal/template ditolak dan tidak ada yang diposting (`accounting-journal-approver.ts`).
+- Perbaikan review K (2026-11-08): merge `main`; migration cabang 0063–0065 dibuat ulang jadi 0068 (tabel, FORCE RLS dilepas sementara saat validasi FK seperti 0065 main) dan 0069 (RLS), lulus test migrasi owner non-superuser. Jurnal manual yang rantainya sudah disetujui tapi postingnya ditolak (periode tutup, akun nonaktif) kini jadi `rejected` oleh sistem + audit, consumer tidak macet. Template berulang: `paused_at` (resume hanya melewati bulan setelah jeda, tunggakan tetap diposting, tiap bulan dilewati dicatat di `recurring_journal_runs` + audit); skip-period diizinkan bila posting ke bulan itu akan ditolak karena bulan sesudahnya tutup; `last_error`/`failed_at` untuk kegagalan job (dibersihkan saat sukses atau skip); penolakan sistem diaudit.
 
 ## legend-mjmm UI POS kasir (ui-engineer, cabang `ui/pos-kasir`)
 
@@ -86,3 +127,18 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
   - Feed dipangkas tiap sequence ke-500: hanya baris > 24 jam DAN > 2000 di belakang cursor; trigger DB hanya mengizinkan delete itu (legend_app dapat DELETE lagi di tabel feed saja).
   - POS fire tidak pernah gagal karena stasiun kosong (skip + audit `kitchen_ticket.unrouted` + warn).
   - Bukti: test per bagian lulus (kds + kds-realtime 63/63, menu-api 17/17). Gerbang penuh pertama gagal lint saja (helper tak terpakai, dibetulkan). Gerbang penuh setelah commit terakhir BELUM selesai: dihentikan sistem karena memori Mac kritis.
+
+## legend-165 registri perangkat + mode latihan (engineer, cabang `ws/device-registry`)
+
+- Selesai: tabel `devices` + `device_training_periods` (RLS tenant + outlet, trigger pencabutan final), migration `0068_closed_tiger_shark` (semula `0063_slim_nekra`, di-renumber di `ws/edge-registry-pull` setelah main; ditambah angkat FORCE RLS sementara untuk migrator pemilik tabel biasa). Route cloud `/api/devices` (daftar, daftarkan + token sekali tampil, terbit ulang token, cabut, mode latihan, heartbeat), edge `/api/edge/devices` (daftar, heartbeat), `/api/edge-sync/device-records` (ekspor replika untuk edge).
+- Temuan keamanan ditutup: `deviceTenantCredential` dan `deviceReader` edge kini cek registri (perangkat aktif, tidak dicabut, tenant cocok, outlet node di edge, token tidak lebih tua dari terbit ulang terakhir). Token hanya diterbitkan service setelah cek registri.
+- Review architect (2 medium, 3 low) dan reviewer (1 bug heartbeat domain ber-brand) dibetulkan.
+- Lanjutan: `legend-2lp.7` P1 (jadwal tarik replika di runtime edge; sebelum itu semua token perangkat di edge ditolak), `legend-2lp.8` (cap `is_training` di pesanan POS + laporan), `legend-2lp.9` (panel ke `/api/devices/*`), `legend-2lp.10` (heartbeat edge ke cloud).
+
+## legend-2lp.7 tarik registri perangkat berkala di edge (engineer, cabang `ws/edge-registry-pull`)
+
+- Cabang ini = `ws/edge-hardening` + merge `ws/device-registry` + tarik berkala, supaya ketiganya di-merge sekali dengan aman.
+- Tarik pertama saat boot (tidak memblokir boot), lalu tiap `EDGE_DEVICE_SYNC_INTERVAL_SECONDS` (default 60). Satu tarik sekaligus, backoff eksponensial sampai 5 menit saat cloud mati, berhenti bersih saat shutdown.
+- Watermark disimpan di tabel baru `edge_pull_checkpoints` (migration `0069_hesitant_smiling_tiger`, RLS tenant + outlet), bukan dari replika: heartbeat edge menaikkan `updated_at` lokal.
+- Gagal tarik: replika lama tetap dipakai, tidak ada akses device yang dibuka. Basi bila tarik sukses terakhir lebih tua dari `EDGE_DEVICE_SYNC_STALE_SECONDS` (default 900): log error, `deviceRegistry.stale` di `/api/edge/status` dan `/api/edge/health` (status HTTP health tidak berubah).
+- Kontrak: `edgeStatusSchema.deviceRegistry` opsional (edge lama tidak mengirimnya). Lanjutan web: tampilkan status basi di panel edge dan isi mock `apps/web/src/features/ws02-edge/mock.ts`.

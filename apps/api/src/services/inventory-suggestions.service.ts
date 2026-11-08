@@ -25,6 +25,7 @@ import {
 import { db } from "../db/index.ts";
 import { inventoryItems, stockLocations } from "../db/schema/inventory.ts";
 import { withTenant } from "../db/tenant.ts";
+import { hiddenBlindPairs } from "./inventory-count.visibility.ts";
 import { assertOutlet, requireOpsPermission } from "./inventory-ops.shared.ts";
 import {
   parPositions,
@@ -54,7 +55,13 @@ export async function listPurchaseSuggestions(
       "inventory.stock.view",
       query.outletId,
     );
+    // Open blind counts hide their pairs from everyone (stock opname T1).
+    const hidden = await hiddenBlindPairs(tx, query.outletId);
     const positions = [...(await parPositions(tx, query.outletId)).values()]
+      .filter(
+        (position) =>
+          !hidden.has(`${position.locationId}:${position.inventoryItemId}`),
+      )
       .filter(
         (position) =>
           query.locationId === undefined ||

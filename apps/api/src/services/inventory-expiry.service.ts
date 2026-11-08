@@ -64,6 +64,7 @@ import {
   requireOpsPermission,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import { blindCountHiddenFilter } from "./inventory-count.visibility.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -370,7 +371,12 @@ async function expiringBatches(
   outletId: string,
   asOf: BusinessDate,
   warnDays: number,
-  filter: { locationId?: string; inventoryItemId?: string } = {},
+  filter: {
+    locationId?: string;
+    inventoryItemId?: string;
+    /** Set by user reads: drops the pairs of open blind counts. */
+    hideBlind?: boolean;
+  } = {},
 ): Promise<ExpiringBatch[]> {
   const horizon = addBusinessDays(asOf, warnDays);
   const filters: SQL[] = [
@@ -381,6 +387,7 @@ async function expiringBatches(
     filters.push(eq(stockBatches.locationId, filter.locationId));
   if (filter.inventoryItemId)
     filters.push(eq(stockBatches.inventoryItemId, filter.inventoryItemId));
+  if (filter.hideBlind) filters.push(blindCountHiddenFilter(stockBatches));
   const candidates = await loadBatchStock(tx, filters);
   if (candidates.length === 0) return [];
   const availability = await availabilityForPairs(
@@ -441,12 +448,14 @@ export async function listExpiryAlerts(
       "inventory.stock.view",
       query.outletId,
     );
+    // Open blind counts hide their pairs from everyone (stock opname T1).
     const clock = await loadOutletClock(tx, query.outletId);
     const asOf = businessDateOf(new Date(), clock);
     const warnDays = await expiryWarningDays(tx, context);
     const rows = await expiringBatches(tx, query.outletId, asOf, warnDays, {
       locationId: query.locationId,
       inventoryItemId: query.inventoryItemId,
+      hideBlind: true,
     });
     return rows.map((row) =>
       expiryAlertSchema.parse({ ...row, asOf, warnDays }),

@@ -1,5 +1,5 @@
 {
-  "id": "efb35d4b-190d-4804-8434-e14381186880",
+  "id": "1f32d9ee-baef-49bc-bddc-961f5dc6fb43",
   "prevId": "9f3025cb-6511-4980-ba17-9fcb38761c7f",
   "version": "7",
   "dialect": "postgresql",
@@ -3284,12 +3284,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "station_type": {
-          "name": "station_type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "course": {
           "name": "course",
           "type": "varchar(20)",
@@ -3555,10 +3549,6 @@
         "menu_items_type_check": {
           "name": "menu_items_type_check",
           "value": "\"menu_items\".\"type\" IN ('single', 'combo')"
-        },
-        "menu_items_station_type_check": {
-          "name": "menu_items_station_type_check",
-          "value": "\"menu_items\".\"station_type\" IS NULL OR \"menu_items\".\"station_type\" IN ('coffee_bar', 'beverage_bar', 'hot_kitchen', 'cold_kitchen', 'pastry')"
         },
         "menu_items_sort_order_check": {
           "name": "menu_items_sort_order_check",
@@ -32929,130 +32919,16 @@
       },
       "isRLSEnabled": false
     },
-    "public.kitchen_station_cursors": {
-      "name": "kitchen_station_cursors",
-      "schema": "",
-      "columns": {
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "station_id": {
-          "name": "station_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_sequence": {
-          "name": "last_sequence",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "kitchen_station_cursors_tenant_id_tenants_id_fk": {
-          "name": "kitchen_station_cursors_tenant_id_tenants_id_fk",
-          "tableFrom": "kitchen_station_cursors",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_cursors_outlet_id_outlets_id_fk": {
-          "name": "kitchen_station_cursors_outlet_id_outlets_id_fk",
-          "tableFrom": "kitchen_station_cursors",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_cursors_station_fk": {
-          "name": "kitchen_station_cursors_station_fk",
-          "tableFrom": "kitchen_station_cursors",
-          "tableTo": "stations",
-          "columnsFrom": [
-            "tenant_id",
-            "station_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_cursors_outlet_fk": {
-          "name": "kitchen_station_cursors_outlet_fk",
-          "tableFrom": "kitchen_station_cursors",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "kitchen_station_cursors_pkey": {
-          "name": "kitchen_station_cursors_pkey",
-          "columns": [
-            "tenant_id",
-            "station_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "kitchen_station_cursors_sequence_check": {
-          "name": "kitchen_station_cursors_sequence_check",
-          "value": "\"kitchen_station_cursors\".\"last_sequence\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.kitchen_station_feed": {
-      "name": "kitchen_station_feed",
+    "public.device_training_periods": {
+      "name": "device_training_periods",
       "schema": "",
       "columns": {
         "id": {
           "name": "id",
           "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "tenant_id": {
           "name": "tenant_id",
@@ -33065,536 +32941,41 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "station_id": {
-          "name": "station_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sequence": {
-          "name": "sequence",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ticket_id": {
-          "name": "ticket_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "occurred_at": {
-          "name": "occurred_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "kitchen_station_feed_ticket_idx": {
-          "name": "kitchen_station_feed_ticket_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "station_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ticket_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "kitchen_station_feed_tenant_id_tenants_id_fk": {
-          "name": "kitchen_station_feed_tenant_id_tenants_id_fk",
-          "tableFrom": "kitchen_station_feed",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_feed_outlet_id_outlets_id_fk": {
-          "name": "kitchen_station_feed_outlet_id_outlets_id_fk",
-          "tableFrom": "kitchen_station_feed",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_feed_station_fk": {
-          "name": "kitchen_station_feed_station_fk",
-          "tableFrom": "kitchen_station_feed",
-          "tableTo": "stations",
-          "columnsFrom": [
-            "tenant_id",
-            "station_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_feed_ticket_fk": {
-          "name": "kitchen_station_feed_ticket_fk",
-          "tableFrom": "kitchen_station_feed",
-          "tableTo": "kitchen_tickets",
-          "columnsFrom": [
-            "tenant_id",
-            "ticket_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_station_feed_outlet_fk": {
-          "name": "kitchen_station_feed_outlet_fk",
-          "tableFrom": "kitchen_station_feed",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "kitchen_station_feed_tenant_id_id_key": {
-          "name": "kitchen_station_feed_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "kitchen_station_feed_station_sequence_key": {
-          "name": "kitchen_station_feed_station_sequence_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "station_id",
-            "sequence"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "kitchen_station_feed_sequence_check": {
-          "name": "kitchen_station_feed_sequence_check",
-          "value": "\"kitchen_station_feed\".\"sequence\" > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.kitchen_ticket_items": {
-      "name": "kitchen_ticket_items",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ticket_id": {
-          "name": "ticket_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_item_id": {
-          "name": "order_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "menu_item_id": {
-          "name": "menu_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "variant_id": {
-          "name": "variant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(150)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "quantity": {
-          "name": "quantity",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "course": {
-          "name": "course",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "modifiers": {
-          "name": "modifiers",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
-        "note": {
-          "name": "note",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fired_at": {
-          "name": "fired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ready_at": {
-          "name": "ready_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "served_at": {
-          "name": "served_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "voided_at": {
-          "name": "voided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "recalled_count": {
-          "name": "recalled_count",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "kitchen_ticket_items_ticket_idx": {
-          "name": "kitchen_ticket_items_ticket_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ticket_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "kitchen_ticket_items_tenant_id_tenants_id_fk": {
-          "name": "kitchen_ticket_items_tenant_id_tenants_id_fk",
-          "tableFrom": "kitchen_ticket_items",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_ticket_items_outlet_id_outlets_id_fk": {
-          "name": "kitchen_ticket_items_outlet_id_outlets_id_fk",
-          "tableFrom": "kitchen_ticket_items",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_ticket_items_ticket_fk": {
-          "name": "kitchen_ticket_items_ticket_fk",
-          "tableFrom": "kitchen_ticket_items",
-          "tableTo": "kitchen_tickets",
-          "columnsFrom": [
-            "tenant_id",
-            "ticket_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_ticket_items_order_item_fk": {
-          "name": "kitchen_ticket_items_order_item_fk",
-          "tableFrom": "kitchen_ticket_items",
-          "tableTo": "order_items",
-          "columnsFrom": [
-            "tenant_id",
-            "order_item_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_ticket_items_outlet_fk": {
-          "name": "kitchen_ticket_items_outlet_fk",
-          "tableFrom": "kitchen_ticket_items",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "kitchen_ticket_items_tenant_id_id_key": {
-          "name": "kitchen_ticket_items_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "kitchen_ticket_items_order_item_key": {
-          "name": "kitchen_ticket_items_order_item_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "order_item_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "kitchen_ticket_items_status_check": {
-          "name": "kitchen_ticket_items_status_check",
-          "value": "\"kitchen_ticket_items\".\"status\" IN ('queued', 'in_progress', 'ready', 'served', 'voided')"
-        },
-        "kitchen_ticket_items_quantity_check": {
-          "name": "kitchen_ticket_items_quantity_check",
-          "value": "\"kitchen_ticket_items\".\"quantity\" BETWEEN 1 AND 999"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.kitchen_ticket_status_changes": {
-      "name": "kitchen_ticket_status_changes",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ticket_id": {
-          "name": "ticket_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "station_id": {
-          "name": "station_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_item_id": {
-          "name": "order_item_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "from_status": {
-          "name": "from_status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "to_status": {
-          "name": "to_status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "item_from_status": {
-          "name": "item_from_status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "item_to_status": {
-          "name": "item_to_status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source": {
-          "name": "source",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "actor_id": {
-          "name": "actor_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_id": {
           "name": "device_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "reason": {
-          "name": "reason",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "occurred_at": {
-          "name": "occurred_at",
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by": {
+          "name": "started_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
-        "kitchen_ticket_status_changes_ticket_idx": {
-          "name": "kitchen_ticket_status_changes_ticket_idx",
+        "device_training_periods_open_key": {
+          "name": "device_training_periods_open_key",
           "columns": [
             {
               "expression": "tenant_id",
@@ -33603,13 +32984,35 @@
               "nulls": "last"
             },
             {
-              "expression": "ticket_id",
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"device_training_periods\".\"ended_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "device_training_periods_device_idx": {
+          "name": "device_training_periods_device_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "occurred_at",
+              "expression": "device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33622,9 +33025,9 @@
         }
       },
       "foreignKeys": {
-        "kitchen_ticket_status_changes_tenant_id_tenants_id_fk": {
-          "name": "kitchen_ticket_status_changes_tenant_id_tenants_id_fk",
-          "tableFrom": "kitchen_ticket_status_changes",
+        "device_training_periods_tenant_id_tenants_id_fk": {
+          "name": "device_training_periods_tenant_id_tenants_id_fk",
+          "tableFrom": "device_training_periods",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -33635,9 +33038,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "kitchen_ticket_status_changes_outlet_id_outlets_id_fk": {
-          "name": "kitchen_ticket_status_changes_outlet_id_outlets_id_fk",
-          "tableFrom": "kitchen_ticket_status_changes",
+        "device_training_periods_outlet_id_outlets_id_fk": {
+          "name": "device_training_periods_outlet_id_outlets_id_fk",
+          "tableFrom": "device_training_periods",
           "tableTo": "outlets",
           "columnsFrom": [
             "outlet_id"
@@ -33648,31 +33051,18 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "kitchen_ticket_status_changes_ticket_fk": {
-          "name": "kitchen_ticket_status_changes_ticket_fk",
-          "tableFrom": "kitchen_ticket_status_changes",
-          "tableTo": "kitchen_tickets",
+        "device_training_periods_device_fk": {
+          "name": "device_training_periods_device_fk",
+          "tableFrom": "device_training_periods",
+          "tableTo": "devices",
           "columnsFrom": [
             "tenant_id",
-            "ticket_id"
+            "outlet_id",
+            "device_id"
           ],
           "columnsTo": [
             "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "kitchen_ticket_status_changes_outlet_fk": {
-          "name": "kitchen_ticket_status_changes_outlet_fk",
-          "tableFrom": "kitchen_ticket_status_changes",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
+            "outlet_id",
             "id"
           ],
           "onDelete": "no action",
@@ -33680,46 +33070,26 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "kitchen_ticket_status_changes_tenant_id_id_key": {
-          "name": "kitchen_ticket_status_changes_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "kitchen_ticket_status_changes_source_check": {
-          "name": "kitchen_ticket_status_changes_source_check",
-          "value": "\"kitchen_ticket_status_changes\".\"source\" IN ('user', 'device', 'system')"
-        },
-        "kitchen_ticket_status_changes_actor_check": {
-          "name": "kitchen_ticket_status_changes_actor_check",
-          "value": "\"kitchen_ticket_status_changes\".\"source\" = 'system' OR \"kitchen_ticket_status_changes\".\"actor_id\" IS NOT NULL"
-        },
-        "kitchen_ticket_status_changes_device_check": {
-          "name": "kitchen_ticket_status_changes_device_check",
-          "value": "\"kitchen_ticket_status_changes\".\"source\" <> 'device' OR \"kitchen_ticket_status_changes\".\"device_id\" IS NOT NULL"
-        },
-        "kitchen_ticket_status_changes_reason_check": {
-          "name": "kitchen_ticket_status_changes_reason_check",
-          "value": "\"kitchen_ticket_status_changes\".\"to_status\" NOT IN ('recalled', 'cancelled') OR \"kitchen_ticket_status_changes\".\"reason\" IS NOT NULL OR \"kitchen_ticket_status_changes\".\"order_item_id\" IS NOT NULL"
+        "device_training_periods_range_check": {
+          "name": "device_training_periods_range_check",
+          "value": "\"device_training_periods\".\"ended_at\" IS NULL OR \"device_training_periods\".\"ended_at\" > \"device_training_periods\".\"started_at\""
         }
       },
       "isRLSEnabled": false
     },
-    "public.kitchen_tickets": {
-      "name": "kitchen_tickets",
+    "public.devices": {
+      "name": "devices",
       "schema": "",
       "columns": {
         "id": {
           "name": "id",
           "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
         "tenant_id": {
           "name": "tenant_id",
@@ -33733,9 +33103,9 @@
           "primaryKey": false,
           "notNull": true
         },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
+        "type": {
+          "name": "type",
+          "type": "varchar(20)",
           "primaryKey": false,
           "notNull": true
         },
@@ -33743,63 +33113,77 @@
           "name": "station_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "fire_batch_id": {
-          "name": "fire_batch_id",
-          "type": "uuid",
+        "label": {
+          "name": "label",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
+        },
+        "capabilities": {
+          "name": "capabilities",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "training_mode": {
+          "name": "training_mode",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",
           "type": "varchar(20)",
           "primaryKey": false,
-          "notNull": true
-        },
-        "priority": {
-          "name": "priority",
-          "type": "smallint",
-          "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "default": "'active'"
         },
-        "fired_at": {
-          "name": "fired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
+        "revoked_at": {
+          "name": "revoked_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
-        "done_at": {
-          "name": "done_at",
-          "type": "timestamp with time zone",
+        "revoked_by": {
+          "name": "revoked_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "served_at": {
-          "name": "served_at",
-          "type": "timestamp with time zone",
+        "revoke_reason": {
+          "name": "revoke_reason",
+          "type": "varchar(500)",
           "primaryKey": false,
           "notNull": false
         },
-        "cancelled_at": {
-          "name": "cancelled_at",
-          "type": "timestamp with time zone",
+        "enrolled_by": {
+          "name": "enrolled_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "printed_fallback": {
-          "name": "printed_fallback",
-          "type": "boolean",
+        "token_issued_at": {
+          "name": "token_issued_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": false
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -33817,8 +33201,8 @@
         }
       },
       "indexes": {
-        "kitchen_tickets_station_status_idx": {
-          "name": "kitchen_tickets_station_status_idx",
+        "devices_sync_idx": {
+          "name": "devices_sync_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -33827,13 +33211,19 @@
               "nulls": "last"
             },
             {
-              "expression": "station_id",
+              "expression": "outlet_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "status",
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33846,9 +33236,9 @@
         }
       },
       "foreignKeys": {
-        "kitchen_tickets_tenant_id_tenants_id_fk": {
-          "name": "kitchen_tickets_tenant_id_tenants_id_fk",
-          "tableFrom": "kitchen_tickets",
+        "devices_tenant_id_tenants_id_fk": {
+          "name": "devices_tenant_id_tenants_id_fk",
+          "tableFrom": "devices",
           "tableTo": "tenants",
           "columnsFrom": [
             "tenant_id"
@@ -33859,9 +33249,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "kitchen_tickets_outlet_id_outlets_id_fk": {
-          "name": "kitchen_tickets_outlet_id_outlets_id_fk",
-          "tableFrom": "kitchen_tickets",
+        "devices_outlet_id_outlets_id_fk": {
+          "name": "devices_outlet_id_outlets_id_fk",
+          "tableFrom": "devices",
           "tableTo": "outlets",
           "columnsFrom": [
             "outlet_id"
@@ -33872,13 +33262,13 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "kitchen_tickets_order_fk": {
-          "name": "kitchen_tickets_order_fk",
-          "tableFrom": "kitchen_tickets",
-          "tableTo": "orders",
+        "devices_outlet_fk": {
+          "name": "devices_outlet_fk",
+          "tableFrom": "devices",
+          "tableTo": "outlets",
           "columnsFrom": [
             "tenant_id",
-            "order_id"
+            "outlet_id"
           ],
           "columnsTo": [
             "tenant_id",
@@ -33887,9 +33277,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "kitchen_tickets_station_fk": {
-          "name": "kitchen_tickets_station_fk",
-          "tableFrom": "kitchen_tickets",
+        "devices_station_fk": {
+          "name": "devices_station_fk",
+          "tableFrom": "devices",
           "tableTo": "stations",
           "columnsFrom": [
             "tenant_id",
@@ -33901,53 +33291,37 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
-        },
-        "kitchen_tickets_outlet_fk": {
-          "name": "kitchen_tickets_outlet_fk",
-          "tableFrom": "kitchen_tickets",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "kitchen_tickets_tenant_id_id_key": {
-          "name": "kitchen_tickets_tenant_id_id_key",
+        "devices_tenant_id_id_key": {
+          "name": "devices_tenant_id_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
             "id"
           ]
         },
-        "kitchen_tickets_order_station_batch_key": {
-          "name": "kitchen_tickets_order_station_batch_key",
+        "devices_tenant_outlet_id_key": {
+          "name": "devices_tenant_outlet_id_key",
           "nullsNotDistinct": false,
           "columns": [
             "tenant_id",
-            "order_id",
-            "station_id",
-            "fire_batch_id"
+            "outlet_id",
+            "id"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "kitchen_tickets_status_check": {
-          "name": "kitchen_tickets_status_check",
-          "value": "\"kitchen_tickets\".\"status\" IN ('new', 'in_progress', 'done', 'recalled', 'cancelled')"
+        "devices_type_check": {
+          "name": "devices_type_check",
+          "value": "\"devices\".\"type\" IN ('pos', 'kds', 'waiter_phone', 'printer', 'display', 'smart_lock', 'panic_button', 'edc')"
         },
-        "kitchen_tickets_priority_check": {
-          "name": "kitchen_tickets_priority_check",
-          "value": "\"kitchen_tickets\".\"priority\" BETWEEN 0 AND 9"
+        "devices_status_check": {
+          "name": "devices_status_check",
+          "value": "(\"devices\".\"status\" = 'active' AND \"devices\".\"revoked_at\" IS NULL) OR (\"devices\".\"status\" = 'revoked' AND \"devices\".\"revoked_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

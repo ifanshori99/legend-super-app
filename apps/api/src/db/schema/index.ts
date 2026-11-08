@@ -39,10 +39,15 @@ export * from "./device-pin";
 // WS-03 QR order carts/orders (legend-e2x).
 export * from "./qr-order";
 export * from "./reservation";
+// Guest reservation self-service links (legend-o5gr).
+export * from "./reservation-public";
 export * from "./facility";
 export * from "./hris";
+// WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
+export * from "./hris-leave";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
 export * from "./accounting-ap-fa";
+export * from "./accounting-journal-requests";
 // WS-06 inventory setup writes (legend-gjmk).
 export * from "./inventory-setup";
 // WS-03 menu import + printable menu (legend-dmi).
@@ -60,3 +65,9 @@ export * from "./edge-node";
 export * from "./pos-order";
 // WS-04 KDS routing + ticket lifecycle (legend-4d5).
 export * from "./kds";
+// WS-07 shareholder documents (legend-69yq).
+export * from "./shareholder-documents";
+// WS-06 stock count / stok opname (legend-j5x).
+export * from "./inventory-count";
+// WS-02 device registry + training periods (legend-165).
+export * from "./device";

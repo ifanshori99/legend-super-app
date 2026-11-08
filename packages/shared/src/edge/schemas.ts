@@ -1,5 +1,7 @@
 import {
   z,
+  cursorSchema,
+  PAGE_LIMIT_MAX,
   uuidSchema,
   ulidSchema,
   tenantIdSchema,
@@ -27,23 +29,85 @@ export const deviceTypeSchema = z.enum([
   "edc",
 ]);
 export const deviceStatusSchema = z.enum(["active", "revoked"]);
+const deviceFields = {
+  ...scope,
+  id: uuidSchema,
+  type: deviceTypeSchema,
+  stationId: uuidSchema.nullable(),
+  label: text,
+  version: text,
+  capabilities: z.array(text),
+  lastSeenAt: isoDateTimeSchema.nullable(),
+  revokedAt: isoDateTimeSchema.nullable(),
+  status: deviceStatusSchema,
+  trainingMode: z.boolean(),
+};
+const revocationAgrees = (d: {
+  status: z.infer<typeof deviceStatusSchema>;
+  revokedAt: string | null;
+}) => (d.status === "revoked") === (d.revokedAt !== null);
+const revocationAgreesIssue = {
+  message: "Revocation status and timestamp must agree",
+};
 export const deviceSchema = z
+  .strictObject(deviceFields)
+  .refine(revocationAgrees, revocationAgreesIssue);
+
+/** F5 Registri Perangkat: devices send a heartbeat every 30 seconds. */
+export const DEVICE_HEARTBEAT_INTERVAL_SECONDS = 30;
+/** No heartbeat for this long = offline (EDG-05; 4 missed beats). */
+export const DEVICE_OFFLINE_AFTER_SECONDS = 120;
+
+/**
+ * Offline = active and silent for more than DEVICE_OFFLINE_AFTER_SECONDS. A
+ * revoked device is never "offline" (it is out of service); an active device
+ * that never reported is offline.
+ */
+export function isDeviceOffline(
+  device: {
+    status: z.infer<typeof deviceStatusSchema>;
+    lastSeenAt: string | null;
+  },
+  now: Date,
+): boolean {
+  if (device.status === "revoked") return false;
+  if (device.lastSeenAt === null) return true;
+  return (
+    now.getTime() - new Date(device.lastSeenAt).getTime() >
+    DEVICE_OFFLINE_AFTER_SECONDS * 1000
+  );
+}
+
+/** Device heartbeat body; the device id comes from the verified token only. */
+export const deviceHeartbeatBodySchema = z.strictObject({
+  version: text,
+  capabilities: z.array(text),
+  occurredAt: isoDateTimeSchema,
+});
+export type DeviceHeartbeatBody = z.infer<typeof deviceHeartbeatBodySchema>;
+
+/** Registry row as the cloud replicates it to an edge node (cloud wins). */
+export const deviceSyncRecordSchema = z
   .strictObject({
-    ...scope,
-    id: uuidSchema,
-    type: deviceTypeSchema,
-    stationId: uuidSchema.nullable(),
-    label: text,
-    version: text,
-    capabilities: z.array(text),
-    lastSeenAt: isoDateTimeSchema.nullable(),
-    revokedAt: isoDateTimeSchema.nullable(),
-    status: deviceStatusSchema,
-    trainingMode: z.boolean(),
+    ...deviceFields,
+    updatedAt: isoDateTimeSchema,
+    /** Token floor: the edge refuses tokens issued before it (reissue rotates). */
+    tokenIssuedAt: isoDateTimeSchema.nullable(),
   })
-  .refine((d) => (d.status === "revoked") === (d.revokedAt !== null), {
-    message: "Revocation status and timestamp must agree",
-  });
+  .refine(revocationAgrees, revocationAgreesIssue);
+export type DeviceSyncRecord = z.infer<typeof deviceSyncRecordSchema>;
+
+export const deviceSyncPageSchema = z.strictObject({
+  data: z.array(deviceSyncRecordSchema),
+  meta: z.strictObject({
+    limit: z.number().int().min(1).max(PAGE_LIMIT_MAX),
+    /** Non-null while more rows follow: request again with `since` = this. */
+    nextCursor: cursorSchema.nullable(),
+    /** Store after applying the page; null = nothing replicated yet. */
+    watermark: cursorSchema.nullable(),
+  }),
+});
+export type DeviceSyncPage = z.infer<typeof deviceSyncPageSchema>;
 export const edgeNodeSchema = z.strictObject({
   ...scope,
   id: uuidSchema,
