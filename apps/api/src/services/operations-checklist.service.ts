@@ -288,13 +288,17 @@ async function loadRunRow(
   return row;
 }
 
-/** OPS-01: `assignedTo` must hold a live grant on the tenant or that outlet. */
+/**
+ * OPS-01: `assignedTo` must hold a live grant on the tenant or that outlet.
+ * With `roleId` (template role) the grant must be for that role.
+ */
 async function assertAssigneeInOutlet(
   tx: Tx,
   tenantId: string,
   outletId: string,
   assignedTo: UserId,
   now: Date,
+  roleId?: string | null,
 ): Promise<void> {
   const [assignment] = await tx
     .select({ id: roleAssignments.id })
@@ -303,6 +307,7 @@ async function assertAssigneeInOutlet(
       and(
         eq(roleAssignments.tenantId, tenantId),
         eq(roleAssignments.userId, assignedTo),
+        roleId ? eq(roleAssignments.roleId, roleId) : undefined,
         lte(roleAssignments.validFrom, now),
         or(
           isNull(roleAssignments.validUntil),
@@ -322,7 +327,9 @@ async function assertAssigneeInOutlet(
     throw new HttpError(
       422,
       "VALIDATION_ERROR",
-      "Penanggung jawab di luar outlet",
+      roleId
+        ? "Penanggung jawab tidak memegang peran checklist ini"
+        : "Penanggung jawab di luar outlet",
     );
 }
 
@@ -662,12 +669,25 @@ export async function createChecklistRun(
       input.templateId,
       input.outletId,
     );
+    // OPS-01: the run's shift must match the template schedule when both set.
+    const scheduledShiftId = template.schedule.shiftTemplateId ?? null;
+    if (
+      input.shiftTemplateId &&
+      scheduledShiftId &&
+      input.shiftTemplateId !== scheduledShiftId
+    )
+      throw new HttpError(
+        422,
+        "VALIDATION_ERROR",
+        "Shift tidak sesuai jadwal template",
+      );
     await assertAssigneeInOutlet(
       tx,
       context.tenant.tenantId,
       input.outletId,
       input.assignedTo,
       now,
+      template.roleId,
     );
     const [outlet] = await tx
       .select({ timezone: outlets.timezone })
@@ -697,7 +717,7 @@ export async function createChecklistRun(
         templateVersion: snapshot.templateVersion,
         items: snapshot.items,
         shiftDate: input.shiftDate,
-        shiftTemplateId: input.shiftTemplateId ?? null,
+        shiftTemplateId: input.shiftTemplateId ?? scheduledShiftId,
         assignedTo: input.assignedTo,
         dueAt,
         completedAt: null,

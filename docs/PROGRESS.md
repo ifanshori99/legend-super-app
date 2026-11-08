@@ -34,6 +34,15 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Biaya sesi ui-engineer (transkrip fe7d1815, 07:57–09:41 UTC, 2 compact, 19 subagent): Opus utama 6128k, Sonnet 5723k, Opus subagent 257k, Haiku 114k; total 12223k unit biaya.
 - Kebutuhan kontrak (belum dikerjakan): metode bayar kasir / kode bayar eksplisit + POS terima pembayaran order tertahan; ubah pax sesi; foto cover outlet; patch opsi baris keranjang; kode promo/voucher ikut `placeOrder`; metode guest `va` dan `card` (nomor VA + channel + kedaluwarsa, URL halaman kartu penyedia di `guestPaymentSchema`).
 
+## legend-5v69 mesin checklist operasional (engineer, cabang `ws/checklist-engine`)
+
+- Temuan awal: sebagian besar mesin sudah ada dari legend-btha/legend-5zkp (template berversi, run dengan snapshot item, `CHECKLIST_ITEM_NOT_IN_RUN` 404, alert `checklist.missed`/`checklist.failed` ke supervisor lewat outbox, sweep tiap menit di worker). Bead ini menutup celahnya.
+- Baru: penjadwal run otomatis `generateScheduledChecklistRuns` (`apps/api/src/services/operations-checklist-scheduler.service.ts`), dipanggil worker tiap menit sebelum sweep terlewat. Satu run per template ber-`roleId` per tanggal lokal outlet, penanggung jawab = pemegang peran aktif (scope outlet dulu, lalu paling lama, lalu id). Tidak membuat run yang sudah lewat batas waktu, tidak menggandakan run manual, template rusak dilewati.
+- Kolom `ops_checklist_runs.scheduled` + indeks unik parsial (tenant, template, tanggal) WHERE scheduled, migrasi `0063_public_amazoness.sql`.
+- Run manual: shift default dari jadwal template (422 bila beda), penanggung jawab wajib memegang peran template (422).
+- Keputusan: template tanpa `roleId` tetap manual saja; alert tetap per run (daftar item gagal di payload), sesuai kontrak.
+- Test: `apps/api/src/test/operations-checklist-engine.test.ts` (20 test).
+
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
