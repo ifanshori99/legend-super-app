@@ -18,7 +18,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
 | ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
 | ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38 | K | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40); gate milestone lulus 21:44 (check 1414 test, build ok; journal when monoton > 0067) | Codex R6 |
-| ws/stock-opname | 59e96f16 | K | nilai stok, akses counter | putaran 2 (brief 84) selesai, Opus reviewer bersih; DIGABUNG milestone/m1 7373f00b (migration 0070/0071); gate milestone jalan | Codex R7 (SHA 59e96f16) |
+| ws/stock-opname | 59e96f16 | K | nilai stok, akses counter | putaran 2 (brief 84) selesai, Opus reviewer bersih; DIGABUNG milestone/m1 7373f00b (migration 0070/0071); gate milestone lulus 22:30 | Codex R7 (SHA 59e96f16) |
 | ws/recipe-bom | f0cec09 | K | HPP | pasangan gelombang 2 | Codex R7 |
 | ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
 | ws/ai-tool-catalog | d15542a | K | aksi AI berizin | pasangan gelombang 2 | Codex R8 |
