@@ -505,6 +505,20 @@
       "when": 1794149399815,
       "tag": "0071_stock_count_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1794151084135,
+      "tag": "0072_safe_harrier",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1794151085226,
+      "tag": "0073_shareholder_documents_rls",
+      "breakpoints": true
     }
   ]
 }
