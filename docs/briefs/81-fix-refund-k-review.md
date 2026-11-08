@@ -9,8 +9,13 @@ Peran: `~/.agents/team/roles/engineer.md`. Worktree `.worktrees/refund-approval`
 4. Rendah — `:836-843,1013,1027`: polling `pending` menaikkan `payoutAttempts` → 8 poll ≈ 2 jam jadi `MANUAL_RECONCILIATION` palsu. Fix: pisahkan penghitung tunggu provider vs hasil tak diketahui.
 5. Migration bentrok dengan main (0063–0067): merge `main`, renumber via drizzle-kit.
 
-## Temuan architect
-(menyusul)
+## Temuan architect (urutan fix: 2, 1, 3, 4; 5–6 boleh bead susulan)
+1. Tinggi — `payment-admin.service.ts:288-292`, `payment-refund.service.ts:271-363`: refund admin tidak menolak intent yang terikat dokumen sumber (`orderId`, `accessTicketId`, `subscriptionInvoiceId`) → uang keluar tanpa jurnal balik, poin loyalti tidak batal (LOY-02), dan POS refund bisa jalan lagi (total 2x bayar). Fix: `createRefund` dan `applyApproval` tolak intent berdokumen sumber kecuali requester sistem (`system:pos`, `system:reservation`); refund penjualan wajib lewat modul pemilik (`order.refunded`). Ini pendekatan pilihan untuk temuan 1 reviewer; jurnal balik gateway tetap untuk dana tanpa dokumen sumber bila relevan.
+2. Sedang — migration 0063 bentrok: hapus SQL + snapshot, `pnpm db:generate --name refund_approval_payout` (when baru; lihat "Catatan merge milestone" di PROGRESS).
+3. Sedang — idempotency (`:510-514`, `:602-623`, kontrak `docs/plan/contracts.md:118`): reject diulang → 409; approve level 1 diulang → `IDEMPOTENCY_KEY_REUSED`. Fix: kembalikan `loadView` bila ada baris rantai dengan key + actor sama; reject langsung dibungkus `idempotentPaymentAdminWrite`.
+4. Sedang — sama dengan temuan 3 reviewer (sweep payout di relay; batasi ±20 dtk per putaran atau loop sendiri).
+5. Rendah — `:820-835`: refund dana belum teralokasi pakai evidence terbaru intent, bukan milik dana. Fix: simpan evidence id di `payment_unallocated_funds` (`payment.service.ts:1078,1181`).
+6. Rendah — `:507`, `routes/platform-approval.routes.ts:93`: cek `payment.reconcile` per outlet hanya di route refund; lewat inbox approval terlewat. Fix: cek tiap `decidedBy` di `settleLocked`.
 
 ## Bukti selesai
 Test regresi per temuan; gerbang penuh; reviewer subagent konteks segar; commit lokal. Laporan: SHA, test, migration lama→baru.
