@@ -1218,6 +1218,23 @@ describe("DOIT adapter: getStatus", () => {
     expect((await status()).paidAt).toBe("2026-11-08T10:05:00.000Z");
   });
 
+  it("reads a paid time without a time zone as unknown (paidAt null)", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08T17:05:00",
+        }),
+      }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+      paidAt: null,
+    });
+  });
+
   it("reports `amount` for a paid VA, also once its QR/VA instrument is released", async () => {
     route = methodsAndPayments({
       get: () => ({ json: vaPayment({ status: "paid", rail: null }) }),

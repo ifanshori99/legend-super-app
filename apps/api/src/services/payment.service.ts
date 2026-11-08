@@ -71,6 +71,7 @@ import {
   decidePaymentConfirmation,
   type PaymentConfirmation,
 } from "./payment-lifecycle";
+import { plausiblePaidAt } from "./payment-paid-at";
 import {
   paymentGateway,
   type GatewayIntent,
@@ -868,6 +869,10 @@ export async function cancelPaymentLinkInTx(
         ),
       ),
     );
+  // A gateway code already past its expiry stays `pending`: it may still be
+  // waiting for a definitive gateway answer, and expiring it here would take
+  // it out of reconciliation (money paid with a lost webhook would never be
+  // recorded). The poller settles it later as a late payment.
   const expired = await tx
     .update(paymentIntents)
     .set({ status: "expired", updatedAt: input.now })
@@ -876,6 +881,10 @@ export async function cancelPaymentLinkInTx(
         eq(paymentIntents.tenantId, tenantId),
         eq(paymentIntents.paymentLinkId, input.linkId),
         eq(paymentIntents.status, "pending"),
+        or(
+          isNull(paymentIntents.providerRef),
+          gt(paymentIntents.expiresAt, input.now),
+        ),
       ),
     )
     .returning();
@@ -1060,6 +1069,7 @@ async function syncPendingIntentDetailed(
   }
   let providerStatus;
   let gatewayError = false;
+  let settlementFailed = false;
   try {
     providerStatus = await paymentGateway().getStatus({
       context,
@@ -1075,7 +1085,11 @@ async function syncPendingIntentDetailed(
   if (providerStatus?.status === "paid" && providerStatus.amountIdr !== null) {
     // Fail closed: a status answer without the settled amount proves nothing
     // about how much arrived; the verified webhook settles it instead (PAY-02).
-    const paidAt = providerStatus.paidAt ?? now.toISOString();
+    const paidAt = plausiblePaidAt(
+      providerStatus.paidAt,
+      intent.createdAt,
+      now,
+    );
     try {
       return {
         intent: await applyConfirmation(
@@ -1115,6 +1129,10 @@ async function syncPendingIntentDetailed(
       // Past expiry a rejected settlement (409) must not surface on the link
       // view: fall through and expire the intent instead.
       if (!pastExpiry) throw error;
+      // A non-definitive failure (DB, serialization) proves nothing: the money
+      // may still settle on the next poll, so it must not expire the intent.
+      if (!(error instanceof PaymentConfirmationRejected))
+        settlementFailed = true;
     }
   }
   if (pastExpiry) {
@@ -1123,6 +1141,7 @@ async function syncPendingIntentDetailed(
     // definitive, so `pending` keeps reconciling like a gateway error does.
     const inconclusive =
       providerStatus === undefined ||
+      settlementFailed ||
       providerStatus.status === "pending" ||
       (providerStatus.status === "paid" && providerStatus.amountIdr === null);
     if (inconclusive) {
@@ -1796,7 +1815,7 @@ async function syncExpiredIntentPayment(
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
     return { intent, gatewayError: false };
-  const paidAt = providerStatus.paidAt ?? now.toISOString();
+  const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
     const settled = await applyConfirmation(
       context,

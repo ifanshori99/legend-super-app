@@ -68,7 +68,10 @@ import { createLogger, logger as moduleLogger } from "../lib/logger";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
+import { db } from "../db";
+import { withTenant } from "../db/tenant";
 import {
+  cancelPaymentLinkInTx,
   createPaymentLink,
   pollPendingGatewayIntents,
 } from "../services/payment.service";
@@ -2121,6 +2124,59 @@ describe("PAY-02 a gateway error never closes a lapsed intent", () => {
     ]);
   });
 
+  it("PAY-02 a DOIT paid_at in the future falls back to the poll time", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 minute");
+    doit.settle(bill.providerRef);
+    doit.payments.get(bill.providerRef)!.paid_at = new Date(
+      Date.now() + 24 * 60 * minutes,
+    ).toISOString();
+    const pollTime = new Date(Date.now() + 2 * minutes);
+    await pollAt(pollTime);
+    await expectPaidOnce(bill);
+    expect((await intentRow(bill.intentId)).paid_at?.toISOString()).toBe(
+      pollTime.toISOString(),
+    );
+    const { rows } = await owner.query<{ received_at: Date }>(
+      "SELECT received_at FROM payment_evidence WHERE payment_intent_id = $1",
+      [bill.intentId],
+    );
+    expect(rows.map((row) => row.received_at.toISOString())).toEqual([
+      pollTime.toISOString(),
+    ]);
+  });
+
+  it("PAY-02 a settlement that fails with a non-rejection error past expiry keeps the intent pending; the next poll settles it", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    doit.settle(bill.providerRef);
+    // A database error (not PaymentConfirmationRejected) while settling.
+    await owner.query(`
+      CREATE FUNCTION fail_paid_settlement() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'paid' THEN
+          RAISE EXCEPTION 'injected settlement failure';
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await owner.query(`
+      CREATE TRIGGER fail_paid_settlement BEFORE UPDATE ON payment_intents
+      FOR EACH ROW EXECUTE FUNCTION fail_paid_settlement()`);
+    const first = new Date(Date.now() + 2 * minutes);
+    try {
+      await pollAt(first);
+    } finally {
+      await owner.query("DROP TRIGGER fail_paid_settlement ON payment_intents");
+      await owner.query("DROP FUNCTION fail_paid_settlement()");
+    }
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+
+    await pollAt(new Date(first.getTime() + 65 * minutes));
+    await expectPaidOnce(bill);
+    expect(await flagsOf(bill.intentId)).toContain("late_payment");
+  });
+
   it("PAY-02 a gateway error past expiry keeps the intent pending; the guest sees it expired; a later poll settles it", async () => {
     const bill = await openIntent();
     await lapse(bill.intentId, "1 hour");
@@ -2169,6 +2225,27 @@ describe("PAY-02 a gateway error never closes a lapsed intent", () => {
       [tenantA, "payment.reconciliation_timed_out", bill.intentId],
     );
     expect(rows).toEqual([{ reason: "gateway_unconfirmed" }]);
+  });
+
+  it("PAY-02 cancelling the link (cash replaced the code) leaves a lapsed DOIT code in reconciliation", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    const first = new Date(Date.now() + 2 * minutes);
+    await withDoitDown(bill, () => pollAt(first));
+    await withTenant(db, contextFor(tenantA), (tx) =>
+      cancelPaymentLinkInTx(tx, contextFor(tenantA), {
+        linkId: bill.linkId,
+        now: new Date(first.getTime() + 3 * minutes),
+        reason: "order_paid_in_cash",
+      }),
+    );
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+
+    // The guest had paid before the code lapsed; DOIT answers later.
+    doit.settle(bill.providerRef);
+    await pollAt(new Date(first.getTime() + 65 * minutes));
+    await expectPaidOnce(bill);
+    expect(await flagsOf(bill.intentId)).toContain("late_payment");
   });
 
   it("PAY-02 a lapsed intent is asked again only after the backoff", async () => {

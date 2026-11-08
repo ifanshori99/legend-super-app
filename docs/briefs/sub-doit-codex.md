@@ -26,3 +26,24 @@ Owns: services/payment-gateway.ts, services/payment-doit-wire.ts, the `at:` line
 - P1 design: NO new status / migration. Make the intent id deterministic: `intentId = uuidv5(namespace, tenantId + ":" + idempotencyKey)` (implement v5 with node:crypto sha1 if no `uuid` dep; set version/variant bits). Same key → same id → same DOIT `reference` + same Idempotency-Key → DOIT replays → line ~477 check passes → insert binds. readIntentPlan re-check unchanged. A dangling DOIT invoice from a failed local insert is unpaid (guest never received it) and is recovered by the retry. Document this in a code comment. Add tests: (a) DOIT accepted, response lost (fake throws after recording) → retry same key → same intent id, single DOIT payment, intent created; (b) local insert fails after DOIT success (e.g. bill locked/changed then restored) → retry same key binds. Also confirm refresh key path gets the same property.
 - Slice A = P1 (own worktree via isolation; files: payment.service.ts createIntent/readIntentPlan/refresh only, payment-doit.ts createIntent only if needed, test/payment-api.test.ts, test/payment-doit.test.ts).
 - Slice B = P2 + P3 together (main worktree; files: payment-gateway.ts, payment-doit-wire.ts, payment-doit.ts getStatus mapping, payment.service.ts sync/poll functions, test/payment-webhook-api.test.ts, test/payment-supersede-doit.test.ts, new test file test/payment-poll-reconcile.test.ts if cleaner).
+
+## Round 2: review fixes (architect on b80001ff + working tree)
+
+Worktree: `.worktrees/doit-provider`. Do not commit; the lead commits. Do not read `.env*`, no pkill. Do not run DB tests (the lead runs them); `npx tsc --noEmit -p apps/api` must stay at 0 errors.
+
+Shared helper (owned by implementer B, imported by A), new file `apps/api/src/services/payment-paid-at.ts`:
+```ts
+/** DOIT's paid time if plausible (createdAt - 5 min .. now + 5 min), else `now`. Logs a warning on fallback. */
+export function plausiblePaidAt(candidate: string | null | undefined, createdAt: Date | null, now: Date): string
+```
+`createdAt` null means: check only the upper bound (now + 5 min). Returns an ISO string.
+
+- **A (payment.service.ts + payment-webhook-api.test.ts):**
+  - (1) In `syncPendingIntentDetailed` past expiry, a settlement error that is NOT `PaymentConfirmationRejected` (DB or serialization) must count as inconclusive. The intent then stays `pending` until `GATEWAY_POLL_WINDOW_MS`, like a gateway error. Any `PaymentConfirmationRejected` stays definitive, so the intent expires as today.
+  - (3) Use `plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now)` in both poll paths that compute `paidAt`: `syncPendingIntentDetailed` and `syncExpiredIntentPayment`.
+  - Tests: `applyConfirmation` throws once (a non-Rejected error, e.g. `vi.spyOn` or a DB trigger) past expiry, so the intent stays pending. The next poll settles it.
+  - Also test: a DOIT `paid_at` in the future (+1 day) falls back to the poll time.
+- **B (payment-doit-wire.ts, payment-webhook.service.ts, payment-paid-at.ts, payment-doit.test.ts):**
+  - (2) Parse DOIT `paid_at` with `isoDateTimeSchema` from `@starter/shared/core`, so a timestamp without a time zone becomes null. `expires_at` stays as is.
+  - (3) Create the helper above, and apply it in the webhook's `readPaidAt` path. Use the intent's `createdAt` if the caller has it; otherwise pass null.
+  - Unit tests in `payment-doit.test.ts`: a zoneless `paid_at` maps to `paidAt: null`. Add helper bounds tests in a new file, `src/test/payment-paid-at.test.ts`, which needs no DB.

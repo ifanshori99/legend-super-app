@@ -15,7 +15,7 @@
 // Nothing here logs or throws a response body, header or secret (PAY-06).
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { CoreError } from "@starter/shared/core";
+import { CoreError, isoDateTimeSchema } from "@starter/shared/core";
 import {
   paymentChannelSchema,
   paymentInstructionsSchema,
@@ -145,7 +145,9 @@ export const doitPaymentSchema = z.object({
     .nullish()
     .catch(null)
     .transform((value) => value ?? null),
-  paid_at: timestampSchema
+  // Needs an explicit offset: a zoneless time would be read in the server's
+  // zone and could shift the settlement by hours, so it becomes null.
+  paid_at: isoDateTimeSchema
     .nullish()
     .catch(null)
     .transform((value) => value ?? null),
