@@ -45,8 +45,8 @@ Aturan: maks 1 run per akun ready, brief hanya rentang diff + berkas berisiko (Â
 
 | Run | Isi | Effort | Brief | Jadwal |
 |---|---|---|---|---|
-| R1 | pos-shift | xhigh | 59 | akun 3, 23:36 (cron d29dba1e) |
-| R2 | refund-approval | xhigh | 65 | akun 2, 00:24 (cron 8763dcff) |
+| R1 | pos-shift + struk | xhigh | 59, 68 | tunggu gate (6c1ec83, 1657797e) via merge train |
+| R2 | refund-approval | xhigh | 65 (SHA 09385266) | GAGAL START 00:10 & 00:25: macOS tolak buka terminal (opendirectoryd rusak). Jalankan pertama setelah pulih (akun 2 atau 3, keduanya ready) |
 | R3 | journals | xhigh | 70 | jendela berikut |
 | R4 | PPh21 | xhigh | menyusul | jendela berikut |
 | R5 | EDC + DOIT | high | 60, 62 | |
