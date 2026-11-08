@@ -27,7 +27,12 @@ import {
   leaveRequestIdSchema,
   holidayIdSchema,
   overtimeRequestIdSchema,
+  overtimeFormulaIdSchema,
 } from "./ids.ts";
+import {
+  overtimeDayTypeSchema,
+  overtimeParametersSchema,
+} from "./payroll/statutory.ts";
 
 const nonnegativeDecimal = decimal4Schema.refine(
   (value) => parseDecimal4(value) >= 0n,
@@ -96,6 +101,12 @@ export const leavePolicySchema = z.strictObject({
   carryOverMaxDays: nonnegativeDecimal,
   /** 0 = carry-over never expires; otherwise months after the period year ends. */
   carryOverExpiryMonths: z.number().int().min(0).max(24),
+  /** false = unlimited leave with no balance row (e.g. sick leave). */
+  tracksBalance: z.boolean().default(true),
+  /** `upfront` grants the annual days once a year; `monthly` accrues 1/12 a month. */
+  accrual: z.enum(["upfront", "monthly"]).default("upfront"),
+  /** How far below zero a balance may go when a request is made. */
+  negativeAllowanceDays: nonnegativeDecimal.default(() => formatDecimal4(0n)),
 });
 export type LeavePolicy = z.infer<typeof leavePolicySchema>;
 
@@ -116,32 +127,76 @@ export const leaveTypeSchema = z.strictObject({
 });
 export type LeaveType = z.infer<typeof leaveTypeSchema>;
 
+/** Create/update payload for a leave type (the server owns id and tenant). */
+export const leaveTypeInputSchema = z.strictObject({
+  code: leaveTypeSchema.shape.code,
+  name: leaveTypeSchema.shape.name,
+  paid: z.boolean(),
+  requiresAttachment: z.boolean(),
+  policy: leavePolicySchema,
+  isActive: z.boolean().optional(),
+});
+export type LeaveTypeInput = z.infer<typeof leaveTypeInputSchema>;
+
+/** Result of an accrual run: balances granted vs skipped (already granted). */
+export const leaveAccrualRunResultSchema = z.strictObject({
+  granted: z.number().int().min(0),
+  skipped: z.number().int().min(0),
+});
+export type LeaveAccrualRunResult = z.infer<typeof leaveAccrualRunResultSchema>;
+
+/**
+ * Tenant leave settings (founder decision Q7 "cuti bersama"). Collective leave
+ * (`holidays.type = 'collective'`) deducts one day of the annual balance per
+ * collective date by default; national and company holidays never deduct.
+ * `annualLeaveTypeId` null = the active leave type coded `ANNUAL`;
+ * `effectiveAnnualLeaveTypeId` is the type the deduction actually uses (null =
+ * none, nothing is deducted). `collectiveLeaveEffectiveFrom` is the business
+ * date from which collective days are deducted (no retroactive deduction; the
+ * server default applies until one is saved). `updatedBy`/`updatedAt` are null
+ * until saved.
+ */
+const collectiveLeaveEffectiveFromSchema = businessDateSchema.refine(
+  (date) => date >= "2000-01-01",
+  "Tanggal berlaku cuti bersama tidak boleh sebelum tahun 2000.",
+);
+export const leaveSettingsSchema = z.strictObject({
+  tenantId: tenantIdSchema,
+  collectiveLeaveDeductsAnnual: z.boolean(),
+  annualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  effectiveAnnualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  collectiveLeaveEffectiveFrom: collectiveLeaveEffectiveFromSchema,
+  updatedBy: userIdSchema.nullable(),
+  updatedAt: isoDateTimeSchema.nullable(),
+});
+export type LeaveSettings = z.infer<typeof leaveSettingsSchema>;
+
+/** PUT payload: the whole setting (the server owns tenant and audit fields). */
+export const leaveSettingsInputSchema = z.strictObject({
+  collectiveLeaveDeductsAnnual: z.boolean(),
+  annualLeaveTypeId: leaveTypeIdSchema.nullable(),
+  /** Omitted or null = the server default. */
+  collectiveLeaveEffectiveFrom: collectiveLeaveEffectiveFromSchema
+    .nullable()
+    .default(null),
+});
+export type LeaveSettingsInput = z.input<typeof leaveSettingsInputSchema>;
+
 /** PRD §6 H `leave_balances` row for one employee, type and period year. */
-export const leaveBalanceSchema = z
-  .strictObject({
-    id: leaveBalanceIdSchema,
-    tenantId: tenantIdSchema,
-    employeeId: employeeIdSchema,
-    leaveTypeId: leaveTypeIdSchema,
-    periodYear: z.number().int().min(2000).max(2100),
-    entitledDays: nonnegativeDecimal,
-    carriedOverDays: nonnegativeDecimal,
-    usedDays: nonnegativeDecimal,
-    pendingDays: nonnegativeDecimal,
-  })
-  .superRefine((balance, ctx) => {
-    const total =
-      parseDecimal4(balance.entitledDays) +
-      parseDecimal4(balance.carriedOverDays);
-    const consumed =
-      parseDecimal4(balance.usedDays) + parseDecimal4(balance.pendingDays);
-    if (consumed > total)
-      ctx.addIssue({
-        code: "custom",
-        path: ["usedDays"],
-        message: "Used and pending leave exceed the available balance",
-      });
-  });
+export const leaveBalanceSchema = z.strictObject({
+  id: leaveBalanceIdSchema,
+  tenantId: tenantIdSchema,
+  employeeId: employeeIdSchema,
+  leaveTypeId: leaveTypeIdSchema,
+  periodYear: z.number().int().min(2000).max(2100),
+  entitledDays: nonnegativeDecimal,
+  carriedOverDays: nonnegativeDecimal,
+  usedDays: nonnegativeDecimal,
+  pendingDays: nonnegativeDecimal,
+});
+// Used + pending may exceed entitled + carried over by the leave type's
+// `policy.negativeAllowanceDays`; the server enforces that limit under a row
+// lock when a request is created, so the DTO itself does not refuse it.
 export type LeaveBalance = z.infer<typeof leaveBalanceSchema>;
 
 /** Remaining days (entitled + carried over − used − pending). */
@@ -213,10 +268,12 @@ export const leaveRequestSchema = z
         path: ["endDate"],
         message: "End date cannot precede the start date",
       });
-    if ((request.decidedBy === null) !== (request.decidedAt === null))
+    // A system ending (matrix expiry / cancel) has a time but no deciding user.
+    if (request.decidedBy !== null && request.decidedAt === null)
       ctx.addIssue({
         code: "custom",
-        message: "A leave decision needs both actor and time",
+        path: ["decidedAt"],
+        message: "A leave decision by a user needs a decision time",
       });
     if (request.status === "pending" && request.decidedAt !== null)
       ctx.addIssue({
@@ -232,6 +289,12 @@ export const leaveRequestSchema = z
         code: "custom",
         path: ["decidedAt"],
         message: "A decided request needs a decision time",
+      });
+    if (request.status === "approved" && request.decidedBy === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["decidedBy"],
+        message: "An approved request needs a deciding user",
       });
   });
 export type LeaveRequest = z.infer<typeof leaveRequestSchema>;
@@ -276,16 +339,22 @@ export const overtimeRequestSchema = z
     date: businessDateSchema,
     minutes: z.number().int().min(1).max(720),
     reason,
+    /** Day kind the pay tiers apply to; a holiday resolves to a rest-day type. */
+    dayType: overtimeDayTypeSchema,
+    /** Formula version pinned at request time; null when none was resolved. */
+    formulaId: overtimeFormulaIdSchema.nullable(),
     status: overtimeRequestStatusSchema,
     requestedAt: isoDateTimeSchema,
     decidedBy: userIdSchema.nullable(),
     decidedAt: isoDateTimeSchema.nullable(),
   })
   .superRefine((request, ctx) => {
-    if ((request.decidedBy === null) !== (request.decidedAt === null))
+    // A system ending (matrix expiry / cancel) has a time but no deciding user.
+    if (request.decidedBy !== null && request.decidedAt === null)
       ctx.addIssue({
         code: "custom",
-        message: "An overtime decision needs both actor and time",
+        path: ["decidedAt"],
+        message: "An overtime decision by a user needs a decision time",
       });
     if (request.status === "pending" && request.decidedAt !== null)
       ctx.addIssue({
@@ -301,6 +370,12 @@ export const overtimeRequestSchema = z
         code: "custom",
         path: ["decidedAt"],
         message: "A decided request needs a decision time",
+      });
+    if (request.status === "approved" && request.decidedBy === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["decidedBy"],
+        message: "An approved request needs a deciding user",
       });
   });
 export type OvertimeRequest = z.infer<typeof overtimeRequestSchema>;
@@ -329,6 +404,36 @@ export function transitionOvertimeRequest(
     );
   return next;
 }
+
+export const overtimeRestDayTypeSchema = z.enum([
+  "rest_day_6_day_week",
+  "rest_day_5_day_week",
+]);
+export type OvertimeRestDayType = z.infer<typeof overtimeRestDayTypeSchema>;
+
+export const overtimeFormulaStatusSchema = z.enum([
+  "draft",
+  "published",
+  "archived",
+]);
+export type OvertimeFormulaStatus = z.infer<typeof overtimeFormulaStatusSchema>;
+
+/** Versioned "rumus lembur": a published version never changes. */
+export const overtimeFormulaSchema = z.strictObject({
+  id: overtimeFormulaIdSchema,
+  tenantId: tenantIdSchema,
+  version: z.number().int().min(1),
+  effectiveFrom: businessDateSchema,
+  status: overtimeFormulaStatusSchema,
+  parameters: overtimeParametersSchema,
+  /** Day type applied to holidays (the tenant's working-week regime). */
+  restDayType: overtimeRestDayTypeSchema,
+  legalBasis: z.string().min(1).max(200),
+  publishedAt: isoDateTimeSchema.nullable(),
+  publishedBy: userIdSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+});
+export type OvertimeFormula = z.infer<typeof overtimeFormulaSchema>;
 
 /** Overtime hours as a Decimal4 quantity, for display and payroll input. */
 export function overtimeHours(minutes: number): Decimal4 {

@@ -248,6 +248,8 @@ export interface PaymentProvider {
     input: PaymentRefundRequest,
   ): Promise<PaymentResult>;
 }
+/** Cloud-side boundary used by fakes and agent RPC fixtures. The edge EDC agent
+ * and per-bank ECR adapters use `EdcProvider` from `@starter/shared/edc`. */
 export interface EdcProvider {
   transact(context: ScopedTenantContext, input: EdcRequest): Promise<EdcResult>;
   /** Only a pending transaction. */
