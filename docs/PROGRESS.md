@@ -191,3 +191,9 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Codex: brief 65 refund SHA 09385266 siap; struk diff 87c27ed7..1657797e; deploy-prep milestone/m1..ws/deploy-prep (perlu brief). Cron akun 2 00:25 di sesi CTO ini.
 - 00:20 Jembatan inventori→GL (G9c40, tetap terbuka): ws/inventory-gl 2253c281, migration 0075/0076 (bentrok journals 0075/0076 → regen saat merge). Kode, build, lint hijau; test DB belum jalan (opendirectoryd). Saat DB pulih: kirim pesan ke G9c40 untuk `LEGEND_TEST_FILES="src/test/inventory-gl.test.ts" heavy node scripts/test.mjs unit` + `heavy pnpm check`. K: perlu Codex.
 - 00:20 Semua akun Claude di Ghostex "needs sign-in" (keychain tidak terbaca, opendirectoryd rusak). Merge train G5dhx berhenti "Login expired". Founder diminta: `sudo launchctl kickstart -k system/com.apple.opendirectoryd` atau restart Mac, lalu login ulang akun #1–#3.
+
+### Pulih 05:30 (9 Nov)
+- Founder restart Mac. whoami normal, akun Claude/Codex ready, Colima + port forward OK (probe 55432).
+- G5dhx merge train dan G9c40 inventori→GL dilanjutkan (DB pulih). G0c95 (brief 90) dan G30x7 (brief 91) di-reload lalu dikirimi brief. Codex refund berjalan di G7110 (akun 2, xhigh). G58ni = sesi Codex kosong sisa crash, abaikan/resolve.
+- Akar insiden: tekanan memori (8 thread + ~16 subagent menjalankan gate penuh bersamaan, swap 7 GB, 13 container DB test basi) → opendirectoryd macOS rusak setelah uptime 5 hari → user 501 tak dikenali → terminal baru ditolak, login akun tak terbaca, Colima/ssh gagal, gxserver mati.
+- Pencegahan: gate penuh sekali per tugas (sudah di TEAM.md), cleanup container test otomatis (bd baru), restart Mac mingguan, CTO cek `docker ps | grep -c starter-pg-test` tiap gelombang.
