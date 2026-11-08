@@ -81,6 +81,15 @@ CREATE TABLE "recurring_journals" (
 	CONSTRAINT "recurring_journals_description_check" CHECK (length(btrim("recurring_journals"."description")) > 0)
 );
 --> statement-breakpoint
+-- legend-vmyg: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated against legal_entities, outlets and journal_entries. Lift FORCE
+-- for this transaction only and restore it before commit (drizzle applies
+-- pending migrations in one transaction; same pattern as 0065).
+ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "manual_journals" ADD CONSTRAINT "manual_journals_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "manual_journals" ADD CONSTRAINT "manual_journals_legal_entity_fk" FOREIGN KEY ("tenant_id","legal_entity_id") REFERENCES "public"."legal_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "manual_journals" ADD CONSTRAINT "manual_journals_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -91,6 +100,9 @@ ALTER TABLE "recurring_journal_runs" ADD CONSTRAINT "recurring_journal_runs_entr
 ALTER TABLE "recurring_journals" ADD CONSTRAINT "recurring_journals_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recurring_journals" ADD CONSTRAINT "recurring_journals_legal_entity_fk" FOREIGN KEY ("tenant_id","legal_entity_id") REFERENCES "public"."legal_entities"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recurring_journals" ADD CONSTRAINT "recurring_journals_outlet_fk" FOREIGN KEY ("tenant_id","outlet_id") REFERENCES "public"."outlets"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.journal_entries FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "manual_journals_entity_status_idx" ON "manual_journals" USING btree ("tenant_id","legal_entity_id","status","created_at" DESC NULLS LAST,"id" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "manual_journals_chain_idx" ON "manual_journals" USING btree ("tenant_id","approval_chain_id");--> statement-breakpoint
 CREATE INDEX "recurring_journals_entity_status_idx" ON "recurring_journals" USING btree ("tenant_id","legal_entity_id","status");--> statement-breakpoint
