@@ -118,6 +118,10 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
   // mid-transition sees a narrower hero (seen once in a sharded run: 487 vs
   // 495), so retry the measurement until the geometry settles — the contract
   // below is unchanged.
+  // The sheet padding is 1rem below the lg breakpoint (1024px) and 1.5rem from
+  // lg up (item-sheet.tsx `--pad`), plus 4px of sub-pixel/scrollbar slack.
+  const viewportWidth = page.viewportSize()?.width ?? 0;
+  const heroInset = viewportWidth >= 1024 ? 2 * 24 + 4 : 2 * 16 + 4;
   await expect(async () => {
     const [heroBox, sheetBox] = await Promise.all([
       hero.boundingBox(),
@@ -125,7 +129,7 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
     ]);
     expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
     expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
-      (sheetBox?.width ?? 0) - 2 * 24 - 4,
+      (sheetBox?.width ?? 0) - heroInset,
     );
     expect(heroBox?.height ?? 0).toBeCloseTo(
       (heroBox?.width ?? 0) * (2 / 3),

@@ -28,7 +28,8 @@ import {
   type MenuFilter,
 } from "../lib/menu-filter.ts";
 import { menuQuery } from "../queries";
-import { QrFrameNotices, qrTextLink } from "./glass/qr-primitives";
+import { QrFrameNotices } from "./glass/qr-frame-notices";
+import { qrTextLink } from "./glass/qr-primitives";
 import { ItemCard, type ItemCartSummary } from "./item-card";
 import { ItemSheet } from "./item-sheet";
 import { QrCartBar } from "./menu/cart-bar";

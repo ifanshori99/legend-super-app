@@ -9,10 +9,9 @@ import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Minus, Plus } from "lucide-react";
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
-import { OfflineBannerSlot } from "@/components/layout/offline-banner-slot";
 import { Badge } from "@/components/ui/badge";
 import { API_MOCK } from "@/lib/api/mock-flag";
-import { IssuePrompt } from "../recovery";
+import { QrFrameNotices } from "./qr-frame-notices";
 
 /** Round 44px icon control on glass or paper (close, back, search, add). */
 export const qrRoundIcon =
@@ -21,19 +20,6 @@ export const qrRoundIcon =
 /** Underlined text action (Ubah, Lihat pilihan, Ganti metode bayar). */
 export const qrTextLink =
   "inline-flex min-h-6 items-center rounded-xs font-semibold underline decoration-1 underline-offset-4 hover:decoration-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring";
-
-/**
- * The offline banner and the failed-item prompt. Rendered right under each
- * page's top layer (QrTopBar or the menu header) so they never sit above it.
- */
-export function QrFrameNotices({ className }: { className?: string }) {
-  return (
-    <div className={cn("grid gap-3 empty:hidden", className)}>
-      <OfflineBannerSlot />
-      <IssuePrompt />
-    </div>
-  );
-}
 
 /**
  * Page nav: a floating glass bar with a leading control (back / close), the

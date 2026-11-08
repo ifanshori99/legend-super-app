@@ -383,10 +383,21 @@ export function CheckoutPage() {
       </Shell>
     );
 
+  // The order is placed without the promo / voucher code (the place contract
+  // has no code field), so the charged amount and the breakdown both come
+  // from the quote without the code. While that quote is still loading there
+  // is nothing to pay yet: never fall back to the coded total.
+  const plainQuote = codeApplied ? (base.data?.data ?? null) : quote;
+  const payable = plainQuote?.totalIdr ?? null;
   const shortfall = quote.minimumSpend.shortfallIdr;
   const busy = place.isPending || start.isPending;
   const blocked =
-    shortfall > 0 || quote.lines.length === 0 || awaitingConfirmation;
+    shortfall > 0 ||
+    quote.lines.length === 0 ||
+    awaitingConfirmation ||
+    // Pay-first charges now: hold until the amount without the code is known.
+    // Pay-later charges nothing here (the bill is computed by the server).
+    (payFirst && payable === null);
   const names = quote.removedLines.map((line) => line.name).join(", ");
   const soldOutIds = new Set(
     menu.items.filter((item) => item.status === "sold_out").map((i) => i.id),
@@ -429,11 +440,6 @@ export function CheckoutPage() {
     );
   };
 
-  // The order is placed without the promo / voucher code (the place contract
-  // has no code field), so the amount actually charged is the plain quote.
-  const payable = codeApplied
-    ? (base.data?.data.totalIdr ?? view.quote?.totalIdr ?? quote.totalIdr)
-    : quote.totalIdr;
   const blockedReason =
     shortfall > 0
       ? t("qrGlass.checkout.blockedMinimum", {
@@ -448,7 +454,7 @@ export function CheckoutPage() {
         <Notice tone="danger" title={errorText(t, place.error)} />
       )}
       {payFailure}
-      {codeApplied && payable !== quote.totalIdr && (
+      {codeApplied && payable !== null && payable !== quote.totalIdr && (
         <Notice
           tone="warning"
           title={t("qrGlass.checkout.codeNotCharged", {
@@ -456,7 +462,26 @@ export function CheckoutPage() {
           })}
         />
       )}
-      {total(payable)}
+      {payable === null && base.isError ? (
+        <Notice
+          tone="danger"
+          title={t("qrGlass.checkout.plainQuoteFailed")}
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void base.refetch()}
+            >
+              {t("common.retry")}
+            </Button>
+          }
+        />
+      ) : payable === null ? (
+        <Skeleton className="h-8 w-full" />
+      ) : (
+        total(payable)
+      )}
       {blocked && blockedReason && (
         <p className="px-1 text-sm leading-5 text-muted-foreground">
           {blockedReason}
@@ -466,12 +491,14 @@ export function CheckoutPage() {
         type="button"
         size="lg"
         className="w-full"
-        loading={busy}
+        loading={busy || (payFirst && payable === null && !base.isError)}
         disabled={blocked}
         onClick={() => submit()}
       >
         {payFirst
-          ? ctaLabel(method, payable)
+          ? payable === null
+            ? t("qrGlass.checkout.cta.held")
+            : ctaLabel(method, payable)
           : t("qrCart.checkout.openBillSubmit")}
         <ChevronRight aria-hidden="true" />
       </Button>
@@ -616,7 +643,11 @@ export function CheckoutPage() {
             onApply={setCode}
             onRemove={() => setCode(null)}
           />
-          <PriceBreakdown quote={quote} />
+          {plainQuote ? (
+            <PriceBreakdown quote={plainQuote} />
+          ) : (
+            <Skeleton className="h-24 w-full rounded-qr-media" />
+          )}
           {shortfall > 0 && (
             <Notice
               tone="danger"

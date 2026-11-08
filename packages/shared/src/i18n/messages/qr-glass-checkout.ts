@@ -36,8 +36,12 @@ export const qrGlassCheckoutMessages = {
   codeNotCharged:
     "Potongan kode belum ikut dalam pembayaran ini. Yang dibayar: {total}.",
   blockedMinimum: "Tambah {shortfall} lagi untuk mencapai minimum pesanan.",
+  plainQuoteFailed:
+    "Total tanpa kode belum bisa dihitung, jadi pembayaran ditahan dulu.",
   cta: {
     qris: "Bayar {total} dengan QRIS",
+    // Shown while the total without the code is not known yet: no amount.
+    held: "Menunggu total pembayaran",
     va: "Buat nomor Virtual Account",
     card: "Bayar {total} dengan kartu",
     ewallet: "Pilih e-wallet dan bayar",
