@@ -97,6 +97,7 @@ CREATE TABLE "kitchen_tickets" (
 	CONSTRAINT "kitchen_tickets_priority_check" CHECK ("kitchen_tickets"."priority" BETWEEN 0 AND 9)
 );
 --> statement-breakpoint
+ALTER TABLE "menu_items" ADD COLUMN "station_type" varchar(20);--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_outlet_id_outlets_id_fk" FOREIGN KEY ("outlet_id") REFERENCES "public"."outlets"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "kitchen_station_cursors" ADD CONSTRAINT "kitchen_station_cursors_station_fk" FOREIGN KEY ("tenant_id","station_id") REFERENCES "public"."stations"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -123,4 +124,5 @@ ALTER TABLE "kitchen_tickets" ADD CONSTRAINT "kitchen_tickets_outlet_fk" FOREIGN
 CREATE INDEX "kitchen_station_feed_ticket_idx" ON "kitchen_station_feed" USING btree ("tenant_id","station_id","ticket_id");--> statement-breakpoint
 CREATE INDEX "kitchen_ticket_items_ticket_idx" ON "kitchen_ticket_items" USING btree ("tenant_id","ticket_id");--> statement-breakpoint
 CREATE INDEX "kitchen_ticket_status_changes_ticket_idx" ON "kitchen_ticket_status_changes" USING btree ("tenant_id","ticket_id","occurred_at");--> statement-breakpoint
-CREATE INDEX "kitchen_tickets_station_status_idx" ON "kitchen_tickets" USING btree ("tenant_id","station_id","status");
+CREATE INDEX "kitchen_tickets_station_status_idx" ON "kitchen_tickets" USING btree ("tenant_id","station_id","status");--> statement-breakpoint
+ALTER TABLE "menu_items" ADD CONSTRAINT "menu_items_station_type_check" CHECK ("menu_items"."station_type" IS NULL OR "menu_items"."station_type" IN ('coffee_bar', 'beverage_bar', 'hot_kitchen', 'cold_kitchen', 'pastry'));

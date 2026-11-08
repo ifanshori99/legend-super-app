@@ -37,6 +37,13 @@ import {
   type LinkFrame,
 } from "./protocol.ts";
 
+/**
+ * Frames received but not yet processed before the peer is closed with
+ * LINK_CLOSE.overloaded (legend-wg5t #1). Stop-and-wait means a well-behaved
+ * peer has about one batch plus a few acks, resends and heartbeats in flight.
+ */
+export const LINK_MAX_PENDING_FRAMES = 32;
+
 export type QueuedEdgeEvent = {
   readonly linkSeq: number;
   readonly event: EventEnvelope;
@@ -86,6 +93,8 @@ export type LinkPeerOptions = {
   version: string;
   batchSize?: number;
   ackTimeoutMs?: number;
+  /** Backpressure bound on unprocessed received frames (legend-wg5t #1). */
+  maxPendingFrames?: number;
   now?: () => Date;
   /** Store/apply failures (no secrets in the error). The link stays up. */
   onError?: (error: unknown) => void;
@@ -123,7 +132,9 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
     LINK_BATCH_SIZE,
   );
   const ackTimeoutMs = options.ackTimeoutMs ?? 10_000;
+  const maxPendingFrames = options.maxPendingFrames ?? LINK_MAX_PENDING_FRAMES;
   const now = options.now ?? (() => new Date());
+  let pendingFrames = 0;
   let ready = false;
   let stopped = false;
   let sentUpTo = 0;
@@ -343,7 +354,21 @@ export function createLinkPeer(options: LinkPeerOptions): LinkPeer {
         transport.close(LINK_CLOSE.protocol, "Invalid frame");
         return;
       }
-      enqueue(() => handle(frame));
+      // The chain processes one frame at a time, so a flood would otherwise
+      // pile up in memory (and in store/DB work) without bound (legend-wg5t #1).
+      if (pendingFrames >= maxPendingFrames) {
+        stop();
+        transport.close(LINK_CLOSE.overloaded, "Too many pending frames");
+        return;
+      }
+      pendingFrames += 1;
+      enqueue(async () => {
+        try {
+          await handle(frame);
+        } finally {
+          pendingFrames -= 1;
+        }
+      });
     },
     notify() {
       enqueue(pump);

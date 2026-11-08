@@ -305,6 +305,35 @@ export const edgeInboundEvents = pgTable(
   ],
 );
 
+// Cloud-side registry of edge_to_cloud event ids, one row per (tenant, event)
+// whichever node delivered it first (legend-wg5t). Primary and standby of one
+// outlet may both send the same event id (the standby took over with the
+// primary's outbox); receipts in edge_inbound_events stay per node and
+// append-only, so the tenant-wide "already received" check and its race
+// guard (primary key) live here instead of in a unique index on the
+// receipts, which pre-existing duplicate receipts would break. Migration 0065
+// backfills it from the receipts. Append-only like the receipts.
+export const edgeReceivedEvents = pgTable(
+  "edge_received_events",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    firstEdgeNodeId: uuid("first_edge_node_id").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.eventId] }),
+    foreignKey({
+      name: "edge_received_events_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.firstEdgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+  ],
+);
+
 export const edgeSyncConflicts = pgTable(
   "edge_sync_conflicts",
   {

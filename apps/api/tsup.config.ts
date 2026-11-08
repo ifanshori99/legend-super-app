@@ -7,6 +7,7 @@ export default defineConfig({
   entry: {
     server: "src/server.ts",
     migrate: "src/migrate.ts",
+    "provision-roles": "src/provision-roles.ts",
     worker: "src/worker-main.ts",
   },
   format: "esm",
