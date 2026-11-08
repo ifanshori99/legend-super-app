@@ -552,12 +552,35 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
         [
           `ALTER FUNCTION app.require_tenant_id() OWNER TO "${roles[0]}"`,
           `ALTER FUNCTION app.require_tenant_id() OWNER TO CURRENT_USER`,
-          /owns tables, functions, types or schemas/,
+          /owns tables, functions, types, schemas or other objects/,
         ],
         [
           "CREATE VIEW public.zoqc_public AS SELECT 1 AS x; GRANT SELECT ON public.zoqc_public TO PUBLIC",
           "DROP VIEW public.zoqc_public",
           /queue role has table rights it must not have: SELECT on public\.zoqc_public/,
+        ],
+        [
+          'CREATE COLLATION public.zoqc_coll FROM "C"; ALTER COLLATION public.zoqc_coll OWNER TO "' +
+            roles[0] +
+            '"',
+          "DROP COLLATION public.zoqc_coll",
+          /owns tables, functions, types, schemas or other objects/,
+        ],
+        // System catalogs and built-in functions beyond what PUBLIC has.
+        [
+          "GRANT SELECT ON pg_catalog.pg_authid TO legend_app",
+          "REVOKE SELECT ON pg_catalog.pg_authid FROM legend_app",
+          /application role has table rights it must not have: SELECT on pg_catalog\.pg_authid/,
+        ],
+        [
+          `GRANT SELECT (rolpassword) ON pg_catalog.pg_authid TO "${roles[1]}"`,
+          `REVOKE SELECT (rolpassword) ON pg_catalog.pg_authid FROM "${roles[1]}"`,
+          /queue role has table rights it must not have: SELECT on pg_catalog\.pg_authid/,
+        ],
+        [
+          "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO legend_app",
+          "REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) FROM legend_app",
+          /may run built-in functions PUBLIC cannot: pg_read_file/,
         ],
         // Roles reached directly or through legend_app, with or without ADMIN.
         [
@@ -808,6 +831,22 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
       stale.stderr,
       /Could not sign in with the application URL .*28P01/,
     );
+    // A connection limit would only show under load; the audit refuses it.
+    await admin.query(`ALTER ROLE "${roles[0]}" CONNECTION LIMIT 1`);
+    try {
+      const limited = runJob(
+        {
+          MIGRATION_DATABASE_URL: adminUrl,
+          APP_DATABASE_URL: appUrl,
+          WORKER_DATABASE_URL: workerUrl,
+        },
+        ["--audit"],
+      );
+      assert.equal(limited.status, 1);
+      assert.match(limited.stderr, /has a connection limit or expiry/);
+    } finally {
+      await admin.query(`ALTER ROLE "${roles[0]}" CONNECTION LIMIT -1`);
+    }
     await admin.query("GRANT TRUNCATE ON zoqc_fixture TO legend_app");
     try {
       const drifted = runJob(

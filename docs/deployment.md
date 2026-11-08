@@ -429,7 +429,11 @@ or if a login:
 
 - is a superuser or has `BYPASSRLS`, `CREATEDB`, `CREATEROLE` or `REPLICATION`,
   directly or inherited, or inherits any predefined `pg_*` role;
-- owns any table, function, type or schema outside its own (`pgboss`);
+- owns any table, function, type, schema, operator, collation or other
+  object outside its own schema (`pgboss`);
+- may run a built-in function that `PUBLIC` cannot (such as `pg_read_file`),
+  or holds rights on a system catalog beyond `PUBLIC`'s (such as reading
+  `pg_authid`);
 - can create objects in the database or any schema outside its own;
 - belongs, directly or through `legend_app`, to any role other than
   `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);

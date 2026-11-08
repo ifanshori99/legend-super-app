@@ -42,6 +42,26 @@ const URL_PARAMS = new Set([
   "connect_timeout",
 ]);
 const APP_TABLE_RIGHTS = ["SELECT", "INSERT", "UPDATE", "DELETE"];
+// Catalogs with an owner column: [catalog, owner column, namespace column].
+const OWNED_CATALOGS: [string, string, string | null][] = [
+  ["pg_class", "relowner", "relnamespace"],
+  ["pg_proc", "proowner", "pronamespace"],
+  ["pg_type", "typowner", "typnamespace"],
+  ["pg_operator", "oprowner", "oprnamespace"],
+  ["pg_opclass", "opcowner", "opcnamespace"],
+  ["pg_opfamily", "opfowner", "opfnamespace"],
+  ["pg_collation", "collowner", "collnamespace"],
+  ["pg_conversion", "conowner", "connamespace"],
+  ["pg_statistic_ext", "stxowner", "stxnamespace"],
+  ["pg_ts_config", "cfgowner", "cfgnamespace"],
+  ["pg_ts_dict", "dictowner", "dictnamespace"],
+  ["pg_extension", "extowner", null],
+  ["pg_event_trigger", "evtowner", null],
+  ["pg_foreign_data_wrapper", "fdwowner", null],
+  ["pg_foreign_server", "srvowner", null],
+  ["pg_largeobject_metadata", "lomowner", null],
+  ["pg_publication", "pubowner", null],
+];
 
 /** An operator-facing failure. Its message never contains a credential. */
 export class ProvisionError extends Error {
@@ -279,23 +299,16 @@ async function assertRestricted(
     throw new ProvisionError(
       `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION; a superuser can remove it with REVOKE <group> FROM <login> GRANTED BY <grantor>, then re-run.`,
     );
+  // Catalog objects belong to the bootstrap superuser, so no schema is exempt
+  // except session temp schemas (a live session's own temp tables): a login
+  // owning anything else outside its own schemas is drift.
+  const ownedBy = OWNED_CATALOGS.map(
+    ([catalog, owner, namespace]) =>
+      `EXISTS (SELECT 1 FROM ${catalog} o${namespace ? ` JOIN pg_namespace n ON n.oid = o.${namespace}` : ""}
+               WHERE pg_has_role($1, o.${owner}, 'MEMBER')${namespace ? " AND n.nspname <> ALL($2::text[]) AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast%'" : ""})`,
+  );
   const owned = await client.query(
-    `SELECT EXISTS (
-       SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-       WHERE pg_has_role($1, c.relowner, 'MEMBER')
-         AND n.nspname <> ALL($2::text[])
-         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-         AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-     ) OR EXISTS (
-       SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE pg_has_role($1, p.proowner, 'MEMBER') AND n.nspname <> ALL($2::text[])
-         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-     ) OR EXISTS (
-       SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-       WHERE pg_has_role($1, t.typowner, 'MEMBER') AND n.nspname <> ALL($2::text[])
-         AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-         AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-     ) OR EXISTS (
+    `SELECT ${ownedBy.join(" OR ")} OR EXISTS (
        SELECT 1 FROM pg_namespace n
        WHERE pg_has_role($1, n.nspowner, 'MEMBER') AND n.nspname <> ALL($2::text[])
          AND n.nspname NOT LIKE 'pg\\_temp\\_%' AND n.nspname NOT LIKE 'pg\\_toast\\_temp\\_%'
@@ -304,7 +317,23 @@ async function assertRestricted(
   );
   if (owned.rows[0].owned)
     throw new ProvisionError(
-      `The ${label} role owns tables, functions, types or schemas outside its own; it must not own application objects.`,
+      `The ${label} role owns tables, functions, types, schemas or other objects outside its own; it must not own application objects.`,
+    );
+  // Built-in functions PUBLIC cannot run (pg_read_file, lo_import, ...)
+  // reach the server's files or other sessions, outside RLS.
+  const functions = await client.query(
+    `SELECT ARRAY(
+       SELECT DISTINCT p.proname::text FROM pg_proc p
+       WHERE p.pronamespace = 'pg_catalog'::regnamespace
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+       ORDER BY 1
+     ) AS names`,
+    [user],
+  );
+  if (functions.rows[0].names.length)
+    throw new ProvisionError(
+      `The ${label} role may run built-in functions PUBLIC cannot: ${functions.rows[0].names.slice(0, 5).join(", ")}${functions.rows[0].names.length > 5 ? ", ..." : ""}.`,
     );
   const ddl = await client.query(
     `SELECT has_database_privilege($1, current_database(), 'CREATE') AS database_create,
@@ -352,17 +381,31 @@ async function assertTableRights(
     ...((await serverVersion(client)) >= 170000 ? ["MAINTAIN"] : []),
   ];
   const rights = await client.query(
-    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege,
+            n.nspname IN ('pg_catalog', 'information_schema') AS system
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
      CROSS JOIN unnest($3::text[]) AS p(privilege)
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND n.nspname <> ALL($2::text[])
-       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-       AND CASE WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
-                THEN has_any_column_privilege($1, c.oid, p.privilege)
-                ELSE has_table_privilege($1, c.oid, p.privilege) END
+       AND CASE
+         -- System catalogs: only what goes beyond PUBLIC's own rights (a
+         -- grant on pg_authid or one of its columns is a leak, reading
+         -- pg_class is not).
+         WHEN n.nspname IN ('pg_catalog', 'information_schema') THEN
+           (has_table_privilege($1, c.oid, p.privilege)
+            AND NOT has_table_privilege('public', c.oid, p.privilege))
+           OR EXISTS (
+             SELECT 1 FROM pg_attribute a
+             WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+               AND CASE WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                        THEN has_column_privilege($1, c.oid, a.attnum, p.privilege)
+                             AND NOT has_column_privilege('public', c.oid, a.attnum, p.privilege)
+                        ELSE false END)
+         WHEN p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+           THEN has_any_column_privilege($1, c.oid, p.privilege)
+         ELSE has_table_privilege($1, c.oid, p.privilege) END
        -- Extension views such as pg_stat_statements are readable by PUBLIC by
        -- design; that is not a right of this login. Only extension-owned
        -- relations are exempt, never application tables granted to PUBLIC.
@@ -374,10 +417,16 @@ async function assertTableRights(
      ORDER BY 1, 2`,
     [user, ownSchemas, privileges],
   );
+  // "*" covers application relations only; a system catalog right beyond
+  // PUBLIC's is never allowed unless listed by name.
   const extra = rights.rows
     .filter(
-      (row: { relation: string; privilege: string }) =>
-        !(allowed[row.relation] ?? allowed["*"] ?? []).includes(row.privilege),
+      (row: { relation: string; privilege: string; system: boolean }) =>
+        !(
+          allowed[row.relation] ??
+          (row.system ? undefined : allowed["*"]) ??
+          []
+        ).includes(row.privilege),
     )
     .map(
       (row: { relation: string; privilege: string }) =>
@@ -698,7 +747,9 @@ export async function provisionRoles(options: {
 
 async function assertLogin(client: ClientBase, user: string, label: string) {
   const role = await client.query(
-    "SELECT rolcanlogin AND rolinherit AS usable FROM pg_roles WHERE rolname = $1",
+    `SELECT rolcanlogin AND rolinherit AND rolconnlimit = -1
+            AND (rolvaliduntil IS NULL OR rolvaliduntil = 'infinity') AS usable
+     FROM pg_roles WHERE rolname = $1`,
     [user],
   );
   if (!role.rows.length)
@@ -707,7 +758,7 @@ async function assertLogin(client: ClientBase, user: string, label: string) {
     );
   if (!role.rows[0].usable)
     throw new ProvisionError(
-      `The ${label} login ${user} cannot log in or does not inherit its group; re-run provision-roles.sh.`,
+      `The ${label} login ${user} cannot log in, does not inherit its group, or has a connection limit or expiry; re-run provision-roles.sh.`,
     );
   await assertNoSettings(client, user, label);
 }
