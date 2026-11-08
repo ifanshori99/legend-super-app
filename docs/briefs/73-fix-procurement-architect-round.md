@@ -13,7 +13,7 @@ Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/procure
 4. Rendah — job email memanggil provider di dalam transaksi DB (`job:118-164`). Pindahkan panggilan provider ke luar transaksi atau pastikan adapter dedupe by `reference` dengan test.
 5. Rendah — tambah test: `legend_app` UPDATE/DELETE riwayat harga supplier → 42501.
 6. Rendah — betulkan komentar `purchasing-send.service.ts:15-16` (DTO memang memuat email penerima).
-7. Keputusan founder tentang siapa boleh membatalkan PO/PR orang lain: tunggu jawaban CTO; jangan ubah dulu.
+7. Keputusan founder Q11: batal/tutup PO dan batal PR hanya oleh pembuat dokumen atau pemegang izin approve terkait (`purchasing.order.approve` / setara untuk PR) di outlet itu; lainnya 403. Test.
 
 ## Bukti selesai
 - Test untuk tiap butir; `heavy pnpm check`, `heavy pnpm build`, `pnpm format:check`, `node scripts/ci/color.mjs`, `node scripts/ci/tenant-hardcode.mjs` lulus (satu gerbang penuh setelah perubahan terakhir). `git status` bersih. Reviewer subagent konteks segar cek diff.
