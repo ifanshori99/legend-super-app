@@ -365,6 +365,30 @@ async function chartForEntity(
   );
 }
 
+/**
+ * Refuses lines whose account is missing, inactive, a header account or of
+ * another legal entity, before a request (manual / recurring journal) reaches
+ * approval. `postJournalInTransaction` re-checks at posting time.
+ */
+export async function assertJournalLinesPostable(
+  tx: TenantTransaction,
+  context: ScopedTenantContext,
+  legalEntityId: string,
+  lines: readonly { readonly accountId: string }[],
+): Promise<void> {
+  const chart = await chartForEntity(
+    tx,
+    context.tenant.tenantId,
+    legalEntityId,
+  );
+  for (const line of lines)
+    assertAccountPostable(
+      line.accountId as AccountId,
+      legalEntityId as LegalEntityId,
+      chart,
+    );
+}
+
 /** Appends journal.posted in the caller's transaction (transactional outbox). */
 async function appendJournalPosted(
   tx: TenantTransaction,

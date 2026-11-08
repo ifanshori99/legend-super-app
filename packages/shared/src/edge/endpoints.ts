@@ -20,8 +20,10 @@ import {
   tenantIdSchema,
   uuidSchema,
 } from "../core/index.ts";
+import { deviceTokenSchema } from "../platform/device-token.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  deviceHeartbeatBodySchema,
   deviceSchema,
   deviceStatusSchema,
   deviceTypeSchema,
@@ -39,7 +41,9 @@ export type CloudLink = z.infer<typeof cloudLinkSchema>;
 /**
  * What staff devices need to show offline status (Alur F step 1): the cloud
  * link, the edge node heartbeat, the outbox backlog (PRD §5 Sinkronisasi) and
- * this device's training mode (PRD §3 F5 Mode Latihan).
+ * this device's training mode (PRD §3 F5 Mode Latihan). `deviceRegistry` is
+ * the edge's replica of the cloud device registry (legend-2lp.7): when it is
+ * stale, a device revoked on the cloud may still be accepted here.
  */
 export const edgeStatusSchema = z.strictObject({
   ...scope,
@@ -47,6 +51,15 @@ export const edgeStatusSchema = z.strictObject({
   edgeNode: edgeNodeSchema.nullable(),
   pendingEventCount: z.number().int().nonnegative(),
   lastSyncedAt: isoDateTimeSchema.nullable(),
+  deviceRegistry: z
+    .strictObject({
+      /** Last successful pull of the device registry from the cloud. */
+      lastPulledAt: isoDateTimeSchema.nullable(),
+      stale: z.boolean(),
+    })
+    // Optional: an edge image older than legend-2lp.7 does not send it; the
+    // edge API always does.
+    .optional(),
   thisDevice: deviceSchema.nullable(),
 });
 export type EdgeStatus = z.infer<typeof edgeStatusSchema>;
@@ -130,4 +143,96 @@ export const setDeviceTrainingMode = defineEndpoint({
   params: deviceParams,
   body: clientInputSchema({ trainingMode: z.boolean() }),
   response: dataResponseSchema(deviceSchema),
+});
+
+// Cloud device registry (bead legend-165; PRD §3 F5 Registri Perangkat). Back
+// office only: `device.registry.manage` (list, enroll, token, training mode)
+// and `device.registry.revoke` (revoke) on the device's outlet. The tenant
+// always comes from the session, never from the body (TEN-02).
+
+export const outletDeviceListQuerySchema = deviceListQuerySchema.extend({
+  outletId: outletIdSchema,
+});
+export type OutletDeviceListQuery = z.infer<typeof outletDeviceListQuerySchema>;
+
+export const listOutletDevices = defineEndpoint({
+  method: "GET",
+  path: "/api/devices",
+  query: outletDeviceListQuerySchema,
+  response: cursorPageSchema(deviceSchema),
+});
+
+/**
+ * The signed `dv1` device token is shown once, at enrollment or reissue; it is
+ * never stored or logged (the registry keeps only `token_issued_at`).
+ */
+export const deviceWithTokenSchema = z.strictObject({
+  device: deviceSchema,
+  token: deviceTokenSchema,
+});
+export type DeviceWithToken = z.infer<typeof deviceWithTokenSchema>;
+
+export const enrollDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/devices",
+  body: clientInputSchema({
+    outletId: outletIdSchema,
+    type: deviceTypeSchema,
+    label: z.string().trim().min(1).max(255),
+    stationId: uuidSchema.nullable().optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(deviceWithTokenSchema),
+});
+
+/** Reissue: a new token; tokens issued before it stop working. Revoked = conflict. */
+export const issueDeviceToken = defineEndpoint({
+  method: "POST",
+  path: "/api/devices/:deviceId/token",
+  params: deviceParams,
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(deviceWithTokenSchema),
+});
+
+/** Terminal (EDG-03): a revoked device never becomes active again. */
+export const revokeDevice = defineEndpoint({
+  method: "POST",
+  path: "/api/devices/:deviceId/revoke",
+  params: deviceParams,
+  body: clientInputSchema({
+    reason: z.string().trim().min(3).max(500),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(deviceSchema),
+});
+
+/** Back-office twin of `setDeviceTrainingMode` (same security rules). */
+export const setOutletDeviceTrainingMode = defineEndpoint({
+  method: "PATCH",
+  path: "/api/devices/:deviceId/training-mode",
+  params: deviceParams,
+  body: clientInputSchema({ trainingMode: z.boolean() }),
+  response: dataResponseSchema(deviceSchema),
+});
+
+export const deviceHeartbeatResultSchema = z.strictObject({
+  deviceId: uuidSchema,
+  serverTime: isoDateTimeSchema,
+});
+export type DeviceHeartbeatResult = z.infer<typeof deviceHeartbeatResultSchema>;
+
+/** Device -> cloud heartbeat; the device id comes from the verified token. */
+export const deviceHeartbeat = defineEndpoint({
+  method: "POST",
+  path: "/api/devices/heartbeat",
+  body: deviceHeartbeatBodySchema,
+  response: dataResponseSchema(deviceHeartbeatResultSchema),
+});
+
+/** Same heartbeat, served by the outlet's edge node. */
+export const edgeDeviceHeartbeat = defineEndpoint({
+  method: "POST",
+  path: "/api/edge/devices/heartbeat",
+  body: deviceHeartbeatBodySchema,
+  response: dataResponseSchema(deviceHeartbeatResultSchema),
 });

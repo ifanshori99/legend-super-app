@@ -188,6 +188,7 @@ function pos(who: Member = cashier, outletId = tenant.outletId) {
         DEVICE_TOKEN_HEADER,
         signDeviceToken({
           version: 1,
+          issuedAt: Math.floor(Date.now() / 1000),
           tenantId: tenant.tenantId,
           brandId: null,
           deviceId: ids.device,

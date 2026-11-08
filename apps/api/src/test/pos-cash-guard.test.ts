@@ -241,6 +241,7 @@ const errorCode = (body: { error?: { code?: string }; code?: string }) =>
 const deviceToken = (deviceId: string) =>
   signDeviceToken({
     version: 1,
+    issuedAt: Math.floor(Date.now() / 1000),
     tenantId: tenant.tenantId,
     brandId: null,
     deviceId,

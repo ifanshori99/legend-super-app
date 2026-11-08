@@ -160,6 +160,7 @@ async function newCashier(label = "Kasir"): Promise<Cashier> {
 function deviceHeader(deviceId: string, forTenant = tenant): string {
   return signDeviceToken({
     version: 1,
+    issuedAt: Math.floor(Date.now() / 1000),
     tenantId: forTenant.tenantId,
     brandId: null,
     deviceId,
