@@ -16,6 +16,8 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 
 - 2026-11-08 malam (CTO G6ifq): tes integrasi `ws/pos-payment-fixes` 2f68a5c LULUS: `heavy pnpm test` API 1227 lulus/0 gagal (141 file), root 1384/0; fokus payment-lifecycle 12, qris-lifecycle 14, qris-round2 3, approval 9, deposit-lock 6, pos-order 13. Siap gerbang merge.
 - Brief second-opinion Codex 59–63 ditulis (commit d376a5a).
+- Refund approval `ws/refund-approval` 5b6a707 SELESAI (gerbang penuh hijau, 43 test). Second-opinion Codex brief 65; urutan antrean Codex: 59 shift, 65 refund, 60 EDC, 61 procurement, 62 DOIT, 63 KDS.
+- Thread baru G1u8c legend-2lp.7 (brief 64): cabang `ws/edge-registry-pull` = edge-hardening + device-registry + tarik berkala; merge cabang ini menggantikan urutan merge edge 3 langkah.
 
 ### Thread berjalan
 | Thread | Kerja | Cabang |
