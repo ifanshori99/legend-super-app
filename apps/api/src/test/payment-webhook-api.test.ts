@@ -2027,9 +2027,12 @@ describe("PAY-02 an intent past its expiry asks DOIT before it expires", () => {
     expect((await guestView(bill)).body.data.paidAfterExpiry).toBe(true);
   });
 
-  it("PAY-02 the poll expires a past-expiry intent DOIT still reports pending", async () => {
+  // Brief 95 follow-up: DOIT's own expiry can lag ours, so `pending` is not
+  // definitive; only DOIT's `expired` closes the intent before the window.
+  it("PAY-02 the poll expires a past-expiry intent DOIT reports expired", async () => {
     const bill = await openIntent();
     await expireNow(bill.intentId);
+    doit.payments.get(bill.providerRef)!.status = "expired";
     await pollLater();
     expect((await intentRow(bill.intentId)).status).toBe("expired");
     expect(await linkPaidIdr(bill.linkId)).toBe(0);
@@ -2138,6 +2141,34 @@ describe("PAY-02 a gateway error never closes a lapsed intent", () => {
     await pollAt(new Date(first.getTime() + 65 * minutes));
     await expectPaidOnce(bill);
     expect(await flagsOf(bill.intentId)).toContain("late_payment");
+  });
+
+  it("PAY-02 DOIT still pending past expiry keeps the intent pending; a later paid answer settles it", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "1 hour");
+    const first = new Date(Date.now() + 2 * minutes);
+    await pollAt(first);
+    expect((await intentRow(bill.intentId)).status).toBe("pending");
+    expect(await evidenceCount(bill.intentId)).toBe(0);
+
+    // The webhook is lost; DOIT takes the money late. The poll still finds it.
+    doit.settle(bill.providerRef);
+    await pollAt(new Date(first.getTime() + 65 * minutes));
+    await expectPaidOnce(bill);
+    expect(await flagsOf(bill.intentId)).toContain("late_payment");
+  });
+
+  it("PAY-02 DOIT still pending after the poll window: expires as timeout, audited as unconfirmed", async () => {
+    const bill = await openIntent();
+    await lapse(bill.intentId, "25 hours");
+    await pollAt(new Date(Date.now() + 2 * minutes));
+    expect((await intentRow(bill.intentId)).status).toBe("expired");
+    const { rows } = await owner.query<{ reason: string | null }>(
+      `SELECT event->>'reason' AS reason FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = $2 AND event->>'objectId' = $3`,
+      [tenantA, "payment.reconciliation_timed_out", bill.intentId],
+    );
+    expect(rows).toEqual([{ reason: "gateway_unconfirmed" }]);
   });
 
   it("PAY-02 a lapsed intent is asked again only after the backoff", async () => {

@@ -1118,8 +1118,12 @@ async function syncPendingIntentDetailed(
     }
   }
   if (pastExpiry) {
+    // A provider that still says `pending` past our expiry can still take the
+    // money (its own expiry may lag ours): only paid / expired / failed are
+    // definitive, so `pending` keeps reconciling like a gateway error does.
     const inconclusive =
       providerStatus === undefined ||
+      providerStatus.status === "pending" ||
       (providerStatus.status === "paid" && providerStatus.amountIdr === null);
     if (inconclusive) {
       // Money may have arrived: keep reconciling until the window closes.
