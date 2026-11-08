@@ -447,7 +447,7 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
         ["APP_DATABASE_URL", `${appUrl}?options=-c%20role%3Dlegend_app`],
       ]) {
         const refused = job({ [name]: url });
-        assert.equal(refused.status, 1, url.replace(/:[^@]*@/, ":***@"));
+        assert.equal(refused.status, 1, `${name} with a query override`);
         assert.match(refused.stderr, /query parameter that is not allowed/);
       }
       const tls = job({ APP_DATABASE_URL: `${appUrl}?sslmode=disable` });

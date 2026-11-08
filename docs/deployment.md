@@ -313,9 +313,11 @@ stays held until the missing event arrives. Watch for that log line: it means a
 producer bug, and nothing skips the gap automatically.
 
 Run `deploy/single-vm/deploy.sh --env-file /absolute/path/compose.env --dry-run`
-to validate without starting services. Without `--dry-run`, it starts PostgreSQL,
-runs the migration job once, then starts the services. Run only after setting up
-backup configuration, provisioning roles and checking the rollout plan. Image
+to validate without starting services (it also runs the role wrapper's
+`--dry-run`). Without `--dry-run`, it starts PostgreSQL, runs the migration job
+once, audits the restricted database roles (`provision-roles.sh --audit`), and
+starts the services only if the audit passes. Run only after setting up backup
+configuration, provisioning roles and checking the rollout plan. Image
 builds and this script do not purchase or provision infrastructure.
 
 ### Deployment security checklist
@@ -389,15 +391,27 @@ migrations (PRD §3 F3, TEN-02):
    ```
 
    The script first refuses to continue if `api.env`, `web.env` or `worker.env`
-   contains `MIGRATION_DATABASE_URL`, if `web.env` holds any database URL, or if
-   `api.env` and `worker.env` disagree on the application login. It then starts
+   contains `MIGRATION_DATABASE_URL`, if `web.env` holds any database URL, if
+   `api.env` and `worker.env` disagree on the application login, if a URL is
+   not exactly `postgresql://<login>:<48 hex>@host:port/database` (no query
+   string), or if the restricted URLs and `MIGRATION_DATABASE_URL` name
+   different databases. It also refuses when the shell exports
+   `API_ENV_FILE`, `WEB_ENV_FILE`, `WORKER_ENV_FILE` or `MIGRATOR_ENV_FILE`
+   with a value other than the one in `compose.env` (Compose would prefer the
+   shell's), and pins the checked paths for every Compose call. Compose output
+   is hidden during validation because Compose echoes an unparsable env line,
+   secrets included. It then starts
    PostgreSQL, applies migrations, and runs the `provision-roles` service (the
    migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
    two restricted URLs taken from the services' own env files. The URLs reach
    the container through the environment, never a command line.
 
 3. Expect `Restricted database roles are ready.` Only role names are printed.
-   Then start the services with `deploy.sh`.
+   Then start the services with `deploy.sh`, which re-checks the roles after
+   every migration with `provision-roles.sh --env-file ... --audit`: the same
+   checks, changing nothing, plus a sign-in with each URL. If the logins were
+   never provisioned, a password no longer matches the env file, or a
+   migration widened their rights, the audit fails and no service starts.
 
 The job is idempotent and doubles as an audit: run it again at any time. Each
 run, inside one locked transaction, creates a missing login or re-keys an
@@ -415,22 +429,39 @@ or if a login:
 
 - is a superuser or has `BYPASSRLS`, `CREATEDB`, `CREATEROLE` or `REPLICATION`,
   directly or inherited, or inherits any predefined `pg_*` role;
-- belongs to a role other than `legend_app` (the queue login: to none);
 - owns any table, function, type or schema outside its own (`pgboss`);
 - can create objects in the database or any schema outside its own;
+- belongs, directly or through `legend_app`, to any role other than
+  `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);
 - holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
-  beyond `SELECT` on `app.active_tenant_registry` (queue). `TRUNCATE` ignores
-  RLS and is always refused. Extension views readable by everyone (such as
-  `pg_stat_statements`) are not counted; application tables granted to
-  `PUBLIC` are.
+  beyond `SELECT` on `app.active_tenant_registry` (queue), including grants on
+  single columns. `TRUNCATE` ignores RLS and is always refused, as are
+  `REFERENCES`, `TRIGGER` and, on PostgreSQL 17, `MAINTAIN`. Extension views
+  readable by everyone (such as `pg_stat_statements`) are not counted;
+  application tables granted to `PUBLIC` are;
+- would receive such rights on tables created later through default
+  privileges (`ALTER DEFAULT PRIVILEGES`), any default table right granted to
+  `PUBLIC`, or a default `CREATE` on schemas. Remove them with
+  `ALTER DEFAULT PRIVILEGES ... REVOKE` and re-run.
+
+After committing, the job signs in with each URL exactly as given and checks
+that PostgreSQL reports that login (not a superuser) on the same database. URLs
+may carry only TLS and timeout parameters after `?` (`sslmode`, `sslrootcert`,
+`sslcert`, `sslkey`, `ssl`, `channel_binding`, `application_name`,
+`connect_timeout`); `user`, `password`, `host`, `options` and the like would
+override the login and are refused. PostgreSQL 16 or newer is required.
+
+Renaming the queue login: the `pgboss` schema still belongs to the old name,
+so the job stops with "The pg-boss schema is owned by ...". As the migration
+owner run `ALTER SCHEMA pgboss OWNER TO "<new login>"`, re-run the job, then
+drop the old role.
 
 An existing role with unsafe attributes is never adopted; fix or drop it by
 hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
 plaintext never reaches the server or its logs. The migration login must be a
 superuser (the Compose `POSTGRES_USER`) or, on managed PostgreSQL, a
 `CREATEROLE` + `BYPASSRLS` owner holding `ADMIN` on `legend_app`; existing data
-migrations run under forced RLS. With a non-superuser owner on PostgreSQL 16+
-the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
+migrations run under forced RLS. With a non-superuser owner the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
 hand it the `pgboss` schema.
 
 Outside Compose (another host on the private network, with the API bundle or
