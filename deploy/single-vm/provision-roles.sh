@@ -156,8 +156,9 @@ fi
 # check-compose-env.mjs, run with node from the migrator image in a container
 # with no network and no env file, which prints only fixed messages naming
 # services and keys. Compose fills ${VAR} in env files from this shell, so it
-# runs here with the same environment as the later Compose calls; the two
-# checked URLs are exported to the checker's side of the pipe only. The image
+# runs here with the environment deploy.sh uses to start the services (which
+# never exports the URLs); the two checked URLs are exported to the checker's
+# side of the pipe only. Keep this before the export below. The image
 # is resolved as Compose does: an exported MIGRATOR_IMAGE wins over compose.env.
 migrator_image=${MIGRATOR_IMAGE:-$(value_of "$env_file" MIGRATOR_IMAGE)}
 [ -n "$migrator_image" ] || fail "compose.env must set MIGRATOR_IMAGE."

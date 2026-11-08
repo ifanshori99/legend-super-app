@@ -108,7 +108,9 @@ export function createWakeListener(url: string): Listener {
     try {
       await assertQueueRole(next);
     } catch (error) {
-      // A refused role must not be retried in the background.
+      // A refused role must not be retried in the background. On a reconnect
+      // the error is swallowed, so say so (fixed text, no connection details).
+      console.error("Wake listener refused an unsafe queue role");
       stopped = true;
       await next.end().catch(() => {});
       throw error;
