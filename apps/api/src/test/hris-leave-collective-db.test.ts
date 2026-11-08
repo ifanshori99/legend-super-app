@@ -1007,3 +1007,79 @@ describe("collective day in a year whose carry-over already ran", () => {
     }
   });
 });
+
+describe("collective day and carry-over expiry", () => {
+  // Late-2044 dates on outlet B, each employee joining just before them, so
+  // no earlier holiday of this file reaches these balances.
+  const carried = (employeeId: string, expiresOn: string) =>
+    sql(
+      `INSERT INTO leave_balances
+         (tenant_id, employee_id, leave_type_id, period_year, entitled_days,
+          carried_over_days, carry_over_expires_on)
+       VALUES ($1, $2, $3, 2044, '2', '5', $4)`,
+      [tenantId, employeeId, annualTypeId, expiresOn],
+    );
+  const balance2044 = async (employeeId: string) =>
+    (
+      await sql<{
+        carried_over_days: string;
+        used_days: string;
+        expiry: string[];
+      }>(
+        `SELECT b.carried_over_days, b.used_days,
+                ARRAY(SELECT a.days::text FROM leave_accruals a
+                       WHERE a.tenant_id = b.tenant_id
+                         AND a.employee_id = b.employee_id
+                         AND a.leave_type_id = b.leave_type_id
+                         AND a.kind = 'carry_over_expiry') AS expiry
+           FROM leave_balances b
+          WHERE b.tenant_id = $1 AND b.employee_id = $2
+            AND b.leave_type_id = $3 AND b.period_year = 2044`,
+        [tenantId, employeeId, annualTypeId],
+      )
+    )[0];
+
+  it("a collective day after the expiry date cannot hold expired carry (job not run)", async () => {
+    const e = await employee(outletB, "2044-07-20");
+    await carried(e.id, "2044-07-31");
+    await holiday("2044-08-01", "collective", outletB);
+    await applyCollectiveLeaveDeductions(
+      workerContext(),
+      new Date("2044-08-02T05:00:00Z"),
+      SYSTEM,
+    );
+    // All 5 carried days are written off before the day is added: 2 − 1 left.
+    expect(await balance2044(e.id)).toEqual({
+      carried_over_days: "0.0000",
+      used_days: "1.0000",
+      expiry: ["-5.0000"],
+    });
+  });
+
+  it("collective days before the expiry date, first processed after it, keep their carried part", async () => {
+    const e = await employee(outletB, "2044-08-20");
+    await carried(e.id, "2044-09-30");
+    await holiday("2044-09-10", "collective", outletB);
+    await holiday("2044-09-20", "collective", outletB);
+    const later = new Date("2044-10-05T05:00:00Z");
+    await applyCollectiveLeaveDeductions(workerContext(), later, SYSTEM);
+    // Both days hold carried days: nothing is written off yet.
+    expect(await balance2044(e.id)).toEqual({
+      carried_over_days: "5.0000",
+      used_days: "2.0000",
+      expiry: [],
+    });
+    // A later day after the expiry date writes off only the unheld 3.
+    await holiday("2044-10-02", "collective", outletB);
+    await applyCollectiveLeaveDeductions(
+      workerContext(),
+      new Date("2044-10-06T05:00:00Z"),
+      SYSTEM,
+    );
+    expect(await balance2044(e.id)).toEqual({
+      carried_over_days: "2.0000",
+      used_days: "3.0000",
+      expiry: ["-3.0000"],
+    });
+  });
+});

@@ -78,6 +78,7 @@ import {
 import { idempotentHrisWrite } from "./hris-holiday.service.ts";
 import {
   expireBalanceCarryOver,
+  lockBalanceForUpdate,
   type LeaveJobActor,
 } from "./hris-leave.service.ts";
 
@@ -525,49 +526,64 @@ export async function applyCollectiveLeaveDeductions(
           skipped += 1;
           continue;
         }
-        // The upsert takes the balance row lock (same as FOR UPDATE), so a
-        // concurrent request or job on this balance serializes behind it.
-        const [upserted] = await tx
+        // Make sure the row exists, then lock it: a concurrent request or job
+        // on this balance serializes behind this run.
+        await tx
           .insert(leaveBalances)
           .values({
             tenantId,
             employeeId: employee.id,
             leaveTypeId: type.id,
             periodYear,
-            usedDays: formatDecimal4(ONE_DAY),
             updatedAt: now,
           })
-          .onConflictDoUpdate({
-            target: [
-              leaveBalances.tenantId,
-              leaveBalances.employeeId,
-              leaveBalances.leaveTypeId,
-              leaveBalances.periodYear,
-            ],
-            set: {
-              usedDays: sql`${leaveBalances.usedDays} + ${formatDecimal4(ONE_DAY)}::numeric`,
-              updatedAt: now,
-            },
-          })
-          .returning();
-        if (!upserted) throw new Error("Leave balance upsert returned no row");
-        granted += 1;
-        // Expired carry not held by used or pending days is written off
-        // first (once, through the ledger), as the expiry job would.
-        const { balance } = await expireBalanceCarryOver(
+          .onConflictDoNothing();
+        const locked = await lockBalanceForUpdate(
           tx,
-          context,
-          upserted,
-          today,
-          now,
-          (after) =>
-            audit(tx, context, actor, now, {
-              action: "hris.leave_carry_over.forfeited",
-              objectType: "leave_balance",
-              objectId: upserted.id,
-              after,
-            }),
+          tenantId,
+          employee.id,
+          type.id,
+          periodYear,
         );
+        if (!locked) throw new Error("Leave balance row missing after upsert");
+        // A day after the carry-over expiry date cannot hold carried days:
+        // write off the expired carry not held by the days taken so far
+        // (once, through the ledger, as the expiry job would) before adding
+        // it. Dates run ascending, so days on or before the expiry date are
+        // already in `used` and keep their carried part.
+        if (
+          locked.carryOverExpiresOn !== null &&
+          holiday.date > locked.carryOverExpiresOn
+        )
+          await expireBalanceCarryOver(
+            tx,
+            context,
+            locked,
+            today,
+            now,
+            (after) =>
+              audit(tx, context, actor, now, {
+                action: "hris.leave_carry_over.forfeited",
+                objectType: "leave_balance",
+                objectId: locked.id,
+                after,
+              }),
+          );
+        const [balance] = await tx
+          .update(leaveBalances)
+          .set({
+            usedDays: sql`${leaveBalances.usedDays} + ${formatDecimal4(ONE_DAY)}::numeric`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(leaveBalances.tenantId, tenantId),
+              eq(leaveBalances.id, locked.id),
+            ),
+          )
+          .returning();
+        if (!balance) throw new Error("Leave balance update returned no row");
+        granted += 1;
         const available =
           parseDecimal4(balance.entitledDays) +
           parseDecimal4(balance.carriedOverDays) -
