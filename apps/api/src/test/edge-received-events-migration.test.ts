@@ -221,6 +221,22 @@ async function expectReceiptsKept(scratch: Pool) {
   expect(all.rows[0].n).toBe(5);
 }
 
+/**
+ * `Pool.end()` resolves before the server has closed the sessions; a
+ * `DROP DATABASE ... WITH (FORCE)` racing them terminates a client that is
+ * still closing (57P01) and pg raises it as an uncaught error. Wait them out.
+ */
+async function waitForNoSessions(admin: Pool, database: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const { rows } = await admin.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1",
+      [database],
+    );
+    if (rows[0]?.n === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function expectRlsStillForced(scratch: Pool) {
   // 0065 lifts FORCE on outlets, edge_nodes and edge_inbound_events for its
   // FKs and backfill; 0068 lifts it on outlets and stations; 0069 on outlets
@@ -269,6 +285,7 @@ describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
   afterAll(async () => {
     await scratch?.end();
     if (admin) {
+      await waitForNoSessions(admin, scratchName);
       await admin.query(`DROP DATABASE IF EXISTS ${scratchName} WITH (FORCE)`);
       await admin.end();
     }
@@ -372,6 +389,7 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
     await owner?.end();
     await adminInScratch?.end();
     if (admin) {
+      await waitForNoSessions(admin, ownerDatabase);
       await admin.query(
         `DROP DATABASE IF EXISTS ${ownerDatabase} WITH (FORCE)`,
       );
