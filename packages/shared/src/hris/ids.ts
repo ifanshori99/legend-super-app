@@ -30,6 +30,7 @@ export const leaveBalanceIdSchema = uuidIdSchema<"LeaveBalanceId">();
 export const leaveRequestIdSchema = uuidIdSchema<"LeaveRequestId">();
 export const holidayIdSchema = uuidIdSchema<"HolidayId">();
 export const overtimeRequestIdSchema = uuidIdSchema<"OvertimeRequestId">();
+export const overtimeFormulaIdSchema = uuidIdSchema<"OvertimeFormulaId">();
 export const kpiDefinitionIdSchema = uuidIdSchema<"KpiDefinitionId">();
 export const kpiReviewIdSchema = uuidIdSchema<"KpiReviewId">();
 export const sopDocumentIdSchema = uuidIdSchema<"SopDocumentId">();

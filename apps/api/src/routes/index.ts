@@ -34,6 +34,7 @@ import { publicSiteRouter } from "./public-site.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
+import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
 import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { approvalRouter } from "./platform-approval.routes";
@@ -43,6 +44,11 @@ import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
+import { payrollPph21PolicyRouter } from "./payroll-pph21-policy.routes";
+import { hrisAnnouncementRouter } from "./hris-announcement.routes";
+import { hrisSopRouter } from "./hris-sop.routes";
+import { hrisTrainingRouter } from "./hris-training.routes";
+import { hrisLeaveRouter } from "./hris-leave.routes";
 import { operationsRouter } from "./operations.routes";
 import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
@@ -133,6 +139,8 @@ apiRouter.use("/tax", taxRouter);
 apiRouter.use("/accounting", createShareholderDocumentsRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
+// Manual + recurring journals with approval (WS-07, legend-vmyg).
+apiRouter.use("/accounting", accountingJournalRouter);
 // AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
@@ -146,8 +154,18 @@ apiRouter.use(reservationPublicRouter);
 apiRouter.use("/facility", facilityRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
 apiRouter.use("/wifi", wifiConfigRouter);
+// WS-10 payroll PPh 21 tenant policy versions (legend-y4wp). Before `/hris`,
+// whose router applies its own middleware to everything under its prefix.
+apiRouter.use("/hris/payroll/pph21-policies", payrollPph21PolicyRouter);
 // WS-10 HRIS (legend-qe1z).
 apiRouter.use("/hris", hrisRouter);
+apiRouter.use(
+  "/hris",
+  hrisSopRouter,
+  hrisTrainingRouter,
+  hrisAnnouncementRouter,
+);
+apiRouter.use("/hris", hrisLeaveRouter);
 // WS-14 daily operations (legend-btha checklists/food safety/prep;
 // legend-i57s equipment/maintenance/handovers). Two routers share the prefix;
 // each applies its middleware per route so unmatched paths pass through.

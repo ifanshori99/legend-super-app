@@ -31,6 +31,13 @@ import {
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import {
+  handleRefundApprovalResolved,
+  sweepApprovedRefundPayouts,
+} from "./services/payment-refund.service.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -49,6 +56,8 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
 
@@ -131,6 +140,14 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
+          // the payout itself runs from the approve call or the payout sweep.
+          await handleRefundApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
+          // Manual/recurring journals (legend-vmyg): settle from the chain.
+          await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -173,6 +190,14 @@ const relay = createRelayRuntime({
       await expireDueApprovalRequests(context);
     } catch {
       console.error("Approval deadline sweep failed");
+    }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
     }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
@@ -220,6 +245,20 @@ const relay = createRelayRuntime({
       } catch {
         console.error("Inventory GL retry sweep failed");
       }
+    }
+    // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+    // templates, one transaction per period. Fail closed, next tick resumes.
+    try {
+      const recurring = await runDueRecurringJournals(context, new Date());
+      // Counts only (no template data); the per-template reason is stored on
+      // recurring_journals.last_error for finance.
+      if (recurring.failed > 0)
+        logger.warn(
+          { job: "recurring_journals", ...recurring },
+          "recurring journal generation had failures",
+        );
+    } catch {
+      console.error("Recurring journal sweep failed");
     }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
@@ -289,10 +328,56 @@ const relay = createRelayRuntime({
     }
   },
 });
+// PAY-04 (legend-hvvn): pay out approved refunds whose provider call has not
+// finished (unknown outcome, pending). Its own loop, not the relay tick: each
+// provider call may take up to a minute and must never stall the outbox relay.
+// Rounds never overlap; each tenant sweep has a time budget of its own.
+const REFUND_PAYOUT_SWEEP_INTERVAL_MS = 30_000;
+let refundSweepStopped = false;
+let refundSweepTimer: NodeJS.Timeout | null = null;
+let refundSweepRound: Promise<void> = Promise.resolve();
+async function runRefundPayoutRound() {
+  try {
+    const tenants = await registry.query<{ id: string }>(
+      "SELECT id FROM app.active_tenant_registry",
+    );
+    for (const { id } of tenants.rows) {
+      if (refundSweepStopped) return;
+      try {
+        await sweepApprovedRefundPayouts(
+          await resolveContext(id),
+          new Date(),
+          undefined,
+          undefined,
+          () => refundSweepStopped,
+        );
+      } catch {
+        console.error("Refund payout sweep failed");
+      }
+    }
+  } catch {
+    console.error("Refund payout sweep failed");
+  }
+}
+function scheduleRefundPayoutRound() {
+  if (refundSweepStopped) return;
+  refundSweepTimer = setTimeout(() => {
+    refundSweepRound = runRefundPayoutRound().finally(
+      scheduleRefundPayoutRound,
+    );
+  }, REFUND_PAYOUT_SWEEP_INTERVAL_MS);
+}
+async function stopRefundPayoutSweep() {
+  refundSweepStopped = true;
+  if (refundSweepTimer) clearTimeout(refundSweepTimer);
+  await refundSweepRound;
+}
 try {
   await runtime.start();
   await relay.start();
+  scheduleRefundPayoutRound();
 } catch (error) {
+  refundSweepStopped = true;
   await runtime.stop().catch(() => {});
   await registry.end();
   throw error;
@@ -301,6 +386,7 @@ let stopping = false;
 async function stop() {
   if (stopping) return;
   stopping = true;
+  await stopRefundPayoutSweep();
   await relay.stop();
   await runtime.stop();
   await registry.end();
