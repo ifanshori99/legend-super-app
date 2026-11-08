@@ -201,3 +201,7 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - 06:00 RAM kuning (batas 4 thread, aktif 7): thread baru ditahan. Antre start: fix DOIT brief 95 (reopen G8x09), WS-03 brief 94 (belum ditulis ulang).
 - 06:40 Fix refund temuan Codex SELESAI (G0fvq): ws/refund-approval 7c24b7b8. Temuan 1 sesuai PRD :541/D14 (refund wajib supervisor: jalur langsung butuh pos.refund.approve). Temuan 2: payout evidence ambigu ditahan EVIDENCE_MAPPING_REQUIRED + unique index (migration 0069 → regen). Test 73/73 sebelum guard terakhir; gate penuh diserahkan ke merge train. 12 subagent, puncak 5. Codex R2b atas diff fix (brief 65 SHA 7c24b7b8) di jendela kuota berikut.
 - Target maksimal 6 thread Claude sekaligus (RAM merah 2x dalam 7 jam).
+- 07:00 WS-13 e2e A–Z (G30x7 selesai): ws/e2e-az 3bf9e8d1, 57 lulus / 64 skip (menunggu cabang) / 0 gagal. Laporan docs/qa/2026-11-09-e2e-az.md. Bug P1: legend-vj37 (build produksi crash, sharp dibundel tsup), legend-ozud + legend-ww29 (whitelabel bocor). Fix lewat subagent CTO di ws/fix-sharp dan ws/fix-whitelabel. 18 subagent, puncak ~8.
+- Keputusan tim: EDC-04 approval aksi `edc_standalone`, wajib PIN supervisor.
+- DOIT tidak punya rail kartu (rail: qris, va, transfer, any; docs doit.id/docs/en). Kartu online butuh keputusan founder: tunda (kartu hanya EDC di kasir) atau Duitku sekarang. PRD baris 223/257/680/1754 perlu dirapikan (transfer bank dihapus) setelah jawaban itu.
+- DOIT G8x09 selesai: 96df32a8 + PROGRESS 6b5c67c0, sisa temuan legend-3wpf (P2).
