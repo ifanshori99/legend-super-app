@@ -1,13 +1,13 @@
 // One order: number, time placed, phase, items with status, summary and the
-// optional serving estimate (PRD §3 F10 "Estimasi Waktu Saji"). One bordered
-// container per order; rows are separated by dividers, no card inside a card.
+// optional serving estimate (PRD §3 F10 "Estimasi Waktu Saji"). One paper
+// panel per order; rows are separated by hairline dividers, no card inside a
+// card.
 import { Link } from "@tanstack/react-router";
 import { Ban, Wallet } from "lucide-react";
 import type { QrOrder } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { orderPhase } from "../../domain";
 import { ItemStatusRow } from "./item-status-row";
 
@@ -46,6 +46,7 @@ export function OrderCard({
   qrToken,
   timeZone,
   etaByOrderId,
+  isPrimaryPay = false,
 }: {
   order: QrOrder;
   qrToken: string;
@@ -53,6 +54,8 @@ export function OrderCard({
   timeZone: string;
   /** Only from WS-04 order pacing (useOrderEtas); never invented here. */
   etaByOrderId?: Record<string, OrderEta>;
+  /** True for the first awaiting-payment order on the page: the only rust CTA. */
+  isPrimaryPay?: boolean;
 }) {
   const t = useT();
   const phase = orderPhase(order);
@@ -79,10 +82,9 @@ export function OrderCard({
       : null;
 
   return (
-    <Card
-      role="article"
+    <article
       aria-labelledby={`order-${order.id}`}
-      className="grid gap-3"
+      className="qr-paper grid gap-3 p-4"
     >
       <header className="flex flex-col items-start gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="grid gap-0.5">
@@ -97,11 +99,15 @@ export function OrderCard({
       </header>
 
       {phase === "awaiting_payment" && (
-        <div className="grid gap-3 border-t pt-3">
+        <div className="grid gap-3 border-t border-border pt-3">
           <p className="text-sm leading-5 text-muted-foreground">
             {t("qrOrders.status.order.awaitingPaymentNote")}
           </p>
-          <Button asChild className="w-full sm:w-fit">
+          <Button
+            asChild
+            variant={isPrimaryPay ? "default" : "outline"}
+            className="w-full sm:w-fit"
+          >
             <Link to="/t/$token/checkout" params={{ token: qrToken }}>
               {t("qrOrders.status.order.payNow")}
             </Link>
@@ -110,7 +116,7 @@ export function OrderCard({
       )}
 
       {phase === "voided" && (
-        <p className="border-t pt-3 text-sm leading-5 text-muted-foreground">
+        <p className="border-t border-border pt-3 text-sm leading-5 text-muted-foreground">
           {t("qrOrders.status.order.voidedNote")}
         </p>
       )}
@@ -120,7 +126,7 @@ export function OrderCard({
           aria-label={t("qrOrders.status.order.itemsLabel", {
             number: order.number,
           })}
-          className="divide-y border-t pt-3"
+          className="divide-y divide-border border-t border-border pt-3"
         >
           {order.items.map((item) => (
             <ItemStatusRow key={item.id} item={item} />
@@ -129,7 +135,7 @@ export function OrderCard({
       )}
 
       {liveItems.length > 0 && phase !== "awaiting_payment" && (
-        <div className="grid gap-1 border-t pt-3">
+        <div className="grid gap-1 border-t border-border pt-3">
           <p
             aria-live="polite"
             className="tabular text-sm leading-5 font-semibold"
@@ -153,6 +159,6 @@ export function OrderCard({
           )}
         </div>
       )}
-    </Card>
+    </article>
   );
 }

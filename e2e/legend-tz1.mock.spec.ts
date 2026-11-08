@@ -9,9 +9,17 @@ const freeTable = `v1.${"C".repeat(40)}.${"D".repeat(43)}`; // A01: pay-first, n
 
 async function joinTable(page: Page, token: string) {
   await page.goto(`/t/${token}`);
-  // The guest-count dialog opens on the first visit (PRD §3 "Scan & Sesi Meja").
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu (PRD §3 "Scan & Sesi Meja").
+  // A click before hydration is lost, so retry it until the panel is open.
+  const save = page.getByRole("button", { name: "Simpan" });
+  await expect(async () => {
+    await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+    await expect(save).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 30_000 });
+  await save.click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 }
 
 test.describe("Failed-item recovery and review (mock)", () => {
@@ -83,16 +91,15 @@ test.describe("Failed-item recovery and review (mock)", () => {
     const sheet = page.getByRole("dialog");
     await sheet.getByRole("radio", { name: /Dingin/ }).click();
     await sheet.getByRole("radio", { name: "Normal" }).click();
-    await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+    await sheet.getByRole("button", { name: /^Tambah · / }).click();
     await expect(sheet).toBeHidden();
 
     // Pay the held order, so the bill is settled and the review opens.
-    await page.getByRole("link", { name: /Keranjang/ }).click();
-    await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
-    await page.getByRole("button", { name: /^Bayar Rp/ }).click();
-    const pay = page.getByRole("dialog");
-    await pay.getByRole("radio", { name: /QRIS/ }).click();
-    await pay.getByRole("button", { name: "Lanjut bayar" }).click();
+    await page.getByRole("link", { name: "Lihat keranjang" }).click();
+    // QRIS is the default method; the button goes straight to the QR screen.
+    await page
+      .getByRole("button", { name: /^Bayar Rp.* dengan QRIS$/ })
+      .click();
     await expect(page.getByRole("img", { name: /Kode QRIS/ })).toBeVisible();
     await expect(
       page.getByText("Pembayaran berhasil", { exact: true }),
@@ -125,7 +132,10 @@ test.describe("Failed-item recovery and review (mock)", () => {
 
   test("review stays closed until the bill is paid", async ({ page }) => {
     await joinTable(page, privateRoom);
-    await page.getByRole("link", { name: "Tagihan", exact: true }).click();
+    await page
+      .getByRole("navigation", { name: "Bagian meja" })
+      .getByRole("link", { name: "Tagihan", exact: true })
+      .click();
     await page.goto(`/t/${privateRoom}/review`);
     await expect(
       page.getByText("Ulasan dibuka setelah tagihan lunas"),

@@ -2,7 +2,7 @@
 // The preview uses the same largest-remainder helper as the server, so the
 // amounts shown are the amounts that will be created (ORD-06).
 import { useMemo, useState } from "react";
-import { Minus, Plus } from "lucide-react";
+import { CircleAlert, Minus, Plus, TriangleAlert } from "lucide-react";
 import type {
   CreateSplitsInput,
   SessionBill,
@@ -173,7 +173,7 @@ export function SplitPanel({
             : null;
 
   return (
-    <section aria-labelledby="bill-split" className="grid gap-4">
+    <section aria-labelledby="bill-split" className="qr-paper grid gap-4 p-4">
       <div className="grid gap-1">
         <h2 id="bill-split" className="type-title">
           {t("qrOrders.bill.splitTitle")}
@@ -236,7 +236,7 @@ export function SplitPanel({
           {participants.map((participant) => (
             <div
               key={participant.id}
-              className="flex min-h-12 items-center gap-3 rounded-container border-(length:--border-w) px-3"
+              className="flex min-h-12 items-center gap-3 rounded-qr-media bg-surface-2 px-3"
             >
               <Checkbox
                 id={`split-person-${participant.id}`}
@@ -267,9 +267,9 @@ export function SplitPanel({
           <p className="text-sm text-muted-foreground">
             {t("qrOrders.bill.itemHint")}
           </p>
-          <ul className="divide-y rounded-container border-(length:--border-w)">
+          <ul className="divide-y divide-border rounded-qr-media bg-surface-2">
             {orderItems.map((item) => (
-              <li key={item.id} className="grid gap-2 p-card">
+              <li key={item.id} className="grid gap-2 p-4">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="min-w-0 font-medium">
                     {item.name}
@@ -303,7 +303,11 @@ export function SplitPanel({
             ))}
           </ul>
           {itemsLeft > 0 && (
-            <p className="text-sm font-medium text-warning">
+            <p className="flex items-start gap-2 text-sm font-medium">
+              <TriangleAlert
+                className="mt-0.5 size-4 shrink-0 text-warning"
+                aria-hidden="true"
+              />
               {t("qrOrders.bill.itemsLeft", { count: itemsLeft })}
             </p>
           )}
@@ -314,7 +318,7 @@ export function SplitPanel({
         <p className="font-semibold">{t("qrOrders.bill.previewTitle")}</p>
         {preview ? (
           <>
-            <ul className="divide-y rounded-container border-(length:--border-w) px-card">
+            <ul className="divide-y divide-border rounded-qr-media bg-surface-2 px-4">
               {preview.map((row, index) => (
                 <li
                   key={`${row.label}-${index}`}
@@ -337,13 +341,19 @@ export function SplitPanel({
       </div>
 
       {create.isError && (
-        <p role="alert" className="text-sm font-medium text-danger">
+        <p
+          role="alert"
+          className="flex items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm font-medium text-foreground"
+        >
+          <CircleAlert
+            className="mt-0.5 size-4 shrink-0 text-danger"
+            aria-hidden="true"
+          />
           {t("qrOrders.bill.createFailed")}
         </p>
       )}
       <Button
         type="button"
-        variant="secondary"
         disabled={error !== null}
         loading={create.isPending}
         onClick={submit}

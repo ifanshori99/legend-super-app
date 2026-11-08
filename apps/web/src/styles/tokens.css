@@ -350,6 +350,87 @@
   font-size: var(--density-text);
 }
 
+/* ------------------------------------------- QR customer theme (Q6) */
+/* Table QR ordering only (/t/$token/*, legend-2re1): founder Q3–Q6 approved
+ * the "final arah A + liquid glass" mockup (design/mockups/README.md,
+ * design/COLOR-RESEARCH.md). The scope is the QR frame root, which also
+ * carries data-theme="light" and data-density="hangat"; nothing outside it
+ * changes (POS, KDS, management keep the Base Theme). Declared after the
+ * derived blocks so --primary-hover and --ring resolve to rust here.
+ * Pairs (WCAG 2.2, sRGB): ink/canvas 14.60, ink/paper 15.36, muted/canvas
+ * 6.33, white/action 6.40, action/paper 6.25, white/action-hover 8.35,
+ * edge/paper 4.17 (borders only), status pairs ≥ 6.19. */
+[data-surface="qr"] {
+  --background: #faf6f0;
+  --foreground: #2b211b;
+  --card: #fffcf7;
+  --surface-2: #f3e9dd;
+  --surface-3: #ecdfd1;
+  --muted: #f3e9dd;
+  --muted-foreground: #67584e;
+  --secondary: #f3e9dd;
+  --accent: #f3e9dd;
+  --border: #e5d8ca;
+  --input: #8b7765;
+  --ring: #a83a17;
+  --primary: #a83a17;
+  --primary-foreground: #ffffff;
+  --primary-hover: #8c2e12;
+  --primary-tint: #f8e9db;
+  --primary-tint-strong: #f3dccb;
+  --brand: #39251b;
+  --brand-foreground: #ffffff;
+  --brand-subtle: #f8e9db;
+  --success: #246443;
+  --success-foreground: #ffffff;
+  --success-subtle: #e8f3eb;
+  --warning: #765000;
+  --warning-foreground: #ffffff;
+  --warning-subtle: #fff0cc;
+  --danger: #a51d2d;
+  --danger-foreground: #ffffff;
+  --danger-subtle: #fff0f0;
+  /* 4.17:1 on paper, 3.97:1 on canvas: skeleton stays a readable shape. */
+  --skeleton: #8b7765;
+  --shadow-faint: rgb(43 33 27 / 0.05);
+  --shadow-soft: rgb(43 33 27 / 0.09);
+  --shadow-strong: rgb(43 33 27 / 0.16);
+  --scrim: rgb(43 33 27 / 0.5);
+  --focus-halo: 0 0 0 3px rgb(168 58 23 / 0.18);
+
+  /* Glass (only on floating layers: header, nav, cart bar, footer, nota).
+   * Alpha .88 / .90 is the minimum that keeps ink ≥ 11.68:1 and white
+   * ≥ 10.60:1 over the darkest and lightest photo behind it. */
+  --qr-glass-light: rgb(255 252 247 / 0.88);
+  --qr-glass-dark: rgb(57 37 27 / 0.9);
+  --qr-glass-light-solid: #fffcf7;
+  --qr-glass-dark-solid: #39251b;
+  --qr-glass-edge: rgb(255 255 255 / 0.7);
+  --qr-glass-edge-dark: rgb(255 255 255 / 0.34);
+  --qr-glass-edge-strong: #2b211b;
+  --qr-glass-highlight: inset 0 1px 0 rgb(255 255 255 / 0.6);
+  --qr-glass-shadow-far: 0 12px 32px rgb(43 33 27 / 0.16);
+  --qr-glass-shadow-near: 0 2px 6px rgb(43 33 27 / 0.08);
+  --qr-glass-shadow: var(--qr-glass-shadow-far), var(--qr-glass-shadow-near);
+  --qr-glass-blur: blur(18px) saturate(1.15);
+  /* Secondary text on light glass: 7.93–10.46:1 over photo extremes. */
+  --qr-glass-muted: #4b3b30;
+  /* Dark nota surfaces, on-dark text 11.65:1 / control icons 8.46:1. */
+  --qr-on-dark: #ffffff;
+  --qr-on-dark-muted: #eadcd0;
+  --qr-coffee-panel: #4b3327;
+  --qr-coffee-control: #654635;
+  --qr-selection: #f3e9dd;
+
+  /* Radius intents for the QR theme (README "Usulan perubahan DESIGN.md"). */
+  --control-radius: 0.875rem;
+  --field-radius: 0.75rem;
+  --qr-radius-media: 1rem;
+  --qr-radius-float: 1.5rem;
+  --qr-radius-nav: 1.375rem;
+  --qr-radius-cta: 0.875rem;
+}
+
 /* ---------------------------------------------------- Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   :root {

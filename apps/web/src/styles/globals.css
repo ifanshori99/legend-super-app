@@ -76,6 +76,18 @@
   --color-timer-near: var(--timer-near);
   --color-timer-late: var(--timer-late);
   --color-scrim: var(--scrim);
+  /* QR customer theme (tokens.css [data-surface="qr"]). */
+  --color-qr-glass-muted: var(--qr-glass-muted);
+  --color-qr-on-dark: var(--qr-on-dark);
+  --color-qr-on-dark-muted: var(--qr-on-dark-muted);
+  --color-qr-coffee: var(--qr-glass-dark-solid);
+  --color-qr-coffee-panel: var(--qr-coffee-panel);
+  --color-qr-coffee-control: var(--qr-coffee-control);
+  --color-qr-selection: var(--qr-selection);
+  --radius-qr-media: var(--qr-radius-media);
+  --radius-qr-float: var(--qr-radius-float);
+  --radius-qr-nav: var(--qr-radius-nav);
+  --radius-qr-cta: var(--qr-radius-cta);
 
   /* Radius scale: multiples of --radius-unit (Tenant "gaya sudut"). */
   --radius-xs: var(--radius-unit);
@@ -250,4 +262,100 @@
 }
 [data-density="kontras"] svg.lucide {
   stroke-width: 2;
+}
+
+/* ------------------------------------------------ QR liquid glass ------
+ * Founder Q4/Q5 + ui-standard "Kaca": only floating layers (header with
+ * category chips, page nav, cart bar, action footer, desktop nota). Max two
+ * blur regions per screen; never behind long text, forms or price rows.
+ * Solid fallbacks: reduced transparency, no backdrop-filter support, and
+ * more contrast (which also gets a 2px edge). backdrop-filter is never
+ * animated. Tokens live in tokens.css [data-surface="qr"]. */
+@utility qr-glass {
+  background-color: var(--qr-glass-light);
+  color: var(--foreground);
+  border: 1px solid var(--qr-glass-edge);
+  box-shadow: var(--qr-glass-highlight), var(--qr-glass-shadow);
+  -webkit-backdrop-filter: var(--qr-glass-blur);
+  backdrop-filter: var(--qr-glass-blur);
+  --muted-foreground: var(--qr-glass-muted);
+  @supports not (
+    (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+  ) {
+    background-color: var(--qr-glass-light-solid);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--qr-glass-light-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  @media (prefers-contrast: more) {
+    background-color: var(--qr-glass-light-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 2px solid var(--qr-glass-edge-strong);
+  }
+}
+@utility qr-glass-dark {
+  background-color: var(--qr-glass-dark);
+  color: var(--qr-on-dark);
+  border: 1px solid var(--qr-glass-edge-dark);
+  box-shadow: var(--qr-glass-shadow);
+  -webkit-backdrop-filter: var(--qr-glass-blur);
+  backdrop-filter: var(--qr-glass-blur);
+  --muted-foreground: var(--qr-on-dark-muted);
+  /* Rust focus rings fail on coffee (2.26:1); on-dark ink is 14:1. */
+  --ring: var(--qr-on-dark);
+  @supports not (
+    (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
+  ) {
+    background-color: var(--qr-glass-dark-solid);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--qr-glass-dark-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  @media (prefers-contrast: more) {
+    background-color: var(--qr-glass-dark-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 2px solid var(--qr-on-dark);
+  }
+}
+/* Paper cards inside the coffee nota (companion row, CTA landing) go back to
+   the rust ring: an on-dark ring would vanish on paper. */
+.qr-glass-dark :is(.bg-card, .qr-paper) {
+  --ring: var(--primary);
+}
+/* While a dialog is open only the dialog may blur (DESIGN §9: max two blur
+   regions). The page's own glass bars under the scrim turn solid. */
+body:has([role="dialog"][data-state="open"])
+  [data-surface="qr"]
+  :is(
+    [class~="qr-glass"],
+    [class*=":qr-glass "],
+    [class$=":qr-glass"],
+    [class~="qr-glass-dark"],
+    [class*=":qr-glass-dark"]
+  ):not([role="dialog"], [role="dialog"] *) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: var(--qr-glass-light-solid);
+}
+body:has([role="dialog"][data-state="open"])
+  [data-surface="qr"]
+  :is([class~="qr-glass-dark"], [class*=":qr-glass-dark"]):not(
+    [role="dialog"],
+    [role="dialog"] *
+  ) {
+  background-color: var(--qr-glass-dark-solid);
+}
+/* Solid paper panel inside the QR theme (forms, price rows, suggestions). */
+@utility qr-paper {
+  background-color: var(--card);
+  border-radius: var(--qr-radius-media);
+  @media (prefers-contrast: more) {
+    border: 2px solid var(--qr-glass-edge-strong);
+  }
 }

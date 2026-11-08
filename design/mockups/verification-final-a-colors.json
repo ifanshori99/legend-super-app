@@ -1,0 +1,1373 @@
+[
+  {
+    "screen": "menu",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Meja A01 · 2 tamu ·"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            43,
+            33,
+            27
+          ],
+          [
+            43,
+            33,
+            27
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Semua"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "1"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Espresso pekat,"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            51.411764705882355,
+            33.372549019607845,
+            24.352941176470587
+          ],
+          [
+            76.41176470588235,
+            58.372549019607845,
+            49.35294117647058
+          ]
+        ],
+        "minRatio": 10.669,
+        "glassExtremeCheck": true,
+        "sample": "Subtotal · 1 item"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "awal",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Meja A01"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            43,
+            33,
+            27
+          ],
+          [
+            43,
+            33,
+            27
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Semua"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Jumlah tamu ·"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Harga belum termasuk pajak dan service."
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "tamu",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Meja A01"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            43,
+            33,
+            27
+          ],
+          [
+            43,
+            33,
+            27
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Semua"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Jumlah tamu"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Isi sebelum menambah menu pertama."
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "2"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Simpan"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Harga belum termasuk pajak dan service."
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "detail",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Pilihan menu"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Espresso pekat dengan es batu."
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            243,
+            233,
+            221
+          ]
+        ],
+        "minRatio": 13.106,
+        "glassExtremeCheck": false,
+        "sample": "Dingin"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Panas"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            240,
+            240
+          ]
+        ],
+        "minRatio": 14.201,
+        "glassExtremeCheck": false,
+        "sample": "Tingkat gula"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            240,
+            240
+          ]
+        ],
+        "minRatio": 6.155,
+        "glassExtremeCheck": false,
+        "sample": "Wajib · Pilih 1"
+      },
+      {
+        "foreground": "oklch(0.470291 0.169763 21.402)",
+        "backgrounds": [
+          [
+            255,
+            240,
+            240
+          ]
+        ],
+        "minRatio": 6.744,
+        "glassExtremeCheck": false,
+        "sample": "Pilih tingkat gula sebelum menambahkan."
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "Tambah croissant mentega?"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 6.656,
+        "glassExtremeCheck": false,
+        "sample": "Opsional · + Rp 23.000"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Contoh: es sedikit"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ],
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "1"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Tambah · Rp 23.000"
+      }
+    ],
+    "minimum": 6.155,
+    "failures": []
+  },
+  {
+    "screen": "checkout",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Keranjang & bayar"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Meja A01 · Keranjang bersama"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Espresso dingin"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Gula normal · Ditambahkan Anda"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "1"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 6.656,
+        "glassExtremeCheck": false,
+        "sample": "Opsional · + Rp 23.000"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Bayar Rp 26.600 dengan QRIS"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "qris",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Bayar dengan QRIS"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Total pembayaran"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            243,
+            233,
+            221
+          ]
+        ],
+        "minRatio": 13.106,
+        "glassExtremeCheck": false,
+        "sample": "Sisa waktu"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Meja A01 · Pesanan QR-0044"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Simpan QR"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Ganti metode bayar"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "kasir",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Bayar di kasir"
+      },
+      {
+        "foreground": "rgb(118, 80, 0)",
+        "backgrounds": [
+          [
+            255,
+            240,
+            204
+          ]
+        ],
+        "minRatio": 6.371,
+        "glassExtremeCheck": false,
+        "sample": "Menunggu pembayaran"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Pesanan tersimpan, belum masuk dapur."
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Meja A01"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            229,
+            216,
+            202
+          ]
+        ],
+        "minRatio": 11.232,
+        "glassExtremeCheck": false,
+        "sample": "1"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Periksa pembayaran"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "berhasil",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Terima kasih. Pesanan Anda"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 6.812,
+        "glassExtremeCheck": false,
+        "sample": "Total dibayar"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "QRIS"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Lihat status pesanan"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Lihat struk"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "habis",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "9.41"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Meja A01 · 2 tamu ·"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            43,
+            33,
+            27
+          ],
+          [
+            43,
+            33,
+            27
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Semua"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "1"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Espresso pekat,"
+      },
+      {
+        "foreground": "rgb(75, 59, 48)",
+        "backgrounds": [
+          [
+            243,
+            233,
+            221
+          ]
+        ],
+        "minRatio": 8.9,
+        "glassExtremeCheck": false,
+        "sample": "Habis hari ini"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Menu belum diperbarui."
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            51.411764705882355,
+            33.372549019607845,
+            24.352941176470587
+          ],
+          [
+            76.41176470588235,
+            58.372549019607845,
+            49.35294117647058
+          ]
+        ],
+        "minRatio": 10.669,
+        "glassExtremeCheck": true,
+        "sample": "Subtotal · 1 item"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  },
+  {
+    "screen": "desktop",
+    "textPairs": [
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 11.64,
+        "glassExtremeCheck": true,
+        "sample": "Cafe Legend"
+      },
+      {
+        "foreground": "oklch(0.366306 0.0290645 56.1484)",
+        "backgrounds": [
+          [
+            224,
+            221.36470588235295,
+            216.97254901960784
+          ],
+          [
+            255,
+            252.36470588235295,
+            247.97254901960784
+          ]
+        ],
+        "minRatio": 7.905,
+        "glassExtremeCheck": true,
+        "sample": "Pesanan meja"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 6.328,
+        "glassExtremeCheck": false,
+        "sample": "Anda duduk di"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            250,
+            246,
+            240
+          ]
+        ],
+        "minRatio": 14.599,
+        "glassExtremeCheck": false,
+        "sample": "Meja A01"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            248,
+            233,
+            219
+          ]
+        ],
+        "minRatio": 13.225,
+        "glassExtremeCheck": false,
+        "sample": "2 tamu"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            43,
+            33,
+            27
+          ]
+        ],
+        "minRatio": 15.718,
+        "glassExtremeCheck": false,
+        "sample": "Semua"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "1 di keranjang"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            51.411764705882355,
+            33.372549019607845,
+            24.352941176470587
+          ],
+          [
+            76.41176470588235,
+            58.372549019607845,
+            49.35294117647058
+          ]
+        ],
+        "minRatio": 10.669,
+        "glassExtremeCheck": true,
+        "sample": "Keranjang meja"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            75,
+            51,
+            39
+          ],
+          [
+            75,
+            51,
+            39
+          ]
+        ],
+        "minRatio": 11.654,
+        "glassExtremeCheck": false,
+        "sample": "Espresso dingin"
+      },
+      {
+        "foreground": "oklch(0.472123 0.0252687 55.694)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ],
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 6.656,
+        "glassExtremeCheck": false,
+        "sample": "Pendamping kopi · Opsional"
+      },
+      {
+        "foreground": "oklch(0.25752 0.0189427 52.5774)",
+        "backgrounds": [
+          [
+            255,
+            252,
+            247
+          ],
+          [
+            255,
+            252,
+            247
+          ]
+        ],
+        "minRatio": 15.358,
+        "glassExtremeCheck": false,
+        "sample": "Croissant mentega"
+      },
+      {
+        "foreground": "rgb(255, 255, 255)",
+        "backgrounds": [
+          [
+            168,
+            58,
+            23
+          ],
+          [
+            168,
+            58,
+            23
+          ]
+        ],
+        "minRatio": 6.397,
+        "glassExtremeCheck": false,
+        "sample": "Lihat keranjang"
+      }
+    ],
+    "minimum": 6.328,
+    "failures": []
+  }
+]
