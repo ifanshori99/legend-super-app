@@ -8,7 +8,7 @@ Open this folder in your AI editor and describe the app you want:
 
 ## What runs where
 
-`compose.dev.yaml` runs PostgreSQL 17. The Express API and the TanStack Start web app run on your computer. You need Node.js 22.12+, pnpm (`corepack enable` provides the pinned version), and Docker with Compose v2; Docker Desktop includes both the engine and Compose.
+`compose.dev.yaml` runs PostgreSQL 17. The Express API and the TanStack Start web app run on your computer. You need Node.js 22.18+ (the scripts load TypeScript through Node type stripping), pnpm (`corepack enable` provides the pinned version), and Docker with Compose v2; Docker Desktop includes both the engine and Compose.
 
 ```sh
 pnpm run setup

@@ -31,6 +31,8 @@ import {
   shiftSwapRequestIdSchema,
   leaveRequestIdSchema,
   overtimeRequestIdSchema,
+  overtimeFormulaIdSchema,
+  holidayIdSchema,
   kpiReviewIdSchema,
   sopDocumentIdSchema,
   trainingIdSchema,
@@ -69,11 +71,24 @@ import {
 } from "./scheduling.ts";
 import {
   holidaySchema,
+  holidayTypeSchema,
+  leaveAccrualRunResultSchema,
   leaveBalanceSchema,
   leaveRequestSchema,
   leaveRequestStatusSchema,
+  leaveSettingsInputSchema,
+  leaveSettingsSchema,
+  leaveTypeInputSchema,
+  leaveTypeSchema,
+  overtimeFormulaSchema,
   overtimeRequestSchema,
+  overtimeRequestStatusSchema,
+  overtimeRestDayTypeSchema,
 } from "./leave.ts";
+import {
+  overtimeDayTypeSchema,
+  overtimeParametersSchema,
+} from "./payroll/statutory.ts";
 import {
   announcementReceiptSchema,
   announcementSchema,
@@ -389,6 +404,73 @@ export const listLeaveBalances = defineEndpoint({
   response: cursorPageSchema(leaveBalanceSchema),
 });
 
+export const listLeaveTypes = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/leave/types",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(leaveTypeSchema),
+});
+
+export const createLeaveType = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/types",
+  body: leaveTypeInputSchema.extend({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(leaveTypeSchema),
+});
+
+export const updateLeaveType = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/leave/types/:leaveTypeId",
+  params: z.strictObject({ leaveTypeId: leaveTypeIdSchema }),
+  body: leaveTypeInputSchema
+    .omit({ code: true })
+    .partial()
+    .extend({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(leaveTypeSchema),
+});
+
+export const runLeaveAccrual = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/accruals/run",
+  body: clientInputSchema({
+    period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM"),
+  }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+export const runLeaveCarryOver = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/carry-over/run",
+  body: clientInputSchema({
+    fromYear: z.number().int().min(2000).max(2099),
+  }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+export const expireLeaveCarryOver = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/leave/carry-over/expire",
+  body: clientInputSchema({ asOf: businessDateSchema }),
+  response: dataResponseSchema(leaveAccrualRunResultSchema),
+});
+
+/** Collective-leave policy (founder decision Q7); HR manage, tenant-wide. */
+export const getLeaveSettings = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/leave/settings",
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
+export const updateLeaveSettings = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/leave/settings",
+  body: clientInputSchema({
+    ...leaveSettingsInputSchema.shape,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(leaveSettingsSchema),
+});
+
 export const listHolidays = defineEndpoint({
   method: "GET",
   path: "/api/hris/holidays",
@@ -396,6 +478,52 @@ export const listHolidays = defineEndpoint({
     year: z.coerce.number().int().min(2000).max(2100).optional(),
   }),
   response: cursorPageSchema(holidaySchema),
+});
+
+export const createHoliday = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/holidays",
+  body: clientInputSchema({
+    date: businessDateSchema,
+    name: z.string().min(1).max(150),
+    type: holidayTypeSchema,
+    /** null = the whole tenant. */
+    outletId: outletIdSchema.nullable(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(holidaySchema),
+});
+
+export const updateHoliday = defineEndpoint({
+  method: "PATCH",
+  path: "/api/hris/holidays/:holidayId",
+  params: z.strictObject({ holidayId: holidayIdSchema }),
+  body: clientInputSchema({
+    date: businessDateSchema.optional(),
+    name: z.string().min(1).max(150).optional(),
+    type: holidayTypeSchema.optional(),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(holidaySchema),
+});
+
+export const deleteHoliday = defineEndpoint({
+  method: "DELETE",
+  path: "/api/hris/holidays/:holidayId",
+  params: z.strictObject({ holidayId: holidayIdSchema }),
+  response: dataResponseSchema(z.strictObject({ id: holidayIdSchema })),
+});
+
+export const listOvertimeRequests = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/overtime-requests",
+  query: cursorPageQuerySchema.extend({
+    employeeId: employeeIdSchema.optional(),
+    status: overtimeRequestStatusSchema.optional(),
+    from: businessDateSchema.optional(),
+    to: businessDateSchema.optional(),
+  }),
+  response: cursorPageSchema(overtimeRequestSchema),
 });
 
 export const createOvertimeRequest = defineEndpoint({
@@ -406,6 +534,8 @@ export const createOvertimeRequest = defineEndpoint({
     date: businessDateSchema,
     minutes: z.number().int().min(1).max(720),
     reason: z.string().min(1).max(500),
+    /** Employee's rest day; a holiday on `date` overrides it server side. */
+    dayType: overtimeDayTypeSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(overtimeRequestSchema),
@@ -420,6 +550,34 @@ export const decideOvertimeRequest = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(overtimeRequestSchema),
+});
+
+export const listOvertimeFormulas = defineEndpoint({
+  method: "GET",
+  path: "/api/hris/overtime-formulas",
+  query: cursorPageQuerySchema,
+  response: cursorPageSchema(overtimeFormulaSchema),
+});
+
+export const createOvertimeFormula = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/overtime-formulas",
+  body: clientInputSchema({
+    effectiveFrom: businessDateSchema,
+    parameters: overtimeParametersSchema,
+    restDayType: overtimeRestDayTypeSchema,
+    legalBasis: z.string().min(1).max(200),
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(overtimeFormulaSchema),
+});
+
+export const publishOvertimeFormula = defineEndpoint({
+  method: "POST",
+  path: "/api/hris/overtime-formulas/:overtimeFormulaId/publish",
+  params: z.strictObject({ overtimeFormulaId: overtimeFormulaIdSchema }),
+  body: clientInputSchema({ idempotencyKey: idempotencyKeySchema }),
+  response: dataResponseSchema(overtimeFormulaSchema),
 });
 
 // ---- KPI, SOP, training, announcements ---------------------------------
@@ -528,9 +686,24 @@ export const hrisEndpoints = [
   createLeaveRequest,
   decideLeaveRequest,
   listLeaveBalances,
+  listLeaveTypes,
+  createLeaveType,
+  updateLeaveType,
+  runLeaveAccrual,
+  runLeaveCarryOver,
+  expireLeaveCarryOver,
+  getLeaveSettings,
+  updateLeaveSettings,
   listHolidays,
+  createHoliday,
+  updateHoliday,
+  deleteHoliday,
+  listOvertimeRequests,
   createOvertimeRequest,
   decideOvertimeRequest,
+  listOvertimeFormulas,
+  createOvertimeFormula,
+  publishOvertimeFormula,
   listKpiReviews,
   listSopDocuments,
   acknowledgeSopDocument,

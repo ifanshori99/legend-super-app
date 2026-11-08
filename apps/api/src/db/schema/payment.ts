@@ -318,6 +318,12 @@ export const paymentUnallocatedFunds = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
     paymentIntentId: uuid("payment_intent_id").notNull(),
+    /**
+     * Provider evidence that brought this money in; null on rows that predate it.
+     * Soft reference (no FK): adding a validated FK to this RLS-forced table
+     * fails for a non-superuser migrator, and evidence is append-only anyway.
+     */
+    evidenceId: uuid("evidence_id"),
     amountIdr: idrColumn("amount_idr").notNull(),
     reason: varchar("reason", { length: 20 })
       .$type<UnallocatedFundsReason>()

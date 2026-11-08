@@ -1,0 +1,2 @@
+ALTER TABLE "pos_order_refunds" ADD CONSTRAINT "pos_order_refunds_approval_check" CHECK ("pos_order_refunds"."override_id" IS NOT NULL OR "pos_order_refunds"."approval_request_id" IS NOT NULL);--> statement-breakpoint
+ALTER TABLE "pos_order_voids" ADD CONSTRAINT "pos_order_voids_approval_check" CHECK ("pos_order_voids"."override_id" IS NOT NULL OR "pos_order_voids"."approval_request_id" IS NOT NULL);

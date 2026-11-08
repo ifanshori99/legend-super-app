@@ -189,16 +189,33 @@ export const refundStatusSchema = z.enum([
 ]);
 export type RefundStatus = z.infer<typeof refundStatusSchema>;
 
+/** Why a refund ended `failed` (null for legacy failed rows). */
+export const refundFailureReasonSchema = z.enum([
+  "rejected",
+  "approval_expired",
+  "provider_declined",
+  "cap_exceeded",
+  "source_document",
+  "approver_unauthorized",
+]);
+export type RefundFailureReason = z.infer<typeof refundFailureReasonSchema>;
+
 /**
  * Non-human requesters: a module that files the refund request by rule (e.g.
  * the reservation DP refund decided from the policy snapshot, PRD §3.22). The
  * approval still needs a person with `payment.reconcile` (never the system).
  */
-export const systemRefundActorSchema = z.enum(["system:reservation"]);
+export const systemRefundActorSchema = z.enum([
+  "system:reservation",
+  "system:pos",
+  "system:qr",
+]);
 export type SystemRefundActor = z.infer<typeof systemRefundActorSchema>;
 /** Display names for system requesters (no `user` row exists for them). */
 export const systemRefundActorNames: Record<SystemRefundActor, string> = {
   "system:reservation": "Sistem (reservasi)",
+  "system:pos": "Sistem (kasir)",
+  "system:qr": "Sistem (pesanan QR)",
 };
 
 export const refundViewSchema = z.strictObject({
@@ -220,6 +237,11 @@ export const refundViewSchema = z.strictObject({
   note: z.string().max(500).nullable(),
   createdAt: isoDateTimeSchema,
   decidedAt: isoDateTimeSchema.nullable(),
+  failureReason: refundFailureReasonSchema.nullable().optional(),
+  /** Provider payout tries so far; an `approved` refund with a last error is awaiting retry. */
+  payoutAttempts: z.number().int().nonnegative().optional(),
+  lastPayoutError: z.string().max(100).nullable().optional(),
+  completedAt: isoDateTimeSchema.nullable().optional(),
 });
 export type RefundView = z.infer<typeof refundViewSchema>;
 
@@ -278,6 +300,19 @@ export const approveRefundInputSchema = clientInputSchema({
   note: z.string().max(500).optional(),
 });
 export type ApproveRefundInput = z.infer<typeof approveRefundInputSchema>;
+
+export const rejectRefundInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  reason: z.string().trim().min(3).max(500),
+});
+export type RejectRefundInput = z.infer<typeof rejectRefundInputSchema>;
+
+export const retryRefundPayoutInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+});
+export type RetryRefundPayoutInput = z.infer<
+  typeof retryRefundPayoutInputSchema
+>;
 
 // ---- Unallocated funds (PAY-04) -----------------------------------------
 
@@ -452,11 +487,33 @@ export const createRefund = defineEndpoint({
   body: createRefundInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
+/**
+ * Runs the refund through the approval matrix (every level needs a distinct
+ * approver, never the requester). Once approved the provider payout starts;
+ * the refund becomes `completed` only on provider success. A payout whose
+ * outcome is unknown stays `approved` and is retried with the same key.
+ */
 export const approveRefund = defineEndpoint({
   method: "POST",
   path: `${ADMIN}/refunds/:refundId/approve`,
   params: refundParams,
   body: approveRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/** Rejects a `pending` refund: it ends `failed` (`rejected`) and frees the reserved amount. */
+export const rejectRefund = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/reject`,
+  params: refundParams,
+  body: rejectRefundInputSchema,
+  response: dataResponseSchema(refundViewSchema),
+});
+/** Retries the provider payout of an `approved` refund (same provider idempotency key). */
+export const retryRefundPayout = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refunds/:refundId/retry`,
+  params: refundParams,
+  body: retryRefundPayoutInputSchema,
   response: dataResponseSchema(refundViewSchema),
 });
 

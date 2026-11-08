@@ -4,7 +4,10 @@
 // identity, so a mis-mounted router answers nothing useful.
 //
 //   GET /api/edge/health  liveness for the outlet's monitoring: mode, cloud
-//                         link and local database. No session, no tenant data.
+//                         link, local database and whether the device
+//                         registry replica is stale. No session, no tenant
+//                         data. Staleness never changes the HTTP status: an
+//                         offline edge keeps serving (legend-2lp.7).
 //   GET /api/edge/status  getEdgeStatus. Tenant and outlet are the node's own
 //                         (from its credential), never the request's
 //                         (TEN-02). Readers:
@@ -20,8 +23,10 @@ import { CoreError } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { checkDatabase } from "../db/index.ts";
-import { getEdgeRuntimeState } from "../edge/runtime.ts";
-import { lookupEdgeDevice } from "../edge/ports.ts";
+import {
+  getDeviceRegistrySyncState,
+  getEdgeRuntimeState,
+} from "../edge/runtime.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { sessionMfaVerifiedAt } from "../lib/mfa.ts";
@@ -31,6 +36,7 @@ import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
+import { findActiveDeviceForToken } from "../services/device-registry-check.ts";
 import { getEdgeStatus } from "../services/edge-status.service.ts";
 
 /** Operational staff of the outlet may see its offline status (§4 Alur F). */
@@ -77,14 +83,11 @@ const deviceReader: RequestHandler = async (req, _res, next) => {
   const payload = verifyDeviceToken(raw);
   const device =
     payload && payload.tenantId === identity.scope.tenantId
-      ? await lookupEdgeDevice(identity.context, payload.deviceId)
+      ? await findActiveDeviceForToken(payload, {
+          outletId: identity.scope.outletId,
+        })
       : null;
-  if (
-    !device ||
-    device.status !== "active" ||
-    device.tenantId !== identity.scope.tenantId ||
-    device.outletId !== identity.scope.outletId
-  )
+  if (!device)
     throw new CoreError(
       "UNAUTHORIZED",
       "Hanya perangkat terdaftar di outlet ini yang dapat membaca status.",
@@ -154,6 +157,7 @@ edgeRouter.get("/health", async (_req, res) => {
     mode: runtime.edgeMode ? "edge" : "cloud",
     cloudLink: runtime.link.cloudLink,
     database,
+    deviceRegistry: { stale: getDeviceRegistrySyncState()?.stale ?? true },
   });
 });
 
