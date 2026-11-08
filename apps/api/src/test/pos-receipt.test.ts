@@ -2636,6 +2636,104 @@ describe("POS-07 a receipt keeps the outlet name and address of the day it was i
   });
 });
 
+describe("Q4 a tax-free order prints with no tax rows (legend-93a)", () => {
+  const TAX_LABELS = /PBJT|PPN|PB1|Pajak/;
+  const tokenOf = (url: string) => url.slice(url.lastIndexOf("/r/") + 3);
+
+  /**
+   * An outlet where the item is exempt: an outlet rule at 0% that names the
+   * item beats the tenant-wide PBJT rule there, so the sale is taxed 0 and
+   * every other test keeps the tenant-wide rule.
+   */
+  async function taxFreeOutlet(): Promise<string> {
+    const outletId = await freshOutlet();
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+            price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, $3, 'EXEMPT-RCP', 'Bebas pajak', 'other', 0, NULL, '[]',
+                 $4, false, true, true, 1, '2026-01-01', 'published', now(), $5)`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          outletId,
+          JSON.stringify({
+            itemClasses: [],
+            categoryIds: [],
+            itemIds: [ids.kopi],
+          }),
+          cashier.userId,
+        ],
+      );
+    });
+    return outletId;
+  }
+
+  it("Q4 a sale with no tax prints a receipt, PDFs, e-receipt, email and invoice without any tax row", async () => {
+    const outletId = await taxFreeOutlet();
+    const { orderId, totalIdr } = await completedSale(outletId);
+    const address = `q4-${randomUUID().slice(0, 8)}@example.com`;
+    const issued = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print", "link", "email"],
+      email: address,
+    });
+    expect(issued.status, JSON.stringify(issued.body)).toBe(200);
+    const { document, receipt, link } = issued.body.data;
+    expect(document.taxLines).toEqual([]);
+    expect(document.taxIdr).toBe(0);
+    expect(document.subtotalIdr).toBe(50_000);
+    expect(document.totalIdr).toBe(totalIdr);
+    expect(document.subtotalIdr + document.taxIdr).toBe(document.totalIdr);
+
+    const staffPdf = await api(outletId)
+      .get(`/receipts/${receipt.id}/pdf`)
+      .buffer(true)
+      .parse(binary as never);
+    expect(staffPdf.status).toBe(200);
+    const staffText = (staffPdf.body as Buffer).toString("latin1");
+    expect(staffText).toContain("Rp 50.000");
+    expect(staffText).not.toMatch(TAX_LABELS);
+
+    const token = tokenOf(link.url);
+    const publicPdf = await agent(app)
+      .get(`/api/public/receipts/${token}/pdf`)
+      .set(headers)
+      .buffer(true)
+      .parse(binary as never);
+    expect(publicPdf.status).toBe(200);
+    expect((publicPdf.body as Buffer).toString("latin1")).not.toMatch(
+      TAX_LABELS,
+    );
+
+    const open = await agent(app)
+      .get(`/api/public/receipts/${token}`)
+      .set(headers);
+    expect(open.status, JSON.stringify(open.body)).toBe(200);
+    expect(receiptDocumentSchema.parse(open.body.data).taxLines).toEqual([]);
+
+    const provider = new FakeEmailProvider();
+    await runPosReceiptEmailJob([tenantContext(tenant.tenantId)], {
+      email: provider,
+    });
+    const mail = provider.sent.find((sent) => sent.to === address);
+    expect(mail).toBeDefined();
+    expect(`${mail?.subject}\n${mail?.body}`).not.toMatch(TAX_LABELS);
+
+    const invoice = await api(outletId).post(`/orders/${orderId}/invoices`, {
+      billedTo: {
+        name: "PT Kopi Nusantara",
+        address: "Jl. Sudirman No. 1, Jakarta Pusat",
+        npwp: "01.234.567.8-901.234",
+      },
+      dueDate: "2026-12-31",
+    });
+    expect(invoice.status, JSON.stringify(invoice.body)).toBe(201);
+    expect(invoice.body.data.taxLines).toEqual([]);
+  });
+});
+
 /** A sale rung up by a specific member (the limited-outlet cashier). */
 async function completedSaleAs(who: Member, outletId: string): Promise<string> {
   const created = await api(outletId, who).post("/orders", {

@@ -772,11 +772,24 @@ test("POS-07: e-receipt and kuitansi carry outlet name, address, items, tax and 
     pos.receiptDocumentSchema.safeParse({
       ...receiptDoc,
       taxLines: [],
-      taxIdr: 0,
-      totalIdr: 109_180,
     }).success,
     false,
-    "the tax line is printed (POS-07)",
+    "a taxed order prints its tax line (POS-07)",
+  );
+  // Founder decision Q4 (legend-93a): a tax-free order prints with no tax row.
+  assert.equal(
+    pos.receiptDocumentSchema.safeParse({
+      ...receiptDoc,
+      taxLines: [],
+      taxIdr: 0,
+      totalIdr: 109_180,
+      tenders: [
+        receiptDoc.tenders[0],
+        { ...receiptDoc.tenders[1], amountIdr: 99_180 },
+      ],
+    }).success,
+    true,
+    "a tax-free order prints without a tax row",
   );
   assert.equal(
     pos.receiptDocumentSchema.safeParse({
