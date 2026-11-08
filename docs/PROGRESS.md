@@ -49,7 +49,7 @@ Aturan: maks 1 run per akun ready, brief hanya rentang diff + berkas berisiko (�
 | R2 | refund-approval | xhigh | 65 (SHA 09385266) | SELESAI 05:45 (G7110, akun 2): 2 temuan P1 yang terlewat review Claude: otorisasi refund di bawah ambang tanpa supervisor (:565), fund evidence_id NULL salah tujuan payout (:933). Fix brief 92 |
 | R3 | journals | xhigh | 70 | jendela berikut |
 | R4 | PPh21 | xhigh | menyusul | jendela berikut |
-| R5 | EDC + DOIT | high | 60, 62 | |
+| R5 | EDC + DOIT | high | 60, 62 | DOIT SELESAI 06:00 (G8d4v, akun 3): 2 P1 (retry POST yatim :477, rekonsiliasi berhenti 60 dtk setelah expiry :1741) + 1 P2 (paid_at dibuang :274), terlewat review Claude. Fix brief 95 (reopen G8x09). EDC belum |
 | R6 | struk + edge registry | high | 68, menyusul | |
 | R7 | stok opname + recipe/BOM | high | menyusul | |
 | R8 | procurement + AI tool catalog | high | menyusul | |
@@ -197,3 +197,5 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - G5dhx merge train dan G9c40 inventori→GL dilanjutkan (DB pulih). G0c95 (brief 90) dan G30x7 (brief 91) di-reload lalu dikirimi brief. Codex refund berjalan di G7110 (akun 2, xhigh). G58ni = sesi Codex kosong sisa crash, abaikan/resolve.
 - Akar insiden: tekanan memori (8 thread + ~16 subagent menjalankan gate penuh bersamaan, swap 7 GB, 13 container DB test basi) → opendirectoryd macOS rusak setelah uptime 5 hari → user 501 tak dikenali → terminal baru ditolak, login akun tak terbaca, Colima/ssh gagal, gxserver mati.
 - Pencegahan: gate penuh sekali per tugas (sudah di TEAM.md), cleanup container test otomatis (bd baru), restart Mac mingguan, CTO cek `docker ps | grep -c starter-pg-test` tiap gelombang.
+- 05:55 inventori→GL SELESAI (G9c40): ws/inventory-gl bf5c895f, test 18/18, gate penuh hijau 1545. Masuk antrean merge train (migration 0075/0076 → regen). Codex R10 inventory-gl (xhigh). Lanjutan legend-s4r6 (applier stock.moved edge→cloud, ke G0c95) dan legend-9w46 (HPP ke recipe-bom setelah db6 digabung).
+- 06:00 RAM kuning (batas 4 thread, aktif 7): thread baru ditahan. Antre start: fix DOIT brief 95 (reopen G8x09), WS-03 brief 94 (belum ditulis ulang).
