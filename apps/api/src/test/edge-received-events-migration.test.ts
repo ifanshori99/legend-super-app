@@ -4,7 +4,7 @@
 // receipt for the same edge_to_cloud event. 0065 now creates the tenant-wide
 // registry edge_received_events and backfills it with one row per event.
 // This suite proves the upgrade path on such data: it migrates a scratch
-// database to 0062, seeds the duplicate shape, then applies the full folder.
+// database to 0064, seeds the duplicate shape, then applies the full folder.
 // The scratch database lives on the disposable test server and is dropped in
 // afterAll; the shared test database and the real journal are never touched.
 // A second suite repeats the upgrade with a NON-superuser table owner, like
@@ -73,19 +73,20 @@ function assertDisposableServer() {
     );
 }
 
-// Temp copy of the migrations, journal cut at idx 62. The real folder and
+// Temp copy of the migrations, journal cut at idx 64 (the last migration
+// before 0065). The real folder and
 // journal stay untouched.
-function copyMigrationsUpTo0062() {
-  const dir = mkdtempSync(join(tmpdir(), "legend-mig-0062-"));
-  const upTo0062 = join(dir, "drizzle");
-  cpSync(drizzleFolder, upTo0062, { recursive: true });
-  const journalPath = join(upTo0062, "meta", "_journal.json");
+function copyMigrationsUpTo0064() {
+  const dir = mkdtempSync(join(tmpdir(), "legend-mig-0064-"));
+  const upTo0064 = join(dir, "drizzle");
+  cpSync(drizzleFolder, upTo0064, { recursive: true });
+  const journalPath = join(upTo0064, "meta", "_journal.json");
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
     entries: { idx: number }[];
   };
-  journal.entries = journal.entries.filter((entry) => entry.idx <= 62);
+  journal.entries = journal.entries.filter((entry) => entry.idx <= 64);
   writeFileSync(journalPath, JSON.stringify(journal));
-  return { dir, upTo0062 };
+  return { dir, upTo0064 };
 }
 
 async function seedTenant(
@@ -97,7 +98,7 @@ async function seedTenant(
   const entity = randomUUID();
   const suffix = randomBytes(4).toString("hex");
   // Minimum columns the table constraints require (no seed tenant exists in a
-  // database that stops at migration 0062).
+  // database that stops at migration 0064).
   await scratch.query(
     `INSERT INTO tenants (id, slug, name, plan, deployment_mode, limits, created_by)
      VALUES ($1, $2, 'Tenant Upgrade Uji', 'starter', 'shared', '{}'::jsonb, $3)`,
@@ -251,11 +252,11 @@ describe("legend-wg5t migration 0065 on pre-0065 duplicate receipts", () => {
     admin = new Pool({ connectionString: adminUrl, max: 1 });
     await admin.query(`CREATE DATABASE ${scratchName}`);
     scratch = new Pool({ connectionString: urlFor(scratchName), max: 2 });
-    const copy = copyMigrationsUpTo0062();
+    const copy = copyMigrationsUpTo0064();
     workDir = copy.dir;
-    await migrate(drizzle(scratch), { migrationsFolder: copy.upTo0062 });
+    await migrate(drizzle(scratch), { migrationsFolder: copy.upTo0064 });
     await seedDuplicateShape(scratch);
-    // 62 migrations into a fresh database outlast the default hook timeout on a
+    // 65 migrations into a fresh database outlast the default hook timeout on a
     // slow disposable Postgres.
   }, 120_000);
 
@@ -327,12 +328,13 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
     admin = new Pool({ connectionString: adminUrl, max: 1 });
     // Role names and the hex password are generated here, so interpolation
     // into DDL (which takes no bind parameters) is safe.
-    // Only 0065 is under test here. Migrations 0000..0062 need BYPASSRLS for
+    // Only 0065 is under test here. Migrations 0000..0064 need BYPASSRLS for
     // a non-superuser owner: adding a foreign key to a table with FORCE ROW
     // LEVEL SECURITY validates existing rows under the tenant policy, which
     // raises "tenant context is required" without app.tenant_id (first hit
-    // in 0004, domain_event_replays). That is older than 0065 and out of
-    // scope, so the role starts with BYPASSRLS and loses it before 0063 runs.
+    // in 0004, domain_event_replays; again in 0063,
+    // fiscal_period_snapshot_lines). That is older than 0065 and out of scope,
+    // so the role starts with BYPASSRLS and loses it before 0065 runs.
     await admin.query(
       `CREATE ROLE ${ownerRole} LOGIN PASSWORD '${ownerPassword}' NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB`,
     );
@@ -345,9 +347,9 @@ describe("legend-wg5t migration 0065 run by a non-superuser table owner", () => 
       connectionString: urlFor(ownerDatabase),
       max: 1,
     });
-    const copy = copyMigrationsUpTo0062();
+    const copy = copyMigrationsUpTo0064();
     workDir = copy.dir;
-    await migrate(drizzle(owner), { migrationsFolder: copy.upTo0062 });
+    await migrate(drizzle(owner), { migrationsFolder: copy.upTo0064 });
     await seedDuplicateShape(adminInScratch);
     // Production shape from here on (drizzle/0001): a plain table owner with
     // CREATEROLE, subject to RLS. ALTER ROLE only applies to new sessions, so
