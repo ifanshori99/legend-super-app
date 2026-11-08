@@ -81,3 +81,8 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: `heavy pnpm check` 138 file / 1246 test lulus, build lulus, format/color/tenant-hardcode lulus, 2 reviewer konteks segar (1 temuan High dibetulkan).
 - Lanjutan (bead): legend-0ixe (UI POS tampilkan void KDS), legend-0frf (UI admin menu tipe stasiun), legend-078b (alert baris QR tanpa stasiun + notifikasi void untuk order QR).
 - Menunggu: review CTO, merge ke `main` oleh gerbang founder.
+- 2026-11-08 malam, perbaikan second-opinion architect (8 butir): merge `main` (1f0b6d2) = `2e56c5a8`, migrasi KDS di-renumber 0068_lame_tusk (generate, SQL identik) / 0069_kds_rls (custom) / 0070_menu_station_type_backfill (custom). Fix = `a9897e90` + `792a08aa` (temuan reviewer).
+  - Keputusan: `after` klien tidak dipercaya; lebih maju dari cursor, tertinggal > 2000 (`KITCHEN_FEED_MAX_LAG`), atau baris sesudahnya sudah dipangkas: HTTP 409 `KDS_RESYNC_REQUIRED`, WebSocket frame `resync` lalu close 4409. Klien: muat ulang snapshot, sambung ulang dengan `after = snapshot.sequence`.
+  - Feed dipangkas tiap sequence ke-500: hanya baris > 24 jam DAN > 2000 di belakang cursor; trigger DB hanya mengizinkan delete itu (legend_app dapat DELETE lagi di tabel feed saja).
+  - POS fire tidak pernah gagal karena stasiun kosong (skip + audit `kitchen_ticket.unrouted` + warn).
+  - Bukti: test per bagian lulus (kds + kds-realtime 63/63, menu-api 17/17). Gerbang penuh pertama gagal lint saja (helper tak terpakai, dibetulkan). Gerbang penuh setelah commit terakhir BELUM selesai: dihentikan sistem karena memori Mac kritis.
