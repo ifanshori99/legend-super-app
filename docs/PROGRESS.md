@@ -11,7 +11,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
 |---|---|---|---|---|---|
 | ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
-| ws/refund-approval | 09385266 | K | refund, approval, payout | fix brief 81 selesai (G7ftq, Opus reviewer 2 putaran bersih, gate hijau 1366); migration 0068 bentrok nomor milestone → regen | Codex R2 (SHA pasca-regen) |
+| ws/refund-approval | 09385266 | K | refund, approval, payout | DIGABUNG m1 `1056e208` (prep 55084e9c, migration diregen 0079); gate prep hijau API 1784 / root 1420; kartu rbjw hvvn ditutup | Codex R2 selesai: 2 P1 (brief 92) BELUM di cabang maupun m1; fix brief 92 harus digabung ke m1 sebelum rilis |
 | ws/journals | 4ec3babb | K | jurnal | fix brief 78 selesai (G0msx, 2 Opus reviewer bersih); regen 0075/0076 di atas m1 8e2e7bc0; DIGABUNG milestone/m1 4e0bacd4 (brief 89, 00:2x); gate: lint+typecheck hijau, API 1496 + 9 file timeout diulang 147/147, root 1419 + 1 artefak diulang 21/21 | Codex R3 brief 70 (SHA 4ec3babb) |
 | ws/payroll-pph21-tests | 461a94bf | K | uang PPh21 | fix 82 + campuran (porsi skema) selesai, reviewer segar + 6000 fuzz bersih, gate hijau 1492; legend-s5c1 P1 prasyarat run service | Codex R4 (SHA 461a94bf) |
 | ws/edc-framework | a6d022d3 | K | uang EDC, tagih dobel | SELESAI (G7cu9 di-resolve): batch_no match (dispatch_batch_no, migration 0070) + kontrak sale sinkron, gate hijau 1408; migration → regen saat merge | Codex R5 brief 60 (SHA a6d022d3) |

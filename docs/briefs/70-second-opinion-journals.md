@@ -5,7 +5,7 @@ Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
 Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/journals`, cabang `ws/journals`, SHA `4ec3babb`.
-Rentang diff: `git diff $(git merge-base main 4ec3babb)..4ec3babb` (abaikan drizzle `meta/*.json`).
+Rentang diff: `git diff 8e2e7bc0 4e0bacd4` (merge m1 `4e0bacd4`, isi cabang saja di atas m1; abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`: menyeret isi m1 lain.
 
 ## Berkas berisiko
 - `apps/api/src/services/accounting-journal-manual.service.ts`
