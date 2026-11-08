@@ -581,5 +581,9 @@ export const payrollConfigMessages = {
       "PIN slip gaji terkunci sementara karena terlalu banyak percobaan.",
     PAYROLL_BANK_FILE_MISMATCH:
       "File transfer tidak cocok dengan payroll yang dipilih.",
+    PAYROLL_PPH21_STATUS_UNSUPPORTED:
+      "Status PTKP ini tidak dipakai untuk pemotongan PPh 21 menurut kebijakan pajak perusahaan.",
+    PAYROLL_PPH21_POLICY_CONFLICT:
+      "Sudah ada versi kebijakan PPh 21 pada tanggal itu, atau tanggalnya sudah lewat.",
   },
 } as const;

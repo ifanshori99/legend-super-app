@@ -25,6 +25,7 @@ import {
   uuidSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   customerPaymentIntentSchema,
   createPaymentIntentInputSchema,
@@ -40,7 +41,19 @@ import {
   type PaymentLinkView,
   type PayAtCashierAcknowledgement,
 } from "@starter/shared/payment";
-import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -314,7 +327,7 @@ async function onlineMethods(
   const gateway = paymentGateway();
   const [routed, health] = await Promise.all([
     routeOnlineMethods(context, link),
-    gateway.health(context),
+    gateway.health(context, link.outletId),
   ]);
   const gatewayUsable = health.status !== "down";
   const result: RoutedMethod[] = [];
@@ -322,7 +335,7 @@ async function onlineMethods(
     const channels =
       entry.method === "qris"
         ? []
-        : await gateway.channels(context, entry.method);
+        : await gateway.channels(context, entry.method, link.outletId);
     const configured = entry.method === "qris" || channels.length > 0;
     const enabled = entry.enabled && gatewayUsable && configured;
     const unavailableReason = !entry.enabled
@@ -347,7 +360,7 @@ export async function getPaymentLinkView(
   const parsedToken = paymentLinkTokenSchema.parse(token);
   const link = await loadLink(context, parsedToken, now);
   const [health, methods] = await Promise.all([
-    paymentGateway().health(context),
+    paymentGateway().health(context, link.outletId),
     onlineMethods(context, link),
   ]);
   const { activeIntent, timeZone } = await withTenant(
@@ -553,7 +566,7 @@ export async function createIntent(
     throw new HttpError(409, "CONFLICT", "This bill is already paid.");
 
   const gateway = paymentGateway();
-  const health = await gateway.health(context);
+  const health = await gateway.health(context, plan.link.outletId);
   if (health.status === "down")
     throw new HttpError(
       503,
@@ -567,6 +580,7 @@ export async function createIntent(
   const intentId = randomUUID();
   const created: GatewayIntent = await gateway.createIntent({
     context,
+    outletId: plan.link.outletId,
     provider: plan.provider,
     intentId,
     method: parsed.method,
@@ -650,6 +664,7 @@ export async function createIntent(
           amountIdr,
           idempotencyKey: parsed.idempotencyKey,
           providerRef: created.providerRef,
+          gatewayIntegrationId: created.integrationId ?? null,
           status: "pending",
           instructions,
           channelCode: parsed.channelCode,
@@ -838,55 +853,227 @@ async function failIntent(
   });
 }
 
-/** Applies a provider status without inventing one (PAY-02). */
+/**
+ * A confirmation the lifecycle refused. Still a 409 CONFLICT for HTTP callers;
+ * `decisionCode` lets internal callers (the polling fallback) tell an
+ * underpayment (`AMOUNT_MISMATCH`, money arrived) from an untrusted source.
+ */
+export class PaymentConfirmationRejected extends HttpError {
+  constructor(
+    public decisionCode:
+      "UNTRUSTED_CONFIRMATION" | "AMOUNT_MISMATCH" | "INVALID_TRANSITION",
+    message: string,
+  ) {
+    super(409, "CONFLICT", message);
+    this.name = "PaymentConfirmationRejected";
+  }
+}
+
+/**
+ * Money arrived that cannot settle the intent: the intent is already closed as
+ * failed (nothing revives it, lifecycle rule) or the paid amount does not match
+ * the bill (AMOUNT_MISMATCH). The funds are recorded once, keyed by the
+ * provider transaction, as unallocated funds for the existing refund or credit
+ * review. Reason: `overpayment` when more than the bill was paid, otherwise
+ * `double_payment` (the closest existing value: money that cannot be
+ * allocated to this bill). The payment evidence row makes a replay, or the
+ * same transaction seen by both webhook and poll, a no-op.
+ */
+export async function recordUnsettledGatewayFunds(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  funds: {
+    provider: string;
+    providerRef: string;
+    method?: PaymentIntentRow["method"];
+    source: "verified_webhook" | "gateway_status";
+    paidAmountIdr: number;
+    receivedAt: Date;
+  },
+  now: Date,
+): Promise<void> {
+  const paid = funds.paidAmountIdr;
+  if (!(paid > 0)) return;
+  const reason =
+    paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
+  await withTenant(db, context, async (tx) => {
+    const [inserted] = await tx
+      .insert(paymentEvidence)
+      .values({
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId,
+        paymentIntentId: intent.id,
+        provider: funds.provider,
+        providerRef: funds.providerRef,
+        method: funds.method ?? intent.method,
+        source: funds.source,
+        amountIdr: idr(paid),
+        receivedAt: funds.receivedAt,
+      })
+      .onConflictDoNothing({
+        target: [
+          paymentEvidence.tenantId,
+          paymentEvidence.provider,
+          paymentEvidence.providerRef,
+        ],
+      })
+      .returning({ id: paymentEvidence.id });
+    if (!inserted) return;
+    await tx.insert(paymentUnallocatedFunds).values({
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId,
+      paymentIntentId: intent.id,
+      amountIdr: idr(paid),
+      reason,
+    });
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.closed_intent_funds_flagged",
+        objectType: "payment_intent",
+        objectId: intent.id,
+        reason: null,
+        maskedChanges: {
+          before: { status: intent.status },
+          after: {
+            status: intent.status,
+            unallocatedIdr: paid,
+            providerRef: funds.providerRef,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["status", "unallocatedIdr", "providerRef"],
+    );
+  });
+}
+
+type SyncResult = {
+  intent: PaymentIntentRow;
+  /** True when the gateway call failed and the answer is unknown. */
+  gatewayError: boolean;
+};
+
+/**
+ * Applies a provider status without inventing one (PAY-02). Past its expiry a
+ * pending intent with a provider reference asks the gateway first: money may
+ * have arrived after the code lapsed, and the lifecycle flags that as a late
+ * payment. Any other answer, or a gateway error, expires it as before.
+ */
+async function syncPendingIntentDetailed(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  now: Date,
+): Promise<SyncResult> {
+  if (intent.status !== "pending") return { intent, gatewayError: false };
+  const pastExpiry = intent.expiresAt <= now;
+  if (intent.providerRef === null) {
+    if (!pastExpiry) return { intent, gatewayError: false };
+    await expireIntent(context, intent, now, "timeout");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  let providerStatus;
+  let gatewayError = false;
+  try {
+    providerStatus = await paymentGateway().getStatus({
+      context,
+      outletId: intent.outletId,
+      integrationId: intent.gatewayIntegrationId,
+      providerRef: intent.providerRef,
+      intentId: intent.id,
+    });
+  } catch {
+    // Gateway outage: the stored status stays; the link view reports it down.
+    gatewayError = true;
+  }
+  if (providerStatus?.status === "paid" && providerStatus.amountIdr !== null) {
+    // Fail closed: a status answer without the settled amount proves nothing
+    // about how much arrived; the verified webhook settles it instead (PAY-02).
+    try {
+      return {
+        intent: await applyConfirmation(
+          context,
+          intent,
+          {
+            source: "gateway_status",
+            method: intent.method,
+            amountIdr: providerStatus.amountIdr,
+            providerRef: providerStatus.providerRef,
+            at: now.toISOString(),
+          },
+          { type: "system" },
+          now,
+        ),
+        gatewayError: false,
+      };
+    } catch (error) {
+      // An underpayment is money that arrived: park it before the intent is
+      // expired or the error surfaces, so a lost webhook never loses funds.
+      if (
+        error instanceof PaymentConfirmationRejected &&
+        error.decisionCode === "AMOUNT_MISMATCH"
+      )
+        await recordUnsettledGatewayFunds(
+          context,
+          intent,
+          {
+            provider: intent.provider,
+            providerRef: providerStatus.providerRef,
+            source: "gateway_status",
+            paidAmountIdr: providerStatus.amountIdr,
+            receivedAt: now,
+          },
+          now,
+        );
+      // Past expiry a rejected settlement (409) must not surface on the link
+      // view: fall through and expire the intent instead.
+      if (!pastExpiry) throw error;
+    }
+  }
+  if (pastExpiry) {
+    await expireIntent(context, intent, now, "timeout");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError,
+    };
+  }
+  if (providerStatus === undefined) return { intent, gatewayError };
+  if (providerStatus.status === "expired") {
+    await expireIntent(context, intent, now, "gateway");
+    return {
+      intent: { ...intent, status: "expired", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  if (providerStatus.status === "failed") {
+    await failIntent(context, intent, now);
+    return {
+      intent: { ...intent, status: "failed", updatedAt: now },
+      gatewayError: false,
+    };
+  }
+  return { intent, gatewayError: false };
+}
+
 async function syncPendingIntent(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<PaymentIntentRow> {
-  if (intent.status !== "pending") return intent;
-  if (intent.expiresAt <= now) {
-    await expireIntent(context, intent, now, "timeout");
-    return { ...intent, status: "expired", updatedAt: now };
-  }
-  if (intent.providerRef === null) return intent;
-  let providerStatus;
-  try {
-    providerStatus = await paymentGateway().getStatus({
-      context,
-      providerRef: intent.providerRef,
-    });
-  } catch {
-    // Gateway outage: the stored status stays; the link view reports it down.
-    return intent;
-  }
-  if (providerStatus.status === "paid") {
-    // Fail closed: a status answer without the settled amount proves nothing
-    // about how much arrived; the verified webhook settles it instead (PAY-02).
-    if (providerStatus.amountIdr === null) return intent;
-    return applyConfirmation(
-      context,
-      intent,
-      {
-        source: "gateway_status",
-        method: intent.method,
-        amountIdr: providerStatus.amountIdr,
-        providerRef: providerStatus.providerRef,
-        at: now.toISOString(),
-      },
-      { type: "system" },
-      now,
-    );
-  }
-  if (providerStatus.status === "expired") {
-    await expireIntent(context, intent, now, "gateway");
-    return { ...intent, status: "expired", updatedAt: now };
-  }
-  if (providerStatus.status === "failed") {
-    await failIntent(context, intent, now);
-    return { ...intent, status: "failed", updatedAt: now };
-  }
-  return intent;
+  return (await syncPendingIntentDetailed(context, intent, now)).intent;
 }
 
 export async function getIntentView(
@@ -935,7 +1122,18 @@ export async function refreshIntent(
       );
     return Number(row?.count ?? 0);
   });
-  const idempotencyKey = `refresh:${link.id}:${count}`.slice(0, 100);
+  // If a create succeeded at the gateway but the local write threw, the
+  // gateway replays that payment for the same key (old amount, old intent
+  // reference), which the adapter refuses: the refresh would be stuck. So the
+  // key also carries the current balance (a changed bill gets a new key) and
+  // the minute (any other failure clears within a minute), while repeated
+  // taps within that minute still share one key. Well under 100 chars.
+  const minute = Math.floor(now.getTime() / 60_000);
+  const idempotencyKey =
+    `refresh:${link.id}:${count}:${outstandingIdr(link)}:${minute}`.slice(
+      0,
+      100,
+    );
   return createIntent(
     context,
     parsedToken,
@@ -1012,7 +1210,7 @@ async function recordPaymentEvidence(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   confirmation: PaymentConfirmation,
-): Promise<boolean> {
+): Promise<{ recorded: boolean; evidenceId: string }> {
   const [inserted] = await tx
     .insert(paymentEvidence)
     .values({
@@ -1034,7 +1232,7 @@ async function recordPaymentEvidence(
       ],
     })
     .returning();
-  if (inserted) return true;
+  if (inserted) return { recorded: true, evidenceId: inserted.id };
   const [existing] = await tx
     .select()
     .from(paymentEvidence)
@@ -1053,7 +1251,7 @@ async function recordPaymentEvidence(
       "CONFLICT",
       "This payment reference is already recorded for another payment.",
     );
-  return false;
+  return { recorded: false, evidenceId: existing.id };
 }
 
 /** Re-reads the intent under a row lock, so a replayed evidence path returns
@@ -1118,19 +1316,24 @@ async function applyConfirmation(
     );
     if (decision.kind === "duplicate") return current;
     if (decision.kind === "reject")
-      throw new HttpError(409, "CONFLICT", decision.message);
+      throw new PaymentConfirmationRejected(decision.code, decision.message);
 
     if (decision.kind === "double_payment") {
       // PAY-04 retries: one provider transaction must produce one unallocated
       // money row. The evidence identity decides; a replay returns the current
       // intent and writes nothing.
-      const recorded = await recordPaymentEvidence(tx, context, current, {
-        source: confirmation.source,
-        method: confirmation.method,
-        amountIdr: decision.amountIdr,
-        providerRef: confirmation.providerRef,
-        at: confirmation.at,
-      });
+      const { recorded, evidenceId } = await recordPaymentEvidence(
+        tx,
+        context,
+        current,
+        {
+          source: confirmation.source,
+          method: confirmation.method,
+          amountIdr: decision.amountIdr,
+          providerRef: confirmation.providerRef,
+          at: confirmation.at,
+        },
+      );
       if (!recorded) return current;
       const [row] = await tx
         .update(paymentIntents)
@@ -1147,6 +1350,7 @@ async function applyConfirmation(
         tenantId: context.tenant.tenantId,
         outletId: current.outletId,
         paymentIntentId: current.id,
+        evidenceId,
         amountIdr: idr(decision.amountIdr),
         reason: "double_payment",
       });
@@ -1185,13 +1389,18 @@ async function applyConfirmation(
     // paid late): only the remainder is allocated, the rest is unallocated.
     // Evidence identity before any money write: a replay of this provider
     // transaction returns the committed state and records nothing.
-    const recorded = await recordPaymentEvidence(tx, context, current, {
-      source: confirmation.source,
-      method: confirmation.method,
-      amountIdr: confirmation.amountIdr,
-      providerRef: confirmation.providerRef,
-      at: confirmation.at,
-    });
+    const { recorded, evidenceId } = await recordPaymentEvidence(
+      tx,
+      context,
+      current,
+      {
+        source: confirmation.source,
+        method: confirmation.method,
+        amountIdr: confirmation.amountIdr,
+        providerRef: confirmation.providerRef,
+        at: confirmation.at,
+      },
+    );
     if (!recorded) return current;
     const allocatableNow = Math.min(
       current.amountIdr,
@@ -1250,6 +1459,7 @@ async function applyConfirmation(
         tenantId: context.tenant.tenantId,
         outletId: current.outletId,
         paymentIntentId: current.id,
+        evidenceId,
         amountIdr: idr(unallocatedNow),
         reason: reasonNow,
       });
@@ -1394,4 +1604,209 @@ export async function expireDueIntents(
     expired += 1;
   }
   return { expired };
+}
+
+// ------------------------------------------- gateway webhook and polling
+
+/** How long a pending intent is left to the verified webhook before the
+ * polling fallback asks the gateway (PRD PAY-02/03). */
+export const GATEWAY_POLL_GRACE_MS = 60_000;
+
+/** Time budget of one polling run, and how many gateway errors in a row end it. */
+export const GATEWAY_POLL_BUDGET_MS = 20_000;
+export const GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
+/**
+ * Applies a verified provider "expired"/"failed" outcome. It acts only while
+ * the intent is still `pending`: the conditional UPDATE re-checks the status
+ * under the row lock, so a paid (or otherwise settled) intent is never
+ * downgraded by a late or out-of-order delivery. Returns the current intent.
+ */
+export async function applyGatewayFailure(
+  context: ScopedTenantContext,
+  intentId: string,
+  outcome: "expired" | "failed",
+  now = new Date(),
+): Promise<PaymentIntent> {
+  const id = uuidSchema.parse(intentId);
+  const load = () =>
+    withTenant(db, context, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.id, id),
+          ),
+        );
+      return row ?? null;
+    });
+  const intent = await load();
+  if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+  assertOutletInScope(context.outletScope, intent.outletId);
+  if (intent.status === "pending") {
+    if (outcome === "expired")
+      await expireIntent(context, intent, now, "gateway");
+    else await failIntent(context, intent, now);
+  }
+  const current = (await load()) ?? intent;
+  return toPaymentIntent(current);
+}
+
+/**
+ * A superseded (or voided-bill) intent is `expired` in our database, but its
+ * gateway payment stays payable until its own expiry. Asks the gateway about
+ * it: a paid answer settles through the lifecycle (flagged `late_payment`), an
+ * underpayment is parked as unallocated funds, any other answer changes
+ * nothing (never re-expires, never emits events).
+ */
+async function syncExpiredIntentPayment(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  now: Date,
+): Promise<SyncResult> {
+  if (intent.status !== "expired" || intent.providerRef === null)
+    return { intent, gatewayError: false };
+  let providerStatus;
+  try {
+    providerStatus = await paymentGateway().getStatus({
+      context,
+      outletId: intent.outletId,
+      integrationId: intent.gatewayIntegrationId,
+      providerRef: intent.providerRef,
+      intentId: intent.id,
+    });
+  } catch {
+    return { intent, gatewayError: true };
+  }
+  if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
+    return { intent, gatewayError: false };
+  try {
+    return {
+      intent: await applyConfirmation(
+        context,
+        intent,
+        {
+          source: "gateway_status",
+          method: intent.method,
+          amountIdr: providerStatus.amountIdr,
+          providerRef: providerStatus.providerRef,
+          at: now.toISOString(),
+        },
+        { type: "system" },
+        now,
+      ),
+      gatewayError: false,
+    };
+  } catch (error) {
+    if (
+      error instanceof PaymentConfirmationRejected &&
+      error.decisionCode === "AMOUNT_MISMATCH"
+    ) {
+      await recordUnsettledGatewayFunds(
+        context,
+        intent,
+        {
+          provider: intent.provider,
+          providerRef: providerStatus.providerRef,
+          source: "gateway_status",
+          paidAmountIdr: providerStatus.amountIdr,
+          receivedAt: now,
+        },
+        now,
+      );
+      return { intent, gatewayError: false };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
+ * pending intents that have a provider reference and are older than the grace
+ * period, through the same path as the customer's status check. Recently
+ * expired intents whose gateway code is still payable (superseded by a newer
+ * code) are asked too. A gateway error leaves the intent untouched; the next
+ * run retries. Intents are taken least-recently-polled first and each attempt
+ * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
+ * A run stops after its time budget or three gateway errors in a row (the
+ * gateway is down).
+ */
+export async function pollPendingGatewayIntents(
+  context: ScopedTenantContext,
+  now = new Date(),
+  limit = 100,
+): Promise<{ checked: number; settled: number }> {
+  const cutoff = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
+  const pending = await withTenant(db, context, async (tx) =>
+    tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          or(
+            eq(paymentIntents.status, "pending"),
+            and(
+              eq(paymentIntents.status, "expired"),
+              gt(paymentIntents.expiresAt, cutoff),
+            ),
+          ),
+          eq(paymentIntents.provider, paymentGateway().provider),
+          isNotNull(paymentIntents.providerRef),
+          lt(paymentIntents.createdAt, cutoff),
+        ),
+      )
+      .orderBy(
+        sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
+        asc(paymentIntents.createdAt),
+      )
+      .limit(limit),
+  );
+  let checked = 0;
+  let settled = 0;
+  let consecutiveErrors = 0;
+  const startedAt = Date.now();
+  for (const row of pending) {
+    if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+    if (consecutiveErrors >= GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS) break;
+    checked += 1;
+    try {
+      // Stamp the attempt first so an erroring intent rotates to the back.
+      await withTenant(db, context, async (tx) =>
+        tx
+          .update(paymentIntents)
+          .set({ gatewayPolledAt: now })
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, row.id),
+            ),
+          ),
+      );
+      // Narrow to the intent's outlet so the gateway reads that outlet's own
+      // DOIT credentials when it has them (outlet row wins over tenant row).
+      const outletContext =
+        context.outletScope.kind === "tenant"
+          ? establishScopedTenantContext(context.tenant, {
+              kind: "outlets",
+              outletIds: [row.outletId],
+            })
+          : context;
+      const result =
+        row.status === "expired"
+          ? await syncExpiredIntentPayment(outletContext, row, now)
+          : await syncPendingIntentDetailed(outletContext, row, now);
+      consecutiveErrors = result.gatewayError ? consecutiveErrors + 1 : 0;
+      if (
+        row.status !== result.intent.status &&
+        (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+      )
+        settled += 1;
+    } catch {
+      // One intent's failure never blocks the others; the next run retries.
+    }
+  }
+  return { checked, settled };
 }
