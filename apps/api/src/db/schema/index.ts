@@ -63,6 +63,8 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// EDC agent framework (legend-apt).
+export * from "./edc";
 // HRIS SOP library, training and announcements (legend-7df1).
 export * from "./hris-sop";
 export * from "./hris-training";
