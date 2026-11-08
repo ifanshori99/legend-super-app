@@ -4,8 +4,8 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/refund-approval`, cabang `ws/refund-approval`, SHA `5b6a707`.
-Rentang diff: `git diff $(git merge-base main 5b6a707)..5b6a707` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/refund-approval`, cabang `ws/refund-approval`, SHA `09385266`.
+Rentang diff: `git diff $(git merge-base main 09385266)..09385266` (abaikan drizzle `meta/*.json`).
 
 ## Berkas berisiko
 - `apps/api/src/services/payment-refund.service.ts`
