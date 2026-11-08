@@ -287,9 +287,10 @@ Copy `deploy/single-vm/compose.env.example` outside the repository and set its
 values and absolute paths. Create separate private env files for migrator, API,
 web and worker; give each process only the credentials it needs. The runtime
 example lists settings, not a complete production secret configuration. Provision
-restricted app and worker database roles after migration using
-`scripts/provision-app-role.mjs`; configure the worker's trusted transport and
-notification adapters before starting it.
+restricted app and worker database roles after migration with
+`deploy/single-vm/provision-roles.sh` (see "First boot: restricted database
+roles" below); configure the worker's trusted transport and notification
+adapters before starting it.
 
 #### Worker transport and notification settings (legend-18qw)
 
@@ -312,9 +313,11 @@ stays held until the missing event arrives. Watch for that log line: it means a
 producer bug, and nothing skips the gap automatically.
 
 Run `deploy/single-vm/deploy.sh --env-file /absolute/path/compose.env --dry-run`
-to validate without starting services. Without `--dry-run`, it starts PostgreSQL,
-runs the migration job once, then starts the services. Run only after setting up
-backup configuration, provisioning roles and checking the rollout plan. Image
+to validate without starting services (it also runs the role wrapper's
+`--dry-run`). Without `--dry-run`, it starts PostgreSQL, runs the migration job
+once, audits the restricted database roles (`provision-roles.sh --audit`), and
+starts the services only if the audit passes. Run only after setting up backup
+configuration, provisioning roles and checking the rollout plan. Image
 builds and this script do not purchase or provision infrastructure.
 
 ### Deployment security checklist
@@ -348,12 +351,201 @@ On a new VM, prepare the private pgBackRest configuration and transport module
 before starting application services. Start PostgreSQL and run the migration job
 separately using the same `--env-file` and Compose file as the deploy script.
 Then initialize and check the pgBackRest stanza as the container's `postgres`
-user, provision the restricted application and queue roles against the migrated
-database, and confirm a successful base backup to both repositories. The role
-provisioner exports functions; it is not a standalone CLI. Run it from a trusted
-operator environment with connectivity to the private database and dependencies
-installed, and never put the administrator credentials into application env
-files. Provisioning is a first-boot prerequisite; the deploy script does not
-perform it. See `deploy/backup/README.md` for the supplied systemd timer example
-and restore-drill procedure. Once those prerequisites and the transport adapter
-are ready, use the deploy script for subsequent releases.
+user, provision the restricted application and queue roles (next section), and
+confirm a successful base backup to both repositories. Provisioning is a
+first-boot prerequisite; the deploy script does not perform it. See
+`deploy/backup/README.md` for the supplied systemd timer example and
+restore-drill procedure. Once those prerequisites and the transport adapter are
+ready, use the deploy script for subsequent releases.
+
+### First boot: restricted database roles (legend-zoqc)
+
+The API and worker never receive the migration (administrator) credentials.
+They log in with two restricted roles that a one-shot job creates after the
+migrations (PRD §3 F3, TEN-02):
+
+| Login                     | Env key (file)                                                 | What it can do                                                                                                                                             |
+| ------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects. |
+| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                    |
+
+1. Generate each login name and password on the VM, and write them into the
+   private env files; never commit or paste them anywhere else:
+
+   ```sh
+   echo "legend_runtime_$(openssl rand -hex 8)"   # application login name
+   echo "legend_worker_$(openssl rand -hex 8)"    # queue login name
+   openssl rand -hex 24                            # a password (one per login)
+   ```
+
+   `api.env`: `APP_DATABASE_URL` and `DATABASE_URL` set to
+   `postgresql://<app login>:<app password>@postgres:5432/legend`.
+   `worker.env`: the same two lines plus `WORKER_DATABASE_URL` with the queue
+   login. `migrator.env` alone holds `MIGRATION_DATABASE_URL`.
+
+2. Run the job from the private network, on the VM:
+
+   ```sh
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env --dry-run
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env
+   ```
+
+   The script first refuses to continue if `api.env`, `web.env` or `worker.env`
+   contains `MIGRATION_DATABASE_URL`, if `web.env` holds any database URL, if
+   `api.env` and `worker.env` disagree on the application login, if a URL is
+   not exactly `postgresql://<login>:<48 hex>@host:port/database` (no query
+   string), or if the restricted URLs and `MIGRATION_DATABASE_URL` name
+   different databases. It also refuses when the shell exports
+   `API_ENV_FILE`, `WEB_ENV_FILE`, `WORKER_ENV_FILE` or `MIGRATOR_ENV_FILE`
+   with a value other than the one in `compose.env` (Compose would prefer the
+   shell's), and pins the checked paths for every Compose call. Any env file
+   with a non-ASCII character before a key on some line (a byte-order mark or
+   a no-break space, which Compose silently skips, so a hidden
+   `MIGRATION_DATABASE_URL` would reach the service) is refused with only the
+   line number shown (lines inside a quoted value that spans lines are not
+   keys and may hold any text); save such files as plain text. Compose output
+   is hidden during validation because Compose echoes an unparsable env line,
+   secrets included.
+
+   Those checks read line starts, and Compose reads more: text after a closing
+   quote is a new `KEY=value` (`A="x" MIGRATION_DATABASE_URL=...`), and a
+   quoted value can span lines and swallow a later line. So, except with
+   `--dry-run`, the script also checks the configuration Compose will really
+   apply: `docker compose config --format json` is piped straight into
+   `deploy/single-vm/check-compose-env.mjs`, run with `node` from the
+   migrator image in a container with no network and no env file. It refuses
+   unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
+   (or `_FILE`), `web` receives no database URL, and the URLs `api` and
+   `worker` receive equal the ones just validated. Its messages name only
+   services and keys, never values. Compose fills `${VAR}` in env files from
+   the shell and `compose.env`, so the configuration is read with the
+   environment `deploy.sh` uses to start the services (which never exports
+   the URLs); the two validated URLs go to the checker only. `MIGRATOR_IMAGE` must be a plain image reference, and if the
+   checker cannot start (image not pulled, no `node`) the script says so and
+   stops. `--dry-run` skips this check (it needs the migrator image);
+   `deploy.sh` always runs it through `--audit` before any service starts.
+   It then starts
+   PostgreSQL, applies migrations, and runs the `provision-roles` service (the
+   migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
+   two restricted URLs taken from the services' own env files. The URLs reach
+   the container through the environment, never a command line.
+
+3. Expect `Restricted database roles are ready.` Only role names are printed.
+   Then start the services with `deploy.sh`, which re-checks the roles after
+   every migration with `provision-roles.sh --env-file ... --audit`: the same
+   checks, changing nothing, plus a sign-in with each URL. If the logins were
+   never provisioned, a password no longer matches the env file, or a
+   migration widened their rights, the audit fails and no service starts.
+
+The job is idempotent and doubles as an audit: run it again at any time. Each
+run, inside one locked transaction, creates a missing login or re-keys an
+existing one to the password in the env file (so changing the password there
+and re-running is how to rotate it; restart the API and worker afterwards). It
+also resets drift that would only break or bend a login (`NOINHERIT`, an
+expiry, a connection limit, role-level settings such as `search_path`, a
+`legend_app` membership without `INHERIT` or with `ADMIN OPTION`; a superuser
+migration login revokes such a grant whoever made it, a non-superuser only its
+own, and the job otherwise refuses and names the grantor). Settings a
+non-superuser owner cannot reset (for example `session_replication_role`) make
+the job fail until a superuser runs `ALTER ROLE ... RESET ALL`. It then
+fails, changing nothing, if `legend_app` can log in or has elevated attributes,
+or if a login:
+
+- is a superuser or has `BYPASSRLS`, `CREATEDB`, `CREATEROLE` or `REPLICATION`,
+  directly or inherited, or inherits any predefined `pg_*` role;
+- owns any table, function, type, schema, operator, collation or other
+  object outside its own schema (`pgboss`);
+- may run a built-in function that `PUBLIC` cannot (such as `pg_read_file`),
+  or holds rights on a system catalog beyond `PUBLIC`'s (such as reading
+  `pg_authid`);
+- can reach, by any path including a grant to `PUBLIC`, an object on the fixed
+  sensitive list: `pg_authid`, `pg_shadow`, `pg_user_mapping`, `pg_statistic`,
+  `pg_statistic_ext_data`, `pg_largeobject`, `pg_subscription.subconninfo`,
+  the file and server functions (`pg_read_file`, `pg_read_binary_file`,
+  `pg_ls_dir` and the other `pg_ls_*dir`, `pg_stat_file`, `lo_import`,
+  `lo_export`, `pg_reload_conf`, `pg_rotate_logfile`, `pg_promote`) and any
+  `dblink*` function. This is an explicit denylist, not a comparison with
+  PostgreSQL's default catalog privileges per major version: such a baseline
+  would have to be copied and kept for every release, while the denylist is
+  short, reviewable and version-independent. Other catalog grants to `PUBLIC`
+  are not detected;
+- can create objects in the database or any schema outside its own;
+- holds, directly, through a group or through `PUBLIC`, `SET` on a parameter
+  that is not a plain user setting (such as `session_replication_role`, which
+  skips triggers and foreign keys) or on a parameter no loaded module defines
+  yet, or `ALTER SYSTEM` on any parameter. As a superuser, remove it with
+  `REVOKE SET ON PARAMETER <parameter> FROM <role|PUBLIC>` (or
+  `REVOKE ALTER SYSTEM ON PARAMETER ...`) and re-run;
+- belongs, directly or through `legend_app`, to any role other than
+  `legend_app` (with or without `ADMIN OPTION`; the queue login: to none);
+- holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
+  beyond `SELECT` on `app.active_tenant_registry` (queue), including grants on
+  single columns. `TRUNCATE` ignores RLS and is always refused, as are
+  `REFERENCES`, `TRIGGER` and, on PostgreSQL 17, `MAINTAIN`. Extension views
+  readable by everyone (such as `pg_stat_statements`) are not counted;
+  application tables granted to `PUBLIC` are;
+- holds sequence rights beyond `USAGE/SELECT` (application) or any sequence
+  right outside `pgboss` (queue). `UPDATE` allows `setval()`, which can push a
+  sequence to its end and break every insert that uses it;
+- would receive such rights on tables or sequences created later through
+  default privileges (`ALTER DEFAULT PRIVILEGES`), any default table or
+  sequence right granted to `PUBLIC`, or a default `CREATE` on schemas. Remove
+  them with `ALTER DEFAULT PRIVILEGES ... REVOKE` and re-run.
+
+The same run (and every audit) also checks tenant isolation itself (TEN-02):
+every table with a `tenant_id` column (in `pgboss` only if the application can
+reach it, including through a grant on a single column) must have row-level security enabled and forced, and a restrictive
+policy for all commands and roles whose `USING` and `WITH CHECK` are exactly
+`tenant_id = app.require_tenant_id()`, as `app.enforce_tenant_rls` creates it.
+Five tables are documented exceptions, the same list as
+`apps/api/src/db/rls.test.ts`: `tenant_domains` and `payment_link_tokens`
+(must keep row-level security enabled; reads are open, writes are
+tenant-checked: every permissive `INSERT`, `UPDATE`, `DELETE` or `ALL` policy
+the application login can use must have `USING` and `WITH CHECK` exactly
+`tenant_id = app.require_tenant_id()`, as the migrations create them), and `session`, `login_challenges` and `wa_inbound_messages`
+(read before a tenant is known; scoped by the services). A table that fails
+the check stops the job. As the migration owner, fix "disabled" with
+`ALTER TABLE <table> ENABLE ROW LEVEL SECURITY` and "not forced" with
+`ALTER TABLE <table> FORCE ROW LEVEL SECURITY`. For a missing or altered policy,
+drop the table's `tenant_access` and `tenant_isolation` policies, then run
+`SELECT app.enforce_tenant_rls('<table>'::regclass)` (it creates both and fails
+if either exists). Never run it on `tenant_domains` or `payment_link_tokens`:
+they only need row-level security enabled. For a write policy on either
+reported as "not limited to the tenant", drop it (`DROP POLICY <policy> ON
+<table>`), or, if the migrations created it (`tenant_domain_*`,
+`payment_link_tokens_*`), restore its expressions with `ALTER POLICY`. The job compares the policy text
+with `search_path` set to `pg_catalog`, so a custom `search_path` does not
+matter.
+
+After committing, the job signs in with each URL exactly as given and checks
+that PostgreSQL reports that login (not a superuser) on the same database. URLs
+may carry only TLS and timeout parameters after `?` (`sslmode`, `sslrootcert`,
+`sslcert`, `sslkey`, `ssl`, `channel_binding`, `application_name`,
+`connect_timeout`); `user`, `password`, `host`, `options` and the like would
+override the login and are refused. PostgreSQL 16 or newer is required.
+
+Changing the queue login name: pg-boss keeps its jobs in tables the old login
+owns, so the new name must be the same role, renamed. With a new name in
+`worker.env` the job stops, creating nothing, with "The pg-boss schema is owned
+by <old>, not <new>". As the migration owner run
+`ALTER ROLE "<old login>" RENAME TO "<new login>"` (the role keeps its OID, so
+it keeps the schema and every table in it), then re-run the job: it re-keys the
+password from `worker.env`. Do not create a separate login and move only the
+schema: the queue tables would stay with the old role and the worker could not
+read them.
+
+An existing role with unsafe attributes is never adopted; fix or drop it by
+hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
+plaintext never reaches the server or its logs. The migration login must be a
+superuser (the Compose `POSTGRES_USER`) or, on managed PostgreSQL, a
+`CREATEROLE` + `BYPASSRLS` owner holding `ADMIN` on `legend_app`; existing data
+migrations run under forced RLS. With a non-superuser owner the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
+hand it the `pgboss` schema.
+
+Outside Compose (another host on the private network, with the API bundle or
+the repository), run `node dist/provision-roles.js` or
+`pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
+`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set. Each
+may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
+job does not read `.env` files. Local development keeps using
+`pnpm dev:prepare`, which provisions its own random login through the same code.

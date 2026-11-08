@@ -38,6 +38,7 @@ import {
   idempotencyKeySchema,
 } from "../core/index.ts";
 import type { Idr } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import {
   discountLineSchema,
@@ -67,6 +68,15 @@ const positiveIdr = idrSchema.refine(
 );
 /** Approval records are WS-01 `approval_requests` rows (§3.7 Matriks Approval). */
 const approvalRequestIdSchema = uuidSchema;
+/**
+ * legend-0gy1: the `pos_overrides` row (ULID) a void / discount / refund
+ * consumed. It is the proof of approval; `approvalRequestId` is only the WS-01
+ * chain id of a phone approval and is null for a supervisor PIN.
+ */
+const overrideIdSchema = posOverrideIdSchema;
+// Rows written before legend-0gy1 carry only the client-sent approval id and
+// no override id, so the stored shapes accept either one (new rows always set
+// the override id).
 
 // ---- Ids ------------------------------------------------------------------
 
@@ -254,6 +264,7 @@ export const posOrderShape = {
   voidReasonNote: z.string().min(4).max(500).nullable(),
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+  voidOverrideId: overrideIdSchema.nullable(),
 };
 
 export const posOrderBaseSchema = z.strictObject(posOrderShape);
@@ -324,7 +335,7 @@ export const posOrderSchema = posOrderBaseSchema.superRefine((order, ctx) => {
       order.voidedAt === null ||
       order.voidReason === null ||
       order.voidApprovedBy === null ||
-      order.voidApprovalRequestId === null
+      (order.voidOverrideId === null && order.voidApprovalRequestId === null)
     )
       ctx.addIssue({
         code: "custom",
@@ -342,7 +353,8 @@ export const posOrderSchema = posOrderBaseSchema.superRefine((order, ctx) => {
     order.voidedAt !== null ||
     order.voidReason !== null ||
     order.voidApprovedBy !== null ||
-    order.voidApprovalRequestId !== null
+    order.voidApprovalRequestId !== null ||
+    order.voidOverrideId !== null
   )
     ctx.addIssue({
       code: "custom",
@@ -395,6 +407,7 @@ export const posOrderItemShape = {
   voidedBy: userIdSchema.nullable(),
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
+  voidOverrideId: overrideIdSchema.nullable(),
   /** §6 `order_items.cost_snapshot_idr`: HPP at sale time, server-computed. */
   costSnapshotIdr: nonnegativeIdr,
   createdAt: isoDateTimeSchema,
@@ -436,7 +449,7 @@ export const posOrderItemSchema = z
         item.voidReason === null ||
         item.voidedBy === null ||
         item.voidApprovedBy === null ||
-        item.voidApprovalRequestId === null
+        (item.voidOverrideId === null && item.voidApprovalRequestId === null)
       )
         ctx.addIssue({
           code: "custom",
@@ -448,7 +461,8 @@ export const posOrderItemSchema = z
       item.voidReason !== null ||
       item.voidedBy !== null ||
       item.voidApprovedBy !== null ||
-      item.voidApprovalRequestId !== null
+      item.voidApprovalRequestId !== null ||
+      item.voidOverrideId !== null
     )
       ctx.addIssue({
         code: "custom",
@@ -635,6 +649,7 @@ export const posDiscountSchema = z
     appliedBy: userIdSchema,
     approvedBy: userIdSchema.nullable(),
     approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     createdAt: isoDateTimeSchema,
   })
   .superRefine((discount, ctx) => {
@@ -695,12 +710,17 @@ export const posVoidSchema = z
     reasonNote: z.string().min(4).max(500),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
-    approvalRequestId: approvalRequestIdSchema,
+    approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     voidedAt: isoDateTimeSchema,
   })
   .refine((row) => row.requestedBy !== row.approvedBy, {
     path: ["approvedBy"],
     message: "The approver is a different actor from the requester (§3.7)",
+  })
+  .refine((row) => row.overrideId !== null || row.approvalRequestId !== null, {
+    path: ["overrideId"],
+    message: "A void records the approval it consumed (POS-02)",
   });
 export type PosVoid = z.infer<typeof posVoidSchema>;
 
@@ -731,7 +751,8 @@ export const posRefundSchema = z
     lines: z.array(posRefundLineSchema).min(1),
     requestedBy: userIdSchema,
     approvedBy: userIdSchema,
-    approvalRequestId: approvalRequestIdSchema,
+    approvalRequestId: approvalRequestIdSchema.nullable(),
+    overrideId: overrideIdSchema.nullable(),
     refundedAt: isoDateTimeSchema,
   })
   .superRefine((refund, ctx) => {
@@ -750,6 +771,12 @@ export const posRefundSchema = z
         code: "custom",
         path: ["approvedBy"],
         message: "The approver is a different actor from the requester (§3.7)",
+      });
+    if (refund.overrideId === null && refund.approvalRequestId === null)
+      ctx.addIssue({
+        code: "custom",
+        path: ["overrideId"],
+        message: "A refund records the approval it consumed (POS-02)",
       });
   });
 export type PosRefund = z.infer<typeof posRefundSchema>;

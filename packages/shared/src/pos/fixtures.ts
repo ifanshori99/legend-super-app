@@ -64,6 +64,14 @@ const approval = {
   shiftClose: id(904),
 };
 
+/** legend-0gy1: the `pos_overrides` rows the approvals above consumed. */
+const override = {
+  itemVoid: ulidId(900),
+  discount: ulidId(901),
+  orderVoid: ulidId(902),
+  finalVoid: ulidId(903),
+};
+
 const orderIds = {
   cashDineIn: ulidId(1),
   qrisTakeaway: ulidId(2),
@@ -122,6 +130,7 @@ function fullOrder(
     voidReasonNote: null,
     voidApprovedBy: null,
     voidApprovalRequestId: null,
+    voidOverrideId: null,
     ...input,
   } as Order;
 }
@@ -149,6 +158,7 @@ function fullItem(
     voidedBy: null,
     voidApprovedBy: null,
     voidApprovalRequestId: null,
+    voidOverrideId: null,
     costSnapshotIdr: 0,
     createdAt: "2026-11-01T03:05:00.000Z",
     ...input,
@@ -242,6 +252,7 @@ const orders: Order[] = [
     voidReasonNote: "Tamu meninggalkan meja sebelum pesanan dibuat",
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   // F. Duplicate cash sale, voided after settlement (POS-04 linked void).
   fullOrder({
@@ -362,6 +373,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.itemVoid,
+    voidOverrideId: override.itemVoid,
   }),
   fullItem({
     id: itemIds.mieGoreng,
@@ -395,6 +407,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   fullItem({
     id: itemIds.thaiTea,
@@ -410,6 +423,7 @@ const orderItems: OrderItem[] = [
     voidedBy: staff.cashierEvening,
     voidApprovedBy: staff.supervisor,
     voidApprovalRequestId: approval.orderVoid,
+    voidOverrideId: override.orderVoid,
   }),
   fullItem({
     id: itemIds.ayamSambalMatah,
@@ -534,6 +548,7 @@ const discounts: Discount[] = [
     appliedBy: staff.cashierEvening,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.discount,
+    overrideId: override.discount,
     createdAt: "2026-11-01T11:07:00.000Z",
   },
 ];
@@ -943,6 +958,7 @@ const voids: FixtureInput["voids"] = [
     requestedBy: staff.cashierMorning,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.finalVoid,
+    overrideId: override.finalVoid,
     voidedAt: "2026-11-01T09:10:00.000Z",
   },
 ];
@@ -959,6 +975,7 @@ const refunds: FixtureInput["refunds"] = [
     requestedBy: staff.cashierMorning,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.orderVoid,
+    overrideId: override.orderVoid,
     refundedAt: "2026-11-01T05:00:00.000Z",
   },
 ];

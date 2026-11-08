@@ -9,7 +9,9 @@
 // belongs to a QR order goes to qr-order-consumers.ts inside the consumption
 // transaction. Any other `payment.paid` goes to the POS order consumer
 // (`handlePosPaymentPaid`, bead legend-kk7), which ignores bills it does not
-// own; expiry/failure of POS bills is not routed yet (WS-04 owns that rule).
+// own. `payment.expired` / `payment.failed` of a link that belongs to a POS
+// tender go to `handlePosPaymentClosed` (bead legend-b0au) inside the
+// consumption transaction: the still-authorized tender becomes `failed`.
 // Events of another tenant are refused before any query (TEN-01).
 
 import { and, eq } from "drizzle-orm";
@@ -20,7 +22,10 @@ import { paymentIntents } from "../db/schema/index.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import type { Tx } from "./menu-internals.ts";
-import { handlePosPaymentPaid } from "./pos-order-payment.ts";
+import {
+  handlePosPaymentClosed,
+  handlePosPaymentPaid,
+} from "./pos-order-payment.ts";
 import {
   handleQrOrderPaymentClosed,
   handleQrOrderPaymentPaid,
@@ -100,7 +105,10 @@ async function dispatchInTx(
             : await handleQrOrderPaymentClosed(context, event, tx, now),
       };
   }
-  return event.name === "payment.paid" ? "pos" : { route: "ignored" };
+  if (event.name === "payment.paid") return "pos";
+  return (await handlePosPaymentClosed(context, event, tx, now))
+    ? { route: "pos" }
+    : { route: "ignored" };
 }
 
 /**
