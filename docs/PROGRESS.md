@@ -93,5 +93,5 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 
 - Sudah: konsumen `stock.moved` → jurnal (opname `stock.adjusted#count`, waste `stock.adjusted#waste`, HPP `stock.deducted`) di `apps/api/src/services/inventory-gl-consumer.ts`, dipasang di worker cloud. Migration 0075 (`inventory_gl_postings`, `inventory_gl_blocked`, indeks sumber `stock_ledger`) dan 0076 (RLS). Periode tutup / pemetaan akun hilang: savepoint, sumber diparkir, sweep worker coba ulang dengan jeda 10 menit; cloud-sync tidak ikut tertahan.
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
-- Belum: `src/test/inventory-gl.test.ts` belum lulus terverifikasi (DB test mati: Colima 'unknown userid 501'). Run terakhir sebelum perbaikan test: 15 lulus, 3 gagal di test sweep (sudah dibetulkan di test, belum dijalankan ulang).
+- Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.

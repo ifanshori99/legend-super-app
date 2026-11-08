@@ -379,7 +379,7 @@ function expectNoNegativeAmounts(lines: Line[]) {
 function sweep(n: number) {
   return retryBlockedInventoryGl(
     context(),
-    new Date(Date.now() + n * (RETRY_AFTER_MS + 1000)),
+    new Date(NOW.getTime() + n * (RETRY_AFTER_MS + 1000)),
   );
 }
 
@@ -948,7 +948,7 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
     const attempts = blocked[0]!.attempts;
 
     // A sweep right now skips the fresh block: nothing is counted.
-    await retryBlockedInventoryGl(context(), new Date());
+    await retryBlockedInventoryGl(context(), NOW);
     expect((await blockedOf("order", orderId))[0]!.attempts).toBe(attempts);
 
     // Still closed after the retry window: the sweep keeps it blocked and
@@ -1001,7 +1001,7 @@ describe("§3.19 a posting that cannot happen is blocked, not lost (ACC-02)", ()
 
     await mapRole(world.entity, "inventory", world.accounts.inventory);
     // Too early: the fresh block is not retried yet, even with the cause gone.
-    await retryBlockedInventoryGl(context(), new Date());
+    await retryBlockedInventoryGl(context(), NOW);
     expect(await journalCount(world)).toBe(0);
     expect(await blockedOf("order", orderId)).toHaveLength(1);
     await sweep(1);
