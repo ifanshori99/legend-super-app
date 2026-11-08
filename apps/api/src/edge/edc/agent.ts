@@ -29,7 +29,17 @@
 // No domain events here: whether approval or settlement marks a bill paid
 // belongs to the POS payment flow (legend-m0k) and settlement (legend-cs7).
 import { createHash, randomInt, randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -56,6 +66,7 @@ import {
   type EdcProvider,
   type EdcProviderCapabilities,
   type EdcTransaction,
+  type EdcTransactionEventName,
   type EdcTransactionRef,
   type EdcTransactionStatus,
 } from "@starter/shared/edc";
@@ -67,10 +78,16 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
+import { emitEdcTransactionEvent } from "./events.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
 
 export type Database = NodePgDatabase<typeof schema>;
-type Hold = <R>(call: () => Promise<R>, signal: AbortSignal) => Promise<R>;
+type Hold = <R>(
+  call: () => Promise<R>,
+  signal: AbortSignal,
+  /** Row whose exchange this is: `holding` has it until the call settles. */
+  rowId?: string,
+) => Promise<R>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type EdcRow = typeof edcTransactions.$inferSelect;
 type TerminalRow = typeof paymentEdcTerminals.$inferSelect;
@@ -87,6 +104,10 @@ export type EdcAgentDeps = {
   /** Extra wait, on top of `saleTimeoutMs`, before an inquiry `not_found`
    * counts as "the terminal never got the sale". Default 30s. */
   notFoundGraceMs?: number;
+  /** An inquiry `not_found` is trusted only while the sale is at most this
+   * old: `by_trace` sees the current batch only, so after settlement it
+   * proves nothing. Older: `unknown` + `needs_reconciliation`. Default 15 min. */
+  notFoundTrustWindowMs?: number;
   now?: () => Date;
   newTrace?: () => string;
 };
@@ -128,11 +149,14 @@ const PERMISSION = "pos.payment.accept" as const;
 const TRACE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const OPEN_STATUSES = ["pending", "unknown"] as const;
 const MAX_ATTEMPTS = 3;
+const DEFAULT_NOT_FOUND_TRUST_WINDOW_MS = 15 * 60_000;
 
 const MESSAGE_UNKNOWN = "Jawaban terminal tidak diterima. Cek status terminal.";
 const MESSAGE_NOT_FOUND = "Terminal tidak menerima transaksi ini.";
 const MESSAGE_NOT_FOUND_UNCONFIRMED =
   "Terminal belum menemukan transaksi ini, tetapi belum pasti. Cek status terminal.";
+const MESSAGE_NOT_FOUND_STALE =
+  "Terminal tidak lagi dapat memastikan transaksi ini. Rekonsiliasi manual.";
 const MESSAGE_TRACE_MISMATCH =
   "Jawaban terminal bukan untuk transaksi ini. Cek status terminal.";
 const MESSAGE_APPROVED_TWICE = "approved twice: void + reconcile";
@@ -225,6 +249,8 @@ function toEcrTerminal(terminal: TerminalRow, bank: EdcBank): EcrTerminal {
 /** What to write after a terminal answer. No `status`: leave it as is. */
 type Patch = {
   status?: EdcTransactionStatus;
+  /** Set when only a human can settle the row (stale evidence). */
+  needsReconciliation?: true;
   details?: Partial<
     Pick<
       EdcRow,
@@ -259,17 +285,24 @@ type AnswerContext = {
   readonly nowMs: number;
   /** Inquiry `not_found` is trusted once the sale is at least this old. */
   readonly notFoundAfterMs: number;
+  /** Inquiry `not_found` is not trusted once the sale is older than this. */
+  readonly notFoundTrustWindowMs: number;
+  /** Inquiry answers must echo our trace; a missing echo settles nothing. */
+  readonly strictTrace: boolean;
 };
 
 /** Terminal answer -> ledger patch. Only an answer that provably belongs to
  * this exchange and this amount is final; anything else is `unknown` for a
  * human to reconcile (EDC-01, EDC-03):
  * - the amount must be reported and equal the request;
- * - the trace echo must equal ours; a missing echo is accepted only from a
- *   provider that can inquire by trace (a `last_only` terminal may answer for
+ * - the trace echo must equal ours; a missing echo is never accepted from an
+ *   inquiry (it may answer for another transaction), and from a sale or cancel
+ *   by any provider except a `last_only` one (its terminal may answer for
  *   another transaction);
  * - `not_found` means `failed` only when the sale was never dispatched, or a
- *   by-trace provider says so after the sale is too old to be in transit. */
+ *   by-trace provider says so after the sale is too old to be in transit and
+ *   still young enough for the batch to hold it; older than that it is
+ *   `unknown` for a human (`needsReconciliation`). */
 function patchFromAnswer(
   row: EdcRow,
   result: EcrResult | EcrInquiryResult,
@@ -278,10 +311,18 @@ function patchFromAnswer(
   if (result.outcome === "in_progress") return {};
   if (result.outcome === "not_found") {
     const dispatchedAt = row.dispatchedAt;
+    const ageMs =
+      dispatchedAt === null ? 0 : answerCtx.nowMs - dispatchedAt.getTime();
+    if (dispatchedAt !== null && ageMs > answerCtx.notFoundTrustWindowMs)
+      return {
+        status: "unknown",
+        needsReconciliation: true,
+        details: { message: MESSAGE_NOT_FOUND_STALE },
+      };
     const trusted =
       dispatchedAt === null ||
       (answerCtx.capabilities.inquiry === "by_trace" &&
-        answerCtx.nowMs - dispatchedAt.getTime() >= answerCtx.notFoundAfterMs);
+        ageMs >= answerCtx.notFoundAfterMs);
     return trusted
       ? { status: "failed", details: { message: MESSAGE_NOT_FOUND } }
       : {
@@ -291,13 +332,27 @@ function patchFromAnswer(
   }
   const traceOk =
     result.trace === row.trace ||
-    (result.trace === null && answerCtx.capabilities.inquiry !== "last_only");
+    (result.trace === null &&
+      !answerCtx.strictTrace &&
+      answerCtx.capabilities.inquiry !== "last_only");
   if (!traceOk) {
     logger.warn(
       { edcTransactionId: row.id, trace: row.trace },
       "EDC terminal answer does not echo the request trace",
     );
-    return unknownEvidencePatch(result, MESSAGE_TRACE_MISMATCH);
+    // An inquiry answers by asking: a wrong or missing echo means another
+    // transaction's answer, so nothing of it is recorded on this row. A sale
+    // or cancel reply may really be the charge: keep it as evidence and flag
+    // the row for a human.
+    if (answerCtx.strictTrace)
+      return {
+        status: "unknown",
+        details: { message: MESSAGE_TRACE_MISMATCH },
+      };
+    return {
+      ...unknownEvidencePatch(result, MESSAGE_TRACE_MISMATCH),
+      needsReconciliation: true,
+    };
   }
   switch (result.outcome) {
     case "approved":
@@ -335,6 +390,25 @@ function unknownEvidencePatch(
       message,
     },
   };
+}
+
+/** Outbox event for a row that just reached `row.status` (EDC-05). `pending`
+ * has none here: `created` is emitted by the write-ahead insert. */
+function eventNameFor(row: EdcRow): EdcTransactionEventName | null {
+  switch (row.status) {
+    case "approved":
+      return "edc_transaction.approved";
+    case "declined":
+      return "edc_transaction.declined";
+    case "failed":
+      return "edc_transaction.failed";
+    case "cancelled":
+      return "edc_transaction.cancelled";
+    case "unknown":
+      return "edc_transaction.flagged";
+    default:
+      return null;
+  }
 }
 
 function unknownPatch(): Patch {
@@ -388,6 +462,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const inquiryTimeoutMs = deps.inquiryTimeoutMs ?? 15_000;
   const cancelTimeoutMs = deps.cancelTimeoutMs ?? 15_000;
   const notFoundGraceMs = deps.notFoundGraceMs ?? 30_000;
+  const notFoundTrustWindowMs =
+    deps.notFoundTrustWindowMs ?? DEFAULT_NOT_FOUND_TRUST_WINDOW_MS;
   const now = deps.now ?? (() => new Date());
   const newTrace = deps.newTrace ?? defaultTrace;
 
@@ -399,6 +475,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   /** Terminals whose adapter call outlived the agent's timeout and has not
    * settled yet: the terminal is busy with an exchange we gave up on. */
   const stuck = new Set<string>();
+  /** Rows whose own adapter call is running under the terminal lock. Cleared
+   * when that call settles, not when the agent stops waiting for it. */
+  const holding = new Set<string>();
+  /** Bypass cancels in progress by row: a second cancel awaits the first
+   * instead of putting another cancel frame on the wire. */
+  const cancelling = new Map<string, Promise<EdcTransaction>>();
+  /** Adapter cancel calls of bypass cancels still on the wire (settled or
+   * not, whatever the agent waited for), by row. The terminal lock of the
+   * sale they interrupt is not freed before they settle. */
+  const bypassWire = new Map<string, Promise<void>>();
   /** Outlets this instance owns (advisory lock), by tenant+outlet. */
   const owned = new Map<
     string,
@@ -514,14 +600,31 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       if (tails.get(terminalRowId) === tail) tails.delete(terminalRowId);
     };
     let held = false;
-    function hold<R>(call: () => Promise<R>, signal: AbortSignal): Promise<R> {
+    function hold<R>(
+      call: () => Promise<R>,
+      signal: AbortSignal,
+      rowId?: string,
+    ): Promise<R> {
       held = true;
+      if (rowId) holding.add(rowId);
       const work = new Promise<R>((resolve) => {
         resolve(call());
       });
       let settled = false;
       const onSettle = () => {
         settled = true;
+        if (rowId) holding.delete(rowId);
+        // A bypass cancel of this row may still be on the wire: the terminal
+        // stays `stuck` and locked until that cancel settles too.
+        const bypass = rowId ? bypassWire.get(rowId) : undefined;
+        if (bypass) {
+          stuck.add(terminalRowId);
+          void bypass.then(() => {
+            stuck.delete(terminalRowId);
+            free();
+          });
+          return;
+        }
         stuck.delete(terminalRowId);
         free();
       };
@@ -657,6 +760,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           }
         : {}),
       ...(patch.details ?? {}),
+      ...(patch.needsReconciliation ? { needsReconciliation: true } : {}),
       ...(options.inquiry
         ? {
             inquiryCount: sql`${edcTransactions.inquiryCount} + 1`,
@@ -666,6 +770,22 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     };
     const write = (values: typeof set & { needsReconciliation?: boolean }) =>
       withTenant(db, ctx, async (tx) => {
+        // Lock the row first: the event is emitted only for a real change,
+        // judged against what is stored, not against the caller's snapshot.
+        const [before] = await tx
+          .select({
+            status: edcTransactions.status,
+            needsReconciliation: edcTransactions.needsReconciliation,
+          })
+          .from(edcTransactions)
+          .where(
+            and(
+              eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+              eq(edcTransactions.id, row.id),
+            ),
+          )
+          .for("update")
+          .limit(1);
         const [updated] = await tx
           .update(edcTransactions)
           .set(values)
@@ -680,7 +800,19 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             ),
           )
           .returning();
-        if (updated) return updated;
+        if (updated) {
+          const name = eventNameFor(updated);
+          const changed =
+            before?.status !== updated.status ||
+            (updated.needsReconciliation && !before?.needsReconciliation);
+          if (name && changed)
+            await emitEdcTransactionEvent(tx, ctx, {
+              name,
+              row: updated,
+              now: at,
+            });
+          return updated;
+        }
         const [current] = await tx
           .select()
           .from(edcTransactions)
@@ -742,9 +874,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               eq(edcTransactions.tenantId, ctx.tenant.tenantId),
               eq(edcTransactions.id, stored.id),
               eq(edcTransactions.status, lateStatus),
+              eq(edcTransactions.needsReconciliation, false),
             ),
           )
           .returning();
+        if (updated)
+          await emitEdcTransactionEvent(tx, ctx, {
+            name: "edc_transaction.flagged",
+            row: updated,
+            now: at,
+          });
         return updated;
       });
       return flagged ?? stored;
@@ -760,11 +899,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     return stored;
   }
 
-  function answerContext(provider: EdcProvider): AnswerContext {
+  function answerContext(
+    provider: EdcProvider,
+    options: { strictTrace?: boolean } = {},
+  ): AnswerContext {
     return {
       capabilities: provider.capabilities,
       nowMs: now().getTime(),
       notFoundAfterMs: saleTimeoutMs + notFoundGraceMs,
+      notFoundTrustWindowMs,
+      strictTrace: options.strictTrace ?? false,
     };
   }
 
@@ -819,7 +963,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             signal,
           ),
         );
-        patch = patchFromAnswer(current, answer, answerContext(provider));
+        patch = patchFromAnswer(
+          current,
+          answer,
+          answerContext(provider, { strictTrace: true }),
+        );
       } catch (error) {
         logger.warn(
           {
@@ -846,6 +994,10 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     return withTerminalLock(terminal.id, async (hold) => {
       // Dispatch claim: only a row still `pending` and never sent goes out. A
       // cancel that won the race while this sale was queued means no sale.
+      // The row joins `holding` only when `hold` invokes the sale call, never
+      // earlier: a cancel that finds the row dispatched but not yet on the
+      // wire queues behind this lock, so it cannot reach an idle terminal
+      // before the sale frame does.
       const claimed = await withTenant(db, ctx, async (tx) => {
         const [updated] = await tx
           .update(edcTransactions)
@@ -877,6 +1029,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
                 signal,
               }),
             signal,
+            claimed.id,
           ),
         );
         patch = patchFromAnswer(claimed, answer, answerContext(provider));
@@ -922,9 +1075,14 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   ): Promise<void> {
     if (earlier.some((row) => row.status === "approved"))
       throw new EdcError("EDC_ALREADY_APPROVED");
-    // A pending row still in flight is being answered by this agent. A pending
-    // row nobody is working on (stale) is inquired like an unknown one.
-    if (earlier.some((row) => row.status === "pending" && inFlight.has(row.id)))
+    // Approved late (cancelled/failed/declined locally, charged on the
+    // terminal) or flagged by a stale inquiry: a human voids and reconciles.
+    if (earlier.some((row) => row.needsReconciliation))
+      throw new EdcError("EDC_NEEDS_RECONCILIATION");
+    // A row still in flight is being answered by this agent, whatever status
+    // it shows right now. A pending row nobody is working on (stale) is
+    // inquired like an unknown one.
+    if (earlier.some((row) => inFlight.has(row.id)))
       throw new EdcError("EDC_STATUS_UNKNOWN");
     let unresolved = false;
     let approved = false;
@@ -969,11 +1127,14 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               eq(edcTransactions.tenantId, ctx.tenant.tenantId),
               eq(edcTransactions.outletId, input.outletId),
               eq(edcTransactions.reference, input.reference),
-              inArray(edcTransactions.status, [
-                "approved",
-                "pending",
-                "unknown",
-              ]),
+              or(
+                inArray(edcTransactions.status, [
+                  "approved",
+                  "pending",
+                  "unknown",
+                ]),
+                eq(edcTransactions.needsReconciliation, true),
+              ),
             ),
           )
           .limit(1);
@@ -999,6 +1160,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           })
           .returning();
         if (!row) throw new Error("EDC transaction insert returned no row");
+        await emitEdcTransactionEvent(tx, ctx, {
+          name: "edc_transaction.created",
+          row,
+          now: at,
+        });
         return { kind: "created", row };
       });
     } catch (error) {
@@ -1018,16 +1184,25 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     }
   }
 
-  /** Pending -> unknown for the outlets of `ctx`, which must be owned: only
-   * the owner knows which pending rows are really in flight. */
-  async function recoverPending(ctx: ScopedTenantContext): Promise<number> {
-    const outletIds = scopeOutletIds(ctx);
+  /** Pending -> unknown for `outletIds` (default: the outlets of `ctx`), which
+   * must be owned: only the owner knows which pending rows are really in
+   * flight. `start` passes only the outlets it just acquired: a second
+   * `start` must not flip a live sale of an outlet this process already ran. */
+  async function recoverPending(
+    ctx: ScopedTenantContext,
+    outletIds: readonly EdcRow["outletId"][] = scopeOutletIds(ctx),
+  ): Promise<number> {
+    if (outletIds.length === 0) return 0;
     for (const outletId of outletIds)
       assertReady(ctx.tenant.tenantId, outletId);
-    const live = [...inFlight];
     const at = now();
-    const recovered = await withTenant(db, ctx, (tx) =>
-      tx
+    const recovered = await withTenant(db, ctx, async (tx) => {
+      // `inFlight` is read here, in the same tick that issues the UPDATE, not
+      // before the transaction opens: a sale registered meanwhile is kept. A
+      // row created after this call began (never dispatched) is a live sale
+      // too, never a crashed one.
+      const live = [...inFlight];
+      const rows = await tx
         .update(edcTransactions)
         .set({
           status: "unknown",
@@ -1039,11 +1214,22 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
             eq(edcTransactions.tenantId, ctx.tenant.tenantId),
             inArray(edcTransactions.outletId, [...outletIds]),
             eq(edcTransactions.status, "pending"),
+            or(
+              isNotNull(edcTransactions.dispatchedAt),
+              lt(edcTransactions.createdAt, at),
+            ),
             live.length > 0 ? notInArray(edcTransactions.id, live) : undefined,
           ),
         )
-        .returning({ id: edcTransactions.id }),
-    );
+        .returning();
+      for (const row of rows)
+        await emitEdcTransactionEvent(tx, ctx, {
+          name: "edc_transaction.flagged",
+          row,
+          now: at,
+        });
+      return rows;
+    });
     if (recovered.length > 0)
       logger.warn(
         { count: recovered.length },
@@ -1080,11 +1266,6 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
                 eq(edcTransactions.tenantId, ctx.tenant.tenantId),
                 eq(edcTransactions.outletId, input.outletId),
                 eq(edcTransactions.reference, input.reference),
-                inArray(edcTransactions.status, [
-                  "approved",
-                  "pending",
-                  "unknown",
-                ]),
               ),
             );
           const terminal = await selectTerminal(
@@ -1183,6 +1364,12 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               ),
             )
             .returning();
+          if (updated)
+            await emitEdcTransactionEvent(tx, ctx, {
+              name: "edc_transaction.cancelled",
+              row: updated,
+              now: at,
+            });
           return updated;
         });
         if (cancelled) return toDto(cancelled);
@@ -1199,45 +1386,100 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       if (!provider.capabilities.cancelInProgress)
         throw new EdcError("EDC_CANCEL_UNSUPPORTED");
       const ecrTerminal = toEcrTerminal(terminal, provider.bank);
+      if (stuck.has(terminal.id)) {
+        logger.error(
+          { terminalRowId: terminal.id, edcTransactionId: row.id },
+          "EDC cancel refused: an earlier adapter call on this terminal is still running",
+        );
+        throw new EdcError("EDC_TERMINAL_UNAVAILABLE");
+      }
 
-      // Not behind the terminal queue: it must reach the in-flight sale.
-      let answer: EcrResult | null = null;
-      try {
-        const signal = AbortSignal.timeout(cancelTimeoutMs);
-        answer = ecrResultSchema.parse(
-          await raceAbort(
+      const sendCancel = async (
+        current: EdcRow,
+        hold?: Hold,
+      ): Promise<EdcTransaction> => {
+        let answer: EcrResult | null = null;
+        try {
+          const signal = AbortSignal.timeout(cancelTimeoutMs);
+          const call = () =>
             provider.cancel({
               terminal: ecrTerminal,
-              trace: row.trace,
+              trace: current.trace,
               signal,
-            }),
-            signal,
-          ),
-        );
-      } catch (error) {
-        logger.warn(
-          {
-            edcTransactionId: row.id,
-            trace: row.trace,
-            kind: errorKind(error),
-          },
-          "EDC cancel gave no answer",
-        );
+            });
+          if (hold) {
+            answer = ecrResultSchema.parse(await hold(call, signal));
+          } else {
+            const wire = new Promise<EcrResult>((resolve) => {
+              resolve(call());
+            });
+            // Chain onto an earlier bypass cancel of this row that timed out
+            // but whose frame may still be on the wire: the lock is freed only
+            // after every one of them settles.
+            const earlier = bypassWire.get(current.id);
+            const settled = wire.then(
+              () => undefined,
+              () => undefined,
+            );
+            const done = earlier
+              ? Promise.all([earlier, settled]).then(() => undefined)
+              : settled;
+            bypassWire.set(current.id, done);
+            void done.then(() => {
+              if (bypassWire.get(current.id) === done)
+                bypassWire.delete(current.id);
+            });
+            answer = ecrResultSchema.parse(await raceAbort(wire, signal));
+          }
+        } catch (error) {
+          logger.warn(
+            {
+              edcTransactionId: current.id,
+              trace: current.trace,
+              kind: errorKind(error),
+            },
+            "EDC cancel gave no answer",
+          );
+        }
+        if (answer) {
+          // `approved` here means the customer already paid: recorded as such.
+          return toDto(
+            await applyPatch(
+              ctx,
+              current,
+              patchFromAnswer(current, answer, answerContext(provider)),
+            ),
+          );
+        }
+        if (current.status === "pending" && !inFlight.has(current.id))
+          return toDto(await applyPatch(ctx, current, unknownPatch()));
+        const latest = await reload(ctx, current.id);
+        return toDto(latest ?? current);
+      };
+
+      // Only the sale whose adapter call holds the terminal lock right now is
+      // cancelled around the queue (cancel must reach it). Anything else,
+      // including a sale still waiting for its turn, queues like every other
+      // exchange: the lock frees when the call settles, before `inFlight`
+      // clears, so `inFlight` alone would let a cancel meet the next sale.
+      if (holding.has(row.id)) {
+        const running = cancelling.get(row.id);
+        if (running) return running;
+        // `sendCancel` puts its frame on the wire before its first await, in
+        // this same tick, so no other caller can slip in between.
+        const run: Promise<EdcTransaction> = sendCancel(row).finally(() => {
+          if (cancelling.get(row.id) === run) cancelling.delete(row.id);
+        });
+        cancelling.set(row.id, run);
+        return run;
       }
-      if (answer) {
-        // `approved` here means the customer already paid: recorded as such.
-        return toDto(
-          await applyPatch(
-            ctx,
-            row,
-            patchFromAnswer(row, answer, answerContext(provider)),
-          ),
-        );
-      }
-      if (row.status === "pending" && !inFlight.has(row.id))
-        return toDto(await applyPatch(ctx, row, unknownPatch()));
-      const current = await reload(ctx, row.id);
-      return toDto(current ?? row);
+      return withTerminalLock(terminal.id, async (hold) => {
+        const current = await reload(ctx, row.id);
+        if (!current) throw notFound();
+        if (current.status === "cancelled") return toDto(current);
+        if (isFinal(current.status)) throw new EdcError("EDC_NOT_CANCELLABLE");
+        return sendCancel(current, hold);
+      });
     },
 
     async get(ctx, actorUserId, ref) {
@@ -1248,14 +1490,16 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       assertTrustedScopedContext(ctx);
       const outletIds = scopeOutletIds(ctx);
       const acquired: string[] = [];
+      const acquiredOutletIds: EdcRow["outletId"][] = [];
       try {
         for (const outletId of outletIds) {
           const key = ownedKey(ctx.tenant.tenantId, outletId);
           if (owned.has(key)) continue;
           await acquireOutlet(ctx.tenant.tenantId, outletId);
           acquired.push(key);
+          acquiredOutletIds.push(outletId);
         }
-        await recoverPending(ctx);
+        await recoverPending(ctx, acquiredOutletIds);
       } catch (error) {
         for (const key of acquired) await releaseOutlet(key);
         throw error;

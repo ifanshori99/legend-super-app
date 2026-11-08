@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794148751554,
+      "tag": "0068_edc_transactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794148755407,
+      "tag": "0069_edc_rls",
+      "breakpoints": true
     }
   ]
 }

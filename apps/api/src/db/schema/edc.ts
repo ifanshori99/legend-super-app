@@ -7,10 +7,10 @@
 // - (tenant_id, idempotency_key) is unique: one key, one sale.
 // - (tenant_id, terminal_id, trace) is unique: the trace identifies the sale
 //   on the terminal for inquiry and cancel.
-// - At most one `approved` row per (tenant_id, outlet_id, reference): EDC-03
+// - At most one approved `sale` per (tenant_id, outlet_id, reference): EDC-03
 //   backstop against a double charge even if the application guard has a bug.
 //   The retry guard is outlet-scoped, so the index is too.
-// - Tenant + outlet RLS: edc.custom.sql (migration 0064).
+// - Tenant + outlet RLS: edc.custom.sql (migration 0069).
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -27,6 +27,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { idrColumn, outletIdColumn, tenantIdColumn } from "../columns.ts";
 import { paymentEdcTerminals } from "./payment-admin.ts";
+import { paymentIntents } from "./payment.ts";
 import { outlets, tenants } from "./platform-org.ts";
 
 export const edcTransactions = pgTable(
@@ -45,6 +46,14 @@ export const edcTransactions = pgTable(
     amountIdr: idrColumn("amount_idr").notNull(),
     method: varchar("method", { length: 10 }).notNull(),
     status: varchar("status", { length: 20 }).notNull(),
+    // PRD §6: sale, void or refund; ECR (cashier POS drives the terminal) or
+    // standalone (terminal keyed by hand, reconciled later). The agent writes
+    // sales in ecr mode; void and refund rows arrive with the void flow.
+    type: varchar("type", { length: 10 }).notNull().default("sale"),
+    mode: varchar("mode", { length: 12 }).notNull().default("ecr"),
+    // The payment intent this charge settles; set by the payment service
+    // once the sale is approved. Composite FK (tenant_id, payment_intent_id).
+    paymentIntentId: uuid("payment_intent_id"),
     trace: varchar("trace", { length: 32 }).notNull(),
     approvalCode: varchar("approval_code", { length: 12 }),
     rrn: varchar("rrn", { length: 24 }),
@@ -82,10 +91,11 @@ export const edcTransactions = pgTable(
       t.terminalId,
       t.trace,
     ),
-    // EDC-03: never two approved charges for one POS reference.
+    // EDC-03: never two approved charges for one POS reference. A void or
+    // refund row shares the sale's reference, so only sales count.
     uniqueIndex("edc_transactions_approved_reference_key")
       .on(t.tenantId, t.outletId, t.reference)
-      .where(sql`${t.status} = 'approved'`),
+      .where(sql`${t.status} = 'approved' AND ${t.type} = 'sale'`),
     index("edc_transactions_reference_idx").on(
       t.tenantId,
       t.outletId,
@@ -110,6 +120,11 @@ export const edcTransactions = pgTable(
         paymentEdcTerminals.id,
       ],
     }),
+    foreignKey({
+      name: "edc_transactions_payment_intent_fk",
+      columns: [t.tenantId, t.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
     check(
       "edc_transactions_bank_check",
       sql`${t.bank} IN ('bca','mandiri','bni','bjb')`,
@@ -119,6 +134,14 @@ export const edcTransactions = pgTable(
     check(
       "edc_transactions_status_check",
       sql`${t.status} IN ('pending','unknown','approved','declined','cancelled','failed')`,
+    ),
+    check(
+      "edc_transactions_type_check",
+      sql`${t.type} IN ('sale','void','refund')`,
+    ),
+    check(
+      "edc_transactions_mode_check",
+      sql`${t.mode} IN ('ecr','standalone')`,
     ),
     check("edc_transactions_inquiry_count_check", sql`${t.inquiryCount} >= 0`),
     // Final statuses carry completed_at; open ones (pending, unknown) never do.

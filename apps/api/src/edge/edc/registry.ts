@@ -35,10 +35,17 @@ export class EdcProviderRegistry {
 }
 
 /** Simulators only in dev/test/demo. Production gets an empty registry until
- * the bank adapters (bead legend-vpx) are registered at boot. */
+ * the bank adapters (bead legend-vpx) are registered at boot. A simulator in
+ * production would approve payments no bank ever saw, so it throws there.
+ * `production` defaults to `NODE_ENV === "production"` (as `tlsAskGuard`). */
 export function createDefaultEdcRegistry(options: {
   simulator: boolean;
+  production?: boolean;
 }): EdcProviderRegistry {
+  const production =
+    options.production ?? process.env.NODE_ENV === "production";
+  if (options.simulator && production)
+    throw new Error("EDC simulators are not allowed in production");
   const registry = new EdcProviderRegistry();
   if (options.simulator)
     for (const bank of allBanks) registry.register(new EcrSimulator(bank));

@@ -320,8 +320,19 @@ describe("EcrSimulator", () => {
       sale: 1,
       cancel: 1,
       inquiry: 1,
+      void: 0,
     });
-    expect(sim.callsFor("other")).toEqual({ sale: 0, cancel: 0, inquiry: 0 });
-    expect(sim.calls).toEqual({ sale: 1, cancel: 1, inquiry: 1 });
+    expect(sim.callsFor("other")).toEqual({
+      sale: 0,
+      cancel: 0,
+      inquiry: 0,
+      void: 0,
+    });
+    expect(sim.calls).toEqual({
+      sale: 1,
+      cancel: 1,
+      inquiry: 1,
+      void: 0,
+    });
   });
 });

@@ -43,9 +43,11 @@ export type EcrSimulatorCalls = {
   sale: number;
   cancel: number;
   inquiry: number;
+  void: number;
 };
 
-type TerminalState = "in_progress" | "approved" | "declined" | "cancelled";
+type TerminalState =
+  "in_progress" | "approved" | "declined" | "cancelled" | "voided";
 
 type SimRecord = {
   terminalRowId: string;
@@ -62,6 +64,7 @@ const emptyCalls = (): EcrSimulatorCalls => ({
   sale: 0,
   cancel: 0,
   inquiry: 0,
+  void: 0,
 });
 
 export class EcrSimulator implements EdcProvider {
@@ -132,6 +135,7 @@ export class EcrSimulator implements EdcProvider {
       total.sale += calls.sale;
       total.cancel += calls.cancel;
       total.inquiry += calls.inquiry;
+      total.void += calls.void;
     }
     return total;
   }
@@ -140,7 +144,8 @@ export class EcrSimulator implements EdcProvider {
     return { ...(this.#calls.get(terminalRowId) ?? emptyCalls()) };
   }
 
-  /** Number of approved sales recorded at the terminal (money taken). */
+  /** Net number of approved sales at the terminal (money taken): a voided
+   * sale is not charged. */
   chargedCount(terminalRowId: string): number {
     let count = 0;
     for (const record of this.#records.values())
@@ -276,6 +281,21 @@ export class EcrSimulator implements EdcProvider {
     return ecrInquiryResultSchema.parse(record.result);
   }
 
+  async void(request: EcrTraceRequest): Promise<EcrResult> {
+    this.#count(request.terminal.id, "void");
+    const record = this.#records.get(key(request.terminal.id, request.trace));
+    if (!record || record.state === "in_progress")
+      throw new EcrTransportError("protocol", "no approved sale for trace");
+    if (record.state === "voided") return ecrResultSchema.parse(record.result);
+    if (record.state !== "approved")
+      throw new EcrTransportError("protocol", "sale was not approved");
+    // Inquiry now answers with the void result (outcome `cancelled`).
+    const result = voided(record.trace, record.result);
+    record.state = "voided";
+    record.result = result;
+    return result;
+  }
+
   #count(terminalRowId: string, kind: keyof EcrSimulatorCalls): void {
     const calls = this.#calls.get(terminalRowId) ?? emptyCalls();
     calls[kind] += 1;
@@ -325,6 +345,19 @@ function declined(trace: string): EcrResult {
     trace,
     responseCode: "51",
     message: "Declined",
+  });
+}
+
+function voided(trace: string, sale: EcrResult | null): EcrResult {
+  return ecrResultSchema.parse({
+    outcome: "cancelled",
+    trace,
+    approvalCode: sale?.approvalCode ?? null,
+    rrn: sale?.rrn ?? null,
+    invoiceNo: sale?.invoiceNo ?? null,
+    batchNo: sale?.batchNo ?? null,
+    amountIdr: sale?.amountIdr ?? null,
+    message: "Voided",
   });
 }
 

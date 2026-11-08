@@ -809,6 +809,7 @@ describe("EDC agent (legend-apt)", () => {
       sale: 0,
       cancel: 0,
       inquiry: 0,
+      void: 0,
     });
   });
 
@@ -1010,6 +1011,7 @@ describe("EDC agent (legend-apt)", () => {
         capabilities: sim.capabilities,
         cancel: (r) => sim.cancel(r),
         inquiry: (r) => sim.inquiry(r),
+        void: (r) => sim.void(r),
         sale: async (r: EcrSaleRequest) => {
           await sim.sale(r); // held until the cancel resolves it
           await gate;

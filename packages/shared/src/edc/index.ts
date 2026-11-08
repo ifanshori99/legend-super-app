@@ -269,6 +269,13 @@ export interface EdcProvider {
   cancel(request: EcrTraceRequest): Promise<EcrResult>;
   /** Status inquiry for `trace`. Safe to repeat; never charges. */
   inquiry(request: EcrTraceRequest): Promise<EcrInquiryResult>;
+  /** Voids the APPROVED sale `trace` (same batch, before settlement) so the
+   * customer is not charged. Resolves `cancelled` once the terminal voided
+   * it; an already voided sale resolves `cancelled` again (safe to repeat).
+   * Throws `EcrTransportError` when the outcome is unknown or the terminal
+   * has no approved sale for the trace; it never resolves `cancelled` for a
+   * sale it did not void. */
+  void(request: EcrTraceRequest): Promise<EcrResult>;
 }
 
 /** The provider could not learn the terminal's answer. The outcome is
@@ -353,6 +360,9 @@ export const edcErrorReasons = {
   /** An earlier attempt for this reference is still unknown after inquiry:
    * check the terminal or reconcile before retrying (EDC-03). */
   EDC_STATUS_UNKNOWN: "CONFLICT",
+  /** An earlier attempt for this reference was approved late (after it was
+   * cancelled or failed) and still needs a void and reconciliation. */
+  EDC_NEEDS_RECONCILIATION: "CONFLICT",
   /** An earlier attempt for this reference was approved: do not charge again. */
   EDC_ALREADY_APPROVED: "CONFLICT",
   /** The terminal reported an amount other than the request (EDC-01). */
@@ -372,6 +382,8 @@ const edcErrorMessages: Record<EdcErrorReason, string> = {
   EDC_TERMINAL_UNAVAILABLE: "Terminal EDC tidak tersedia untuk pembayaran ini.",
   EDC_STATUS_UNKNOWN:
     "Status transaksi EDC sebelumnya belum diketahui. Cek terminal sebelum mencoba lagi.",
+  EDC_NEEDS_RECONCILIATION:
+    "Ada pembayaran EDC untuk tagihan ini yang perlu direkonsiliasi dan di-void sebelum mencoba lagi.",
   EDC_ALREADY_APPROVED: "Pembayaran EDC untuk tagihan ini sudah disetujui.",
   EDC_AMOUNT_MISMATCH: "Nominal di terminal EDC tidak sama dengan tagihan.",
   EDC_NOT_CANCELLABLE:
@@ -389,3 +401,4 @@ export class EdcError extends CoreError {
     this.reason = reason;
   }
 }
+export * from "./events.ts";
