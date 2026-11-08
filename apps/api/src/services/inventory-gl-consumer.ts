@@ -332,8 +332,28 @@ export async function retryBlockedInventoryGl(
       );
       if (result.status === "blocked") stillBlocked += 1;
       else posted += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      // An unexpected error keeps the backoff too, so a row that keeps
+      // failing neither retries every tick nor starves newer blocked sources.
+      console.error(
+        `Inventory GL retry failed for ${source.sourceType}: ${error instanceof Error ? error.name : "unknown"}`,
+      );
+      await withTenant(db, context, (tx) =>
+        tx
+          .update(inventoryGlBlocked)
+          .set({
+            attempts: sql`${inventoryGlBlocked.attempts} + 1`,
+            lastFailedAt: now,
+          })
+          .where(
+            and(
+              eq(inventoryGlBlocked.tenantId, tenantId),
+              eq(inventoryGlBlocked.sourceType, source.sourceType),
+              eq(inventoryGlBlocked.sourceId, source.sourceId),
+            ),
+          ),
+      ).catch(() => undefined);
     }
   }
   return { posted, stillBlocked, failed };
