@@ -477,6 +477,20 @@
       "when": 1794142693714,
       "tag": "0067_smiling_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794150507093,
+      "tag": "0068_payroll_pph21_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794150508174,
+      "tag": "0069_payroll_pph21_policy_rls",
+      "breakpoints": true
     }
   ]
 }
