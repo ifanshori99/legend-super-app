@@ -79,12 +79,14 @@ import {
   type InventoryItem,
   type StockBatch,
   type StockLedgerEntry,
+  type StockMovedEventPayload,
   type StockMovementType,
   type StockSourceType,
   type StockTransfer,
   type Uom,
   type UomConversion,
 } from "@starter/shared/inventory";
+import type { EventEnvelope } from "@starter/shared/events";
 import type { z } from "zod";
 import type * as schema from "../db/schema";
 import {
@@ -1118,6 +1120,122 @@ async function appendStockMovedEvent(
     direction: null,
     peerId: null,
   });
+}
+
+/** True when the stored ledger row is exactly the replicated movement. */
+function sameReplicatedMovement(
+  row: LedgerRow,
+  entry: StockLedgerEntry,
+): boolean {
+  const stored = toLedgerEntry(row);
+  const id = (value: string | null) => value?.toLowerCase() ?? null;
+  return (
+    id(stored.outletId) === id(entry.outletId) &&
+    id(stored.locationId) === id(entry.locationId) &&
+    id(stored.inventoryItemId) === id(entry.inventoryItemId) &&
+    stored.movementType === entry.movementType &&
+    parseDecimal4(stored.quantity) === parseDecimal4(entry.quantity) &&
+    parseDecimal4(stored.unitCostIdr) === parseDecimal4(entry.unitCostIdr) &&
+    id(stored.batchId) === id(entry.batchId) &&
+    stored.sourceType === entry.sourceType &&
+    id(row.sourceId) === id(sourceIdToDb(entry.sourceId)) &&
+    Date.parse(stored.occurredAt) === Date.parse(entry.occurredAt)
+  );
+}
+
+/**
+ * Cloud side of an edge `stock.moved` (bead legend-s4r6, edge/stock-moved-
+ * applier.ts): writes the edge's ledger row with its own id, quantity, cost,
+ * source and time (the cost is never recomputed), applies it to the cloud
+ * balance like the local path and re-emits the same `stock.moved` on the
+ * cloud outbox so the GL bridge consumes it. `cloud-sync` is a local sink on
+ * the cloud (worker/transport.ts), so the event never goes back to the edge.
+ * Returns false and writes nothing when the identical row is already there
+ * (replay); a different movement under the same id throws.
+ */
+export async function recordReplicatedStockMovementInTransaction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  payload: StockMovedEventPayload,
+): Promise<boolean> {
+  if (!event.outletId)
+    throw new HttpError(422, "VALIDATION_ERROR", "Stock event needs an outlet.");
+  assertOutlet(context, event.outletId);
+  const tenantId = context.tenant.tenantId;
+  const entry = stockLedgerEntrySchema.parse({
+    id: payload.ledgerEntryId,
+    tenantId,
+    outletId: event.outletId,
+    locationId: payload.locationId,
+    inventoryItemId: payload.inventoryItemId,
+    movementType: payload.movementType,
+    quantity: payload.quantity,
+    unitCostIdr: payload.unitCostIdr,
+    batchId: payload.batchId,
+    sourceType: payload.sourceType,
+    sourceId: payload.sourceId,
+    occurredAt: payload.occurredAt,
+  });
+  await requireLocation(tx, entry.outletId, entry.locationId);
+  await requireItem(tx, entry.inventoryItemId);
+  if (entry.batchId !== null)
+    await requireBatch(tx, entry.outletId, entry.batchId, entry);
+
+  await lockInventoryLocations(tx, tenantId, [entry.locationId]);
+  const inserted = await tx
+    .insert(stockLedger)
+    .values({
+      id: entry.id,
+      tenantId,
+      outletId: entry.outletId,
+      locationId: entry.locationId,
+      inventoryItemId: entry.inventoryItemId,
+      movementType: entry.movementType,
+      quantity: entry.quantity,
+      unitCostIdr: entry.unitCostIdr,
+      batchId: entry.batchId,
+      sourceType: entry.sourceType,
+      sourceId: sourceIdToDb(entry.sourceId),
+      idempotencyKey: null,
+      requestFingerprint: null,
+      occurredAt: new Date(entry.occurredAt),
+    })
+    .onConflictDoNothing({ target: stockLedger.id })
+    .returning({ id: stockLedger.id });
+  if (inserted.length === 0) {
+    // Only an identical row is a replay. A row of another tenant (invisible
+    // here) or a different movement under the same id is refused, so the
+    // receipt fails and the edge keeps the event instead of losing it.
+    const [existing] = await tx
+      .select()
+      .from(stockLedger)
+      .where(
+        and(eq(stockLedger.tenantId, tenantId), eq(stockLedger.id, entry.id)),
+      );
+    if (!existing || !sameReplicatedMovement(existing, entry))
+      throw new HttpError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "This stock ledger id was used for a different movement.",
+      );
+    return false;
+  }
+
+  const balance = await lockStockBalance(tx, context, entry);
+  await applyMovementToLockedBalance(tx, balance, entry);
+  const cloudEvent = inventoryEvents["stock.moved"].envelopeSchema.parse({
+    ...event,
+    idempotencyKey: `stock.moved:${entry.id}`,
+  });
+  await appendOutbox(tx, context, {
+    id: createUlid(),
+    event: cloudEvent,
+    destination: EVENT_DESTINATION,
+    direction: null,
+    peerId: null,
+  });
+  return true;
 }
 
 export async function listStockLedger(

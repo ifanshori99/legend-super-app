@@ -13,6 +13,13 @@
 // link (4403) within `reverifyIntervalMs` (EDG-03); the instance that revoked
 // it closes immediately through `disconnect`.
 //
+// Failed authentications (legend-x3lv) are counted per client address only;
+// once an address has used up EDGE_LINK_AUTH_FAILURE_LIMIT in its window,
+// upgrades from it are refused with 429 BEFORE `authenticate` runs, until the
+// window ends. There is no per-node lockout: anyone who knows a node id could
+// otherwise lock the real node out, and the 32-byte secret makes per-node
+// guessing pointless. A success never resets a counter.
+//
 // Every dependency is injected (runtime.ts wires the Postgres ones), so this
 // module has no database or env import.
 import { createHash } from "node:crypto";
@@ -49,6 +56,9 @@ export const LINK_UPGRADE_PER_ADDRESS = 120;
 export const LINK_UPGRADE_PER_NODE = 12;
 const LINK_UPGRADE_WINDOW_MS = 60_000;
 const LINK_UPGRADE_CAPACITY = 10_000;
+/** Failed authentications per client address per window (legend-x3lv). */
+export const LINK_AUTH_FAILURE_LIMIT = 10;
+export const LINK_AUTH_FAILURE_WINDOW_MS = 300_000;
 /** Heartbeat DB writes per link: the client sends one every 15 s. */
 export const LINK_HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 
@@ -75,6 +85,11 @@ export type EdgeLinkServerDeps<Identity extends EdgeLinkIdentity> = {
   upgradeRateLimit?: {
     perAddress?: number;
     perNode?: number;
+    windowMs?: number;
+  };
+  /** Failed-authentication lockout (legend-x3lv); injectable for tests. */
+  authFailureLimit?: {
+    limit?: number;
     windowMs?: number;
   };
   /**
@@ -144,6 +159,11 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
   const perNode = createFixedWindowCounter({
     limit: deps.upgradeRateLimit?.perNode ?? LINK_UPGRADE_PER_NODE,
     windowMs,
+    capacity: LINK_UPGRADE_CAPACITY,
+  });
+  const failures = createFixedWindowCounter({
+    limit: deps.authFailureLimit?.limit ?? LINK_AUTH_FAILURE_LIMIT,
+    windowMs: deps.authFailureLimit?.windowMs ?? LINK_AUTH_FAILURE_WINDOW_MS,
     capacity: LINK_UPGRADE_CAPACITY,
   });
   const links = new Map<
@@ -247,9 +267,22 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
             "retry-after": String(retryAfter),
             "cache-control": "no-store",
           });
-        if (!token) return refuseCredential(socket);
+        // Per-address failure lockout, checked before authenticate
+        // (legend-x3lv).
+        const failureKey = `ip:${address}`;
+        const lockedFor = failures.peek(failureKey, at);
+        if (lockedFor !== null)
+          return refuse(socket, 429, {
+            "retry-after": String(lockedFor),
+            "cache-control": "no-store",
+          });
+        const failed = () => {
+          failures.take(failureKey, now());
+          refuseCredential(socket);
+        };
+        if (!token) return failed();
         const identity = await deps.authenticate(token);
-        if (!identity) return refuseCredential(socket);
+        if (!identity) return failed();
         if (socket.destroyed) return;
         wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));
       } catch (error) {

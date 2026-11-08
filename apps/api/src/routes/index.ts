@@ -54,6 +54,8 @@ import { staffPinSyncRouter } from "./staff-pin-sync.routes.ts";
 import { deviceRouter } from "./device.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
+import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -173,6 +175,8 @@ apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);
 apiRouter.use("/devices", deviceRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
+apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
 
 // Registry-backed EdgeDeviceLookup for /api/edge/status `thisDevice`.
 installDeviceRegistryPorts();

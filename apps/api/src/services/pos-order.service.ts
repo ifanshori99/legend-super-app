@@ -61,7 +61,7 @@ import {
 } from "@starter/shared/pos";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { tableSessions } from "../db/schema/index.ts";
+import { devices, tableSessions } from "../db/schema/index.ts";
 import {
   orderEvents,
   posApprovalPolicies,
@@ -702,6 +702,22 @@ export async function createPosOrder(
           })
           .returning();
         if (!order) throw new Error("Order insert returned no row");
+        // Training stamp: the device's mode at creation, fixed for the order's life.
+        let isTraining = false;
+        if (caller.deviceId) {
+          const [device] = await tx
+            .select({ trainingMode: devices.trainingMode })
+            .from(devices)
+            .where(
+              and(
+                eq(devices.tenantId, tenantId),
+                eq(devices.outletId, outlet.id as OutletId),
+                eq(devices.id, caller.deviceId),
+              ),
+            )
+            .limit(1);
+          isTraining = device?.trainingMode ?? false;
+        }
         await tx.insert(posOrders).values({
           orderId,
           tenantId,
@@ -711,6 +727,7 @@ export async function createPosOrder(
           deviceId: caller.deviceId,
           cashierId: caller.userId,
           holdItems: input.holdItems ?? false,
+          isTraining,
           createdAt: now,
           updatedAt: now,
         });
