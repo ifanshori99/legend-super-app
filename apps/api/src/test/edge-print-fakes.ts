@@ -41,7 +41,7 @@ export function makePrinter(
     label: id,
     role: "receipt",
     stationId: null,
-    transport: { kind: "network", host: "127.0.0.1", port: 9100 },
+    transport: { kind: "network", host: "192.168.1.50", port: 9100 },
     paperWidth: 32,
     fallbackPrinterId: null,
     status: "unknown",
@@ -112,6 +112,7 @@ export function createFakeStore(
         content: job.content,
         attempts: 0,
         lastError: null,
+        failurePhase: null,
         reprintOf: job.reprintOf ?? null,
         printedFallback: job.printedFallback ?? false,
         fallbackReason: job.fallbackReason ?? null,
@@ -144,10 +145,11 @@ export function createFakeStore(
       job.status = "printed";
       job.printedAt = at;
     },
-    async markFailed(jobId, error) {
+    async markFailed(jobId, error, phase) {
       const job = find(jobId);
       job.status = "failed";
       job.lastError = error;
+      job.failurePhase = phase;
     },
     async requeue(jobId) {
       const job = find(jobId);
@@ -155,6 +157,7 @@ export function createFakeStore(
         throw new CoreError("CONFLICT", "Tugas cetak tidak bisa diulang.");
       }
       job.status = "queued";
+      job.failurePhase = null;
       return { ...job };
     },
     async releaseClaim(jobId, error) {
@@ -162,6 +165,7 @@ export function createFakeStore(
       if (!job || job.status !== "printing") return;
       job.status = "queued";
       job.lastError = error;
+      job.failurePhase = null;
       startedAt.delete(job.id);
     },
     async failStaleClaims(startedBefore, error) {
@@ -176,6 +180,7 @@ export function createFakeStore(
           continue;
         job.status = "failed";
         job.lastError = error.slice(0, 500);
+        job.failurePhase = "stale";
         failed.push({ ...job });
       }
       return failed;

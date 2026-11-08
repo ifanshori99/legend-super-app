@@ -98,6 +98,7 @@ function toJobRecord(row: JobRow): PrintJobRecord {
     content: row.content,
     attempts: row.attempts,
     lastError: row.lastError,
+    failurePhase: row.failurePhase,
     reprintOf: row.reprintOf,
     printedFallback: row.printedFallback,
     fallbackReason: row.fallbackReason,
@@ -354,13 +355,14 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       });
     },
 
-    async markFailed(jobId, error) {
+    async markFailed(jobId, error, phase) {
       await run(async (tx) => {
         const row = await lockJob(tx, jobId);
         const next = transitionPrintJob(row.status, "fail");
         await updateJob(tx, jobId, {
           status: next,
           lastError: error.slice(0, MAX_ERROR_LENGTH),
+          failurePhase: phase,
         });
       });
     },
@@ -369,7 +371,9 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       return run(async (tx) => {
         const row = await lockJob(tx, jobId);
         const next = transitionPrintJob(row.status, "retry");
-        return toJobRecord(await updateJob(tx, jobId, { status: next }));
+        return toJobRecord(
+          await updateJob(tx, jobId, { status: next, failurePhase: null }),
+        );
       });
     },
 
@@ -386,6 +390,7 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
           .set({
             status: "queued",
             lastError: error.slice(0, MAX_ERROR_LENGTH),
+            failurePhase: null,
             startedAt: null,
             updatedAt: now(),
           })
@@ -406,6 +411,7 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
           .set({
             status: "failed",
             lastError: error.slice(0, MAX_ERROR_LENGTH),
+            failurePhase: "stale",
             updatedAt: now(),
           })
           .where(

@@ -26,7 +26,7 @@ function printer(id: string): PrinterConfig {
     label: id,
     role: "receipt",
     stationId: null,
-    transport: { kind: "network", host: "127.0.0.1", port: 9100 },
+    transport: { kind: "network", host: "192.168.1.50", port: 9100 },
     paperWidth: 48,
     fallbackPrinterId: null,
     status: "unknown",

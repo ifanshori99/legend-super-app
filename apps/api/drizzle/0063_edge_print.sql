@@ -25,6 +25,7 @@ CREATE TABLE "edge_print_jobs" (
 	"content" "bytea" NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
 	"last_error" varchar(500),
+	"failure_phase" varchar(20),
 	"reprint_of" uuid,
 	"printed_fallback" boolean DEFAULT false NOT NULL,
 	"fallback_reason" varchar(20),
@@ -42,6 +43,8 @@ CREATE TABLE "edge_print_jobs" (
 	CONSTRAINT "edge_print_jobs_status_check" CHECK ("edge_print_jobs"."status" IN ('queued', 'printing', 'printed', 'failed')),
 	CONSTRAINT "edge_print_jobs_fallback_check" CHECK (("edge_print_jobs"."printed_fallback" AND "edge_print_jobs"."fallback_reason" IS NOT NULL AND "edge_print_jobs"."fallback_reason" IN ('kds_down', 'printer_offline'))
         OR (NOT "edge_print_jobs"."printed_fallback" AND "edge_print_jobs"."fallback_reason" IS NULL)),
+	CONSTRAINT "edge_print_jobs_failure_phase_check" CHECK ("edge_print_jobs"."failure_phase" IN ('write', 'stale', 'other')),
+	CONSTRAINT "edge_print_jobs_failure_phase_status_check" CHECK (("edge_print_jobs"."status" = 'failed') = ("edge_print_jobs"."failure_phase" IS NOT NULL)),
 	CONSTRAINT "edge_print_jobs_attempts_check" CHECK ("edge_print_jobs"."attempts" >= 0),
 	CONSTRAINT "edge_print_jobs_printed_at_check" CHECK (("edge_print_jobs"."status" = 'printed') = ("edge_print_jobs"."printed_at" IS NOT NULL))
 );
@@ -70,6 +73,9 @@ CREATE TABLE "edge_printers" (
 	CONSTRAINT "edge_printers_paper_width_check" CHECK ("edge_printers"."paper_width" IN (32, 48)),
 	CONSTRAINT "edge_printers_transport_check" CHECK (("edge_printers"."transport" = 'network' AND "edge_printers"."host" IS NOT NULL AND "edge_printers"."port" BETWEEN 1 AND 65535 AND "edge_printers"."device_path" IS NULL)
         OR ("edge_printers"."transport" = 'usb' AND "edge_printers"."device_path" IS NOT NULL AND "edge_printers"."host" IS NULL AND "edge_printers"."port" IS NULL)),
+	CONSTRAINT "edge_printers_device_path_check" CHECK ("edge_printers"."device_path" IS NULL OR "edge_printers"."device_path" ~ '^/dev/(usb/lp|lp)[0-9]+$'),
+	CONSTRAINT "edge_printers_port_check" CHECK ("edge_printers"."port" IS NULL OR "edge_printers"."port" BETWEEN 9100 AND 9102),
+	CONSTRAINT "edge_printers_host_check" CHECK ("edge_printers"."host" IS NULL OR (CASE WHEN "edge_printers"."host" ~ '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$' THEN "edge_printers"."host"::inet << '10.0.0.0/8'::inet OR "edge_printers"."host"::inet << '172.16.0.0/12'::inet OR "edge_printers"."host"::inet << '192.168.0.0/16'::inet ELSE false END)),
 	CONSTRAINT "edge_printers_station_role_check" CHECK ("edge_printers"."role" = 'station' OR "edge_printers"."station_id" IS NULL),
 	CONSTRAINT "edge_printers_not_own_fallback_check" CHECK ("edge_printers"."fallback_printer_id" IS NULL OR "edge_printers"."fallback_printer_id" <> "edge_printers"."id")
 );

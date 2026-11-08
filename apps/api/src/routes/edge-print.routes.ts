@@ -13,7 +13,7 @@
 // Tenant and outlet are the node's own (from its credential), never the
 // request's (TEN-02). Middleware is per route, not router-wide, so the other
 // /api/edge routes (health, status) stay untouched.
-import { Router, type RequestHandler } from "express";
+import { Router, type RequestHandler, type Response } from "express";
 import type { PermissionCode } from "@starter/shared/access";
 import { AccessError } from "@starter/shared/access";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -35,6 +35,7 @@ import {
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
 import {
+  type PrintAccess,
   listPrintersForOutlet,
   listPrintJobsForOutlet,
   reprintPrintJobForOutlet,
@@ -52,12 +53,18 @@ export const PRINT_READ_PERMISSIONS: readonly PermissionCode[] = [
   "device.registry.manage",
 ];
 
-/** Reprint and retry can hand out a second receipt: narrower than read. */
+/**
+ * Reprint and retry can hand out a second receipt: cashiers only. Reprint or
+ * retry of a `shift_report` also needs a shift permission (SHIFT_REPORT_PERMISSIONS).
+ */
 export const PRINT_WRITE_PERMISSIONS: readonly PermissionCode[] = [
   "pos.sale.create",
-  "kds.ticket.process",
-  "kds.expo.operate",
-  "device.registry.manage",
+];
+
+/** Shift report bytes carry cash totals: see or reprint them only with one of these. */
+export const SHIFT_REPORT_PERMISSIONS: readonly PermissionCode[] = [
+  "shift.cash.view_all",
+  "shift.cash.approve_close",
 ];
 
 function edgeIdentity() {
@@ -84,12 +91,15 @@ const requireNodeTenant: RequestHandler = (req, _res, next) => {
   next();
 };
 
-/** A signed-in member holding one of `permissions` on the node's outlet. */
+/**
+ * A signed-in member holding one of `permissions` on the node's outlet. Leaves
+ * what the member may see of print content in `res.locals.printAccess`.
+ */
 function requireNodeOutletPermission(
   permissions: readonly PermissionCode[],
   message: string,
 ): RequestHandler {
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     const identity = edgeIdentity();
     const userId = getAuth(req).user.id;
     const tenantWide = establishScopedTenantContext(identity.context.tenant, {
@@ -103,14 +113,21 @@ function requireNodeOutletPermission(
       mfaVerified: (await sessionMfaVerifiedAt(req)) !== null,
       now: new Date(),
     });
-    const allowed = permissions.some(
-      (permission) =>
-        snapshot.contextFor(permission, {
-          type: "outlet",
-          id: identity.scope.outletId,
-        }) !== null,
-    );
-    if (!allowed) throw new AccessError("PERMISSION_DENIED", message);
+    const holdsAny = (codes: readonly PermissionCode[]) =>
+      codes.some(
+        (permission) =>
+          snapshot.contextFor(permission, {
+            type: "outlet",
+            id: identity.scope.outletId,
+          }) !== null,
+      );
+    if (!holdsAny(permissions))
+      throw new AccessError("PERMISSION_DENIED", message);
+    const access: PrintAccess = {
+      content: holdsAny(["pos.sale.create"]),
+      shiftReport: holdsAny(SHIFT_REPORT_PERMISSIONS),
+    };
+    res.locals.printAccess = access;
     next();
   };
 }
@@ -123,6 +140,11 @@ const canWrite = requireNodeOutletPermission(
   PRINT_WRITE_PERMISSIONS,
   "Akun Anda tidak dapat mencetak ulang atau mengulang tugas cetak outlet ini.",
 );
+
+/** Set by canRead / canWrite; always present in the handlers behind them. */
+function printAccess(res: Response): PrintAccess {
+  return res.locals.printAccess as PrintAccess;
+}
 
 export const edgePrintRouter = Router();
 
@@ -151,6 +173,7 @@ edgePrintRouter.get(
       await listPrintJobsForOutlet({
         context: edgeIdentity().context,
         query,
+        access: printAccess(res),
       }),
     );
   },
@@ -173,6 +196,7 @@ edgePrintRouter.post(
         printJobId,
         idempotencyKey: body.idempotencyKey,
         actorUserId: getAuth(req).user.id,
+        access: printAccess(res),
       }),
     });
   },
@@ -187,13 +211,15 @@ edgePrintRouter.post(
   canWrite,
   async (req, res) => {
     const { printJobId } = printJobParams.parse(req.params);
-    retryPrintJob.body.parse(req.body);
+    const body = retryPrintJob.body.parse(req.body);
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       data: await retryPrintJobForOutlet({
         context: edgeIdentity().context,
         printJobId,
+        idempotencyKey: body.idempotencyKey,
         actorUserId: getAuth(req).user.id,
+        access: printAccess(res),
       }),
     });
   },

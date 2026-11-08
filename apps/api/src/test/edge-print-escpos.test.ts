@@ -263,6 +263,14 @@ describe("markReprint", () => {
     expect(marked.at(-4)).toBe(GS);
   });
 
+  it("returns a job unchanged when the banner is already right after init", () => {
+    const once = markReprint(renderReceipt(receipt, 32));
+    const twice = markReprint(once);
+    expect(toHex(twice)).toBe(toHex(once));
+    const custom = markReprint(new Uint8Array([ESC, 0x40, 0x41]), "COPY");
+    expect(toHex(markReprint(custom, "COPY"))).toBe(toHex(custom));
+  });
+
   it("supports a custom label and a job with only ESC @", () => {
     const bytes = new Uint8Array([ESC, 0x40, 0x41]);
     const marked = markReprint(bytes, "COPY");

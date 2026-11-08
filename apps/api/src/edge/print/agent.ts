@@ -200,7 +200,11 @@ export function createPrintAgent(options: PrintAgentOptions) {
         return "stop";
       }
       try {
-        await store.markFailed(job.id, text);
+        await store.markFailed(
+          job.id,
+          text,
+          error instanceof PrintTransportError ? "write" : "other",
+        );
       } catch {
         // The job stays printing; the stale sweep fails it later.
         return "stop";

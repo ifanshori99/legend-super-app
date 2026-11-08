@@ -33,6 +33,7 @@ import {
 import { outletIdColumn, tenantIdColumn, ulidInUuid } from "../columns.ts";
 import { outlets, tenants } from "./platform-org.ts";
 import type {
+  FailurePhase,
   FallbackReason,
   PaperWidth,
   PrintAlertKind,
@@ -113,6 +114,20 @@ export const edgePrinters = pgTable(
       sql`(${t.transport} = 'network' AND ${t.host} IS NOT NULL AND ${t.port} BETWEEN 1 AND 65535 AND ${t.devicePath} IS NULL)
         OR (${t.transport} = 'usb' AND ${t.devicePath} IS NOT NULL AND ${t.host} IS NULL AND ${t.port} IS NULL)`,
     ),
+    /** Only the agent's own targets: Linux USB printer nodes, raw-print ports 9100-9102. */
+    check(
+      "edge_printers_device_path_check",
+      sql`${t.devicePath} IS NULL OR ${t.devicePath} ~ '^/dev/(usb/lp|lp)[0-9]+$'`,
+    ),
+    check(
+      "edge_printers_port_check",
+      sql`${t.port} IS NULL OR ${t.port} BETWEEN 9100 AND 9102`,
+    ),
+    /** Private LAN IPv4 literal only (10/8, 172.16/12, 192.168/16): no loopback, link-local, hostname. CASE keeps the inet cast behind the strict dotted-quad regex. */
+    check(
+      "edge_printers_host_check",
+      sql`${t.host} IS NULL OR (CASE WHEN ${t.host} ~ '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$' THEN ${t.host}::inet << '10.0.0.0/8'::inet OR ${t.host}::inet << '172.16.0.0/12'::inet OR ${t.host}::inet << '192.168.0.0/16'::inet ELSE false END)`,
+    ),
     check(
       "edge_printers_station_role_check",
       sql`${t.role} = 'station' OR ${t.stationId} IS NULL`,
@@ -139,6 +154,10 @@ export const edgePrintJobs = pgTable(
     content: bytea("content").notNull(),
     attempts: integer("attempts").notNull().default(0),
     lastError: varchar("last_error", { length: 500 }),
+    /** Set while status is failed (write: bytes may be partly printed; stale: claim swept). */
+    failurePhase: varchar("failure_phase", {
+      length: 20,
+    }).$type<FailurePhase>(),
     reprintOf: ulidInUuid("reprint_of"),
     printedFallback: boolean("printed_fallback").notNull().default(false),
     fallbackReason: varchar("fallback_reason", {
@@ -219,6 +238,14 @@ export const edgePrintJobs = pgTable(
       "edge_print_jobs_fallback_check",
       sql`(${t.printedFallback} AND ${t.fallbackReason} IS NOT NULL AND ${t.fallbackReason} IN ('kds_down', 'printer_offline'))
         OR (NOT ${t.printedFallback} AND ${t.fallbackReason} IS NULL)`,
+    ),
+    check(
+      "edge_print_jobs_failure_phase_check",
+      sql`${t.failurePhase} IN ('write', 'stale', 'other')`,
+    ),
+    check(
+      "edge_print_jobs_failure_phase_status_check",
+      sql`(${t.status} = 'failed') = (${t.failurePhase} IS NOT NULL)`,
     ),
     check("edge_print_jobs_attempts_check", sql`${t.attempts} >= 0`),
     check(

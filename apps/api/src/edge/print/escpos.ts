@@ -156,7 +156,8 @@ export function formatDateTime(date: Date): string {
 /**
  * Inserts a centered bold label line right after the leading ESC @ (and the
  * ESC t n that follows it) of an existing job, so a "cetak ulang" is visibly a
- * copy (fraud control on receipt reprints).
+ * copy (fraud control on receipt reprints). Idempotent: a job that already
+ * carries the banner there is returned as is.
  */
 export function markReprint(
   bytes: Uint8Array,
@@ -176,6 +177,13 @@ export function markReprint(
     .bold(false)
     .align("left")
     .bytes();
+  // Already marked (banner right after init): return unchanged, no double banner.
+  const head = bytes.subarray(offset, offset + banner.length);
+  if (
+    head.length === banner.length &&
+    head.every((value, index) => value === banner[index])
+  )
+    return bytes;
   const out = new Uint8Array(bytes.length + banner.length);
   out.set(bytes.subarray(0, offset), 0);
   out.set(banner, offset);

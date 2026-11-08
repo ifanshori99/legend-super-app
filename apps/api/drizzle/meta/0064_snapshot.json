@@ -1,6 +1,6 @@
 {
-  "id": "0964560d-64b8-4c6a-920b-32862ba51a70",
-  "prevId": "b6dd5062-0b29-4ca9-a0dd-cf2f2e3ca80d",
+  "id": "e1590b6d-d46c-4f69-8318-dd0fe08bb0fa",
+  "prevId": "2685b8a5-d272-4c3e-86f9-c467170517e2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -30554,6 +30554,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "failure_phase": {
+          "name": "failure_phase",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "reprint_of": {
           "name": "reprint_of",
           "type": "uuid",
@@ -30818,6 +30824,14 @@
           "name": "edge_print_jobs_fallback_check",
           "value": "(\"edge_print_jobs\".\"printed_fallback\" AND \"edge_print_jobs\".\"fallback_reason\" IS NOT NULL AND \"edge_print_jobs\".\"fallback_reason\" IN ('kds_down', 'printer_offline'))\n        OR (NOT \"edge_print_jobs\".\"printed_fallback\" AND \"edge_print_jobs\".\"fallback_reason\" IS NULL)"
         },
+        "edge_print_jobs_failure_phase_check": {
+          "name": "edge_print_jobs_failure_phase_check",
+          "value": "\"edge_print_jobs\".\"failure_phase\" IN ('write', 'stale', 'other')"
+        },
+        "edge_print_jobs_failure_phase_status_check": {
+          "name": "edge_print_jobs_failure_phase_status_check",
+          "value": "(\"edge_print_jobs\".\"status\" = 'failed') = (\"edge_print_jobs\".\"failure_phase\" IS NOT NULL)"
+        },
         "edge_print_jobs_attempts_check": {
           "name": "edge_print_jobs_attempts_check",
           "value": "\"edge_print_jobs\".\"attempts\" >= 0"
@@ -31059,6 +31073,18 @@
         "edge_printers_transport_check": {
           "name": "edge_printers_transport_check",
           "value": "(\"edge_printers\".\"transport\" = 'network' AND \"edge_printers\".\"host\" IS NOT NULL AND \"edge_printers\".\"port\" BETWEEN 1 AND 65535 AND \"edge_printers\".\"device_path\" IS NULL)\n        OR (\"edge_printers\".\"transport\" = 'usb' AND \"edge_printers\".\"device_path\" IS NOT NULL AND \"edge_printers\".\"host\" IS NULL AND \"edge_printers\".\"port\" IS NULL)"
+        },
+        "edge_printers_device_path_check": {
+          "name": "edge_printers_device_path_check",
+          "value": "\"edge_printers\".\"device_path\" IS NULL OR \"edge_printers\".\"device_path\" ~ '^/dev/(usb/lp|lp)[0-9]+$'"
+        },
+        "edge_printers_port_check": {
+          "name": "edge_printers_port_check",
+          "value": "\"edge_printers\".\"port\" IS NULL OR \"edge_printers\".\"port\" BETWEEN 9100 AND 9102"
+        },
+        "edge_printers_host_check": {
+          "name": "edge_printers_host_check",
+          "value": "\"edge_printers\".\"host\" IS NULL OR (CASE WHEN \"edge_printers\".\"host\" ~ '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$' THEN \"edge_printers\".\"host\"::inet << '10.0.0.0/8'::inet OR \"edge_printers\".\"host\"::inet << '172.16.0.0/12'::inet OR \"edge_printers\".\"host\"::inet << '192.168.0.0/16'::inet ELSE false END)"
         },
         "edge_printers_station_role_check": {
           "name": "edge_printers_station_role_check",

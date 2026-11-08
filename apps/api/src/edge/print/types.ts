@@ -51,6 +51,13 @@ export type PrintJobKind = PrintJob["kind"];
 export type PrintJobStatus = PrintJob["status"];
 /** Why a job is not on its normal printer / not on the KDS screen. */
 export type FallbackReason = "kds_down" | "printer_offline";
+/**
+ * Why a job is `failed`: `write` (bytes may be partly printed), `stale`
+ * (claim swept, outcome unknown) or `other`. Connect-phase failures never
+ * fail a job (the claim is released). A retry of a `write` / `stale` job
+ * prints a marked reprint, never a silent second original.
+ */
+export type FailurePhase = "write" | "stale" | "other";
 
 export type PrintJobRecord = {
   /** ULID. */
@@ -64,6 +71,8 @@ export type PrintJobRecord = {
   content: Uint8Array;
   attempts: number;
   lastError: string | null;
+  /** Set while status is failed; null otherwise. */
+  failurePhase: FailurePhase | null;
   /** ULID of the original job when this one is a "cetak ulang". */
   reprintOf: string | null;
   /** Printed because the KDS screen or the normal printer was unavailable. */
@@ -149,8 +158,12 @@ export interface PrintStore {
   /** printing → printed. */
   markPrinted(jobId: string, at: Date): Promise<void>;
   /** printing → failed, keeping the error text (no secrets, max 500 chars). */
-  markFailed(jobId: string, error: string): Promise<void>;
-  /** failed → queued (transitionPrintJob "retry"). Returns the updated job. */
+  markFailed(
+    jobId: string,
+    error: string,
+    phase: Exclude<FailurePhase, "stale">,
+  ): Promise<void>;
+  /** failed → queued (transitionPrintJob "retry"), clearing failurePhase. Returns the updated job. */
   requeue(jobId: string): Promise<PrintJobRecord>;
   /**
    * printing → queued in one statement, keeping attempts and the error text:
@@ -161,7 +174,7 @@ export interface PrintStore {
   /**
    * Jobs left in printing with started_at before `startedBefore` (crash or
    * DB error after the claim): printing → failed with `error`, so staff
-   * retry deliberately. Returns the failed jobs.
+   * retry deliberately (failurePhase "stale"). Returns the failed jobs.
    */
   failStaleClaims(
     startedBefore: Date,

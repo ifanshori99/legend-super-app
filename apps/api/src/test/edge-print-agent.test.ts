@@ -158,16 +158,46 @@ describe("print agent queue", () => {
     });
     transports.get("A")!.failNextSend = "write";
     await tick();
-    expect(store.jobs[0]).toMatchObject({ status: "failed", attempts: 1 });
+    expect(store.jobs[0]).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      failurePhase: "write",
+    });
     expect(store.alerts.filter((a) => a.kind === "job_failed")).toHaveLength(1);
     expect(store.alerts[0]?.subjectId).toBe(job.id);
     // No automatic retry: staff decide (a duplicate print is possible).
     await tick();
     expect(store.jobs[0]?.status).toBe("failed");
     await store.requeue(job.id);
+    expect(store.jobs[0]?.failurePhase).toBeNull();
     await tick();
     expect(store.jobs[0]).toMatchObject({ status: "printed", attempts: 2 });
     expect(transports.get("A")!.printed.map(textOf)).toEqual(["r"]);
+  });
+
+  it("marks a non-transport failure with phase other", async () => {
+    const { clock, store } = setup([makePrinter("A")]);
+    const agent = createPrintAgent({
+      store,
+      clock,
+      transportFor: () => ({
+        send: async () => {
+          throw new Error("boom");
+        },
+        probe: async () => true,
+      }),
+    });
+    await agent.enqueue({
+      printerId: "A",
+      kind: "receipt",
+      content: bytesOf("r"),
+      idempotencyKey: "k-other",
+    });
+    await agent.tick();
+    expect(store.jobs[0]).toMatchObject({
+      status: "failed",
+      failurePhase: "other",
+    });
   });
 });
 
@@ -585,6 +615,7 @@ describe("stale claims", () => {
     expect(failed.map((job) => job.idempotencyKey)).toEqual(["old"]);
     expect(store.jobs.map((job) => job.status)).toEqual(["failed", "printing"]);
     expect(store.jobs[0]?.lastError).toContain("periksa printer");
+    expect(store.jobs[0]?.failurePhase).toBe("stale");
     const alerts = store.alerts.filter((a) => a.kind === "job_failed");
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.subjectId).toBe(store.jobs[0]?.id);

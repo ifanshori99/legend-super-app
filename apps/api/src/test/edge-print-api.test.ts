@@ -10,6 +10,9 @@
 // paths, the reprint label on the ESC/POS bytes, the reprint and retry audit
 // rows, concurrent same-key reprint, 409 on invalid transitions (a failed job
 // is retried, not reprinted) and 404 for another tenant's or outlet's job.
+// Also: only cashiers (pos.sale.create) reprint or retry, shift reports need a
+// shift permission, list content is hidden from readers who may not hand it
+// out, and retry of a half-printed (write / stale) job makes a marked reprint.
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
@@ -47,6 +50,8 @@ const offEdge = {
 const ids = {
   operatorRole: randomUUID(),
   readerRole: randomUUID(),
+  kdsRole: randomUUID(),
+  shiftRole: randomUUID(),
   noneRole: randomUUID(),
   edgeNode: randomUUID(),
   printer: randomUUID(),
@@ -63,6 +68,8 @@ let otherTenantOutletId: string;
 type Member = { client: ReturnType<typeof agent>; userId: string };
 let operator: Member;
 let reader: Member;
+let kds: Member;
+let shiftCashier: Member;
 let nobody: Member;
 
 /** Owner-side writes set the tenant local, because RLS is FORCED. */
@@ -111,7 +118,7 @@ async function insertPrinter(
   await asOwnerTenant(tenantId, (client) =>
     client.query(
       `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, transport, host, port, paper_width)
-       VALUES ($1, $2, $3, $4, 'receipt', 'network', '127.0.0.1', 9100, 48)`,
+       VALUES ($1, $2, $3, $4, 'receipt', 'network', '192.168.1.50', 9100, 48)`,
       [printerId, tenantId, outletId, label],
     ),
   );
@@ -124,6 +131,8 @@ async function insertJob(input: {
   printerId: string;
   status: "queued" | "printed" | "failed";
   text?: string;
+  kind?: "receipt" | "shift_report";
+  failurePhase?: "write" | "stale" | "other";
 }): Promise<string> {
   const id = createUlid();
   const content = Buffer.concat([
@@ -133,8 +142,8 @@ async function insertJob(input: {
   await asOwnerTenant(input.tenantId, (client) =>
     client.query(
       `INSERT INTO edge_print_jobs
-         (id, tenant_id, outlet_id, printer_id, kind, status, content, attempts, idempotency_key, source_ref, printed_at)
-       VALUES ($1, $2, $3, $4, 'receipt', $5, $6, 1, $7, 'RCP-001',
+         (id, tenant_id, outlet_id, printer_id, kind, status, content, attempts, idempotency_key, source_ref, failure_phase, printed_at)
+       VALUES ($1, $2, $3, $4, $8, $5, $6, 1, $7, 'RCP-001', $9,
                CASE WHEN $5::varchar = 'printed' THEN now() END)`,
       [
         ulidToUuid(id),
@@ -144,6 +153,8 @@ async function insertJob(input: {
         input.status,
         content,
         `seed-${id}`,
+        input.kind ?? "receipt",
+        input.status === "failed" ? (input.failurePhase ?? "other") : null,
       ],
     ),
   );
@@ -167,6 +178,8 @@ function api(who: Member) {
       send(`/print-jobs/${jobId}/reprint`, { idempotencyKey }),
     retry: (jobId: string) =>
       send(`/print-jobs/${jobId}/retry`, { idempotencyKey: randomUUID() }),
+    retryWithKey: (jobId: string, idempotencyKey: string) =>
+      send(`/print-jobs/${jobId}/retry`, { idempotencyKey }),
     reprintWithoutOrigin: (jobId: string) =>
       sendWithoutOrigin(`/print-jobs/${jobId}/reprint`, {
         idempotencyKey: randomUUID(),
@@ -189,6 +202,12 @@ beforeAll(async () => {
     [ids.operatorRole, "Cetak Operator Uji", ["order.view", "pos.sale.create"]],
     [ids.readerRole, "Cetak Order View Uji", ["order.view"]],
     [ids.noneRole, "Tanpa Cetak", ["floor.table.view"]],
+    [ids.kdsRole, "Cetak KDS Uji", ["kds.ticket.process"]],
+    [
+      ids.shiftRole,
+      "Cetak Kasir Shift Uji",
+      ["pos.sale.create", "shift.cash.view_all"],
+    ],
   ];
   for (const [id, name, permissions] of roles)
     await owner.query(
@@ -199,6 +218,8 @@ beforeAll(async () => {
   operator = await member(ids.operatorRole, "Cetak Operator");
   reader = await member(ids.readerRole, "Cetak Pembaca");
   nobody = await member(ids.noneRole, "Cetak Tamu");
+  kds = await member(ids.kdsRole, "Cetak KDS");
+  shiftCashier = await member(ids.shiftRole, "Cetak Kasir Shift");
   await insertPrinter(tenant.tenantId, tenant.outletId, ids.printer, "Kasir");
   await insertPrinter(
     tenant.tenantId,
@@ -355,7 +376,7 @@ describe("edge print queue API (legend-46p)", () => {
     expect(data.kind).toBe("receipt");
     printJobSchema.parse(data);
 
-    const bytes = Buffer.from(data.content, "base64");
+    const bytes = Buffer.from(data.content ?? "", "base64");
     expect(bytes.subarray(0, 2).equals(ESC_AT)).toBe(true);
     expect(bytes.toString("latin1")).toContain("CETAK ULANG");
     expect(bytes.toString("latin1")).toContain("Total Rp 55.000");
@@ -531,6 +552,236 @@ describe("edge print queue API (legend-46p)", () => {
       status: "printed",
     });
     expect((await api(operator).retry(printed)).status).toBe(409);
+  });
+
+  it("answers 403 to reprint and retry for a KDS-only user (reprint is for cashiers)", async () => {
+    asEdgeNode();
+    const printed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "printed",
+    });
+    const failed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "failed",
+    });
+    // The KDS user can still read the queue.
+    expect((await api(kds).list()).status).toBe(200);
+    expect((await api(kds).reprint(printed)).status).toBe(403);
+    expect((await api(kds).retry(failed)).status).toBe(403);
+    const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query<{ status: string }>(
+        "SELECT status FROM edge_print_jobs WHERE id = $1",
+        [ulidToUuid(failed)],
+      ),
+    );
+    expect(rows[0].status).toBe("failed");
+  });
+
+  it("reprints a shift report only with a shift permission", async () => {
+    asEdgeNode();
+    const report = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "printed",
+      kind: "shift_report",
+      text: "Tutup shift Rp 1.000.000\n",
+    });
+    const denied = await api(operator).reprint(report);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error?.code ?? denied.body.code).toBe(
+      "PERMISSION_DENIED",
+    );
+    const { rows: none } = await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query("SELECT 1 FROM edge_print_jobs WHERE reprint_of = $1", [
+        ulidToUuid(report),
+      ]),
+    );
+    expect(none).toHaveLength(0);
+    const allowed = await api(shiftCashier).reprint(report);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(201);
+    expect(allowed.body.data.kind).toBe("shift_report");
+    expect(allowed.body.data.reprintOf).toBe(report);
+  });
+
+  it("hides content in the list from readers who may not hand it out", async () => {
+    asEdgeNode();
+    const receipt = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "printed",
+    });
+    const report = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "printed",
+      kind: "shift_report",
+    });
+    const contentOf = async (who: Member, id: string) => {
+      const res = await api(who).list("?limit=100");
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const job = listPrintJobs.response
+        .parse(res.body)
+        .data.find((item) => item.id === id);
+      expect(job, `job ${id} listed`).toBeDefined();
+      return job?.content;
+    };
+    // KDS-only: no bytes at all.
+    expect(await contentOf(kds, receipt)).toBeNull();
+    expect(await contentOf(kds, report)).toBeNull();
+    // Cashier without shift permissions: receipt yes, shift report no.
+    expect(await contentOf(operator, receipt)).toEqual(expect.any(String));
+    expect(await contentOf(operator, report)).toBeNull();
+    // Cashier with a shift permission sees both.
+    expect(await contentOf(shiftCashier, report)).toEqual(expect.any(String));
+  });
+
+  it("retry of a write- or stale-failed job makes a marked reprint and leaves the original failed", async () => {
+    asEdgeNode();
+    for (const failurePhase of ["write", "stale"] as const) {
+      const failed = await insertJob({
+        tenantId: tenant.tenantId,
+        outletId: tenant.outletId,
+        printerId: ids.printer,
+        status: "failed",
+        failurePhase,
+        text: "Total Rp 77.000\n",
+      });
+      const key = randomUUID();
+      const res = await api(operator).retryWithKey(failed, key);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const job = printJobSchema.parse(res.body.data);
+      expect(job.id).not.toBe(failed);
+      expect(job.reprintOf).toBe(failed);
+      expect(job.status).toBe("queued");
+      const bytes = Buffer.from(job.content ?? "", "base64").toString("latin1");
+      expect(bytes).toContain("CETAK ULANG");
+      expect(bytes).toContain("Total Rp 77.000");
+
+      // The original stays failed with its phase; the same key returns the same reprint.
+      const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query<{ status: string; failure_phase: string }>(
+          "SELECT status, failure_phase FROM edge_print_jobs WHERE id = $1",
+          [ulidToUuid(failed)],
+        ),
+      );
+      expect(rows[0]).toEqual({
+        status: "failed",
+        failure_phase: failurePhase,
+      });
+      const again = await api(operator).retryWithKey(failed, key);
+      expect(again.status).toBe(200);
+      expect(again.body.data.id).toBe(job.id);
+      // Audited as a reprint with the retry reason.
+      const { rows: audit } = await asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `SELECT event FROM audit_logs
+           WHERE tenant_id = $1 AND event->>'action' = 'print_job.reprinted'
+             AND event->>'objectId' = $2`,
+          [tenant.tenantId, job.id],
+        ),
+      );
+      expect(audit).toHaveLength(1);
+      expect(audit[0].event.reason).toBe("retry");
+    }
+  });
+
+  it("retry of a write-failed shift report needs a shift permission", async () => {
+    asEdgeNode();
+    const failed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "failed",
+      failurePhase: "write",
+      kind: "shift_report",
+    });
+    expect((await api(operator).retry(failed)).status).toBe(403);
+    const res = await api(shiftCashier).retry(failed);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.reprintOf).toBe(failed);
+  });
+
+  it("retry of a write-failed job already reprinted under another key is 409; the same key replays", async () => {
+    asEdgeNode();
+    const failed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "failed",
+      failurePhase: "write",
+    });
+    const key = randomUUID();
+    const first = await api(operator).retryWithKey(failed, key);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const second = await api(operator).retryWithKey(failed, randomUUID());
+    expect(second.status, JSON.stringify(second.body)).toBe(409);
+    expect(JSON.stringify(second.body)).toContain(
+      "Tugas ini sudah dicetak ulang.",
+    );
+    const replay = await api(operator).retryWithKey(failed, key);
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query("SELECT 1 FROM edge_print_jobs WHERE reprint_of = $1", [
+        ulidToUuid(failed),
+      ]),
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it("plain requeue of an other-failed shift report needs a shift permission", async () => {
+    asEdgeNode();
+    const failed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "failed",
+      failurePhase: "other",
+      kind: "shift_report",
+    });
+    expect((await api(operator).retry(failed)).status).toBe(403);
+    const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query<{ status: string }>(
+        "SELECT status FROM edge_print_jobs WHERE id = $1",
+        [ulidToUuid(failed)],
+      ),
+    );
+    expect(rows[0].status).toBe("failed");
+    const res = await api(shiftCashier).retry(failed);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({ id: failed, status: "queued" });
+  });
+
+  it("retry of an other-failed job requeues the same job and clears the phase", async () => {
+    asEdgeNode();
+    const failed = await insertJob({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      printerId: ids.printer,
+      status: "failed",
+      failurePhase: "other",
+    });
+    const res = await api(operator).retry(failed);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data).toMatchObject({
+      id: failed,
+      status: "queued",
+      reprintOf: null,
+    });
+    const { rows } = await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query<{ status: string; failure_phase: string | null }>(
+        "SELECT status, failure_phase FROM edge_print_jobs WHERE id = $1",
+        [ulidToUuid(failed)],
+      ),
+    );
+    expect(rows[0]).toEqual({ status: "queued", failure_phase: null });
   });
 
   it("TEN-01 TEN-03 another tenant's or outlet's job id is 404, and an unknown id too", async () => {

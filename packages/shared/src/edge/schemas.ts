@@ -145,7 +145,8 @@ export const printJobSchema = z.strictObject({
   printerId: uuidSchema,
   kind: z.enum(["receipt", "station_ticket", "shift_report"]),
   format: z.literal("esc_pos"),
-  content: z.string().min(1),
+  // null when the caller may not see the bytes
+  content: z.string().min(1).nullable(),
   status: printJobStatusSchema,
   createdAt: isoDateTimeSchema,
   reprintOf: ulidSchema.nullable(),

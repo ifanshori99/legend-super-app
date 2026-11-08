@@ -93,7 +93,7 @@ async function insertPrinter(
   await asOwner((client) =>
     client.query(
       `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, transport, host, port, paper_width, fallback_printer_id)
-       VALUES ($1, $2, $3, $4, 'receipt', 'network', '192.0.2.10', 9100, 48, $5)`,
+       VALUES ($1, $2, $3, $4, 'receipt', 'network', '192.168.1.50', 9100, 48, $5)`,
       [id, tenantId, outletId, label, fallbackPrinterId],
     ),
   );
@@ -174,15 +174,17 @@ describe("print queue", () => {
     expect((await storeA.getJob(first.id))?.status).toBe("printed");
     expect((await storeA.getJob(first.id))?.printedAt).toBeInstanceOf(Date);
 
-    await storeA.markFailed(second.id, "x".repeat(900));
+    await storeA.markFailed(second.id, "x".repeat(900), "other");
     const failed = await storeA.getJob(second.id);
     expect(failed?.status).toBe("failed");
     expect(failed?.lastError).toHaveLength(500);
+    expect(failed?.failurePhase).toBe("other");
 
     // A failed job returns to the queue behind older queued jobs only by age:
     // it is older than `third`, so it is claimed first again.
     const requeued = await storeA.requeue(second.id);
     expect(requeued.status).toBe("queued");
+    expect(requeued.failurePhase).toBeNull();
     expect((await storeA.claimNext(printer))?.id).toBe(second.id);
     expect((await storeA.getJob(second.id))?.attempts).toBe(2);
     expect((await storeA.claimNext(printer))?.id).toBe(third.id);
@@ -195,7 +197,9 @@ describe("print queue", () => {
     await expect(storeA.markPrinted(queued.id, tick())).rejects.toMatchObject({
       code: "CONFLICT",
     });
-    await expect(storeA.markFailed(queued.id, "err")).rejects.toMatchObject({
+    await expect(
+      storeA.markFailed(queued.id, "err", "other"),
+    ).rejects.toMatchObject({
       code: "CONFLICT",
     });
     await expect(storeA.requeue(queued.id)).rejects.toMatchObject({
@@ -366,7 +370,7 @@ describe("print queue", () => {
       status: "queued",
       reprintOf: null,
     });
-    expect(Buffer.from(dto.content, "base64")[0]).toBe(0x1b);
+    expect(Buffer.from(dto.content ?? "", "base64")[0]).toBe(0x1b);
     expect(dto.createdAt).toBe(created[0]!.createdAt.toISOString());
   });
 
@@ -386,7 +390,7 @@ describe("print queue", () => {
       status: "online",
       lastSeenAt: t3,
       offlineSince: null,
-      transport: { kind: "network", host: "192.0.2.10", port: 9100 },
+      transport: { kind: "network", host: "192.168.1.50", port: 9100 },
       paperWidth: 48,
     });
     await expect(
@@ -508,7 +512,10 @@ describe("print queue", () => {
     ).filter((item) => item.printerId === printer);
     // Only the printing jobs started before the cutoff: `stale`.
     expect(failed.map((item) => item.id)).toEqual([stale.id]);
-    expect(failed[0]).toMatchObject({ status: "failed" });
+    expect(failed[0]).toMatchObject({
+      status: "failed",
+      failurePhase: "stale",
+    });
     expect(failed[0]?.lastError).toHaveLength(500);
 
     expect((await storeA.getJob(stale.id))?.status).toBe("failed");
@@ -518,6 +525,56 @@ describe("print queue", () => {
     expect(
       await storeA.failStaleClaims(new Date(cutoff.getTime() + 1), "x"),
     ).toEqual([]);
+  });
+
+  it("markFailed records the write phase and requeue / releaseClaim clear it", async () => {
+    const printer = await insertPrinter(outletA, "Fase gagal");
+    const written = (await storeA.enqueue(job(printer, "ph-w"))).job;
+    await storeA.claimNext(printer);
+    await storeA.markFailed(written.id, "write error", "write");
+    expect(await storeA.getJob(written.id)).toMatchObject({
+      status: "failed",
+      failurePhase: "write",
+    });
+    expect((await storeA.requeue(written.id)).failurePhase).toBeNull();
+    // A claimed job released back to the queue never keeps a phase.
+    await storeA.claimNext(printer);
+    await storeA.releaseClaim(written.id, "connect error");
+    expect(await storeA.getJob(written.id)).toMatchObject({
+      status: "queued",
+      failurePhase: null,
+    });
+  });
+
+  it("CHECK keeps failure_phase set exactly while the job is failed", async () => {
+    const printer = await insertPrinter(outletA, "Cek fase");
+    const insert = (status: string, phase: string | null) =>
+      asOwner((client) =>
+        client.query(
+          `INSERT INTO edge_print_jobs (id, tenant_id, outlet_id, printer_id, kind, content, idempotency_key, status, failure_phase, printed_at)
+           VALUES ($1, $2, $3, $4, 'receipt', '\\x1b40', $5, $6, $7, NULL)`,
+          [
+            randomUUID(),
+            tenantId,
+            outletA,
+            printer,
+            `ph-${randomUUID()}`,
+            status,
+            phase,
+          ],
+        ),
+      );
+    await expect(insert("failed", null)).rejects.toThrow(
+      /edge_print_jobs_failure_phase_status_check/,
+    );
+    await expect(insert("queued", "write")).rejects.toThrow(
+      /edge_print_jobs_failure_phase_status_check/,
+    );
+    await expect(insert("failed", "bogus")).rejects.toThrow(
+      /edge_print_jobs_failure_phase_check/,
+    );
+    await expect(insert("failed", "stale")).resolves.toBeDefined();
+    await expect(insert("queued", null)).resolves.toBeDefined();
   });
 
   it("CHECK refuses a fallback job without a reason and a reason without fallback", async () => {
@@ -604,7 +661,9 @@ describe("print tables isolation", () => {
         (await foreign.listJobs({ limit: 200 })).items.map((item) => item.id),
       ).not.toContain(secret.id);
       expect(await foreign.claimNext(printer)).toBeNull();
-      await expect(foreign.markFailed(secret.id, "x")).rejects.toMatchObject({
+      await expect(
+        foreign.markFailed(secret.id, "x", "other"),
+      ).rejects.toMatchObject({
         code: "NOT_FOUND",
       });
       await expect(foreign.requeue(secret.id)).rejects.toMatchObject({
@@ -697,6 +756,80 @@ describe("print tables isolation", () => {
         outlet: true,
       })),
     );
+  });
+});
+
+describe("printer target CHECKs", () => {
+  const insertTarget = (
+    transport: "network" | "usb",
+    host: string | null,
+    port: number | null,
+    devicePath: string | null,
+  ) =>
+    asOwner((client) =>
+      client.query(
+        `INSERT INTO edge_printers (id, tenant_id, outlet_id, label, role, transport, host, port, device_path, paper_width)
+         VALUES ($1, $2, $3, 'Target', 'receipt', $4, $5, $6, $7, 48)`,
+        [randomUUID(), tenantId, outletA, transport, host, port, devicePath],
+      ),
+    );
+
+  it("refuses a device path outside /dev/usb/lpN and /dev/lpN", async () => {
+    for (const path of [
+      "/etc/passwd",
+      "/dev/sda",
+      "/dev/usb/lp",
+      "/dev/usb/lp0/../sda",
+      "/dev/lp0x",
+      "dev/usb/lp0",
+    ])
+      await expect(insertTarget("usb", null, null, path)).rejects.toThrow(
+        /edge_printers_device_path_check/,
+      );
+    await expect(
+      insertTarget("usb", null, null, "/dev/usb/lp0"),
+    ).resolves.toBeDefined();
+    await expect(
+      insertTarget("usb", null, null, "/dev/lp1"),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses a port outside 9100-9102", async () => {
+    for (const port of [9099, 9103, 9200, 80, 65535])
+      await expect(
+        insertTarget("network", "192.168.1.50", port, null),
+      ).rejects.toThrow(/edge_printers_port_check/);
+    for (const port of [9100, 9101, 9102])
+      await expect(
+        insertTarget("network", "192.168.1.50", port, null),
+      ).resolves.toBeDefined();
+  });
+
+  it("refuses a host that is not a private LAN IPv4 literal", async () => {
+    for (const host of [
+      "127.0.0.1",
+      "169.254.1.1",
+      "printer.local",
+      "8.8.8.8",
+      "172.32.0.1",
+      "999.1.1.1",
+      "192.168.1",
+      "192.168.1.50/24",
+      "::1",
+      "",
+    ])
+      await expect(insertTarget("network", host, 9100, null)).rejects.toThrow(
+        /edge_printers_host_check/,
+      );
+    for (const host of [
+      "10.1.2.3",
+      "172.16.0.9",
+      "172.31.255.1",
+      "192.168.1.50",
+    ])
+      await expect(
+        insertTarget("network", host, 9100, null),
+      ).resolves.toBeDefined();
   });
 });
 
