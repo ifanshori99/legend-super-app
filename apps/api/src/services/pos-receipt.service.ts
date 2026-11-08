@@ -8,11 +8,12 @@
 //   UPDATE ... last_number + 1 row lock serialises devices and a rollback of
 //   the sale rolls the number back with it. Idempotent per order.
 // - A void never returns a number: the row flips to `voided` and stays.
-// - Cloud merge of an offline device run (`mergeDeviceReceiptRun`) only moves
-//   forward and is an idempotent replay. It refuses the outlet-owned (cloud)
-//   sequence, a `lastNumber` beyond max(cloud, incoming ordinals), receipts
-//   whose order is not in the same tenant and outlet, and a stale batch
-//   (`lastNumber` below the cloud's) unless it is a pure no-op replay.
+// - Cloud merge of an offline device run (`mergeDeviceReceiptRun`) backfills
+//   missing ordinals (late/reversed batches too), is an idempotent replay and
+//   advances `lastNumber` only over a complete 1..n run (else
+//   RECEIPT_SEQUENCE_GAP, nothing written). It refuses the outlet-owned
+//   (cloud) sequence, receipts whose order is not in the same tenant and
+//   outlet, and an ordinal that is already taken by another receipt.
 // The database triggers in pos-receipt.custom.sql are the backstop.
 
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -26,7 +27,6 @@ import {
 import {
   assertReceiptMatchesSequence,
   formatReceiptNumber,
-  mergeDeviceReceiptSequence,
   posReceiptSchema,
   PosError,
   receiptGaps,
@@ -37,7 +37,12 @@ import {
   type ReceiptSequence,
 } from "@starter/shared/pos";
 import { posOrders } from "../db/schema/pos-order.ts";
-import { posReceipts, receiptSequences } from "../db/schema/pos-receipt.ts";
+import { legalEntities, outlets } from "../db/schema/platform-org.ts";
+import {
+  posReceipts,
+  receiptSequences,
+  type PosReceiptOutletSnapshot,
+} from "../db/schema/pos-receipt.ts";
 import type { PosReceiptPort } from "./pos-order-ports.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -228,6 +233,44 @@ export async function findReceiptByNumber(
 }
 
 /**
+ * Outlet name/address and legal entity name/NPWP tail as they are at issue
+ * time. Stored on the receipt so later outlet edits never rewrite a printed
+ * document.
+ */
+export async function outletSnapshotFor(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+): Promise<PosReceiptOutletSnapshot> {
+  const tenantId = context.tenant.tenantId;
+  const [row] = await tx
+    .select({
+      outletName: outlets.name,
+      outletAddress: outlets.address,
+      legalName: legalEntities.name,
+      npwpLast4: legalEntities.npwpLast4,
+    })
+    .from(outlets)
+    .leftJoin(
+      legalEntities,
+      and(
+        eq(legalEntities.tenantId, outlets.tenantId),
+        eq(legalEntities.id, outlets.legalEntityId),
+      ),
+    )
+    .where(
+      and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId as OutletId)),
+    );
+  if (!row) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+  return {
+    outletName: row.outletName,
+    outletAddress: row.outletAddress,
+    legalName: row.legalName ?? null,
+    npwpLast4: row.npwpLast4 ?? null,
+  };
+}
+
+/**
  * POS-06: next gapless number of the sale's device, inside the caller's order
  * transaction. An order that already has a receipt gets it back unchanged.
  */
@@ -265,6 +308,7 @@ export async function allocateReceipt(
       lastNumber: receiptSequences.lastNumber,
     });
   if (!advanced) throw new Error("Receipt sequence update returned no row");
+  const outletSnapshot = await outletSnapshotFor(tx, context, outletId);
   const [row] = await tx
     .insert(posReceipts)
     .values({
@@ -277,6 +321,7 @@ export async function allocateReceipt(
       sequenceNumber: advanced.lastNumber,
       status: "issued",
       issuedAt: input.at,
+      outletSnapshot,
     })
     .returning();
   if (!row) throw new Error("Receipt insert returned no row");
@@ -395,10 +440,15 @@ export async function provisionReceiptSequence(
 
 /**
  * Cloud merge of an offline device run. The device's run is authoritative for
- * its ordinals: the sequence only moves forward, incoming receipts are inserted
- * once (replay is a no-op) and a receipt voided offline is voided here too.
- * A device cannot claim numbers it does not send, cannot use the cloud-owned
- * (outlet id) sequence and can only reference orders of its own outlet.
+ * its ordinals. Incoming receipts missing in the cloud are inserted (above or
+ * below the cloud `lastNumber`: late and reversed batches are fine), an
+ * ordinal already present must be the very same receipt (replay is a no-op)
+ * and a receipt voided offline is voided here too. The cloud `lastNumber`
+ * moves to max(cloud, device) only when every ordinal 1..newLast exists after
+ * the batch; otherwise nothing is written and RECEIPT_SEQUENCE_GAP lists the
+ * missing ordinals (the device resends the full range). A device cannot use
+ * the cloud-owned (outlet id) sequence and can only reference orders of its
+ * own outlet.
  */
 export async function mergeDeviceReceiptRun(
   tx: Tx,
@@ -410,7 +460,7 @@ export async function mergeDeviceReceiptRun(
       prefix: string;
       lastNumber: number;
     };
-    receipts: PosReceipt[];
+    receipts: (PosReceipt & { outletSnapshot?: PosReceiptOutletSnapshot })[];
   },
 ): Promise<{ sequence: ReceiptSequence; inserted: number }> {
   const tenantId = context.tenant.tenantId;
@@ -419,21 +469,19 @@ export async function mergeDeviceReceiptRun(
   // The outlet id is the key of the cloud-owned sequence; a device never owns it.
   if (deviceId === outletId) throw new PosError("RECEIPT_PREFIX_MISMATCH");
   await lockOutletSequences(tx, tenantId, outletId);
-  let cloudRow = await findSequenceRow(tx, tenantId, outletId, deviceId);
-  if (!cloudRow) {
+  const cloudRow = await findSequenceRow(tx, tenantId, outletId, deviceId);
+  if (cloudRow) {
+    if (cloudRow.prefix !== prefix)
+      throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  } else {
     const used = await prefixesOfOutlet(tx, tenantId, outletId);
     if (used.has(prefix)) throw new PosError("RECEIPT_PREFIX_MISMATCH");
-    cloudRow = await insertSequence(tx, {
-      tenantId,
-      outletId,
-      deviceId,
-      prefix,
-    });
   }
-  const cloud = toReceiptSequence(cloudRow);
-  if (cloud.prefix !== prefix) throw new PosError("RECEIPT_PREFIX_MISMATCH");
+  const cloudLast = cloudRow?.lastNumber ?? 0;
 
-  // Validate every incoming receipt before anything is written.
+  // Validate the whole batch before anything is written.
+  const ordinals = new Set<number>();
+  const batchOrderIds = new Set<string>();
   for (const receipt of input.receipts) {
     if (
       receipt.tenantId !== tenantId ||
@@ -445,9 +493,17 @@ export async function mergeDeviceReceiptRun(
       { prefix, lastNumber: input.sequence.lastNumber },
       receipt,
     );
+    // Two receipts for one ordinal or one order disagree with each other.
+    if (
+      ordinals.has(receipt.sequenceNumber) ||
+      batchOrderIds.has(receipt.orderId)
+    )
+      throw new PosError("RECEIPT_SEQUENCE_REGRESSION");
+    ordinals.add(receipt.sequenceNumber);
+    batchOrderIds.add(receipt.orderId);
   }
   if (input.receipts.length > 0) {
-    const orderIds = [...new Set(input.receipts.map((r) => r.orderId))];
+    const orderIds = [...batchOrderIds];
     const orderRows = await tx
       .select({ orderId: posOrders.orderId })
       .from(posOrders)
@@ -463,103 +519,51 @@ export async function mergeDeviceReceiptRun(
       if (!known.has(orderId)) throw new PosError("RECEIPT_PREFIX_MISMATCH");
   }
 
-  const maxIncoming = input.receipts.reduce(
-    (max, receipt) => Math.max(max, receipt.sequenceNumber),
-    0,
-  );
-  if (input.sequence.lastNumber > Math.max(cloud.lastNumber, maxIncoming))
-    throw new CoreError(
-      "VALIDATION_ERROR",
-      "Nomor terakhir perangkat melebihi struk yang dikirim.",
-    );
-
-  if (input.sequence.lastNumber < cloud.lastNumber) {
-    // Stale batch: only an exact replay of what the cloud already holds.
-    for (const receipt of input.receipts) {
-      const [existing] = await tx
-        .select()
-        .from(posReceipts)
-        .where(
-          and(
-            eq(posReceipts.tenantId, tenantId),
-            eq(posReceipts.orderId, receipt.orderId),
-          ),
-        );
-      if (
-        !existing ||
-        existing.number !== receipt.number ||
-        existing.sequenceId !== cloud.id ||
-        existing.sequenceNumber !== receipt.sequenceNumber ||
-        (existing.status !== receipt.status && existing.status !== "voided")
-      )
-        throw new PosError("RECEIPT_SEQUENCE_REGRESSION");
-    }
-    return { sequence: cloud, inserted: 0 };
-  }
-
-  const merged = mergeDeviceReceiptSequence(cloud, {
-    ...cloud,
-    prefix,
-    lastNumber: input.sequence.lastNumber,
-  });
-  let sequence = cloud;
-  if (merged.lastNumber !== cloud.lastNumber) {
-    const [row] = await tx
-      .update(receiptSequences)
-      .set({ lastNumber: merged.lastNumber, updatedAt: sql`now()` })
-      .where(
-        and(
-          eq(receiptSequences.tenantId, tenantId),
-          eq(receiptSequences.id, cloud.id),
-        ),
-      )
-      .returning();
-    if (!row) throw new Error("Receipt sequence update returned no row");
-    sequence = toReceiptSequence(row);
-  }
-
-  let inserted = 0;
-  for (const receipt of input.receipts) {
-    const rows = await tx
-      .insert(posReceipts)
-      .values({
-        id: receipt.id,
-        tenantId,
-        outletId,
-        orderId: receipt.orderId,
-        sequenceId: sequence.id,
-        deviceId,
-        number: receipt.number,
-        sequenceNumber: receipt.sequenceNumber,
-        status: receipt.status,
-        issuedAt: new Date(receipt.issuedAt),
-        voidedAt: receipt.voidedAt ? new Date(receipt.voidedAt) : null,
-        voidReason: receipt.voidReason,
-        voidedBy: receipt.voidedBy,
-        reprintCount: receipt.reprintCount,
-      })
-      .onConflictDoNothing()
-      .returning({ id: posReceipts.id });
-    if (rows.length > 0) {
-      inserted += 1;
-      continue;
-    }
-    // Pre-existing row: it must be this very receipt, else the device run
-    // disagrees with what the cloud already issued.
-    const [existing] = await tx
+  // Compare the batch with what the cloud already holds.
+  const byOrdinal = new Map<number, ReceiptRow>();
+  const cloudOrdinals = new Set<number>();
+  if (cloudRow) {
+    const held = await tx
       .select()
       .from(posReceipts)
       .where(
         and(
           eq(posReceipts.tenantId, tenantId),
-          eq(posReceipts.orderId, receipt.orderId),
+          eq(posReceipts.sequenceId, cloudRow.id),
         ),
       );
+    for (const row of held) {
+      byOrdinal.set(row.sequenceNumber, row);
+      cloudOrdinals.add(row.sequenceNumber);
+    }
+  }
+  const byOrder = new Map<string, ReceiptRow>();
+  if (input.receipts.length > 0) {
+    const rows = await tx
+      .select()
+      .from(posReceipts)
+      .where(
+        and(
+          eq(posReceipts.tenantId, tenantId),
+          inArray(posReceipts.orderId, [...batchOrderIds]),
+        ),
+      );
+    for (const row of rows) byOrder.set(row.orderId, row);
+  }
+  const toInsert: typeof input.receipts = [];
+  const toVoid: { existing: ReceiptRow; receipt: PosReceipt }[] = [];
+  for (const receipt of input.receipts) {
+    const existing = byOrdinal.get(receipt.sequenceNumber);
+    const sameOrder = byOrder.get(receipt.orderId);
+    if (!existing) {
+      // The order already has a receipt elsewhere: the device disagrees.
+      if (sameOrder) throw new PosError("RECEIPT_SEQUENCE_REGRESSION");
+      toInsert.push(receipt);
+      continue;
+    }
     if (
-      !existing ||
-      existing.number !== receipt.number ||
-      existing.sequenceId !== sequence.id ||
-      existing.sequenceNumber !== receipt.sequenceNumber
+      existing.orderId !== receipt.orderId ||
+      existing.number !== receipt.number
     )
       throw new PosError("RECEIPT_SEQUENCE_REGRESSION");
     if (
@@ -569,23 +573,96 @@ export async function mergeDeviceReceiptRun(
       receipt.voidReason &&
       receipt.voidedBy
     )
-      await tx
-        .update(posReceipts)
-        .set({
-          status: "voided",
-          voidedAt: new Date(receipt.voidedAt),
-          voidReason: receipt.voidReason,
-          voidedBy: receipt.voidedBy,
-          updatedAt: sql`now()`,
-        })
-        .where(
-          and(
-            eq(posReceipts.tenantId, tenantId),
-            eq(posReceipts.id, existing.id),
-          ),
-        );
+      toVoid.push({ existing, receipt });
   }
-  return { sequence, inserted };
+
+  // Completeness: the sequence advances only over a run with no hole. A stale
+  // batch (device.last <= cloud.last) never moves it and is never refused.
+  const newLast = Math.max(cloudLast, input.sequence.lastNumber);
+  if (input.sequence.lastNumber > cloudLast) {
+    const missing: number[] = [];
+    for (let n = 1; n <= newLast; n += 1)
+      if (!cloudOrdinals.has(n) && !ordinals.has(n)) missing.push(n);
+    if (missing.length > 0) {
+      const shown = missing.slice(0, 20).join(", ");
+      const more = missing.length > 20 ? ` (+${missing.length - 20} lagi)` : "";
+      throw new PosError(
+        "RECEIPT_SEQUENCE_GAP",
+        `Ada nomor struk yang hilang pada perangkat ini: ${shown}${more}.`,
+      );
+    }
+  }
+
+  // Writes: sequence first (the retained trigger needs sequence_number <=
+  // last_number), then receipts, all in the caller's transaction.
+  let sequenceRow = cloudRow;
+  if (!sequenceRow)
+    sequenceRow = await insertSequence(tx, {
+      tenantId,
+      outletId,
+      deviceId,
+      prefix,
+    });
+  if (newLast !== sequenceRow.lastNumber) {
+    const [row] = await tx
+      .update(receiptSequences)
+      .set({ lastNumber: newLast, updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(receiptSequences.tenantId, tenantId),
+          eq(receiptSequences.id, sequenceRow.id),
+        ),
+      )
+      .returning();
+    if (!row) throw new Error("Receipt sequence update returned no row");
+    sequenceRow = row;
+  }
+
+  let fallbackSnapshot: PosReceiptOutletSnapshot | undefined;
+  for (const receipt of toInsert) {
+    let snapshot = receipt.outletSnapshot;
+    if (!snapshot) {
+      fallbackSnapshot ??= await outletSnapshotFor(tx, context, outletId);
+      snapshot = fallbackSnapshot;
+    }
+    await tx.insert(posReceipts).values({
+      id: receipt.id,
+      tenantId,
+      outletId,
+      orderId: receipt.orderId,
+      sequenceId: sequenceRow.id,
+      deviceId,
+      number: receipt.number,
+      sequenceNumber: receipt.sequenceNumber,
+      status: receipt.status,
+      issuedAt: new Date(receipt.issuedAt),
+      voidedAt: receipt.voidedAt ? new Date(receipt.voidedAt) : null,
+      voidReason: receipt.voidReason,
+      voidedBy: receipt.voidedBy,
+      reprintCount: receipt.reprintCount,
+      outletSnapshot: snapshot,
+    });
+  }
+  for (const { existing, receipt } of toVoid)
+    await tx
+      .update(posReceipts)
+      .set({
+        status: "voided",
+        voidedAt: new Date(receipt.voidedAt as string),
+        voidReason: receipt.voidReason,
+        voidedBy: receipt.voidedBy,
+        updatedAt: sql`now()`,
+      })
+      .where(
+        and(
+          eq(posReceipts.tenantId, tenantId),
+          eq(posReceipts.id, existing.id),
+        ),
+      );
+  return {
+    sequence: toReceiptSequence(sequenceRow),
+    inserted: toInsert.length,
+  };
 }
 
 /** Sequences of the outlet that issued a number with no receipt row (POS-06). */

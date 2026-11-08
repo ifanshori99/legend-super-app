@@ -23,6 +23,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   smallint,
   text,
@@ -90,6 +91,18 @@ export const receiptSequences = pgTable(
   ],
 );
 
+/**
+ * POS-07 header frozen when the receipt is issued: a later outlet rename or
+ * move never changes a printed / emailed / e-receipt document. Immutable with
+ * the row (pos_receipts_retained trigger).
+ */
+export type PosReceiptOutletSnapshot = {
+  outletName: string;
+  outletAddress: string;
+  legalName: string | null;
+  npwpLast4: string | null;
+};
+
 /** `pos_receipts` (T, O): POS-06, one receipt per completed sale. */
 export const posReceipts = pgTable(
   "pos_receipts",
@@ -108,6 +121,9 @@ export const posReceipts = pgTable(
     voidReason: varchar("void_reason", { length: 30 }),
     voidedBy: text("voided_by"),
     reprintCount: smallint("reprint_count").notNull().default(0),
+    outletSnapshot: jsonb("outlet_snapshot")
+      .$type<PosReceiptOutletSnapshot>()
+      .notNull(),
     createdAt,
     updatedAt,
   },
@@ -157,6 +173,12 @@ export const posReceipts = pgTable(
       "pos_receipts_void_fields_check",
       sql`(${table.status} = 'voided') = (${table.voidedAt} IS NOT NULL AND ${table.voidReason} IS NOT NULL AND ${table.voidedBy} IS NOT NULL)
         AND (${table.status} = 'voided' OR (${table.voidedAt} IS NULL AND ${table.voidReason} IS NULL AND ${table.voidedBy} IS NULL))`,
+    ),
+    check(
+      "pos_receipts_outlet_snapshot_check",
+      sql`jsonb_typeof(${table.outletSnapshot}) = 'object'
+        AND jsonb_typeof(${table.outletSnapshot} -> 'outletName') = 'string'
+        AND jsonb_typeof(${table.outletSnapshot} -> 'outletAddress') = 'string'`,
     ),
     index("pos_receipts_outlet_issued_idx").on(
       table.tenantId,

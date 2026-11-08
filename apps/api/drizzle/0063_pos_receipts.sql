@@ -74,6 +74,7 @@ CREATE TABLE "pos_receipts" (
 	"void_reason" varchar(30),
 	"voided_by" text,
 	"reprint_count" smallint DEFAULT 0 NOT NULL,
+	"outlet_snapshot" jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "pos_receipts_tenant_id_id_key" UNIQUE("tenant_id","id"),
@@ -84,7 +85,10 @@ CREATE TABLE "pos_receipts" (
 	CONSTRAINT "pos_receipts_sequence_number_check" CHECK ("pos_receipts"."sequence_number" BETWEEN 1 AND 999999999),
 	CONSTRAINT "pos_receipts_reprint_count_check" CHECK ("pos_receipts"."reprint_count" BETWEEN 0 AND 99),
 	CONSTRAINT "pos_receipts_void_fields_check" CHECK (("pos_receipts"."status" = 'voided') = ("pos_receipts"."voided_at" IS NOT NULL AND "pos_receipts"."void_reason" IS NOT NULL AND "pos_receipts"."voided_by" IS NOT NULL)
-        AND ("pos_receipts"."status" = 'voided' OR ("pos_receipts"."voided_at" IS NULL AND "pos_receipts"."void_reason" IS NULL AND "pos_receipts"."voided_by" IS NULL)))
+        AND ("pos_receipts"."status" = 'voided' OR ("pos_receipts"."voided_at" IS NULL AND "pos_receipts"."void_reason" IS NULL AND "pos_receipts"."voided_by" IS NULL))),
+	CONSTRAINT "pos_receipts_outlet_snapshot_check" CHECK (jsonb_typeof("pos_receipts"."outlet_snapshot") = 'object'
+        AND jsonb_typeof("pos_receipts"."outlet_snapshot" -> 'outletName') = 'string'
+        AND jsonb_typeof("pos_receipts"."outlet_snapshot" -> 'outletAddress') = 'string')
 );
 --> statement-breakpoint
 CREATE TABLE "receipt_sequences" (

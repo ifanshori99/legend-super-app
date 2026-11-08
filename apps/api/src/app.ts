@@ -61,10 +61,22 @@ const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 // The e-receipt token in the path is a bearer credential too (bead legend-93a).
 const PUBLIC_RECEIPT_PATH = /^(\/api\/public\/receipts\/)[^/?]+(\/pdf)?/i;
 
+function isMalformedPath(path: string) {
+  try {
+    decodeURIComponent(path);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
   const [rawPath, query] = url.split("?", 2);
+  // A malformed percent-encoding makes the router reject the request (400);
+  // the path may carry a credential in a param, so never log any of it.
+  if (rawPath && isMalformedPath(rawPath)) return "[malformed-url]";
   const path = rawPath?.replace(PUBLIC_RECEIPT_PATH, "$1[redacted]…");
   if (!query) return path;
   const params = new URLSearchParams(query);

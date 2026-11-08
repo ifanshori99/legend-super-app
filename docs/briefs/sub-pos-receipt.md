@@ -157,3 +157,25 @@ F-C (file: services/pos-receipt.service.ts only), `mergeDeviceReceiptRun` harden
 5. Update the header comment accordingly.
 
 F-D (file: test/pos-receipt.test.ts only): add tests for: ordinal 1,000,000 inserts with number `<prefix>-1000000` (provision, advance last_number via owner SQL to 999999, then allocate); merge refuses deviceId=outletId, refuses lastNumber beyond sent receipts, stale replay of an earlier batch is a no-op, refuses order of another outlet; email replay with another address → 409 IDEMPOTENCY_KEY_REUSED; public JSON has cashierName null and tender references null; sealed destination is NULL after job sent/failed; link URL starts with WEB_URL and contains `/r/`. Adjust existing assertions that assumed the old URL.
+
+## Round 2 fixes (second-opinion; CTO brief `legend/docs/briefs/55-fix-pos-receipt-round2.md`)
+
+Done by lead: `pos_receipts.outlet_snapshot` jsonb NOT NULL, type `PosReceiptOutletSnapshot = { outletName; outletAddress; legalName: string | null; npwpLast4: string | null }` exported from `db/schema/pos-receipt.ts`; migration 0063 regenerated. The retained trigger already freezes it.
+
+R2-A (file: `services/pos-receipt.service.ts` only):
+
+1. P1 merge. Rules for `mergeDeviceReceiptRun`:
+   - Validate the batch: no duplicate ordinals, every ordinal ≤ `sequence.lastNumber`, number matches prefix, order in same tenant+outlet (existing checks stay).
+   - Backfill: an incoming ordinal that is missing in the cloud is inserted, whether it is above or below the cloud `lastNumber` (late/reversed batches are fine). An ordinal already present must be identical (same order, number); else `RECEIPT_SEQUENCE_REGRESSION`. Incoming voided + cloud issued → apply void. Replays are no-ops.
+   - Completeness before advancing: the cloud `lastNumber` becomes `max(cloud.last, device.last)` only if every ordinal `1..newLast` exists after this batch (cloud rows ∪ incoming). Otherwise throw `PosError("RECEIPT_SEQUENCE_GAP")` with `details: { missing: number[] }` if PosError supports details (else put them in the message) and write nothing (the device resends the full range). A stale batch (`device.last ≤ cloud.last`) never moves the sequence back and never errors when its rows are backfill/identical.
+   - Order of writes: advance sequence first, then insert (trigger needs `sequence_number <= last_number`), all in the caller's tx.
+2. P2 snapshot write: add `export async function outletSnapshotFor(tx, context, outletId): Promise<PosReceiptOutletSnapshot>` here (outlets.name/address + legal_entities.name/npwp_last4 via outlets.legal_entity_id, tenant-filtered). `allocateReceipt` writes it. Merge input receipts accept optional `outletSnapshot?: PosReceiptOutletSnapshot` per receipt (edge copy); missing → `outletSnapshotFor` at merge time.
+
+R2-B (file: `services/pos-receipt-document.ts` only): P2 read side. `buildReceiptDocument` / `buildInvoiceDocument` take outlet name and address from the receipt row's `outlet_snapshot` (load the row by receipt id + tenant), never from `outlets`. Keep the POS-07 address-too-short CONFLICT on the snapshot value. Print, PDF, email, e-receipt all go through these builders.
+
+R2-C (files: `middleware/error-handler.ts`, `app.ts`, new test `test/error-handler-decode.test.ts`): P3. A malformed percent-encoding (`/api/public/receipts/<TOKEN>%ZZ`, also any route param) must answer 400 with a fixed generic message (no path, no param echo) and the log entry must not contain the raw path, the param or the URIError message/stack. Find where Express 5 / router raises the decode error (URIError or `Failed to decode param` with status 400) and sanitize it in the error handler (and the request logger if it logs `err`). Test: capture the logger output (see how other tests capture pino, or inject a destination) and assert a secret token string never appears; assert status 400 and body has no token. The test must fail on the current code.
+
+R2-D (file: `test/pos-receipt.test.ts` only): tests that fail on the current code:
+
+- P1: sparse batch `lastNumber=3` with only #3 on an empty cloud → `RECEIPT_SEQUENCE_GAP`, nothing written; then batch #1,#2 `lastNumber=2` → accepted; then #3 `lastNumber=3` → accepted, gaps empty. Reversed: merge #1..#3 then a late replay batch #1,#2 `lastNumber=2` → no-op, no error. Backfill: cloud with a hole below lastNumber (seed via owner SQL bypassing service, e.g. advance last_number and insert #1,#3) → batch with #2 inserts it and `receiptGapsForOutlet` becomes empty. Conflicting ordinal (same ordinal, other order) → `RECEIPT_SEQUENCE_REGRESSION`.
+- P2: issue a receipt, then rename outlet and change its address via owner SQL → staff document, PDF text, public e-receipt and email body still show the original name/address; a receipt issued after the rename shows the new one. `outlet_snapshot` UPDATE via owner SQL is refused by the trigger.

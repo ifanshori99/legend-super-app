@@ -3,8 +3,10 @@
 //
 // The document is a snapshot of the order: amounts are read, never recomputed,
 // and the result must satisfy the contract schema (totals equal the order).
-// The outlet name and address are printed on every document; an outlet without
-// a usable address refuses to print (POS-07).
+// The outlet name and address are printed on every document, read from the
+// receipt's frozen `outlet_snapshot` (never from `outlets`, so a later rename
+// does not change an issued receipt); a snapshot without a usable address
+// refuses to print (POS-07).
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { CoreError, idr, type ScopedTenantContext } from "@starter/shared/core";
@@ -17,15 +19,10 @@ import {
 } from "@starter/shared/pos";
 import { serviceChargeRules, taxRules, user } from "../db/schema/index.ts";
 import { posOrderRefunds, posOrders } from "../db/schema/pos-order.ts";
-import type { posInvoices } from "../db/schema/pos-receipt.ts";
+import { posReceipts, type posInvoices } from "../db/schema/pos-receipt.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import type { Tx } from "./permission-resolver.ts";
-import {
-  itemsOf,
-  liveDiscountsOf,
-  loadOutlet,
-  tendersOf,
-} from "./pos-order-support.ts";
+import { itemsOf, liveDiscountsOf, tendersOf } from "./pos-order-support.ts";
 
 /** Contract: outletAddress is 10..300 characters. */
 const MIN_ADDRESS = 10;
@@ -68,8 +65,15 @@ export async function buildReceiptDocument(
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, receipt.orderId)));
   if (!order) throw new CoreError("NOT_FOUND", "Pesanan tidak ditemukan.");
-  const outlet = await loadOutlet(tx, context, order.outletId as never);
-  const address = printableAddress(outlet.address);
+  const [row] = await tx
+    .select({ outletSnapshot: posReceipts.outletSnapshot })
+    .from(posReceipts)
+    .where(
+      and(eq(posReceipts.tenantId, tenantId), eq(posReceipts.id, receipt.id)),
+    );
+  if (!row) throw new CoreError("NOT_FOUND", "Struk tidak ditemukan.");
+  const outlet = row.outletSnapshot;
+  const address = printableAddress(outlet.outletAddress);
 
   const [pos] = await tx
     .select({ cashierId: posOrders.cashierId })
@@ -150,7 +154,7 @@ export async function buildReceiptDocument(
     orderNumber: order.number,
     documentKind: kind,
     status: receipt.status,
-    outletName: outlet.name,
+    outletName: outlet.outletName,
     outletAddress: address,
     issuedAt: receipt.issuedAt,
     items: items

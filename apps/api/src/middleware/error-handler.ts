@@ -92,6 +92,12 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       })),
     );
 
+  // The router rejects a malformed percent-encoding in a route param with a
+  // URIError whose message echoes the raw param (it can be a bearer token).
+  // Answer a fixed message and keep the error out of the log.
+  if (error instanceof URIError)
+    return send(400, "VALIDATION_ERROR", "The request URL is malformed.");
+
   const parserError = error as ParserError | null;
   if (parserError?.type === "entity.parse.failed")
     return send(400, "INVALID_JSON", "Send valid JSON.");

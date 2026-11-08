@@ -88,6 +88,13 @@ const WEB_URL = (process.env.WEB_URL ?? "http://localhost:3101").replace(
 );
 const OUTLET_NAME = "Cafe Legend Senopati";
 const OUTLET_ADDRESS = "Jl. Kopi Legenda No. 12, Jakarta Selatan";
+// Frozen outlet copy a receipt row carries (R2 P2); owner-SQL seeds must set it.
+const SEED_SNAPSHOT = JSON.stringify({
+  outletName: OUTLET_NAME,
+  outletAddress: OUTLET_ADDRESS,
+  legalName: null,
+  npwpLast4: null,
+});
 const RECEIPT_TABLES = [
   "receipt_sequences",
   "pos_receipts",
@@ -877,8 +884,8 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
       ] as const)
         await client.query(
           `INSERT INTO pos_receipts
-             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at)
-           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now())`,
+             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
           [
             tenant.tenantId,
             outletId,
@@ -887,6 +894,7 @@ describe("POS-06 gapless receipt numbers (legend-93a)", () => {
             device,
             formatReceiptNumber(prefix, ordinal),
             ordinal,
+            SEED_SNAPSHOT,
           ],
         );
     });
@@ -1035,6 +1043,8 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
     const [o1, o2, o3, o4] = await drafts(outletId, 4);
     const device = randomUUID();
     const base = { outletId, deviceId: device, prefix: "OFF1" };
+    // Round 2: a claim beyond the sent receipts leaves ordinals missing, so it
+    // is refused as RECEIPT_SEQUENCE_GAP (was VALIDATION_ERROR in round 1).
 
     // First run: claims 5 but sends only 1..3.
     await expect(
@@ -1043,7 +1053,7 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
         offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
         offlineReceipt({ ...base, orderId: o3!, ordinal: 3 }),
       ]),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
     expect(await receiptRows(outletId)).toHaveLength(0);
     expect(await sequenceRows(outletId)).toHaveLength(0);
 
@@ -1057,7 +1067,7 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
       mergeRun(outletId, device, "OFF1", 6, [
         offlineReceipt({ ...base, orderId: o4!, ordinal: 4 }),
       ]),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
     expect(await receiptRows(outletId)).toHaveLength(3);
     expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 3 });
   });
@@ -1145,6 +1155,168 @@ describe("POS-06 merge of an offline device run (legend-93a)", () => {
   });
 });
 
+// ---- POS-06: merge completeness (Round 2 P1) -------------------------------------
+// Assumptions: a batch that would leave ordinals 1..lastNumber incomplete is
+// refused as RECEIPT_SEQUENCE_GAP and writes nothing (not even the sequence
+// row); the exact shape of `details.missing` is not asserted.
+
+describe("POS-06 merge never advances past a hole (legend-93a round 2)", () => {
+  const gapsOf = async (outletId: string, device: string) =>
+    (await inTx((tx, c) => receiptGapsForOutlet(tx, c, outletId))).find(
+      (gap) => gap.deviceId === device,
+    )?.missing ?? [];
+
+  it("POS-06 a sparse batch is refused with RECEIPT_SEQUENCE_GAP and writes nothing; the missing numbers then merge in order", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o3] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "OFF1" };
+
+    // lastNumber 3 but only #3 sent, empty cloud: 1 and 2 are missing.
+    await expect(
+      mergeRun(outletId, device, "OFF1", 3, [
+        offlineReceipt({ ...base, orderId: o3!, ordinal: 3 }),
+      ]),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
+    expect(await receiptRows(outletId)).toHaveLength(0);
+    expect(await sequenceRows(outletId)).toHaveLength(0);
+
+    const first = await mergeRun(outletId, device, "OFF1", 2, [
+      offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+      offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
+    ]);
+    expect(first.inserted).toBe(2);
+    expect(first.sequence.lastNumber).toBe(2);
+
+    const last = await mergeRun(outletId, device, "OFF1", 3, [
+      offlineReceipt({ ...base, orderId: o3!, ordinal: 3 }),
+    ]);
+    expect(last.inserted).toBe(1);
+    expect(last.sequence.lastNumber).toBe(3);
+    expect((await receiptRows(outletId)).map((row) => row.number)).toEqual([
+      "OFF1-000001",
+      "OFF1-000002",
+      "OFF1-000003",
+    ]);
+    expect(await gapsOf(outletId, device)).toEqual([]);
+  });
+
+  it("POS-06 a batch that skips ahead of the cloud is refused and the cloud sequence stays put", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o4] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "OFF1" };
+    await mergeRun(outletId, device, "OFF1", 2, [
+      offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+      offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
+    ]);
+    // #4 arrives alone with lastNumber 4: #3 is missing everywhere.
+    await expect(
+      mergeRun(outletId, device, "OFF1", 4, [
+        offlineReceipt({ ...base, orderId: o4!, ordinal: 4 }),
+      ]),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_GAP" });
+    expect(await receiptRows(outletId)).toHaveLength(2);
+    expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 2 });
+  });
+
+  it("POS-06 a late replay of an earlier batch after a full run is a no-op without error", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o3] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "OFF1" };
+    const receipt = (orderId: string, ordinal: number) =>
+      offlineReceipt({ ...base, orderId, ordinal });
+
+    await mergeRun(outletId, device, "OFF1", 3, [
+      receipt(o1!, 1),
+      receipt(o2!, 2),
+      receipt(o3!, 3),
+    ]);
+    const before = await receiptRows(outletId);
+    // Reversed arrival: the early batch (#1,#2, lastNumber 2) shows up late.
+    const late = await mergeRun(outletId, device, "OFF1", 2, [
+      receipt(o1!, 1),
+      receipt(o2!, 2),
+    ]);
+    expect(late.inserted).toBe(0);
+    expect(late.sequence.lastNumber).toBe(3);
+    expect(await receiptRows(outletId)).toEqual(before);
+    expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 3 });
+    expect(await gapsOf(outletId, device)).toEqual([]);
+  });
+
+  it("POS-06 a batch with the missing number below the cloud last number backfills it and closes the gap", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o3] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "BACK" };
+    const sequenceId = randomUUID();
+    // Owner-side seed that bypasses the service: last_number 3, receipts #1 and #3.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO receipt_sequences (id, tenant_id, outlet_id, device_id, prefix, last_number)
+         VALUES ($1, $2, $3, $4, 'BACK', 3)`,
+        [sequenceId, tenant.tenantId, outletId, device],
+      );
+      for (const [order, ordinal] of [
+        [o1!, 1],
+        [o3!, 3],
+      ] as const)
+        await client.query(
+          `INSERT INTO pos_receipts
+             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
+          [
+            tenant.tenantId,
+            outletId,
+            ulidToUuid(order),
+            sequenceId,
+            device,
+            formatReceiptNumber("BACK", ordinal),
+            ordinal,
+            SEED_SNAPSHOT,
+          ],
+        );
+    });
+    expect(await gapsOf(outletId, device)).toEqual([2]);
+
+    const merged = await mergeRun(outletId, device, "BACK", 3, [
+      offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
+    ]);
+    expect(merged.inserted).toBe(1);
+    expect(merged.sequence.lastNumber).toBe(3);
+    expect((await receiptRows(outletId)).map((row) => row.number)).toEqual([
+      "BACK-000001",
+      "BACK-000002",
+      "BACK-000003",
+    ]);
+    expect(await gapsOf(outletId, device)).toEqual([]);
+  });
+
+  it("POS-06 an ordinal already stored for another order is RECEIPT_SEQUENCE_REGRESSION and the whole batch is refused", async () => {
+    const outletId = await freshOutlet();
+    const [o1, o2, o3] = await drafts(outletId, 3);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "OFF1" };
+    await mergeRun(outletId, device, "OFF1", 1, [
+      offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+    ]);
+    // A later batch that moves forward but gives #1 to a different order.
+    await expect(
+      mergeRun(outletId, device, "OFF1", 3, [
+        offlineReceipt({ ...base, orderId: o2!, ordinal: 1 }),
+        offlineReceipt({ ...base, orderId: o3!, ordinal: 2 }),
+        offlineReceipt({ ...base, orderId: o1!, ordinal: 3 }),
+      ]),
+    ).rejects.toMatchObject({ code: "RECEIPT_SEQUENCE_REGRESSION" });
+    expect((await receiptRows(outletId)).map((row) => row.number)).toEqual([
+      "OFF1-000001",
+    ]);
+    expect((await sequenceRows(outletId))[0]).toMatchObject({ last_number: 1 });
+  });
+});
+
 // ---- POS-06: database backstop ------------------------------------------------------
 
 describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
@@ -1200,8 +1372,8 @@ describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
       await expect(
         attempt(
           `INSERT INTO pos_receipts
-             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at)
-           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now())`,
+             (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+           VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
           [
             tenant.tenantId,
             outletId,
@@ -1210,6 +1382,7 @@ describe("POS-06 the database refuses to rewrite receipts (legend-93a)", () => {
             outletId,
             number,
             ordinal,
+            SEED_SNAPSHOT,
           ],
         ),
       ).rejects.toThrow(/POS-06/);
@@ -1435,7 +1608,15 @@ describe("POS-07 receipt document (legend-93a)", () => {
       outletId,
       OUTLET_ADDRESS,
     ]);
-    const fixed = await api(outletId).post(`/orders/${orderId}/receipts`);
+    // Round 2: the receipt keeps the outlet address frozen at issue time, so
+    // the old sale stays refused after the outlet is fixed...
+    const stillRefused = await api(outletId).post(
+      `/orders/${orderId}/receipts`,
+    );
+    expect(stillRefused.status).toBe(409);
+    // ...and the next sale, issued with the fixed address, prints.
+    const next = await completedSale(outletId);
+    const fixed = await api(outletId).post(`/orders/${next.orderId}/receipts`);
     expect(fixed.status, JSON.stringify(fixed.body)).toBeLessThan(300);
     expect(fixed.body.data.document.outletAddress).toBe(OUTLET_ADDRESS);
   });
@@ -2158,6 +2339,233 @@ describe("Receipt isolation and permissions (legend-93a)", () => {
       `/orders/${own}/receipts`,
     );
     expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
+  });
+});
+
+// ---- POS-07: frozen outlet snapshot (Round 2 P2) -----------------------------------
+// Assumptions: the issued email carries the outlet name and address in its
+// subject or body; the snapshot keys are camelCase (outletName, outletAddress,
+// legalName, npwpLast4) as in PosReceiptOutletSnapshot.
+
+describe("POS-07 a receipt keeps the outlet name and address of the day it was issued (legend-93a round 2)", () => {
+  const OLD_NAME = "Kopi Lama Menteng";
+  const OLD_ADDRESS = "Jl. Lama Menteng No. 7, Jakarta Pusat";
+  const NEW_NAME = "Kopi Baru Kemang";
+  const NEW_ADDRESS = "Jl. Baru Kemang Raya No. 99, Jakarta Selatan";
+  const tokenOf = (url: string) => url.slice(url.lastIndexOf("/r/") + 3);
+  const snapshotOf = async (receiptId: string) =>
+    (
+      await rows<{ outlet_snapshot: Record<string, unknown> }>(
+        `SELECT outlet_snapshot FROM pos_receipts WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, receiptId],
+      )
+    )[0]?.outlet_snapshot;
+
+  it("POS-07 after the outlet is renamed, the document, PDF, e-receipt, email and invoice of an issued receipt keep the original name and address", async () => {
+    const outletId = await freshOutlet({
+      name: OLD_NAME,
+      address: OLD_ADDRESS,
+    });
+    const { orderId } = await completedSale(outletId);
+    const address = `snap-${randomUUID().slice(0, 8)}@example.com`;
+    const issued = await api(outletId).post(`/orders/${orderId}/receipts`, {
+      deliveries: ["print", "link", "email"],
+      email: address,
+    });
+    expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
+    const receiptId = issued.body.data.receipt.id as string;
+    const token = tokenOf(issued.body.data.link.url);
+    expect(issued.body.data.document).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+
+    await owner.query(
+      "UPDATE outlets SET name = $2, address = $3 WHERE id = $1",
+      [outletId, NEW_NAME, NEW_ADDRESS],
+    );
+
+    // Staff document, by id and by number.
+    const byId = await api(outletId).get(`/receipts/${receiptId}`);
+    expect(byId.status, JSON.stringify(byId.body)).toBe(200);
+    expect(byId.body.data).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+    const byNumber = await api(outletId).get(
+      `/receipts/by-number/${issued.body.data.receipt.number}`,
+    );
+    expect(byNumber.status).toBe(200);
+    expect(byNumber.body.data.document).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+
+    // PDF (staff).
+    const pdf = await api(outletId)
+      .get(`/receipts/${receiptId}/pdf`)
+      .buffer(true)
+      .parse(binary as never);
+    expect(pdf.status).toBe(200);
+    const pdfText = (pdf.body as Buffer).toString("latin1");
+    expect(pdfText).toContain(OLD_NAME);
+    expect(pdfText).toContain(OLD_ADDRESS);
+    expect(pdfText).not.toContain(NEW_NAME);
+    expect(pdfText).not.toContain(NEW_ADDRESS);
+
+    // Public e-receipt and its PDF.
+    const publicRes = await agent(app)
+      .get(`/api/public/receipts/${token}`)
+      .set(headers);
+    expect(publicRes.status, JSON.stringify(publicRes.body)).toBe(200);
+    expect(receiptDocumentSchema.parse(publicRes.body.data)).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+    const publicPdf = await agent(app)
+      .get(`/api/public/receipts/${token}/pdf`)
+      .set(headers)
+      .buffer(true)
+      .parse(binary as never);
+    expect(publicPdf.status).toBe(200);
+    const publicPdfText = (publicPdf.body as Buffer).toString("latin1");
+    expect(publicPdfText).toContain(OLD_NAME);
+    expect(publicPdfText).not.toContain(NEW_NAME);
+
+    // Email sent by the worker after the rename.
+    const provider = new FakeEmailProvider();
+    await runPosReceiptEmailJob([tenantContext(tenant.tenantId)], {
+      email: provider,
+    });
+    const mail = provider.sent.filter((sent) => sent.to === address);
+    expect(mail).toHaveLength(1);
+    const mailText = `${mail[0]?.subject}\n${mail[0]?.body}`;
+    expect(mailText).toContain(OLD_NAME);
+    expect(mailText).toContain(OLD_ADDRESS);
+    expect(mailText).not.toContain(NEW_NAME);
+    expect(mailText).not.toContain(NEW_ADDRESS);
+
+    // Invoice for the same order, raised after the rename.
+    const invoice = await api(outletId).post(`/orders/${orderId}/invoices`, {
+      billedTo: {
+        name: "PT Kopi Nusantara",
+        address: "Jl. Sudirman No. 1, Jakarta Pusat",
+        npwp: "01.234.567.8-901.234",
+      },
+      dueDate: "2026-12-31",
+    });
+    expect(invoice.status, JSON.stringify(invoice.body)).toBeLessThan(300);
+    expect(invoiceDocumentSchema.parse(invoice.body.data)).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+  });
+
+  it("POS-07 a receipt issued after the rename shows the new name and address, the earlier one still the old", async () => {
+    const outletId = await freshOutlet({
+      name: OLD_NAME,
+      address: OLD_ADDRESS,
+    });
+    const before = await completedSale(outletId);
+    const beforeIssued = await api(outletId).post(
+      `/orders/${before.orderId}/receipts`,
+    );
+    expect(beforeIssued.status).toBeLessThan(300);
+
+    await owner.query(
+      "UPDATE outlets SET name = $2, address = $3 WHERE id = $1",
+      [outletId, NEW_NAME, NEW_ADDRESS],
+    );
+    const after = await completedSale(outletId);
+    const afterIssued = await api(outletId).post(
+      `/orders/${after.orderId}/receipts`,
+    );
+    expect(afterIssued.status, JSON.stringify(afterIssued.body)).toBeLessThan(
+      300,
+    );
+    expect(afterIssued.body.data.document).toMatchObject({
+      outletName: NEW_NAME,
+      outletAddress: NEW_ADDRESS,
+    });
+    const reread = await api(outletId).get(
+      `/receipts/${beforeIssued.body.data.receipt.id}`,
+    );
+    expect(reread.body.data).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+    expect(await snapshotOf(afterIssued.body.data.receipt.id)).toMatchObject({
+      outletName: NEW_NAME,
+      outletAddress: NEW_ADDRESS,
+    });
+  });
+
+  it("POS-07 the receipt row stores the outlet snapshot, and the database refuses to change it", async () => {
+    const outletId = await freshOutlet({
+      name: OLD_NAME,
+      address: OLD_ADDRESS,
+    });
+    const [order] = await drafts(outletId, 1);
+    const receipt = await allocate(outletId, order!, null);
+    const snapshot = await snapshotOf(receipt.id);
+    expect(snapshot).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
+    expect(snapshot).toHaveProperty("legalName");
+    expect(snapshot).toHaveProperty("npwpLast4");
+
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          `UPDATE pos_receipts SET outlet_snapshot = $3::jsonb WHERE tenant_id = $1 AND id = $2`,
+          [
+            tenant.tenantId,
+            receipt.id,
+            JSON.stringify({
+              outletName: NEW_NAME,
+              outletAddress: NEW_ADDRESS,
+              legalName: null,
+              npwpLast4: null,
+            }),
+          ],
+        ),
+      ),
+    ).rejects.toThrow(/POS-06|snapshot/i);
+    expect(await snapshotOf(receipt.id)).toMatchObject({
+      outletName: OLD_NAME,
+    });
+  });
+
+  it("POS-07 an offline receipt merged later is stored with the device's own outlet copy, or the outlet at merge time when it sends none", async () => {
+    const outletId = await freshOutlet({
+      name: OLD_NAME,
+      address: OLD_ADDRESS,
+    });
+    const [o1, o2] = await drafts(outletId, 2);
+    const device = randomUUID();
+    const base = { outletId, deviceId: device, prefix: "OFF1" };
+    const edgeCopy = {
+      outletName: "Kopi Tepi Jalan",
+      outletAddress: "Jl. Tepi Jalan No. 3, Bandung",
+      legalName: null,
+      npwpLast4: null,
+    };
+    const withCopy = {
+      ...offlineReceipt({ ...base, orderId: o1!, ordinal: 1 }),
+      outletSnapshot: edgeCopy,
+    } as unknown as PosReceipt;
+    const merged = await mergeRun(outletId, device, "OFF1", 2, [
+      withCopy,
+      offlineReceipt({ ...base, orderId: o2!, ordinal: 2 }),
+    ]);
+    expect(merged.inserted).toBe(2);
+    const [one, two] = await receiptRows(outletId);
+    expect(await snapshotOf(one!.id)).toMatchObject(edgeCopy);
+    expect(await snapshotOf(two!.id)).toMatchObject({
+      outletName: OLD_NAME,
+      outletAddress: OLD_ADDRESS,
+    });
   });
 });
 

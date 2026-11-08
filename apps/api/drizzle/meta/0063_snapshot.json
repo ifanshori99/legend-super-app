@@ -1,5 +1,5 @@
 {
-  "id": "3b0e5ce1-6a7d-43dd-9828-f745c8d7f125",
+  "id": "b7d520e4-434b-4c23-8b4c-a78449b3f1bc",
   "prevId": "72500ebb-2ca7-4201-928e-db949562135e",
   "version": "7",
   "dialect": "postgresql",
@@ -32973,6 +32973,12 @@
           "notNull": true,
           "default": 0
         },
+        "outlet_snapshot": {
+          "name": "outlet_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -33144,6 +33150,10 @@
         "pos_receipts_void_fields_check": {
           "name": "pos_receipts_void_fields_check",
           "value": "(\"pos_receipts\".\"status\" = 'voided') = (\"pos_receipts\".\"voided_at\" IS NOT NULL AND \"pos_receipts\".\"void_reason\" IS NOT NULL AND \"pos_receipts\".\"voided_by\" IS NOT NULL)\n        AND (\"pos_receipts\".\"status\" = 'voided' OR (\"pos_receipts\".\"voided_at\" IS NULL AND \"pos_receipts\".\"void_reason\" IS NULL AND \"pos_receipts\".\"voided_by\" IS NULL))"
+        },
+        "pos_receipts_outlet_snapshot_check": {
+          "name": "pos_receipts_outlet_snapshot_check",
+          "value": "jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\") = 'object'\n        AND jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\" -> 'outletName') = 'string'\n        AND jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\" -> 'outletAddress') = 'string'"
         }
       },
       "isRLSEnabled": false
