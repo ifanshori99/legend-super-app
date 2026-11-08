@@ -123,7 +123,8 @@ export async function auditAccountingChange(
   tx: TenantTransaction,
   context: ScopedTenantContext,
   input: {
-    actorId: UserId;
+    /** Null records a system decision (actorType "system"). */
+    actorId: UserId | null;
     action: string;
     objectType: string;
     objectId: string | null;
@@ -140,7 +141,7 @@ export async function auditAccountingChange(
       id: createUlid(),
       tenantId: context.tenant.tenantId,
       outletId: input.outletId ?? null,
-      actorType: "user",
+      actorType: input.actorId === null ? "system" : "user",
       actorId: input.actorId,
       deviceId: null,
       action: input.action,

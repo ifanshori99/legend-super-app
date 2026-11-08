@@ -22,6 +22,12 @@ export const reservationErrorHttpStatus = {
   WAITLIST_TRANSITION_INVALID: 409,
   /** The guest is already on today's waitlist at this outlet. */
   WAITLIST_DUPLICATE_ENTRY: 409,
+  /** Guest link is malformed, unknown, expired or revoked; never says which. */
+  RESERVATION_LINK_INVALID: 404,
+  /** The guest already has a reschedule request waiting for staff. */
+  RESERVATION_RESCHEDULE_PENDING: 409,
+  /** The requested new time is not allowed for this reservation. */
+  RESERVATION_RESCHEDULE_INVALID: 422,
 } as const satisfies Record<string, number>;
 
 export type ReservationErrorCode = keyof typeof reservationErrorHttpStatus;
@@ -50,6 +56,11 @@ export const reservationErrorMessages: Record<ReservationErrorCode, string> = {
     "Status daftar tunggu tidak dapat diubah ke tahap tersebut.",
   WAITLIST_DUPLICATE_ENTRY:
     "Tamu ini sudah terdaftar di daftar tunggu hari ini.",
+  RESERVATION_LINK_INVALID: "Tautan reservasi tidak berlaku.",
+  RESERVATION_RESCHEDULE_PENDING:
+    "Permintaan jadwal ulang sebelumnya masih diproses.",
+  RESERVATION_RESCHEDULE_INVALID:
+    "Jadwal baru tidak dapat diminta untuk reservasi ini.",
 };
 
 /**

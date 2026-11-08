@@ -685,9 +685,11 @@ export const stockCountActionSchema = z.enum([
 export type StockCountAction = z.infer<typeof stockCountActionSchema>;
 
 /**
- * A count session. `blind` hides `systemQty` from the counter (UI/API
- * responsibility); the approver sees the variance. A posted count has written
- * its `adjustment` ledger rows (INV-01, INV-03).
+ * A count session. `blind` hides `systemQty` from the counter; the API
+ * enforces it (counters use the sheet endpoints, which never carry system
+ * quantity, cost or variance; full detail of a blind count is approver-only
+ * and only once submitted). The approver sees the variance. A posted count has
+ * written its `adjustment` ledger rows (INV-01, INV-03).
  */
 export const stockCountSchema = z
   .strictObject({
@@ -751,6 +753,27 @@ export const stockCountDetailSchema = z.strictObject({
   lines: z.array(stockCountLineSchema),
 });
 export type StockCountDetail = z.infer<typeof stockCountDetailSchema>;
+
+/**
+ * Counter-facing line (blind count): no system quantity, unit cost or
+ * variance, so nothing about expected stock can reach the counter.
+ */
+export const stockCountSheetLineSchema = z.strictObject({
+  id: stockCountLineIdSchema,
+  tenantId: tenantIdSchema,
+  stockCountId: stockCountIdSchema,
+  inventoryItemId: inventoryItemIdSchema,
+  countedQty: decimal4Schema.nullable(),
+  countedBy: userIdSchema.nullable(),
+  countedAt: isoDateTimeSchema.nullable(),
+});
+export type StockCountSheetLine = z.infer<typeof stockCountSheetLineSchema>;
+
+export const stockCountSheetSchema = z.strictObject({
+  count: stockCountSchema,
+  lines: z.array(stockCountSheetLineSchema),
+});
+export type StockCountSheet = z.infer<typeof stockCountSheetSchema>;
 
 const STOCK_COUNT_TRANSITIONS: Record<
   StockCountStatus,

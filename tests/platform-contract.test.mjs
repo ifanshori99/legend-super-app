@@ -696,9 +696,18 @@ test("TEN-02 device token is opaque, versioned and strictly parsed", () => {
     tenantId: fx.tenant.id,
     brandId: fx.brand.id,
     deviceId: fx.brand.id,
+    issuedAt: 1_700_000_000,
     expiresAt: 1_800_000_000,
   };
   platform.deviceTokenPayloadSchema.parse(payload);
+  // legend-165: issuedAt is compared with the registry's token floor.
+  assert.equal(
+    platform.deviceTokenPayloadSchema.safeParse({
+      ...payload,
+      issuedAt: undefined,
+    }).success,
+    false,
+  );
   assert.equal(
     platform.deviceTokenPayloadSchema.safeParse({ ...payload, version: 2 })
       .success,
