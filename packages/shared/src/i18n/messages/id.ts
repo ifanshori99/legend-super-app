@@ -23,6 +23,13 @@ import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
 import { ownerDashboardMessages } from "./owner-dashboard.ts";
 import { qrCartMessages } from "./qr-cart.ts";
+import { qrGlassCartMessages } from "./qr-glass-cart.ts";
+import { qrGlassCheckoutMessages } from "./qr-glass-checkout.ts";
+import { qrGlassItemMessages } from "./qr-glass-item.ts";
+import { qrGlassMenuMessages } from "./qr-glass-menu.ts";
+import { qrGlassPayMessages } from "./qr-glass-pay.ts";
+import { qrGlassSharedMessages } from "./qr-glass-shared.ts";
+import { qrGlassTableMessages } from "./qr-glass-table.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
@@ -64,6 +71,14 @@ import { crm360Messages } from "./ws08-crm-360.ts";
 import { crmCampaignsMessages } from "./ws08-crm-campaigns.ts";
 import { deliveryOpsMessages } from "./ws08-delivery.ts";
 import { reservationBookingMessages } from "./ws08-reservation-customer.ts";
+import { posKasirCommonMessages } from "./pos-kasir-common.ts";
+import { posKasirPaymentMessages } from "./pos-kasir-payment.ts";
+import { posKasirGatewayMessages } from "./pos-kasir-gateway.ts";
+import { posKasirEdcMessages } from "./pos-kasir-edc.ts";
+import { posKasirCodeMessages } from "./pos-kasir-code.ts";
+import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
+import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
+import { posKasirDaycloseMessages } from "./pos-kasir-dayclose.ts";
 
 export const id = {
   // Customer and staff sign-in (WS-01, bead legend-baa). One file so parallel
@@ -84,10 +99,29 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // QR order final arah A + liquid glass (legend-2re1), one file per screen.
+  qrGlass: {
+    menu: qrGlassMenuMessages,
+    item: qrGlassItemMessages,
+    checkout: qrGlassCheckoutMessages,
+    pay: qrGlassPayMessages,
+    table: qrGlassTableMessages,
+    cart: qrGlassCartMessages,
+    shared: qrGlassSharedMessages,
+  },
   // POS customer display (PRD §3 F11 "Customer Display"), bead legend-azt.
   posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).
   reservation: reservationMessages,
+  // POS cashier screens (bead legend-mjmm): one catalog file per screen group.
+  posKasirCommon: posKasirCommonMessages,
+  posKasirPayment: posKasirPaymentMessages,
+  posKasirGateway: posKasirGatewayMessages,
+  posKasirEdc: posKasirEdcMessages,
+  posKasirCode: posKasirCodeMessages,
+  posKasirShift: posKasirShiftMessages,
+  posKasirSupervisor: posKasirSupervisorMessages,
+  posKasirDayclose: posKasirDaycloseMessages,
   // WS-08 CRM squad (2026-11-03): Customer 360/segments/reviews (legend-i026),
   // campaigns/automations (legend-hbad), delivery channels (legend-e8oa) and
   // the guest booking flow (legend-xm4y). One module per bead so they never

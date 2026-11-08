@@ -64,8 +64,8 @@ test("Q23 legend-qf0i: the guest QR menu hides the legacy row", async ({
   // Prime the scenario, then walk to the table as a guest.
   await page.goto("/kelola/menu?mock=photo-missing", NAV);
   await page.goto(`/t/${TABLE_TOKEN}`, NAV);
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu header and the menu is public
+  // before joining, so no join step is needed to read the list.
 
   // The photo-first menu still lists the photographed items…
   await expect(page.getByText("Cappuccino").first()).toBeVisible();

@@ -3,7 +3,7 @@
 // member account; ordering never does (ORD-01).
 import { useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { CircleCheck, Clock, Gift } from "lucide-react";
+import { CircleAlert, CircleCheck, Clock, Gift } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -33,10 +33,7 @@ export function ClaimCard({
     status === "claimed" ? CircleCheck : status === "expired" ? Clock : Gift;
 
   return (
-    <section
-      aria-labelledby="bill-claim"
-      className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline"
-    >
+    <section aria-labelledby="bill-claim" className="qr-paper grid gap-3 p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-5 shrink-0" aria-hidden="true" />
         <h2 id="bill-claim" className="type-title">
@@ -88,7 +85,7 @@ export function ClaimCard({
             ) : (
               <Button
                 type="button"
-                variant="secondary"
+                variant="outline"
                 loading={claim.isPending}
                 onClick={() => claim.mutate()}
               >
@@ -96,7 +93,14 @@ export function ClaimCard({
               </Button>
             )}
             {claim.isError && (
-              <p role="alert" className="text-sm font-medium text-danger">
+              <p
+                role="alert"
+                className="flex items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm font-medium text-foreground"
+              >
+                <CircleAlert
+                  className="mt-0.5 size-4 shrink-0 text-danger"
+                  aria-hidden="true"
+                />
                 {t("qrOrders.bill.claimFailed")}
               </p>
             )}

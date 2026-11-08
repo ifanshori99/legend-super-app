@@ -15,6 +15,7 @@
 //
 // Every dependency is injected (runtime.ts wires the Postgres ones), so this
 // module has no database or env import.
+import { createHash } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import WebSocket, { WebSocketServer } from "ws";
@@ -24,13 +25,32 @@ import {
   type LinkScope,
   type LinkStore,
 } from "./link-peer.ts";
-import { bearerToken } from "./credential.ts";
+import { bearerToken, parseEdgeCredential } from "./credential.ts";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import {
   LINK_CLOSE,
   LINK_MAX_FRAME_BYTES,
   LINK_PATH,
+  LINK_REFUSED_CREDENTIAL,
+  LINK_REFUSED_HEADER,
   type LinkFrame,
 } from "./protocol.ts";
+
+/**
+ * Upgrade budgets, charged BEFORE the credential lookup (a database read) so
+ * a flood of upgrades cannot become a flood of queries (legend-wg5t #8a). The
+ * address is the client's as resolved through TRUST_PROXY (`clientAddress`),
+ * never the proxy's own socket address, so a flood from one client cannot
+ * spend every edge's budget; it stays generous for outlets behind one NAT.
+ * The per-credential limit is tight because a healthy node reconnects with
+ * backoff, a few times a minute at most.
+ */
+export const LINK_UPGRADE_PER_ADDRESS = 120;
+export const LINK_UPGRADE_PER_NODE = 12;
+const LINK_UPGRADE_WINDOW_MS = 60_000;
+const LINK_UPGRADE_CAPACITY = 10_000;
+/** Heartbeat DB writes per link: the client sends one every 15 s. */
+export const LINK_HEARTBEAT_WRITE_INTERVAL_MS = 10_000;
 
 export type EdgeLinkIdentity = { readonly scope: LinkScope };
 
@@ -49,6 +69,22 @@ export type EdgeLinkServerDeps<Identity extends EdgeLinkIdentity> = {
   version: string;
   reverifyIntervalMs?: number;
   ackTimeoutMs?: number;
+  /** Minimum gap between `onHeartbeat` calls (DB writes) per link. */
+  heartbeatWriteIntervalMs?: number;
+  /** Upgrade rate limits (legend-wg5t #8a); injectable for tests. */
+  upgradeRateLimit?: {
+    perAddress?: number;
+    perNode?: number;
+    windowMs?: number;
+  };
+  /**
+   * The client address for the per-address upgrade limit. Production passes
+   * Express's trust-proxy resolution (lib/client-address.ts); the default is
+   * the socket address (no proxy in front).
+   */
+  clientAddress?: (request: IncomingMessage) => string;
+  /** Test seam: clock in epoch ms for heartbeat throttling and rate limits. */
+  now?: () => number;
 };
 
 export type EdgeLinkServer = {
@@ -62,15 +98,30 @@ export type EdgeLinkServer = {
   close(): Promise<void>;
 };
 
-function refuse(socket: Duplex, status: 400 | 401 | 403 | 503) {
+function refuse(
+  socket: Duplex,
+  status: 400 | 401 | 403 | 429 | 503,
+  headers: Record<string, string> = {},
+) {
   const text = {
     400: "Bad Request",
     401: "Unauthorized",
     403: "Forbidden",
+    429: "Too Many Requests",
     503: "Service Unavailable",
   }[status];
-  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
+  const extra = Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}\r\n`)
+    .join("");
+  socket.write(
+    `HTTP/1.1 ${status} ${text}\r\n${extra}Connection: close\r\n\r\n`,
+  );
   socket.destroy();
+}
+
+/** 401 that tells the edge client the credential itself was refused. */
+function refuseCredential(socket: Duplex) {
+  refuse(socket, 401, { [LINK_REFUSED_HEADER]: LINK_REFUSED_CREDENTIAL });
 }
 
 export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
@@ -80,6 +131,20 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: LINK_MAX_FRAME_BYTES,
+  });
+  const now = deps.now ?? Date.now;
+  const heartbeatWriteIntervalMs =
+    deps.heartbeatWriteIntervalMs ?? LINK_HEARTBEAT_WRITE_INTERVAL_MS;
+  const windowMs = deps.upgradeRateLimit?.windowMs ?? LINK_UPGRADE_WINDOW_MS;
+  const perAddress = createFixedWindowCounter({
+    limit: deps.upgradeRateLimit?.perAddress ?? LINK_UPGRADE_PER_ADDRESS,
+    windowMs,
+    capacity: LINK_UPGRADE_CAPACITY,
+  });
+  const perNode = createFixedWindowCounter({
+    limit: deps.upgradeRateLimit?.perNode ?? LINK_UPGRADE_PER_NODE,
+    windowMs,
+    capacity: LINK_UPGRADE_CAPACITY,
   });
   const links = new Map<
     string,
@@ -95,6 +160,9 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       clearInterval(previous.timer);
       previous.ws.close(LINK_CLOSE.replaced, "Replaced");
     }
+    // Heartbeats arrive every 15 s but each one is a DB write; persist at most
+    // one per interval per link and drop the rest (legend-wg5t #1b).
+    let lastHeartbeatWrite = Number.NEGATIVE_INFINITY;
     const peer = createLinkPeer({
       scope: identity.scope,
       outboundDirection: "cloud_to_edge",
@@ -103,6 +171,9 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
       ackTimeoutMs: deps.ackTimeoutMs,
       onError: deps.onError,
       onHeartbeat: (frame) => {
+        const at = now();
+        if (at - lastHeartbeatWrite < heartbeatWriteIntervalMs) return;
+        lastHeartbeatWrite = at;
         void deps.onHeartbeat?.(identity, frame).catch(deps.onError);
       },
       transport: {
@@ -154,17 +225,39 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
     void (async () => {
       try {
         if (request.headers.origin) return refuse(socket, 403);
+        // Charge before authenticate (a DB read; legend-wg5t #8a). The second
+        // bucket is per presented credential (a digest of the whole token,
+        // only for well-formed ones, no DB): a node stuck in a reconnect loop
+        // is capped, while someone who knows a node's id but not its secret
+        // lands in another bucket and cannot lock the real node out.
+        const at = now();
+        const address = deps.clientAddress
+          ? deps.clientAddress(request)
+          : (request.socket.remoteAddress ?? "unknown");
         const token = bearerToken(request.headers.authorization);
-        if (!token) return refuse(socket, 401);
+        const credentialKey =
+          token && parseEdgeCredential(token)
+            ? `credential:${createHash("sha256").update(token).digest("base64url")}`
+            : null;
+        const retryAfter =
+          perAddress.take(`ip:${address}`, at) ??
+          (credentialKey ? perNode.take(credentialKey, at) : null);
+        if (retryAfter !== null)
+          return refuse(socket, 429, {
+            "retry-after": String(retryAfter),
+            "cache-control": "no-store",
+          });
+        if (!token) return refuseCredential(socket);
         const identity = await deps.authenticate(token);
-        if (!identity) return refuse(socket, 401);
+        if (!identity) return refuseCredential(socket);
         if (socket.destroyed) return;
         wss.handleUpgrade(request, socket, head, (ws) => attach(ws, identity));
       } catch (error) {
         deps.onError?.(error);
         // A cloud-side failure (database blip, pool exhausted) is transient:
-        // 503 keeps the edge retrying. Only a refused credential is 401, which
-        // the edge client treats as final (review fix).
+        // 503 keeps the edge retrying. Only a refused credential is 401 with
+        // the refusal header, which the edge client treats as final (review
+        // fix, legend-wg5t #6).
         if (!socket.destroyed) refuse(socket, 503);
       }
     })();

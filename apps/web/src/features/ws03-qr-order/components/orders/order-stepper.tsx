@@ -50,7 +50,7 @@ export function OrderStepper({ step }: { step: ItemStep }) {
             />
             <span
               className={cn(
-                "flex items-center gap-1 text-xs leading-4",
+                "flex flex-col items-center gap-1 text-center text-xs leading-4",
                 isCurrent
                   ? "font-semibold text-foreground"
                   : reached
@@ -59,7 +59,7 @@ export function OrderStepper({ step }: { step: ItemStep }) {
               )}
             >
               <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-              <span className="truncate">{t(label)}</span>
+              <span className="min-w-0 break-words">{t(label)}</span>
             </span>
           </li>
         );

@@ -6,7 +6,6 @@ import { Link } from "@tanstack/react-router";
 import { CircleAlert, CircleCheck, ExternalLink, WifiOff } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { FormField } from "@/components/ui/form-field";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +18,8 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import type { TableReview } from "@starter/shared/qr-order";
+import { QrFooter } from "../glass/qr-primitives";
+import { QrSubPage } from "../session-states";
 import { StarRating } from "./star-rating";
 
 const COMMENT_MAX = 1000;
@@ -28,19 +29,18 @@ function ReviewSkeleton() {
   return (
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("common.loading")}</span>
-      <div className="grid gap-1">
-        <Skeleton className="h-8 w-3/4" />
-        <Skeleton className="h-4 w-full max-w-sm" />
+      <Skeleton className="h-4 w-full max-w-sm" />
+      <div className="qr-paper grid gap-5 p-4">
+        <div className="grid gap-2">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-12 w-64 max-w-full rounded-qr-media" />
+        </div>
+        <div className="grid gap-2">
+          <Skeleton className="h-4 w-28" />
+          <Skeleton className="h-28 w-full rounded-qr-media" />
+        </div>
       </div>
-      <div className="grid gap-2">
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-12 w-64 max-w-full rounded-control" />
-      </div>
-      <div className="grid gap-2">
-        <Skeleton className="h-4 w-28" />
-        <Skeleton className="h-28 w-full rounded-field" />
-      </div>
-      <Skeleton className="h-12 w-full rounded-control" />
+      <Skeleton className="h-14 w-full rounded-qr-float" />
     </div>
   );
 }
@@ -80,11 +80,14 @@ function ThankYou({
   const t = useT();
   const toGoogle = review.googleReviewPrompt && googleUrl !== null;
   return (
-    <Card aria-live="polite" className="grid gap-3">
-      <h1 className="type-title flex items-start gap-2">
-        <CircleCheck className="mt-1 size-icon shrink-0" aria-hidden="true" />
+    <div aria-live="polite" className="qr-paper grid gap-3 p-4">
+      <h2 className="type-title flex items-start gap-2">
+        <CircleCheck
+          className="mt-1 size-icon shrink-0 text-success"
+          aria-hidden="true"
+        />
         {t("qrRecovery.review.thanks.title")}
-      </h1>
+      </h2>
       {toGoogle ? (
         <>
           <p>{t("qrRecovery.review.thanks.high")}</p>
@@ -104,7 +107,7 @@ function ThankYou({
       ) : (
         <p>{t("qrRecovery.review.thanks.low")}</p>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -113,6 +116,7 @@ export function ReviewPage() {
   const online = useOnline();
   const journey = useTableJourney();
   const { qrToken, guest, sessionId } = journey;
+  const title = t("qrRecovery.review.title");
   const eligibility = useReviewEligibility(sessionId);
   const submit = useSubmitReview(sessionId ?? "none");
   const [rating, setRating] = useState<number | null>(null);
@@ -121,73 +125,83 @@ export function ReviewPage() {
 
   if (guest === null)
     return (
-      <EmptyState
-        title={t("qrRecovery.review.notJoined.title")}
-        description={t("qrRecovery.review.notJoined.hint")}
-        action={
-          <Button type="button" onClick={() => journey.openJoin()}>
-            {t("qrRecovery.review.notJoined.action")}
-          </Button>
-        }
-      />
+      <QrSubPage title={title}>
+        <EmptyState
+          className="qr-paper"
+          title={t("qrRecovery.review.notJoined.title")}
+          description={t("qrRecovery.review.notJoined.hint")}
+          action={
+            <Button type="button" onClick={() => journey.openJoin()}>
+              {t("qrRecovery.review.notJoined.action")}
+            </Button>
+          }
+        />
+      </QrSubPage>
     );
 
   const state = eligibility.data?.data;
   if (!state) {
     if (eligibility.isError)
       return (
-        <ErrorState
-          title={t("qrRecovery.review.error.title")}
-          description={t("qrRecovery.review.error.hint")}
-          onRetry={() => void eligibility.refetch()}
-        />
+        <QrSubPage title={title}>
+          <ErrorState
+            className="qr-paper"
+            title={t("qrRecovery.review.error.title")}
+            description={t("qrRecovery.review.error.hint")}
+            onRetry={() => void eligibility.refetch()}
+          />
+        </QrSubPage>
       );
-    return <ReviewSkeleton />;
+    return (
+      <QrSubPage title={title}>
+        <ReviewSkeleton />
+      </QrSubPage>
+    );
   }
 
-  const header = (
-    <header className="grid gap-1">
-      <h1 className="type-display-xl">{t("qrRecovery.review.title")}</h1>
-      <p className="text-muted-foreground">{t("qrRecovery.review.hint")}</p>
-    </header>
+  const hint = (
+    <p className="px-1 leading-6 text-muted-foreground">
+      {t("qrRecovery.review.hint")}
+    </p>
   );
 
   // A fresh result wins over the refreshed eligibility ("already submitted").
   if (submit.isSuccess)
     return (
-      <div className="grid gap-4">
+      <QrSubPage title={title}>
         <ThankYou
           review={submit.data.data}
           googleUrl={safeHttpUrl(
             submit.data.data.googleReviewUrl ?? state.googleReviewUrl,
           )}
         />
-      </div>
+      </QrSubPage>
     );
 
   if (state.alreadySubmitted)
     return (
-      <div className="grid gap-4">
-        <Card className="grid gap-1">
-          <h1 className="type-title flex items-start gap-2">
+      <QrSubPage title={title}>
+        <div className="qr-paper grid gap-1 p-4">
+          <h2 className="type-title flex items-start gap-2">
             <CircleCheck
-              className="mt-1 size-icon shrink-0"
+              className="mt-1 size-icon shrink-0 text-success"
               aria-hidden="true"
             />
             {t("qrRecovery.review.already.title")}
-          </h1>
+          </h2>
           <p className="text-muted-foreground">
             {t("qrRecovery.review.already.hint")}
           </p>
-        </Card>
-      </div>
+        </div>
+      </QrSubPage>
     );
 
   if (!state.eligible)
     return (
-      <div className="grid gap-4">
-        {header}
+      <QrSubPage title={title}>
+        {hint}
         <EmptyState
+          className="qr-paper"
           title={t("qrRecovery.review.notEligible.title")}
           description={t("qrRecovery.review.notEligible.hint")}
           action={
@@ -198,7 +212,7 @@ export function ReviewPage() {
             </Button>
           }
         />
-      </div>
+      </QrSubPage>
     );
 
   const key = submit.isError ? errorKey(submit.error) : null;
@@ -217,104 +231,113 @@ export function ReviewPage() {
   }
 
   return (
-    <form onSubmit={onSubmit} noValidate className="grid gap-5 pb-4">
-      {header}
+    <QrSubPage title={title}>
+      <form onSubmit={onSubmit} noValidate className="grid gap-4">
+        {hint}
 
-      {!online && (
-        <p
-          role="status"
-          className="flex items-start gap-2 text-sm text-muted-foreground"
-        >
-          <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          {t("qrRecovery.review.offline")}
-        </p>
-      )}
-
-      <div className="grid gap-2">
-        <p className="text-sm leading-5 font-semibold" id="review-rating-label">
-          {t("qrRecovery.review.rating.label")}
-        </p>
-        <StarRating
-          value={rating}
-          describedBy={missingRating ? "review-rating-error" : undefined}
-          disabled={submit.isPending}
-          onValueChange={(next) => {
-            setRating(next);
-            setMissingRating(false);
-          }}
-        />
-        <div id="review-rating-error" aria-live="polite">
-          {missingRating && rating === null && (
-            <p className="flex items-start gap-1.5 text-sm leading-5 font-medium text-danger">
-              <CircleAlert
-                className="mt-0.5 size-4 shrink-0"
-                aria-hidden="true"
-              />
-              {t("qrRecovery.review.rating.required")}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="grid gap-1">
-        <FormField
-          label={t("qrRecovery.review.comment.label")}
-          hint={t("qrRecovery.review.comment.hint")}
-        >
-          <Textarea
-            value={comment}
-            maxLength={COMMENT_MAX}
-            rows={4}
-            className="resize-none"
-            placeholder={t("qrRecovery.review.comment.placeholder")}
-            disabled={submit.isPending}
-            onChange={(event) => setComment(event.target.value)}
-          />
-        </FormField>
-        <p className="text-right text-sm text-muted-foreground tabular">
-          {t("qrRecovery.review.comment.counter", {
-            count: comment.length,
-            max: COMMENT_MAX,
-          })}
-        </p>
-      </div>
-
-      {key && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-start gap-2 rounded-container border-(length:--border-w) border-danger bg-danger-subtle p-3 text-sm"
-        >
-          <CircleAlert
-            className="mt-0.5 size-4 shrink-0 text-danger"
-            aria-hidden="true"
-          />
-          <p className="min-w-0 flex-1 font-medium">
-            {t(`qrRecovery.review.errors.${key}`)}
+        {!online && (
+          <p
+            role="status"
+            className="flex items-start gap-2 rounded-qr-media bg-surface-2 p-3 text-sm leading-5"
+          >
+            <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            {t("qrRecovery.review.offline")}
           </p>
-          {key === "conflict" && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                submit.reset();
-                void eligibility.refetch();
-              }}
-            >
-              {t("qrRecovery.review.errors.reload")}
-            </Button>
-          )}
-        </div>
-      )}
+        )}
 
-      <Button
-        type="submit"
-        size="lg"
-        loading={submit.isPending}
-        disabled={!online}
-      >
-        {t("qrRecovery.review.submit")}
-      </Button>
-    </form>
+        <div className="qr-paper grid gap-5 p-4">
+          <div className="grid gap-2">
+            <p
+              className="text-sm leading-5 font-semibold"
+              id="review-rating-label"
+            >
+              {t("qrRecovery.review.rating.label")}
+            </p>
+            <StarRating
+              value={rating}
+              describedBy={missingRating ? "review-rating-error" : undefined}
+              disabled={submit.isPending}
+              onValueChange={(next) => {
+                setRating(next);
+                setMissingRating(false);
+              }}
+            />
+            <div id="review-rating-error" aria-live="polite">
+              {missingRating && rating === null && (
+                <p className="flex items-start gap-1.5 text-sm leading-5 font-medium text-foreground">
+                  <CircleAlert
+                    className="mt-0.5 size-4 shrink-0 text-danger"
+                    aria-hidden="true"
+                  />
+                  {t("qrRecovery.review.rating.required")}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-1">
+            <FormField
+              label={t("qrRecovery.review.comment.label")}
+              hint={t("qrRecovery.review.comment.hint")}
+            >
+              <Textarea
+                value={comment}
+                maxLength={COMMENT_MAX}
+                rows={4}
+                className="resize-none"
+                placeholder={t("qrRecovery.review.comment.placeholder")}
+                disabled={submit.isPending}
+                onChange={(event) => setComment(event.target.value)}
+              />
+            </FormField>
+            <p className="text-right text-sm text-muted-foreground tabular">
+              {t("qrRecovery.review.comment.counter", {
+                count: comment.length,
+                max: COMMENT_MAX,
+              })}
+            </p>
+          </div>
+        </div>
+
+        {key && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm text-foreground"
+          >
+            <CircleAlert
+              className="mt-0.5 size-4 shrink-0 text-danger"
+              aria-hidden="true"
+            />
+            <p className="min-w-0 flex-1 font-medium">
+              {t(`qrRecovery.review.errors.${key}`)}
+            </p>
+            {key === "conflict" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  submit.reset();
+                  void eligibility.refetch();
+                }}
+              >
+                {t("qrRecovery.review.errors.reload")}
+              </Button>
+            )}
+          </div>
+        )}
+
+        <QrFooter>
+          <Button
+            type="submit"
+            size="lg"
+            loading={submit.isPending}
+            disabled={!online}
+          >
+            {t("qrRecovery.review.submit")}
+          </Button>
+        </QrFooter>
+      </form>
+    </QrSubPage>
   );
 }

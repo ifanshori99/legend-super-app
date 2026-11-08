@@ -1,5 +1,5 @@
 {
-  "id": "7346dd5c-6154-4135-b659-4260ea6b5fe1",
+  "id": "b19fed12-5408-4f0a-87e6-d41d0607ee4f",
   "prevId": "72500ebb-2ca7-4201-928e-db949562135e",
   "version": "7",
   "dialect": "postgresql",
@@ -11012,6 +11012,285 @@
       },
       "isRLSEnabled": false
     },
+    "public.fiscal_period_snapshot_lines": {
+      "name": "fiscal_period_snapshot_lines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot_id": {
+          "name": "snapshot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "debit_idr": {
+          "name": "debit_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
+        "credit_idr": {
+          "name": "credit_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fiscal_period_snapshot_lines_tenant_id_tenants_id_fk": {
+          "name": "fiscal_period_snapshot_lines_tenant_id_tenants_id_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshot_lines_snapshot_fk": {
+          "name": "fiscal_period_snapshot_lines_snapshot_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "fiscal_period_snapshots",
+          "columnsFrom": [
+            "tenant_id",
+            "snapshot_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshot_lines_account_fk": {
+          "name": "fiscal_period_snapshot_lines_account_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "chart_of_accounts",
+          "columnsFrom": [
+            "tenant_id",
+            "account_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "fiscal_period_snapshot_lines_snapshot_account_key": {
+          "name": "fiscal_period_snapshot_lines_snapshot_account_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "snapshot_id",
+            "account_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "fiscal_period_snapshot_lines_amounts_check": {
+          "name": "fiscal_period_snapshot_lines_amounts_check",
+          "value": "\"fiscal_period_snapshot_lines\".\"debit_idr\" >= 0 AND \"fiscal_period_snapshot_lines\".\"credit_idr\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.fiscal_period_snapshots": {
+      "name": "fiscal_period_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "legal_entity_id": {
+          "name": "legal_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fiscal_period_id": {
+          "name": "fiscal_period_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period": {
+          "name": "period",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "taken_by": {
+          "name": "taken_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "taken_at": {
+          "name": "taken_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "fiscal_period_snapshots_idempotency_key": {
+          "name": "fiscal_period_snapshots_idempotency_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"fiscal_period_snapshots\".\"idempotency_key\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "fiscal_period_snapshots_tenant_id_tenants_id_fk": {
+          "name": "fiscal_period_snapshots_tenant_id_tenants_id_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshots_legal_entity_fk": {
+          "name": "fiscal_period_snapshots_legal_entity_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "legal_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "legal_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshots_fiscal_period_fk": {
+          "name": "fiscal_period_snapshots_fiscal_period_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "fiscal_periods",
+          "columnsFrom": [
+            "tenant_id",
+            "fiscal_period_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "fiscal_period_snapshots_tenant_period_version_key": {
+          "name": "fiscal_period_snapshots_tenant_period_version_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "fiscal_period_id",
+            "version"
+          ]
+        },
+        "fiscal_period_snapshots_tenant_id_key": {
+          "name": "fiscal_period_snapshots_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "fiscal_period_snapshots_period_check": {
+          "name": "fiscal_period_snapshots_period_check",
+          "value": "\"fiscal_period_snapshots\".\"period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'"
+        },
+        "fiscal_period_snapshots_version_check": {
+          "name": "fiscal_period_snapshots_version_check",
+          "value": "\"fiscal_period_snapshots\".\"version\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.fiscal_periods": {
       "name": "fiscal_periods",
       "schema": "",
@@ -11719,6 +11998,228 @@
         "journal_lines_line_no_check": {
           "name": "journal_lines_line_no_check",
           "value": "\"journal_lines\".\"line_no\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.period_reopen_requests": {
+      "name": "period_reopen_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "legal_entity_id": {
+          "name": "legal_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fiscal_period_id": {
+          "name": "fiscal_period_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period": {
+          "name": "period",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decision_note": {
+          "name": "decision_note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "period_reopen_requests_pending_key": {
+          "name": "period_reopen_requests_pending_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "fiscal_period_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"period_reopen_requests\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "period_reopen_requests_entity_idx": {
+          "name": "period_reopen_requests_entity_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "legal_entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requested_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "period_reopen_requests_tenant_id_tenants_id_fk": {
+          "name": "period_reopen_requests_tenant_id_tenants_id_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "period_reopen_requests_legal_entity_fk": {
+          "name": "period_reopen_requests_legal_entity_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "legal_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "legal_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "period_reopen_requests_fiscal_period_fk": {
+          "name": "period_reopen_requests_fiscal_period_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "fiscal_periods",
+          "columnsFrom": [
+            "tenant_id",
+            "fiscal_period_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "period_reopen_requests_tenant_id_key": {
+          "name": "period_reopen_requests_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "period_reopen_requests_period_check": {
+          "name": "period_reopen_requests_period_check",
+          "value": "\"period_reopen_requests\".\"period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'"
+        },
+        "period_reopen_requests_status_check": {
+          "name": "period_reopen_requests_status_check",
+          "value": "\"period_reopen_requests\".\"status\" IN ('pending', 'approved', 'rejected', 'cancelled')"
+        },
+        "period_reopen_requests_reason_check": {
+          "name": "period_reopen_requests_reason_check",
+          "value": "length(btrim(\"period_reopen_requests\".\"reason\")) > 0"
+        },
+        "period_reopen_requests_decided_check": {
+          "name": "period_reopen_requests_decided_check",
+          "value": "(\"period_reopen_requests\".\"status\" IN ('approved', 'rejected')) = (\"period_reopen_requests\".\"decided_by\" IS NOT NULL AND \"period_reopen_requests\".\"decided_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -32280,371 +32781,6 @@
         "pos_orders_version_check": {
           "name": "pos_orders_version_check",
           "value": "\"pos_orders\".\"version\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.edc_transactions": {
-      "name": "edc_transactions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "terminal_id": {
-          "name": "terminal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bank": {
-          "name": "bank",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reference": {
-          "name": "reference",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_fingerprint": {
-          "name": "request_fingerprint",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "amount_idr": {
-          "name": "amount_idr",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "method": {
-          "name": "method",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "trace": {
-          "name": "trace",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval_code": {
-          "name": "approval_code",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rrn": {
-          "name": "rrn",
-          "type": "varchar(24)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "card_type": {
-          "name": "card_type",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "masked_pan": {
-          "name": "masked_pan",
-          "type": "varchar(23)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "response_code": {
-          "name": "response_code",
-          "type": "varchar(8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "message": {
-          "name": "message",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "invoice_no": {
-          "name": "invoice_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "batch_no": {
-          "name": "batch_no",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "dispatched_at": {
-          "name": "dispatched_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "needs_reconciliation": {
-          "name": "needs_reconciliation",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "inquiry_count": {
-          "name": "inquiry_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_inquiry_at": {
-          "name": "last_inquiry_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "edc_transactions_approved_reference_key": {
-          "name": "edc_transactions_approved_reference_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"edc_transactions\".\"status\" = 'approved'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_reference_idx": {
-          "name": "edc_transactions_reference_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reference",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "edc_transactions_terminal_status_idx": {
-          "name": "edc_transactions_terminal_status_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "terminal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "edc_transactions_tenant_id_tenants_id_fk": {
-          "name": "edc_transactions_tenant_id_tenants_id_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edc_transactions_outlet_id_outlets_id_fk": {
-          "name": "edc_transactions_outlet_id_outlets_id_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edc_transactions_outlet_fk": {
-          "name": "edc_transactions_outlet_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "edc_transactions_terminal_fk": {
-          "name": "edc_transactions_terminal_fk",
-          "tableFrom": "edc_transactions",
-          "tableTo": "payment_edc_terminals",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id",
-            "terminal_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "outlet_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "edc_transactions_tenant_idempotency_key": {
-          "name": "edc_transactions_tenant_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "idempotency_key"
-          ]
-        },
-        "edc_transactions_tenant_terminal_trace_key": {
-          "name": "edc_transactions_tenant_terminal_trace_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "terminal_id",
-            "trace"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "edc_transactions_bank_check": {
-          "name": "edc_transactions_bank_check",
-          "value": "\"edc_transactions\".\"bank\" IN ('bca','mandiri','bni','bjb')"
-        },
-        "edc_transactions_amount_check": {
-          "name": "edc_transactions_amount_check",
-          "value": "\"edc_transactions\".\"amount_idr\" > 0"
-        },
-        "edc_transactions_method_check": {
-          "name": "edc_transactions_method_check",
-          "value": "\"edc_transactions\".\"method\" IN ('card','qris')"
-        },
-        "edc_transactions_status_check": {
-          "name": "edc_transactions_status_check",
-          "value": "\"edc_transactions\".\"status\" IN ('pending','unknown','approved','declined','cancelled','failed')"
-        },
-        "edc_transactions_inquiry_count_check": {
-          "name": "edc_transactions_inquiry_count_check",
-          "value": "\"edc_transactions\".\"inquiry_count\" >= 0"
-        },
-        "edc_transactions_completed_check": {
-          "name": "edc_transactions_completed_check",
-          "value": "(\"edc_transactions\".\"completed_at\" IS NOT NULL) = (\"edc_transactions\".\"status\" IN ('approved','declined','cancelled','failed'))"
         }
       },
       "isRLSEnabled": false

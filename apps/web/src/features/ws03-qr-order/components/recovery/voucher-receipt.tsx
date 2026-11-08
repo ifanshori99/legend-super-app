@@ -1,5 +1,5 @@
 // Apology voucher shown after the guest chose "Kredit ke voucher" (PRD §3 F10
-// "Voucher Permintaan Maaf"). A receipt-like bordered block, not a card.
+// "Voucher Permintaan Maaf"). A receipt-like paper block with a dashed edge.
 import { useState } from "react";
 import { Check, Copy, Ticket } from "lucide-react";
 import { useT } from "@/components/i18n";
@@ -40,7 +40,7 @@ export function VoucherReceipt({ voucher, timeZone }: VoucherReceiptProps) {
   return (
     <section
       aria-labelledby="voucher-receipt-title"
-      className="grid gap-4 rounded-container border-(length:--border-w) border-dashed border-input p-card"
+      className="qr-paper grid gap-4 border-(length:--border-w) border-dashed border-input p-4"
     >
       <h2
         id="voucher-receipt-title"
@@ -78,7 +78,7 @@ export function VoucherReceipt({ voucher, timeZone }: VoucherReceiptProps) {
         </p>
       </div>
 
-      <dl className="grid gap-2 border-t-(length:--border-w) pt-3">
+      <dl className="grid gap-2 border-t-(length:--border-w) border-border pt-3">
         <div className="flex items-baseline justify-between gap-3">
           <dt className="text-sm text-muted-foreground">
             {t("qrRecovery.voucher.value")}

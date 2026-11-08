@@ -3,16 +3,18 @@
 // Bill"; §4 flows A and B). Totals come from the server bill (ORD-03).
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { CircleCheck, ReceiptText, WifiOff } from "lucide-react";
+import { CircleAlert, CircleCheck, ReceiptText } from "lucide-react";
 import type { BillSplit, GuestPaymentTarget } from "@starter/shared/qr-order";
 import { DEFAULT_TIME_ZONE } from "@starter/shared/core";
 import { useT } from "@/components/i18n";
 import { StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOnline } from "@/lib/use-online";
+import { QrFooter } from "../glass/qr-primitives";
+import { Notice } from "../notice";
+import { QrSubPage } from "../session-states";
 import { canSplitBill, splitScope } from "../../domain.ts";
 import { useTableJourney } from "../../context";
 import { useSendServiceRequest, useSessionBill } from "../../hooks";
@@ -27,8 +29,7 @@ function BillSkeleton() {
   return (
     <div aria-busy="true" className="grid gap-4">
       <span className="sr-only">{t("qrOrders.bill.loading")}</span>
-      <Skeleton className="h-7 w-40" />
-      <div className="grid gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline">
+      <div className="qr-paper grid gap-3 p-4">
         {[0, 1, 2, 3, 4].map((row) => (
           <div key={row} className="flex items-center justify-between gap-3">
             <Skeleton className="h-4 w-1/3" />
@@ -36,7 +37,7 @@ function BillSkeleton() {
           </div>
         ))}
       </div>
-      <Skeleton className="h-14 w-full rounded-control" />
+      <Skeleton className="h-14 w-full rounded-qr-float" />
     </div>
   );
 }
@@ -54,16 +55,14 @@ export function BillPage() {
     amountIdr: number;
   } | null>(null);
 
-  const heading = (
-    <h1 className="type-display-xl">{t("qrOrders.bill.title")}</h1>
-  );
+  const title = t("qrOrders.bill.title");
 
   if (guest === null || sessionId === null)
     return (
-      <div className="grid gap-4">
-        {heading}
+      <QrSubPage title={title}>
         <EmptyState
           icon={ReceiptText}
+          className="qr-paper"
           title={t("qrOrders.bill.joinTitle")}
           description={t("qrOrders.bill.joinHint")}
           action={
@@ -72,36 +71,35 @@ export function BillPage() {
             </Button>
           }
         />
-      </div>
+      </QrSubPage>
     );
 
   if (bill.isPending)
     return (
-      <div className="grid gap-4">
-        {heading}
+      <QrSubPage title={title}>
         <BillSkeleton />
-      </div>
+      </QrSubPage>
     );
 
   if (bill.isError)
     return (
-      <div className="grid gap-4">
-        {heading}
+      <QrSubPage title={title}>
         <ErrorState
+          className="qr-paper"
           title={t("qrOrders.bill.errorTitle")}
           description={t("qrOrders.bill.errorHint")}
           onRetry={() => void bill.refetch()}
         />
-      </div>
+      </QrSubPage>
     );
 
   const data = bill.data.data;
   if (data.orders.length === 0)
     return (
-      <div className="grid gap-4">
-        {heading}
+      <QrSubPage title={title}>
         <EmptyState
           icon={ReceiptText}
+          className="qr-paper"
           title={t("qrOrders.bill.emptyTitle")}
           description={t("qrOrders.bill.emptyHint")}
           action={
@@ -112,7 +110,7 @@ export function BillPage() {
             </Button>
           }
         />
-      </div>
+      </QrSubPage>
     );
 
   const session = view?.session;
@@ -130,6 +128,9 @@ export function BillPage() {
     (menu?.zone.paymentMode ?? session?.paymentMode) === "open_bill";
   const settled = outstanding === 0;
   const showSplitPanel = canSplit && (splits.length === 0 || changing);
+  // The one main action of the screen: pay the whole bill, in the footer.
+  const showPayAll =
+    !settled && !closed && splits.length === 0 && !showSplitPanel;
 
   const payShare = (split: BillSplit) =>
     setPay({
@@ -138,22 +139,10 @@ export function BillPage() {
     });
 
   return (
-    <div className="grid gap-6">
-      {heading}
-
-      {!online && (
-        <p
-          role="status"
-          className="flex items-start gap-2 rounded-container bg-warning-subtle p-3 text-sm text-warning"
-        >
-          <WifiOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          {t("qrOrders.bill.offline")}
-        </p>
-      )}
+    <QrSubPage title={title} className="gap-5">
+      {!online && <Notice tone="warning" title={t("qrOrders.bill.offline")} />}
       {closed && (
-        <p role="status" className="rounded-container bg-surface-2 p-3 text-sm">
-          {t("qrOrders.bill.sessionClosed")}
-        </p>
+        <Notice tone="info" title={t("qrOrders.bill.sessionClosed")} />
       )}
 
       <BillTotals bill={data} />
@@ -165,7 +154,7 @@ export function BillPage() {
       )}
 
       {openBill && !closed && !settled && (
-        <div className="grid gap-2" aria-live="polite">
+        <div className="qr-paper grid gap-2 p-4" aria-live="polite">
           {sessionStatus === "bill_requested" ? (
             <>
               <StatusPill status="success">
@@ -186,7 +175,14 @@ export function BillPage() {
                 {t("qrOrders.bill.requestBill")}
               </Button>
               {requestBill.isError && (
-                <p role="alert" className="text-sm font-medium text-danger">
+                <p
+                  role="alert"
+                  className="flex items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm font-medium text-foreground"
+                >
+                  <CircleAlert
+                    className="mt-0.5 size-4 shrink-0 text-danger"
+                    aria-hidden="true"
+                  />
                   {t("qrOrders.bill.requestBillFailed")}
                 </p>
               )}
@@ -196,20 +192,25 @@ export function BillPage() {
       )}
 
       {settled ? (
-        <Card className="grid gap-3">
+        <section
+          aria-labelledby="bill-settled"
+          className="qr-paper grid gap-3 p-4"
+        >
           <div className="flex items-center gap-2">
             <CircleCheck className="size-5 text-success" aria-hidden="true" />
-            <h2 className="type-title">{t("qrOrders.bill.settledTitle")}</h2>
+            <h2 id="bill-settled" className="type-title">
+              {t("qrOrders.bill.settledTitle")}
+            </h2>
           </div>
           <p className="text-sm text-muted-foreground">
             {t("qrOrders.bill.settledHint")}
           </p>
-          <Button asChild variant="outline">
+          <Button asChild>
             <Link to="/t/$token/review" params={{ token: qrToken }}>
               {t("qrOrders.bill.reviewAction")}
             </Link>
           </Button>
-        </Card>
+        </section>
       ) : (
         !closed && (
           <>
@@ -247,23 +248,6 @@ export function BillPage() {
                 onDone={() => setChanging(false)}
               />
             )}
-            {splits.length === 0 && !showSplitPanel && (
-              <section className="grid gap-2">
-                <h2 className="sr-only">{t("qrOrders.bill.payTitle")}</h2>
-                <Button
-                  type="button"
-                  size="lg"
-                  onClick={() =>
-                    setPay({ target: { kind: "bill" }, amountIdr: outstanding })
-                  }
-                >
-                  {t("qrOrders.bill.payAll")}
-                </Button>
-                <p className="text-sm text-muted-foreground">
-                  {t("qrOrders.bill.payAllHint")}
-                </p>
-              </section>
-            )}
           </>
         )
       )}
@@ -281,6 +265,28 @@ export function BillPage() {
         target={pay?.target ?? null}
         amountIdr={pay?.amountIdr ?? 0}
       />
-    </div>
+
+      {showPayAll && (
+        <QrFooter>
+          <section aria-labelledby="bill-pay" className="grid gap-2">
+            <h2 id="bill-pay" className="sr-only">
+              {t("qrOrders.bill.payTitle")}
+            </h2>
+            <Button
+              type="button"
+              size="lg"
+              onClick={() =>
+                setPay({ target: { kind: "bill" }, amountIdr: outstanding })
+              }
+            >
+              {t("qrOrders.bill.payAll")}
+            </Button>
+            <p className="text-center text-sm text-muted-foreground">
+              {t("qrOrders.bill.payAllHint")}
+            </p>
+          </section>
+        </QrFooter>
+      )}
+    </QrSubPage>
   );
 }

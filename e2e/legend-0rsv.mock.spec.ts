@@ -27,22 +27,30 @@ async function setTheme(page: Page, theme: "light" | "dark") {
 /** Join the table, add one menu line, and open checkout as a guest. */
 async function openCheckout(page: Page) {
   await page.goto(`/t/${freeTable}`);
-  // The guest-count dialog opens on the first visit (PRD §3 "Scan & Sesi Meja").
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu (PRD §3 "Scan & Sesi Meja").
+  // A click before hydration is lost, so retry it until the panel is open.
+  const save = page.getByRole("button", { name: "Simpan" });
+  await expect(async () => {
+    await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+    await expect(save).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 30_000 });
+  await save.click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 
-  await page.getByRole("searchbox", { name: "Cari menu" }).fill("espresso");
+  // Search is a toggle on phones, so open the item straight from the grid.
   await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
   const sheet = page.getByRole("dialog");
   await sheet.getByRole("radio", { name: /Dingin/ }).click();
   await sheet.getByRole("radio", { name: "Normal" }).click();
-  await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+  await sheet.getByRole("button", { name: /^Tambah · / }).click();
   await expect(sheet).toBeHidden();
 
-  await page.getByRole("link", { name: /Keranjang/ }).click();
-  await page.getByRole("link", { name: "Lanjut ke checkout" }).click();
+  // Cart and checkout are one page now ("Keranjang & bayar").
+  await page.getByRole("link", { name: "Lihat keranjang" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "Checkout" }),
+    page.getByRole("heading", { level: 1, name: "Keranjang & bayar" }),
   ).toBeVisible();
 }
 
@@ -84,7 +92,9 @@ test("F10 Login Opsional: guest checkout invites sign-in and still lets the gues
   );
 
   // F10: sign-in is optional, so the order button is usable as a guest.
-  const payButton = page.getByRole("button", { name: /^Bayar Rp/ });
+  const payButton = page.getByRole("button", {
+    name: /^Bayar Rp.* dengan QRIS$/,
+  });
   await expect(payButton).toBeEnabled();
 
   await captureScreenshot(page, "legend-0rsv/checkout-390-light.png");
@@ -92,14 +102,15 @@ test("F10 Login Opsional: guest checkout invites sign-in and still lets the gues
   // Continuing the order proves the nudge does not block the flow.
   await payButton.click();
   await expect(
-    page.getByRole("heading", { name: "Pilih cara bayar" }),
+    page.getByRole("heading", { name: "Bayar dengan QRIS" }),
   ).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toBeHidden();
+  await page.getByRole("link", { name: "Ganti metode bayar" }).click();
 
   // Pay-first completion state: the order waits for payment and the invite is
   // not shown there, but the payment action stays available.
-  await expect(page.getByRole("button", { name: /^Bayar Rp/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Bayar Rp.* dengan QRIS$/ }),
+  ).toBeVisible();
   await expect(nudgeTitle(page)).toHaveCount(0);
 });
 
@@ -117,9 +128,11 @@ test("F10 Login Opsional: dismissing the nudge hides it for this browser session
   // A reload keeps the dismissal (sessionStorage) and the order actions.
   await page.reload({ waitUntil: "networkidle" });
   await expect(
-    page.getByRole("heading", { level: 1, name: "Checkout" }),
+    page.getByRole("heading", { level: 1, name: "Keranjang & bayar" }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Bayar Rp/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Bayar Rp.* dengan QRIS$/ }),
+  ).toBeVisible();
   await expect(nudgeTitle(page)).toHaveCount(0);
 });
 

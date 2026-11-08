@@ -40,7 +40,7 @@ import {
   type PaymentLinkView,
   type PayAtCashierAcknowledgement,
 } from "@starter/shared/payment";
-import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import {
@@ -615,7 +615,23 @@ export async function createIntent(
           ),
         )
         .for("update");
-      if (!lockedLink || outstandingIdr(lockedLink) !== amountIdr)
+      // legend-b0au: the gateway call above ran outside any lock, so a
+      // `cancelPaymentLinkInTx` (cash replaced the QRIS, order voided) may have
+      // committed meanwhile. A link that is closed now, or whose expiry moved
+      // since the plan (the cancel stamps its own `now`, which can be later
+      // than this request's clock), never receives the new intent.
+      if (
+        !lockedLink ||
+        (lockedLink.expiresAt !== null &&
+          (lockedLink.expiresAt <= now ||
+            lockedLink.expiresAt.getTime() !== plan.link.expiresAt?.getTime()))
+      )
+        throw new HttpError(
+          404,
+          "NOT_FOUND",
+          "This payment link is not available.",
+        );
+      if (outstandingIdr(lockedLink) !== amountIdr)
         throw new HttpError(
           409,
           "CONFLICT",
@@ -739,6 +755,58 @@ async function expireIntent(
       now,
     });
   });
+}
+
+/**
+ * Closes a payment link inside the caller's transaction (bead legend-b0au,
+ * WS-05): a POS bill whose tender was voided or replaced must stop taking
+ * money. The link's `expires_at` moves to `now` (links already expiring sooner
+ * keep their date; the link page and `createIntent` refuse an expired link)
+ * and every `pending` intent of the link becomes `expired` with its own
+ * `payment.expired` event, same shape as `expireIntent`. Idempotent: a second
+ * call finds nothing pending and changes nothing. There is no gateway call (the
+ * port has no cancel): a customer who still pays the old code is handled as a
+ * late payment by the order consumer.
+ */
+export async function cancelPaymentLinkInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { linkId: string; now: Date; reason: string },
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  await tx
+    .update(paymentLinks)
+    .set({ expiresAt: input.now, updatedAt: input.now })
+    .where(
+      and(
+        eq(paymentLinks.tenantId, tenantId),
+        eq(paymentLinks.id, input.linkId),
+        or(
+          isNull(paymentLinks.expiresAt),
+          gt(paymentLinks.expiresAt, input.now),
+        ),
+      ),
+    );
+  const expired = await tx
+    .update(paymentIntents)
+    .set({ status: "expired", updatedAt: input.now })
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, input.linkId),
+        eq(paymentIntents.status, "pending"),
+      ),
+    )
+    .returning();
+  for (const intent of expired)
+    await appendPaymentEvent(tx, context, {
+      name: "payment.expired",
+      aggregateId: intent.id,
+      outletId: intent.outletId,
+      actor: { type: "system" },
+      payload: { intentId: intent.id, reason: input.reason },
+      now: input.now,
+    });
 }
 
 async function failIntent(
