@@ -973,6 +973,74 @@ describe("legend-lmk menu API", () => {
     );
   });
 
+  it("KDS-01 clearing the station of an item clears its station type; an explicit type in the same patch wins", async () => {
+    const { client, userId } = await menuClient("owner", {
+      type: "tenant",
+      id: null,
+    });
+    createdUserIds.push(userId);
+    const station = await client
+      .post("/api/menu/stations")
+      .set(originHeader)
+      .send({ outletId: outletA, name: "Bar Tipe Uji", type: "coffee_bar" });
+    expect(station.status).toBe(201);
+    const stationId = data(station).id as string;
+    const category = await client
+      .post("/api/menu/categories")
+      .set(originHeader)
+      .send({
+        brandId,
+        name: `Tipe Stasiun ${randomBytes(2).toString("hex")}`,
+      });
+    const categoryId = data(category).id as string;
+    const created = await client
+      .post("/api/menu/items")
+      .set(originHeader)
+      .send({ brandId, categoryId, name: "Tipe Stasiun Uji", stationId });
+    expect(created.status).toBe(201);
+    const itemId = data(created).id as string;
+    expect(data(created)).toMatchObject({
+      stationId,
+      stationType: "coffee_bar",
+    });
+
+    // Clearing the station alone clears the type: no stale routing by type.
+    const cleared = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ stationId: null });
+    expect(cleared.status).toBe(200);
+    expect(data(cleared)).toMatchObject({ stationId: null, stationType: null });
+
+    // Assigning the station again carries its type.
+    const assigned = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ stationId });
+    expect(data(assigned)).toMatchObject({
+      stationId,
+      stationType: "coffee_bar",
+    });
+
+    // An explicit type in the same request wins over the clearing.
+    const explicit = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ stationId: null, stationType: "pastry" });
+    expect(explicit.status).toBe(200);
+    expect(data(explicit)).toMatchObject({
+      stationId: null,
+      stationType: "pastry",
+    });
+
+    // A patch that does not touch the station leaves the type alone.
+    const renamed = await client
+      .patch(`/api/menu/items/${itemId}`)
+      .set(originHeader)
+      .send({ name: "Tipe Stasiun Uji 2" });
+    expect(data(renamed)).toMatchObject({ stationType: "pastry" });
+  });
+
   it("uploads a menu photo through the storage adapter and resolves its URL", async () => {
     const { userId } = await menuClient("owner", { type: "tenant", id: null });
     createdUserIds.push(userId);

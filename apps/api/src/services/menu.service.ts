@@ -1175,12 +1175,16 @@ export async function updateItem(
         ...(input.stationId !== undefined
           ? { stationId: input.stationId }
           : {}),
-        // An explicit type wins; otherwise a new station carries its type.
+        // An explicit type wins; otherwise a new station carries its type, and
+        // clearing the station clears the type too (a stale type would keep
+        // routing the item by type after the owner unassigned the station).
         ...(input.stationType !== undefined
           ? { stationType: input.stationType }
           : stationTypeOfStation !== null
             ? { stationType: stationTypeOfStation }
-            : {}),
+            : input.stationId === null
+              ? { stationType: null }
+              : {}),
         ...(input.course !== undefined ? { course: input.course } : {}),
         ...(input.recipeId !== undefined ? { recipeId: input.recipeId } : {}),
         ...(input.taxRuleId !== undefined

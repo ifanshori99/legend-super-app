@@ -4,10 +4,11 @@
 -- kitchen_station_feed and kitchen_station_cursors.
 --
 -- KDS-04: every status change is recorded with time and user, and the record
--- is never rewritten. KDS-02: the per-station feed is gapless and append-only.
+-- is never rewritten. KDS-02: the per-station feed is gapless and append-only,
+-- except that rows older than 24 hours may be deleted (pruning, see 1b).
 
--- 1. Append-only history: status changes and the station feed are never
---    updated or deleted (trigger + revoked privileges as backstop).
+-- 1. Append-only history: status changes are never updated or deleted
+--    (trigger + revoked privileges as backstop).
 CREATE OR REPLACE FUNCTION app.kds_append_only() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -18,9 +19,24 @@ CREATE TRIGGER "kitchen_ticket_status_changes_append_only_trg"
   BEFORE UPDATE OR DELETE ON "kitchen_ticket_status_changes"
   FOR EACH ROW EXECUTE FUNCTION app.kds_append_only();
 --> statement-breakpoint
+
+-- 1b. The station feed is never updated. The only delete allowed is pruning
+--     of rows older than 24 hours (the app also keeps the newest
+--     KITCHEN_FEED_MAX_LAG sequences of a station, see kds-support.ts). The
+--     age is judged by the database clock, so no session can delete recent
+--     rows. Keep 24 hours in step with KITCHEN_FEED_RETENTION_HOURS.
+CREATE OR REPLACE FUNCTION app.kds_feed_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND OLD.occurred_at < now() - interval '24 hours' THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
 CREATE TRIGGER "kitchen_station_feed_append_only_trg"
   BEFORE UPDATE OR DELETE ON "kitchen_station_feed"
-  FOR EACH ROW EXECUTE FUNCTION app.kds_append_only();
+  FOR EACH ROW EXECUTE FUNCTION app.kds_feed_guard();
 --> statement-breakpoint
 
 -- 2. Tenant + outlet RLS (TEN-01/TEN-03). Every table has outlet_id NOT NULL.
@@ -46,7 +62,9 @@ SELECT app.enforce_outlet_rls('public.kitchen_station_cursors'::regclass);
 --> statement-breakpoint
 
 -- 3. enforce_tenant_rls grants full DML; take UPDATE/DELETE back on the
---    append-only tables.
+--    status change log. On the station feed only UPDATE is revoked: DELETE
+--    stays granted to legend_app for pruning, and the trigger above limits it
+--    to rows older than 24 hours.
 REVOKE UPDATE, DELETE ON public.kitchen_ticket_status_changes FROM legend_app;
 --> statement-breakpoint
-REVOKE UPDATE, DELETE ON public.kitchen_station_feed FROM legend_app;
+REVOKE UPDATE ON public.kitchen_station_feed FROM legend_app;

@@ -10,8 +10,13 @@
 // and sequences commit in order with no gap. A `pg_notify` carrying ids only
 // (delivered at commit, same rule as qr-order-realtime-signal.ts) wakes the
 // realtime relay, which re-reads the feed under each socket's own identity.
+//
+// Resume and pruning: a client cursor is untrusted. `assertFeedResumable`
+// refuses (409 KDS_RESYNC_REQUIRED) a cursor ahead of the station, too far
+// behind it, or whose following rows are gone; the client reloads the
+// snapshot. Old rows are pruned from `appendStationFeed` now and then.
 
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   createUlid,
@@ -24,6 +29,9 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  KDS_RESYNC_REQUIRED,
+  KITCHEN_FEED_MAX_LAG,
+  KITCHEN_FEED_RETENTION_HOURS,
   kitchenEvents,
   kitchenItemStatusSchema,
   kitchenTicketDetailSchema,
@@ -35,6 +43,7 @@ import {
   type KitchenTicketItem,
   type KitchenTicketStatus,
 } from "@starter/shared/kitchen";
+import { HttpError } from "../lib/http-error.ts";
 import { domainEventOutbox } from "../db/schema/index.ts";
 import {
   kitchenStationCursors,
@@ -63,6 +72,29 @@ export const kdsWakeSignalSchema = z.strictObject({
   sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 export type KdsWakeSignal = z.infer<typeof kdsWakeSignalSchema>;
+
+/**
+ * Prune the station feed when the new sequence is a multiple of this: often
+ * enough to bound the table, rare enough to cost one range delete per 500
+ * changes instead of one per change.
+ */
+const FEED_PRUNE_EVERY = 500;
+
+/**
+ * The client must reload the snapshot (409 `KDS_RESYNC_REQUIRED`). `sequence`
+ * is the station's current cursor, which the realtime relay sends in its
+ * `resync` frame; the HTTP error body carries only code and message.
+ */
+export class KdsResyncRequiredError extends HttpError {
+  constructor(public readonly sequence: number) {
+    super(
+      409,
+      KDS_RESYNC_REQUIRED,
+      "Kursor tidak dapat dilanjutkan. Muat ulang tiket stasiun lalu sambungkan lagi.",
+    );
+    this.name = "KdsResyncRequiredError";
+  }
+}
 
 const EVENT_DESTINATION = "cloud-sync";
 const AUDIT_SAFE_FIELDS = [
@@ -119,6 +151,8 @@ export async function appendStationFeed(
     ticketId: input.ticketId,
     occurredAt: input.now,
   });
+  if (sequence % FEED_PRUNE_EVERY === 0)
+    await pruneStationFeed(tx, context, input.stationId, sequence);
   const signal = kdsWakeSignalSchema.parse({
     tenantId,
     outletId: input.outletId,
@@ -129,6 +163,68 @@ export async function appendStationFeed(
     sql`SELECT pg_notify(${KDS_WAKE_CHANNEL}, ${JSON.stringify(signal)})`,
   );
   return sequence;
+}
+
+/**
+ * Deletes feed rows that are both older than the retention and more than
+ * KITCHEN_FEED_MAX_LAG behind `newest` (a cursor that far back resyncs anyway,
+ * so nobody can need them). Runs under the cursor row lock taken by the
+ * caller. The age test uses the database clock, the same as the append-only
+ * trigger on the table: an app clock that drifts can never make the trigger
+ * refuse the delete and fail a fire. The range scan uses the unique
+ * (tenant, station, sequence) index.
+ */
+async function pruneStationFeed(
+  tx: Tx,
+  context: ScopedTenantContext,
+  stationId: string,
+  newest: number,
+): Promise<void> {
+  await tx
+    .delete(kitchenStationFeed)
+    .where(
+      and(
+        eq(kitchenStationFeed.tenantId, context.tenant.tenantId),
+        eq(kitchenStationFeed.stationId, stationId),
+        lt(kitchenStationFeed.sequence, newest - KITCHEN_FEED_MAX_LAG),
+        sql`${kitchenStationFeed.occurredAt} < now() - make_interval(hours => ${KITCHEN_FEED_RETENTION_HOURS})`,
+      ),
+    );
+}
+
+/**
+ * Throws KdsResyncRequiredError unless the feed can continue from `after`:
+ * not ahead of the station cursor, at most `maxLag` behind it, and the row
+ * right after it (`after + 1`) still exists. `after` comes from the client,
+ * so it is never trusted. A station with no cursor row counts as sequence 0.
+ */
+export async function assertFeedResumable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  stationId: string,
+  after: number,
+  maxLag: number = KITCHEN_FEED_MAX_LAG,
+): Promise<void> {
+  const current = await readStationCursor(tx, context, stationId);
+  if (after > current || current - after > maxLag)
+    throw new KdsResyncRequiredError(current);
+  if (after === current) return;
+  const [oldest] = await tx
+    .select({
+      sequence: sql<number>`min(${kitchenStationFeed.sequence})`.mapWith(
+        Number,
+      ),
+    })
+    .from(kitchenStationFeed)
+    .where(
+      and(
+        eq(kitchenStationFeed.tenantId, context.tenant.tenantId),
+        eq(kitchenStationFeed.stationId, stationId),
+      ),
+    );
+  // `min` is null (mapped to 0) only when every row is gone: also a gap.
+  if (!oldest || oldest.sequence === 0 || oldest.sequence > after + 1)
+    throw new KdsResyncRequiredError(current);
 }
 
 /** The station cursor (0 before the first change), read in the caller's tx. */

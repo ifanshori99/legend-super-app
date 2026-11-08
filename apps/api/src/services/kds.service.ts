@@ -74,6 +74,7 @@ import {
   actorSource,
   appendKitchenEvent,
   appendStationFeed,
+  assertFeedResumable,
   auditKitchen,
   freshTicketDetail,
   itemStatusOf,
@@ -103,6 +104,11 @@ const stationNotFound = () =>
   new CoreError("NOT_FOUND", "Stasiun dapur tidak ditemukan di outlet ini.");
 const ticketCancelled = () =>
   new CoreError("CONFLICT", "Tiket dapur sudah dibatalkan.");
+const ticketMoved = () =>
+  new CoreError(
+    "CONFLICT",
+    "Tiket dapur dipindah ke stasiun lain; muat ulang lalu coba lagi.",
+  );
 
 const TICKET_ACTION_LABEL: Record<KitchenTicketAction, string> = {
   start: "mulai",
@@ -739,23 +745,25 @@ export async function applyKitchenTicketAction(
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
-    const order =
-      action === "void"
-        ? await lockOrderOf(
-            tx,
-            context,
-            (await readTicket(tx, context, outletId, ticketId, false)).orderId,
-          )
-        : null;
-    const ticket = await readTicket(tx, context, outletId, ticketId, true);
+    // Permission first, on an unlocked read: a denied user must never queue
+    // behind (or hold) the order and ticket locks of a busy kitchen.
+    const unlocked = await readTicket(tx, context, outletId, ticketId, false);
     await assertStationPermission(
       tx,
       context,
       actor.userId,
       PROCESS,
-      ticket.stationId,
+      unlocked.stationId,
       now,
     );
+    const order =
+      action === "void"
+        ? await lockOrderOf(tx, context, unlocked.orderId)
+        : null;
+    const ticket = await readTicket(tx, context, outletId, ticketId, true);
+    // The check above covered the station read before locking; refuse if the
+    // ticket moved meanwhile instead of acting on a station never checked.
+    if (ticket.stationId !== unlocked.stationId) throw ticketMoved();
     const reason = input.reason?.trim() || null;
     if ((action === "recall" || action === "void") && reason === null)
       throw new CoreError("VALIDATION_ERROR", "Alasan wajib diisi.");
@@ -770,6 +778,39 @@ export async function applyKitchenTicketAction(
       updatedAt: now,
     };
     const voidedLines: string[] = [];
+    // Line statuses before the change (ticket row is locked, so these cannot
+    // move under us): bump / recall / void write one audit row per moved line.
+    const linesBefore = await tx
+      .select({
+        orderItemId: kitchenTicketItems.orderItemId,
+        status: kitchenTicketItems.status,
+      })
+      .from(kitchenTicketItems)
+      .where(ticketFilter)
+      .orderBy(kitchenTicketItems.orderItemId);
+    const lineMoves: {
+      orderItemId: string;
+      from: KitchenItemStatus;
+      to: KitchenItemStatus;
+    }[] = [];
+    if (action === "bump" || action === "recall" || action === "void") {
+      for (const line of linesBefore) {
+        const from = line.status as KitchenItemStatus;
+        const to: KitchenItemStatus | null =
+          action === "bump"
+            ? from === "queued" || from === "in_progress"
+              ? "ready"
+              : null
+            : action === "recall"
+              ? from === "ready"
+                ? "in_progress"
+                : null
+              : from === "served" || from === "voided"
+                ? null
+                : "voided";
+        if (to) lineMoves.push({ orderItemId: line.orderItemId, from, to });
+      }
+    }
     if (action === "start") {
       patch.startedAt = ticket.startedAt ?? now;
       await tx
@@ -792,6 +833,8 @@ export async function applyKitchenTicketAction(
         .update(kitchenTicketItems)
         .set({
           status: "in_progress",
+          // The line is being redone, so its old ready time no longer holds.
+          readyAt: null,
           recalledCount: sql`${kitchenTicketItems.recalledCount} + 1`,
           updatedAt: now,
         })
@@ -831,6 +874,19 @@ export async function applyKitchenTicketAction(
       reason,
       now,
     });
+    for (const move of lineMoves)
+      await recordStatusChange(tx, context, {
+        ticket,
+        orderItemId: move.orderItemId,
+        fromStatus: before,
+        toStatus: next,
+        itemFromStatus: move.from,
+        itemToStatus: move.to,
+        source: actorSource(actor),
+        actor,
+        reason,
+        now,
+      });
     await appendStationFeed(tx, context, {
       outletId: ticket.outletId,
       stationId: ticket.stationId,
@@ -979,7 +1035,24 @@ export async function applyKitchenItemAction(
         ),
       );
     if (!found) throw itemNotFound();
-    // Order row (void only), ticket row, then the line: the ticket-action order.
+    // Permission first, on an unlocked read: a denied user must never queue
+    // behind (or hold) the order and ticket locks of a busy kitchen.
+    const unlocked = await readTicket(
+      tx,
+      context,
+      outletId,
+      found.ticketId,
+      false,
+    );
+    await assertStationPermission(
+      tx,
+      context,
+      actor.userId,
+      PROCESS,
+      unlocked.stationId,
+      now,
+    );
+    // Then order row (void only), ticket row, and the line: the ticket-action order.
     const order =
       action === "void" ? await lockOrderOf(tx, context, found.orderId) : null;
     const ticket = await readTicket(
@@ -989,14 +1062,8 @@ export async function applyKitchenItemAction(
       found.ticketId,
       true,
     );
-    await assertStationPermission(
-      tx,
-      context,
-      actor.userId,
-      PROCESS,
-      ticket.stationId,
-      now,
-    );
+    // Refuse if the ticket moved between the permission check and the lock.
+    if (ticket.stationId !== unlocked.stationId) throw ticketMoved();
     const [item] = await tx
       .select()
       .from(kitchenTicketItems)
@@ -1247,7 +1314,9 @@ export async function listStationTickets(
 /**
  * KDS-02 resync: changes after `afterSequence`, collapsed to the latest
  * sequence per ticket, oldest first, one page of KITCHEN_FEED_PAGE_LIMIT
- * tickets. Each entry carries the ticket's current state.
+ * tickets. Each entry carries the ticket's current state. Throws 409
+ * KDS_RESYNC_REQUIRED when `afterSequence` cannot be resumed (see
+ * assertFeedResumable); `options.maxLag` lowers the lag limit for tests.
  */
 export async function readStationFeed(
   context: ScopedTenantContext,
@@ -1256,6 +1325,7 @@ export async function readStationFeed(
   stationId: string,
   afterSequence: number,
   now: Date,
+  options: { maxLag?: number } = {},
 ): Promise<KitchenStationFeed> {
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
@@ -1269,6 +1339,15 @@ export async function readStationFeed(
       now,
     );
     await assertStationInOutlet(tx, context, outletId, stationId);
+    // `afterSequence` is client input: refuse a cursor that cannot resume so
+    // the screen reloads its snapshot instead of silently missing changes.
+    await assertFeedResumable(
+      tx,
+      context,
+      stationId,
+      afterSequence,
+      options.maxLag,
+    );
     const latest = sql<number>`max(${kitchenStationFeed.sequence})`.mapWith(
       Number,
     );

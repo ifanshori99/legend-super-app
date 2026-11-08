@@ -37,8 +37,13 @@ import {
   userIdSchema,
   uuidToUlid,
 } from "@starter/shared/core";
-import { establishTenantContext } from "@starter/shared/core/server";
 import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import {
+  KDS_RESYNC_REQUIRED,
+  KITCHEN_FEED_PAGE_LIMIT,
   kitchenStationFeedSchema,
   kitchenStationSnapshotSchema,
   kitchenTicketDetailSchema,
@@ -48,6 +53,9 @@ import {
   type KitchenTicketDetail,
 } from "@starter/shared/kitchen";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { appendStationFeed } from "../services/kds-support.ts";
 import { setStaffPin } from "../services/device-pin.service.ts";
 import { resolveKdsStaffConnection } from "../services/kds-realtime-auth.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -643,7 +651,7 @@ async function approval(
     objectType: "order",
     objectId: orderId,
   },
-): Promise<{ approvedBy: string; approvalRequestId: string }> {
+): Promise<{ approvedBy: string; overrideId: string }> {
   const { override } = await createPosOverride(
     establishTenantContext({
       tenantId: tenantIdSchema.parse(tenant.tenantId),
@@ -667,7 +675,7 @@ async function approval(
     { idempotencyKey: randomUUID() },
   );
   expect(override.status).toBe("approved");
-  return { approvedBy: supervisor.userId, approvalRequestId: randomUUID() };
+  return { approvedBy: supervisor.userId, overrideId: override.id };
 }
 
 async function voidLine(placed: Placed, menuItemId: string) {
@@ -878,35 +886,120 @@ describe("KDS-01 routing: an item reaches the right station", () => {
     expect(tickets.map((ticket) => ticket.stationId)).toEqual([ids.barA]);
   });
 
-  it("KDS-01 a station that cannot be resolved in the outlet rejects the whole fire and persists nothing", async () => {
+  it("KDS-01 a line whose station cannot be resolved is fired without a ticket and audited; the sale never fails", async () => {
+    // Roti is pastry and only outlet B has a pastry station: unresolvable here.
     const placed = await placeOrder(
       [{ menuItemId: ids.nasi }, { menuItemId: ids.roti }],
       { hold: true },
     );
-    const ticketsBefore = await ticketCount();
-    const cursorBefore = await cursorOf(ids.kitchenA);
 
-    const refused = await pos().fire(
+    const fired = await pos().fire(
       placed.orderId,
       placed.lines.map((line) => line.id),
       placed.status,
     );
-    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(fired.status, JSON.stringify(fired.body)).toBe(200);
 
-    // Fail closed: not even the resolvable Nasi Goreng line was routed.
-    expect(await ticketsOfOrder(placed.orderId)).toEqual([]);
-    expect(await ticketCount()).toBe(ticketsBefore);
-    expect(await cursorOf(ids.kitchenA)).toBe(cursorBefore);
+    // The routable line has its ticket; roti has none.
+    const tickets = await ticketsOfOrder(placed.orderId);
+    expect(tickets.map((ticket) => ticket.stationId)).toEqual([ids.kitchenA]);
+    const onKitchen = await ticketDetail(
+      await ticketOn(placed.orderId, ids.kitchenA),
+    );
+    expect(onKitchen.items.map((item) => item.name)).toEqual(["Nasi Goreng"]);
+
+    // Both lines are fired, so the sale goes on.
     const order = await pos().get(placed.orderId);
     expect(
       order.body.data.items.every(
-        (item: { fireStatus: string }) => item.fireStatus === "held",
+        (item: { fireStatus: string }) => item.fireStatus === "fired",
       ),
     ).toBe(true);
+
+    // The skipped line is recorded in the audit log.
+    const roti = placed.lines.find((line) => line.menuItemId === ids.roti);
+    const audit = await rows<{ event: { after?: { itemIds?: string[] } } }>(
+      `SELECT event FROM audit_logs
+       WHERE tenant_id = $1 AND event->>'action' = 'kitchen_ticket.unrouted'
+         AND event->>'objectId' = $2`,
+      [tenant.tenantId, placed.orderId],
+    );
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit[0]?.event)).toContain(roti?.id ?? "missing");
+  });
+
+  it("KDS-01 an order whose lines are all unroutable still fires and creates no ticket", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.roti }]);
+    expect(await ticketsOfOrder(placed.orderId)).toEqual([]);
   });
 });
 
 // ===== KDS-02 =====================================================================
+
+// ---- Feed seeding helpers (KDS-02 resync, paging and pruning) ------------------------
+// Stations of a type no menu item maps to, so seeded cursors and feed rows
+// never mix with the routed stations the other tests count on.
+
+async function extraStation(type: "coffee_bar" | "cold_kitchen" | "pastry") {
+  const id = randomUUID();
+  await asOwnerTenant(tenant.tenantId, (client) =>
+    client.query(
+      `INSERT INTO stations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, $4, $5)`,
+      [
+        id,
+        tenant.tenantId,
+        tenant.outletId,
+        `Uji feed ${id.slice(0, 8)}`,
+        type,
+      ],
+    ),
+  );
+  return id;
+}
+
+/** Cursor row and feed rows written as the owner (the trigger allows inserts). */
+async function seedFeed(
+  stationId: string,
+  cursor: number,
+  feedRows: { sequence: number; ticketId: string; ageHours?: number }[],
+) {
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO kitchen_station_cursors (tenant_id, outlet_id, station_id, last_sequence)
+       VALUES ($1, $2, $3, $4)`,
+      [tenant.tenantId, tenant.outletId, stationId, cursor],
+    );
+    for (const row of feedRows)
+      await client.query(
+        `INSERT INTO kitchen_station_feed (id, tenant_id, outlet_id, station_id, sequence, ticket_id, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6::uuid, now() - make_interval(hours => $7))`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          stationId,
+          row.sequence,
+          ulidToUuid(row.ticketId),
+          row.ageHours ?? 0,
+        ],
+      );
+  });
+}
+
+async function feedSequences(stationId: string): Promise<number[]> {
+  return (
+    await rows<{ sequence: number }>(
+      `SELECT sequence::int AS sequence FROM kitchen_station_feed
+       WHERE station_id = $1 ORDER BY sequence`,
+      [stationId],
+    )
+  ).map((row) => row.sequence);
+}
+
+async function anyTicket(): Promise<string> {
+  const placed = await placeOrder([{ menuItemId: ids.kopi }]);
+  return ticketOn(placed.orderId, ids.barA);
+}
 
 describe("KDS-02 gapless feed and cursor resync", () => {
   it("KDS-02 the snapshot cursor plus feed(after) returns exactly the later changes, one entry per ticket", async () => {
@@ -945,9 +1038,10 @@ describe("KDS-02 gapless feed and cursor resync", () => {
     expect(none.entries).toEqual([]);
     expect(none.hasMore).toBe(false);
     expect(none.toSequence).toBe(later.toSequence);
-    const beyond = await feed(ids.barA, later.toSequence + 1_000);
-    expect(beyond.entries).toEqual([]);
-    expect(beyond.toSequence).toBeGreaterThanOrEqual(later.toSequence + 1_000);
+    // A cursor ahead of the station is not trusted: resync, never an empty page.
+    const beyond = await kds().feed(ids.barA, later.toSequence + 1_000);
+    expect(beyond.status, JSON.stringify(beyond.body)).toBe(409);
+    expect(beyond.body.error.code).toBe(KDS_RESYNC_REQUIRED);
 
     // A station never sees another station's changes.
     const other = await feed(ids.kitchenA, await cursorOf(ids.kitchenA));
@@ -979,6 +1073,170 @@ describe("KDS-02 gapless feed and cursor resync", () => {
       expect(cursor?.last_sequence).toBe(sequences.length);
       expect(await cursorOf(stationId)).toBe(sequences.length);
     }
+  });
+
+  it("KDS-02 a cursor ahead of the station, too far behind it, or past pruned rows must resync with 409 KDS_RESYNC_REQUIRED", async () => {
+    const ticketId = await anyTicket();
+    const expectResync = async (stationId: string, after: number) => {
+      const response = await kds().feed(stationId, after);
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(response.body.error.code).toBe(KDS_RESYNC_REQUIRED);
+    };
+
+    // A station without any change: only 0 is a valid cursor.
+    const empty = await extraStation("coffee_bar");
+    expect((await feed(empty, 0)).entries).toEqual([]);
+    await expectResync(empty, 1);
+
+    // Far behind: 5000 changes ahead of a cursor at 100 (lag limit 2000).
+    const lagging = await extraStation("cold_kitchen");
+    await seedFeed(lagging, 5_000, [
+      { sequence: 3_001, ticketId },
+      { sequence: 5_000, ticketId },
+    ]);
+    await expectResync(lagging, 100);
+    await expectResync(lagging, 5_001);
+    // Exactly at the limit still resumes: 5000 - 3000 = 2000.
+    expect((await feed(lagging, 3_000)).entries).toHaveLength(1);
+
+    // Rows 1..5 were pruned: a cursor before the oldest retained row resyncs,
+    // one that starts right at it does not (row 5 is the one it still needs).
+    const pruned = await extraStation("pastry");
+    await seedFeed(
+      pruned,
+      10,
+      [6, 7, 8, 9, 10].map((sequence) => ({ sequence, ticketId })),
+    );
+    await expectResync(pruned, 2);
+    await expectResync(pruned, 4);
+    expect((await feed(pruned, 5)).entries).toHaveLength(1);
+    expect((await feed(pruned, 10)).entries).toEqual([]);
+  });
+
+  it("KDS-02 more changed tickets than one page gives hasMore, and the next page continues from toSequence without a gap or duplicate", async () => {
+    const template = ulidToUuid(await anyTicket());
+    const total = KITCHEN_FEED_PAGE_LIMIT + 50;
+    const station = await extraStation("coffee_bar");
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      // `total` distinct tickets, each a clone of one real ticket with its
+      // own cloned order line and ticket line (a detail needs >= 1 line), and
+      // one feed row each, so nothing collapses. Cloning through temp tables
+      // keeps every column without listing them.
+      await client.query(
+        `CREATE TEMP TABLE seed ON COMMIT DROP AS
+         SELECT n, gen_random_uuid() AS ticket_id, gen_random_uuid() AS order_item_id
+         FROM generate_series(1, $1::int) AS n`,
+        [total],
+      );
+      await client.query(
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, status, priority, fired_at)
+         SELECT s.ticket_id, t.tenant_id, t.outlet_id, t.order_id, $2::uuid, gen_random_uuid(), 'new', 0, now()
+         FROM kitchen_tickets t, seed s WHERE t.id = $1::uuid`,
+        [template, station],
+      );
+      await client.query(
+        `CREATE TEMP TABLE order_line_clone ON COMMIT DROP AS
+         SELECT oi.*, s.order_item_id AS new_id FROM order_items oi, seed s
+         WHERE oi.id = (SELECT order_item_id FROM kitchen_ticket_items WHERE ticket_id = $1::uuid LIMIT 1)`,
+        [template],
+      );
+      await client.query("UPDATE order_line_clone SET id = new_id");
+      await client.query("ALTER TABLE order_line_clone DROP COLUMN new_id");
+      await client.query(
+        "INSERT INTO order_items SELECT * FROM order_line_clone",
+      );
+      await client.query(
+        `CREATE TEMP TABLE ticket_line_clone ON COMMIT DROP AS
+         SELECT ti.*, s.ticket_id AS new_ticket_id, s.order_item_id AS new_order_item_id
+         FROM kitchen_ticket_items ti, seed s WHERE ti.ticket_id = $1::uuid`,
+        [template],
+      );
+      await client.query(
+        `UPDATE ticket_line_clone
+         SET id = gen_random_uuid(), ticket_id = new_ticket_id, order_item_id = new_order_item_id`,
+      );
+      await client.query(
+        "ALTER TABLE ticket_line_clone DROP COLUMN new_ticket_id, DROP COLUMN new_order_item_id",
+      );
+      await client.query(
+        "INSERT INTO kitchen_ticket_items SELECT * FROM ticket_line_clone",
+      );
+      await client.query(
+        `INSERT INTO kitchen_station_feed (id, tenant_id, outlet_id, station_id, sequence, ticket_id, occurred_at)
+         SELECT gen_random_uuid(), t.tenant_id, t.outlet_id, t.station_id, s.n, t.id, now()
+         FROM kitchen_tickets t JOIN seed s ON s.ticket_id = t.id`,
+      );
+      await client.query(
+        `INSERT INTO kitchen_station_cursors (tenant_id, outlet_id, station_id, last_sequence)
+         VALUES ($1, $2, $3, $4)`,
+        [tenant.tenantId, tenant.outletId, station, total],
+      );
+    });
+
+    const first = await feed(station, 0);
+    expect(first.entries).toHaveLength(KITCHEN_FEED_PAGE_LIMIT);
+    expect(first.hasMore).toBe(true);
+    expect(first.toSequence).toBe(KITCHEN_FEED_PAGE_LIMIT);
+    const second = await feed(station, first.toSequence);
+    expect(second.entries).toHaveLength(total - KITCHEN_FEED_PAGE_LIMIT);
+    expect(second.hasMore).toBe(false);
+    expect(second.toSequence).toBe(total);
+    const sequences = [...first.entries, ...second.entries].map(
+      (entry) => entry.sequence,
+    );
+    expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+    expect(
+      new Set([...first.entries, ...second.entries].map((e) => e.ticket.id))
+        .size,
+    ).toBe(total);
+  });
+
+  it("KDS-02 parallel fires on one station keep the feed gapless 1..n and equal to the cursor", async () => {
+    const before = await cursorOf(ids.barA);
+    const parallel = 6;
+    const placed = await Promise.all(
+      Array.from({ length: parallel }, () =>
+        placeOrder([{ menuItemId: ids.kopi }]),
+      ),
+    );
+    expect(placed).toHaveLength(parallel);
+    const sequences = await feedSequences(ids.barA);
+    expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+    expect(sequences.length - before).toBe(parallel);
+    expect(await cursorOf(ids.barA)).toBe(sequences.length);
+  });
+
+  it("KDS-02 the feed of a station is pruned only past both the retention and the lag, and only by the app", async () => {
+    const ticketId = await anyTicket();
+    const station = await extraStation("coffee_bar");
+    // Cursor 2999: the next change is 3000, a multiple of 500, so it prunes
+    // rows below 3000 - 2000 = 1000 that are older than 24 hours.
+    await seedFeed(station, 2_999, [
+      { sequence: 1, ticketId, ageHours: 25 }, // old and far behind: pruned
+      { sequence: 2, ticketId, ageHours: 25 },
+      { sequence: 500, ticketId, ageHours: 1 }, // far behind but recent: kept
+      { sequence: 2_500, ticketId, ageHours: 25 }, // old but inside the lag: kept
+    ]);
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const sequence = await withTenant(db, context, (tx) =>
+      appendStationFeed(tx, context, {
+        outletId: tenant.outletId,
+        stationId: station,
+        ticketId,
+        now: new Date(),
+      }),
+    );
+    expect(sequence).toBe(3_000);
+    expect(await feedSequences(station)).toEqual([500, 2_500, 3_000]);
+    // The feed still answers for a cursor inside the retained range.
+    expect((await feed(station, 2_500)).entries).toHaveLength(1);
   });
 
   it("KDS-02 the snapshot is ordered by priority (highest first) and then by fire time", async () => {
@@ -1235,7 +1493,10 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
       ticketId,
     );
 
-    const log = await changesOf(ticketId);
+    // Ticket-level rows only; the per-item rows are asserted in their own test.
+    const log = (await changesOf(ticketId)).filter(
+      (row) => row.order_item_id === null,
+    );
     expect(log.map((row) => [row.from_status, row.to_status])).toEqual([
       [null, "new"],
       ["new", "in_progress"],
@@ -1256,6 +1517,95 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
     expect([...times].sort((a, b) => a - b)).toEqual(times);
   });
 
+  it("KDS-04 ticket bump, recall and void each record one status change per affected line, and recall clears readyAt", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.nasi },
+      { menuItemId: ids.nasi, note: "Pedas" },
+    ]);
+    const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
+    const [first, second] = (await ticketDetail(ticketId)).items;
+    // One line in progress, one still queued: the bump moves both to ready.
+    expect((await kds().item(first!.id, "start")).status).toBe(200);
+
+    // Rows written by the three ticket-level actions only (the item start
+    // above ends in in_progress, the ticket creation row has no line).
+    const lineRows = () =>
+      rows<{
+        order_item_id: string;
+        from_status: string;
+        to_status: string;
+        item_from_status: string;
+        item_to_status: string;
+        reason: string | null;
+      }>(
+        `SELECT order_item_id::text AS order_item_id, from_status, to_status,
+                item_from_status, item_to_status, reason
+         FROM kitchen_ticket_status_changes
+         WHERE ticket_id = $1::uuid AND order_item_id IS NOT NULL
+           AND to_status IN ('done', 'recalled', 'cancelled')
+         ORDER BY occurred_at, id`,
+        [ulidToUuid(ticketId)],
+      );
+    const shape = (list: Awaited<ReturnType<typeof lineRows>>) =>
+      list
+        .map((row) =>
+          [
+            row.from_status,
+            row.to_status,
+            row.item_from_status,
+            row.item_to_status,
+          ].join(">"),
+        )
+        .sort();
+
+    expect((await kds().bump(ticketId)).status).toBe(200);
+    let list = await lineRows();
+    expect(shape(list)).toEqual([
+      "in_progress>done>in_progress>ready",
+      "in_progress>done>queued>ready",
+    ]);
+    expect(new Set(list.map((row) => row.order_item_id)).size).toBe(2);
+    expect(
+      (await ticketDetail(ticketId)).items.every((i) => i.readyAt !== null),
+    ).toBe(true);
+
+    expect(
+      (await kds().recall(ticketId, { reason: "Salah meja" })).status,
+    ).toBe(200);
+    list = (await lineRows()).filter((row) => row.to_status === "recalled");
+    expect(shape(list)).toEqual([
+      "done>recalled>ready>in_progress",
+      "done>recalled>ready>in_progress",
+    ]);
+    for (const row of list) expect(row.reason).toBe("Salah meja");
+    // The lines are being redone: no stale ready time may survive the recall.
+    const recalled = await ticketDetail(ticketId);
+    expect(recalled.items.every((i) => i.status === "in_progress")).toBe(true);
+    expect(recalled.items.every((i) => i.readyAt === null)).toBe(true);
+    expect(second && recalled.items.length).toBe(2);
+
+    expect(
+      (await kds().voidTicket(ticketId, { reason: "Bahan habis" })).status,
+    ).toBe(200);
+    list = (await lineRows()).filter((row) => row.to_status === "cancelled");
+    expect(shape(list)).toEqual([
+      "recalled>cancelled>in_progress>voided",
+      "recalled>cancelled>in_progress>voided",
+    ]);
+    for (const row of list) expect(row.reason).toBe("Bahan habis");
+    // Each ticket-level change still has its own ticket row (no line id).
+    const ticketRows = (await changesOf(ticketId)).filter(
+      (row) => row.order_item_id === null,
+    );
+    expect(ticketRows.map((row) => row.to_status)).toEqual([
+      "new",
+      "in_progress",
+      "done",
+      "recalled",
+      "cancelled",
+    ]);
+  });
+
   it("KDS-04 voiding a ticket needs a reason and records it with the user", async () => {
     const placed = await placeOrder([{ menuItemId: ids.nasi }]);
     const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
@@ -1264,7 +1614,9 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
     const detail = kitchenTicketDetailSchema.parse(voided.body.data);
     expect(detail.status).toBe("cancelled");
     expect(detail.items.every((item) => item.status === "voided")).toBe(true);
-    const log = await changesOf(ticketId);
+    const log = (await changesOf(ticketId)).filter(
+      (row) => row.order_item_id === null,
+    );
     expect(log.at(-1)).toMatchObject({
       from_status: "new",
       to_status: "cancelled",
@@ -1384,6 +1736,37 @@ describe("KDS-04 ticket lifecycle and audit trail", () => {
         sql,
       ).rejects.toThrow(/append-only/i);
     expect((await changesOf(ticketId)).length).toBeGreaterThan(0);
+
+    // Pruning is the one exception: a feed row older than 24 hours may be
+    // deleted, never updated; a recent one (above) and the status changes stay.
+    const station = await extraStation("cold_kitchen");
+    await seedFeed(station, 2, [
+      { sequence: 1, ticketId, ageHours: 25 },
+      { sequence: 2, ticketId, ageHours: 1 },
+    ]);
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "UPDATE kitchen_station_feed SET occurred_at = now() WHERE station_id = $1 AND sequence = 1",
+          [station],
+        ),
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      asOwnerTenant(tenant.tenantId, (client) =>
+        client.query(
+          "DELETE FROM kitchen_station_feed WHERE station_id = $1 AND sequence = 2",
+          [station],
+        ),
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        "DELETE FROM kitchen_station_feed WHERE station_id = $1 AND sequence = 1",
+        [station],
+      ),
+    );
+    expect(await feedSequences(station)).toEqual([2]);
   });
 });
 
@@ -1397,6 +1780,78 @@ describe("KDS illegal transitions change nothing", () => {
       cursor: await cursorOf(stationId),
     };
   }
+
+  it("KDS-04 two bumps of the same ticket at once: exactly one wins, the other gets 409, one status change is recorded", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.nasi },
+      { menuItemId: ids.nasi, note: "Pedas" },
+    ]);
+    const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
+    expect((await kds().start(ticketId)).status).toBe(200);
+
+    const results = await Promise.all([
+      kds().bump(ticketId),
+      kds().bump(ticketId),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+
+    const done = await rows<{ order_item_id: string | null }>(
+      `SELECT order_item_id::text AS order_item_id
+       FROM kitchen_ticket_status_changes
+       WHERE ticket_id = $1::uuid AND to_status = 'done'`,
+      [ulidToUuid(ticketId)],
+    );
+    // One ticket row plus one row per line, from the single winner.
+    expect(done.filter((row) => row.order_item_id === null)).toHaveLength(1);
+    expect(done.filter((row) => row.order_item_id !== null)).toHaveLength(2);
+    expect((await ticketDetail(ticketId)).status).toBe("done");
+  });
+
+  it("KDS-04 a user without station permission gets 403 at once, even while another transaction holds the order and ticket locks", async () => {
+    const placed = await placeOrder([{ menuItemId: ids.nasi }]);
+    const ticketId = await ticketOn(placed.orderId, ids.kitchenA);
+    const [line] = (await ticketDetail(ticketId)).items;
+    const before = await stateOf(ticketId, ids.kitchenA);
+
+    // Hold the order row and the ticket row locked, like a busy POS/KDS write.
+    const holder = await owner.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.tenantId],
+      );
+      await holder.query(
+        "SELECT 1 FROM orders WHERE id = $1::uuid FOR UPDATE",
+        [ulidToUuid(placed.orderId)],
+      );
+      await holder.query(
+        "SELECT 1 FROM kitchen_tickets WHERE id = $1::uuid FOR UPDATE",
+        [ulidToUuid(ticketId)],
+      );
+
+      // The barista only has bar A: kitchen A is out of reach. If the check ran
+      // after the locks, these would hang until the holder commits.
+      const asBarista = kds(barista);
+      const attempts = [
+        asBarista.voidTicket(ticketId, { reason: "Uji" }),
+        asBarista.bump(ticketId),
+        asBarista.item(line!.id, "void"),
+        asBarista.item(line!.id, "start"),
+      ];
+      const settled = await Promise.race([
+        Promise.all(attempts.map((attempt) => attempt.then((r) => r.status))),
+        new Promise<"timeout">((resolve) =>
+          setTimeout(resolve, 5000, "timeout"),
+        ),
+      ]);
+      expect(settled).toEqual([403, 403, 403, 403]);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    expect(await stateOf(ticketId, ids.kitchenA)).toEqual(before);
+  });
 
   it("KDS-04 bumping a ticket that was never started is refused with 409", async () => {
     const placed = await placeOrder([{ menuItemId: ids.nasi }]);

@@ -17,6 +17,15 @@
 //   `after`, every change after it is replayed first. Each client has one
 //   promise chain and a cursor, so frames never interleave or repeat and only
 //   entries with `sequence` > cursor are sent.
+// - `after` is untrusted. When it is ahead of the station, too far behind or
+//   its rows were pruned, the server sends `hello`, then `resync` (with the
+//   station's current cursor) and closes with 4409
+//   (KITCHEN_REALTIME_RESYNC_CLOSE_CODE). The client reloads the snapshot and
+//   reconnects with `after = snapshot.sequence`. The same happens when a later
+//   catch-up hits the lag limit.
+// - Wakeups are coalesced per socket: while a catch-up is queued and has not
+//   started, further wakeups add nothing, because that run reads everything
+//   up to the moment it starts.
 // - The identity is re-resolved on every wakeup for that station and every
 //   RECHECK_INTERVAL_MS (which also catches up any missed wakeup); a denial
 //   closes the socket with 1008. Incoming frames close it with 1008.
@@ -34,10 +43,15 @@ import {
 } from "@starter/shared/core";
 import {
   KITCHEN_REALTIME_PROTOCOL,
+  KITCHEN_REALTIME_RESYNC_CLOSE_CODE,
   stationIdSchema,
   type KitchenRealtimeMessage,
 } from "@starter/shared/kitchen";
-import { KDS_WAKE_CHANNEL, kdsWakeSignalSchema } from "./kds-support.ts";
+import {
+  KDS_WAKE_CHANNEL,
+  KdsResyncRequiredError,
+  kdsWakeSignalSchema,
+} from "./kds-support.ts";
 import { listStationTickets, readStationFeed } from "./kds.service.ts";
 
 const PATH =
@@ -67,6 +81,8 @@ type Options = {
   resolveConnection?: (request: IncomingMessage) => Promise<Identity | null>;
   trustedOrigins?: readonly string[];
   recheckIntervalMs?: number;
+  /** Lag limit before a cursor must resync; default KITCHEN_FEED_MAX_LAG. */
+  maxFeedLag?: number;
 };
 
 type Client = {
@@ -79,6 +95,8 @@ type Client = {
   cursor: number;
   /** Serialises hello, replay and live frames for this socket. */
   chain: Promise<void>;
+  /** A catch-up is queued on `chain` and has not started yet. */
+  queued: boolean;
 };
 
 /** Outlet + station ids and the optional `after` of a realtime URL. */
@@ -128,6 +146,23 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
     else ws.terminate();
   };
 
+  /** Resync frame + close for a cursor that cannot resume; else fail closed. */
+  function fail(ws: WebSocket, client: Client, error: unknown) {
+    if (clients.get(ws) !== client) return;
+    if (error instanceof KdsResyncRequiredError) {
+      send(ws, {
+        type: "resync",
+        stationId: client.stationId as Extract<
+          KitchenRealtimeMessage,
+          { type: "resync" }
+        >["stationId"],
+        sequence: error.sequence,
+      });
+      return drop(ws, KITCHEN_REALTIME_RESYNC_CLOSE_CODE);
+    }
+    drop(ws, 1008);
+  }
+
   /** Sends every feed entry after the client cursor, page by page. */
   async function catchUp(ws: WebSocket, client: Client, identity: Identity) {
     for (;;) {
@@ -139,6 +174,7 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
         client.stationId,
         client.cursor,
         new Date(),
+        { maxLag: options.maxFeedLag },
       );
       if (clients.get(ws) !== client) return;
       for (const entry of feed.entries) {
@@ -167,16 +203,24 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
 
   /** Queue a fresh-identity catch-up; any failure closes the socket. */
   function enqueue(ws: WebSocket, client: Client) {
+    // One pending run is enough: it starts later than every wakeup that
+    // found it queued, so it reads their changes too. A wakeup during a
+    // running catch-up still queues one more run (its change may be newer
+    // than that run's last read).
+    if (client.queued) return client.chain;
+    client.queued = true;
     client.chain = client.chain.then(async () => {
+      client.queued = false;
       if (clients.get(ws) !== client) return;
       try {
         const identity = await reresolve(client);
         if (!identity) return drop(ws, 1008);
         await catchUp(ws, client, identity);
-      } catch {
+      } catch (error) {
         // Denied (station, outlet, tenant) or unreadable: fail closed. The
-        // client reconnects with `after` and loses nothing (KDS-02).
-        drop(ws, 1008);
+        // client reconnects with `after` and loses nothing (KDS-02). A cursor
+        // that cannot resume gets a resync frame instead of a bare close.
+        fail(ws, client, error);
       }
     });
     return client.chain;
@@ -221,6 +265,7 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
             stationId: target.stationId,
             cursor: target.after ?? snapshot.sequence,
             chain: Promise.resolve(),
+            queued: false,
           };
           clients.set(ws, client);
           ws.on("close", () => clients.delete(ws));
@@ -236,8 +281,9 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
           });
           // Replay after `after`, or close the gap between the snapshot and
           // registration when no `after` was given.
-          client.chain = catchUp(ws, client, identity).catch(() =>
-            drop(ws, 1008),
+          // A bad `after` fails here with the resync frame, right after hello.
+          client.chain = catchUp(ws, client, identity).catch((error) =>
+            fail(ws, client, error),
           );
         });
       } catch {

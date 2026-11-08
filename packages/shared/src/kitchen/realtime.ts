@@ -10,6 +10,10 @@
 //      change after the cursor, then streams live changes in sequence order
 //   3. on reconnect, reopens with `?after=<last applied sequence>` (or calls
 //      GET .../feed?after=<cursor>) and applies only `sequence > cursor`
+//   4. when the server answers `KDS_RESYNC_REQUIRED` (HTTP 409) or sends a
+//      `resync` frame, the cursor cannot be resumed (ahead of the station, too
+//      far behind, or its changes were pruned): reload the snapshot from
+//      step 1 and reconnect with `after = snapshot.sequence`
 //
 // Each feed entry carries the ticket's full current state, so applying the
 // latest entry per ticket is idempotent: a replayed entry replaces the same
@@ -41,6 +45,27 @@ export const kitchenFeedSequenceSchema = z
 
 /** Largest number of tickets one feed page or replay frame batch returns. */
 export const KITCHEN_FEED_PAGE_LIMIT = 200;
+
+/**
+ * Furthest a cursor may trail the station's newest sequence and still resume
+ * from the feed. Beyond it the client reloads the snapshot: replaying that
+ * much history is slower than the snapshot and old feed rows get pruned.
+ */
+export const KITCHEN_FEED_MAX_LAG = 2000;
+
+/**
+ * Feed rows are pruned only once older than this AND more than
+ * KITCHEN_FEED_MAX_LAG behind the newest sequence of their station. The
+ * database trigger on kitchen_station_feed enforces the same age.
+ */
+export const KITCHEN_FEED_RETENTION_HOURS = 24;
+
+/**
+ * Stable error code of HTTP 409 on `/feed` when `after` cannot be resumed:
+ * `after` is ahead of the station cursor, more than KITCHEN_FEED_MAX_LAG
+ * behind it, or the rows after it were pruned.
+ */
+export const KDS_RESYNC_REQUIRED = "KDS_RESYNC_REQUIRED";
 
 export const kitchenFeedEntrySchema = z.strictObject({
   sequence: kitchenFeedSequenceSchema.refine((n) => n > 0, {
@@ -144,6 +169,12 @@ export const KITCHEN_REALTIME_PROTOCOL = "legend-kds.v1";
 export const KITCHEN_REALTIME_PATH =
   "/api/outlets/:outletId/kitchen/stations/:stationId/realtime";
 
+/**
+ * WebSocket close code that follows a `resync` frame. 4409 mirrors the HTTP
+ * 409; the 4000 range is reserved for applications, and 1008 stays "denied".
+ */
+export const KITCHEN_REALTIME_RESYNC_CLOSE_CODE = 4409;
+
 /** Server-to-client frames. The client never sends data frames. */
 export const kitchenRealtimeMessageSchema = z.discriminatedUnion("type", [
   /** First frame: the station's current cursor when the socket opened. */
@@ -157,6 +188,17 @@ export const kitchenRealtimeMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("ticket"),
     stationId: stationIdSchema,
     entry: kitchenFeedEntrySchema,
+  }),
+  /**
+   * The client's `after` cannot be resumed (same cases as KDS_RESYNC_REQUIRED
+   * on HTTP). `sequence` is the station's current cursor. The server closes
+   * the socket right after with KITCHEN_REALTIME_RESYNC_CLOSE_CODE; the client
+   * reloads the snapshot and reconnects with `after = snapshot.sequence`.
+   */
+  z.strictObject({
+    type: z.literal("resync"),
+    stationId: stationIdSchema,
+    sequence: kitchenFeedSequenceSchema,
   }),
 ]);
 export type KitchenRealtimeMessage = z.infer<

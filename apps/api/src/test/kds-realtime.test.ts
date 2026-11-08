@@ -19,6 +19,8 @@
 //    station); a missing session is 401 or 403.
 //  - Dropping the credential makes the server close the socket with 1008 at
 //    the next change for that station.
+//  - A cursor that cannot resume gets `hello`, `resync` and a close with
+//    KITCHEN_REALTIME_RESYNC_CLOSE_CODE (4409).
 
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
@@ -34,6 +36,7 @@ import {
 } from "@starter/shared/core/server";
 import {
   KITCHEN_REALTIME_PROTOCOL,
+  KITCHEN_REALTIME_RESYNC_CLOSE_CODE,
   kitchenRealtimeMessageSchema,
   type KitchenRealtimeMessage,
 } from "@starter/shared/kitchen";
@@ -692,6 +695,155 @@ describe("KDS-02 reconnect without loss or duplicates", () => {
     }
     left.ws.close();
     right.ws.close();
+  });
+});
+
+describe("KDS-02 an untrusted cursor gets a resync frame, then a close", () => {
+  // Stations of a type no menu item maps to, so seeded cursors never mix with
+  // the stations the other tests count on.
+  async function seededStation(
+    type: "coffee_bar" | "cold_kitchen" | "pastry",
+    cursor: number,
+    sequences: number[],
+  ): Promise<string> {
+    const stationId = randomUUID();
+    const orderId = await placeOrder([ids.kopi]);
+    const ticketId = ulidToUuid(await ticketOn(orderId, ids.barA));
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO stations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, $4, $5)`,
+        [
+          stationId,
+          tenant.tenantId,
+          tenant.outletId,
+          `Uji resync ${stationId.slice(0, 8)}`,
+          type,
+        ],
+      );
+      await client.query(
+        `INSERT INTO kitchen_station_cursors (tenant_id, outlet_id, station_id, last_sequence)
+         VALUES ($1, $2, $3, $4)`,
+        [tenant.tenantId, tenant.outletId, stationId, cursor],
+      );
+      for (const sequence of sequences)
+        await client.query(
+          `INSERT INTO kitchen_station_feed (id, tenant_id, outlet_id, station_id, sequence, ticket_id, occurred_at)
+           VALUES ($1, $2, $3, $4, $5, $6::uuid, now())`,
+          [
+            randomUUID(),
+            tenant.tenantId,
+            tenant.outletId,
+            stationId,
+            sequence,
+            ticketId,
+          ],
+        );
+    });
+    return stationId;
+  }
+
+  /** hello, then resync with the station cursor, then a 4409 close. */
+  async function expectResync(
+    stationId: string,
+    after: number,
+    cursor: number,
+  ) {
+    const client = connect(stationId, { after });
+    const closed = once(client.ws, "close");
+    await opened(client);
+    const [code] = await closed;
+    expect(code).toBe(KITCHEN_REALTIME_RESYNC_CLOSE_CODE);
+    expect(client.parsed()).toEqual([
+      { type: "hello", stationId, sequence: cursor },
+      { type: "resync", stationId, sequence: cursor },
+    ]);
+  }
+
+  it("KDS-02 an after ahead of the station gets hello, resync and a 4409 close", async () => {
+    const cursor = await cursorOf(ids.barA);
+    await expectResync(ids.barA, cursor + 10, cursor);
+  });
+
+  it("KDS-02 an after more than the lag limit behind gets resync; one at the limit still replays", async () => {
+    const station = await seededStation("coffee_bar", 5_000, [3_001, 5_000]);
+    await expectResync(station, 100, 5_000);
+    const client = connect(station, { after: 3_000 });
+    await opened(client);
+    await client.until((frames) => frames.length >= 2);
+    expect(client.parsed().map((frame) => frame.type)).toEqual([
+      "hello",
+      "ticket",
+    ]);
+    client.ws.close();
+  });
+
+  it("KDS-02 an after whose following rows were pruned gets resync", async () => {
+    const station = await seededStation("cold_kitchen", 10, [6, 7, 8, 9, 10]);
+    await expectResync(station, 2, 10);
+  });
+
+  it("KDS-02 a screen that falls too far behind while connected gets resync and a 4409 close", async () => {
+    const station = await seededStation("pastry", 10, [8, 9, 10]);
+    const client = connect(station, { after: 10 });
+    const closed = once(client.ws, "close");
+    await opened(client);
+    await client.until((frames) => frames.length >= 1);
+    // The station moves 4990 changes ahead (owner write) and the wake-up for
+    // it reaches the relay: the catch-up hits the lag limit.
+    await asOwnerTenant(tenant.tenantId, (clientDb) =>
+      clientDb.query(
+        "UPDATE kitchen_station_cursors SET last_sequence = 5000 WHERE station_id = $1",
+        [station],
+      ),
+    );
+    await realtime.dispatch({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      stationId: station,
+      sequence: 5_000,
+    });
+    const [code] = await closed;
+    expect(code).toBe(KITCHEN_REALTIME_RESYNC_CLOSE_CODE);
+    expect(client.parsed().at(-1)).toEqual({
+      type: "resync",
+      stationId: station,
+      sequence: 5_000,
+    });
+  });
+
+  it("KDS-02 a burst of wake-ups delivers each change exactly once", async () => {
+    const cursor = await cursorOf(ids.barA);
+    const client = connect(ids.barA, { after: cursor });
+    await opened(client);
+    await client.until((frames) => frames.length >= 1);
+
+    const burst = 5;
+    await Promise.all(
+      Array.from({ length: burst }, () => placeOrder([ids.kopi])),
+    );
+    const last = await cursorOf(ids.barA);
+    // Repeated and stale signals on top of the real NOTIFY wake-ups.
+    await Promise.all(
+      Array.from({ length: 30 }, (_, index) =>
+        realtime.dispatch({
+          tenantId: tenant.tenantId,
+          outletId: tenant.outletId,
+          stationId: ids.barA,
+          sequence: index % 2 === 0 ? last : cursor + 1,
+        }),
+      ),
+    );
+    await client.until(
+      (frames) => frames.filter((f) => f.type === "ticket").length >= burst,
+    );
+    await settle();
+    const sequences = client.tickets().map((frame) => frame.entry.sequence);
+    expect(sequences).toHaveLength(burst);
+    expect(new Set(sequences).size).toBe(burst);
+    expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
+    expect(sequences.at(-1)).toBe(last);
+    expect(new Set(ticketIdsOf(client)).size).toBe(burst);
+    client.ws.close();
   });
 });
 
