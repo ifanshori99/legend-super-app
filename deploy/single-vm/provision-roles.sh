@@ -150,23 +150,38 @@ if [ "$mode" = dry-run ]; then
   echo 'Validated env files; would start database, run migrations, then provision restricted roles. (The check of the configuration Compose really applies needs the migrator image and runs with --audit and when provisioning.)'
   exit 0
 fi
-APP_DATABASE_URL=$app_url
-WORKER_DATABASE_URL=$worker_url
-export APP_DATABASE_URL WORKER_DATABASE_URL
 # Compose reads more than the line starts checked above (text after a closing
 # quote is a new KEY=value, for one), so compare what it will really hand each
 # service with the checked URLs. The JSON holds secrets: it goes straight into
 # check-compose-env.mjs, run with node from the migrator image in a container
-# with no network and no env file (the two URLs come from this environment),
-# which prints only fixed messages naming services and keys. The image is
-# resolved as Compose does: an exported MIGRATOR_IMAGE wins over compose.env.
+# with no network and no env file, which prints only fixed messages naming
+# services and keys. Compose fills ${VAR} in env files from this shell, so it
+# runs here with the same environment as the later Compose calls; the two
+# checked URLs are exported to the checker's side of the pipe only. The image
+# is resolved as Compose does: an exported MIGRATOR_IMAGE wins over compose.env.
 migrator_image=${MIGRATOR_IMAGE:-$(value_of "$env_file" MIGRATOR_IMAGE)}
 [ -n "$migrator_image" ] || fail "compose.env must set MIGRATOR_IMAGE."
-compose config --format json 2>/dev/null |
+printf '%s\n' "$migrator_image" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9._/:@-]*' ||
+  fail "MIGRATOR_IMAGE must be a plain image reference (letters, digits and . _ / : @ -)."
+set +e
+compose config --format json 2>/dev/null | (
+  APP_DATABASE_URL=$app_url
+  WORKER_DATABASE_URL=$worker_url
+  export APP_DATABASE_URL WORKER_DATABASE_URL
   docker run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL \
     -v "$script_dir/check-compose-env.mjs:/tmp/check-compose-env.mjs:ro" \
-    --entrypoint node "$migrator_image" /tmp/check-compose-env.mjs ||
-  fail "the configuration docker compose would apply does not match the checked env files (reason above)."
+    --entrypoint node "$migrator_image" /tmp/check-compose-env.mjs
+)
+check_status=$?
+set -e
+case "$check_status" in
+  0) ;;
+  1) fail "the configuration docker compose would apply does not match the checked env files (reason above)." ;;
+  *) fail "could not run the configuration check (docker exit $check_status). Is MIGRATOR_IMAGE pulled, and does it contain node?" ;;
+esac
+APP_DATABASE_URL=$app_url
+WORKER_DATABASE_URL=$worker_url
+export APP_DATABASE_URL WORKER_DATABASE_URL
 if [ "$mode" = audit ]; then
   compose --profile provisioning run --rm provision-roles node dist/provision-roles.js --audit
   exit 0

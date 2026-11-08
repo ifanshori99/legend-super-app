@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -1318,7 +1319,12 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     // the two calls may log in either order).
     const checkedEffective = (calls) => {
       const piped = calls.slice(1, 3);
-      assert.ok(piped.some((call) => /config --format json\|/.test(call)));
+      const config = piped.find((call) => /config --format json\|/.test(call));
+      assert.ok(config, "config --format json did not run");
+      // Compose fills ${VAR} in env files from its shell, so the config it
+      // prints must come from the same environment as the later calls: the
+      // checked URLs reach the checker only.
+      assert.deepEqual(config.split("|").slice(1, 3), ["", ""]);
       const check = piped.find((call) => /check-compose-env\.mjs/.test(call));
       assert.ok(check, "check-compose-env.mjs did not run");
       assert.match(
@@ -1366,7 +1372,27 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       assertNoSecrets(mismatch);
       assert.equal(mismatch.calls.length, 3, `${args}: a job ran anyway`);
     }
+    // A checker that cannot start (image missing, no node) is a different
+    // failure from a mismatch, and still stops everything.
+    stub('case "$*" in *check-compose-env*) exit 125 ;; esac\n');
+    const broken = run(["--audit"]);
+    assert.equal(broken.status, 1);
+    assert.match(
+      broken.stderr,
+      /could not run the configuration check \(docker exit 125\)/,
+    );
+    assert.doesNotMatch(broken.stderr, /does not match/);
+    assert.equal(broken.calls.length, 3, "a job ran without the check");
     stub();
+    // MIGRATOR_IMAGE (an exported one wins, as in Compose) must be a plain
+    // image reference before it reaches docker run.
+    const badImage = run(["--audit"], { MIGRATOR_IMAGE: "--privileged" });
+    assert.equal(badImage.status, 1);
+    assert.match(
+      badImage.stderr,
+      /MIGRATOR_IMAGE must be a plain image reference/,
+    );
+    assert.equal(badImage.calls.length, 1, "docker ran with a bad image");
 
     // An exported path the script did not check is refused, not followed.
     writeFileSync(
@@ -1763,6 +1789,54 @@ test("legend-zoqc Compose check catches keys the line-based checks cannot see", 
       audit.stderr + audit.stdout,
       /provision-roles\.js|Role audit/,
     );
+
+    // Compose fills ${VAR} in env files from its shell and compose.env. The
+    // wrapper must read the configuration with the environment the later
+    // Compose calls get, not with the checked URLs exported: otherwise
+    // `${WORKER_DATABASE_URL}` would look right to the check and resolve to
+    // compose.env's value in production. A docker shim passes only the
+    // config and checker calls to the real docker and logs the rest.
+    const realDocker = spawnSync("sh", ["-c", "command -v docker"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    const bin = join(dir, "bin");
+    mkdirSync(bin, { recursive: true });
+    const jobs = join(dir, "jobs");
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/bin/sh\ncase "$*" in *"config --format json"*|*check-compose-env*) exec "$REAL_DOCKER" "$@" ;; esac\nprintf '%s\\n' "$*" >> "$JOBS"\n`,
+      { mode: 0o755 },
+    );
+    write({
+      worker: `${files.worker}X="" WORKER_DATABASE_URL=\${WORKER_DATABASE_URL}\n`,
+    });
+    appendFileSync(
+      join(dir, "compose.env"),
+      `\nWORKER_DATABASE_URL=${admin}\n`,
+    );
+    writeFileSync(jobs, "");
+    const interpolated = spawnSync(
+      wrapper,
+      ["--env-file", join(dir, "compose.env"), "--audit"],
+      {
+        env: {
+          ...env,
+          PATH: `${bin}:${env.PATH}`,
+          REAL_DOCKER: realDocker,
+          JOBS: jobs,
+        },
+        encoding: "utf8",
+      },
+    );
+    assertNoSecrets(interpolated);
+    assert.equal(interpolated.status, 1, interpolated.stderr);
+    assert.match(
+      interpolated.stderr,
+      /Effective Compose configuration refused: worker receives a WORKER_DATABASE_URL other than the checked one/,
+    );
+    // Only the static `config --quiet` call reached the shim; no job ran.
+    assert.doesNotMatch(readFileSync(jobs, "utf8"), /provision-roles|up -d/);
+    assert.match(readFileSync(jobs, "utf8"), /config --quiet/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
