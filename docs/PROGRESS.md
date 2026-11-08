@@ -27,14 +27,14 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/reservation-selfservice | (G2m46) | K | token publik, deposit | setelah lapor | Codex R9 |
 | ws/hris-leave | 1db3cd05 | S | cuti (Opus: domain rumit) | Opus reviewer PERLU FIX (2 Tinggi, 2 Sedang) → brief 85 ke G5klp 22:06 | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
-| ws/hris-sop | (G4ali) | S | SOP | Sonnet setelah lapor | gabung milestone |
+| ws/hris-sop | 50e6eba4 | S | SOP | thread: 3 reviewer + architect + reviewer akhir; Sonnet reviewer CTO jalan 22:35; migration 0068/0069 → regen | gabung milestone |
 | ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
 | fix/worktree-shared | 4ab45cc | S | tooling | Sonnet: LOLOS | DIGABUNG milestone 4478360 |
 | ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
 | ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
-Urutan merge: edge (1e476101) → stock-opname (7373f00b) → shareholder-docs (regen ke 0072+) → journals → refund-approval → hris-leave → lainnya. Tiap cabang regen migration di atas milestone/m1 terbaru, satu per satu.
+Urutan merge: edge (1e476101) → stock-opname (7373f00b) → shareholder-docs (regen ke 0072+) → journals → refund-approval → hris-sop → edc → pph21 → pos-shift → hris-leave → lainnya. Tiap cabang regen migration di atas milestone/m1 terbaru, satu per satu.
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
 
 Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya kuota tidak dipakai untuk temuan yang sudah diketahui. Jendela Codex yang datang sebelum ada fix siap: pakai untuk cabang K berikutnya yang belum direview (recipe/BOM, tenant config export, AI tool catalog).
