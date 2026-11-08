@@ -17,7 +17,6 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 ### Thread berjalan
 | Thread | Kerja | Cabang |
 |---|---|---|
-| G8pc7 | POS shift putaran 2 (brief 46) | ws/pos-shift |
 | G2737 | Struk putaran 2 (brief 55) | ws/pos-receipt |
 | G70ms | PPh21 putaran 2 + config kebijakan pajak `legend-y4wp` (brief 54) | ws/payroll-pph21-tests |
 | G3pew | Refund approval legend-hvvn + rbjw (brief 51) | — |
@@ -28,6 +27,8 @@ CTO baru: baca bagian ini dulu, lalu `ghostex coordinator status`. Brief thread 
 Uang/PPh21/refund/shift/struk: setelah lapor, perlu reviewer + architect + second-opinion Codex.
 
 ### Menunggu second-opinion Codex (kuota habis)
+- PRIORITAS: POS shift `ws/pos-shift` 580d0db (putaran 2 selesai: 5 temuan + 2 temuan reviewer dibetulkan, check 1277 lulus, build hijau). Migration 0063–0067 di cabang ini. Kontrak berubah: close pakai `countId`, endpoint baru `.../shifts/:shiftId/counts`, tunai wajib shift terbuka (409 `SHIFT_NOT_OPEN`). Konflik merge diperkirakan dengan `ws/kds` dan `ws/pos-payment-fixes`. Ronde berikut ke agent baru (sesi G8pc7 compact 2x).
+- UI POS kasir perlu menyusul: buka shift sebelum terima tunai; tutup shift 2 langkah (hitung, lalu tutup).
 - Akun Codex 3 reset 23:36, akun 2 reset 00:24 (9 Nov). Cron 518b310d jam 23:40 (sesi lama; bila sesi lama mati, jadwalkan ulang): mulai maks 3 sekaligus.
 - Antrean: EDC (ws/edc-framework 5f797fe), procurement (ws/procurement ae09d1d), DOIT (ws/doit-provider be35d6b), KDS (ws/kds 4a1f613), print agent (ws/print-agent cb385ab), device registry (7caa7be, B18), recipe/BOM (f0cec09, B19), tenant config export (1405f19, B20), AI tool catalog (78d516a+d15542a, B22). Brief second-opinion untuk tiap cabang belum ditulis (pola: brief 24/26/30/32).
 - Cabang lain belum direview: ws/checklist-engine e3ac2ef, fix/worktree-shared 4ab45cc.
