@@ -311,6 +311,8 @@ export function shiftWire(shift: EngineShift) {
         : null,
     approvedBy: closed ? MOCK_SUPERVISOR_ID : null,
     approvalRequestId: closed ? "00000000-0000-4000-8000-000000000904" : null,
+    // The contract names the stored blind count the close used.
+    countId: closed ? "00000000-0000-4000-8000-000000000905" : null,
     approvedAt: closed ? shift.closed!.closedAt : null,
     closedAt: closed ? shift.closed!.closedAt : null,
   };
