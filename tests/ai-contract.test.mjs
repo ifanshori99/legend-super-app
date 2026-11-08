@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as ai from "../packages/shared/src/ai/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
+import { roleTemplate } from "../packages/shared/src/access/roles.ts";
 
 const f = ai.cafeLegendAiFixtures;
 const clone = (value) => structuredClone(value);
@@ -940,6 +941,81 @@ test("AIG-03 action request outlet is derived from distinct outlet ids", () => {
       input: { ...input, outletIds: [input.outletIds[0], input.outletIds[0]] },
     }),
   );
+});
+
+test("legend-9v9t every minRoles role template holds the tool's required permissions", () => {
+  for (const row of ai.AI_TOOL_CATALOG)
+    for (const entry of row.minRoles) {
+      const granted = roleTemplate(entry.role).permissions;
+      assert.ok(
+        ai.roleHoldsToolPermissions(row, entry.role, granted),
+        `${row.code} ${entry.role} lacks ${ai
+          .requiredPermissionsFor(row, entry.role)
+          .filter((code) => !granted.includes(code))
+          .join(", ")}`,
+      );
+    }
+});
+
+test("legend-9v9t TL-06 shareholder needs aggregate only, never financial statements", () => {
+  const row = tool("TL-06");
+  assert.deepEqual(ai.requiredPermissionsFor(row, "shareholder"), [
+    "report.aggregate.view",
+  ]);
+  assert.deepEqual(ai.requiredPermissionsFor(row, "finance"), [
+    "report.financial.view",
+  ]);
+  assert.ok(
+    !roleTemplate("shareholder").permissions.includes("report.financial.view"),
+  );
+});
+
+test("legend-9v9t roles below the PRD minimum are denied and lack a data permission", () => {
+  const lower = [
+    "employee",
+    "cashier",
+    "waiter",
+    "barista_cook",
+    "facility_attendant",
+    "shareholder",
+  ];
+  for (const row of ai.AI_TOOL_CATALOG)
+    for (const roleKey of lower) {
+      if (row.minRoles.some((entry) => entry.role === roleKey)) continue;
+      assert.deepEqual(
+        ai.canCallTool({
+          tool: row,
+          scopes: ai.MCP_SCOPES,
+          roles: [roleKey],
+        }),
+        { allowed: false, reason: "role_not_allowed" },
+        `${row.code} ${roleKey}`,
+      );
+      if (
+        row.requiredPermissions.length === 1 &&
+        row.requiredPermissions[0] === "ai.ask"
+      )
+        continue;
+      assert.ok(
+        !ai.roleHoldsToolPermissions(
+          row,
+          roleKey,
+          roleTemplate(roleKey).permissions,
+        ),
+        `${row.code} ${roleKey} holds every required permission`,
+      );
+    }
+});
+
+test("legend-9v9t a write tool role override must keep ai.action.propose", () => {
+  for (const row of ai.AI_TOOL_CATALOG.filter((r) => r.kind === "write"))
+    for (const entry of row.minRoles)
+      assert.ok(
+        ai
+          .requiredPermissionsFor(row, entry.role)
+          .includes("ai.action.propose"),
+        `${row.code} ${entry.role}`,
+      );
 });
 
 test("WS-12 catalog header comment matches tools that list ai.ask", () => {

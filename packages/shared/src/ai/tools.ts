@@ -12,9 +12,14 @@
 // closed-period aggregates only). The server still intersects every outlet
 // filter with the caller's real scope (AIG-01).
 //
-// Known gap: role templates do not yet grant every `requiredPermissions` entry
-// to every `minRoles` role (tracked in bead legend-9v9t). The server checks
-// both the role and the permissions, so a tool is callable only when both pass.
+// A `minRoles` entry may carry `permissions`: they replace the tool's
+// `requiredPermissions` for that role only. TL-06 uses it for the shareholder,
+// who holds `report.aggregate.view` (closed-period aggregates), never
+// `report.financial.view`. Use `requiredPermissionsFor` and
+// `roleHoldsToolPermissions` instead of reading `requiredPermissions` directly.
+// Every `minRoles` role template holds the permissions its tool needs (bead
+// legend-9v9t, checked in tests/ai-contract.test.mjs). The server checks both
+// the role and the permissions, so a tool is callable only when both pass.
 
 import { z } from "../core/index.ts";
 import type { OutletId, TenantId, UserId } from "../core/index.ts";
@@ -63,6 +68,8 @@ export const aiToolAccessLevelSchema = z.enum(AI_TOOL_ACCESS_LEVELS);
 export const aiToolMinRoleSchema = z.strictObject({
   role: roleTemplateKeySchema,
   access: aiToolAccessLevelSchema,
+  /** Replaces the tool `requiredPermissions` for this role only. */
+  permissions: z.array(permissionCodeSchema).min(1).max(10).optional(),
 });
 export type AiToolMinRole = z.infer<typeof aiToolMinRoleSchema>;
 
@@ -124,8 +131,11 @@ type ToolSeed = {
 function role(
   roleKey: RoleTemplateKey,
   access: AiToolAccessLevel,
+  permissions?: readonly PermissionCode[],
 ): AiToolMinRole {
-  return { role: roleKey, access };
+  return permissions
+    ? { role: roleKey, access, permissions: [...permissions] }
+    : { role: roleKey, access };
 }
 
 function freezeTool(tool: AiToolDefinition): AiToolDefinition {
@@ -134,7 +144,14 @@ function freezeTool(tool: AiToolDefinition): AiToolDefinition {
     featureCodes: Object.freeze([...tool.featureCodes]),
     requiredPermissions: Object.freeze([...tool.requiredPermissions]),
     minRoles: Object.freeze(
-      tool.minRoles.map((entry) => Object.freeze({ ...entry })),
+      tool.minRoles.map((entry) =>
+        Object.freeze({
+          ...entry,
+          ...(entry.permissions && {
+            permissions: Object.freeze([...entry.permissions]),
+          }),
+        }),
+      ),
     ),
     mcpAnnotations: Object.freeze({ ...tool.mcpAnnotations }),
   }) as AiToolDefinition;
@@ -295,8 +312,11 @@ const READ_TOOLS = {
     requiredPermissions: ["report.sales.view"],
     minRoles: [
       role("outlet_manager", "assigned_outlets"),
-      role("kitchen_lead", "assigned_outlets"),
-      role("marketing", "tenant"),
+      // Kitchen lead and marketing hold no report.sales.view (it opens the
+      // whole sales report group in the app, beyond the PRD tool table):
+      // TL-02 only needs the menu or promo permission they already have.
+      role("kitchen_lead", "assigned_outlets", ["menu.item.view"]),
+      role("marketing", "tenant", ["promo.manage"]),
     ],
     maxRows: 50,
   }),
@@ -325,7 +345,9 @@ const READ_TOOLS = {
     scope: "mcp:food_cost:read",
     requiredPermissions: ["inventory.cost.view"],
     minRoles: [
-      role("kitchen_lead", "assigned_outlets"),
+      // Kitchen lead holds no inventory.cost.view (MFA-sensitive): TL-04 returns
+      // aggregate food cost only, no unit costs, so recipe.manage is enough.
+      role("kitchen_lead", "assigned_outlets", ["recipe.manage"]),
       role("finance", "tenant"),
       role("owner", "tenant"),
     ],
@@ -357,7 +379,7 @@ const READ_TOOLS = {
     minRoles: [
       role("finance", "tenant"),
       role("owner", "tenant"),
-      role("shareholder", "closed_period_aggregate"),
+      role("shareholder", "closed_period_aggregate", ["report.aggregate.view"]),
     ],
   }),
   "TL-07": read({
@@ -518,6 +540,14 @@ function assertCatalog(): void {
     if (isWrite && !tool.requiredPermissions.includes("ai.action.propose"))
       fail(`${tool.code} must require ai.action.propose`);
     if (
+      isWrite &&
+      tool.minRoles.some(
+        (entry) =>
+          entry.permissions && !entry.permissions.includes("ai.action.propose"),
+      )
+    )
+      fail(`${tool.code} role override must keep ai.action.propose`);
+    if (
       tool.input !== AI_TOOL_IO[tool.code].input ||
       tool.output !== AI_TOOL_IO[tool.code].output
     )
@@ -534,6 +564,26 @@ function assertCatalog(): void {
 assertCatalog();
 
 // ---- Scope and role helpers ------------------------------------------------
+
+/** Permissions the role needs for the tool: the role override, else the tool `requiredPermissions`. */
+export function requiredPermissionsFor(
+  tool: AiToolDefinition,
+  roleKey: RoleTemplateKey,
+): readonly PermissionCode[] {
+  const entry = tool.minRoles.find((item) => item.role === roleKey);
+  return entry?.permissions ?? tool.requiredPermissions;
+}
+
+/** True when `granted` holds every permission the role needs for the tool (ALL-of). */
+export function roleHoldsToolPermissions(
+  tool: AiToolDefinition,
+  roleKey: RoleTemplateKey,
+  granted: readonly string[],
+): boolean {
+  return requiredPermissionsFor(tool, roleKey).every((code) =>
+    granted.includes(code),
+  );
+}
 
 /** Scopes a token may carry for these roles: scopes of every tool the roles may use (MCP-01). */
 export function mcpScopesForRoles(
