@@ -32,13 +32,19 @@ import {
   recordEdgeHeartbeat,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
-import { pullDeviceRegistry } from "../services/edge-device-sync.ts";
+import {
+  isDeviceSyncCursorError,
+  pullDeviceRegistry,
+} from "../services/edge-device-sync.ts";
 import {
   loadDeviceRegistryCheckpoint,
   saveDeviceRegistryCheckpoint,
 } from "../services/edge-device-sync-store.ts";
 import { EDGE_LINK_WAKE_CHANNEL } from "../services/edge-queue.service.ts";
-import { createDeviceRecordsFetcher } from "./cloud-http.ts";
+import {
+  createDeviceRecordsFetcher,
+  EdgeCloudHttpError,
+} from "./cloud-http.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -49,6 +55,7 @@ import type { LinkScope } from "./link-peer.ts";
 import { createEdgeLinkServer } from "./link-server.ts";
 import {
   createDeviceRegistryPuller,
+  pullWithCursorRecovery,
   type DeviceRegistryPuller,
   type DeviceRegistrySyncState,
 } from "./device-registry-puller.ts";
@@ -67,6 +74,25 @@ export const EDGE_REQUIRED_TABLES = [
 
 /** Missed-wakeup fallback: how often an idle link re-checks its queue. */
 const SWEEP_INTERVAL_MS = 5_000;
+
+/** The cloud answered 400 to the first request of a pull (its cursor). */
+class StoredCursorRefusedError extends Error {
+  constructor() {
+    super("The cloud refused the stored device-registry cursor");
+    this.name = "StoredCursorRefusedError";
+  }
+}
+
+/**
+ * The stored device-registry cursor was refused: malformed on the edge, or a
+ * 400 on the pull's first request. A bad record is not a cursor problem and
+ * is not retried from the start.
+ */
+function isRejectedCursor(error: unknown): boolean {
+  return (
+    error instanceof StoredCursorRefusedError || isDeviceSyncCursorError(error)
+  );
+}
 
 /** Longest wait between device-registry pulls while the cloud is failing. */
 const MIN_MAX_PULL_BACKOFF_MS = 300_000;
@@ -277,11 +303,36 @@ export async function startEdgeRuntime(
   });
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
-      pullDeviceRegistry({
-        context: local.context,
+      pullWithCursorRecovery(
+        (from) => {
+          let first = true;
+          return pullDeviceRegistry({
+            context: local.context,
+            since: from,
+            fetchPage: async (cursor) => {
+              const isFirst = first;
+              first = false;
+              try {
+                return await fetchDeviceRecords(cursor, signal);
+              } catch (error) {
+                if (
+                  isFirst &&
+                  error instanceof EdgeCloudHttpError &&
+                  error.code === "HTTP_400"
+                )
+                  throw new StoredCursorRefusedError();
+                throw error;
+              }
+            },
+          });
+        },
         since,
-        fetchPage: (cursor) => fetchDeviceRecords(cursor, signal),
-      }),
+        isRejectedCursor,
+        () =>
+          logger.warn(
+            "Edge device registry cursor refused; pulling from the start",
+          ),
+      ),
     load: () =>
       loadDeviceRegistryCheckpoint(local.context, local.scope.edgeNodeId),
     save: (input) =>

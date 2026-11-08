@@ -93,7 +93,9 @@ export function createDeviceRegistryPuller(
 
   function isStale(): boolean {
     if (!lastSuccessAt) return true;
-    return now().getTime() - lastSuccessAt.getTime() > deps.staleAfterMs;
+    const age = now().getTime() - lastSuccessAt.getTime();
+    // A success "in the future" means the clock moved back: trust nothing.
+    return age < 0 || age > deps.staleAfterMs;
   }
 
   function checkStale(): void {
@@ -204,4 +206,25 @@ export function createDeviceRegistryPuller(
       };
     },
   };
+}
+
+/**
+ * One pull from `since`; when that cursor is refused (the cloud changed its
+ * cursor format, or the stored checkpoint is corrupt), one more pull from the
+ * start instead of failing forever. Safe: applying records is idempotent and a
+ * device's token floor only moves forward.
+ */
+export async function pullWithCursorRecovery<R>(
+  pull: (since: string | null) => Promise<R>,
+  since: string | null,
+  isRejectedCursor: (error: unknown) => boolean,
+  onRestart?: () => void,
+): Promise<R> {
+  try {
+    return await pull(since);
+  } catch (error) {
+    if (since === null || !isRejectedCursor(error)) throw error;
+    onRestart?.();
+    return pull(null);
+  }
 }

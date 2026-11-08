@@ -90,13 +90,24 @@ const VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 
 type Watermark = { readonly version: string; readonly id: string };
 
+const CURSOR_INVALID_MESSAGE = "Cursor sinkronisasi tidak valid.";
+
+/** True when `error` is the refusal of a malformed sync cursor (not a record). */
+export function isDeviceSyncCursorError(error: unknown): boolean {
+  return (
+    error instanceof CoreError &&
+    error.code === "VALIDATION_ERROR" &&
+    error.message === CURSOR_INVALID_MESSAGE
+  );
+}
+
 function parseWatermark(cursor: string | undefined): Watermark | null {
   if (cursor === undefined) return null;
   let keys: unknown[];
   try {
     keys = decodeCursor(cursor);
   } catch {
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+    throw new CoreError("VALIDATION_ERROR", CURSOR_INVALID_MESSAGE);
   }
   const [tag, version, id, extra] = keys;
   if (
@@ -106,7 +117,7 @@ function parseWatermark(cursor: string | undefined): Watermark | null {
     !uuidSchema.safeParse(id).success ||
     extra !== undefined
   )
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+    throw new CoreError("VALIDATION_ERROR", CURSOR_INVALID_MESSAGE);
   return { version, id: String(id) };
 }
 

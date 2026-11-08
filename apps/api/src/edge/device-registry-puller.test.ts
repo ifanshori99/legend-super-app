@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createDeviceRegistryPuller,
+  pullWithCursorRecovery,
   type DeviceRegistryPullerDeps,
 } from "./device-registry-puller.ts";
 
@@ -349,5 +350,54 @@ describe("createDeviceRegistryPuller", () => {
     expect(t.onStaleChange.mock.calls).toEqual([[true], [false], [true]]);
     await t.puller.runOnce(); // still stale: no duplicate
     expect(t.onStaleChange).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("pullWithCursorRecovery", () => {
+  const rejected = (error: unknown) =>
+    error instanceof Error && error.message === "bad cursor";
+
+  it("legend-2lp.7 a refused stored cursor is retried once from the start", async () => {
+    const pull = vi.fn(async (since: string | null) => {
+      if (since !== null) throw new Error("bad cursor");
+      return "full";
+    });
+    const onRestart = vi.fn();
+    await expect(
+      pullWithCursorRecovery(pull, "w1", rejected, onRestart),
+    ).resolves.toBe("full");
+    expect(pull.mock.calls).toEqual([["w1"], [null]]);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("legend-2lp.7 other errors, and a refusal from the start, are not retried", async () => {
+    const down = vi.fn(async () => {
+      throw new Error("down");
+    });
+    await expect(pullWithCursorRecovery(down, "w1", rejected)).rejects.toThrow(
+      "down",
+    );
+    expect(down).toHaveBeenCalledTimes(1);
+    const refused = vi.fn(async () => {
+      throw new Error("bad cursor");
+    });
+    await expect(
+      pullWithCursorRecovery(refused, null, rejected),
+    ).rejects.toThrow("bad cursor");
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("staleness and the clock", () => {
+  it("legend-2lp.7 a last success in the future (clock moved back) is stale", async () => {
+    const future = new Date(Date.parse("2026-11-08T11:00:00.000Z"));
+    const t = setup({
+      load: vi.fn(async () => ({ watermark: "w0", lastSuccessAt: future })),
+      pull: vi.fn(async () => {
+        throw new Error("down");
+      }),
+    });
+    await t.puller.runOnce();
+    expect(t.puller.getState().stale).toBe(true);
   });
 });

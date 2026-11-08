@@ -456,6 +456,48 @@ describe("EDG-02 the edge pulls the cloud device registry", () => {
     ).toBeLessThanOrEqual(1);
   });
 
+  it("EDG-02 a corrupt stored watermark is dropped: the runtime pulls from the start instead of failing forever", async () => {
+    await enroll("Tarik cursor rusak");
+    await saveDeviceRegistryCheckpoint(edgeScope(outletA), node.id, {
+      watermark: "not-a-cursor",
+      succeededAt: new Date(),
+    });
+    const spy = spyFetch(cloudAnswer);
+    await boot();
+    await vi.waitFor(async () =>
+      expect((await checkpointRow())?.watermark).not.toBe("not-a-cursor"),
+    );
+    // The edge refused its own cursor before asking the cloud.
+    const calls = registryCalls(spy);
+    expect(calls.length).toBe(1);
+    expect(urlOf(calls[0]!).searchParams.get("since")).toBeNull();
+    expect(getDeviceRegistrySyncState()?.consecutiveFailures).toBe(0);
+  });
+
+  it("EDG-02 a cloud 400 on the stored cursor is retried once from the start", async () => {
+    await enroll("Tarik cursor ditolak");
+    spyFetch(cloudAnswer);
+    expect(await wirePuller(globalThis.fetch).runOnce()).toBe(true);
+    vi.restoreAllMocks();
+
+    // The cloud no longer accepts the stored cursor (say, a format change).
+    const spy = spyFetch(async (input) =>
+      urlOf([input as never]).searchParams.has("since")
+        ? new Response("bad cursor", { status: 400 })
+        : cloudAnswer(input),
+    );
+    await boot();
+    await vi.waitFor(() =>
+      expect(getDeviceRegistrySyncState()?.lastSuccessAt).toBeTruthy(),
+    );
+    const sinceParams = registryCalls(spy).map((call) =>
+      urlOf(call).searchParams.get("since"),
+    );
+    expect(sinceParams[0]).not.toBeNull();
+    expect(sinceParams[1]).toBeNull();
+    expect(getDeviceRegistrySyncState()?.consecutiveFailures).toBe(0);
+  });
+
   it("EDG-02 a pull applies a cloud revocation to the replica", async () => {
     const { device } = await enroll("Tarik cabut");
     const active = (await exportedRecord(device.id)) as { updatedAt: string };
