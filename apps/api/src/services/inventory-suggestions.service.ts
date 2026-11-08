@@ -25,7 +25,12 @@ import {
 import { db } from "../db/index.ts";
 import { inventoryItems, stockLocations } from "../db/schema/inventory.ts";
 import { withTenant } from "../db/tenant.ts";
-import { assertOutlet, requireOpsPermission } from "./inventory-ops.shared.ts";
+import { hiddenBlindPairs } from "./inventory-count.visibility.ts";
+import {
+  assertOutlet,
+  outletTarget,
+  requireOpsPermission,
+} from "./inventory-ops.shared.ts";
 import {
   parPositions,
   shortfallRatioCompare,
@@ -47,14 +52,30 @@ export async function listPurchaseSuggestions(
 ): Promise<PurchaseSuggestion[]> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await requireOpsPermission(
+    const snapshot = await requireOpsPermission(
       tx,
       context,
       actorUserId,
       "inventory.stock.view",
       query.outletId,
     );
+    // Blind counts hide their pairs' on-hand quantity (stock opname T1).
+    const hidden = await hiddenBlindPairs(
+      tx,
+      {
+        userId: actorUserId,
+        canApprove: snapshot.allows(
+          "inventory.adjustment.approve",
+          outletTarget(query.outletId),
+        ),
+      },
+      query.outletId,
+    );
     const positions = [...(await parPositions(tx, query.outletId)).values()]
+      .filter(
+        (position) =>
+          !hidden.has(`${position.locationId}:${position.inventoryItemId}`),
+      )
       .filter(
         (position) =>
           query.locationId === undefined ||

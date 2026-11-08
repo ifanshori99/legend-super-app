@@ -102,6 +102,7 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { recordAudit } from "./core-audit";
+import { blindCountHiddenFilter } from "./inventory-count.visibility";
 import { appendOutbox } from "./core-outbox";
 import {
   loadTenantAccessInTransaction,
@@ -773,14 +774,19 @@ export async function listStockBatches(
 ): Promise<CursorPage<StockBatch>> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await assertPermission(
-      tx,
-      context,
-      actorUserId,
-      "inventory.stock.view",
-      outletTarget(query.outletId),
-    );
-    const filters: SQL[] = [eq(stockBatches.outletId, query.outletId)];
+    const snapshot = await loadAccessSnapshot(tx, context, actorUserId);
+    const target = outletTarget(query.outletId);
+    if (!snapshot.allows("inventory.stock.view", target))
+      throw new AccessError("PERMISSION_DENIED");
+    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
+    const viewer = {
+      userId: actorUserId,
+      canApprove: snapshot.allows("inventory.adjustment.approve", target),
+    };
+    const filters: SQL[] = [
+      eq(stockBatches.outletId, query.outletId),
+      blindCountHiddenFilter(viewer, stockBatches),
+    ];
     if (query.locationId)
       filters.push(eq(stockBatches.locationId, query.locationId));
     if (query.inventoryItemId)
@@ -1142,7 +1148,15 @@ export async function listStockLedger(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    const filters: SQL[] = [eq(stockLedger.outletId, query.outletId)];
+    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
+    const viewer = {
+      userId: actorUserId,
+      canApprove: snapshot.allows("inventory.adjustment.approve", target),
+    };
+    const filters: SQL[] = [
+      eq(stockLedger.outletId, query.outletId),
+      blindCountHiddenFilter(viewer, stockLedger),
+    ];
     if (query.locationId)
       filters.push(eq(stockLedger.locationId, query.locationId));
     if (query.inventoryItemId)
@@ -1231,7 +1245,15 @@ export async function listStockBalances(
     if (!snapshot.allows("inventory.stock.view", target))
       throw new AccessError("PERMISSION_DENIED");
     const withCost = snapshot.allows("inventory.cost.view", target);
-    const filters: SQL[] = [eq(stockBalances.outletId, query.outletId)];
+    // Blind counts hide their pairs from counters / non-approvers (stock opname T1).
+    const viewer = {
+      userId: actorUserId,
+      canApprove: snapshot.allows("inventory.adjustment.approve", target),
+    };
+    const filters: SQL[] = [
+      eq(stockBalances.outletId, query.outletId),
+      blindCountHiddenFilter(viewer, stockBalances),
+    ];
     if (query.locationId)
       filters.push(eq(stockBalances.locationId, query.locationId));
     if (query.inventoryItemId)

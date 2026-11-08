@@ -61,9 +61,14 @@ import {
   insufficientStock,
   loadOutletClock,
   lockLocations,
+  outletTarget,
   requireOpsPermission,
   type Tx,
 } from "./inventory-ops.shared.ts";
+import {
+  blindCountHiddenFilter,
+  type BlindViewer,
+} from "./inventory-count.visibility.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -370,7 +375,12 @@ async function expiringBatches(
   outletId: string,
   asOf: BusinessDate,
   warnDays: number,
-  filter: { locationId?: string; inventoryItemId?: string } = {},
+  filter: {
+    locationId?: string;
+    inventoryItemId?: string;
+    /** Set by user reads: drops the pairs of open blind counts they must not see. */
+    viewer?: BlindViewer;
+  } = {},
 ): Promise<ExpiringBatch[]> {
   const horizon = addBusinessDays(asOf, warnDays);
   const filters: SQL[] = [
@@ -381,6 +391,8 @@ async function expiringBatches(
     filters.push(eq(stockBatches.locationId, filter.locationId));
   if (filter.inventoryItemId)
     filters.push(eq(stockBatches.inventoryItemId, filter.inventoryItemId));
+  if (filter.viewer)
+    filters.push(blindCountHiddenFilter(filter.viewer, stockBatches));
   const candidates = await loadBatchStock(tx, filters);
   if (candidates.length === 0) return [];
   const availability = await availabilityForPairs(
@@ -434,19 +446,28 @@ export async function listExpiryAlerts(
 ): Promise<ExpiryAlert[]> {
   assertOutlet(context, query.outletId);
   return withTenant(db, context, async (tx) => {
-    await requireOpsPermission(
+    const snapshot = await requireOpsPermission(
       tx,
       context,
       actorUserId,
       "inventory.stock.view",
       query.outletId,
     );
+    // Blind counts hide their pairs' batch quantities (stock opname T1).
+    const viewer = {
+      userId: actorUserId,
+      canApprove: snapshot.allows(
+        "inventory.adjustment.approve",
+        outletTarget(query.outletId),
+      ),
+    };
     const clock = await loadOutletClock(tx, query.outletId);
     const asOf = businessDateOf(new Date(), clock);
     const warnDays = await expiryWarningDays(tx, context);
     const rows = await expiringBatches(tx, query.outletId, asOf, warnDays, {
       locationId: query.locationId,
       inventoryItemId: query.inventoryItemId,
+      viewer,
     });
     return rows.map((row) =>
       expiryAlertSchema.parse({ ...row, asOf, warnDays }),

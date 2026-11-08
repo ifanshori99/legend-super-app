@@ -27,6 +27,7 @@ import { Pool, type PoolClient } from "pg";
 import type { Response } from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  businessDateSchema,
   decimal4,
   outletIdSchema,
   type OutletId,
@@ -37,14 +38,19 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { createWasteLogInputSchema } from "@starter/shared/inventory";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
-import { recordStockMovement } from "../services/inventory.service.ts";
+import {
+  createStockBatch,
+  recordStockMovement,
+} from "../services/inventory.service.ts";
 import {
   getStockCountDetail,
   listStockCounts,
   transitionStockCount,
 } from "../services/inventory-count.service.ts";
+import { createWasteLog } from "../services/inventory-waste.service.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
@@ -694,9 +700,15 @@ describe("F16 blind count (hitung buta)", () => {
       varianceIdr: -3000,
     });
 
-    // Once posted the count is no longer a secret.
+    // Wave 3 S4: a counter never gets the blind detail, not even once posted.
+    // The approver (not a counter) still reads it.
     await ok(await transition(approver, countId, "approve"));
-    const afterPost = await ok(await get(counter, `/${countId}`));
+    expectError(
+      await get(counter, `/${countId}`),
+      403,
+      "STOCK_COUNT_BLIND_HIDDEN",
+    );
+    const afterPost = await ok(await get(approver, `/${countId}`));
     expect(afterPost.body.data.count.status).toBe("posted");
     expect(afterPost.body.data.lines[0].systemQty).toBe("10.0000");
   });
@@ -1212,7 +1224,7 @@ describe("F2 every approval level must be a clean approver", () => {
     }
   }
 
-  it("a counter approving level 1 in the inbox does not make the count post", async () => {
+  it("a counter approving level 1 in the inbox does not make the count post (R8: lines kept, fresh chain, 409)", async () => {
     await withTwoLevels(async () => {
       const prepared = await startedCount([{ onHand: "10.0000" }]);
       // `dual` is a counter (enters the line) and also an outlet manager.
@@ -1220,26 +1232,31 @@ describe("F2 every approval level must be a clean approver", () => {
         [prepared.itemIds[0]!]: "6.0000",
       });
       await ok(await transition(counter, prepared.countId, "submit"));
+      const oldChain = (await approvalRows(prepared.countId))[0]!.chain_id;
 
       await inboxDecide(dual, prepared.countId, "approved"); // level 1
       await inboxDecide(approver, prepared.countId, "approved"); // level 2
-      expect(
-        (await approvalRows(prepared.countId)).filter(
-          (row) => row.status === "approved",
-        ),
-      ).toHaveLength(2);
 
       // Both levels are approved in the inbox, but level 1 was decided by a
-      // counter: settling reverts to counting. Assumption: 200 like the other
-      // settle-to-counting outcomes.
-      const settled = await ok(
+      // counter. Assumption (Wave 3 R8): the settling request is answered 409
+      // STOCK_COUNT_SELF_APPROVAL; the count stays pending_approval with its
+      // counted lines and a fresh pending chain; nothing is posted.
+      expectCode(
         await transition(approver, prepared.countId, "post"),
+        "STOCK_COUNT_SELF_APPROVAL",
       );
-      expect(settled.body.data.status).toBe("counting");
       expect(await countLedger(prepared.countId)).toEqual([]);
       expect(await balanceOf(prepared.locationId, prepared.itemIds[0]!)).toBe(
         "10.0000",
       );
+      const detail = await ok(await get(approver, `/${prepared.countId}`));
+      expect(detail.body.data.count.status).toBe("pending_approval");
+      expect(detail.body.data.lines[0].countedQty).toBe("6.0000");
+      const pending = (await approvalRows(prepared.countId)).filter(
+        (row) => row.status === "pending",
+      );
+      expect(pending.length).toBeGreaterThan(0);
+      for (const row of pending) expect(row.chain_id).not.toBe(oldChain);
     });
   });
 
@@ -1414,11 +1431,15 @@ describe("F6 counter history survives overwritten lines", () => {
   it("an inbox approval by such a user does not post the count", async () => {
     const prepared = await overwrittenCount();
     await inboxDecide(dual, prepared.countId, "approved");
-    const settled = await ok(
+    // Wave 3 R8: refused 409, the count stays pending with its counted lines.
+    expectCode(
       await transition(approver, prepared.countId, "post"),
+      "STOCK_COUNT_SELF_APPROVAL",
     );
-    expect(settled.body.data.status).toBe("counting");
     expect(await countLedger(prepared.countId)).toEqual([]);
+    const detail = await ok(await get(approver, `/${prepared.countId}`));
+    expect(detail.body.data.count.status).toBe("pending_approval");
+    expect(detail.body.data.lines[0].countedQty).toBe("8.0000");
   });
 });
 
@@ -1482,28 +1503,38 @@ describe("F16 approval is bound to the counted lines", () => {
   });
 });
 
-describe("F16 transactions during the count (delta method)", () => {
-  it("posts counted - snapshot, so movements after the snapshot survive", async () => {
+describe("F16 / T2 per-line snapshot at entry", () => {
+  async function sell(locationId: string, itemId: string, quantity: string) {
+    await recordStockMovement(tenantContext(), {
+      outletId: outletA,
+      locationId,
+      inventoryItemId: itemId,
+      movementType: "sale",
+      quantity: decimal4(quantity),
+      sourceType: "order",
+      sourceId: randomUUID(),
+      actor: { type: "system" },
+    });
+  }
+
+  it("system quantity is the stock when the line is entered: snapshot 10, sale -2, counted 7 -> adjustment -1, final 7", async () => {
     const { locationId, itemIds } = await seedStock([{ onHand: "10.0000" }]);
     const item = itemIds[0]!;
     const { count } = await createCount(counter, locationId, itemIds);
     await ok(await transition(counter, count.id, "start")); // snapshot = 10
 
-    // A sale of 2 posts while the count is running (no stock freeze).
-    await recordStockMovement(tenantContext(), {
-      outletId: outletA,
-      locationId,
-      inventoryItemId: item,
-      movementType: "sale",
-      quantity: decimal4("-2.0000"),
-      sourceType: "order",
-      sourceId: randomUUID(),
-      actor: { type: "system" },
-    });
+    await sell(locationId, item, "-2.0000"); // no stock freeze
     expect(await balanceOf(locationId, item)).toBe("8.0000");
 
-    // The shelf held 7 at the snapshot moment.
-    await enterCounts(counter, count.id, false, { [item]: "7.0000" });
+    const lineIds = await lineIdsOf(counter, count.id, false);
+    const entered = await ok(
+      await patch(counter, `/${count.id}/lines/${lineIds.get(item)}`, {
+        countedQty: "7.0000",
+      }),
+    );
+    // The entry refreshes the line to the balance at that moment.
+    expect(entered.body.data.systemQty).toBe("8.0000");
+
     await ok(await transition(counter, count.id, "submit"));
     await ok(await transition(approver, count.id, "approve"));
 
@@ -1511,10 +1542,88 @@ describe("F16 transactions during the count (delta method)", () => {
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({
       movement_type: "adjustment",
-      quantity: "-3.0000",
+      quantity: "-1.0000",
     });
-    // 7 counted - 2 sold since the snapshot.
+    expect(await balanceOf(locationId, item)).toBe("7.0000");
+  });
+
+  it("sales after the entry stay untouched; re-entering a line refreshes it again", async () => {
+    const { locationId, itemIds } = await seedStock([{ onHand: "10.0000" }]);
+    const item = itemIds[0]!;
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+
+    await enterCounts(counter, count.id, false, { [item]: "9.0000" }); // system 10
+    await sell(locationId, item, "-2.0000"); // after the entry: untouched
+    expect(await balanceOf(locationId, item)).toBe("8.0000");
+
+    // Re-entry at balance 8: counted 5 -> adjustment -3.
+    const lineIds = await lineIdsOf(counter, count.id, false);
+    const again = await ok(
+      await patch(counter, `/${count.id}/lines/${lineIds.get(item)}`, {
+        countedQty: "5.0000",
+      }),
+    );
+    expect(again.body.data.systemQty).toBe("8.0000");
+    await sell(locationId, item, "-1.0000"); // after the re-entry: untouched
+
+    await ok(await transition(counter, count.id, "submit"));
+    await ok(await transition(approver, count.id, "approve"));
+    const ledger = await countLedger(count.id);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.quantity).toBe("-3.0000");
+    // 8 - 3 (adjustment) - 1 (later sale).
+    expect(await balanceOf(locationId, item)).toBe("4.0000");
+  });
+});
+
+describe("S3 found stock is valued at a reference cost", () => {
+  async function ledgerCost(countId: string): Promise<string[]> {
+    const { rows } = await owner.query<{ cost: string }>(
+      `SELECT unit_cost_idr::text AS cost FROM stock_ledger
+       WHERE tenant_id = $1 AND source_id = $2 ORDER BY inventory_item_id`,
+      [tenantA, countId],
+    );
+    return rows.map((row) => row.cost);
+  }
+
+  it("with no stock at the location, the item's latest positive ledger cost elsewhere is used", async () => {
+    const { locationId, itemIds } = await seedStock([{ onHand: null }]);
+    const item = itemIds[0]!;
+    const elsewhere = await insertLocation("Reference");
+    await receive(elsewhere, item, "4.0000", "2000.0000");
+
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    await enterCounts(counter, count.id, false, { [item]: "5.0000" });
+    await ok(await transition(counter, count.id, "submit"));
+
+    const detail = await ok(await get(approver, `/${count.id}`));
+    expect(detail.body.data.lines[0].varianceIdr).toBe(10000); // 5 x 2.000
+    await ok(await transition(approver, count.id, "approve"));
+    const ledger = await countLedger(count.id);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.quantity).toBe("5.0000");
+    expect((await ledgerCost(count.id))[0]).toMatch(/^2000(\.0+)?$/);
     expect(await balanceOf(locationId, item)).toBe("5.0000");
+  });
+
+  it("with no cost anywhere, submit is refused (422 STOCK_COUNT_COST_MISSING) and the count stays open", async () => {
+    const { locationId, itemIds } = await seedStock([{ onHand: null }]);
+    const item = itemIds[0]!;
+    const { count } = await createCount(counter, locationId, itemIds);
+    await ok(await transition(counter, count.id, "start"));
+    await enterCounts(counter, count.id, false, { [item]: "5.0000" });
+
+    expectError(
+      await transition(counter, count.id, "submit"),
+      422,
+      "STOCK_COUNT_COST_MISSING",
+    );
+    const detail = await ok(await get(counter, `/${count.id}`));
+    expect(detail.body.data.count.status).toBe("counting");
+    expect(await approvalRows(count.id)).toEqual([]);
+    expect(await countLedger(count.id)).toEqual([]);
   });
 });
 
@@ -1660,5 +1769,531 @@ describe("TEN-01/TEN-03 isolation of stock counts", () => {
     );
     expect(visible).toEqual({ counts: "1", lines: "1" });
     expect(await countLedger(prepared.countId)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// Wave 3 (docs/briefs/sub-stock-opname.md): T1, S4, R5, R6, R8
+// ============================================================================
+
+describe("T1 an open blind count is hidden from quantity reads", () => {
+  type ReadKind = "balances" | "stock-ledger" | "batches";
+  const READS: ReadKind[] = ["balances", "stock-ledger", "batches"];
+
+  /** Items the actor can see for a location on one quantity read. */
+  async function visibleItems(
+    actor: Actor,
+    kind: ReadKind,
+    locationId: string,
+  ): Promise<Set<string>> {
+    const response = await actor.client.get(
+      `/api/inventory/${kind}?outletId=${outletA}&locationId=${locationId}&limit=100`,
+    );
+    await ok(response);
+    return new Set(
+      (response.body.data as Array<{ inventoryItemId: string }>).map(
+        (row) => row.inventoryItemId,
+      ),
+    );
+  }
+
+  /** Two items at one location, both received in a batch, only `hidden` counted. */
+  async function seedBatched() {
+    const { locationId, itemIds } = await seedStock([
+      { onHand: null },
+      { onHand: null },
+    ]);
+    for (const [index, itemId] of itemIds.entries()) {
+      const batch = await createStockBatch(tenantContext(), {
+        outletId: outletA,
+        locationId,
+        inventoryItemId: itemId,
+        batchCode: `T1-${index}-${short()}`,
+        expiresOn: null,
+      });
+      await recordStockMovement(tenantContext(), {
+        outletId: outletA,
+        locationId,
+        inventoryItemId: itemId,
+        movementType: "receipt",
+        quantity: decimal4("10.0000"),
+        unitCostIdr: decimal4("1500.0000"),
+        batchId: batch.id,
+        sourceType: "goods_receipt",
+        sourceId: randomUUID(),
+        actor: { type: "system" },
+      });
+    }
+    return { locationId, hidden: itemIds[0]!, other: itemIds[1]! };
+  }
+
+  it("the counter and a viewer without the approval permission miss the counted pair while the count is open; the approver sees it", async () => {
+    const { locationId, hidden, other } = await seedBatched();
+    await createCount(counter, locationId, [hidden], { blind: true });
+
+    for (const kind of READS) {
+      for (const viewer of [counter, counter2]) {
+        const seen = await visibleItems(viewer, kind, locationId);
+        expect(seen.has(hidden), `${kind} hides the counted item`).toBe(false);
+        expect(seen.has(other), `${kind} keeps other items`).toBe(true);
+      }
+      const seen = await visibleItems(approver, kind, locationId);
+      expect(seen.has(hidden), `${kind} for the approver`).toBe(true);
+      expect(seen.has(other)).toBe(true);
+    }
+  });
+
+  it("a counter who also holds the approval permission is hidden too", async () => {
+    const { locationId, hidden, other } = await seedBatched();
+    await createCount(dual, locationId, [hidden], { blind: true });
+    for (const kind of READS) {
+      const seen = await visibleItems(dual, kind, locationId);
+      expect(seen.has(hidden), kind).toBe(false);
+      expect(seen.has(other), kind).toBe(true);
+    }
+    expect(
+      (await visibleItems(approver, "balances", locationId)).has(hidden),
+    ).toBe(true);
+  });
+
+  it("an approver who counted a line is hidden, through the line and through counter_ids alone", async () => {
+    const { locationId, hidden, other } = await seedBatched();
+    const { count } = await createCount(counter, locationId, [hidden], {
+      blind: true,
+    });
+    await ok(await transition(counter, count.id, "start"));
+    // Not a counter yet: the approval permission shows everything.
+    expect((await visibleItems(dual, "balances", locationId)).has(hidden)).toBe(
+      true,
+    );
+
+    await enterCounts(dual, count.id, true, { [hidden]: "9.0000" });
+    for (const kind of READS) {
+      const seen = await visibleItems(dual, kind, locationId);
+      expect(seen.has(hidden), `${kind} after counting a line`).toBe(false);
+      expect(seen.has(other), kind).toBe(true);
+    }
+
+    // Line-counter branch alone: drop dual from the history, keep the line.
+    await owner.query(
+      "UPDATE stock_counts SET counter_ids = ARRAY[counted_by] WHERE id = $1",
+      [count.id],
+    );
+    expect((await visibleItems(dual, "balances", locationId)).has(hidden)).toBe(
+      false,
+    );
+
+    // counter_ids branch alone: dual back in the history, line overwritten.
+    await owner.query(
+      "UPDATE stock_counts SET counter_ids = ARRAY[counted_by, $2::text] WHERE id = $1",
+      [count.id, dual.userId],
+    );
+    await enterCounts(counter, count.id, true, { [hidden]: "8.0000" });
+    const line = await owner.query<{ counted_by: string }>(
+      "SELECT counted_by FROM stock_count_lines WHERE stock_count_id = $1",
+      [count.id],
+    );
+    expect(line.rows.map((row) => row.counted_by)).toEqual([counter.userId]);
+    for (const kind of READS)
+      expect(
+        (await visibleItems(dual, kind, locationId)).has(hidden),
+        `${kind} via counter_ids`,
+      ).toBe(false);
+    expect(
+      (await visibleItems(approver, "balances", locationId)).has(hidden),
+    ).toBe(true);
+  });
+
+  it("the counter sees the pair again once the count is posted", async () => {
+    const { locationId, itemIds } = await seedStock([
+      { onHand: "10.0000" },
+      { onHand: "10.0000" },
+    ]);
+    const [hidden, other] = itemIds as [string, string];
+    const { count } = await createCount(counter, locationId, [hidden], {
+      blind: true,
+    });
+    await ok(await transition(counter, count.id, "start"));
+    for (const kind of ["balances", "stock-ledger"] as const)
+      expect((await visibleItems(counter, kind, locationId)).has(hidden)).toBe(
+        false,
+      );
+
+    await enterCounts(counter, count.id, true, { [hidden]: "8.0000" });
+    await ok(await transition(counter, count.id, "submit"));
+    // pending_approval still counts as open.
+    for (const kind of ["balances", "stock-ledger"] as const)
+      expect((await visibleItems(counter, kind, locationId)).has(hidden)).toBe(
+        false,
+      );
+
+    await ok(await transition(approver, count.id, "approve"));
+    for (const kind of ["balances", "stock-ledger"] as const) {
+      const seen = await visibleItems(counter, kind, locationId);
+      expect(seen.has(hidden), kind).toBe(true);
+      expect(seen.has(other), kind).toBe(true);
+    }
+  });
+
+  it("the counter sees a batch again after the count is cancelled", async () => {
+    const { locationId, hidden } = await seedBatched();
+    const { count } = await createCount(counter, locationId, [hidden], {
+      blind: true,
+    });
+    expect(
+      (await visibleItems(counter, "batches", locationId)).has(hidden),
+    ).toBe(false);
+    await ok(await transition(counter, count.id, "cancel"));
+    expect(
+      (await visibleItems(counter, "batches", locationId)).has(hidden),
+    ).toBe(true);
+  });
+
+  it("a non-blind count hides nothing", async () => {
+    const { locationId, hidden, other } = await seedBatched();
+    await createCount(counter, locationId, [hidden], { blind: false });
+    for (const kind of READS) {
+      const seen = await visibleItems(counter, kind, locationId);
+      expect(seen.has(hidden), kind).toBe(true);
+      expect(seen.has(other), kind).toBe(true);
+    }
+  });
+});
+
+describe("T1 (wave 3b) alerts hide the counted pair of an open blind count", () => {
+  type Alerter = {
+    /** Items the actor sees on one alert read for the location. */
+    visible: (actor: Actor, locationId: string) => Promise<Set<string>>;
+    /** Two items at one location that both show up on this alert read. */
+    seed: () => Promise<{
+      locationId: string;
+      hidden: string;
+      other: string;
+    }>;
+  };
+
+  async function itemsOf<Row>(
+    actor: Actor,
+    url: string,
+    pick: (row: Row) => string,
+  ): Promise<Set<string>> {
+    const response = await actor.client.get(url);
+    await ok(response);
+    return new Set((response.body.data as Row[]).map(pick));
+  }
+
+  // Assumption: /stock-alerts lists the open par_critical alert of each item
+  // that fell below its par level; /expiry-alerts lists expired batches.
+  const parAlerts: Alerter = {
+    visible: (actor, locationId) =>
+      itemsOf<{ inventoryItemId: string }>(
+        actor,
+        `/api/inventory/stock-alerts?outletId=${outletA}&locationId=${locationId}&kind=par_critical&limit=100`,
+        (row) => row.inventoryItemId,
+      ),
+    seed: async () => {
+      const { locationId, itemIds } = await seedStock([
+        { onHand: "10.0000" },
+        { onHand: "10.0000" },
+      ]);
+      for (const itemId of itemIds) {
+        await owner.query(
+          "INSERT INTO par_levels (tenant_id, outlet_id, location_id, inventory_item_id, par_min, par_max) VALUES ($1, $2, $3, $4, $5, $6)",
+          [tenantA, outletA, locationId, itemId, "5.0000", "20.0000"],
+        );
+        // 10 - 6 = 4, below par_min 5: raises the critical alert.
+        await createWasteLog(
+          tenantContext(),
+          counter.userId,
+          createWasteLogInputSchema.parse({
+            outletId: outletA,
+            locationId,
+            targetType: "inventory_item",
+            targetId: itemId,
+            quantity: "6.0000",
+            reason: "spoiled",
+            idempotencyKey: key("t1-par-waste"),
+          }),
+        );
+      }
+      return { locationId, hidden: itemIds[0]!, other: itemIds[1]! };
+    },
+  };
+
+  // Assumption: /purchase-suggestions lists each item whose on-hand fell below
+  // its par_min (4 < 5 in the par seed), so it reuses the par seed unchanged.
+  const purchaseSuggestions: Alerter = {
+    visible: (actor, locationId) =>
+      itemsOf<{ inventoryItemId: string }>(
+        actor,
+        `/api/inventory/purchase-suggestions?outletId=${outletA}&locationId=${locationId}`,
+        (row) => row.inventoryItemId,
+      ),
+    seed: parAlerts.seed,
+  };
+
+  const expiryAlerts: Alerter = {
+    visible: (actor, locationId) =>
+      itemsOf<{ batch: { inventoryItemId: string } }>(
+        actor,
+        `/api/inventory/expiry-alerts?outletId=${outletA}&locationId=${locationId}`,
+        (row) => row.batch.inventoryItemId,
+      ),
+    seed: async () => {
+      const { locationId, itemIds } = await seedStock([
+        { onHand: null },
+        { onHand: null },
+      ]);
+      for (const [index, itemId] of itemIds.entries()) {
+        const batch = await createStockBatch(tenantContext(), {
+          outletId: outletA,
+          locationId,
+          inventoryItemId: itemId,
+          batchCode: `T1X-${index}-${short()}`,
+          // Long past, so the batch is "expired" whatever today is.
+          expiresOn: businessDateSchema.parse("2020-01-01"),
+        });
+        await recordStockMovement(tenantContext(), {
+          outletId: outletA,
+          locationId,
+          inventoryItemId: itemId,
+          movementType: "receipt",
+          quantity: decimal4("10.0000"),
+          unitCostIdr: decimal4("1500.0000"),
+          batchId: batch.id,
+          sourceType: "goods_receipt",
+          sourceId: randomUUID(),
+          actor: { type: "system" },
+        });
+      }
+      return { locationId, hidden: itemIds[0]!, other: itemIds[1]! };
+    },
+  };
+
+  for (const [name, alerter] of [
+    ["stock-alerts", parAlerts],
+    ["expiry-alerts", expiryAlerts],
+    ["purchase-suggestions", purchaseSuggestions],
+  ] as const) {
+    describe(`/api/inventory/${name}`, () => {
+      it("the counter and another counter miss the counted pair while the count is open; the approver sees it", async () => {
+        const { locationId, hidden, other } = await alerter.seed();
+        // Before the count: the counter sees both (the seed really alerts).
+        const before = await alerter.visible(counter, locationId);
+        expect(before.has(hidden), "seeded alert for the item").toBe(true);
+        expect(before.has(other)).toBe(true);
+
+        await createCount(counter, locationId, [hidden], { blind: true });
+
+        for (const viewer of [counter, counter2]) {
+          const seen = await alerter.visible(viewer, locationId);
+          expect(seen.has(hidden), "counted item is hidden").toBe(false);
+          expect(seen.has(other), "other items stay visible").toBe(true);
+        }
+        const seen = await alerter.visible(approver, locationId);
+        expect(seen.has(hidden), "approver still sees it").toBe(true);
+        expect(seen.has(other)).toBe(true);
+      });
+
+      it("a counter who also holds the approval permission is hidden too", async () => {
+        const { locationId, hidden, other } = await alerter.seed();
+        await createCount(dual, locationId, [hidden], { blind: true });
+        const seen = await alerter.visible(dual, locationId);
+        expect(seen.has(hidden)).toBe(false);
+        expect(seen.has(other)).toBe(true);
+      });
+
+      it("the counter sees the pair again once the count is posted", async () => {
+        const { locationId, hidden, other } = await alerter.seed();
+        const { count } = await createCount(counter, locationId, [hidden], {
+          blind: true,
+        });
+        await ok(await transition(counter, count.id, "start"));
+        // Counted below the system quantity so posting writes an adjustment.
+        await enterCounts(counter, count.id, true, { [hidden]: "3.0000" });
+        await ok(await transition(counter, count.id, "submit"));
+        // pending_approval still counts as open.
+        expect((await alerter.visible(counter, locationId)).has(hidden)).toBe(
+          false,
+        );
+
+        await ok(await transition(approver, count.id, "approve"));
+        const seen = await alerter.visible(counter, locationId);
+        expect(seen.has(hidden), "visible after posting").toBe(true);
+        expect(seen.has(other)).toBe(true);
+      });
+
+      it("a non-blind count hides nothing", async () => {
+        const { locationId, hidden, other } = await alerter.seed();
+        await createCount(counter, locationId, [hidden], { blind: false });
+        const seen = await alerter.visible(counter, locationId);
+        expect(seen.has(hidden)).toBe(true);
+        expect(seen.has(other)).toBe(true);
+      });
+    });
+  }
+});
+
+describe("S4 counters never see a blind detail; deciders cannot count", () => {
+  it("a counter gets 403 STOCK_COUNT_BLIND_HIDDEN on a cancelled blind count", async () => {
+    const prepared = await startedCount([{ onHand: "10.0000" }], {
+      blind: true,
+    });
+    await ok(await transition(counter, prepared.countId, "cancel"));
+    expectError(
+      await get(counter, `/${prepared.countId}`),
+      403,
+      "STOCK_COUNT_BLIND_HIDDEN",
+    );
+  });
+
+  it("a line counter who is not the creator is refused on a posted blind count", async () => {
+    const prepared = await startedCount([{ onHand: "10.0000" }], {
+      blind: true,
+    });
+    await enterCounts(counter2, prepared.countId, true, {
+      [prepared.itemIds[0]!]: "9.0000",
+    });
+    await ok(await transition(counter, prepared.countId, "submit"));
+    await ok(await transition(approver, prepared.countId, "approve"));
+    expectError(
+      await get(counter2, `/${prepared.countId}`),
+      403,
+      "STOCK_COUNT_BLIND_HIDDEN",
+    );
+  });
+
+  it("someone who rejected a count cannot enter a line on the recount (STOCK_COUNT_DECIDER_CANNOT_COUNT)", async () => {
+    // `dual` can count and decide, but was not a counter of this count.
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["6.0000"]);
+    await ok(
+      await transition(dual, prepared.countId, "reject", { note: "Ulang" }),
+    );
+
+    const lineIds = await lineIdsOf(counter, prepared.countId, false);
+    const lineId = lineIds.get(prepared.itemIds[0]!)!;
+    expectError(
+      await patch(dual, `/${prepared.countId}/lines/${lineId}`, {
+        countedQty: "6.0000",
+      }),
+      403,
+      "STOCK_COUNT_DECIDER_CANNOT_COUNT",
+    );
+    // A clean counter can recount.
+    await ok(
+      await patch(counter2, `/${prepared.countId}/lines/${lineId}`, {
+        countedQty: "6.0000",
+      }),
+    );
+  });
+
+  it("an inbox decider is refused too once the chain settles", async () => {
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["6.0000"]);
+    await inboxDecide(dual, prepared.countId, "rejected");
+    const settled = await ok(
+      await transition(approver, prepared.countId, "post"),
+    );
+    expect(settled.body.data.status).toBe("counting");
+
+    const lineIds = await lineIdsOf(counter, prepared.countId, false);
+    expectError(
+      await patch(
+        dual,
+        `/${prepared.countId}/lines/${lineIds.get(prepared.itemIds[0]!)}`,
+        { countedQty: "6.0000" },
+      ),
+      403,
+      "STOCK_COUNT_DECIDER_CANNOT_COUNT",
+    );
+  });
+});
+
+describe("R5 a blind approval payload carries no lines hash", () => {
+  async function requestText(countId: string): Promise<string> {
+    const { rows } = await owner.query<{ text: string }>(
+      `SELECT row_to_json(a)::text AS text FROM approval_requests a
+       WHERE tenant_id = $1 AND source_module = 'inventory_count' AND object_id = $2`,
+      [tenantA, countId],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    return rows.map((row) => row.text).join("\n");
+  }
+
+  it("blind: payload is countVersion + blind only; the hash stays on the count row", async () => {
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      blind: true,
+    });
+    const text = await requestText(prepared.countId);
+    expect(text).toContain("countVersion");
+    expect(text).toMatch(/"blind"\s*:\s*true/);
+    expect(text).not.toContain("linesHash");
+    const { rows } = await owner.query<{ lines_hash: string | null }>(
+      "SELECT lines_hash FROM stock_counts WHERE tenant_id = $1 AND id = $2",
+      [tenantA, prepared.countId],
+    );
+    expect(rows[0]?.lines_hash).toBeTruthy();
+  });
+});
+
+describe("R6 approving after the deadline", () => {
+  it("is refused 409 STOCK_COUNT_APPROVAL_EXPIRED without any state change", async () => {
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["6.0000"]);
+    await owner.query(
+      `UPDATE approval_requests SET created_at = now() - interval '2 hours', deadline_at = now() - interval '1 hour'
+       WHERE tenant_id = $1 AND source_module = 'inventory_count' AND object_id = $2 AND status = 'pending'`,
+      [tenantA, prepared.countId],
+    );
+    expectError(
+      await transition(approver, prepared.countId, "approve"),
+      409,
+      "STOCK_COUNT_APPROVAL_EXPIRED",
+    );
+    expect(await countLedger(prepared.countId)).toEqual([]);
+    const detail = await ok(await get(approver, `/${prepared.countId}`));
+    expect(detail.body.data.count.status).toBe("pending_approval");
+    expect(detail.body.data.lines[0].countedQty).toBe("6.0000");
+    expect(
+      (await approvalRows(prepared.countId)).map((row) => row.status),
+    ).toEqual(["pending"]);
+  });
+});
+
+describe("R8 a counter's inbox approval keeps the count and opens a fresh chain", () => {
+  it("answers 409, keeps the counted lines, opens a new pending chain; a clean approver then posts", async () => {
+    const prepared = await startedCount([{ onHand: "10.0000" }]);
+    // `dual` is a counter of this count and holds the approval permission.
+    await enterCounts(dual, prepared.countId, false, {
+      [prepared.itemIds[0]!]: "6.0000",
+    });
+    await ok(await transition(counter, prepared.countId, "submit"));
+    const [first] = await approvalRows(prepared.countId);
+    await inboxDecide(dual, prepared.countId, "approved");
+
+    expectCode(
+      await transition(approver, prepared.countId, "post"),
+      "STOCK_COUNT_SELF_APPROVAL",
+    );
+    expect(await countLedger(prepared.countId)).toEqual([]);
+    expect(await balanceOf(prepared.locationId, prepared.itemIds[0]!)).toBe(
+      "10.0000",
+    );
+
+    const detail = await ok(await get(approver, `/${prepared.countId}`));
+    expect(detail.body.data.count.status).toBe("pending_approval");
+    expect(detail.body.data.lines[0].countedQty).toBe("6.0000");
+    const pending = (await approvalRows(prepared.countId)).filter(
+      (row) => row.status === "pending",
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.chain_id).not.toBe(first!.chain_id);
+
+    // A clean approver finishes the new chain without a recount.
+    await ok(await transition(approver, prepared.countId, "approve"));
+    const ledger = await countLedger(prepared.countId);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.quantity).toBe("-4.0000");
+    expect(await balanceOf(prepared.locationId, prepared.itemIds[0]!)).toBe(
+      "6.0000",
+    );
   });
 });

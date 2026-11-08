@@ -4,19 +4,24 @@
 // A count is one session for ONE stock location, `full` (every active item
 // plus any item holding a balance there) or `cycle` (the given items).
 //
-// Snapshot and the delta method (no freeze): `system_qty` and `unit_cost_idr`
-// (moving average) are taken at create and REFRESHED at `start`
-// (draft -> counting), which is "stok sistem saat opname dimulai". Sales and
-// receipts keep posting to the location while it is counted, so the physical
-// count describes the stock AT THE SNAPSHOT, and the adjustment posted per
-// line is `counted_qty - system_qty(snapshot)`, never `counted - current
-// balance`. Movements after the snapshot stay in the ledger untouched: the
-// final balance is counted + the movements since the snapshot.
+// Per-line snapshot at entry (no freeze): a physical count reflects the stock
+// at the moment the line is entered. `system_qty` and `unit_cost_idr` are
+// provisional at create / `start` (for the non-blind display) and are SET
+// again, under the location lock, to the CURRENT balance and cost every time a
+// line is entered (re-entry refreshes). The adjustment posted per line is
+// `counted_qty - system_qty(at entry)`: with 10 at start, a sale of 2 and a
+// count of 7 the line posts -1 and the final balance is 7. Sales after the
+// entry stay untouched in the ledger. Cost: the location moving average if
+// positive, else the item's latest positive ledger cost (any location); found
+// stock (positive difference) with no cost at all cannot be submitted
+// (STOCK_COUNT_COST_MISSING).
 //
 // Blind count: the system quantity and variance never reach a counter. The
 // counter uses the sheet endpoints (no system qty / cost / variance keys at
-// all); the full detail of a blind count is approver-only and only once it is
-// submitted; create answers with no lines.
+// all); the full detail of a blind count is approver-only, only once it is
+// submitted, and never for anyone in the counter set (403 at any status);
+// create answers with no lines. The approval payload carries no lines hash
+// (it could be brute-forced to the system quantity).
 //
 // Approval (INV-03, fail closed): `submit` computes the line variances, binds
 // the approval to the lines (`count_version` + sha256 `lines_hash`) and opens
@@ -25,12 +30,17 @@
 // never be the creator or any line counter. `approve`/`reject` decide the
 // current level, then SETTLE the chain on the locked count row; approvals made
 // in the generic inbox are honoured by `post` (or any later approve), which
-// only settles. An approved chain posts in the same transaction (PRD J.4) and
-// the terminal `posted` status makes the approval single-use.
+// only settles. An approve on an expired chain is a 409. A counter who
+// approved in the inbox does not reset the count: the lines are kept, a fresh
+// chain is opened for the same version and the request answers 409
+// STOCK_COUNT_SELF_APPROVAL after that commits. Everyone who decided a level
+// is kept in `decider_ids` and can never enter a line. An approved chain
+// posts in the same transaction (PRD J.4) and the terminal `posted` status
+// makes the approval single-use.
 //
 // Posting (INV-01): one `adjustment` / `stock_count` ledger row per non-zero
-// line through `recordStockMovementInTransaction`, valued at the snapshot
-// moving-average cost, idempotency key `stock-count:<countId>:<lineId>`
+// line through `recordStockMovementInTransaction`, valued at the cost
+// stored on the line at entry, idempotency key `stock-count:<countId>:<lineId>`
 // (`:<n>` for the 2nd+ batch row of a split). A decrease is drawn FEFO across
 // the batches (the part above the current on-hand goes unbatched); an increase
 // has no batch to attribute to and is posted unbatched.
@@ -98,6 +108,7 @@ import {
   lineDelta,
   loadBatchRemaining,
   OPEN_COUNT_STATUSES,
+  referenceUnitCost,
   sumVariance,
   toSheetLine,
   toStockCount,
@@ -260,6 +271,12 @@ function selfApproval(): HttpError {
   );
 }
 
+/**
+ * An error that must be answered AFTER the transaction commits (throwing
+ * inside it would roll back the state change it reports).
+ */
+type Deferred = { error: HttpError | null };
+
 async function audit(
   tx: Tx,
   context: ScopedTenantContext,
@@ -356,9 +373,9 @@ export async function listStockCounts(
 
 /**
  * GET full detail (system qty + variance). Non-blind: `inventory.stock.view`.
- * Blind: 403 STOCK_COUNT_BLIND_HIDDEN while draft/counting (everyone), to a
- * counter of the count, and to anyone without `inventory.adjustment.approve`,
- * until the count is posted or cancelled.
+ * Blind: 403 STOCK_COUNT_BLIND_HIDDEN to a counter of the count at ANY status
+ * (posted and cancelled included), and to everyone else while draft/counting
+ * or without `inventory.adjustment.approve`, until posted or cancelled.
  */
 export async function getStockCountDetail(
   context: ScopedTenantContext,
@@ -378,11 +395,11 @@ export async function getStockCountDetail(
         if (!canView && !canApprove) throw new AccessError("PERMISSION_DENIED");
         const finished = row.status === "posted" || row.status === "cancelled";
         const hidden =
-          !finished &&
-          (row.status === "draft" ||
-            row.status === "counting" ||
-            !canApprove ||
-            counterIds(row, lines).has(actorUserId.toLowerCase()));
+          counterIds(row, lines).has(actorUserId.toLowerCase()) ||
+          (!finished &&
+            (row.status === "draft" ||
+              row.status === "counting" ||
+              !canApprove));
         if (hidden)
           throw countError(
             "STOCK_COUNT_BLIND_HIDDEN",
@@ -698,6 +715,12 @@ async function editLine(
         [PERM_COUNT],
         row.outletId,
       );
+      const actor = actorUserId.toLowerCase();
+      if (row.deciderIds.some((id) => id.toLowerCase() === actor))
+        throw countError(
+          "STOCK_COUNT_DECIDER_CANNOT_COUNT",
+          "A person who approved or rejected this stock count cannot count it.",
+        );
       if (mode === "full" && row.blind)
         throw countError(
           "STOCK_COUNT_BLIND_USE_SHEET",
@@ -709,9 +732,42 @@ async function editLine(
           `Lines can only be edited while counting, not in ${row.status}.`,
         );
       const now = new Date();
+      const [current] = await tx
+        .select({ inventoryItemId: stockCountLines.inventoryItemId })
+        .from(stockCountLines)
+        .where(
+          and(
+            eq(stockCountLines.id, lineId),
+            eq(stockCountLines.stockCountId, row.id),
+          ),
+        );
+      if (!current)
+        throw new HttpError(404, "NOT_FOUND", "Stock count line not found.");
+      // The physical count describes the stock at this moment: take the
+      // balance and cost now, under the location lock (re-entry refreshes).
+      await lockLocations(tx, row.tenantId, [row.locationId]);
+      const [balance] = await tx
+        .select({
+          quantity: stockBalances.quantity,
+          avgCostIdr: stockBalances.avgCostIdr,
+        })
+        .from(stockBalances)
+        .where(
+          and(
+            eq(stockBalances.locationId, row.locationId),
+            eq(stockBalances.inventoryItemId, current.inventoryItemId),
+          ),
+        );
+      const avgCost = balance?.avgCostIdr ?? ZERO;
+      const unitCost =
+        parseDecimal4(avgCost) > 0n
+          ? avgCost
+          : await referenceUnitCost(tx, row.tenantId, current.inventoryItemId);
       const [line] = await tx
         .update(stockCountLines)
         .set({
+          systemQty: balance?.quantity ?? ZERO,
+          unitCostIdr: unitCost,
           countedQty: formatDecimal4(parseDecimal4(input.countedQty)),
           countedBy: actorUserId,
           countedAt: now,
@@ -785,7 +841,8 @@ export async function transitionStockCount(
   try {
     if (input.action === "approve" || input.action === "reject")
       return await decide(context, actorUserId, stockCountId, input, options);
-    return await withTenant(db, context, async (tx) => {
+    const deferred: Deferred = { error: null };
+    const result = await withTenant(db, context, async (tx) => {
       const row = await loadCount(tx, context, stockCountId, true);
       await requireAnyPermission(
         tx,
@@ -807,9 +864,13 @@ export async function transitionStockCount(
             await cancel(tx, context, actorUserId, row, input, now),
           );
         default:
-          return toStockCount(await post(tx, context, actorUserId, row, now));
+          return toStockCount(
+            await post(tx, context, actorUserId, row, now, deferred),
+          );
       }
     });
+    if (deferred.error) throw deferred.error;
+    return result;
   } catch (error) {
     throw translateCountError(error);
   }
@@ -894,6 +955,12 @@ async function submit(
   const varianceIdrs: number[] = [];
   for (const line of lines) {
     const countedQty = line.countedQty!;
+    // Found stock needs a cost to be valued (S3); Rp0 would hide the gain.
+    if (lineDelta(line) > 0n && parseDecimal4(line.unitCostIdr) <= 0n)
+      throw countError(
+        "STOCK_COUNT_COST_MISSING",
+        "A line with found stock has no unit cost to value it.",
+      );
     const varianceIdr = stockCountVarianceIdr(
       {
         systemQty: line.systemQty,
@@ -915,10 +982,11 @@ async function submit(
   const { total, gross } = sumVariance(varianceIdrs);
   const linesHash = countLinesHash(lines);
   // The requester (a counter) can read their own request: a blind count must
-  // not carry any variance there. No amount means every tier applies.
+  // not carry any variance or lines hash there. No amount means every tier
+  // applies.
   const approvalAmount = row.blind ? null : gross;
   const approvalPayload = row.blind
-    ? { countVersion: row.countVersion, linesHash, blind: true }
+    ? { countVersion: row.countVersion, blind: true }
     : {
         countVersion: row.countVersion,
         linesHash,
@@ -1021,11 +1089,12 @@ async function post(
   actorUserId: string,
   row: CountRow,
   now: Date,
+  deferred: Deferred,
 ): Promise<CountRow> {
   if (row.status === "posted") return row;
   if (row.status === "approved" || row.status === "pending_approval") {
-    const settled = await settle(tx, context, actorUserId, row, now);
-    if (settled.status === "pending_approval")
+    const settled = await settle(tx, context, actorUserId, row, now, deferred);
+    if (settled.status === "pending_approval" && deferred.error === null)
       throw countError(
         "STOCK_COUNT_INVALID_TRANSITION",
         "The stock count is still waiting for its approval.",
@@ -1092,6 +1161,13 @@ async function decide(
         .limit(1);
       pending = level ?? null;
     }
+    // R6: an expired level cannot be approved; nothing changes in this
+    // request (post / cancel / reject still settle it back to counting).
+    if (approving && pending && pending.deadlineAt.getTime() <= now.getTime())
+      throw countError(
+        "STOCK_COUNT_APPROVAL_EXPIRED",
+        "The approval request has expired and can no longer be approved.",
+      );
     return { done: null, pending };
   });
   if (prepared.done) return prepared.done;
@@ -1130,7 +1206,8 @@ async function decide(
     }
   }
 
-  return withTenant(db, context, async (tx) => {
+  const deferred: Deferred = { error: null };
+  const result = await withTenant(db, context, async (tx) => {
     const row = await loadCount(tx, context, stockCountId, true);
     if (reached(row)) return toStockCount(row);
     if (!approving) {
@@ -1152,18 +1229,75 @@ async function decide(
       )
         throw invalid();
     }
-    return toStockCount(await settle(tx, context, actorUserId, row, now));
+    return toStockCount(
+      await settle(tx, context, actorUserId, row, now, deferred),
+    );
   });
+  if (deferred.error) throw deferred.error;
+  return result;
 }
 
 // ------------------------------------------------------------------ settle
 
 /**
+ * Opens a FRESH approval chain for the same version of the lines (new
+ * idempotency key, derived from the chain it replaces) and stores its id. The
+ * lines, version and hash stay as they are. `null` when the policy no longer
+ * routes the count to anyone (the caller sends it back to counting). The
+ * caller holds the count row FOR UPDATE.
+ */
+async function reopenApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  row: CountRow,
+  requestedBy: string,
+  now: Date,
+): Promise<CountRow | null> {
+  const blind = row.blind;
+  const opened = await openApprovalRequest(tx, context, {
+    sourceModule: COUNT_APPROVAL_MODULE,
+    actionType: "stock_adjustment",
+    objectType: "stock_count",
+    objectId: row.id,
+    amountIdr: blind ? null : row.grossVarianceIdr,
+    outletId: row.outletId,
+    requestedBy,
+    source: "user",
+    requestReason: "Persetujuan ulang selisih stok opname",
+    payload: blind
+      ? { countVersion: row.countVersion, blind: true }
+      : {
+          countVersion: row.countVersion,
+          totalVarianceIdr: row.totalVarianceIdr,
+          grossVarianceIdr: row.grossVarianceIdr,
+        },
+    idempotencyKey: `sc-rechain:${row.approvalChainId}`,
+    now,
+  });
+  if (!opened.required) return null;
+  const [updated] = await tx
+    .update(stockCounts)
+    .set({ approvalChainId: opened.chainId, updatedAt: now })
+    .where(eq(stockCounts.id, row.id))
+    .returning();
+  await audit(
+    tx,
+    context,
+    actorUserId,
+    "inventory.stock_count_approval_reopened",
+    row,
+    updated!,
+    "approver_is_counter",
+  );
+  return updated!;
+}
+
+/**
  * Back to `counting` for a recount: chain, version binding and variances are
- * cleared, the snapshot is re-taken from the current balance and every line's
- * counted quantity is cleared, so the recount is against the NEW snapshot
- * (the delta method posts `counted - system` of one snapshot). The version is
- * bumped; `counter_ids` keeps everyone who ever counted.
+ * cleared, the provisional snapshot is re-taken and every line's counted
+ * quantity is cleared; each re-entry takes its own stock and cost at that
+ * moment. The version is bumped; `counter_ids` keeps everyone who ever counted.
  */
 async function revertToCounting(
   tx: Tx,
@@ -1217,10 +1351,13 @@ async function revertToCounting(
 
 /**
  * Settles the approval chain of a count whose row the caller holds FOR UPDATE.
- * Approved: re-verifies the approver (not a counter, still allowed to approve)
- * and the version binding, then posts in the same transaction. Rejected or
- * expired: back to `counting`. Cancelled by the module: cancelled. Pending:
- * unchanged. Safe to call repeatedly.
+ * Every level's decider is appended to `decider_ids` first. Approved:
+ * re-verifies the approver (not a counter, still allowed to approve) and the
+ * version binding, then posts in the same transaction; an approver who is a
+ * counter or lacks the permission (inbox approval) keeps the lines and gets a
+ * fresh chain, the 409 STOCK_COUNT_SELF_APPROVAL goes out via `deferred`.
+ * Rejected or expired: back to `counting`. Cancelled by the module:
+ * cancelled. Pending: unchanged. Safe to call repeatedly.
  */
 async function settle(
   tx: Tx,
@@ -1228,6 +1365,7 @@ async function settle(
   actorUserId: string,
   row: CountRow,
   now: Date,
+  deferred: Deferred,
 ): Promise<CountRow> {
   if (row.status === "approved")
     return postLines(tx, context, row.approvedBy ?? actorUserId, row, now);
@@ -1242,12 +1380,22 @@ async function settle(
     .select({
       decidedBy: approvalRequests.decidedBy,
       deadlineAt: approvalRequests.deadlineAt,
+      requestedBy: approvalRequests.requestedBy,
     })
     .from(approvalRequests)
     .where(eq(approvalRequests.chainId, row.approvalChainId))
     .orderBy(desc(approvalRequests.level));
   const last = levels[0];
   if (!last) throw notFound();
+  const known = new Set(row.deciderIds.map((id) => id.toLowerCase()));
+  const newDeciders = levels
+    .map((level) => level.decidedBy)
+    .filter((id): id is string => id !== null && !known.has(id.toLowerCase()));
+  if (newDeciders.length > 0)
+    await tx
+      .update(stockCounts)
+      .set({ deciderIds: [...new Set([...row.deciderIds, ...newDeciders])] })
+      .where(eq(stockCounts.id, row.id));
   // Past the deadline the count stays blocked even before the sweep runs; the
   // still open request is withdrawn so a resubmit is not blocked by it.
   if (outcome === "pending" && last.deadlineAt.getTime() <= now.getTime()) {
@@ -1285,8 +1433,9 @@ async function settle(
   // be allowed to approve at the outlet.
   const counters = counterIds(row, lines);
   const approvers = new Set<string>();
+  let invalidApprover = false;
   for (const level of levels) {
-    if (level.decidedBy === null || counters.has(level.decidedBy.toLowerCase()))
+    if (level.decidedBy === null)
       return revertToCounting(
         tx,
         context,
@@ -1295,19 +1444,36 @@ async function settle(
         now,
         "approver_is_counter",
       );
+    if (counters.has(level.decidedBy.toLowerCase())) invalidApprover = true;
     approvers.add(level.decidedBy);
   }
   for (const id of approvers) {
     const approverSnapshot = await loadSnapshot(tx, context, id);
     if (!allows(approverSnapshot, PERM_APPROVE, row.outletId))
+      invalidApprover = true;
+  }
+  if (invalidApprover) {
+    // R8: the lines stay counted; only the approval is redone by a clean
+    // approver. The 409 is answered once this transaction has committed.
+    const reopened = await reopenApproval(
+      tx,
+      context,
+      actorUserId,
+      row,
+      levels[levels.length - 1]!.requestedBy,
+      now,
+    );
+    if (reopened === null)
       return revertToCounting(
         tx,
         context,
         actorUserId,
         row,
         now,
-        "approver_lacks_permission",
+        "approver_is_counter",
       );
+    deferred.error = selfApproval();
+    return reopened;
   }
   const approver = last.decidedBy!;
   // The approval belongs to the lines it was opened for.

@@ -4,8 +4,13 @@
 // uses. None of this is HTTP and none of it opens a transaction.
 
 import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { formatDecimal4, idr, parseDecimal4 } from "@starter/shared/core";
+import { and, desc, eq, sql } from "drizzle-orm";
+import {
+  formatDecimal4,
+  idr,
+  parseDecimal4,
+  type Decimal4,
+} from "@starter/shared/core";
 import {
   InventoryError,
   stockBatchSchema,
@@ -128,11 +133,38 @@ export function sumVariance(varianceIdrs: readonly number[]) {
   return { total: idr(total), gross: idr(gross) };
 }
 
-/** Signed `counted − system` (the delta method posts exactly this). */
+/** Signed `counted − system` (system = stock at the moment the line was entered). */
 export function lineDelta(line: Pick<LineRow, "countedQty" | "systemQty">) {
   return (
     parseDecimal4(line.countedQty ?? "0.0000") - parseDecimal4(line.systemQty)
   );
+}
+
+// ------------------------------------------------------------------- costs
+
+/**
+ * Reference cost of an item: its latest positive `unit_cost_idr` in the
+ * ledger, any location of the tenant. Used when the location has no positive
+ * moving-average cost (found stock). Zero when the item never had one.
+ */
+export async function referenceUnitCost(
+  tx: Tx,
+  tenantId: CountRow["tenantId"],
+  inventoryItemId: string,
+): Promise<Decimal4> {
+  const [row] = await tx
+    .select({ unitCostIdr: stockLedger.unitCostIdr })
+    .from(stockLedger)
+    .where(
+      and(
+        eq(stockLedger.tenantId, tenantId),
+        eq(stockLedger.inventoryItemId, inventoryItemId),
+        sql`${stockLedger.unitCostIdr} > 0`,
+      ),
+    )
+    .orderBy(desc(stockLedger.occurredAt), desc(stockLedger.id))
+    .limit(1);
+  return row?.unitCostIdr ?? formatDecimal4(0n);
 }
 
 // ------------------------------------------------------------------ errors
@@ -148,6 +180,9 @@ const COUNT_ERROR_STATUS: Partial<Record<InventoryErrorCode, number>> = {
   STOCK_COUNT_APPROVAL_UNROUTED: 409,
   STOCK_COUNT_VERSION_MISMATCH: 409,
   STOCK_COUNT_NOT_EDITABLE: 409,
+  STOCK_COUNT_COST_MISSING: 422,
+  STOCK_COUNT_DECIDER_CANNOT_COUNT: 403,
+  STOCK_COUNT_APPROVAL_EXPIRED: 409,
 };
 
 export function countError(

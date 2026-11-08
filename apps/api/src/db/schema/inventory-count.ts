@@ -41,7 +41,8 @@ import { user } from "./user.ts";
 /**
  * `stock_counts` (T, outlet-owned): one opname session for one location.
  * `counted_by` is the creator (counter); `counter_ids` is the append-only set
- * of everyone who entered a line. Approval runs through
+ * of everyone who entered a line; `decider_ids` the append-only set of everyone
+ * who decided an approval level. Approval runs through
  * `approval_requests`: `approval_chain_id` / `approval_version` / `lines_hash`
  * bind the approval to the exact counted lines (`count_version` is bumped on
  * every line edit). At most one open count per location (partial unique index).
@@ -66,6 +67,12 @@ export const stockCounts = pgTable(
     // Everyone who ever entered a quantity (creator included); only appended,
     // so a recount that clears the line counters keeps the second-person rule.
     counterIds: text("counter_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    // Everyone who approved or rejected a level of this count's chains; only
+    // appended. A decider can never enter a line afterwards.
+    deciderIds: text("decider_ids")
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
@@ -145,8 +152,9 @@ export const stockCounts = pgTable(
 
 /**
  * `stock_count_lines` (T, outlet-owned): one item of a count. `system_qty` and
- * `unit_cost_idr` are the snapshot taken at start (moving-average cost);
- * `counted_by` is the last user who entered the line.
+ * `unit_cost_idr` are provisional at start and REFRESHED each time the line is
+ * entered (stock and cost at that moment); `counted_by` is the last user who
+ * entered the line.
  */
 export const stockCountLines = pgTable(
   "stock_count_lines",
