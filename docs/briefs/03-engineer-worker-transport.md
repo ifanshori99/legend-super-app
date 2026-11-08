@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (kerja berat, definisi selesai), lalu ikuti. Aturan repo yang mengikat: `docs/plan/AGENT_PLAYBOOK.md`, `docs/plan/contracts.md`. Baca juga `/Users/ifanshori99/Projects/legend super app/HANDOFF.md` bagian 2 (aturan tetap: claude-mem mati, Colima untuk `pnpm check`/`pnpm test`, jangan push).
 
 ## Repo
-`/Users/ifanshori99/Projects/legend super app/legend`. Kamu dijalankan di worktree sendiri dari `main`; kerja di cabang worktree itu. Worktree baru butuh `.claude/settings.local.json` yang mematikan claude-mem (lihat HANDOFF §2).
+Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/worker-transport`, cabang `ws/worker-transport` (dari `main`, sudah dibuat, `.claude/settings.local.json` pematik claude-mem sudah ada). `cd` ke sana dulu dan kerja hanya di folder itu. Pakai `PORT` dan nama database sendiri bila menjalankan server.
 
 ## Tujuan
 Tutup penghalang rilis P1 `legend-18qw` (`bd show legend-18qw`): transport event edge/cloud yang terautentikasi, acknowledgement idempoten yang tahan lama, replay urutan yang hilang, plus adapter penerima/provider notifikasi produksi untuk worker. Saat ini config produksi sengaja gagal tertutup tanpa ini, jadi di production tidak ada event outbox yang terkirim (notifikasi, payment.paid, approval).
