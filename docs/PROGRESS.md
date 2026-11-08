@@ -13,11 +13,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - legend-18qw (worker event transport, gap replay, adapter notifikasi Brevo): commit `b22d549` di `ws/worker-transport` (worktree `.worktrees/worker-transport`). pnpm check hijau. Bead sudah di-close engineer.
 - Review legend-18qw: reviewer Claude (tanpa blocker) + second-opinion Codex (2 major). Semua temuan: `docs/briefs/06-fix-review-worker-transport.md`.
 
-## Sedang (dihentikan di tengah)
-- Fix temuan review legend-18qw: commit WIP `5a6070d` di `ws/worker-transport`. Kode untuk 9 fix (#1-#9 brief 06) sudah ditulis, test baru sudah ditambah, tapi BELUM dijalankan sama sekali (typecheck terakhir lulus sebelum test baru). Sisa urutan: `heavy pnpm check` via test-runner (rawan: insert `roles`/`tenants` test tenant C, regex `status (\d{3})`), subagent reviewer cek diff fix, buat 3 bead lanjutan (cloud-sync tenant-wide di edge, healthcheck worker, cek backfill sequence sebelum deploy pertama), tutup `legend-3a0y`, rapikan pesan commit WIP agar merujuk `legend-18qw`. Thread lama "engineer: worker event transport" (S30:P9mkl:G7rl2) bisa di-reopen untuk konteks.
+## Sedang
+- (kosong selain thread di bawah)
 
 ## Sesi CTO baru (2026-11-08, lanjutan)
-- Thread "Engineer: selesaikan fix worker" (brief 07): lanjut fix brief 06 di `ws/worker-transport`.
+- SELESAI fix review legend-18qw (brief 07): `ws/worker-transport` = `262d012` (amend WIP). 9 fix + 3 temuan reviewer subagent dibetulkan. `heavy pnpm check` hijau (1192 test), build hijau, format/color/tenant-hardcode lulus. `legend-3a0y` ditutup. Bead baru: `legend-7h5s` (edge tanpa cloud-sync tenant-wide), `legend-z649` (healthcheck worker), `legend-k1np` P1 (cek backfill sequence sebelum deploy), `legend-j75w` P2 (alert terthrottle auth Brevo). Sisa risiko: dedup Brevo belum dites ke Brevo asli (tunggu `legend-wwuc`); at-least-once bila retry >30 menit. Biaya sesi engineer: ~933k (Opus 668k, Haiku 151k, Sonnet 114k).
 - Thread "Designer: riset warna mockup" (brief 08, Codex): `design/COLOR-RESEARCH.md` + ulang `final-a-*`.
 
 ## Keputusan founder Q6 (mockup final): UBAH DULU
@@ -25,7 +25,7 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Langkah: riset psikologi warna untuk F&B order (warna CTA/tombol, warna yang mendorong nafsu makan dan nilai pesanan lebih besar, bukti dari sumber kredibel, bedakan mitos vs bukti, tetap lolos kontras WCAG), tulis `design/COLOR-RESEARCH.md`, lalu designer (Codex) ulang `final-a-*` dengan palet baru, review founder lagi. Pola upsell/menambah pesanan (rekomendasi "tambah minuman", bundling) boleh diusulkan bersama.
 
 ## Langkah berikut
-1. Engineer lanjutkan fix brief 06 di `ws/worker-transport` (agent baru: Opus high, brief 03 + 06).
+1. (selesai) fix brief 06.
 2. Riset warna + ulang mockup (lihat Keputusan founder Q6), founder review lagi.
 3. Setelah mockup disetujui: ui-engineer bangun UI order pelanggan dari `final-a-*`, update `DESIGN.md` sesuai usulan README mockup. Jangan sentuh area worker.
 4. Merge `ws/worker-transport` dan `ux/customer-order-benchmark` ke `main`: menunggu gerbang founder.

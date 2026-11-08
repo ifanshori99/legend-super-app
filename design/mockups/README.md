@@ -6,37 +6,61 @@ Cabang `ux/customer-order-benchmark`, 8 November 2026. Artefak ini untuk review 
 
 **Keputusan founder:** Q4 memilih Arah A, katalog foto. Q5 menyetujui jumlah tamu inline di chip/bar kecil di atas menu, wajib diisi sebelum item pertama ditambah; browsing tersedia tanpa jendela sambutan. Q3 tetap berlaku: Bayar di kasir tersedia, pelanggan menunjukkan kode, kasir menerima uang, lalu pesanan masuk dapur. Keputusan ini tidak perlu diminta ulang. Dasar: [brief lanjutan](../../docs/briefs/04-designer-arah-a-liquid-glass.md).
 
+### Revisi warna (Q6)
+
+Permintaan founder: “Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak”. Riset, metode, kekuatan bukti, token dan pasangan kontras ada di [COLOR-RESEARCH.md](../COLOR-RESEARCH.md). Revisi ini sudah diterapkan pada seluruh sepuluh ekspor final; palet masih **usulan untuk review**, bukan klaim menaikkan omzet.
+
+Urutan kerja Q6: telaah bukti → putuskan peran warna/pasangan AA → revisi sumber mobile dan desktop → render seluruh PNG → audit teks/kaca dan inspeksi visual → review konteks segar → commit lokal. Scope tetap artefak desain; tidak mengubah aplikasi, DESIGN.md atau docs/.
+
+| Peran | Palet sebelum Q6 | Palet usulan Q6 | Alasan dan rujukan |
+|---|---|---|---|
+| CTA utama | Petrol `#0f5e68` | Rust/jingga bata `#a83a17` + putih, **6,40:1** | Satu aksen aksi yang jelas di atas ivory, dibedakan dari status. **Keputusan desain**, bukan warna pemicu lapar; riset §Bukti/CTA. |
+| Nama dan harga | Tinta `#1c1b19` | Coffee `#2b211b` | Hierarki harga stabil, ≥14,60:1 pada canvas/paper; tanpa harga merah atau diskon rekaan. Riset §Palet. |
+| Canvas dan paper | `#f7f6f4` / `#fbfaf9` | Ivory `#faf6f0` / `#fffcf7` | Selaras dengan foto kafe dan area baca solid; alasan visual, belum bukti konversi. Riset §Implikasi. |
+| Teks bantu | `#5f5b55`; kaca `#3d3a35` | `#67584e`; kaca `#4b3b30` | Minimum teks solid 6,33:1; teks bantu kaca ≥7,93:1. Riset §Kaca. |
+| Kaca gelap | Petrol gelap `rgba(8,45,50,.78)` | Coffee `rgba(57,37,27,.90)` | Kontras putih ≥10,60:1 di atas ekstrem foto; tint lebih pekat menjaga bacaan. Riset §Kaca. |
+| Kaca terang | `rgba(251,250,249,.72)` | `rgba(255,252,247,.88)` | Teks utama ≥11,68:1; kaca tetap terbatas di lapisan mengambang. Riset §Kaca. |
+| Status / promo | Hijau/merah/amber terpisah | Sukses `#246443` pada `#e8f3eb`; error `#a51d2d` pada `#fff0f0`; menunggu/promo `#765000` pada `#fff0cc` | Pasangan ≥6,19:1; selalu ikon/teks. Token promo adalah aturan pemakaian, tidak ada promo baru yang dikarang. Riset §Aturan. |
+
+**Upsell yang terlihat:** detail espresso dan checkout menampilkan satu croissant mentega “Opsional · + Rp 23.000”; nota desktop menampilkan item sama. Bar keranjang mobile menambahkan “Tambah pendamping kopi? · Lihat pilihan” dengan bobot lebih ringan dari akses keranjang. Saran tidak otomatis masuk pesanan: subtotal tetap Rp 23.000 dan total contoh Rp 26.600. Keranjang kosong, error/stok habis, dan pembayaran berlangsung/berhasil tidak diberi tawaran tambahan. Pairing kopi–croissant adalah inferensi desain dari menu contoh; bukan rekomendasi algoritmik atau hasil penjualan lokal.
+
+Bukti paling relevan untuk saran adalah eksperimen lapangan prompt F&B Ebster (2.160 transaksi), bukan klaim hue tertentu. Pembatasan satu saran opsional mempertimbangkan temuan Norvell tentang efek sikap/kunjungan kembali. Bundling dan prompt “Tambah minuman?” dicatat sebagai usulan aturan kontekstual dalam riset, tidak menjadi paket atau diskon baru.
+
+**Tambahan usulan DESIGN.md:** batasi penggantian warna pada tema QR pelanggan; dokumentasikan token action/ink/surface/glass/status beserta pasangan yang diizinkan, alpha minimum .88/.90, landasan solid CTA rust di nota gelap, kontrol katalog netral, dan satu saran pendamping sekunder. Pertahankan font, katalog foto, harga tabular, Q3 kasir, Q5 tamu inline, maksimum dua wilayah blur serta semua fallback. Mockup tidak memberikan izin mengganti warna seluruh POS/KDS/manajemen.
+
+Audit Q6: `heavy node design/mockups/check-final-a-colors.mjs` menyimpan [pasangan teks aktual](verification-final-a-colors.json); seluruh pasangan yang terlihat diuji ke ambang 4,5:1 termasuk komposit ekstrem kaca. Menu 390×844, tamu 390×960 dan desktop 1440×900 dirender; seluruh 10 PNG dibuka sendiri. Detail mempertahankan hero 3:2; deskripsi dipadatkan. Teks konteks checkout dipisah dari foto dan label sampel desktop dipindah ke ruang kosong setelah inspeksi. Reviewer konteks segar membuka 10/10 PNG dan memeriksa diff, sumber riset, harga, token serta hasil audit; tidak menemukan blocker konkret. Reviewer tidak menjalankan ulang browser audit, yang dilakukan designer.
+
 ### Sepuluh gambar final dan kondisi
 
 Semua ekspor berskala 1×. Mobile **390 × 844 px**, kecuali kontrol jumlah tamu terbuka **390 × 960 px** agar katalog tetap terlihat. Desktop **1440 × 900 px**. Menu sesudah scroll adalah komposisi statis yang menunjukkan posisi header/kategori menempel dan foto lewat di belakang kaca; PNG tidak membuktikan perilaku scroll aplikasi.
 
 | Gambar | Tujuan dan kondisi yang ditampilkan |
 |---|---|
-| [final-a-menu-mobile.png](final-a-menu-mobile.png) | Menelusuri katalog sesudah sedikit scroll; header dan kategori dalam satu wilayah kaca, 2 tamu dikonfirmasi, 1 espresso di keranjang, bar kaca gelap menunjukkan subtotal Rp 23.000. |
+| [final-a-menu-mobile.png](final-a-menu-mobile.png) | Menelusuri katalog sesudah sedikit scroll; header dan kategori dalam satu wilayah kaca, 2 tamu dikonfirmasi, 1 espresso di keranjang, bar kaca coffee menunjukkan subtotal Rp 23.000 dan tautan pendamping kopi. |
 | [final-a-menu-awal-mobile.png](final-a-menu-awal-mobile.png) | Scan pertama; “Jumlah tamu · Pilih” belum diisi, katalog dapat dilihat, keranjang kosong tanpa bar subtotal. |
 | [final-a-jumlah-tamu-mobile.png](final-a-jumlah-tamu-mobile.png) | Kontrol inline terbuka; jumlah 2 sedang dipilih dan belum disimpan, instruksi wajib sebelum tambah pertama, tanpa modal sambutan. Tinggi 960 px. |
-| [final-a-detail-mobile.png](final-a-detail-mobile.png) | Detail espresso, foto hero 3:2, suhu Dingin dipilih; gula wajib belum dipilih setelah percobaan tambah. Error lokal, tambahan/catatan opsional, stepper dan CTA dalam footer kaca. |
-| [final-a-checkout-mobile.png](final-a-checkout-mobile.png) | Keranjang dan bayar satu halaman; rincian biaya solid, QRIS dipilih, E-wallet dan Bayar di kasir tersedia inline. Footer kaca menampilkan total Rp 26.600 dan satu CTA bayar. |
+| [final-a-detail-mobile.png](final-a-detail-mobile.png) | Detail espresso, foto hero 3:2, suhu Dingin dipilih; gula wajib belum dipilih setelah percobaan tambah. Error lokal, tambahan/catatan opsional, saran croissant belum dipilih, stepper dan CTA dalam footer kaca. |
+| [final-a-checkout-mobile.png](final-a-checkout-mobile.png) | Keranjang dan bayar satu halaman dengan satu rekomendasi croissant opsional; rincian biaya solid, QRIS dipilih, E-wallet dan Bayar di kasir tersedia inline. Footer kaca menampilkan total Rp 26.600 dan satu CTA bayar. |
 | [final-a-qris-menunggu-mobile.png](final-a-qris-menunggu-mobile.png) | Menunggu pembayaran, total Rp 26.600, QR contoh berlabel bukan untuk pembayaran, sisa waktu contoh 04:58, aksi simpan QR dan ganti metode. |
 | [final-a-kode-kasir-mobile.png](final-a-kode-kasir-mobile.png) | Menunggu pembayaran kasir; kode contoh LG–0044, total dan langkah bayar, penjelasan pesanan belum masuk dapur, aksi periksa pembayaran. |
 | [final-a-berhasil-mobile.png](final-a-berhasil-mobile.png) | Status contoh pembayaran QRIS berhasil; ringkasan, kode pesanan, estimasi, akses status/struk. Ajakan klaim poin baru tampil setelah pembayaran. |
 | [final-a-stok-habis-mobile.png](final-a-stok-habis-mobile.png) | Kondisi gabungan: cappuccino “Habis hari ini” tanpa aksi tambah; pemberitahuan menu belum diperbarui dengan Coba lagi, sementara 1 item keranjang tetap terlihat. |
-| [final-a-menu-desktop.png](final-a-menu-desktop.png) | Katalog dua kolom foto besar, indeks kategori kiri dan nota keranjang tetap kanan. Header kaca terang dan nota mengambang kaca gelap di atas foto; 2 tamu dan 1 espresso. |
+| [final-a-menu-desktop.png](final-a-menu-desktop.png) | Katalog dua kolom foto besar, indeks kategori kiri dan nota keranjang tetap kanan. Header kaca terang dan nota mengambang kaca gelap di atas foto; 2 tamu, 1 espresso, dan saran croissant opsional pada permukaan solid. |
 
 ### Aturan kaca yang dipakai
 
-- Material web: `backdrop-filter: blur(18px) saturate(1.15)`, beserta prefiks WebKit. Tint terang `rgba(251,250,249,.72)`, tint gelap `rgba(8,45,50,.78)`. Tinta gelap di kaca terang, teks putih di kaca gelap; muted pada kaca terang dibuat lebih gelap (`#3d3a35`).
+- Material web: `backdrop-filter: blur(18px) saturate(1.15)`, beserta prefiks WebKit. Tint terang `rgba(255,252,247,.88)`, tint gelap `rgba(57,37,27,.90)`. Tinta gelap di kaca terang, teks putih di kaca gelap; muted pada kaca terang dibuat lebih gelap (`#4b3b30`).
 - Kaca hanya di elemen mengambang: header/kategori, navigasi detail/pembayaran, bar keranjang, footer aksi dan panel nota desktop. Maksimal **2 wilayah blur per layar**; header dan kategori dihitung satu wilayah. Foto katalog, form, pilihan, rincian harga dan isi nota tetap solid, tanpa kaca bertumpuk di belakang teks panjang.
 - Border terang 1 px memberi tepi material: putih alpha .70 pada mobile / .65 desktop; kaca gelap memakai alpha .34 / .28. Bayangan dan highlight inset terbatas pada lapisan mengambang. Foto di bawah kaca memperlihatkan material; area baca tetap tenang.
-- `prefers-reduced-transparency: reduce` serta `@supports not (backdrop-filter: blur(1px))` mengganti kaca menjadi solid: terang `#fbfaf9`, gelap `#082d32`, blur dimatikan. `prefers-contrast: more` juga memakai permukaan solid, blur mati dan border 2 px yang tegas. Reduced motion mematikan transisi/animasi. Cabang solid dan kontras tinggi telah dirender pada menu mobile/desktop; batas pembuktiannya dicatat di bawah.
-- Kontras tint dihitung terhadap hitam/putih ekstrem: terang + tinta utama 8,31–16,70:1; terang + sekunder 5,47–10,99:1; gelap + putih 7,30–16,42:1. Ini membuktikan pasangan teks/kaca pada sumber mockup, bukan seluruh aksesibilitas aplikasi. Implementasi perlu mempertahankan alpha, warna teks opaque dan pengujian atas konten nyata.
+- `prefers-reduced-transparency: reduce` serta `@supports not (backdrop-filter: blur(1px))` mengganti kaca menjadi solid: terang `#fffcf7`, gelap `#39251b`, blur dimatikan. `prefers-contrast: more` juga memakai permukaan solid, blur mati dan border 2 px yang tegas. Reduced motion mematikan transisi/animasi. Cabang solid dan kontras tinggi telah dirender pada menu mobile/desktop; batas pembuktiannya dicatat di bawah.
+- Kontras tint dihitung terhadap hitam/putih ekstrem: terang + tinta utama 11,68–15,40:1; terang + sekunder 7,93–10,46:1; gelap + putih 10,60–15,25:1. Ini membuktikan pasangan teks/kaca pada sumber mockup, bukan seluruh aksesibilitas aplikasi. Implementasi perlu mempertahankan alpha, warna teks opaque dan pengujian atas konten nyata.
 
 ### Lima perubahan anti-slop yang konkret
 
 1. Katalog foto 1:1 mendapat ruang sendiri tanpa bingkai kartu berlapis; jumlah dan harga mengikuti makanan, bukan komposisi dashboard generik.
 2. Tombol outline “+ Tambah” diganti kontrol tambah bulat 44 px di sudut foto; item terpilih berubah menjadi stepper dan penanda jumlah sehingga perubahan keadaan terlihat.
 3. Hierarki angka diperjelas: subtotal di bar 24 px, total QRIS 40 px, nominal bukti bayar 36 px; nama makanan dan teks baca tetap terbaca, angka tabular dipertahankan.
-4. Canvas abu hangat menggantikan putih polos; kedalaman muncul dari foto meja kafe, permukaan solid dan dua lapisan kaca fungsional, tanpa glow atau gradien dekoratif.
+4. Canvas ivory hangat menggantikan putih polos; kedalaman muncul dari foto meja kafe, permukaan solid dan dua lapisan kaca fungsional, tanpa glow atau gradien dekoratif.
 5. Desktop ditata khusus menjadi indeks, foto besar dan nota kanan; checkout menjadi aliran biaya/metode dengan satu aksi utama, sementara poin ditunda sampai berhasil. Tidak ditambahkan rating, promo, testimoni atau urgensi rekaan.
 
 ### Usulan perubahan DESIGN.md untuk implementasi
@@ -45,11 +69,11 @@ Founder sudah mengizinkan eksplorasi liquid glass dan foto latar melalui brief i
 
 | Aturan lama | Usulan arah final dan batas |
 |---|---|
-| Media pelanggan radius 12 px | Media katalog 16 px; thumbnail kecil tetap 8/12 px sesuai konteks. Foto menu 1:1 dan hero detail 3:2 dipertahankan. |
+| Media pelanggan radius 12 px | Media katalog 16 px; thumbnail kecil tetap 8/12 px sesuai konteks. Foto menu 1:1 dan hero detail 3:2 dipertahankan; deskripsi espresso dipadatkan agar saran opsional tetap muat. |
 | Shell radius 18 px, CTA pelanggan pill | Wilayah mengambang utama radius 24 px; navigasi ringkas 20/22 px sesuai komposisi. CTA primer mobile radius 14 px, menggantikan pill; sumber desktop saat ini memakai varian 12 px. Radius varian perlu dijadikan token, bukan aturan seragam untuk semua kontrol. |
-| Halaman pelanggan putih | Canvas abu hangat `#f7f6f4`, isi/form/biaya tetap solid terang. |
+| Halaman pelanggan putih | Canvas ivory hangat `#faf6f0`, isi/form/biaya tetap solid terang. |
 | Tanpa glassmorphism dan foto latar dekoratif | Foto meja kafe ilustratif dibatasi sebagai underlay material pada header/panel mengambang; kaca mengikuti aturan hemat dan fallback di atas. Izin eksplorasi founder bukan klaim bahwa kontras/performa aplikasi sudah teruji. |
-| Plus Jakarta Sans dan palet Legend | Tetap: satu keluarga Plus Jakarta Sans lokal, petrol `#0f5e68`, tinta `#1c1b19`, abu hangat. Tidak ada merek, font, atau hue aksi baru. |
+| Plus Jakarta Sans dan palet Legend | Font tetap satu keluarga Plus Jakarta Sans lokal. **Usulan Q6 khusus QR pelanggan:** petrol diganti rust `#a83a17`, tinta coffee `#2b211b`, paper ivory dan kaca coffee; token/pasangan AA di COLOR-RESEARCH. Perubahan belum berlaku pada sistem aplikasi. |
 
 ### Sumber, provenance dan asumsi
 
@@ -64,11 +88,27 @@ Founder sudah mengizinkan eksplorasi liquid glass dan foto latar melalui brief i
 
 Render ulang dari root repo: `heavy node design/mockups/capture-final-a.mjs`. [capture-final-a.mjs](capture-final-a.mjs) membuka sumber lokal di Chromium Playwright, menunggu font, lalu mengekspor sepuluh PNG tanpa dev server, database atau koneksi pembayaran. Perintah ini menimpa PNG final dan [verification-final-a.json](verification-final-a.json).
 
-`verification-final-a.json` merekam ukuran viewport/dokumen, font termuat, error runtime/request, gambar hilang, teks keluar viewport atau beririsan panel mengambang, jumlah wilayah blur, tint/blur terhitung dan irisan geometri foto di bawah kaca. Catatan geometri ini membantu memeriksa ekspor; irisan foto tidak membuktikan kualitas efek kaca atau kontras piksel. Hasil capture terakhir: 10/10 ukuran sesuai, font termuat, tanpa error runtime/request, gambar hilang, teks terpotong sebagian, atau teks tertutup panel tanpa sengaja. Setiap layar memiliki 1–2 wilayah blur dan setidaknya satu foto di bawah kaca. Bagian katalog yang sepenuhnya di luar jendela scroll tidak dihitung sebagai teks terpotong. Semua 10 PNG dibuka satu per satu oleh designer dan reviewer; tidak ada blocker konkret tersisa pada scope gambar.
+`verification-final-a.json` merekam ukuran viewport/dokumen, font termuat, error runtime/request, gambar hilang, teks keluar viewport atau beririsan panel mengambang, jumlah wilayah blur, tint/blur terhitung dan irisan geometri foto di bawah kaca. Catatan geometri ini membantu memeriksa ekspor; irisan foto tidak membuktikan kualitas efek kaca atau kontras piksel. Hasil capture terakhir: 10/10 ukuran sesuai, font termuat, tanpa error runtime/request, gambar hilang, teks terpotong sebagian, atau teks tertutup panel tanpa sengaja. Setiap layar memiliki 1–2 wilayah blur dan setidaknya satu foto di bawah kaca. Bagian katalog yang sepenuhnya di luar jendela scroll tidak dihitung sebagai teks terpotong. Semua 10 PNG dibuka satu per satu oleh designer dan reviewer konteks segar; tidak ada blocker konkret tersisa pada scope gambar.
 
 Pemeriksaan material: `heavy node design/mockups/check-final-a-glass.mjs`; [verification-final-a-glass.json](verification-final-a-glass.json) menyimpan perhitungan kontras dan computed styles. Emulasi Chromium `prefers-reduced-transparency: reduce` serta `prefers-contrast: more` menghasilkan permukaan solid, blur mati, dan border 2 px pada mode kontras tinggi. Keduanya dijalankan pada menu mobile/desktop, lalu keempat PNG di [qa/](qa/) dibuka. Cabang CSS tanpa dukungan backdrop-filter juga dipaksa aktif dan computed style dicek; ini **bukan** pengujian browser lama sesungguhnya.
 
-Gate final pada scope mockup: Product/UX/UI/design system/visual QA/anti-slop **PASS untuk kanvas dan keadaan yang diminta**; responsive **PASS hanya lebar ekspor 390 dan 1440**; edge cases **PASS untuk yang diekspor**. Code quality aplikasi **N/A**. Accessibility aplikasi **NOT VERIFIED** di luar kontras serta keterbacaan gambar, sehingga gate produk keseluruhan tetap **NOT VERIFIED**. Siap untuk review visual, belum hasil validasi pengguna atau aplikasi siap produksi.
+Gate Q6 mengikuti RYUX; bukti desain berasal dari brief, standar tim, benchmark yang sudah ada, render Chromium dan riset tertaut. Tidak ada observasi pelanggan Legend baru.
+
+| Area | Hasil | Bukti dan batas |
+|---|---|---|
+| PRODUCT | PASS pada scope mockup | Permintaan Q6 dan keputusan Q3/Q5 terpenuhi; bukti lokal untuk uplift **None**, riset transfer **Thin**. |
+| UX | PASS pada keadaan gambar | Saran opsional dan sekunder, harga jelas, tidak memblokir pembayaran. Belum diuji pengguna. |
+| UI | PASS pada kanvas diminta | Point of view: task UI katalog foto, ivory/coffee dan aksen rust. |
+| DESIGN SYSTEM | PASS pada sumber mockup | Token HEX + OKLCH setara; usulan perubahan sistem dicatat, DESIGN.md tidak diubah. |
+| ACCESSIBILITY | NOT VERIFIED untuk aplikasi | Pasangan teks terlihat ≥6,15:1; pasangan status yang diusulkan ≥6,19:1 dan kontrol penting ≥3:1. Keyboard/screen reader/zoom bukan bukti dari PNG. |
+| RESPONSIVE | NOT VERIFIED di luar kanvas | Render 390×844, 390×960 dan 1440×900 lulus; belum 320 px atau fluid layout. |
+| EDGE CASES | PASS pada keadaan diminta | Tamu belum diisi, validasi gula, stok habis/jaringan, dua jalur tunggu bayar, sukses. |
+| CODE QUALITY | N/A aplikasi | Sumber statis dan script render diaudit; tidak ada kode aplikasi berubah. |
+| VISUAL QA | PASS | Chromium Playwright; sepuluh PNG dan empat fallback dibuka sendiri, geometri/error/font/aset diperiksa. |
+| ANTI-SLOP | PASS pada scope revisi | Tidak ada bukti sosial/urgensi/diskon rekaan; satu saran, harga tetap jujur. |
+| FINAL | NOT VERIFIED untuk produk keseluruhan | Artefak revisi selesai untuk review visual; belum validasi perilaku/pembelian pengguna. |
+
+Hitungan konsistensi Q6: 1 hue aksi (rust), 3 hue status terpisah (amber/hijau/merah), 1 keluarga netral hangat, 1 keluarga font, 1 gaya ikon garis, 0 emoji di antarmuka, 0 gradien dekoratif; skala radius tetap 4/6/8/12/14/16/18/20/22/24 px dan lingkaran/pill untuk kontrol. Hanya satu hierarki angka dominan per layar; label rekomendasi menyatakan opsional dan harga tambahan. Kontrol katalog tetap netral agar aksen tidak tersebar ke semua item.
 
 PNG dan sumber statis belum membuktikan interaksi aplikasi, transaksi, countdown, pemulihan jaringan, sinkronisasi sesi, uji pengguna, keyboard/fokus/screen reader, zoom 200%, lebar 320 px, semua tema atau performa perangkat. Tidak ada klaim seluruh aksesibilitas maupun responsivitas aplikasi telah diuji.
 

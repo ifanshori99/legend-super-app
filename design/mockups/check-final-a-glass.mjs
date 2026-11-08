@@ -36,7 +36,7 @@ await browser.close();
 function lum(rgb){return rgb.map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);}
 function ratio(a,b){const lo=Math.min(lum(a),lum(b)),hi=Math.max(lum(a),lum(b));return(hi+.05)/(lo+.05);}
 const contrast=[];
-for(const [name,color,alpha,text] of [['light-ink',[251,250,249],.72,[28,27,25]],['light-secondary',[251,250,249],.72,[61,58,53]],['dark-white',[8,45,50],.78,[255,255,255]]]){
+for(const [name,color,alpha,text] of [['light-ink',[255,252,247],.88,[43,33,27]],['light-secondary',[255,252,247],.88,[75,59,48]],['dark-white',[57,37,27],.90,[255,255,255]]]){
   for(const backdrop of [0,255]){
     const composite=color.map(x=>x*alpha+backdrop*(1-alpha));
     const value=ratio(composite,text);if(value<4.5)throw Error(`Contrast failed: ${name}`);

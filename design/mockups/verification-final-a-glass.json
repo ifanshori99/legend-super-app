@@ -5,13 +5,13 @@
       "normal": [
         {
           "className": "glass glass-light floating-header",
-          "background": "rgba(251, 250, 249, 0.72)",
+          "background": "rgba(255, 252, 247, 0.88)",
           "blur": "blur(18px) saturate(1.15)",
           "borderWidth": "1px"
         },
         {
           "className": "glass glass-dark cart-bar",
-          "background": "rgba(8, 45, 50, 0.78)",
+          "background": "rgba(57, 37, 27, 0.9)",
           "blur": "blur(18px) saturate(1.15)",
           "borderWidth": "1px"
         }
@@ -20,13 +20,13 @@
       "reduced": [
         {
           "className": "glass glass-light floating-header",
-          "background": "rgb(251, 250, 249)",
+          "background": "rgb(255, 252, 247)",
           "blur": "none",
           "borderWidth": "1px"
         },
         {
           "className": "glass glass-dark cart-bar",
-          "background": "rgb(8, 45, 50)",
+          "background": "rgb(57, 37, 27)",
           "blur": "none",
           "borderWidth": "1px"
         }
@@ -34,13 +34,13 @@
       "contrast": [
         {
           "className": "glass glass-light floating-header",
-          "background": "rgb(251, 250, 249)",
+          "background": "rgb(255, 252, 247)",
           "blur": "none",
           "borderWidth": "2px"
         },
         {
           "className": "glass glass-dark cart-bar",
-          "background": "rgb(8, 45, 50)",
+          "background": "rgb(57, 37, 27)",
           "blur": "none",
           "borderWidth": "2px"
         }
@@ -48,13 +48,13 @@
       "noSupportBranch": [
         {
           "className": "glass glass-light floating-header",
-          "background": "rgb(251, 250, 249)",
+          "background": "rgb(255, 252, 247)",
           "blur": "none",
           "borderWidth": "1px"
         },
         {
           "className": "glass glass-dark cart-bar",
-          "background": "rgb(8, 45, 50)",
+          "background": "rgb(57, 37, 27)",
           "blur": "none",
           "borderWidth": "1px"
         }
@@ -65,13 +65,13 @@
       "normal": [
         {
           "className": "glass",
-          "background": "rgba(251, 250, 249, 0.72)",
+          "background": "oklch(0.991986 0.0073388 80.7214 / 0.88)",
           "blur": "blur(18px) saturate(1.15)",
           "borderWidth": "1px"
         },
         {
           "className": "glass cart",
-          "background": "rgba(8, 45, 50, 0.78)",
+          "background": "oklch(0.286238 0.0352692 47.4342 / 0.9)",
           "blur": "blur(18px) saturate(1.15)",
           "borderWidth": "1px"
         }
@@ -80,13 +80,13 @@
       "reduced": [
         {
           "className": "glass",
-          "background": "rgb(251, 250, 249)",
+          "background": "oklch(0.991986 0.0073388 80.7214)",
           "blur": "none",
           "borderWidth": "1px"
         },
         {
           "className": "glass cart",
-          "background": "rgb(8, 45, 50)",
+          "background": "oklch(0.286238 0.0352692 47.4342)",
           "blur": "none",
           "borderWidth": "1px"
         }
@@ -94,13 +94,13 @@
       "contrast": [
         {
           "className": "glass",
-          "background": "rgb(251, 250, 249)",
+          "background": "oklch(0.991986 0.0073388 80.7214)",
           "blur": "none",
           "borderWidth": "2px"
         },
         {
           "className": "glass cart",
-          "background": "rgb(8, 45, 50)",
+          "background": "oklch(0.286238 0.0352692 47.4342)",
           "blur": "none",
           "borderWidth": "2px"
         }
@@ -108,13 +108,13 @@
       "noSupportBranch": [
         {
           "className": "glass",
-          "background": "rgb(251, 250, 249)",
+          "background": "oklch(0.991986 0.0073388 80.7214)",
           "blur": "none",
           "borderWidth": "1px"
         },
         {
           "className": "glass cart",
-          "background": "rgb(8, 45, 50)",
+          "background": "oklch(0.286238 0.0352692 47.4342)",
           "blur": "none",
           "borderWidth": "1px"
         }
@@ -125,32 +125,32 @@
     {
       "name": "light-ink",
       "backdrop": "black",
-      "ratio": 8.31
+      "ratio": 11.68
     },
     {
       "name": "light-ink",
       "backdrop": "white",
-      "ratio": 16.7
+      "ratio": 15.4
     },
     {
       "name": "light-secondary",
       "backdrop": "black",
-      "ratio": 5.47
+      "ratio": 7.93
     },
     {
       "name": "light-secondary",
       "backdrop": "white",
-      "ratio": 10.99
+      "ratio": 10.46
     },
     {
       "name": "dark-white",
       "backdrop": "black",
-      "ratio": 16.42
+      "ratio": 15.25
     },
     {
       "name": "dark-white",
       "backdrop": "white",
-      "ratio": 7.3
+      "ratio": 10.6
     }
   ],
   "noSupportScope": "Forced CSS fallback branch; no legacy browser run."

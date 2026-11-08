@@ -13,7 +13,7 @@
     "glasses": [
       {
         "className": "glass glass-light floating-header",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -25,14 +25,14 @@
       },
       {
         "className": "glass glass-dark cart-bar",
-        "background": "rgba(8, 45, 50, 0.78)",
+        "background": "rgba(57, 37, 27, 0.9)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
           "x": 16,
-          "y": 748,
+          "y": 712,
           "width": 358,
-          "height": 80
+          "height": 116
         }
       }
     ],
@@ -52,7 +52,7 @@
     "glasses": [
       {
         "className": "glass glass-light floating-header",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -79,7 +79,7 @@
     "glasses": [
       {
         "className": "glass glass-light floating-header",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -106,7 +106,7 @@
     "glasses": [
       {
         "className": "glass glass-light nav-glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -118,7 +118,7 @@
       },
       {
         "className": "glass glass-light float-footer detail-footer",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": false,
         "bounds": {
@@ -145,7 +145,7 @@
     "glasses": [
       {
         "className": "glass glass-light nav-glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -157,7 +157,7 @@
       },
       {
         "className": "glass glass-light float-footer checkout-footer",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": false,
         "bounds": {
@@ -184,7 +184,7 @@
     "glasses": [
       {
         "className": "glass glass-light nav-glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -196,7 +196,7 @@
       },
       {
         "className": "glass glass-light float-footer pay-footer",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": false,
         "bounds": {
@@ -223,7 +223,7 @@
     "glasses": [
       {
         "className": "glass glass-light nav-glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -235,7 +235,7 @@
       },
       {
         "className": "glass glass-light float-footer cashier-footer",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": false,
         "bounds": {
@@ -262,7 +262,7 @@
     "glasses": [
       {
         "className": "glass glass-light nav-glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -274,7 +274,7 @@
       },
       {
         "className": "glass glass-light float-footer success-footer",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": false,
         "bounds": {
@@ -301,7 +301,7 @@
     "glasses": [
       {
         "className": "glass glass-light floating-header",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "rgba(255, 252, 247, 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -313,14 +313,14 @@
       },
       {
         "className": "glass glass-dark cart-bar",
-        "background": "rgba(8, 45, 50, 0.78)",
+        "background": "rgba(57, 37, 27, 0.9)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
           "x": 16,
-          "y": 748,
+          "y": 746,
           "width": 358,
-          "height": 80
+          "height": 82
         }
       }
     ],
@@ -340,7 +340,7 @@
     "glasses": [
       {
         "className": "glass",
-        "background": "rgba(251, 250, 249, 0.72)",
+        "background": "oklch(0.991986 0.0073388 80.7214 / 0.88)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
@@ -352,14 +352,14 @@
       },
       {
         "className": "glass cart",
-        "background": "rgba(8, 45, 50, 0.78)",
+        "background": "oklch(0.286238 0.0352692 47.4342 / 0.9)",
         "blur": "blur(18px) saturate(1.15)",
         "photoUnderlay": true,
         "bounds": {
           "x": 940,
-          "y": 264,
+          "y": 240,
           "width": 424,
-          "height": 530
+          "height": 558
         }
       }
     ],
