@@ -88,3 +88,37 @@ edc_transaction.flagged` (flagged = needs_reconciliation set / outcome unknown) 
 - Tests (in edc-agent-review.test.ts or a new edc-outbox.test.ts): one approved sale →
   outbox has created + approved for that aggregate, same tx (rollback of ledger write leaves no
   outbox row); catalog/contract tests still pass.
+
+## Round 2 (CTO follow-up): batch check before trusting not_found
+
+Problem: by_trace inquiry sees only the current batch. If the bank closes the batch (settlement)
+inside the 15-min window, a charged sale answers `not_found` → row `failed` → retry charges again.
+
+Design (decided):
+
+- New nullable column `edc_transactions.dispatch_batch_no varchar(20)`: the terminal's last known
+  batch at dispatch = `batch_no` of the newest row of the same (tenant, terminal_id) with
+  `batch_no IS NOT NULL` (order by completed_at desc), read and written in the dispatch-claim tx.
+  Migration via `drizzle-kit generate --name edc_dispatch_batch` (→ 0070); never hand-edit journal.
+- Adapter contract: an inquiry `not_found` MUST carry the terminal's current open `batchNo`.
+- `patchFromAnswer` not_found for a DISPATCHED row: `failed` only if all old rules hold AND
+  `result.batchNo !== null && row.dispatchBatchNo !== null && result.batchNo === row.dispatchBatchNo`.
+  Otherwise `unknown` + `needsReconciliation: true` + new message (batch changed or unknown).
+  Never-dispatched rows unchanged (failed). Batch equal ⇒ no close since a txn older than dispatch.
+- Simulator: per-terminal batch counter (start "000001"); results and not_found inquiries carry the
+  current batchNo; new `closeBatch(terminalRowId)` (settlement): batch+1, earlier records invisible
+  to inquiry (not_found). Existing tests that rely on not_found→failed for a dispatched row must
+  first settle one approved sale on that terminal so the batch is known (say which tests changed).
+- JSDoc on `EdcProvider` / `sale`: the sale frame must be written to the wire synchronously when
+  `sale()` is called (no await/connect/open before the write; open the link beforehand); the agent's
+  cancel bypass relies on it. Also document the not_found batchNo rule on `ecrInquiryResultSchema`.
+
+Tests (test-writer, new file `apps/api/src/test/edc-agent-batch.test.ts`):
+
+- B1 known batch, sale X times out (terminal actually approved), bank closes batch within 15 min,
+  inquiry not_found (batch 2) → X stays unknown + needs_reconciliation; re-bill same reference with new
+  key → `EDC_NEEDS_RECONCILIATION`; simulator chargedCount for X's sale = 1 (no second charge).
+- Batch unknown (first sale on a terminal, no earlier row with batch_no) + not_found → unknown +
+  needs_reconciliation, not failed.
+- Control: same batch, not_found in window → failed, retry allowed and charged once.
+- dispatch_batch_no is stored on dispatch from the newest known batch.

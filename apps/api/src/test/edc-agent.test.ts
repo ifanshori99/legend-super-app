@@ -452,10 +452,11 @@ describe("EDC agent (legend-apt)", () => {
     expect(tx.status).toBe("unknown");
     expect(f.bca.chargedCount(f.terminalId)).toBe(0);
     // The failure is instant, so age the dispatch past saleTimeoutMs + grace:
-    // no dependence on wall-clock timing.
+    // no dependence on wall-clock timing. The terminal's batch at dispatch is
+    // the one its not_found reports ("000001"): no settlement in between.
     await asOwner(f.tenant.tenantId, (client) =>
       client.query(
-        `UPDATE edc_transactions SET dispatched_at = now() - interval '1 minute' WHERE id = $1`,
+        `UPDATE edc_transactions SET dispatched_at = now() - interval '1 minute', dispatch_batch_no = '000001' WHERE id = $1`,
         [tx.id],
       ),
     );
@@ -1092,7 +1093,7 @@ describe("EDC agent (legend-apt)", () => {
     });
     await asOwner(f.tenant.tenantId, (client) =>
       client.query(
-        `UPDATE edc_transactions SET dispatched_at = now() - interval '1 minute' WHERE id = $1`,
+        `UPDATE edc_transactions SET dispatched_at = now() - interval '1 minute', dispatch_batch_no = '000001' WHERE id = $1`,
         [staleId],
       ),
     );

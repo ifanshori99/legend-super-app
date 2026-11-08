@@ -184,7 +184,14 @@ export type EcrResult = z.infer<typeof ecrResultSchema>;
  * for the customer. `not_found`: the terminal has no record of the trace.
  * The agent trusts `not_found` (records `failed`) only from a provider whose
  * `capabilities.inquiry` is `by_trace`, and only once the sale is old enough
- * that it cannot still be in transit; otherwise it stays `unknown`. */
+ * that it cannot still be in transit; otherwise it stays `unknown`.
+ *
+ * Adapter contract: a `not_found` MUST carry `batchNo`, the terminal's
+ * current open batch. A bank settlement closes the batch and hides its
+ * transactions from a by-trace inquiry, so the agent trusts `not_found`
+ * (records `failed`) only when `batchNo` is present and equals the batch known
+ * when the sale was dispatched; a different or missing batch stays `unknown`
+ * and flagged for reconciliation. */
 export const ecrInquiryResultSchema = ecrResultDetailsSchema.extend({
   outcome: z.enum([
     "approved",
@@ -255,13 +262,22 @@ export type EdcProviderCapabilities = {
  *   it never resolves `cancelled`.
  * - `cancel` runs concurrently with `sale` only when
  *   `capabilities.cancelInProgress` is true.
+ * - `sale` must write the sale frame to the wire synchronously when it is
+ *   called: no await, connect or open before the write (open the link
+ *   beforehand). The agent's cancel bypass relies on it: a cancel that
+ *   finds the sale call already started assumes the sale frame is on the
+ *   wire, so it can never overtake it.
+ * - An inquiry `not_found` must carry the terminal's current open `batchNo`
+ *   (see `ecrInquiryResultSchema`).
  * - Echo `trace` and the amount in results whenever the protocol carries
  *   them; return `invoiceNo` / `batchNo` for void and settlement. */
 export interface EdcProvider {
   readonly bank: EdcBank;
   readonly capabilities: EdcProviderCapabilities;
-  /** Sends a sale and waits for the customer. Resolves only with a
-   * definitive answer; throws `EcrTransportError` otherwise. */
+  /** Sends a sale and waits for the customer. The sale frame must be written
+   * to the wire synchronously when this is called (no await, connect or open
+   * before the write). Resolves only with a definitive answer; throws
+   * `EcrTransportError` otherwise. */
   sale(request: EcrSaleRequest): Promise<EcrResult>;
   /** Cancels the sale `trace` while the terminal still waits for the
    * customer. If the sale already finished, resolves with that final

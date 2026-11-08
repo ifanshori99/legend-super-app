@@ -1,0 +1,1 @@
+ALTER TABLE "edc_transactions" ADD COLUMN "dispatch_batch_no" varchar(20);

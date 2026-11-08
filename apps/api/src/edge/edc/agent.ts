@@ -24,7 +24,9 @@
 //   right before it reaches the terminal. `dispatched_at IS NULL` proves the
 //   terminal never saw it, so only then may it be cancelled or failed locally.
 //   A terminal's `not_found` is trusted only from a by-trace provider after
-//   the sale is old enough that it cannot still be in transit.
+//   the sale is old enough that it cannot still be in transit, and only while
+//   the terminal's open batch equals the batch known at dispatch (a closed
+//   batch hides the sale from inquiry).
 //
 // No domain events here: whether approval or settlement marks a bill paid
 // belongs to the POS payment flow (legend-m0k) and settlement (legend-cs7).
@@ -157,6 +159,8 @@ const MESSAGE_NOT_FOUND_UNCONFIRMED =
   "Terminal belum menemukan transaksi ini, tetapi belum pasti. Cek status terminal.";
 const MESSAGE_NOT_FOUND_STALE =
   "Terminal tidak lagi dapat memastikan transaksi ini. Rekonsiliasi manual.";
+const MESSAGE_NOT_FOUND_BATCH =
+  "Batch terminal berubah atau tidak diketahui, transaksi tidak dapat dipastikan. Rekonsiliasi manual.";
 const MESSAGE_TRACE_MISMATCH =
   "Jawaban terminal bukan untuk transaksi ini. Cek status terminal.";
 const MESSAGE_APPROVED_TWICE = "approved twice: void + reconcile";
@@ -302,7 +306,10 @@ type AnswerContext = {
  * - `not_found` means `failed` only when the sale was never dispatched, or a
  *   by-trace provider says so after the sale is too old to be in transit and
  *   still young enough for the batch to hold it; older than that it is
- *   `unknown` for a human (`needsReconciliation`). */
+ *   `unknown` for a human (`needsReconciliation`);
+ * - a dispatched row's `not_found` also needs the answer's batch to equal the
+ *   batch known at dispatch (both known): a settlement in between hides the
+ *   sale from inquiry, so a changed or unknown batch is `unknown` too. */
 function patchFromAnswer(
   row: EdcRow,
   result: EcrResult | EcrInquiryResult,
@@ -323,6 +330,20 @@ function patchFromAnswer(
       dispatchedAt === null ||
       (answerCtx.capabilities.inquiry === "by_trace" &&
         ageMs >= answerCtx.notFoundAfterMs);
+    if (
+      trusted &&
+      dispatchedAt !== null &&
+      !(
+        result.batchNo !== null &&
+        row.dispatchBatchNo !== null &&
+        result.batchNo === row.dispatchBatchNo
+      )
+    )
+      return {
+        status: "unknown",
+        needsReconciliation: true,
+        details: { message: MESSAGE_NOT_FOUND_BATCH },
+      };
     return trusted
       ? { status: "failed", details: { message: MESSAGE_NOT_FOUND } }
       : {
@@ -999,9 +1020,26 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       // wire queues behind this lock, so it cannot reach an idle terminal
       // before the sale frame does.
       const claimed = await withTenant(db, ctx, async (tx) => {
+        // The terminal's last known batch: kept on the row so a later
+        // `not_found` can be checked against a settlement in between.
+        const [lastBatch] = await tx
+          .select({ batchNo: edcTransactions.batchNo })
+          .from(edcTransactions)
+          .where(
+            and(
+              eq(edcTransactions.tenantId, ctx.tenant.tenantId),
+              eq(edcTransactions.terminalId, row.terminalId),
+              isNotNull(edcTransactions.batchNo),
+            ),
+          )
+          .orderBy(sql`${edcTransactions.completedAt} DESC NULLS LAST`)
+          .limit(1);
         const [updated] = await tx
           .update(edcTransactions)
-          .set({ dispatchedAt: now() })
+          .set({
+            dispatchedAt: now(),
+            dispatchBatchNo: lastBatch?.batchNo ?? null,
+          })
           .where(
             and(
               eq(edcTransactions.tenantId, ctx.tenant.tenantId),

@@ -2,7 +2,9 @@
 // Deterministic: behavior is scripted per terminal row id with `next()`; the
 // default scenario is `approve`. It models what a real terminal remembers per
 // (terminal, trace) so status inquiry and cancel give honest answers, and it
-// counts calls so tests can prove no second sale was sent (no double charge).
+// keeps a batch counter per terminal (a settlement via `closeBatch` opens the
+// next batch and hides earlier records from inquiry). It counts calls so tests
+// can prove no second sale was sent (no double charge).
 import {
   EcrTransportError,
   ecrInquiryResultSchema,
@@ -55,6 +57,8 @@ type SimRecord = {
   method: EdcMethod;
   amountIdr: number;
   state: TerminalState;
+  /** The terminal's open batch when the sale was taken. */
+  batchNo: string;
   result: EcrResult | null;
   /** Wakes the sale call held by the `hold` scenario, if still listening. */
   settle: ((result: EcrResult) => void) | null;
@@ -78,6 +82,7 @@ export class EcrSimulator implements EdcProvider {
   readonly #calls = new Map<string, EcrSimulatorCalls>();
   readonly #invoiceCounters = new Map<string, number>();
   readonly #lastTrace = new Map<string, string>();
+  readonly #batches = new Map<string, number>();
   #counter = 0;
 
   constructor(bank: EdcBank, options: EcrSimulatorOptions = {}) {
@@ -128,6 +133,15 @@ export class EcrSimulator implements EdcProvider {
     );
   }
 
+  /** Settlement at the terminal: the batch closes and the next one opens
+   * ("000002", ...). Records of earlier batches are no longer visible to
+   * inquiry (`not_found`, carrying the new open batch) and can no longer be
+   * voided. Returns the new open batch number. */
+  closeBatch(terminalRowId: string): string {
+    this.#batches.set(terminalRowId, this.#batch(terminalRowId) + 1);
+    return this.#batchNo(terminalRowId);
+  }
+
   /** Total calls to this bank's simulator, over all terminals. */
   get calls(): EcrSimulatorCalls {
     const total = emptyCalls();
@@ -166,6 +180,7 @@ export class EcrSimulator implements EdcProvider {
         method,
         amountIdr: amount,
         state,
+        batchNo: this.#batchNo(terminalRowId),
         result: null,
         settle: null,
       };
@@ -274,8 +289,13 @@ export class EcrSimulator implements EdcProvider {
     const known =
       this.capabilities.inquiry !== "last_only" ||
       this.#lastTrace.get(terminalRowId) === request.trace;
-    if (!record || !known)
-      return ecrInquiryResultSchema.parse({ outcome: "not_found" });
+    // A closed batch hides its records: the terminal answers for its open
+    // batch only, and says which batch that is.
+    if (!record || !known || record.batchNo !== this.#batchNo(terminalRowId))
+      return ecrInquiryResultSchema.parse({
+        outcome: "not_found",
+        batchNo: this.#batchNo(terminalRowId),
+      });
     if (record.state === "in_progress")
       return ecrInquiryResultSchema.parse({ outcome: "in_progress" });
     return ecrInquiryResultSchema.parse(record.result);
@@ -286,6 +306,8 @@ export class EcrSimulator implements EdcProvider {
     const record = this.#records.get(key(request.terminal.id, request.trace));
     if (!record || record.state === "in_progress")
       throw new EcrTransportError("protocol", "no approved sale for trace");
+    if (record.batchNo !== this.#batchNo(request.terminal.id))
+      throw new EcrTransportError("protocol", "sale batch already settled");
     if (record.state === "voided") return ecrResultSchema.parse(record.result);
     if (record.state !== "approved")
       throw new EcrTransportError("protocol", "sale was not approved");
@@ -294,6 +316,14 @@ export class EcrSimulator implements EdcProvider {
     record.state = "voided";
     record.result = result;
     return result;
+  }
+
+  #batch(terminalRowId: string): number {
+    return this.#batches.get(terminalRowId) ?? 1;
+  }
+
+  #batchNo(terminalRowId: string): string {
+    return String(this.#batch(terminalRowId)).padStart(6, "0");
   }
 
   #count(terminalRowId: string, kind: keyof EcrSimulatorCalls): void {
@@ -322,7 +352,7 @@ export class EcrSimulator implements EdcProvider {
       responseCode: "00",
       amountIdr,
       invoiceNo: String(invoice).padStart(6, "0"),
-      batchNo: "000001",
+      batchNo: this.#batchNo(terminalRowId),
       trace: overrides.trace ?? trace,
       ...(overrides.message === undefined
         ? {}

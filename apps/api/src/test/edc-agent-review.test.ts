@@ -513,6 +513,7 @@ describe("EDC review K regressions", () => {
             ecrInquiryResultSchema.parse({
               outcome: "not_found",
               trace: r.trace,
+              batchNo: "000001",
             }),
         }),
     });
@@ -521,6 +522,13 @@ describe("EDC review K regressions", () => {
     const tx = await pay(f, first);
     expect(tx.status).toBe("unknown");
     await ageDispatch(tx.id, "1 minute");
+    // Same batch at dispatch and at inquiry: no settlement in between.
+    await asOwner((client) =>
+      client.query(
+        `UPDATE edc_transactions SET dispatch_batch_no = '000001' WHERE id = $1`,
+        [tx.id],
+      ),
+    );
 
     const retry = await pay(f, request(f, { reference: first.reference }));
     expect(retry.status).toBe("approved");

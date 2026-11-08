@@ -58,7 +58,8 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Agent: retry ditolak `EDC_NEEDS_RECONCILIATION` bila ada baris referensi itu yang ditandai rekonsiliasi (approved late), `EDC_STATUS_UNKNOWN` bila masih in-flight; `not_found` dipercaya hanya 15 menit sejak dispatch (`notFoundTrustWindowMs`); cancel lewat antrean terminal kecuali sale-nya sendiri sedang memegang kunci, ditolak saat terminal stuck; jawaban trace salah: inquiry tidak menulis hasil, sale/cancel simpan bukti + tandai rekonsiliasi; recoverPending hanya outlet yang baru diambil.
 - Outbox: `edc_transaction.created/approved/declined/failed/cancelled/flagged` ditulis di transaksi yang sama (EDC-05). `settled` disisakan untuk settlement bank (EDC-06).
 - Skema: kolom `type`, `mode`, `payment_intent_id`; `EdcProvider.void` + simulator; registry menolak simulator di production. Unique approved per referensi kini hanya `type = 'sale'`.
-- Sisa risiko: settlement batch di dalam jendela 15 menit masih bisa membuat `not_found` palsu; race kecil di `recoverInFlight` publik (baris yang dispatch di tick yang sama bisa sempat `unknown`, jawaban akhir tetap tercatat).
+- Batch check (lanjutan CTO): `dispatch_batch_no` (migrasi 0070) = batch terakhir terminal saat dispatch; `not_found` hanya jadi `failed` bila batch di jawaban sama dengan batch saat dispatch, selain itu `unknown` + rekonsiliasi (bank tutup batch dalam 15 menit tidak lagi memicu tagih dobel). Kontrak `EdcProvider`: frame sale terkirim sinkron saat `sale()` dipanggil; `not_found` wajib membawa `batchNo`.
+- Sisa risiko: sale pertama di terminal (batch belum diketahui) atau sesudah settlement malam selalu masuk rekonsiliasi manual bila hasilnya tak pasti; race kecil di `recoverInFlight` publik (baris yang dispatch di tick yang sama bisa sempat `unknown`, jawaban akhir tetap tercatat).
 
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 

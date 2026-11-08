@@ -66,6 +66,10 @@ export const edcTransactions = pgTable(
     // Set (guarded UPDATE) inside the terminal lock right before the sale is
     // sent. NULL means the terminal never saw this sale.
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    // The terminal's last known batch at dispatch (batch_no of its newest row
+    // that has one). NULL: unknown. An inquiry `not_found` is trusted only
+    // while the terminal's open batch still equals this one.
+    dispatchBatchNo: varchar("dispatch_batch_no", { length: 20 }),
     // A second approval for one reference was rejected by the unique index:
     // a human must void one charge and reconcile.
     needsReconciliation: boolean("needs_reconciliation")
