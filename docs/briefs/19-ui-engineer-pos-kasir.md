@@ -18,6 +18,8 @@ Bangun layar POS kasir (tablet landscape 1280x800 utama) sesuai 21 mockup yang d
 - Layar POS yang ada: `apps/web/src/routes/_ops/pos.*.tsx` dan feature terkait.
 - Backend paralel (cabang lain, belum merge): shift `legend-6c0`, nomor struk `legend-93a`, fix pembayaran `legend-b0au/94qt/0gy1`, EDC `legend-m0k` (belum mulai). Pakai kontrak di `packages/shared` yang ada + mock (`VITE_API_MOCK=true`). Kontrak belum ada: tampilkan sesuai mock di balik mode demo seperti pola UI order pelanggan (`apps/web/src/features/ws03-qr-order/`), dan tulis kebutuhan kontrak di laporan.
 
+- Kontrak POS berubah di cabang `ws/pos-payment-fixes` (belum merge): body void, refund, diskon memakai `overrideId` (id persetujuan supervisor dari server, sekali pakai, 15 menit), bukan `approvalRequestId`. Pakai `overrideId` di UI.
+
 ## Scope
 - Boleh diubah: `apps/web/src/routes/_ops/pos*`, feature/komponen web POS, i18n pesan POS, e2e mock POS terkait.
 - Jangan disentuh: `apps/api/`, skema/validator `packages/shared` (kecuali file pesan i18n), `_customer/`, `design/`.
