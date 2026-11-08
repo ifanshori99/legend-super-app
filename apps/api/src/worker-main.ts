@@ -30,6 +30,9 @@ import {
   handleRefundApprovalResolved,
   sweepApprovedRefundPayouts,
 } from "./services/payment-refund.service.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -48,6 +51,8 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
 
@@ -124,6 +129,11 @@ const runtime = createWorkerRuntime({
           // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
           // the payout itself runs from the approve call or the payout sweep.
           await handleRefundApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
+          // Manual/recurring journals (legend-vmyg): settle from the chain.
+          await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -167,6 +177,14 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Approval deadline sweep failed");
     }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
+    }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
       await expireDueSupportAccessGrants(context);
@@ -203,6 +221,20 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+    // templates, one transaction per period. Fail closed, next tick resumes.
+    try {
+      const recurring = await runDueRecurringJournals(context, new Date());
+      // Counts only (no template data); the per-template reason is stored on
+      // recurring_journals.last_error for finance.
+      if (recurring.failed > 0)
+        logger.warn(
+          { job: "recurring_journals", ...recurring },
+          "recurring journal generation had failures",
+        );
+    } catch {
+      console.error("Recurring journal sweep failed");
     }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
