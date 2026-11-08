@@ -45,7 +45,8 @@ CREATE UNIQUE INDEX "gateway_webhook_events_event_key" ON "gateway_webhook_event
 CREATE UNIQUE INDEX "gateway_webhook_events_rejected_hash_uq" ON "gateway_webhook_events" USING btree ("tenant_id","payload_hash") WHERE NOT "gateway_webhook_events"."signature_valid";--> statement-breakpoint
 CREATE INDEX "gateway_webhook_events_status_idx" ON "gateway_webhook_events" USING btree ("tenant_id","status","received_at");--> statement-breakpoint
 CREATE INDEX "gateway_webhook_events_provider_ref_idx" ON "gateway_webhook_events" USING btree ("tenant_id","provider","provider_ref");--> statement-breakpoint
-ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_gateway_integration_fk" FOREIGN KEY ("gateway_integration_id") REFERENCES "public"."tenant_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_gateway_integration_fk" FOREIGN KEY ("gateway_integration_id") REFERENCES "public"."tenant_integrations"("id") ON DELETE no action ON UPDATE no action;
+--> statement-breakpoint
 ALTER TABLE public.tenant_integrations FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;

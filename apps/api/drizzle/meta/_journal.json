@@ -624,6 +624,20 @@
       "when": 1794158110088,
       "tag": "0088_pos_day_close_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794158175793,
+      "tag": "0089_heavy_korvac",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794158184781,
+      "tag": "0090_doit_webhook_events_rls",
+      "breakpoints": true
     }
   ]
 }
