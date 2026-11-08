@@ -1,6 +1,6 @@
 {
-  "id": "2395d75f-1eb9-4f4f-bf81-b643f481515f",
-  "prevId": "a3847f93-28ac-438d-a9e0-9e9ed87f3def",
+  "id": "054046d3-978a-4f5b-94de-708314ff1241",
+  "prevId": "69e3146d-ad4f-433e-8fa3-1640371735ba",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -20228,6 +20228,411 @@
       },
       "isRLSEnabled": false
     },
+    "public.reservation_guest_links": {
+      "name": "reservation_guest_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reservation_id": {
+          "name": "reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "reservation_guest_links_active_key": {
+          "name": "reservation_guest_links_active_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reservation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"reservation_guest_links\".\"revoked_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reservation_guest_links_tenant_id_tenants_id_fk": {
+          "name": "reservation_guest_links_tenant_id_tenants_id_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_outlet_id_outlets_id_fk": {
+          "name": "reservation_guest_links_outlet_id_outlets_id_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_outlet_fk": {
+          "name": "reservation_guest_links_outlet_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_guest_links_reservation_fk": {
+          "name": "reservation_guest_links_reservation_fk",
+          "tableFrom": "reservation_guest_links",
+          "tableTo": "reservations",
+          "columnsFrom": [
+            "tenant_id",
+            "reservation_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reservation_guest_links_tenant_id_id_key": {
+          "name": "reservation_guest_links_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "reservation_guest_links_token_key": {
+          "name": "reservation_guest_links_token_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reservation_guest_links_token_hash_check": {
+          "name": "reservation_guest_links_token_hash_check",
+          "value": "\"reservation_guest_links\".\"token_hash\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.reservation_reschedule_requests": {
+      "name": "reservation_reschedule_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reservation_id": {
+          "name": "reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guest_link_id": {
+          "name": "guest_link_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_for": {
+          "name": "requested_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "party_size": {
+          "name": "party_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "varchar(300)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_by": {
+          "name": "resolved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "reservation_reschedule_requests_pending_key": {
+          "name": "reservation_reschedule_requests_pending_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reservation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"reservation_reschedule_requests\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reservation_reschedule_requests_list_idx": {
+          "name": "reservation_reschedule_requests_list_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reservation_reschedule_requests_tenant_id_tenants_id_fk": {
+          "name": "reservation_reschedule_requests_tenant_id_tenants_id_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_outlet_id_outlets_id_fk": {
+          "name": "reservation_reschedule_requests_outlet_id_outlets_id_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_outlet_fk": {
+          "name": "reservation_reschedule_requests_outlet_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_reservation_fk": {
+          "name": "reservation_reschedule_requests_reservation_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "reservations",
+          "columnsFrom": [
+            "tenant_id",
+            "reservation_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "reservation_reschedule_requests_link_fk": {
+          "name": "reservation_reschedule_requests_link_fk",
+          "tableFrom": "reservation_reschedule_requests",
+          "tableTo": "reservation_guest_links",
+          "columnsFrom": [
+            "tenant_id",
+            "guest_link_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reservation_reschedule_requests_tenant_id_id_key": {
+          "name": "reservation_reschedule_requests_tenant_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reservation_reschedule_requests_status_check": {
+          "name": "reservation_reschedule_requests_status_check",
+          "value": "\"reservation_reschedule_requests\".\"status\" IN ('pending', 'approved', 'declined', 'withdrawn')"
+        },
+        "reservation_reschedule_requests_party_size_check": {
+          "name": "reservation_reschedule_requests_party_size_check",
+          "value": "\"reservation_reschedule_requests\".\"party_size\" IS NULL OR (\"reservation_reschedule_requests\".\"party_size\" >= 1 AND \"reservation_reschedule_requests\".\"party_size\" <= 50)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.access_tickets": {
       "name": "access_tickets",
       "schema": "",
@@ -24053,1292 +24458,6 @@
         "positions_name_check": {
           "name": "positions_name_check",
           "value": "length(\"positions\".\"name\") > 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.holidays": {
-      "name": "holidays",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "date": {
-          "name": "date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(150)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "type": {
-          "name": "type",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "holidays_tenant_date_idx": {
-          "name": "holidays_tenant_date_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "holidays_tenant_id_tenants_id_fk": {
-          "name": "holidays_tenant_id_tenants_id_fk",
-          "tableFrom": "holidays",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "holidays_outlet_fk": {
-          "name": "holidays_outlet_fk",
-          "tableFrom": "holidays",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "holidays_tenant_id_key": {
-          "name": "holidays_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "holidays_tenant_outlet_date_key": {
-          "name": "holidays_tenant_outlet_date_key",
-          "nullsNotDistinct": true,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "date"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "holidays_type_check": {
-          "name": "holidays_type_check",
-          "value": "\"holidays\".\"type\" IN ('national', 'collective', 'company')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.hris_leave_settings": {
-      "name": "hris_leave_settings",
-      "schema": "",
-      "columns": {
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "collective_leave_deducts_annual": {
-          "name": "collective_leave_deducts_annual",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "annual_leave_type_id": {
-          "name": "annual_leave_type_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "collective_leave_effective_from": {
-          "name": "collective_leave_effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "hris_leave_settings_tenant_id_tenants_id_fk": {
-          "name": "hris_leave_settings_tenant_id_tenants_id_fk",
-          "tableFrom": "hris_leave_settings",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "hris_leave_settings_annual_leave_type_fk": {
-          "name": "hris_leave_settings_annual_leave_type_fk",
-          "tableFrom": "hris_leave_settings",
-          "tableTo": "leave_types",
-          "columnsFrom": [
-            "tenant_id",
-            "annual_leave_type_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.leave_accruals": {
-      "name": "leave_accruals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "employee_id": {
-          "name": "employee_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "leave_type_id": {
-          "name": "leave_type_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "period": {
-          "name": "period",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "days": {
-          "name": "days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "leave_accruals_collective_leave_key": {
-          "name": "leave_accruals_collective_leave_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "employee_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "period",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"leave_accruals\".\"kind\" = 'collective_leave'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "leave_accruals_tenant_id_tenants_id_fk": {
-          "name": "leave_accruals_tenant_id_tenants_id_fk",
-          "tableFrom": "leave_accruals",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_accruals_employee_fk": {
-          "name": "leave_accruals_employee_fk",
-          "tableFrom": "leave_accruals",
-          "tableTo": "employees",
-          "columnsFrom": [
-            "tenant_id",
-            "employee_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_accruals_leave_type_fk": {
-          "name": "leave_accruals_leave_type_fk",
-          "tableFrom": "leave_accruals",
-          "tableTo": "leave_types",
-          "columnsFrom": [
-            "tenant_id",
-            "leave_type_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "leave_accruals_tenant_employee_type_kind_period_key": {
-          "name": "leave_accruals_tenant_employee_type_kind_period_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "employee_id",
-            "leave_type_id",
-            "kind",
-            "period"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "leave_accruals_kind_check": {
-          "name": "leave_accruals_kind_check",
-          "value": "\"leave_accruals\".\"kind\" IN ('grant', 'carry_over', 'carry_over_expiry', 'collective_leave')"
-        },
-        "leave_accruals_period_check": {
-          "name": "leave_accruals_period_check",
-          "value": "\"leave_accruals\".\"period\" ~ '^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.leave_balances": {
-      "name": "leave_balances",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "employee_id": {
-          "name": "employee_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "leave_type_id": {
-          "name": "leave_type_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "period_year": {
-          "name": "period_year",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "entitled_days": {
-          "name": "entitled_days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
-        "carried_over_days": {
-          "name": "carried_over_days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
-        "used_days": {
-          "name": "used_days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
-        "pending_days": {
-          "name": "pending_days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
-        "carry_over_expires_on": {
-          "name": "carry_over_expires_on",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "leave_balances_tenant_id_tenants_id_fk": {
-          "name": "leave_balances_tenant_id_tenants_id_fk",
-          "tableFrom": "leave_balances",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_balances_employee_fk": {
-          "name": "leave_balances_employee_fk",
-          "tableFrom": "leave_balances",
-          "tableTo": "employees",
-          "columnsFrom": [
-            "tenant_id",
-            "employee_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_balances_leave_type_fk": {
-          "name": "leave_balances_leave_type_fk",
-          "tableFrom": "leave_balances",
-          "tableTo": "leave_types",
-          "columnsFrom": [
-            "tenant_id",
-            "leave_type_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "leave_balances_tenant_id_key": {
-          "name": "leave_balances_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "leave_balances_tenant_employee_type_year_key": {
-          "name": "leave_balances_tenant_employee_type_year_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "employee_id",
-            "leave_type_id",
-            "period_year"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "leave_balances_period_year_check": {
-          "name": "leave_balances_period_year_check",
-          "value": "\"leave_balances\".\"period_year\" BETWEEN 2000 AND 2100"
-        },
-        "leave_balances_nonnegative_check": {
-          "name": "leave_balances_nonnegative_check",
-          "value": "\"leave_balances\".\"entitled_days\" >= 0 AND \"leave_balances\".\"carried_over_days\" >= 0 AND \"leave_balances\".\"pending_days\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.leave_requests": {
-      "name": "leave_requests",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "employee_id": {
-          "name": "employee_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "leave_type_id": {
-          "name": "leave_type_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "period_year": {
-          "name": "period_year",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "start_date": {
-          "name": "start_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "end_date": {
-          "name": "end_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "days": {
-          "name": "days",
-          "type": "numeric(9, 4)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "excluded_holiday_dates": {
-          "name": "excluded_holiday_dates",
-          "type": "date[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::date[]"
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "attachment_key": {
-          "name": "attachment_key",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "approval_chain_id": {
-          "name": "approval_chain_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requested_at": {
-          "name": "requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "decided_by": {
-          "name": "decided_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "create_idempotency_key": {
-          "name": "create_idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "leave_requests_tenant_employee_start_idx": {
-          "name": "leave_requests_tenant_employee_start_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "employee_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "start_date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "leave_requests_tenant_attachment_key": {
-          "name": "leave_requests_tenant_attachment_key",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "attachment_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "leave_requests_tenant_id_tenants_id_fk": {
-          "name": "leave_requests_tenant_id_tenants_id_fk",
-          "tableFrom": "leave_requests",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_requests_outlet_fk": {
-          "name": "leave_requests_outlet_fk",
-          "tableFrom": "leave_requests",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_requests_employee_fk": {
-          "name": "leave_requests_employee_fk",
-          "tableFrom": "leave_requests",
-          "tableTo": "employees",
-          "columnsFrom": [
-            "tenant_id",
-            "employee_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "leave_requests_leave_type_fk": {
-          "name": "leave_requests_leave_type_fk",
-          "tableFrom": "leave_requests",
-          "tableTo": "leave_types",
-          "columnsFrom": [
-            "tenant_id",
-            "leave_type_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "leave_requests_tenant_id_key": {
-          "name": "leave_requests_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "leave_requests_tenant_idempotency_key": {
-          "name": "leave_requests_tenant_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "create_idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "leave_requests_date_range_check": {
-          "name": "leave_requests_date_range_check",
-          "value": "\"leave_requests\".\"end_date\" >= \"leave_requests\".\"start_date\""
-        },
-        "leave_requests_days_check": {
-          "name": "leave_requests_days_check",
-          "value": "\"leave_requests\".\"days\" >= 0"
-        },
-        "leave_requests_status_check": {
-          "name": "leave_requests_status_check",
-          "value": "\"leave_requests\".\"status\" IN ('pending', 'approved', 'rejected', 'cancelled')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.leave_types": {
-      "name": "leave_types",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "code": {
-          "name": "code",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "paid": {
-          "name": "paid",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requires_attachment": {
-          "name": "requires_attachment",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy": {
-          "name": "policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "is_active": {
-          "name": "is_active",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "leave_types_tenant_id_tenants_id_fk": {
-          "name": "leave_types_tenant_id_tenants_id_fk",
-          "tableFrom": "leave_types",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "leave_types_tenant_id_key": {
-          "name": "leave_types_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "leave_types_tenant_code_key": {
-          "name": "leave_types_tenant_code_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "code"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.overtime_formulas": {
-      "name": "overtime_formulas",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "effective_from": {
-          "name": "effective_from",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'draft'"
-        },
-        "parameters": {
-          "name": "parameters",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rest_day_type": {
-          "name": "rest_day_type",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "legal_basis": {
-          "name": "legal_basis",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_by": {
-          "name": "published_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "overtime_formulas_tenant_id_tenants_id_fk": {
-          "name": "overtime_formulas_tenant_id_tenants_id_fk",
-          "tableFrom": "overtime_formulas",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "overtime_formulas_tenant_id_key": {
-          "name": "overtime_formulas_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "overtime_formulas_tenant_version_key": {
-          "name": "overtime_formulas_tenant_version_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "version"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "overtime_formulas_version_check": {
-          "name": "overtime_formulas_version_check",
-          "value": "\"overtime_formulas\".\"version\" > 0"
-        },
-        "overtime_formulas_status_check": {
-          "name": "overtime_formulas_status_check",
-          "value": "\"overtime_formulas\".\"status\" IN ('draft', 'published', 'archived')"
-        },
-        "overtime_formulas_rest_day_type_check": {
-          "name": "overtime_formulas_rest_day_type_check",
-          "value": "\"overtime_formulas\".\"rest_day_type\" IN ('rest_day_6_day_week', 'rest_day_5_day_week')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.overtime_requests": {
-      "name": "overtime_requests",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "employee_id": {
-          "name": "employee_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "date": {
-          "name": "date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "minutes": {
-          "name": "minutes",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "day_type": {
-          "name": "day_type",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "approval_chain_id": {
-          "name": "approval_chain_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "formula_id": {
-          "name": "formula_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "requested_at": {
-          "name": "requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "decided_by": {
-          "name": "decided_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "create_idempotency_key": {
-          "name": "create_idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "overtime_requests_tenant_employee_date_idx": {
-          "name": "overtime_requests_tenant_employee_date_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "employee_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "date",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "overtime_requests_tenant_id_tenants_id_fk": {
-          "name": "overtime_requests_tenant_id_tenants_id_fk",
-          "tableFrom": "overtime_requests",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "overtime_requests_outlet_fk": {
-          "name": "overtime_requests_outlet_fk",
-          "tableFrom": "overtime_requests",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "overtime_requests_employee_fk": {
-          "name": "overtime_requests_employee_fk",
-          "tableFrom": "overtime_requests",
-          "tableTo": "employees",
-          "columnsFrom": [
-            "tenant_id",
-            "employee_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "overtime_requests_formula_fk": {
-          "name": "overtime_requests_formula_fk",
-          "tableFrom": "overtime_requests",
-          "tableTo": "overtime_formulas",
-          "columnsFrom": [
-            "tenant_id",
-            "formula_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "overtime_requests_tenant_id_key": {
-          "name": "overtime_requests_tenant_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "overtime_requests_tenant_idempotency_key": {
-          "name": "overtime_requests_tenant_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "create_idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "overtime_requests_minutes_check": {
-          "name": "overtime_requests_minutes_check",
-          "value": "\"overtime_requests\".\"minutes\" BETWEEN 1 AND 720"
-        },
-        "overtime_requests_status_check": {
-          "name": "overtime_requests_status_check",
-          "value": "\"overtime_requests\".\"status\" IN ('pending', 'approved', 'rejected', 'cancelled')"
         }
       },
       "isRLSEnabled": false
@@ -34315,6 +33434,294 @@
         "pos_orders_version_check": {
           "name": "pos_orders_version_check",
           "value": "\"pos_orders\".\"version\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shareholder_document_files": {
+      "name": "shareholder_document_files",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "profit_entity_id": {
+          "name": "profit_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_key": {
+          "name": "file_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "uploaded_by": {
+          "name": "uploaded_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "shareholder_document_files_tenant_id_tenants_id_fk": {
+          "name": "shareholder_document_files_tenant_id_tenants_id_fk",
+          "tableFrom": "shareholder_document_files",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "shareholder_document_files_tenant_id_id_pk": {
+          "name": "shareholder_document_files_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "shareholder_document_files_tenant_file_key": {
+          "name": "shareholder_document_files_tenant_file_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "file_key"
+          ]
+        },
+        "shareholder_document_files_tenant_entity_file_key": {
+          "name": "shareholder_document_files_tenant_entity_file_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "profit_entity_id",
+            "file_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "shareholder_document_files_content_type_check": {
+          "name": "shareholder_document_files_content_type_check",
+          "value": "\"shareholder_document_files\".\"content_type\" = 'application/pdf'"
+        },
+        "shareholder_document_files_size_check": {
+          "name": "shareholder_document_files_size_check",
+          "value": "\"shareholder_document_files\".\"size_bytes\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shareholder_documents": {
+      "name": "shareholder_documents",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "profit_entity_id": {
+          "name": "profit_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_key": {
+          "name": "file_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "visibility": {
+          "name": "visibility",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_by": {
+          "name": "published_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "shareholder_documents_entity_created_idx": {
+          "name": "shareholder_documents_entity_created_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "profit_entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "shareholder_documents_tenant_id_tenants_id_fk": {
+          "name": "shareholder_documents_tenant_id_tenants_id_fk",
+          "tableFrom": "shareholder_documents",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "shareholder_documents_file_fk": {
+          "name": "shareholder_documents_file_fk",
+          "tableFrom": "shareholder_documents",
+          "tableTo": "shareholder_document_files",
+          "columnsFrom": [
+            "tenant_id",
+            "profit_entity_id",
+            "file_key"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "profit_entity_id",
+            "file_key"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "shareholder_documents_tenant_id_id_pk": {
+          "name": "shareholder_documents_tenant_id_id_pk",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "shareholder_documents_tenant_file_key": {
+          "name": "shareholder_documents_tenant_file_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "file_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "shareholder_documents_kind_check": {
+          "name": "shareholder_documents_kind_check",
+          "value": "\"shareholder_documents\".\"kind\" IN ('monthly_report', 'general_meeting_minutes', 'other')"
+        },
+        "shareholder_documents_visibility_check": {
+          "name": "shareholder_documents_visibility_check",
+          "value": "\"shareholder_documents\".\"visibility\" IN ('shareholders', 'management')"
+        },
+        "shareholder_documents_published_check": {
+          "name": "shareholder_documents_published_check",
+          "value": "(\"shareholder_documents\".\"published_at\" IS NULL) = (\"shareholder_documents\".\"published_by\" IS NULL)"
         }
       },
       "isRLSEnabled": false

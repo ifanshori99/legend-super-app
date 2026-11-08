@@ -34,10 +34,13 @@ import { publicSiteRouter } from "./public-site.routes";
 import { tableSessionsRouter } from "./table-sessions.routes";
 import { paymentRouter } from "./payment.routes";
 import { paymentAdminRouter } from "./payment-admin.routes.ts";
+import { accountingJournalRouter } from "./accounting-journal.routes";
 import { accountingRouter } from "./accounting.routes";
+import { createShareholderDocumentsRouter } from "./shareholder-documents.routes";
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
+import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
@@ -128,8 +131,12 @@ apiRouter.use("/pos-overrides", posOverrideRouter);
 apiRouter.use("/public/site", publicSiteRouter);
 // WS-05 versioned tax / service-charge configuration, preview and PBJT recap.
 apiRouter.use("/tax", taxRouter);
+// Shareholder documents (WS-07, legend-69yq): upload, publish, list, signed URL.
+apiRouter.use("/accounting", createShareholderDocumentsRouter());
 // Accounting core (WS-07): CoA, mappings, journals, fiscal periods.
 apiRouter.use("/accounting", accountingRouter);
+// Manual + recurring journals with approval (WS-07, legend-vmyg).
+apiRouter.use("/accounting", accountingJournalRouter);
 // AP/AR aging, fixed assets, depreciation, budgets (WS-07, legend-hpgo).
 apiRouter.use("/accounting", createAccountingApFaRouter());
 // WS-08 promo engine shared by POS/QR/website (legend-7x4g).
@@ -137,6 +144,8 @@ apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);
+// Guest self-service via signed link (legend-o5gr): full paths inside.
+apiRouter.use(reservationPublicRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).
