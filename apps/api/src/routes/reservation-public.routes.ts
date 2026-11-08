@@ -11,7 +11,8 @@
 //   in the URL fragment). A missing, malformed, unknown, expired or revoked
 //   token gets the same 404 RESERVATION_LINK_INVALID from the service.
 // - Public writes need `Idempotency-Key`. They have their own per-IP limit
-//   (separate from the booking POST's counters, no tenant-wide bucket) and a
+//   (separate from the booking POST's counters, no tenant bucket of its own;
+//   the path is still under the shared public per-tenant limit) and a
 //   per-link cap the service charges once the link resolves.
 // - Staff: requireAuth + requireTrustedOrigin + requireTenantContext, then
 //   `reservation.view` / `reservation.manage` on the path's outlet (TEN-03).
@@ -56,10 +57,11 @@ const view = requireOutletPermission("reservation.view", outletOf);
 const manage = requireOutletPermission("reservation.manage", outletOf);
 // Own instance: the guest self-service writes must not spend the booking POST's
 // per-IP and per-tenant budget (and the other way round).
-// The tenant-wide bucket is lifted: it would be charged before the token is
-// checked, so junk tokens from a few IPs could 429 every guest's cancel. The
-// per-IP bucket stays; a per-link cap is charged in the service once the link
-// resolves.
+// This instance has no tenant bucket of its own, but that does not lift the
+// tenant limit: the path stays in PUBLIC_RATE_LIMIT_PATHS
+// (middleware/public-rate-limit.ts), so the shared per-IP and per-tenant limit
+// still applies before the token is checked (decision: the shared limit is
+// kept). A per-link cap is charged in the service once the link resolves.
 const guestWriteLimits = createPublicBookingLimits({
   perTenant: Number.MAX_SAFE_INTEGER,
 });

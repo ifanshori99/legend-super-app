@@ -536,6 +536,13 @@ export async function cancelGuestReservation(
       );
       return { result, refund: null };
     }
+    // A guest cannot cancel once the booking time has come: a no-DP no-show
+    // must stay on record for staff.
+    if (now >= row.reservedFor)
+      throw new ReservationError(
+        "RESERVATION_TRANSITION_INVALID",
+        "Reservasi sudah lewat; tidak dapat dibatalkan melalui tautan.",
+      );
     assertReservationTransition(row.status, "cancelled");
     // RSV-03: always the snapshot taken at booking, never the live policy.
     const policy = reservationPolicySnapshotSchema.parse(row.policySnapshot);

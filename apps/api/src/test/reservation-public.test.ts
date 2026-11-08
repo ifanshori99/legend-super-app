@@ -653,6 +653,18 @@ describe("RSV-03 guest cancel follows the policy snapshot", () => {
     expect(await refundRows(intentId)).toHaveLength(0);
   });
 
+  it("RSV-03 a booking without a DP past its time cannot be cancelled by the guest", async () => {
+    const { id } = await freeBooking();
+    const token = await issueLink(id);
+    await moveReservedFor(id, new Date(Date.now() - HOUR));
+
+    const response = await publicPost("cancel", token, {});
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    expect(response.body.error.code).toBe("RESERVATION_TRANSITION_INVALID");
+    expect((await reservationRow(id)).status).toBe("confirmed");
+  });
+
   it("RSV-03 a body with unknown fields (tenant, refund amount) is refused", async () => {
     const { id } = await freeBooking();
     const token = await issueLink(id);
