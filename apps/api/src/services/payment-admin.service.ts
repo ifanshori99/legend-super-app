@@ -11,6 +11,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
+  approvalRequests,
   outlets,
   paymentIntents,
   paymentLinks,
@@ -21,18 +22,20 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import { approveRefund as approveRefundWithPayout } from "./payment-refund.service.ts";
 import {
   appendPaymentEvent,
   assertPaymentPermission,
 } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 
-const missing = () =>
+export const missing = () =>
   new HttpError(404, "NOT_FOUND", "Payment or refund not found.");
-const conflict = (message: string) => new HttpError(409, "CONFLICT", message);
+export const conflict = (message: string) =>
+  new HttpError(409, "CONFLICT", message);
 
-type Intent = typeof paymentIntents.$inferSelect;
-type Refund = typeof paymentRefunds.$inferSelect;
+export type Intent = typeof paymentIntents.$inferSelect;
+export type Refund = typeof paymentRefunds.$inferSelect;
 // Evidence and fund rows are written under the intent lock by settlement.
 // Compute in PostgreSQL numeric and bigint to avoid rounding aggregate sums.
 export async function refundableBalance(tx: Tx, intent: Intent) {
@@ -81,7 +84,11 @@ async function paymentInfo(tx: Tx, intent: Intent) {
   if (!link || !outlet) throw missing();
   return { link, outlet };
 }
-async function refundView(tx: Tx, refund: Refund) {
+export async function refundView(
+  tx: Tx,
+  refund: Refund,
+  viewerCanApprove = false,
+) {
   const [intent] = await tx
     .select()
     .from(paymentIntents)
@@ -121,8 +128,7 @@ async function refundView(tx: Tx, refund: Refund) {
       names.find((n) => n.id === refund.requestedBy)?.name ??
       systemRequesterName(refund.requestedBy) ??
       refund.requestedBy,
-    // The approval inbox/provider is not wired yet; never advertise an unsafe approval.
-    viewerCanApprove: false,
+    viewerCanApprove,
     approvedByName: refund.approvedBy
       ? (names.find((n) => n.id === refund.approvedBy)?.name ??
         refund.approvedBy)
@@ -130,46 +136,111 @@ async function refundView(tx: Tx, refund: Refund) {
     note: refund.note,
     createdAt: refund.createdAt.toISOString(),
     decidedAt: refund.decidedAt?.toISOString() ?? null,
+    failureReason: refund.failureReason,
+    payoutAttempts: refund.payoutAttempts,
+    lastPayoutError: refund.lastPayoutError,
+    completedAt: refund.completedAt?.toISOString() ?? null,
   });
+}
+/**
+ * Whether `viewerId` may act on the refund's approval: pending, not the
+ * requester or chain submitter, holds `payment.reconcile` at the outlet, and
+ * has not decided an earlier level. The matrix still decides on the write.
+ */
+async function canViewerApprove(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  viewerId: string,
+): Promise<boolean> {
+  if (refund.status !== "pending" || refund.requestedBy === viewerId)
+    return false;
+  try {
+    await authorize(
+      tx,
+      context,
+      viewerId,
+      "payment.reconcile",
+      refund.outletId,
+    );
+  } catch (error) {
+    if (error instanceof AccessError) return false;
+    throw error;
+  }
+  if (!refund.approvalChainId) return true;
+  const [involved] = await tx
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.tenantId, refund.tenantId),
+        eq(approvalRequests.chainId, refund.approvalChainId),
+        sql`(${approvalRequests.decidedBy} = ${viewerId}
+          OR (${approvalRequests.level} = 1 AND ${approvalRequests.requestedBy} = ${viewerId}))`,
+      ),
+    )
+    .limit(1);
+  return !involved;
+}
+/** `refundView` with `viewerCanApprove` computed for the signed-in viewer. */
+export async function refundViewFor(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  viewerId: string,
+) {
+  return refundView(
+    tx,
+    refund,
+    await canViewerApprove(tx, context, refund, viewerId),
+  );
 }
 function systemRequesterName(requestedBy: string): string | null {
   const actor = contract.systemRefundActorSchema.safeParse(requestedBy);
   return actor.success ? contract.systemRefundActorNames[actor.data] : null;
 }
-async function audit(
+/** Audit row for one refund transition; `actorId` null = the system (payout, sweep). */
+export async function refundAudit(
   tx: Tx,
   context: ScopedTenantContext,
-  actorId: string,
-  row: Refund,
-  now: Date,
+  input: {
+    actorId: string | null;
+    row: Refund;
+    action: string;
+    now: Date;
+    reason?: string | null;
+    before?: Record<string, unknown> | null;
+    after?: Record<string, unknown>;
+  },
 ) {
+  const { row } = input;
   await recordAudit(
     tx,
     context,
     {
-      id: createUlid(now.getTime()),
+      id: createUlid(input.now.getTime()),
       tenantId: context.tenant.tenantId,
       outletId: row.outletId,
-      actorType: "user",
-      actorId,
+      actorType: input.actorId === null ? "system" : "user",
+      actorId: input.actorId,
       deviceId: null,
-      action: "payment.refund_requested",
+      action: input.action,
       objectType: "payment_refund",
       objectId: row.id,
-      reason: row.reason,
+      reason: input.reason === undefined ? row.reason : input.reason,
       maskedChanges: {
-        before: null,
-        after: { amountIdr: row.amountIdr, status: row.status },
+        before: input.before === undefined ? null : input.before,
+        after: input.after ?? { amountIdr: row.amountIdr, status: row.status },
       },
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y",
-      createdAt: now.toISOString(),
+      createdAt: input.now.toISOString(),
     },
-    ["amountIdr", "status"],
+    ["amountIdr", "status", "failureReason", "providerCode"],
   );
 }
-async function authorize(
+export async function authorize(
   tx: Tx,
   context: ScopedTenantContext,
   actor: string,
@@ -235,7 +306,12 @@ export async function createRefund(
           })
           .returning();
         if (!row) throw new Error("Refund insert returned no row");
-        await audit(tx, context, actor, row, now);
+        await refundAudit(tx, context, {
+          actorId: actor,
+          row,
+          action: "payment.refund_requested",
+          now,
+        });
         await appendPaymentEvent(tx, context, {
           name: "payment.refund_requested",
           aggregateId: row.id,
@@ -248,7 +324,7 @@ export async function createRefund(
           },
           now,
         });
-        return refundView(tx, row);
+        return refundViewFor(tx, context, row, actor);
       },
     );
   });
@@ -340,7 +416,8 @@ export async function listRefunds(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     const data = [];
-    for (const row of page) data.push(await refundView(tx, row));
+    for (const row of page)
+      data.push(await refundViewFor(tx, context, row, actor));
     return {
       data,
       meta: {
@@ -353,35 +430,14 @@ export async function listRefunds(
     };
   });
 }
+/** Runs the approval matrix, then the provider payout (see payment-refund.service.ts). */
 export async function approveRefund(
   context: ScopedTenantContext,
   actor: string,
   params: { refundId: string },
   input: contract.ApproveRefundInput,
   key: string,
+  opts: { mfaVerified: boolean } = { mfaVerified: false },
 ) {
-  void input;
-  void key;
-  return withTenant(db, context, async (tx) => {
-    const [refund] = await tx
-      .select()
-      .from(paymentRefunds)
-      .where(
-        and(
-          eq(paymentRefunds.tenantId, context.tenant.tenantId),
-          eq(paymentRefunds.id, params.refundId),
-        ),
-      )
-      .for("update");
-    if (!refund) throw missing();
-    await authorize(tx, context, actor, "payment.reconcile", refund.outletId);
-    if (refund.requestedBy === actor)
-      throw new AccessError("APPROVER_IS_REQUESTER");
-    // Fail closed until the multi-level approval and actual refund provider are wired.
-    throw new HttpError(
-      503,
-      "SERVICE_UNAVAILABLE",
-      "Refund approval is not configured.",
-    );
-  });
+  return approveRefundWithPayout(context, actor, params, input, key, opts);
 }

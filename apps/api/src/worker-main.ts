@@ -25,6 +25,10 @@ import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import {
+  handleRefundApprovalResolved,
+  sweepApprovedRefundPayouts,
+} from "./services/payment-refund.service.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -112,6 +116,9 @@ const runtime = createWorkerRuntime({
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
+          // PAY-04 (legend-hvvn): an approved refund chain settles the refund;
+          // the payout itself runs from the approve call or the payout sweep.
+          await handleRefundApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -184,6 +191,13 @@ const relay = createRelayRuntime({
       await retryPendingRefunds(context, new Date());
     } catch {
       console.error("Reservation refund retry sweep failed");
+    }
+    // PAY-04 (legend-hvvn): pay out approved refunds whose provider call has not
+    // finished (unknown outcome, pending); backs off and stops after 8 tries.
+    try {
+      await sweepApprovedRefundPayouts(context, new Date());
+    } catch {
+      console.error("Refund payout sweep failed");
     }
     // §3.19 Aset Tetap (legend-hpgo): post last month's depreciation once per
     // legal entity (idempotent per entity+period and asset+period). Fail closed.
