@@ -1113,6 +1113,7 @@ describe("DOIT adapter: getStatus", () => {
       status: "pending",
       providerRef: "pay_0001",
       amountIdr: null,
+      paidAt: null,
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]!.method).toBe("GET");
@@ -1136,6 +1137,7 @@ describe("DOIT adapter: getStatus", () => {
       status: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
+      paidAt: null,
     });
   });
 
@@ -1176,6 +1178,7 @@ describe("DOIT adapter: getStatus", () => {
       status: expected,
       providerRef: "pay_0001",
       amountIdr: null,
+      paidAt: null,
     });
   });
 
@@ -1186,7 +1189,7 @@ describe("DOIT adapter: getStatus", () => {
     await expectCoreError(status(), "SERVICE_UNAVAILABLE");
   });
 
-  it("reports `amount` for a paid QRIS payment", async () => {
+  it("reports `amount` and the provider's paid time for a paid QRIS payment", async () => {
     route = methodsAndPayments({
       get: () => ({
         json: qrisPayment({
@@ -1199,6 +1202,53 @@ describe("DOIT adapter: getStatus", () => {
       status: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
+      paidAt: "2026-11-08T10:05:00.000Z",
+    });
+  });
+
+  it("normalizes a paid time with an offset to ISO UTC", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08T17:05:00+07:00",
+        }),
+      }),
+    });
+    expect((await status()).paidAt).toBe("2026-11-08T10:05:00.000Z");
+  });
+
+  it("reads a paid time without a time zone as unknown (paidAt null)", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08T17:05:00",
+        }),
+      }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+      paidAt: null,
+    });
+  });
+
+  it("reads a paid time with a space separator and a zone", async () => {
+    route = methodsAndPayments({
+      get: () => ({
+        json: qrisPayment({
+          status: "paid",
+          paid_at: "2026-11-08 17:05:00+07:00",
+        }),
+      }),
+    });
+    expect(await status()).toEqual({
+      status: "paid",
+      providerRef: "pay_0001",
+      amountIdr: 50_000,
+      paidAt: "2026-11-08T10:05:00.000Z",
     });
   });
 
@@ -1213,7 +1263,7 @@ describe("DOIT adapter: getStatus", () => {
     route = methodsAndPayments({
       get: () => ({ json: transferPayment({ status: "paid" }) }),
     });
-    expect(await status()).toEqual({
+    expect(await status()).toMatchObject({
       status: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,

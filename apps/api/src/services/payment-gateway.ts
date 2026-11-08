@@ -80,6 +80,11 @@ export type GatewayPaymentStatus = {
   readonly providerRef: string;
   /** Amount the provider settled, when it reports one. */
   readonly amountIdr: number | null;
+  /** Provider time of the payment (ISO), when it reports one. A poll that
+   * finds the payment after the code lapsed records this time, not the poll
+   * time, so a payment made before expiry is never flagged late. Optional so
+   * test doubles written before it stay valid; absent means "not reported". */
+  readonly paidAt?: string | null;
 };
 
 export interface PaymentGatewayPort {

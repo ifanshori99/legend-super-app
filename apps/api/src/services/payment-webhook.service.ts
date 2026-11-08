@@ -46,6 +46,7 @@ import {
   recordUnsettledGatewayFunds,
 } from "./payment.service";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
+import { plausiblePaidAt } from "./payment-paid-at";
 import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
@@ -243,10 +244,14 @@ function readableEventId(value: unknown): string | null {
 
 /** Provider payment time; falls back to the injected `now` (never the wall
  * clock) so an old retry is not mistaken for a late payment. */
-function readPaidAt(event: DoitWebhookEvent, now: Date): string {
+function readPaidAt(
+  event: DoitWebhookEvent,
+  createdAt: Date | null,
+  now: Date,
+): string {
   for (const candidate of [event.data.paid_at, event.created_at]) {
     const parsed = isoDateTimeSchema.safeParse(candidate);
-    if (parsed.success) return parsed.data;
+    if (parsed.success) return plausiblePaidAt(parsed.data, createdAt, now);
   }
   return now.toISOString();
 }
@@ -372,7 +377,7 @@ async function recordUnsettledFunds(
       providerRef: event.data.id,
       source: "verified_webhook",
       paidAmountIdr: paid,
-      receivedAt: new Date(readPaidAt(event, now)),
+      receivedAt: new Date(readPaidAt(event, intent.createdAt, now)),
     },
     now,
   );
@@ -496,7 +501,7 @@ async function processStoredEvent(
         outcome = "failed";
         code = "AMOUNT_MISSING";
       } else {
-        const at = readPaidAt(event, now);
+        const at = readPaidAt(event, intent.createdAt, now);
         try {
           await confirmPayment(
             context,

@@ -15,7 +15,7 @@
 // Nothing here logs or throws a response body, header or secret (PAY-06).
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { CoreError } from "@starter/shared/core";
+import { CoreError, isoDateTimeSchema } from "@starter/shared/core";
 import {
   paymentChannelSchema,
   paymentInstructionsSchema,
@@ -145,8 +145,18 @@ export const doitPaymentSchema = z.object({
     .nullish()
     .catch(null)
     .transform((value) => value ?? null),
-  paid_at: timestampSchema
-    .nullish()
+  // Needs an explicit offset: a zoneless time would be read in the server's
+  // zone and could shift the settlement by hours, so it becomes null.
+  // Strict ISO with a zone (a zoneless time would be read in server time); a
+  // space between date and time is accepted as `T`.
+  paid_at: z
+    .preprocess(
+      (value) =>
+        typeof value === "string"
+          ? value.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:)/, "$1T$2")
+          : value,
+      isoDateTimeSchema.nullish(),
+    )
     .catch(null)
     .transform((value) => value ?? null),
   flags: z
@@ -269,11 +279,23 @@ export function doitPaymentToGatewayStatus(
   payment: DoitPayment,
 ): GatewayPaymentStatus {
   if (payment.status === "refunded")
-    return { status: "pending", providerRef: payment.id, amountIdr: null };
+    return {
+      status: "pending",
+      providerRef: payment.id,
+      amountIdr: null,
+      paidAt: null,
+    };
+  const paid = payment.status === "paid";
   return {
     status: payment.status,
     providerRef: payment.id,
-    amountIdr: payment.status === "paid" ? payment.amount : null,
+    amountIdr: paid ? payment.amount : null,
+    // `paid_at` already parsed as a timestamp; normalized to ISO for the
+    // lifecycle's confirmation schema.
+    paidAt:
+      paid && payment.paid_at !== null
+        ? new Date(payment.paid_at).toISOString()
+        : null,
   };
 }
 
