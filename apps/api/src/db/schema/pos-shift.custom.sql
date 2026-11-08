@@ -11,6 +11,9 @@
 --    and no shift is ever deleted (the variance stays on record).
 CREATE OR REPLACE FUNCTION app.pos_shifts_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  count_shift uuid;
+  count_counted bigint;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'POS-03: shift % cannot be deleted', OLD.id
@@ -34,6 +37,18 @@ BEGIN
   THEN
     RAISE EXCEPTION 'POS-03: shift % identity and opening float cannot change', OLD.id
       USING ERRCODE = '23514';
+  END IF;
+  -- The close must use a count of this very shift with the same counted cash.
+  IF NEW.status = 'closed' THEN
+    SELECT c.shift_id, c.counted_idr INTO count_shift, count_counted
+    FROM public.pos_shift_counts c
+    WHERE c.tenant_id = NEW.tenant_id AND c.id = NEW.count_id;
+    IF count_shift IS DISTINCT FROM NEW.id
+      OR count_counted IS DISTINCT FROM NEW.counted_idr
+    THEN
+      RAISE EXCEPTION 'POS-03: shift % must close with its own count', OLD.id
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
@@ -103,7 +118,8 @@ SELECT app.enforce_outlet_rls('public.pos_daily_closes'::regclass);
 --> statement-breakpoint
 
 -- 5. Blind count submissions are append-only history and only land on an open
---    shift of the same outlet, submitted by that shift's cashier.
+--    shift of the same outlet, submitted by that shift's cashier (forced
+--    supervisor counts, U9, by anyone but that cashier).
 CREATE OR REPLACE FUNCTION app.pos_shift_counts_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE
@@ -127,8 +143,12 @@ BEGIN
     RAISE EXCEPTION 'TEN-03: shift count outlet differs from its shift'
       USING ERRCODE = '23514';
   END IF;
-  IF lower(NEW.submitted_by) <> lower(shift_cashier) THEN
+  IF NOT NEW.forced AND lower(NEW.submitted_by) <> lower(shift_cashier) THEN
     RAISE EXCEPTION 'POS-03: shift count must be submitted by the shift cashier'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.forced AND lower(NEW.submitted_by) = lower(shift_cashier) THEN
+    RAISE EXCEPTION 'POS-03: a forced shift count cannot be submitted by the shift cashier'
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;

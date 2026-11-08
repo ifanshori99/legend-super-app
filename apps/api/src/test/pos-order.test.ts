@@ -44,6 +44,8 @@ import {
 import { stillRefundableByMethod } from "../services/pos-order-corrections.ts";
 import { getPosOrder } from "../services/pos-order.service.ts";
 import { setEdgeCredentialVerifier } from "../services/staff-pin-sync.ts";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { signDeviceToken } from "../lib/device-token.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
@@ -181,6 +183,16 @@ function pos(who: Member = cashier, outletId = tenant.outletId) {
       .post(`${base}${path}`)
       .set(headers)
       .set(originHeader)
+      // The till: cash goes into the drawer of the shift open on this device.
+      .set(
+        DEVICE_TOKEN_HEADER,
+        signDeviceToken({
+          version: 1,
+          tenantId: tenant.tenantId,
+          brandId: null,
+          deviceId: ids.device,
+        }),
+      )
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
     base,

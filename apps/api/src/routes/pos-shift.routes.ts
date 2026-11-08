@@ -26,6 +26,7 @@ import { userIdSchema } from "@starter/shared/core";
 import {
   closePosDay,
   closePosShift,
+  forceClosePosShift,
   listPosShiftCounts,
   submitPosShiftCount,
   getEndOfDayRecap,
@@ -35,8 +36,6 @@ import {
   openPosShift,
   recordPosCashMovement,
 } from "@starter/shared/pos";
-import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
-import { verifyDeviceToken } from "../lib/device-token.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -44,12 +43,10 @@ import {
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
-import {
-  getTenantContext,
-  requireTenantContext,
-} from "../middleware/tenant.ts";
+import { requireTenantContext } from "../middleware/tenant.ts";
 import * as day from "../services/pos-day.service.ts";
 import * as shifts from "../services/pos-shift.service.ts";
+import { deviceIdOf } from "./device-id.ts";
 
 export const posShiftRouter = Router({ mergeParams: true });
 
@@ -90,6 +87,12 @@ function canAny(...permissions: PermissionCode[]): RequestHandler {
 }
 
 const operate = can("shift.cash.operate");
+const approveClose = can("shift.cash.approve_close");
+// The cashier counts; a supervisor submits a forced count (the service decides).
+const operateOrApproveClose = canAny(
+  "shift.cash.operate",
+  "shift.cash.approve_close",
+);
 const readShift = canAny(
   "shift.cash.operate",
   "shift.cash.view_all",
@@ -102,19 +105,6 @@ const readDay = canAny(
   "shift.cash.approve_close",
 );
 const closeDay = can("pos.day.close");
-
-/** The signed device id, only when the token names this request's tenant. */
-function deviceIdOf(req: Request): string | null {
-  const raw = req.get(DEVICE_TOKEN_HEADER);
-  const payload = raw ? verifyDeviceToken(raw) : null;
-  if (
-    payload === null ||
-    payload.tenantId.toLowerCase() !==
-      getTenantContext(req).tenantId.toLowerCase()
-  )
-    return null;
-  return payload.deviceId;
-}
 
 function caller(req: Request): shifts.ShiftCaller {
   return {
@@ -169,7 +159,7 @@ posShiftRouter.get("/shifts/:shiftId", readShift, async (req, res) => {
 // supervisor reads the trail with expected and variance.
 posShiftRouter.post(
   "/shifts/:shiftId/counts",
-  operate,
+  operateOrApproveClose,
   jsonBody,
   async (req, res) => {
     const { outletId, shiftId } = submitPosShiftCount.params.parse(req.params);
@@ -207,6 +197,25 @@ posShiftRouter.post(
     const body = closePosShift.body.parse(req.body);
     res.json({
       data: await shifts.closePosShift(
+        getScopedTenantContext(req),
+        caller(req),
+        outletId,
+        shiftId,
+        body,
+      ),
+    });
+  },
+);
+
+posShiftRouter.post(
+  "/shifts/:shiftId/force-close",
+  approveClose,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, shiftId } = forceClosePosShift.params.parse(req.params);
+    const body = forceClosePosShift.body.parse(req.body);
+    res.json({
+      data: await shifts.forceClosePosShift(
         getScopedTenantContext(req),
         caller(req),
         outletId,

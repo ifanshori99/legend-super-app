@@ -288,15 +288,18 @@ export async function addPosTender(
           if (input.receivedIdr === undefined)
             throw new PosError("CASH_TENDER_MISMATCH");
           const plan = planCashTender(idr(remaining), idr(input.receivedIdr));
-          await lockCashierShiftForCash(tx, context, {
+          const shift = await lockCashierShiftForCash(tx, context, {
             outletId,
             cashierId: caller.userId,
+            deviceId: caller.deviceId,
+            mode: "in",
             at: now,
           });
           [inserted] = await tx
             .insert(posOrderTenders)
             .values({
               ...base,
+              shiftId: shift.id,
               provider: "manual",
               amountIdr: plan.amountIdr,
               receivedIdr: plan.receivedIdr,

@@ -6,19 +6,26 @@
 //   correction write of that date takes the SAME lock in shared mode first,
 //   so a write either commits before the close reads its figures or waits
 //   for the close and then sees the `pos_daily_closes` row and is refused.
-// - Cash goes into an open drawer: a cash tender, refund or void locks the
-//   caller's open shift row FOR SHARE. `closePosShift` and
-//   `recordCashMovement` lock that row FOR UPDATE, so cash taken while a
-//   shift is closing waits for the close and then finds no open shift.
+// - Cash goes into an open drawer of the device it is taken on: a cash
+//   tender locks the caller's open shift on that device FOR SHARE; a cash
+//   refund or void locks it FOR UPDATE and checks the drawer holds enough.
+//   `closePosShift` and `recordCashMovement` lock that row FOR UPDATE, so
+//   cash taken while a shift is closing waits for the close and then finds
+//   no open shift.
 //
 // Lock order: idempotency lock -> order row -> day lock (shared) -> shift row
 // (share). The day and shift closes take no order row locks, so no cycle.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import {
+  CoreError,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import { PosError } from "@starter/shared/pos";
 import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
 import type { Tx } from "./menu-internals.ts";
+import { liveExpectedCashIdr, type ShiftRow } from "./pos-shift-support.ts";
 
 /**
  * Refuses with BUSINESS_DAY_ALREADY_CLOSED when any of `businessDates` is
@@ -53,9 +60,16 @@ export async function assertBusinessDayOpen(
 }
 
 /**
- * Locks the cashier's open shift on the outlet FOR SHARE and returns its id;
- * refuses with SHIFT_NOT_OPEN when the cashier has no open shift there (cash
- * without a drawer, or a drawer that closed while the request waited).
+ * Locks the cashier's open shift ON THIS DEVICE and returns its row; refuses
+ * with SHIFT_NOT_OPEN when the request has no verified device, or the cashier
+ * has no open shift on that device (cash without a drawer, cash through
+ * another device's till, or a drawer that closed while the request waited).
+ * Cash goes into the drawer of the device it was taken on.
+ * - `mode "in"` (a cash tender) locks FOR SHARE.
+ * - `mode "out"` (a cash refund or void) locks FOR UPDATE and refuses with
+ *   CONFLICT when the cash paid out is more than the drawer should hold
+ *   (`cashOutIdr`), so the shift can always still close. The message does not
+ *   reveal the expected amount.
  * `at` is the time the cash is recorded under; it is taken before the locks,
  * so when the shift found was opened after `at` (S1 closed and S2 opened
  * while the request waited) the cash would fall in neither shift's figures
@@ -64,21 +78,40 @@ export async function assertBusinessDayOpen(
 export async function lockCashierShiftForCash(
   tx: Tx,
   context: ScopedTenantContext,
-  input: { outletId: OutletId; cashierId: string; at: Date },
-): Promise<string> {
-  const [shift] = await tx
-    .select({ id: posShifts.id, openedAt: posShifts.openedAt })
+  input: {
+    outletId: OutletId;
+    cashierId: string;
+    deviceId: string | null;
+    mode: "in" | "out";
+    at: Date;
+    /** Cash paid out of the drawer; checked against the drawer in `out` mode. */
+    cashOutIdr?: number;
+  },
+): Promise<ShiftRow> {
+  if (input.deviceId === null) throw new PosError("SHIFT_NOT_OPEN");
+  const query = tx
+    .select()
     .from(posShifts)
     .where(
       and(
         eq(posShifts.tenantId, context.tenant.tenantId),
         eq(posShifts.outletId, input.outletId),
         sql`lower(${posShifts.cashierId}) = lower(${input.cashierId})`,
+        eq(posShifts.deviceId, input.deviceId),
         eq(posShifts.status, "open"),
       ),
     )
-    .limit(1)
-    .for("share");
+    .limit(1);
+  const [shift] =
+    input.mode === "out" ? await query.for("update") : await query.for("share");
   if (!shift || input.at < shift.openedAt) throw new PosError("SHIFT_NOT_OPEN");
-  return shift.id;
+  if (input.mode === "out" && (input.cashOutIdr ?? 0) > 0) {
+    const expected = await liveExpectedCashIdr(tx, shift);
+    if (input.cashOutIdr! > expected)
+      throw new CoreError(
+        "CONFLICT",
+        "Tunai di laci tidak cukup untuk transaksi ini. Minta bantuan supervisor.",
+      );
+  }
+  return shift;
 }

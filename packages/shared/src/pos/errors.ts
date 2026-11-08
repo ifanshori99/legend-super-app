@@ -39,6 +39,8 @@ export const posErrorHttpStatus = {
   SHIFT_COUNT_STALE: 409,
   /** A newer count of the same shift replaced this one. */
   SHIFT_COUNT_SUPERSEDED: 409,
+  /** The cashier used all recounts of the shift: a supervisor force closes it. */
+  SHIFT_COUNT_LIMIT: 409,
   /** A device holds one open shift at a time. */
   SHIFT_ALREADY_OPEN: 409,
   /** An order can only be billed to an open shift of its own terminal. */
@@ -83,6 +85,8 @@ const defaultMessages: Record<PosErrorCode, string> = {
   SHIFT_COUNT_STALE: "Kas laci berubah setelah dihitung. Hitung ulang.",
   SHIFT_COUNT_SUPERSEDED:
     "Hitungan ini sudah diganti hitungan yang lebih baru.",
+  SHIFT_COUNT_LIMIT:
+    "Batas hitung ulang tercapai. Minta supervisor menutup shift.",
   SHIFT_ALREADY_OPEN: "Perangkat ini masih memiliki shift yang terbuka.",
   SHIFT_ORDER_MISMATCH: "Pesanan ini bukan milik shift perangkat tersebut.",
   RECEIPT_SEQUENCE_GAP: "Ada nomor struk yang hilang pada perangkat ini.",

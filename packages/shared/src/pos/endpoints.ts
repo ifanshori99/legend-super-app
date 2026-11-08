@@ -30,6 +30,7 @@ import {
   cashMovementTypeSchema,
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
+  forceClosePosShiftInputSchema,
   customerDisplayPairingSchema,
   customerDisplayStateSchema,
   discountReasonSchema,
@@ -436,6 +437,15 @@ export const closePosShift = defineEndpoint({
   path: "/api/outlets/:outletId/pos/shifts/:shiftId/close",
   params: shiftParams,
   body: closePosShiftInputSchema,
+  response: dataResponseSchema(posShiftSchema),
+});
+
+/** U9: a supervisor force closes a shift after the cashier's recount limit. */
+export const forceClosePosShift = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/shifts/:shiftId/force-close",
+  params: shiftParams,
+  body: forceClosePosShiftInputSchema,
   response: dataResponseSchema(posShiftSchema),
 });
 

@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@starter/shared/core";
 import {
   closePosShiftInputSchema,
+  forceClosePosShiftInputSchema,
   openPosShiftInputSchema,
   posCashMovementSchema,
   posEvents,
@@ -39,7 +40,6 @@ import {
   posOrderTenders,
   posOrderVoids,
 } from "../db/schema/pos-order.ts";
-import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
   cashMovements,
   posShiftCounts,
@@ -54,6 +54,9 @@ export type ShiftRow = typeof posShifts.$inferSelect;
 export type CashMovementRow = typeof cashMovements.$inferSelect;
 export type OpenPosShiftInput = z.output<typeof openPosShiftInputSchema>;
 export type ClosePosShiftInput = z.output<typeof closePosShiftInputSchema>;
+export type ForceClosePosShiftInput = z.output<
+  typeof forceClosePosShiftInputSchema
+>;
 export type SubmitPosShiftCountInput = z.output<
   typeof submitPosShiftCountInputSchema
 >;
@@ -226,36 +229,22 @@ export const emptyAggregates: ShiftAggregates = {
 };
 
 /**
- * The shift's cash figures up to `until` (the close instant, or now for an
- * open shift's screen).
- * - Sales: captured cash tenders of the orders attributed to the shift.
- * - Refunds: cash lines of the cashier's linked refunds, plus the captured
- *   cash tenders of the cashier's paid-sale voids (a correction void pays the
- *   whole sale back; pos-order-corrections writes no per-method lines), both
- *   inside [opened_at, until].
+ * The shift's cash figures. Cash rows carry the id of the drawer they went
+ * into (`shift_id`, set under the shift row lock by pos-cash-guard), so the
+ * figures are exactly the rows of this shift: no cashier or time window.
+ * - Sales: captured cash tenders of the shift.
+ * - Refunds: cash lines of the shift's linked refunds, plus the captured
+ *   cash tenders of the shift's paid-sale voids (a correction void pays the
+ *   whole sale back; pos-order-corrections writes no per-method lines).
  * - In / out / drop: the shift's cash movements.
  */
 export async function computeShiftAggregates(
   tx: Tx,
   shift: ShiftRow,
-  until: Date,
 ): Promise<ShiftAggregates> {
   const tenantId = shift.tenantId;
   const outletId = shift.outletId;
-  const cashier = shift.cashierId.toLowerCase();
-  // An open shift (live figures, or the close itself under the shift's row
-  // lock) owns everything its cashier took since it opened; only a closed
-  // shift is bounded by its close time. No upper bound on an open shift also
-  // keeps a database clock slightly ahead of the API clock from dropping a
-  // capture that committed a moment before the close read.
-  const bounded = (column: AnyPgColumn) =>
-    shift.status === "open" ? undefined : lte(column, until);
 
-  // Cash goes into the drawer of whoever took it, when they took it: the
-  // capturing cashier and the capture time (pos-order-payment sets both on a
-  // cash tender), the same rule as refunds and voids below. Not the order's
-  // submit-time shift: a tab submitted in shift A and paid in shift B is B's
-  // cash, and an order submitted without a shift still lands in a drawer.
   const [sales] = await tx
     .select({
       total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)`,
@@ -265,11 +254,9 @@ export async function computeShiftAggregates(
       and(
         eq(posOrderTenders.tenantId, tenantId),
         eq(posOrderTenders.outletId, outletId),
+        eq(posOrderTenders.shiftId, shift.id),
         eq(posOrderTenders.method, "cash"),
         eq(posOrderTenders.status, "captured"),
-        sql`lower(${posOrderTenders.capturedBy}) = ${cashier}`,
-        gte(posOrderTenders.resolvedAt, shift.openedAt),
-        bounded(posOrderTenders.resolvedAt),
       ),
     );
 
@@ -280,9 +267,7 @@ export async function computeShiftAggregates(
       and(
         eq(posOrderRefunds.tenantId, tenantId),
         eq(posOrderRefunds.outletId, outletId),
-        sql`lower(${posOrderRefunds.requestedBy}) = ${cashier}`,
-        gte(posOrderRefunds.refundedAt, shift.openedAt),
-        bounded(posOrderRefunds.refundedAt),
+        eq(posOrderRefunds.shiftId, shift.id),
       ),
     );
   let refundCash = 0;
@@ -306,9 +291,7 @@ export async function computeShiftAggregates(
       and(
         eq(posOrderVoids.tenantId, tenantId),
         eq(posOrderVoids.outletId, outletId),
-        sql`lower(${posOrderVoids.requestedBy}) = ${cashier}`,
-        gte(posOrderVoids.voidedAt, shift.openedAt),
-        bounded(posOrderVoids.voidedAt),
+        eq(posOrderVoids.shiftId, shift.id),
         eq(posOrderTenders.method, "cash"),
         eq(posOrderTenders.status, "captured"),
       ),
@@ -590,4 +573,24 @@ export function shiftAuditView(
     approvalRequestId: dto.approvalRequestId,
     version: row.version,
   };
+}
+
+/**
+ * The cash the drawer should hold right now: opening float + cash sales -
+ * cash refunds + cash in - cash out - drops (same formula as the cash
+ * movement guard). Call with the shift row locked.
+ */
+export async function liveExpectedCashIdr(
+  tx: Tx,
+  shift: ShiftRow,
+): Promise<number> {
+  const live = await computeShiftAggregates(tx, shift);
+  return (
+    Number(shift.openingFloatIdr) +
+    live.cashSalesIdr -
+    live.cashRefundsIdr +
+    live.cashInIdr -
+    live.cashOutIdr -
+    live.cashDropIdr
+  );
 }

@@ -230,16 +230,23 @@ export async function voidPosOrderCorrection(
           businessDateFor(await loadOutlet(tx, context, outletId), now),
         ],
       });
-      if (
-        (await tendersOf(tx, context, order.id)).some(
+      // The void pays the sale's captured cash back out of this drawer.
+      const voidCashIdr = (await tendersOf(tx, context, order.id))
+        .filter(
           (tender) => tender.method === "cash" && tender.status === "captured",
         )
-      )
-        await lockCashierShiftForCash(tx, context, {
-          outletId,
-          cashierId: caller.userId,
-          at: now,
-        });
+        .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
+      const shift =
+        voidCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: voidCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -255,6 +262,7 @@ export async function voidPosOrderCorrection(
           approvalRequestId: override.approvalRequestId,
           overrideId: override.id,
           voidedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
@@ -450,12 +458,20 @@ export async function refundPosOrder(
           businessDateFor(await loadOutlet(tx, context, outletId), now),
         ],
       });
-      if (lines.some((line) => tenderBucket(line.method as never) === "cash"))
-        await lockCashierShiftForCash(tx, context, {
-          outletId,
-          cashierId: caller.userId,
-          at: now,
-        });
+      const refundCashIdr = lines
+        .filter((line) => tenderBucket(line.method as never) === "cash")
+        .reduce((sum, line) => sum + line.amountIdr, 0);
+      const shift =
+        refundCashIdr > 0
+          ? await lockCashierShiftForCash(tx, context, {
+              outletId,
+              cashierId: caller.userId,
+              deviceId: caller.deviceId,
+              mode: "out",
+              at: now,
+              cashOutIdr: refundCashIdr,
+            })
+          : null;
       const [row] = await tx
         .insert(posOrderRefunds)
         .values({
@@ -471,6 +487,7 @@ export async function refundPosOrder(
           approvalRequestId: override.approvalRequestId,
           overrideId: override.id,
           refundedAt: now,
+          shiftId: shift?.id ?? null,
         })
         .returning();
       if (!row) throw new Error("Refund insert returned no row");

@@ -69,6 +69,16 @@ const positiveIdr = idrSchema.refine(
 /** Approval records are WS-01 `approval_requests` rows (§3.7 Matriks Approval). */
 const approvalRequestIdSchema = uuidSchema;
 /**
+ * The approval id a closed shift stores. A supervisor PIN decision has no WS-01
+ * chain, so the shift keeps the `pos_overrides` ULID as a uuid (`ulidToUuid`);
+ * that value has no RFC 4122 version/variant bits, so only its shape is
+ * checked here. Client input keeps the strict `approvalRequestIdSchema`.
+ */
+export const storedApprovalIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  .toLowerCase();
+/**
  * legend-0gy1: the `pos_overrides` row (ULID) a void / discount / refund
  * consumed. It is the proof of approval; `approvalRequestId` is only the WS-01
  * chain id of a phone approval and is null for a supervisor PIN.
@@ -835,7 +845,7 @@ export const posShiftShape = {
   varianceIdr: idrSchema.nullable(),
   varianceNote: z.string().min(4).max(500).nullable(),
   approvedBy: userIdSchema.nullable(),
-  approvalRequestId: approvalRequestIdSchema.nullable(),
+  approvalRequestId: storedApprovalIdSchema.nullable(),
   approvedAt: isoDateTimeSchema.nullable(),
   closedAt: isoDateTimeSchema.nullable(),
   /** The count submission the close used (`pos_shift_counts`). */
@@ -994,6 +1004,22 @@ export type PosShiftCountReceipt = z.infer<typeof posShiftCountReceiptSchema>;
 export const closePosShiftInputSchema = clientInputSchema({
   countId: posShiftCountIdSchema,
   varianceNote: z.string().min(4).max(500).nullable().optional(),
+  approvedBy: userIdSchema,
+  approvalRequestId: approvalRequestIdSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * U9 force close (legend-6c0 review K), step two. Step one is a normal
+ * `POST .../counts` by a supervisor who is not the shift's cashier: it stores a
+ * forced count (the server derives the figures). The witness (`approvedBy`:
+ * neither the caller nor the cashier, holding `shift.cash.approve_close`)
+ * approves that count through the usual `cash_shift_close` override, then this
+ * closes the shift with it. `note` is the supervisor's written reason.
+ */
+export const forceClosePosShiftInputSchema = clientInputSchema({
+  countId: posShiftCountIdSchema,
+  note: z.string().trim().min(10).max(500),
   approvedBy: userIdSchema,
   approvalRequestId: approvalRequestIdSchema,
   idempotencyKey: idempotencyKeySchema,

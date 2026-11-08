@@ -217,6 +217,8 @@ function pos(who: Member = cashier) {
       .post(`${base}${path}`)
       .set(headers)
       .set(originHeader)
+      // The till: cash goes into the drawer of the shift open on this device.
+      .set("X-Device-Token", deviceToken())
       .send({ idempotencyKey: randomUUID(), ...body });
   return {
     create: (body: Record<string, unknown> = {}) =>
@@ -290,7 +292,7 @@ async function pinApproval(input: {
   // UUID `approvalRequestId`, but a PIN override's id is a ULID whose UUID form
   // is RFC-valid only ~12% of the time. Until the service/contract names PIN
   // approvals reliably, re-approve until the id is nameable so the day tests
-  // stay deterministic. Void/refund use the pos-order "any request id" path.
+  // stay deterministic.
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const { override } = await createPosOverride(
       establishTenantContext({
@@ -315,8 +317,9 @@ async function pinApproval(input: {
       { idempotencyKey: randomUUID() },
     );
     expect(override.status).toBe("approved");
+    // Void/refund name the override itself (main legend-0gy1).
     if (input.action !== "cash_shift_close")
-      return { approvedBy: approver, approvalRequestId: randomUUID() };
+      return { approvedBy: approver, overrideId: override.id };
     const asUuid = ulidToUuid(override.id);
     if (RFC_UUID.test(asUuid))
       return { approvedBy: approver, approvalRequestId: asUuid };
@@ -1224,11 +1227,11 @@ describe("TEN-01 end-of-day isolation (legend-6c0)", () => {
   });
 });
 
-// ---- Migration 0065 backfill ------------------------------------------------------
+// ---- Migration 0070 backfill (was 0065 before the main merge) -----------------
 
-describe("POS-05 migration 0065 grants pos.day.close to existing template roles (legend-6c0)", () => {
+describe("POS-05 migration 0070 grants pos.day.close to existing template roles (legend-6c0)", () => {
   const migrationSql = readFileSync(
-    new URL("../../drizzle/0065_pos_day_close_permission.sql", import.meta.url),
+    new URL("../../drizzle/0070_pos_day_close_permission.sql", import.meta.url),
     "utf8",
   );
   const templateRoleId = randomUUID();
@@ -1298,7 +1301,7 @@ describe("POS-05 migration 0065 grants pos.day.close to existing template roles 
 
     const role = await runMigrationAsOwner();
     console.info(
-      `[0065] migration role: ${role.name} rolsuper=${role.super} rolbypassrls=${role.bypass}`,
+      `[0070] migration role: ${role.name} rolsuper=${role.super} rolbypassrls=${role.bypass}`,
     );
     const afterFirst = await permissionsOf(templateRoleId);
     expect(afterFirst.filter((code) => code === "pos.day.close")).toHaveLength(

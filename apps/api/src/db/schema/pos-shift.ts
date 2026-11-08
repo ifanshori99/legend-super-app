@@ -26,6 +26,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  type PgTableExtraConfigValue,
   text,
   timestamp,
   unique,
@@ -106,7 +107,7 @@ export const posShifts = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (table) => [
+  (table): PgTableExtraConfigValue[] => [
     unique("pos_shifts_tenant_id_id_key").on(table.tenantId, table.id),
     unique("pos_shifts_open_key").on(
       table.tenantId,
@@ -117,6 +118,15 @@ export const posShifts = pgTable(
       name: "pos_shifts_outlet_fk",
       columns: [table.tenantId, table.outletId],
       foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    // The close count belongs to this shift (the guard trigger also checks
+    // shift_id and counted_idr). posShiftCounts is declared below and already
+    // points back here, so its columns are read only when drizzle builds the
+    // constraint, never while this table is being declared.
+    foreignKey({
+      name: "pos_shifts_count_fk",
+      columns: [table.tenantId, table.countId],
+      foreignColumns: [posShiftCounts.tenantId, posShiftCounts.id],
     }),
     uniqueIndex("pos_shifts_open_device_key")
       .on(table.tenantId, table.outletId, table.deviceId)
@@ -155,7 +165,8 @@ export const posShifts = pgTable(
         AND ${table.approvedBy} IS NULL AND ${table.approvalRequestId} IS NULL
         AND ${table.approvalOverrideId} IS NULL AND ${table.approvedAt} IS NULL
         AND ${table.closedAt} IS NULL AND ${table.closedBy} IS NULL
-        AND ${table.closeKey} IS NULL AND ${table.closeFingerprint} IS NULL)`,
+        AND ${table.closeKey} IS NULL AND ${table.closeFingerprint} IS NULL
+        AND ${table.countId} IS NULL)`,
     ),
     check(
       "pos_shifts_closed_check",
@@ -210,6 +221,8 @@ export const posShiftCounts = pgTable(
       .notNull()
       .references(() => user.id),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+    /** Supervisor force close (U9): submitted by someone other than the cashier. */
+    forced: boolean("forced").notNull().default(false),
     idempotencyKey: varchar("idempotency_key", { length: 100 }).notNull(),
     requestFingerprint: varchar("request_fingerprint", {
       length: 64,

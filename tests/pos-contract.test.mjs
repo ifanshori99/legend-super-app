@@ -337,6 +337,41 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
     false,
   );
 
+  // U9 force close, step two: it names the supervisor's forced count (step one
+  // is the normal count submission); the numbers can no longer ride along.
+  const validForce = {
+    countId: P.shiftCounts.morningSecond,
+    note: "Kasir gagal hitung 3 kali",
+    approvedBy: P.staff.supervisor,
+    approvalRequestId: P.approvals.shiftClose,
+    idempotencyKey: "force-close-0001",
+  };
+  assert.equal(
+    pos.forceClosePosShiftInputSchema.safeParse(validForce).success,
+    true,
+  );
+  for (const [label, patch] of [
+    ["a short note", { note: "terlalu" }],
+    ["no count", { countId: undefined }],
+    ["no witness", { approvedBy: undefined }],
+    ["no approval", { approvalRequestId: undefined }],
+    ["a counted total", { countedIdr: 0 }],
+    ["denominations", { counts }],
+    ["a system variance", { varianceIdr: 0 }],
+  ]) {
+    assert.equal(
+      pos.forceClosePosShiftInputSchema.safeParse({ ...validForce, ...patch })
+        .success,
+      false,
+      `force close refuses ${label}`,
+    );
+  }
+  assert.equal(pos.forceClosePosShift.method, "POST");
+  assert.equal(
+    pos.forceClosePosShift.path,
+    "/api/outlets/:outletId/pos/shifts/:shiftId/force-close",
+  );
+
   // The blind receipt carries no expected figure and no variance.
   const receipt = {
     id: P.shiftCounts.morningSecond,
@@ -400,6 +435,7 @@ test("POS-03: shift close is a blind count and the approved variance is locked",
   );
   assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_STALE, 409);
   assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_SUPERSEDED, 409);
+  assert.equal(pos.posErrorHttpStatus.SHIFT_COUNT_LIMIT, 409);
 
   assert.equal(
     pos.blindCountTotalIdr([
@@ -1171,6 +1207,7 @@ test("F8 endpoints: paths, params and responses stay in step with the fixtures",
   });
   respond(pos.listPosShiftCounts, parsed.shiftCounts);
   respond(pos.closePosShift, parsed.shifts[0]);
+  respond(pos.forceClosePosShift, parsed.shifts[0]);
   respond(pos.recordPosCashMovement, parsed.cashMovements[0]);
   pos.listPosCashMovements.response.parse({
     data: parsed.cashMovements,

@@ -33,7 +33,9 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EndOfDayRecap, PosReceipt } from "@starter/shared/pos";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { signDeviceToken } from "../lib/device-token.ts";
 import {
   setDeviceOutletResolver,
   setStaffPin,
@@ -52,6 +54,7 @@ import { setPosReceiptGapsPort } from "../services/pos-shift-ports.ts";
 import {
   closePosShift,
   openPosShift,
+  recordCashMovement,
   submitPosShiftCount,
 } from "../services/pos-shift.service.ts";
 import { createPosOverride } from "../services/staff-override.service.ts";
@@ -234,14 +237,41 @@ async function addOutlet(): Promise<{ outletId: string; deviceId: string }> {
 const errorCode = (body: { error?: { code?: string }; code?: string }) =>
   body.error?.code ?? body.code;
 
-function pos(outletId: string, who: Member = cashier) {
+/** A signed X-Device-Token for `deviceId` in the run's tenant. */
+const deviceToken = (deviceId: string) =>
+  signDeviceToken({
+    version: 1,
+    tenantId: tenant.tenantId,
+    brandId: null,
+    deviceId,
+  });
+
+/** The outlet's first registered device (addOutlet registers one). */
+function deviceOf(outletId: string): string | null {
+  for (const [deviceId, outlet] of devices)
+    if (outlet === outletId) return deviceId;
+  return null;
+}
+
+/**
+ * The POS order API as `who` on a till. The till is the outlet's device
+ * unless `deviceId` says otherwise; null sends no device token.
+ */
+function pos(
+  outletId: string,
+  who: Member = cashier,
+  deviceId: string | null = deviceOf(outletId),
+) {
   const base = `/api/outlets/${encodeURIComponent(outletId)}/pos/orders`;
-  const send = (path: string, body: Record<string, unknown>) =>
-    who.client
+  const send = (path: string, body: Record<string, unknown>) => {
+    const request = who.client
       .post(`${base}${path}`)
       .set(headers)
-      .set(originHeader)
-      .send({ idempotencyKey: randomUUID(), ...body });
+      .set(originHeader);
+    if (deviceId !== null)
+      request.set(DEVICE_TOKEN_HEADER, deviceToken(deviceId));
+    return request.send({ idempotencyKey: randomUUID(), ...body });
+  };
   return {
     create: () =>
       send("", {
@@ -373,7 +403,7 @@ async function pinApproval(input: {
     { idempotencyKey: randomUUID() },
   );
   expect(override.status).toBe("approved");
-  return { approvedBy: supervisor.userId, approvalRequestId: randomUUID() };
+  return { approvedBy: supervisor.userId, overrideId: override.id };
 }
 
 /** An approved shift-close override row for a zero-variance count (objectType pos_shift_count). */
@@ -644,6 +674,25 @@ describe("POS-05 a closed business day refuses order writes (legend-6c0 finding 
     // The refund counts in the recap of the day it is made: tomorrow is open,
     // so yesterday's closed sale can still be refunded.
     const tomorrow = new Date(Date.now() + 26 * 60 * 60_000);
+    // The PIN approval is given when the refund is made (tomorrow): a PIN
+    // override only counts for a few minutes after it is approved.
+    const approval = await pinApproval({
+      outletId: outlet.outletId,
+      action: "refund",
+      orderId: sale.orderId,
+      valueIdr: KOPI_IDR,
+    });
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE pos_overrides SET created_at = $3, resolved_at = $3
+         WHERE tenant_id = $1 AND id = $2`,
+        [
+          tenant.tenantId,
+          ulidToUuid(approval.overrideId),
+          new Date(tomorrow.getTime() - 5_000),
+        ],
+      ),
+    );
     const refund = await refundPosOrder(
       scopedContext(),
       {
@@ -658,12 +707,7 @@ describe("POS-05 a closed business day refuses order writes (legend-6c0 finding 
         reasonNote: "Minuman tumpah",
         amountIdr: KOPI_IDR,
         idempotencyKey: randomUUID(),
-        ...(await pinApproval({
-          outletId: outlet.outletId,
-          action: "refund",
-          orderId: sale.orderId,
-          valueIdr: KOPI_IDR,
-        })),
+        ...approval,
       } as Parameters<typeof refundPosOrder>[4],
       tomorrow,
     );
@@ -918,7 +962,7 @@ describe("POS-03 cash needs the cashier's open shift (legend-6c0 finding 2)", ()
     const beforeOpen = new Date(opened!.opened_at.getTime() - 60_000);
     const caller = {
       userId: userIdSchema.parse(cashier.userId),
-      deviceId: null,
+      deviceId: outlet.deviceId,
       expectedVersion: null,
     };
     const outletId = outletIdSchema.parse(outlet.outletId);
@@ -1015,5 +1059,122 @@ describe("POS-03 cash needs the cashier's open shift (legend-6c0 finding 2)", ()
     );
     expect(paid.order.id).toBe(unpaid.orderId);
     expect(await count("pos_order_tenders", unpaid.orderId)).toBe(1);
+  }, 60_000);
+});
+
+describe("POS-03 cash goes into the drawer of the till it is taken on (legend-6c0 review K)", () => {
+  it("a cash tender without a device token, or through another till of the outlet, is refused with 409 SHIFT_NOT_OPEN; the shift's own till takes it into that shift", async () => {
+    const outlet = await addOutlet();
+    const shiftId = await openShift(outlet);
+    const otherTill = randomUUID();
+    devices.set(otherTill, outlet.outletId);
+    const unpaid = await submittedOrder(outlet.outletId);
+
+    const noDevice = await pos(outlet.outletId, cashier, null).cash(
+      unpaid.orderId,
+      unpaid.status,
+      unpaid.totalIdr,
+    );
+    expect(noDevice.status, JSON.stringify(noDevice.body)).toBe(409);
+    expect(errorCode(noDevice.body)).toBe("SHIFT_NOT_OPEN");
+
+    const viaOtherTill = await pos(outlet.outletId, cashier, otherTill).cash(
+      unpaid.orderId,
+      unpaid.status,
+      unpaid.totalIdr,
+    );
+    expect(viaOtherTill.status, JSON.stringify(viaOtherTill.body)).toBe(409);
+    expect(errorCode(viaOtherTill.body)).toBe("SHIFT_NOT_OPEN");
+
+    const paid = await pos(outlet.outletId).cash(
+      unpaid.orderId,
+      unpaid.status,
+      unpaid.totalIdr,
+    );
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+    const { rows } = await owner.query<{ shift_id: string | null }>(
+      `SELECT shift_id FROM pos_order_tenders
+       WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, ulidToUuid(unpaid.orderId)],
+    );
+    expect(rows).toEqual([{ shift_id: shiftId }]);
+  }, 60_000);
+
+  it("a cash refund or void larger than the drawer holds is refused with 409 without the expected amount, stores nothing, and the shift still counts and closes", async () => {
+    const outlet = await addOutlet();
+    const shiftId = await openShift(outlet);
+    const sale = await completedSale(outlet.outletId, "cash");
+    const caller = {
+      userId: userIdSchema.parse(cashier.userId),
+      deviceId: outlet.deviceId,
+    };
+    const outletId = outletIdSchema.parse(outlet.outletId);
+    // Leave 1.000 in the drawer: float + the sale, minus a cash out.
+    const left = 1_000;
+    await recordCashMovement(scopedContext(), caller, outletId, shiftId, {
+      type: "cash_out",
+      amountIdr: idr(OPENING_FLOAT_IDR + sale.totalIdr - left),
+      reasonNote: "Belanja es batu",
+      idempotencyKey: randomUUID(),
+    } as Parameters<typeof recordCashMovement>[4]);
+
+    const refund = await pos(outlet.outletId).refund(sale.orderId, {
+      reason: "quality_complaint",
+      reasonNote: "Minuman tumpah",
+      amountIdr: KOPI_IDR,
+      ...(await pinApproval({
+        outletId: outlet.outletId,
+        action: "refund",
+        orderId: sale.orderId,
+        valueIdr: KOPI_IDR,
+      })),
+    });
+    expect(refund.status, JSON.stringify(refund.body)).toBe(409);
+    expect(JSON.stringify(refund.body)).not.toContain(String(left));
+
+    const voided = await pos(outlet.outletId).correctionVoid(sale.orderId, {
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan salah pesan",
+      ...(await pinApproval({
+        outletId: outlet.outletId,
+        action: "void",
+        orderId: sale.orderId,
+        valueIdr: sale.totalIdr,
+      })),
+    });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(409);
+
+    const { rows } = await owner.query<{ corrections: number }>(
+      `SELECT (SELECT count(*)::int FROM pos_order_refunds WHERE tenant_id = $1 AND outlet_id = $2)
+            + (SELECT count(*)::int FROM pos_order_voids WHERE tenant_id = $1 AND outlet_id = $2)
+              AS corrections`,
+      [tenant.tenantId, outlet.outletId],
+    );
+    expect(rows[0]).toEqual({ corrections: 0 });
+
+    const count = await submitPosShiftCount(
+      scopedContext(),
+      caller,
+      outletId,
+      shiftId,
+      {
+        counts: [{ denominationIdr: left, quantity: 1 }],
+        idempotencyKey: randomUUID(),
+      } as Parameters<typeof submitPosShiftCount>[4],
+    );
+    const approval = await shiftCloseApproval(outlet.outletId, count.id);
+    const closed = await closePosShift(
+      scopedContext(),
+      caller,
+      outletId,
+      shiftId,
+      {
+        countId: count.id,
+        approvedBy: userIdSchema.parse(approval.approvedBy),
+        approvalRequestId: approval.approvalRequestId,
+        idempotencyKey: randomUUID(),
+      } as Parameters<typeof closePosShift>[4],
+    );
+    expect(closed.status).toBe("closed");
   }, 60_000);
 });

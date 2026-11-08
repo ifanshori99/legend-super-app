@@ -42,6 +42,7 @@ import {
 import {
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
   userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -61,6 +62,7 @@ import { createPosOverride } from "../services/staff-override.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
+  fixtures,
   owner,
   seededTenantId,
   type IsolatedTenant,
@@ -376,6 +378,8 @@ async function closeShift(
  */
 async function seedSale(input: {
   shift: { id: string; businessDate: string };
+  /** The shift whose drawer took the cash (default: the order's shift). */
+  drawer?: { id: string };
   cashier: Cashier;
   method?: "cash" | "qris";
   status?: "captured" | "failed";
@@ -422,8 +426,8 @@ async function seedSale(input: {
     await client.query(
       `INSERT INTO pos_order_tenders
          (tenant_id, outlet_id, order_id, method, provider, amount_idr, received_idr, change_idr,
-          status, requested_at, resolved_at, captured_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), $10)`,
+          status, requested_at, resolved_at, captured_by, shift_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), $10, $11)`,
       [
         tenant.tenantId,
         tenant.outletId,
@@ -435,6 +439,8 @@ async function seedSale(input: {
         cash ? 5_000 : null,
         status,
         input.cashier.userId,
+        // Review K: cash is counted by the drawer (shift_id), not by time.
+        cash ? (input.drawer ?? input.shift).id : null,
       ],
     );
   });
@@ -705,6 +711,10 @@ describe("POS-03 cash in, cash out and drops", () => {
     });
     expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(409);
     expect(tooMuch.body.error.code).toBe("CONFLICT");
+    // Review K: the refusal never reveals the drawer (or any amount).
+    expect(tooMuch.body.error.message).toBe(
+      "Kas keluar ini perlu persetujuan supervisor.",
+    );
     const dropTooMuch = await move(cashier, shift.id, {
       type: "drop",
       amountIdr: FLOAT_IDR + 1,
@@ -1004,10 +1014,12 @@ describe("POS-03 close with blind count and supervisor approval", () => {
       counts: countsFor(FLOAT_IDR),
     });
     expect(foreignCount.status).toBe(403);
+    // Review K: a supervisor holding approve_close submits a forced count
+    // (step one of a force close); the cashier then simply counts again below.
     const bySupervisor = await submitCount(supervisor, shift.id, {
       counts: countsFor(FLOAT_IDR),
     });
-    expect(bySupervisor.status).toBe(403);
+    expect(bySupervisor.status, JSON.stringify(bySupervisor.body)).toBe(201);
 
     const count = await countDrawer(owningCashier, shift.id, FLOAT_IDR);
     const approval = await approvalFor(owningCashier, count.id);
@@ -1154,8 +1166,13 @@ describe("POS-03 close with blind count and supervisor approval", () => {
     const morning = await openShift(first);
     const evening = await openShift(second);
     // The order was submitted in the morning shift but the evening cashier
-    // took the cash.
-    await seedSale({ shift: morning, cashier: second, totalIdr: 40_000 });
+    // took the cash: its tender carries the evening shift (the drawer).
+    await seedSale({
+      shift: morning,
+      drawer: evening,
+      cashier: second,
+      totalIdr: 40_000,
+    });
     const here = await report(viewAllUser, evening.id);
     expect(here.status).toBe(200);
     expect(here.body.data.shift.cashSalesIdr).toBe(40_000);
@@ -1993,6 +2010,449 @@ describe("POS-03 round 2: a close approval is bound to one count and its varianc
 });
 
 // ---- Locked after close (database backstop) ----------------------------------------
+
+describe("POS-03 review K: shift service fixes (legend-6c0)", () => {
+  it("stores the verified PIN override's own id as approval_request_id, never the raw client value, on the shift and its event", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const count = await countDrawer(cashier, shift.id, FLOAT_IDR - 5_000);
+    const override = await pinOverride(cashier, count.id, 0);
+    const clientValue = randomUUID();
+    const closed = await close(cashier, shift.id, {
+      countId: count.id,
+      approvedBy: supervisor.userId,
+      approvalRequestId: clientValue,
+      varianceNote: "Uang kembalian terselip",
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const expected = ulidToUuid(override.id);
+    expect(closed.body.data.approvalRequestId).toBe(expected);
+    expect(closed.body.data.approvalRequestId).not.toBe(clientValue);
+    const { rows } = await owner.query<{ stored: string; event: string }>(
+      `SELECT s.approval_request_id::text AS stored,
+              (SELECT e.event->'payload'->>'approvalRequestId'
+                 FROM domain_event_outbox e
+                WHERE e.tenant_id = s.tenant_id
+                  AND e.event->>'name' = 'cashier_shift.closed'
+                  AND e.event->'payload'->>'shiftId' = s.id::text) AS event
+         FROM pos_shifts s WHERE s.tenant_id = $1 AND s.id = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows[0]).toEqual({ stored: expected, event: expected });
+  });
+
+  it("refuses a cash out over the drawer with a generic message and keeps an audit row of the refusal (no expected figure)", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    const refused = await move(cashier, shift.id, {
+      type: "cash_out",
+      amountIdr: FLOAT_IDR + 1_000,
+      reasonNote: "Beli gas elpiji",
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("CONFLICT");
+    expect(refused.body.error.message).toBe(
+      "Kas keluar ini perlu persetujuan supervisor.",
+    );
+    expect(refused.body.error.message).not.toMatch(/laci|\d/);
+    const { rows } = await owner.query<{
+      event: {
+        actorId: string;
+        objectType: string;
+        maskedChanges: { after: Record<string, unknown> };
+      };
+    }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'pos_shift.cash_movement_refused'
+          AND event->>'objectId' = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.actorId).toBe(cashier.userId);
+    expect(rows[0]!.event.maskedChanges.after).toEqual({
+      shiftId: shift.id,
+      type: "cash_out",
+      amountIdr: FLOAT_IDR + 1_000,
+    });
+    // Nothing was recorded as a movement.
+    const { rows: moved } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM cash_movements WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(moved[0]?.n).toBe(0);
+  });
+
+  it("a tier that needs several levels says only that the shift needs a supervisor over the phone, whatever the variance", async () => {
+    await withShiftClosePolicies(
+      [
+        { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 1 },
+        { thresholdIdr: 50_000, roleId: roleIds.supervisor, level: 2 },
+      ],
+      async () => {
+        const cashier = await newCashier();
+        const shift = await openShift(cashier);
+        const count = await countDrawer(cashier, shift.id, FLOAT_IDR + 60_000);
+        const refused = await close(cashier, shift.id, {
+          countId: count.id,
+          ...(await approvalFor(cashier, count.id)),
+          varianceNote: "Selisih dicek supervisor",
+        });
+        expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        expect(refused.body.error.message).toBe(
+          "Penutupan shift ini perlu persetujuan supervisor lewat ponsel.",
+        );
+        expect(refused.body.error.message).not.toMatch(/selisih|berjenjang/i);
+        expect((await shiftRow(shift.id))?.status).toBe("open");
+      },
+    );
+  });
+
+  it("a cashier submits at most 3 counts per shift: the 4th is 409 SHIFT_COUNT_LIMIT, a replay of an earlier count still answers, and the latest count closes", async () => {
+    const cashier = await newCashier();
+    const shift = await openShift(cashier);
+    await countDrawer(cashier, shift.id, FLOAT_IDR - 1_000);
+    await countDrawer(cashier, shift.id, FLOAT_IDR - 2_000);
+    const thirdKey = randomUUID();
+    const third = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+      idempotencyKey: thirdKey,
+    });
+    expect(third.status, JSON.stringify(third.body)).toBe(201);
+    const fourth = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR - 3_000),
+    });
+    expect(fourth.status, JSON.stringify(fourth.body)).toBe(409);
+    expect(fourth.body.error.code).toBe("SHIFT_COUNT_LIMIT");
+    expect(fourth.body.error.message).toBe(
+      "Batas hitung ulang tercapai. Minta supervisor menutup shift.",
+    );
+    const replay = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+      idempotencyKey: thirdKey,
+    });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(201);
+    expect(replay.body.data.id).toBe(third.body.data.id);
+    const { rows } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows[0]?.n).toBe(3);
+    const closed = await close(cashier, shift.id, {
+      countId: third.body.data.id,
+      ...(await approvalFor(cashier, third.body.data.id)),
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+  });
+});
+
+// ---- Review K: supervisor force close (U9) ---------------------------------------
+
+function forceClose(
+  who: Member,
+  shiftId: string,
+  body: Record<string, unknown>,
+  outletId = tenant.outletId,
+) {
+  return who.client
+    .post(`${SHIFTS(outletId)}/${shiftId}/force-close`)
+    .set(headers)
+    .set(originHeader)
+    .send({ idempotencyKey: randomUUID(), ...body });
+}
+
+/**
+ * Step one of a force close: a supervisor (not the shift's cashier) submits a
+ * forced count; step two's witness approves it through the real override path.
+ */
+async function forcedCount(
+  caller: Member,
+  shiftId: string,
+  countedIdr: number,
+): Promise<CountReceipt> {
+  const response = await submitCount(caller, shiftId, {
+    counts: countsFor(countedIdr),
+  });
+  expect(response.status, JSON.stringify(response.body)).toBe(201);
+  return posShiftCountReceiptSchema.parse(response.body.data) as CountReceipt;
+}
+
+/** The witness (`supervisor`, who holds a PIN) approves `countId`, asked for by `caller`. */
+async function witnessFor(caller: Member, countId: string) {
+  const override = await pinOverride(caller, countId, 0);
+  return {
+    override,
+    body: { approvedBy: supervisor.userId, approvalRequestId: randomUUID() },
+  };
+}
+
+describe("POS-03 review K: supervisor force close (legend-6c0)", () => {
+  const note = "Kasir gagal menghitung kas tiga kali";
+
+  it("a supervisor submits a forced count past the cashier's limit; the witness approves it; the shift closes with it, replays by key and stores the override's id", async () => {
+    const cashier = await newCashier();
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Paksa");
+    const shift = await openShift(cashier);
+    for (const delta of [1_000, 2_000, 3_000])
+      await countDrawer(cashier, shift.id, FLOAT_IDR - delta);
+    const blocked = await submitCount(cashier, shift.id, {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(blocked.body.error.code).toBe("SHIFT_COUNT_LIMIT");
+
+    const count = await forcedCount(caller, shift.id, FLOAT_IDR - 5_000);
+    expect(count.sequence).toBe(4);
+    // The receipt stays blind.
+    expect(count).not.toHaveProperty("expectedIdr");
+    expect(count).not.toHaveProperty("varianceIdr");
+    const { override, body: witness } = await witnessFor(caller, count.id);
+    const request = { countId: count.id, note, ...witness };
+    const key = randomUUID();
+    const closed = await forceClose(caller, shift.id, {
+      ...request,
+      idempotencyKey: key,
+    });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(closed.body.data).toMatchObject({
+      status: "closed",
+      countedIdr: FLOAT_IDR - 5_000,
+      expectedIdr: FLOAT_IDR,
+      varianceIdr: -5_000,
+      varianceNote: note,
+      approvedBy: supervisor.userId,
+      countId: count.id,
+      approvalRequestId: ulidToUuid(override.id),
+    });
+    const { rows } = await owner.query<{
+      closed_by: string;
+      forced: boolean;
+      submitted_by: string;
+    }>(
+      `SELECT s.closed_by, c.forced, c.submitted_by
+         FROM pos_shifts s JOIN pos_shift_counts c
+           ON c.tenant_id = s.tenant_id AND c.id = s.count_id
+        WHERE s.tenant_id = $1 AND s.id = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(rows[0]).toEqual({
+      closed_by: caller.userId,
+      forced: true,
+      submitted_by: caller.userId,
+    });
+    expect(await outboxNames(shift.id)).toContain("cashier_shift.closed");
+    const { rows: audit } = await owner.query(
+      `SELECT 1 FROM audit_logs WHERE tenant_id = $1
+        AND event->>'action' = 'pos_shift.force_closed' AND event->>'objectId' = $2`,
+      [tenant.tenantId, shift.id],
+    );
+    expect(audit).toHaveLength(1);
+
+    const replay = await forceClose(caller, shift.id, {
+      ...request,
+      idempotencyKey: key,
+    });
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body.data.id).toBe(closed.body.data.id);
+    const again = await forceClose(caller, shift.id, request);
+    expect(again.body.error.code).toBe("SHIFT_ALREADY_CLOSED");
+    const reused = await forceClose(caller, shift.id, {
+      ...request,
+      note: "Catatan lain yang cukup panjang",
+      idempotencyKey: key,
+    });
+    expect(reused.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("refuses a forced count from someone who may not (403) and a cashier closing on a forced count", async () => {
+    const cashier = await newCashier();
+    const peer = await newCashier("Kasir Lain");
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Tolak");
+    const shift = await openShift(cashier);
+
+    // No shift permission at all, or only `operate` on another cashier's shift.
+    for (const who of [noShiftUser, peer]) {
+      const refused = await submitCount(who, shift.id, {
+        counts: countsFor(FLOAT_IDR),
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    }
+    const { rows: none } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = $2",
+      [tenant.tenantId, shift.id],
+    );
+    expect(none[0]?.n).toBe(0);
+
+    // The cashier cannot close on the supervisor's forced count.
+    const count = await forcedCount(caller, shift.id, FLOAT_IDR);
+    const byCashier = await close(cashier, shift.id, {
+      countId: count.id,
+      ...(await approvalFor(cashier, count.id)),
+    });
+    expect(byCashier.status, JSON.stringify(byCashier.body)).toBe(403);
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+  });
+
+  it("force close refuses the cashier, a non-holder, a short note, a cashier's own count, a bad witness, a superseded and a stale count; nothing closes", async () => {
+    const cashier = await newCashier();
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Batas");
+    const shift = await openShift(cashier);
+    const cashierCount = await countDrawer(cashier, shift.id, FLOAT_IDR);
+    const first = await forcedCount(caller, shift.id, FLOAT_IDR - 5_000);
+    const { body: witness } = await witnessFor(caller, first.id);
+    const base = { countId: first.id, note, ...witness };
+
+    for (const who of [cashier, noShiftUser]) {
+      const refused = await forceClose(who, shift.id, base);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    }
+    const shortNote = await forceClose(caller, shift.id, {
+      ...base,
+      note: "terlalu",
+    });
+    expect(shortNote.status).toBe(VALIDATION_STATUS);
+    // The cashier's own (not forced) count is no basis for a force close.
+    const own = await forceClose(caller, shift.id, {
+      ...base,
+      countId: cashierCount.id,
+    });
+    expect(own.status, JSON.stringify(own.body)).toBe(403);
+    // Witness is the caller, or the cashier.
+    for (const bad of [caller.userId, cashier.userId]) {
+      const refused = await forceClose(caller, shift.id, {
+        ...base,
+        approvedBy: bad,
+      });
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    }
+    // No witness approval was ever given for this count.
+    const second = await forcedCount(caller, shift.id, FLOAT_IDR - 5_000);
+    const superseded = await forceClose(caller, shift.id, base);
+    expect(superseded.status, JSON.stringify(superseded.body)).toBe(409);
+    expect(superseded.body.error.code).toBe("SHIFT_COUNT_SUPERSEDED");
+    const unapproved = await forceClose(caller, shift.id, {
+      countId: second.id,
+      note,
+      approvedBy: supervisor.userId,
+      approvalRequestId: randomUUID(),
+    });
+    expect(unapproved.status, JSON.stringify(unapproved.body)).toBe(403);
+
+    // The drawer moves after the count: stale.
+    const moved = await move(cashier, shift.id, { amountIdr: 10_000 });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(201);
+    const { body: lateWitness } = await witnessFor(caller, second.id);
+    const stale = await forceClose(caller, shift.id, {
+      countId: second.id,
+      note,
+      ...lateWitness,
+    });
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("SHIFT_COUNT_STALE");
+    expect((await shiftRow(shift.id))?.status).toBe("open");
+
+    // A fresh forced count, approved, closes.
+    const third = await forcedCount(caller, shift.id, FLOAT_IDR + 10_000);
+    const { body: okWitness } = await witnessFor(caller, third.id);
+    const ok = await forceClose(caller, shift.id, {
+      countId: third.id,
+      note,
+      ...okWitness,
+    });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(ok.body.data.varianceIdr).toBe(0);
+  });
+
+  it("after a force close nothing is left open, so Tutup Hari proceeds", async () => {
+    // A fresh outlet: the shared one keeps other tests' shifts open all day.
+    const outletId = randomUUID();
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet Tutup Hari Uji', 'Jl. Uji 1', 'Asia/Jakarta', $6, 'active')`,
+      [
+        outletId,
+        tenant.tenantId,
+        tenant.brandId,
+        tenant.legalEntityId,
+        `TH${randomUUID().slice(0, 6)}`.toUpperCase(),
+        JSON.stringify(fixtures.outlets[0].openingHours),
+      ],
+    );
+    const managerRole = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Manajer Hari Uji', false, NULL, $3, false, '["tenant"]')`,
+      [managerRole, tenant.tenantId, JSON.stringify(["pos.day.close"])],
+    );
+    const manager = await member(tenant, managerRole, "Manajer Hari");
+    const caller = await member(tenant, roleIds.supervisor, "Supervisor Hari");
+    const cashier = await member(tenant, roleIds.cashier, "Kasir Hari");
+    const deviceId = randomUUID();
+    registeredDevices.set(`${tenant.tenantId}:${deviceId}`, outletId);
+    await setStaffPin(
+      tenantContextOf(tenant.tenantId).tenant,
+      supervisor.userId,
+      { outletId, userId: supervisor.userId },
+      { pin: PIN },
+    );
+    const post = (who: Member, path: string, body: Record<string, unknown>) =>
+      who.client
+        .post(`/api/outlets/${encodeURIComponent(outletId)}/pos/${path}`)
+        .set(headers)
+        .set(originHeader)
+        .set(DEVICE_TOKEN_HEADER, deviceHeader(deviceId))
+        .send({ idempotencyKey: randomUUID(), ...body });
+
+    const opened = await post(cashier, "shifts", {
+      openingFloatIdr: FLOAT_IDR,
+    });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    const shift = opened.body.data as { id: string; businessDate: string };
+    const closeDay = () =>
+      post(manager, "day/close", {
+        businessDate: shift.businessDate,
+        inventoryDeduction: false,
+      });
+    const blocked = await closeDay();
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+
+    const countResponse = await post(caller, `shifts/${shift.id}/counts`, {
+      counts: countsFor(FLOAT_IDR),
+    });
+    expect(countResponse.status, JSON.stringify(countResponse.body)).toBe(201);
+    const { override } = await createPosOverride(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      caller.userId,
+      {
+        outletId,
+        action: "cash_shift_close",
+        valueIdr: 0,
+        reason: "Hitung kas akhir shift",
+        objectType: "pos_shift_count",
+        objectId: countResponse.body.data.id,
+        approval: {
+          method: "supervisor_pin",
+          approverUserId: userIdSchema.parse(supervisor.userId),
+          pin: PIN,
+        },
+      } as Parameters<typeof createPosOverride>[2],
+      { idempotencyKey: randomUUID() },
+    );
+    expect(override.status).toBe("approved");
+    const forced = await post(caller, `shifts/${shift.id}/force-close`, {
+      countId: countResponse.body.data.id,
+      note,
+      approvedBy: supervisor.userId,
+      approvalRequestId: randomUUID(),
+    });
+    expect(forced.status, JSON.stringify(forced.body)).toBe(200);
+
+    const day = await closeDay();
+    expect(day.status, JSON.stringify(day.body)).toBe(200);
+  });
+});
 
 describe("POS-03 a closed shift and its cash movements cannot be changed", () => {
   it("refuses direct SQL UPDATE and DELETE of a closed shift, even by the database owner", async () => {
