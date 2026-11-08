@@ -50,3 +50,8 @@ for (const [name,screen,height] of screens) {
 await browser.close();
 await writeFile(new URL('verification-final-a.json',dir),JSON.stringify(results,null,2)+'\n');
 for(const r of results) console.log(JSON.stringify({ file:r.filename,size:`${r.width}x${r.height}`,errors:r.errors,failedRequests:r.failedRequests,clipped:r.clipped,hidden:r.hiddenByFloating,blurRegions:r.blurRegions,photosBehindGlass:r.glasses.filter(g=>g.photoUnderlay).length }));
+const failures = results.filter(r => r.errors.length || r.failedRequests.length ||
+  r.clipped.length || r.hiddenByFloating.length || r.missingImages.length ||
+  !r.fontLoaded || r.documentWidth !== r.width || r.blurRegions > 2 ||
+  !r.glasses.some(g => g.photoUnderlay));
+if (failures.length) throw new Error(`Mockup verification failed: ${failures.map(r => r.filename).join(', ')}`);
