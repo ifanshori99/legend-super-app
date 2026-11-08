@@ -10,6 +10,7 @@ CREATE TABLE "purchase_order_email_deliveries" (
 	"created_by" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"sent_at" timestamp with time zone,
+	"next_attempt_at" timestamp with time zone,
 	CONSTRAINT "purchase_order_email_deliveries_tenant_id_id_key" UNIQUE("tenant_id","id"),
 	CONSTRAINT "purchase_order_email_deliveries_status_check" CHECK ("purchase_order_email_deliveries"."status" IN ('queued', 'sent', 'failed')),
 	CONSTRAINT "purchase_order_email_deliveries_attempts_check" CHECK ("purchase_order_email_deliveries"."attempts" >= 0)
@@ -183,6 +184,18 @@ CREATE TABLE "suppliers" (
 	CONSTRAINT "suppliers_rating_check" CHECK ("suppliers"."rating" IS NULL OR "suppliers"."rating" BETWEEN 1 AND 5)
 );
 --> statement-breakpoint
+-- Purchasing foreign keys. The migrator may be a plain table owner (no
+-- SUPERUSER, no BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant
+-- policies to it, and with no app.tenant_id set they raise 42501 while the
+-- foreign keys below are validated against outlets, inventory_items and uoms.
+-- Lift FORCE on those three for this transaction only; it is restored right
+-- after the last foreign key, before commit (drizzle applies pending migrations
+-- in one transaction, so no other session ever sees the lifted state). tenants
+-- and user never had FORCE, so they are left alone. The new purchasing tables
+-- get RLS only in the custom migration that follows.
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.inventory_items NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.uoms NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "purchase_order_email_deliveries" ADD CONSTRAINT "purchase_order_email_deliveries_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_order_email_deliveries" ADD CONSTRAINT "purchase_order_email_deliveries_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_order_email_deliveries" ADD CONSTRAINT "purchase_order_email_deliveries_order_fk" FOREIGN KEY ("tenant_id","outlet_id","purchase_order_id") REFERENCES "public"."purchase_orders"("tenant_id","outlet_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -219,6 +232,9 @@ ALTER TABLE "supplier_prices" ADD CONSTRAINT "supplier_prices_item_fk" FOREIGN K
 ALTER TABLE "supplier_prices" ADD CONSTRAINT "supplier_prices_uom_fk" FOREIGN KEY ("tenant_id","purchase_uom_id") REFERENCES "public"."uoms"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "suppliers" ADD CONSTRAINT "suppliers_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "suppliers" ADD CONSTRAINT "suppliers_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.uoms FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.inventory_items FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE INDEX "purchase_order_email_deliveries_order_idx" ON "purchase_order_email_deliveries" USING btree ("tenant_id","outlet_id","purchase_order_id","created_at");--> statement-breakpoint
 CREATE INDEX "purchase_order_lines_order_idx" ON "purchase_order_lines" USING btree ("tenant_id","outlet_id","purchase_order_id");--> statement-breakpoint
 CREATE INDEX "purchase_order_share_links_order_idx" ON "purchase_order_share_links" USING btree ("tenant_id","outlet_id","purchase_order_id");--> statement-breakpoint
