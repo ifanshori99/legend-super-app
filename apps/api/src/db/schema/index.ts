@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-04 KDS routing + ticket lifecycle (legend-4d5).
+export * from "./kds";

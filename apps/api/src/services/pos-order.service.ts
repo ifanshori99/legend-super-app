@@ -72,6 +72,10 @@ import {
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
+  cancelKitchenItemsForVoidedLines,
+  routeFiredItemsToKitchen,
+} from "./kds.service.ts";
+import {
   releaseMenuItemDailyLimit,
   reserveMenuItemDailyLimit,
 } from "./menu-availability.ts";
@@ -849,6 +853,13 @@ async function fireLines(
         inArray(posOrderItems.itemId, ids),
       ),
     );
+  await routeFiredItemsToKitchen(tx, context, {
+    outletId: order.outletId,
+    orderId: order.id,
+    itemIds: ids,
+    actor: { userId: caller.userId, deviceId: caller.deviceId ?? null },
+    now,
+  });
   let current = order;
   if (order.status === "awaiting_payment") {
     const next = transitionPosOrder(order.status, "fire");
@@ -1263,6 +1274,15 @@ async function voidLines(
           ),
         ),
       );
+  if (voided.length > 0)
+    await cancelKitchenItemsForVoidedLines(tx, context, {
+      outletId: order.outletId,
+      orderId: order.id,
+      itemIds: voided.map((item) => item.id),
+      reason: input.reason,
+      actor: { userId: input.voidedBy, deviceId: null },
+      now: input.now,
+    });
   return voided.length;
 }
 
