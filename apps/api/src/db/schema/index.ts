@@ -77,3 +77,5 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// WS-06 inventory -> GL bridge tracking (legend-w1vo).
+export * from "./inventory-gl";
