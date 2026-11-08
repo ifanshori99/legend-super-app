@@ -28,7 +28,11 @@ import {
   createEmployee,
   type CreateEmployeeInput,
 } from "../services/hris-employee.service.ts";
-import { createHoliday } from "../services/hris-holiday.service.ts";
+import {
+  createHoliday,
+  deleteHoliday,
+  updateHoliday,
+} from "../services/hris-holiday.service.ts";
 import {
   createLeaveType,
   updateLeaveType,
@@ -308,6 +312,10 @@ afterAll(async () => {
       `DELETE FROM leave_balances WHERE tenant_id = $1
          AND (period_year BETWEEN 2043 AND 2044 OR leave_type_id = ANY($2::uuid[]))`,
       [tenantId, createdTypes],
+    );
+    await client.query(
+      "DELETE FROM leave_requests WHERE tenant_id = $1 AND requested_by = ANY($2)",
+      [tenantId, createdUsers],
     );
     await client.query(
       "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND (key LIKE 'cbdb-%' OR key LIKE 'leave-jobs/204%')",
@@ -719,5 +727,237 @@ describe("collective leave cutover and leave type switch", () => {
     ).toEqual([]);
 
     await setFrom(null);
+  });
+});
+
+describe("collective day inside a leave request (no double deduction)", () => {
+  /** A request row as the request service leaves it; `days` is its count. */
+  const request = (
+    employeeId: string,
+    range: [string, string],
+    days: string,
+    status: "pending" | "approved",
+  ) =>
+    sql<{ id: string }>(
+      `INSERT INTO leave_requests
+         (tenant_id, outlet_id, employee_id, leave_type_id, period_year,
+          start_date, end_date, days, status, requested_by, requested_at)
+       VALUES ($1, $2, $3, $4, 2044, $5, $6, $7, $8, $9, clock_timestamp())
+       RETURNING id`,
+      [
+        tenantId,
+        outletA,
+        employeeId,
+        annualTypeId,
+        range[0],
+        range[1],
+        days,
+        status,
+        hr,
+      ],
+    );
+  const in2044 = (periods: string[]) =>
+    periods.filter((period) => period.startsWith("2044")).length;
+  const setUsed = (employeeId: string, used: string) =>
+    sql(
+      `INSERT INTO leave_balances
+         (tenant_id, employee_id, leave_type_id, period_year, entitled_days, used_days)
+       VALUES ($1, $2, $3, 2044, '12', $4)
+       ON CONFLICT (tenant_id, employee_id, leave_type_id, period_year)
+       DO UPDATE SET used_days = EXCLUDED.used_days`,
+      [tenantId, employeeId, annualTypeId, used],
+    );
+
+  it("a collective day added after an approved 5-day request is not deducted again", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    await request(e.id, ["2044-04-20", "2044-04-24"], "5.0000", "approved");
+    await setUsed(e.id, "5.0000");
+    await holiday("2044-04-22", "collective"); // added after the request
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    // A new employee also takes the earlier collective days of this file.
+    const periods = await periodsOf(e.id);
+    expect(periods).not.toContain("2044-04-22");
+    expect(Number(await usedOf(e.id, 2044))).toBe(5 + in2044(periods));
+  });
+
+  it("a pending request is skipped too; once rejected, a later run deducts the day", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    const [row] = await request(
+      e.id,
+      ["2044-04-25", "2044-04-26"],
+      "2.0000",
+      "pending",
+    );
+    await holiday("2044-04-25", "collective");
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    expect(await periodsOf(e.id)).not.toContain("2044-04-25");
+
+    await sql(
+      `UPDATE leave_requests SET status = 'rejected' WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, row!.id],
+    );
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const periods = await periodsOf(e.id);
+    expect(periods).toContain("2044-04-25");
+    expect(Number(await usedOf(e.id, 2044))).toBe(in2044(periods));
+  });
+
+  it("a request filed after the collective day existed (day excluded from its count) still deducts it", async () => {
+    const e = await employee(outletA, "2040-01-02");
+    await holiday("2044-04-28", "collective"); // known before filing
+    await request(e.id, ["2044-04-27", "2044-04-29"], "2.0000", "approved");
+    await setUsed(e.id, "2.0000");
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const periods = await periodsOf(e.id);
+    expect(periods).toContain("2044-04-28");
+    expect(Number(await usedOf(e.id, 2044))).toBe(2 + in2044(periods));
+  });
+});
+
+describe("removing, moving or retyping a deducted collective day reverses it", () => {
+  const countOf = async (employeeId: string, period: string) =>
+    (await periodsOf(employeeId)).filter((p) => p === period).length;
+  const reversedAudits = (holidayId: string) =>
+    sql<{ after: { date: string; reversed: number } }>(
+      `SELECT event->'maskedChanges'->'after' AS after FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'hris.leave_collective.reversed'
+          AND event->>'objectId' = $2`,
+      [tenantId, holidayId],
+    );
+
+  it("delete: the ledger row goes, `used` gets the day back, audited once", async () => {
+    const day = await holiday("2044-04-08", "collective");
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    expect(await countOf(eA.id, "2044-04-08")).toBe(1);
+    const used = Number(await usedOf(eA.id, 2044));
+
+    await deleteHoliday(tenantScope(), hr, day.id);
+    expect(await countOf(eA.id, "2044-04-08")).toBe(0);
+    expect(await countOf(eB.id, "2044-04-08")).toBe(0);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used - 1);
+    const audits = await reversedAudits(day.id);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.after.date).toBe("2044-04-08");
+    expect(audits[0]!.after.reversed).toBeGreaterThanOrEqual(2);
+
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    expect(await countOf(eA.id, "2044-04-08")).toBe(0);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used - 1);
+  });
+
+  it("move: the old date is reversed (a replay reverses nothing more), the new date deducts once", async () => {
+    const day = await holiday("2044-04-09", "collective");
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const used = Number(await usedOf(eA.id, 2044));
+    const body = {
+      date: "2044-04-10",
+      idempotencyKey: key(),
+    } as never;
+    await updateHoliday(tenantScope(), hr, day.id, body);
+    expect(await countOf(eA.id, "2044-04-09")).toBe(0);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used - 1);
+    await updateHoliday(tenantScope(), hr, day.id, body); // replay
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used - 1);
+    expect(await reversedAudits(day.id)).toHaveLength(1);
+
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    expect(await countOf(eA.id, "2044-04-10")).toBe(1);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used);
+  });
+
+  it("retype to national: reversed and never deducted again", async () => {
+    const day = await holiday("2044-04-11", "collective");
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const used = Number(await usedOf(eA.id, 2044));
+    await updateHoliday(tenantScope(), hr, day.id, {
+      type: "national",
+      idempotencyKey: key(),
+    } as never);
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    expect(await countOf(eA.id, "2044-04-11")).toBe(0);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(used - 1);
+  });
+
+  it("only staff no longer covered by another collective row on that date are reversed", async () => {
+    const wide = await holiday("2044-04-14", "collective");
+    await holiday("2044-04-14", "collective", outletA);
+    await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+    const usedA = Number(await usedOf(eA.id, 2044));
+    const usedB = Number(await usedOf(eB.id, 2044));
+
+    await deleteHoliday(tenantScope(), hr, wide.id);
+    expect(await countOf(eA.id, "2044-04-14")).toBe(1);
+    expect(await countOf(eB.id, "2044-04-14")).toBe(0);
+    expect(Number(await usedOf(eA.id, 2044))).toBe(usedA);
+    expect(Number(await usedOf(eB.id, 2044))).toBe(usedB - 1);
+  });
+});
+
+describe("collective day in a year whose carry-over already ran", () => {
+  const carryInto2044 = (employeeId: string) =>
+    sql(
+      `INSERT INTO leave_accruals (tenant_id, employee_id, leave_type_id, kind, period, days)
+       VALUES ($1, $2, $3, 'carry_over', '2044', '0')`,
+      [tenantId, employeeId, annualTypeId],
+    );
+  const dropCarry = () =>
+    sql(
+      `DELETE FROM leave_accruals WHERE tenant_id = $1 AND kind = 'carry_over' AND period = '2044'`,
+      [tenantId],
+    );
+
+  it("the job skips a previous-year day for an employee whose carry-over ran", async () => {
+    await holiday("2043-11-05", "collective");
+    await carryInto2044(eA.id);
+    try {
+      await applyCollectiveLeaveDeductions(workerContext(), NOW, SYSTEM);
+      expect(await periodsOf(eA.id)).not.toContain("2043-11-05");
+      expect(await periodsOf(eB.id)).toContain("2043-11-05");
+    } finally {
+      await dropCarry();
+    }
+  });
+
+  it("create, move or retype into that year, or reversing a deduction there, is a 422 LEAVE_YEAR_CARRIED_OVER", async () => {
+    const may = await holiday("2044-05-20", "collective");
+    const national = await holiday("2043-11-10", "national");
+    const [dec26] = await sql<{ id: string }>(
+      `SELECT id FROM holidays WHERE tenant_id = $1 AND date = '2043-12-26'
+         AND type = 'collective' AND outlet_id IS NULL`,
+      [tenantId],
+    );
+    await carryInto2044(eA.id);
+    try {
+      const refused = { status: 422, code: "LEAVE_YEAR_CARRIED_OVER" };
+      expect(await failure(holiday("2043-11-03", "collective"))).toEqual(
+        refused,
+      );
+      expect(
+        await failure(
+          updateHoliday(tenantScope(), hr, may.id, {
+            date: "2043-11-04",
+            idempotencyKey: key(),
+          } as never),
+        ),
+      ).toEqual(refused);
+      expect(
+        await failure(
+          updateHoliday(tenantScope(), hr, national.id, {
+            type: "collective",
+            idempotencyKey: key(),
+          } as never),
+        ),
+      ).toEqual(refused);
+      // 2043-12-26 was deducted for eA earlier: reversing it is refused.
+      expect(
+        await failure(deleteHoliday(tenantScope(), hr, dec26!.id)),
+      ).toEqual(refused);
+      expect(await periodsOf(eA.id)).toContain("2043-12-26");
+      // A national day in that year and a collective day in the open year pass.
+      await holiday("2043-11-11", "national");
+      await holiday("2044-05-21", "collective");
+    } finally {
+      await dropCarry();
+    }
   });
 });

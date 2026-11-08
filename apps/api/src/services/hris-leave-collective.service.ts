@@ -20,13 +20,25 @@
 // - There is no attendance table yet, so an employee who worked on the
 //   collective day is still deducted (overtime pays that day as a workday,
 //   hris-overtime.service.ts).
-// - National and company holidays never deduct; leave requests keep excluding
-//   every holiday from their day count (countLeaveDays), so nothing is
-//   deducted twice. A collective date that also has a national/company holiday
-//   in the employee's scope (tenant-wide or their home outlet) is already a
-//   paid day off and is not deducted (same precedence as overtime).
+// - National and company holidays never deduct. A leave request counts its
+//   days once, at filing (countLeaveDays excludes the holidays that exist
+//   then). A collective day added or moved into a pending/approved request
+//   after it was filed is therefore already inside that request's day count:
+//   the job skips that employee and date (no ledger row, so a rejected or
+//   cancelled request is deducted on a later run). A collective date that
+//   also has a national/company holiday in the employee's scope (tenant-wide
+//   or their home outlet) is already a paid day off and is not deducted (same
+//   precedence as overtime).
+// - Carry-over closes a year: once a `carry_over` ledger row moved the
+//   leftover of year Y into Y+1, a deduction in Y would inflate that carry.
+//   The job skips a previous-year date for an employee whose carry-over ran,
+//   and holiday writes refuse a collective day in such a year (422
+//   `LEAVE_YEAR_CARRIED_OVER`, assertCollectiveYearOpen).
+// - Deleting, moving or retyping a deducted collective day reverses its
+//   deduction in the same transaction (reverseCollectiveLeaveDeductions):
+//   the ledger row is deleted and the day returned to `used`, once.
 
-import { and, asc, eq, gte, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, lte, ne, sql } from "drizzle-orm";
 import {
   DEFAULT_TIME_ZONE,
   createUlid,
@@ -49,6 +61,7 @@ import {
   hrisLeaveSettings,
   leaveAccruals,
   leaveBalances,
+  leaveRequests,
   leaveTypes,
 } from "../db/schema/hris-leave.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -62,7 +75,10 @@ import {
   type Tx,
 } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-holiday.service.ts";
-import type { LeaveJobActor } from "./hris-leave.service.ts";
+import {
+  usableCarriedOverDays,
+  type LeaveJobActor,
+} from "./hris-leave.service.ts";
 
 type SettingsRow = typeof hrisLeaveSettings.$inferSelect;
 type LeaveTypeRow = typeof leaveTypes.$inferSelect;
@@ -286,6 +302,105 @@ export async function updateLeaveSettings(
 
 // -------------------------------------------------------------- deduction
 
+const dayNumber = (date: string) =>
+  Math.floor(Date.parse(`${date}T00:00:00Z`) / 86_400_000);
+
+/**
+ * `employeeId|date` pairs whose collective day a pending or approved request
+ * already counts as a leave day. countLeaveDays ran at filing, so the stored
+ * days exceed a recount against today's calendar by the number of days of
+ * the request that became a holiday later. Those are the most recently
+ * written holidays in its range (holiday timestamps only, never compared with
+ * the request's own clock); the collective ones among them are skipped.
+ */
+async function datesCountedByRequests(
+  tx: Tx,
+  tenantId: SettingsRow["tenantId"],
+  collective: readonly { date: string; outletId: string | null }[],
+  range: { from: string; today: string },
+): Promise<Set<string>> {
+  const counted = new Set<string>();
+  const requests = await tx
+    .select({
+      employeeId: leaveRequests.employeeId,
+      outletId: leaveRequests.outletId,
+      startDate: leaveRequests.startDate,
+      endDate: leaveRequests.endDate,
+      days: leaveRequests.days,
+    })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.tenantId, tenantId),
+        inArray(leaveRequests.status, ["pending", "approved"]),
+        gte(leaveRequests.endDate, range.from),
+        lt(leaveRequests.startDate, range.today),
+      ),
+    );
+  const inScope = (outletId: string | null, requestOutlet: string) =>
+    outletId === null || outletId.toLowerCase() === requestOutlet.toLowerCase();
+  const inRange = (
+    row: { date: string; outletId: string | null },
+    request: (typeof requests)[number],
+  ) =>
+    row.date >= request.startDate &&
+    row.date <= request.endDate &&
+    inScope(row.outletId, request.outletId);
+  const candidates = requests.filter((request) =>
+    collective.some((holiday) => inRange(holiday, request)),
+  );
+  if (candidates.length === 0) return counted;
+  const first = candidates.reduce(
+    (min, request) => (request.startDate < min ? request.startDate : min),
+    candidates[0]!.startDate,
+  );
+  const last = candidates.reduce(
+    (max, request) => (request.endDate > max ? request.endDate : max),
+    candidates[0]!.endDate,
+  );
+  const calendar = await tx
+    .select({
+      date: holidays.date,
+      outletId: holidays.outletId,
+      type: holidays.type,
+      updatedAt: holidays.updatedAt,
+    })
+    .from(holidays)
+    .where(
+      and(
+        eq(holidays.tenantId, tenantId),
+        gte(holidays.date, first),
+        lte(holidays.date, last),
+      ),
+    );
+  for (const request of candidates) {
+    // Per date in range: latest write, and whether a collective row is there.
+    const dates = new Map<string, { at: number; collective: boolean }>();
+    for (const row of calendar) {
+      if (!inRange(row, request)) continue;
+      const seen = dates.get(row.date);
+      dates.set(row.date, {
+        at: Math.max(seen?.at ?? 0, row.updatedAt.getTime()),
+        collective: (seen?.collective ?? false) || row.type === "collective",
+      });
+    }
+    const recount = BigInt(
+      dayNumber(request.endDate) -
+        dayNumber(request.startDate) +
+        1 -
+        dates.size,
+    );
+    const excess = (parseDecimal4(request.days) - recount * ONE_DAY) / ONE_DAY;
+    if (excess <= 0n) continue;
+    const newest = [...dates.entries()]
+      .sort(([, a], [, b]) => b.at - a.at)
+      .slice(0, Number(excess));
+    for (const [date, entry] of newest)
+      if (entry.collective) counted.add(`${request.employeeId}|${date}`);
+  }
+  return counted;
+}
+
 /**
  * Deducts one annual-leave day per past collective holiday (current and
  * previous Asia/Jakarta year) for each employee in scope. Idempotent through
@@ -316,6 +431,9 @@ export async function applyCollectiveLeaveDeductions(
       DEFAULT_COLLECTIVE_LEAVE_EFFECTIVE_FROM;
     const from = effectiveFrom > yearStart ? effectiveFrom : yearStart;
 
+    // FOR SHARE: a concurrent delete/move/retype of one of these days (which
+    // reverses its deductions) waits for this run, or this run waits for it
+    // and then no longer sees the changed row.
     const collective = await tx
       .select({ date: holidays.date, outletId: holidays.outletId })
       .from(holidays)
@@ -327,7 +445,8 @@ export async function applyCollectiveLeaveDeductions(
           lt(holidays.date, today),
         ),
       )
-      .orderBy(asc(holidays.date), asc(holidays.id));
+      .orderBy(asc(holidays.date), asc(holidays.id))
+      .for("share");
     if (collective.length === 0) return { granted: 0, skipped: 0 };
 
     // National/company holidays win over the collective day, per scope.
@@ -381,6 +500,28 @@ export async function applyCollectiveLeaveDeductions(
       ).map((row) => `${row.employeeId}|${row.period}`),
     );
 
+    const counted = await datesCountedByRequests(tx, tenantId, collective, {
+      from,
+      today,
+    });
+    // Previous-year dates for employees whose carry-over into this year ran.
+    const thisYear = today.slice(0, 4);
+    const carried = new Set(
+      (
+        await tx
+          .select({ employeeId: leaveAccruals.employeeId })
+          .from(leaveAccruals)
+          .where(
+            and(
+              eq(leaveAccruals.tenantId, tenantId),
+              eq(leaveAccruals.leaveTypeId, type.id),
+              eq(leaveAccruals.kind, "carry_over"),
+              eq(leaveAccruals.period, thisYear),
+            ),
+          )
+      ).map((row) => row.employeeId),
+    );
+
     let granted = 0;
     let skipped = 0;
     let negative = 0;
@@ -403,6 +544,9 @@ export async function applyCollectiveLeaveDeductions(
         )
           continue;
         const pair = `${employee.id}|${holiday.date}`;
+        if (counted.has(pair)) continue;
+        if (holiday.date.slice(0, 4) < thisYear && carried.has(employee.id))
+          continue;
         if (done.has(pair)) {
           skipped += 1;
           continue;
@@ -464,7 +608,7 @@ export async function applyCollectiveLeaveDeductions(
         granted += 1;
         const available =
           parseDecimal4(balance.entitledDays) +
-          parseDecimal4(balance.carriedOverDays) -
+          usableCarriedOverDays(balance, today) -
           parseDecimal4(balance.usedDays) -
           parseDecimal4(balance.pendingDays);
         if (available < 0n) {
@@ -487,4 +631,151 @@ export async function applyCollectiveLeaveDeductions(
       });
     return { granted, skipped };
   });
+}
+
+// ------------------------------------------------- holiday write follow-ups
+
+const yearCarriedOver = (year: number) =>
+  new HttpError(
+    422,
+    "LEAVE_YEAR_CARRIED_OVER",
+    `Sisa cuti tahun ${year} sudah dibawa ke tahun berikutnya; cuti bersama di tahun itu tidak bisa ditambah, dipindah, atau dihapus.`,
+  );
+
+/**
+ * Refuses a collective day in a year whose carry-over already ran for anyone
+ * in the tenant (a `carry_over` ledger row for the next year): deducting it
+ * would inflate the carried days. Called by holiday create/update.
+ */
+export async function assertCollectiveYearOpen(
+  tx: Tx,
+  context: ScopedTenantContext,
+  date: string,
+): Promise<void> {
+  const year = Number(date.slice(0, 4));
+  const [row] = await tx
+    .select({ id: leaveAccruals.id })
+    .from(leaveAccruals)
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, context.tenant.tenantId),
+        eq(leaveAccruals.kind, "carry_over"),
+        eq(leaveAccruals.period, String(year + 1)),
+      ),
+    )
+    .limit(1);
+  if (row) throw yearCarriedOver(year);
+}
+
+/**
+ * Reverses the collective-leave deductions of `date` for every employee no
+ * longer covered by a collective holiday on that date (tenant-wide, or their
+ * home outlet). Call it in the holiday write's transaction, after the row was
+ * deleted, moved or retyped (the caller holds that row's lock; the job reads
+ * the rows FOR SHARE). Deleting the ledger row returns the day to `used`
+ * once, so a retry reverses nothing more and a re-added day deducts again.
+ * A reversal in a year whose carry-over ran for that employee is refused
+ * (422 `LEAVE_YEAR_CARRIED_OVER`). Returns the number of days reversed.
+ */
+export async function reverseCollectiveLeaveDeductions(
+  tx: Tx,
+  context: ScopedTenantContext,
+  date: string,
+  now: Date,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  // Two writes on different collective rows of one date (tenant-wide and an
+  // outlet row) each see the other as remaining: serialize them per date.
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hris:collective:${tenantId}:${date}`}, 0))`,
+  );
+  const remaining = await tx
+    .select({ outletId: holidays.outletId })
+    .from(holidays)
+    .where(
+      and(
+        eq(holidays.tenantId, tenantId),
+        eq(holidays.type, "collective"),
+        eq(holidays.date, date),
+      ),
+    );
+  if (remaining.some((row) => row.outletId === null)) return 0;
+  const coveredOutlets = new Set(
+    remaining.map((row) => row.outletId!.toLowerCase()),
+  );
+  const ledger = await tx
+    .select({
+      id: leaveAccruals.id,
+      employeeId: leaveAccruals.employeeId,
+      homeOutletId: employees.homeOutletId,
+    })
+    .from(leaveAccruals)
+    .innerJoin(
+      employees,
+      and(
+        eq(employees.tenantId, leaveAccruals.tenantId),
+        eq(employees.id, leaveAccruals.employeeId),
+      ),
+    )
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, tenantId),
+        eq(leaveAccruals.kind, "collective_leave"),
+        eq(leaveAccruals.period, date),
+      ),
+    );
+  const uncovered = ledger.filter(
+    (row) => !coveredOutlets.has(row.homeOutletId.toLowerCase()),
+  );
+  if (uncovered.length === 0) return 0;
+  const year = Number(date.slice(0, 4));
+  const [carried] = await tx
+    .select({ id: leaveAccruals.id })
+    .from(leaveAccruals)
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, tenantId),
+        eq(leaveAccruals.kind, "carry_over"),
+        eq(leaveAccruals.period, String(year + 1)),
+        inArray(
+          leaveAccruals.employeeId,
+          uncovered.map((row) => row.employeeId),
+        ),
+      ),
+    )
+    .limit(1);
+  if (carried) throw yearCarriedOver(year);
+  const removed = await tx
+    .delete(leaveAccruals)
+    .where(
+      and(
+        eq(leaveAccruals.tenantId, tenantId),
+        inArray(
+          leaveAccruals.id,
+          uncovered.map((row) => row.id),
+        ),
+      ),
+    )
+    .returning({
+      employeeId: leaveAccruals.employeeId,
+      leaveTypeId: leaveAccruals.leaveTypeId,
+      days: leaveAccruals.days,
+    });
+  for (const row of removed)
+    // `days` is the signed ledger amount (-1): adding it gives the day back.
+    await tx
+      .update(leaveBalances)
+      .set({
+        usedDays: sql`${leaveBalances.usedDays} + ${row.days}::numeric`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(leaveBalances.tenantId, tenantId),
+          eq(leaveBalances.employeeId, row.employeeId),
+          eq(leaveBalances.leaveTypeId, row.leaveTypeId),
+          eq(leaveBalances.periodYear, year),
+        ),
+      );
+  return removed.length;
 }

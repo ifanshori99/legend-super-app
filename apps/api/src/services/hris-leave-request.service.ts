@@ -84,7 +84,11 @@ import {
   noHrisFileSigner,
   type HrisFileSigner,
 } from "./hris-contract.service.ts";
-import { countLeaveDays, lockBalanceForUpdate } from "./hris-leave.service.ts";
+import {
+  countLeaveDays,
+  lockBalanceForUpdate,
+  usableCarriedOverDays,
+} from "./hris-leave.service.ts";
 import {
   cancelApprovalRequest,
   decideApprovalRequest,
@@ -779,9 +783,11 @@ export async function createLeaveRequest(
         periodYear,
       );
       if (!balance) throw new Error("Leave balance row missing after upsert");
+      // From the expiry date on, carried days not held by used or pending
+      // ones are forfeit, even before the expiry job writes them off.
       const available =
         parseDecimal4(balance.entitledDays) +
-        parseDecimal4(balance.carriedOverDays) -
+        usableCarriedOverDays(balance, localDateOf(now)) -
         parseDecimal4(balance.usedDays) -
         parseDecimal4(balance.pendingDays) +
         parseDecimal4(type.policy.negativeAllowanceDays);

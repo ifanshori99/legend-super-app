@@ -1015,7 +1015,7 @@ describe("legend-hggk carry-over and expiry", () => {
     ).resolves.toBeDefined();
   });
 
-  it("L2: expiry skips a balance with pending days (no ledger row) and forfeits once the pending days cleared", async () => {
+  it("L2: expiry forfeits carried − (used + pending) even while days are pending, once", async () => {
     const type = await makeType({
       annualDays: "12.0000",
       carryOverMaxDays: "5.0000",
@@ -1036,26 +1036,26 @@ describe("legend-hggk carry-over and expiry", () => {
     const body = expireLeaveCarryOverEndpoint.body.parse({
       asOf: "2036-04-01",
     });
-    const first = await expireLeaveCarryOver(tenantScope(), hr, body, asOfNow);
-    expect(first.skipped).toBeGreaterThanOrEqual(1);
+    await expireLeaveCarryOver(tenantScope(), hr, body, asOfNow);
+    // The pending day holds 1 carried day; the other 4 are forfeited.
     expect(
       (await balanceOf(staff.employee.id, type.id, 2036))?.carried_over_days,
-    ).toBe("5.0000");
+    ).toBe("1.0000");
+    const expiries = (await ledgerOf(staff.employee.id, type.id)).filter(
+      (row) => row.kind === "carry_over_expiry",
+    );
+    expect(expiries).toHaveLength(1);
+
+    // A second run claims nothing and changes nothing.
+    await expireLeaveCarryOver(tenantScope(), hr, body, asOfNow);
+    expect(
+      (await balanceOf(staff.employee.id, type.id, 2036))?.carried_over_days,
+    ).toBe("1.0000");
     expect(
       (await ledgerOf(staff.employee.id, type.id)).filter(
         (row) => row.kind === "carry_over_expiry",
       ),
-    ).toHaveLength(0);
-
-    await sql(
-      `UPDATE leave_balances SET pending_days = 0
-        WHERE tenant_id = $1 AND employee_id = $2 AND leave_type_id = $3 AND period_year = 2036`,
-      [tenantId, staff.employee.id, type.id],
-    );
-    await expireLeaveCarryOver(tenantScope(), hr, body, asOfNow);
-    expect(
-      (await balanceOf(staff.employee.id, type.id, 2036))?.carried_over_days,
-    ).toBe("0.0000");
+    ).toHaveLength(1);
   });
 });
 

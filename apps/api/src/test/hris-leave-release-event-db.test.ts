@@ -685,7 +685,7 @@ describe("legend-arj.3 releasing leave days after carry-over expiry", () => {
     ).toHaveLength(0);
   });
 
-  it("a pending request cancelled after expiry (expiry skipped it) clamps carried to used", async () => {
+  it("a pending request cancelled after expiry clamps carried to used", async () => {
     const type = await makeType();
     const staff = await makeStaff();
     await carriedBalance(staff, type.id);
@@ -694,7 +694,7 @@ describe("legend-arj.3 releasing leave days after carry-over expiry", () => {
       (await balanceOf(staff.employee.id, type.id, 2031))?.pending_days,
     ).toBe("3.0000");
 
-    // pending > 0: the expiry job skips this balance, carried stays 5.
+    // The 3 pending days hold 3 carried days; expiry forfeits the other 2.
     await expireLeaveCarryOver(
       tenantScope(),
       hr,
@@ -703,7 +703,7 @@ describe("legend-arj.3 releasing leave days after carry-over expiry", () => {
     );
     expect(
       (await balanceOf(staff.employee.id, type.id, 2031))?.carried_over_days,
-    ).toBe("5.0000");
+    ).toBe("3.0000");
 
     await decideAs(staff.userId, created.id, "cancel", AFTER_EXPIRY);
     const after = (await balanceOf(staff.employee.id, type.id, 2031))!;
@@ -715,7 +715,7 @@ describe("legend-arj.3 releasing leave days after carry-over expiry", () => {
     expect(available(after)).toBe(parseDecimal4("12"));
     expect(
       await forfeitAudits(await balanceIdOf(staff.employee.id, type.id)),
-    ).toEqual([{ forfeited: "5.0000", carried: "0.0000" }]);
+    ).toEqual([{ forfeited: "3.0000", carried: "0.0000" }]);
   });
 
   it("a pending request rejected after expiry clamps carried to used (system actor)", async () => {

@@ -567,6 +567,29 @@ export async function lockBalanceForUpdate(
   return row ?? null;
 }
 
+/**
+ * Carried-over days a balance can still count on business date `today`
+ * (scaled Decimal4). From `carry_over_expires_on` on, days taken consume the
+ * carried-over part first (same rule as `expireLeaveCarryOver`), so only the
+ * part held by `used + pending` still counts. The rest is forfeit even before
+ * the expiry job has written it off.
+ */
+export function usableCarriedOverDays(
+  balance: Pick<
+    LeaveBalanceRow,
+    "carriedOverDays" | "usedDays" | "pendingDays" | "carryOverExpiresOn"
+  >,
+  today: string,
+): bigint {
+  const carried = parseDecimal4(balance.carriedOverDays);
+  if (balance.carryOverExpiresOn === null || balance.carryOverExpiresOn > today)
+    return carried;
+  const taken =
+    parseDecimal4(balance.usedDays) + parseDecimal4(balance.pendingDays);
+  const held = taken > 0n ? taken : 0n;
+  return carried < held ? carried : held;
+}
+
 function dayNumber(date: string): number {
   if (!BUSINESS_DATE_PATTERN.test(date))
     throw new HttpError(422, "VALIDATION_ERROR", "Tanggal tidak valid.");
@@ -895,9 +918,11 @@ export async function carryOverLeave(
         skipped += 1;
         continue;
       }
+      // Carry that expired during `fromYear` and was not taken does not roll
+      // over again, even when the expiry job has not written it off yet.
       const available =
         parseDecimal4(balance.entitledDays) +
-        parseDecimal4(balance.carriedOverDays) -
+        usableCarriedOverDays(balance, `${toYear}-01-01`) -
         parseDecimal4(balance.usedDays) -
         parseDecimal4(balance.pendingDays);
       const carried = available <= 0n ? 0n : available < max ? available : max;
@@ -941,7 +966,8 @@ export async function carryOverLeave(
  * POST /api/hris/leave/carry-over/expire — forfeits the carried-over days of
  * every balance whose `carry_over_expires_on` is on or before `asOf`. Days
  * taken consume the carried-over part first, so only
- * `carried − (used + pending)` is forfeited. Idempotent through the ledger.
+ * `carried − (used + pending)` is forfeited, also while days are still
+ * pending. Idempotent through the ledger.
  */
 export async function expireLeaveCarryOver(
   context: ScopedTenantContext,
@@ -989,14 +1015,10 @@ export async function expireCarryOverLeave(
     let granted = 0;
     let skipped = 0;
     for (const balance of balances) {
-      if (parseDecimal4(balance.pendingDays) > 0n) {
-        skipped += 1;
-        continue;
-      }
+      // Pending days hold their carried part until decided; releasing them
+      // later forfeits it then (`moveBalance` in hris-leave-request.service.ts).
       const carried = parseDecimal4(balance.carriedOverDays);
-      const consumed =
-        parseDecimal4(balance.usedDays) + parseDecimal4(balance.pendingDays);
-      const forfeited = carried > consumed ? carried - consumed : 0n;
+      const forfeited = carried - usableCarriedOverDays(balance, input.asOf);
       const claimed = await claimLedger(tx, context, now, {
         employeeId: balance.employeeId,
         leaveTypeId: balance.leaveTypeId,

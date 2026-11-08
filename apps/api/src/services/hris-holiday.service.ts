@@ -9,6 +9,10 @@
 // - Writes are idempotent per `Idempotency-Key` (hris_idempotency) and a
 //   duplicate (outlet, date) is a 409 (unique NULLS NOT DISTINCT).
 // - `idempotentHrisWrite` is exported for the overtime formula writes.
+// - Collective days: a create or a move/retype into a year whose carry-over
+//   ran is a 422 `LEAVE_YEAR_CARRIED_OVER`; deleting, moving or retyping a
+//   collective day reverses its deductions in the same transaction
+//   (hris-leave-collective.service.ts).
 
 import {
   and,
@@ -58,6 +62,10 @@ import {
   type HrisAccess,
   type Tx,
 } from "./hris-access.ts";
+import {
+  assertCollectiveYearOpen,
+  reverseCollectiveLeaveDeductions,
+} from "./hris-leave-collective.service.ts";
 
 type HolidayRow = typeof holidays.$inferSelect;
 type ListHolidaysQuery = z.output<typeof listHolidaysEndpoint.query>;
@@ -79,6 +87,7 @@ export const HRIS_LEAVE_AUDIT_SAFE_FIELDS = [
   "formulaId",
   "action",
   "approvalOutcome",
+  "reversed",
 ] as const;
 
 export function toHoliday(row: HolidayRow): Holiday {
@@ -300,6 +309,8 @@ export async function createHoliday(
       "holiday.create",
       { actor: access.actorUserId, ...input, idempotencyKey: undefined },
       async () => {
+        if (input.type === "collective")
+          await assertCollectiveYearOpen(tx, context, input.date);
         let row: HolidayRow | undefined;
         try {
           // A savepoint keeps the transaction usable after a constraint error.
@@ -345,6 +356,35 @@ export async function createHoliday(
       },
     );
   });
+}
+
+/** Reverses the deductions of a collective row that left its date; audited. */
+async function reverseDeductions(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actor: string,
+  now: Date,
+  previous: HolidayRow,
+): Promise<void> {
+  const reversed = await reverseCollectiveLeaveDeductions(
+    tx,
+    context,
+    previous.date,
+    now,
+  );
+  if (reversed === 0) return;
+  await recordAudit(
+    tx,
+    context,
+    tenantOrOutletAudit(context, actor, now, {
+      outletId: previous.outletId,
+      action: "hris.leave_collective.reversed",
+      objectType: "holiday",
+      objectId: previous.id,
+      after: { date: previous.date, reversed },
+    }),
+    HRIS_LEAVE_AUDIT_SAFE_FIELDS,
+  );
 }
 
 async function lockHoliday(
@@ -406,6 +446,14 @@ export async function updateHoliday(
           changed.push("type");
         }
         if (changed.length === 0) return toHoliday(current);
+        const nextType = patch.type ?? current.type;
+        const moved = patch.date !== undefined || patch.type !== undefined;
+        if (moved && nextType === "collective")
+          await assertCollectiveYearOpen(
+            tx,
+            context,
+            patch.date ?? current.date,
+          );
         let row: HolidayRow | undefined;
         try {
           row = await tx.transaction(async (inner) => {
@@ -421,6 +469,14 @@ export async function updateHoliday(
           throw error;
         }
         if (!row) throw new Error("Holiday update returned no row");
+        if (moved && current.type === "collective")
+          await reverseDeductions(
+            tx,
+            context,
+            access.actorUserId,
+            now,
+            current,
+          );
         await recordAudit(
           tx,
           context,
@@ -451,6 +507,8 @@ export async function deleteHoliday(
     const current = await lockHoliday(tx, context, holidayId);
     if (!canManage(access, current.outletId)) throw forbidden();
     await tx.delete(holidays).where(eq(holidays.id, current.id));
+    if (current.type === "collective")
+      await reverseDeductions(tx, context, access.actorUserId, now, current);
     await recordAudit(
       tx,
       context,
