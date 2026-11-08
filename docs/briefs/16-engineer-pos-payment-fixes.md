@@ -1,6 +1,7 @@
 # Brief: engineer — legend-b0au, legend-94qt, legend-0gy1
 
 ## Peran
+Langkah pertama: pecah tugas dan spawn subagent paralel dalam satu giliran.
 Baca `~/.agents/team/roles/engineer.md` dan `~/.agents/team/TEAM.md` (bagian "Paralel dulu", kerja berat, definisi selesai), lalu ikuti. Konvensi: `AGENTS.md`, `docs/plan/AGENT_PLAYBOOK.md`, `docs/plan/contracts.md`. Prosedur migration: `/Users/ifanshori99/Projects/legend super app/HANDOFF.md` §5.
 
 ## Repo
