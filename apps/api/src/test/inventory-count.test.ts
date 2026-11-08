@@ -20,6 +20,7 @@
 // - A fresh count starts in `draft`; lines exist from create, `start` makes
 //   the snapshot and moves it to `counting`.
 // - Cross-tenant / cross-outlet denial may be 403 or 404 (TEN-01/TEN-03).
+import { roleTemplate } from "@starter/shared/access";
 import { stockCountQuerySchema } from "@starter/shared/inventory";
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
@@ -1134,6 +1135,62 @@ describe("F1 blind count does not leak through the approval inbox", () => {
     );
     expect(row, "approval row of the count").toBeDefined();
     expect(Number(row!.amountIdr)).toBe(10500);
+  });
+});
+
+describe("F1 blind count variance in the audit log is not readable by the counter", () => {
+  const auditEventsOf = async (countId: string) =>
+    (
+      await owner.query<{ event: Record<string, unknown> }>(
+        `SELECT event FROM audit_logs
+          WHERE tenant_id = $1 AND event->>'objectId' = $2`,
+        [tenantA, countId],
+      )
+    ).rows.map((row) => row.event);
+
+  it("the audit rows hold the variance, but no API route serves audit rows to a counter", async () => {
+    // 10 on hand at 1.500 counted as 3 -> variance Rp10.500.
+    const prepared = await submittedCount([{ onHand: "10.0000" }], ["3.0000"], {
+      blind: true,
+    });
+    // The audit trail does record the variance (the reason this test exists).
+    const events = await auditEventsOf(prepared.countId);
+    expect(JSON.stringify(events)).toMatch(/grossVarianceIdr/);
+
+    // The counter role (warehouse) never holds the audit viewer permission…
+    expect(roleTemplate("warehouse").permissions).toContain(
+      "inventory.opname.count",
+    );
+    expect(roleTemplate("warehouse").permissions).not.toContain(
+      "audit.log.view",
+    );
+
+    // …and no audit read endpoint is mounted, so nothing reaches the counter.
+    for (const path of [
+      "/api/audit/events",
+      `/api/audit/events?objectType=stock_count&objectId=${prepared.countId}`,
+    ]) {
+      const response = await counter.client.get(path);
+      expect([403, 404]).toContain(response.status);
+      expect(JSON.stringify(response.body)).not.toMatch(/variance|10500/i);
+    }
+  });
+
+  it("tripwire: the audit viewer is not mounted yet (it must redact blind-count variance before it ships)", async () => {
+    // A tenant admin holds `audit.log.view`. When the F36 audit viewer
+    // (`GET /api/audit/events`) is built this test fails on purpose: the viewer
+    // must then hide totalVarianceIdr/grossVarianceIdr of blind stock counts
+    // from readers who counted them or lack `inventory.adjustment.approve`
+    // (legend-j5x), and this test must be replaced by that redaction test.
+    const admin = await makeActor("Opname Audit Admin", []);
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+      [tenantA, admin.userId, await roleIdOf("tenant_admin")],
+    );
+    const response = await admin.client.get("/api/audit/events");
+    expect(response.status).toBe(404);
   });
 });
 
