@@ -19,7 +19,7 @@ Founder belum puas dengan UI/UX order pelanggan Legend dan ingin setara standar 
 Mobile 390 lebar adalah utama (pelanggan scan QR di meja). Per arah, 4 layar mobile:
 1. Menu (dengan bar keranjang melayang berisi total, item yang sudah di keranjang terlihat).
 2. Detail item + opsi/modifier (dengan validasi opsi wajib).
-3. Keranjang / checkout satu layar sampai pilih metode bayar (QRIS terpilih, e-wallet, dan opsi "Bayar di kasir" yang ditandai bisa dihapus bila founder menolak).
+3. Keranjang / checkout satu layar sampai pilih metode bayar (QRIS terpilih, e-wallet, dan opsi "Bayar di kasir" (disetujui founder 2026-11-08: pelanggan tunjukkan kode ke kasir, pesanan masuk dapur setelah kasir terima uang)).
 4. Menunggu pembayaran QRIS atau Pembayaran berhasil.
 Plus 1 desktop 1440 untuk Menu per arah.
 Nama berkas: `design/mockups/arah-a-<layar>-mobile.png`, `arah-b-...`. Tutup semua celah prioritas 1 sampai 9 di REPORT.md. Harga konsisten `Rp 23.000`. Data contoh Indonesia yang masuk akal (cafe, menu kopi dan makanan).
