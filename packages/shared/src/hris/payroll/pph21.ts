@@ -101,6 +101,12 @@ export type Pph21PeriodInput = {
      */
     grossSchemeBaseIdr?: Idr | number;
     employerSchemeBaseIdr?: Idr | number;
+    /**
+     * Part of `pph21WithheldIdr` that was the employer-funded tax allowance
+     * (gross-up) of earlier periods. It is withheld on the payslip but the
+     * company paid for it, so it counts as employer tax like the borne tax.
+     */
+    taxAllowanceIdr?: Idr | number;
   };
 };
 
@@ -266,6 +272,24 @@ export function computePph21Period(
     input.prior.employerSchemeBaseIdr ?? 0,
     "prior.employerSchemeBaseIdr",
   );
+  const priorAllowance =
+    input.prior.taxAllowanceIdr === undefined
+      ? null
+      : nonNegativeInt(input.prior.taxAllowanceIdr, "prior.taxAllowanceIdr");
+  if (priorAllowance !== null && priorAllowance > priorWithheld)
+    throw new RangeError(
+      "prior.taxAllowanceIdr exceeds prior.pph21WithheldIdr",
+    );
+  const priorMix = priorGrossScheme + priorEmployerScheme;
+  // Employer-funded share of the tax paid so far: borne + allowance when the
+  // caller reports the allowance, else the earlier scheme mix when given (a
+  // gross-up allowance sits in `withheld`, so borne alone would call it the
+  // employee's), else the borne tax alone.
+  let priorEmployerTax = priorBorne;
+  if (priorAllowance !== null) priorEmployerTax = priorBorne + priorAllowance;
+  else if (priorMix > 0n)
+    priorEmployerTax = (priorTax * priorEmployerScheme) / priorMix;
+  const priorEmployeeTax = priorTax - priorEmployerTax;
   // Employer BPJS (in g) is taxable income, but for a net / gross-up employee
   // (no gross line) the tax on it is the company's: it joins the employer-
   // covered tax (allowance or borne) and never reduces take-home. With any
@@ -342,10 +366,9 @@ export function computePph21Period(
   // With nothing paid yet (priorTax = 0) the payer history is unknown, so the
   // shortfall follows the earlier scheme mix, else this month's mix.
   const historyBase0 = g + u + n;
-  const priorMix = priorGrossScheme + priorEmployerScheme;
   let employerHistory = 0n;
   if (history > 0n && priorTax > 0n)
-    employerHistory = (history * priorBorne) / priorTax;
+    employerHistory = (history * priorEmployerTax) / priorTax;
   else if (history > 0n && priorMix > 0n)
     employerHistory = (history * priorEmployerScheme) / priorMix;
   else if (history > 0n && historyBase0 > 0n)
@@ -406,10 +429,12 @@ export function computePph21Period(
   } else {
     const owedBack = -tax;
     if (policy.mixedSchemeAllocation === "gross_first") {
-      employeeRefund = owedBack < priorWithheld ? owedBack : priorWithheld;
+      employeeRefund =
+        owedBack < priorEmployeeTax ? owedBack : priorEmployeeTax;
       employerRefund = owedBack - employeeRefund;
     } else {
-      employerRefund = priorTax > 0n ? (owedBack * priorBorne) / priorTax : 0n;
+      employerRefund =
+        priorTax > 0n ? (owedBack * priorEmployerTax) / priorTax : 0n;
       employeeRefund = owedBack - employerRefund;
     }
   }

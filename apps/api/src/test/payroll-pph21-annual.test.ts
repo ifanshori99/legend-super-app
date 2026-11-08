@@ -1302,4 +1302,109 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     expect(r.pph21WithheldIdr).toBe(60_750);
     expect(r.pph21EmployerBorneIdr).toBe(333_050);
   });
+
+  for (const allocation of ["gross_first", "proportional"] as const) {
+    it(`R72 gross-up December after a gross-up year with prior tax > 0 (${allocation}): the company-funded Jan-Nov shortfall is not cut from the employee`, () => {
+      // Prior: gross 90_200_000 (11 x 8_200_000), PPh 21 220_000 (11 x 20_000)
+      // all gross-up allowance: withheld 220_000 of which allowance 220_000,
+      // borne 0. December: gross_up 8_000_000.
+      // H = tax(90_200_000) - 220_000: cost 4_510_000, net 85_690_000,
+      //   PKP 31_690_000, tax 1_584_500 -> H = 1_364_500, all the employer's.
+      // G = 0 => the employee's share W = 0, S = T (X = 8_000_000 + S):
+      //   S0=0         gross 98_200_000 PKP 39_290_000 tax 1_964_500 T 1_744_500
+      //   S1=1_744_500 gross 99_944_500 PKP 40_947_000 tax 2_047_350 T 1_827_350
+      //   S2=1_827_350 PKP 41_025_000 tax 2_051_250 T 1_831_250
+      //   S3=1_831_250 PKP 41_029_000 tax 2_051_450 T 1_831_450
+      //   S4=1_831_450 PKP 41_029_000 same -> stop. Allowance = withheld = S.
+      // Take-home = 8_000_000 + allowance - withheld = 8_000_000.
+      const r = run(
+        {
+          taxableLines: [{ amountIdr: 8_000_000, taxScheme: "gross_up" }],
+          prior: {
+            ...prior(90_200_000, 220_000, 0),
+            taxAllowanceIdr: 220_000,
+          },
+        },
+        { mixedSchemeAllocation: allocation },
+      );
+      expect(r.taxableGrossIdr).toBe(9_831_450);
+      expect(r.pph21Idr).toBe(1_831_450);
+      expect(r.taxAllowanceIdr).toBe(1_831_450);
+      expect(r.pph21WithheldIdr).toBe(1_831_450);
+      expect(r.pph21EmployerBorneIdr).toBe(0);
+      expect(8_000_000 + r.taxAllowanceIdr - r.pph21WithheldIdr).toBe(
+        8_000_000,
+      );
+    });
+
+    it(`R73 gross-up year ends in lebih potong (${allocation}): the refund of company-funded allowance goes back to the employer`, () => {
+      // Prior: gross 110_000_000, PPh 21 5_000_000, all allowance (withheld
+      // 5_000_000 = allowance 5_000_000). December gross_up 10_000_000:
+      // gross 120_000_000, cost 6_000_000, PKP 60_000_000, tax 3_000_000
+      // => T = 3_000_000 - 5_000_000 = -2_000_000. S = 0 (T < 0).
+      // The whole prior tax was company-funded => employer refund 2_000_000.
+      const r = run(
+        {
+          taxableLines: [{ amountIdr: 10_000_000, taxScheme: "gross_up" }],
+          prior: {
+            ...prior(110_000_000, 5_000_000, 0),
+            taxAllowanceIdr: 5_000_000,
+          },
+        },
+        { mixedSchemeAllocation: allocation },
+      );
+      expect(r.pph21Idr).toBe(-2_000_000);
+      expect(r.pph21RefundIdr).toBe(0);
+      expect(r.pph21EmployerRefundIdr).toBe(2_000_000);
+      expect(r.pph21WithheldIdr).toBe(0);
+    });
+  }
+
+  it("R74 refund of a year paid 3_000_000 by the employee and 2_000_000 as allowance: proportional splits 3:2, gross_first returns the employee's own part first", () => {
+    // Prior: gross 110_000_000, withheld 5_000_000 (allowance 2_000_000 of it),
+    // borne 0. December gross 10_000_000 => T = 3_000_000 - 5_000_000 = -2_000_000.
+    // proportional: employer refund floor(2_000_000 x 2_000_000 / 5_000_000)
+    //   = 800_000, employee 1_200_000.
+    // gross_first: employee-paid prior tax 3_000_000 >= 2_000_000 => employee
+    //   refund 2_000_000, employer 0.
+    const input = {
+      taxableLines: [{ amountIdr: 10_000_000, taxScheme: "gross" as const }],
+      prior: {
+        ...prior(110_000_000, 5_000_000, 0),
+        taxAllowanceIdr: 2_000_000,
+      },
+    };
+    const proportional = run(input, { mixedSchemeAllocation: "proportional" });
+    expect(proportional.pph21Idr).toBe(-2_000_000);
+    expect(proportional.pph21EmployerRefundIdr).toBe(800_000);
+    expect(proportional.pph21RefundIdr).toBe(1_200_000);
+    const grossFirst = run(input, { mixedSchemeAllocation: "gross_first" });
+    expect(grossFirst.pph21EmployerRefundIdr).toBe(0);
+    expect(grossFirst.pph21RefundIdr).toBe(2_000_000);
+  });
+
+  it("R75 gross-up year without a reported prior allowance: the earlier employer scheme base stands in for it", () => {
+    // As R72 gross_first, but the caller gives only the scheme mix
+    // (employer scheme 90_200_000 of 90_200_000): the prior tax is all the
+    // employer's, so the same result as R72.
+    const r = run(
+      {
+        taxableLines: [{ amountIdr: 8_000_000, taxScheme: "gross_up" }],
+        prior: {
+          ...prior(90_200_000, 220_000, 0),
+          employerSchemeBaseIdr: 90_200_000,
+        },
+      },
+      { mixedSchemeAllocation: "gross_first" },
+    );
+    expect(r.pph21Idr).toBe(1_831_450);
+    expect(r.taxAllowanceIdr).toBe(1_831_450);
+    expect(r.pph21WithheldIdr).toBe(1_831_450);
+  });
+
+  it("R76 rejects a prior allowance above the prior withheld tax", () => {
+    expect(() =>
+      run({ prior: { ...prior(0, 100, 0), taxAllowanceIdr: 101 } }),
+    ).toThrow(RangeError);
+  });
 });
