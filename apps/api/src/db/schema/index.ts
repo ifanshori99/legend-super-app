@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// EDC agent framework (legend-apt).
+export * from "./edc";
