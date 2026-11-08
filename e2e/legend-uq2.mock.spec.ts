@@ -50,6 +50,9 @@ test("KDS-05 · kitchen config replaces a station's capacity rules", async ({
 test("F12 · serving-time report groups by station, hour and staff", async ({
   page,
 }) => {
+  // The report defaults to the last 7 days and the kitchen fixtures are dated
+  // 1 Nov 2026, so pin the browser clock to the fixture day (legend-nv3y).
+  await page.clock.setFixedTime(new Date("2026-11-01T12:00:00.000+07:00"));
   await page.goto("/kelola/dapur/laporan");
   await expect(
     page.getByRole("heading", { name: "Analitik waktu saji" }),

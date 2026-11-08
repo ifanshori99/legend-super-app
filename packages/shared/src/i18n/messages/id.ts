@@ -23,6 +23,13 @@ import { loginMessages } from "./login.ts";
 import { loyaltyMessages } from "./loyalty.ts";
 import { ownerDashboardMessages } from "./owner-dashboard.ts";
 import { qrCartMessages } from "./qr-cart.ts";
+import { qrGlassCartMessages } from "./qr-glass-cart.ts";
+import { qrGlassCheckoutMessages } from "./qr-glass-checkout.ts";
+import { qrGlassItemMessages } from "./qr-glass-item.ts";
+import { qrGlassMenuMessages } from "./qr-glass-menu.ts";
+import { qrGlassPayMessages } from "./qr-glass-pay.ts";
+import { qrGlassSharedMessages } from "./qr-glass-shared.ts";
+import { qrGlassTableMessages } from "./qr-glass-table.ts";
 import { qrMenuMessages } from "./qr-menu.ts";
 import { qrOrdersMessages } from "./qr-orders.ts";
 import { qrRecoveryMessages } from "./qr-recovery.ts";
@@ -92,6 +99,16 @@ export const id = {
   qrCart: qrCartMessages,
   qrOrders: qrOrdersMessages,
   qrRecovery: qrRecoveryMessages,
+  // QR order final arah A + liquid glass (legend-2re1), one file per screen.
+  qrGlass: {
+    menu: qrGlassMenuMessages,
+    item: qrGlassItemMessages,
+    checkout: qrGlassCheckoutMessages,
+    pay: qrGlassPayMessages,
+    table: qrGlassTableMessages,
+    cart: qrGlassCartMessages,
+    shared: qrGlassSharedMessages,
+  },
   // POS customer display (PRD §3 F11 "Customer Display"), bead legend-azt.
   posDisplay: posDisplayMessages,
   // Reservation desk (bead legend-oye8; PRD §3 F19, §3.22).

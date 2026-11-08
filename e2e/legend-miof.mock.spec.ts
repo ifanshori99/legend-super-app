@@ -15,9 +15,17 @@ const VIEWPORT_LABEL = "Notifikasi";
 
 async function joinTable(page: Page) {
   await page.goto(`/t/${freeTable}`);
-  // The guest-count dialog opens on the first visit (PRD §3 "Scan & Sesi Meja").
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu (PRD §3 "Scan & Sesi Meja").
+  // A click before hydration is lost, so retry it until the panel is open.
+  const save = page.getByRole("button", { name: "Simpan" });
+  await expect(async () => {
+    await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+    await expect(save).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 30_000 });
+  await save.click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 }
 
 function channels(color: string): [number, number, number] {
@@ -101,14 +109,15 @@ test("miof a toast on a customer route sits above the bottom nav", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await joinTable(page);
-  const nav = page.getByRole("navigation", { name: "Navigasi utama" });
-  await expect(nav).toBeVisible();
+  // Phones have no bottom nav in the glass journey: the bottom layer is the
+  // cart bar, which mounts with the first add (legend-2re1).
+  const nav = page.getByRole("region", { name: "Keranjang meja" });
 
   await page.getByRole("button", { name: "Lihat detail Espresso" }).click();
   const sheet = page.getByRole("dialog");
   await sheet.getByRole("radio", { name: /Dingin/ }).click();
   await sheet.getByRole("radio", { name: "Normal" }).click();
-  await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+  await sheet.getByRole("button", { name: /^Tambah · / }).click();
   // Client-only controls drop a click that lands before hydration (see
   // e2e/legend-vxj.mock.spec.ts); retry the add until the toast shows.
   await expect(page.getByText(/masuk keranjang/).first()).toBeVisible({
@@ -117,14 +126,16 @@ test("miof a toast on a customer route sits above the bottom nav", async ({
 
   const toast = page.getByText(/masuk keranjang/).first();
   await expect(toast).toBeVisible();
+  await expect(nav).toBeVisible();
   // The shell publishes the bar height, and the toast viewport bottom lands on
-  // it, so the toast itself never covers a tab.
+  // it, so the toast itself never covers the bar.
   const inset = await page.evaluate(() =>
     getComputedStyle(document.documentElement).getPropertyValue(
       "--toast-inset-bottom",
     ),
   );
-  expect(inset.trim()).toContain("calc(");
+  // The bar publishes its own height (plus its 12px gap) in px.
+  expect(inset.trim()).toMatch(/^\d+(\.\d+)?px$/);
 
   const [toastBox, navBox] = await Promise.all([
     toast.boundingBox(),
@@ -132,6 +143,7 @@ test("miof a toast on a customer route sits above the bottom nav", async ({
   ]);
   expect(toastBox).not.toBeNull();
   expect(navBox).not.toBeNull();
+  expect(Number.parseFloat(inset)).toBeGreaterThanOrEqual(navBox!.height);
   expect(toastBox!.y + toastBox!.height).toBeLessThanOrEqual(navBox!.y + 1);
   await captureScreenshot(page, "legend-miof/toast-above-nav-390-light.png");
 });

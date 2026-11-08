@@ -572,7 +572,7 @@ describe("legend-lmk menu API", () => {
     await asOwnerTenant(otherTenant, async (client) => {
       await client.query(
         `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-         VALUES ($1, $2, 'Tenant Lain', 'lengkap', 'active', 'shared', '{"modules":[]}', $3, $4)`,
+         VALUES ($1, $2, 'Tenant Lain', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
         [
           otherTenant,
           `lain-${randomBytes(3).toString("hex")}`,

@@ -226,7 +226,9 @@ import { Route as OpsPosShiftTutupRouteImport } from './routes/_ops/pos.shift.tu
 import { Route as PlatformPlatformTenantIndexRouteImport } from './routes/_platform/platform.tenant.index'
 import { Route as PlatformPlatformTenantTenantIdRouteImport } from './routes/_platform/platform.tenant.$tenantId'
 import { Route as PlatformPlatformTenantBaruRouteImport } from './routes/_platform/platform.tenant.baru'
+import { Route as CustomerTTokenBayarOrderIdRouteImport } from './routes/_customer/t.$token.bayar.$orderId'
 import { Route as CustomerTTokenIssueIssueIdRouteImport } from './routes/_customer/t.$token.issue.$issueId'
+import { Route as CustomerTTokenKasirOrderIdRouteImport } from './routes/_customer/t.$token.kasir.$orderId'
 import { Route as CustomerTTokenPayPaymentIdRouteImport } from './routes/_customer/t.$token.pay.$paymentId'
 import { Route as KelolaKelolaAksesRoleRoleIdRouteImport } from './routes/_kelola/kelola.akses.role.$roleId'
 import { Route as KelolaKelolaAkuntansiBagiHasilIndexRouteImport } from './routes/_kelola/kelola.akuntansi.bagi-hasil.index'
@@ -1432,10 +1434,22 @@ const PlatformPlatformTenantBaruRoute =
     path: '/platform/tenant/baru',
     getParentRoute: () => PlatformRoute,
   } as any)
+const CustomerTTokenBayarOrderIdRoute =
+  CustomerTTokenBayarOrderIdRouteImport.update({
+    id: '/bayar/$orderId',
+    path: '/bayar/$orderId',
+    getParentRoute: () => CustomerTTokenRoute,
+  } as any)
 const CustomerTTokenIssueIssueIdRoute =
   CustomerTTokenIssueIssueIdRouteImport.update({
     id: '/issue/$issueId',
     path: '/issue/$issueId',
+    getParentRoute: () => CustomerTTokenRoute,
+  } as any)
+const CustomerTTokenKasirOrderIdRoute =
+  CustomerTTokenKasirOrderIdRouteImport.update({
+    id: '/kasir/$orderId',
+    path: '/kasir/$orderId',
     getParentRoute: () => CustomerTTokenRoute,
   } as any)
 const CustomerTTokenPayPaymentIdRoute =
@@ -1802,7 +1816,9 @@ export interface FileRoutesByFullPath {
   '/pos/meja/': typeof OpsPosMejaIndexRoute
   '/pos/shift/': typeof OpsPosShiftIndexRoute
   '/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
+  '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/t/$token/kasir/$orderId': typeof CustomerTTokenKasirOrderIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
   '/kelola/akuntansi/bagi-hasil/distribusi': typeof KelolaKelolaAkuntansiBagiHasilDistribusiRoute
@@ -2034,7 +2050,9 @@ export interface FileRoutesByTo {
   '/pos/meja': typeof OpsPosMejaIndexRoute
   '/pos/shift': typeof OpsPosShiftIndexRoute
   '/platform/tenant': typeof PlatformPlatformTenantIndexRoute
+  '/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/t/$token/kasir/$orderId': typeof CustomerTTokenKasirOrderIdRoute
   '/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
   '/kelola/akuntansi/bagi-hasil/distribusi': typeof KelolaKelolaAkuntansiBagiHasilDistribusiRoute
@@ -2281,7 +2299,9 @@ export interface FileRoutesById {
   '/_ops/pos/meja/': typeof OpsPosMejaIndexRoute
   '/_ops/pos/shift/': typeof OpsPosShiftIndexRoute
   '/_platform/platform/tenant/': typeof PlatformPlatformTenantIndexRoute
+  '/_customer/t/$token/bayar/$orderId': typeof CustomerTTokenBayarOrderIdRoute
   '/_customer/t/$token/issue/$issueId': typeof CustomerTTokenIssueIssueIdRoute
+  '/_customer/t/$token/kasir/$orderId': typeof CustomerTTokenKasirOrderIdRoute
   '/_customer/t/$token/pay/$paymentId': typeof CustomerTTokenPayPaymentIdRoute
   '/_kelola/kelola/akses/role/$roleId': typeof KelolaKelolaAksesRoleRoleIdRoute
   '/_kelola/kelola/akuntansi/bagi-hasil/distribusi': typeof KelolaKelolaAkuntansiBagiHasilDistribusiRoute
@@ -2518,7 +2538,9 @@ export interface FileRouteTypes {
     | '/pos/meja/'
     | '/pos/shift/'
     | '/platform/tenant/'
+    | '/t/$token/bayar/$orderId'
     | '/t/$token/issue/$issueId'
+    | '/t/$token/kasir/$orderId'
     | '/t/$token/pay/$paymentId'
     | '/kelola/akses/role/$roleId'
     | '/kelola/akuntansi/bagi-hasil/distribusi'
@@ -2750,7 +2772,9 @@ export interface FileRouteTypes {
     | '/pos/meja'
     | '/pos/shift'
     | '/platform/tenant'
+    | '/t/$token/bayar/$orderId'
     | '/t/$token/issue/$issueId'
+    | '/t/$token/kasir/$orderId'
     | '/t/$token/pay/$paymentId'
     | '/kelola/akses/role/$roleId'
     | '/kelola/akuntansi/bagi-hasil/distribusi'
@@ -2996,7 +3020,9 @@ export interface FileRouteTypes {
     | '/_ops/pos/meja/'
     | '/_ops/pos/shift/'
     | '/_platform/platform/tenant/'
+    | '/_customer/t/$token/bayar/$orderId'
     | '/_customer/t/$token/issue/$issueId'
+    | '/_customer/t/$token/kasir/$orderId'
     | '/_customer/t/$token/pay/$paymentId'
     | '/_kelola/kelola/akses/role/$roleId'
     | '/_kelola/kelola/akuntansi/bagi-hasil/distribusi'
@@ -4564,11 +4590,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlatformPlatformTenantBaruRouteImport
       parentRoute: typeof PlatformRoute
     }
+    '/_customer/t/$token/bayar/$orderId': {
+      id: '/_customer/t/$token/bayar/$orderId'
+      path: '/bayar/$orderId'
+      fullPath: '/t/$token/bayar/$orderId'
+      preLoaderRoute: typeof CustomerTTokenBayarOrderIdRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
     '/_customer/t/$token/issue/$issueId': {
       id: '/_customer/t/$token/issue/$issueId'
       path: '/issue/$issueId'
       fullPath: '/t/$token/issue/$issueId'
       preLoaderRoute: typeof CustomerTTokenIssueIssueIdRouteImport
+      parentRoute: typeof CustomerTTokenRoute
+    }
+    '/_customer/t/$token/kasir/$orderId': {
+      id: '/_customer/t/$token/kasir/$orderId'
+      path: '/kasir/$orderId'
+      fullPath: '/t/$token/kasir/$orderId'
+      preLoaderRoute: typeof CustomerTTokenKasirOrderIdRouteImport
       parentRoute: typeof CustomerTTokenRoute
     }
     '/_customer/t/$token/pay/$paymentId': {
@@ -4807,7 +4847,9 @@ interface CustomerTTokenRouteChildren {
   CustomerTTokenOrdersRoute: typeof CustomerTTokenOrdersRoute
   CustomerTTokenReviewRoute: typeof CustomerTTokenReviewRoute
   CustomerTTokenIndexRoute: typeof CustomerTTokenIndexRoute
+  CustomerTTokenBayarOrderIdRoute: typeof CustomerTTokenBayarOrderIdRoute
   CustomerTTokenIssueIssueIdRoute: typeof CustomerTTokenIssueIssueIdRoute
+  CustomerTTokenKasirOrderIdRoute: typeof CustomerTTokenKasirOrderIdRoute
   CustomerTTokenPayPaymentIdRoute: typeof CustomerTTokenPayPaymentIdRoute
 }
 
@@ -4818,7 +4860,9 @@ const CustomerTTokenRouteChildren: CustomerTTokenRouteChildren = {
   CustomerTTokenOrdersRoute: CustomerTTokenOrdersRoute,
   CustomerTTokenReviewRoute: CustomerTTokenReviewRoute,
   CustomerTTokenIndexRoute: CustomerTTokenIndexRoute,
+  CustomerTTokenBayarOrderIdRoute: CustomerTTokenBayarOrderIdRoute,
   CustomerTTokenIssueIssueIdRoute: CustomerTTokenIssueIssueIdRoute,
+  CustomerTTokenKasirOrderIdRoute: CustomerTTokenKasirOrderIdRoute,
   CustomerTTokenPayPaymentIdRoute: CustomerTTokenPayPaymentIdRoute,
 }
 

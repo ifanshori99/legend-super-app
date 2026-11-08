@@ -1,23 +1,33 @@
 // An inline message that stays on the page (session waiting for the waiter,
-// sold-out items removed, zone closed). Status is icon + text, never color
-// alone (DESIGN.md §8). Not an error boundary: use ErrorState for failed loads.
+// sold-out items removed, zone closed). Q6 status pairs: subtle fill, ink
+// text, an icon and, for warning and danger, a 3px left rule, so status is
+// never color alone (DESIGN.md §8). Not an error boundary: use ErrorState for
+// failed loads.
 import type { ReactNode } from "react";
 import { cn } from "cn";
 import { CircleAlert, Clock, Info, TriangleAlert } from "lucide-react";
 
 const TONES = {
-  info: { icon: Info, box: "bg-info-subtle", iconClass: "text-info" },
+  info: {
+    icon: Info,
+    box: "bg-surface-2",
+    iconClass: "text-muted-foreground",
+  },
   warning: {
     icon: TriangleAlert,
-    box: "bg-warning-subtle",
+    box: "border-l-[3px] border-warning bg-warning-subtle",
     iconClass: "text-warning",
   },
   danger: {
     icon: CircleAlert,
-    box: "bg-danger-subtle",
+    box: "border-l-[3px] border-danger bg-danger-subtle",
     iconClass: "text-danger",
   },
-  waiting: { icon: Clock, box: "bg-info-subtle", iconClass: "text-info" },
+  waiting: {
+    icon: Clock,
+    box: "bg-surface-2",
+    iconClass: "text-muted-foreground",
+  },
 } as const;
 
 export function Notice({
@@ -36,8 +46,12 @@ export function Notice({
   const { icon: Icon, box, iconClass } = TONES[tone];
   return (
     <div
-      role="status"
-      className={cn("flex gap-3 rounded-container p-3", box, className)}
+      role={tone === "danger" ? "alert" : "status"}
+      className={cn(
+        "flex gap-3 rounded-qr-media p-3 text-foreground",
+        box,
+        className,
+      )}
     >
       <Icon
         className={cn("mt-0.5 size-5 shrink-0", iconClass)}

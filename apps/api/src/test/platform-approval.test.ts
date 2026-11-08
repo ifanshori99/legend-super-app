@@ -264,7 +264,7 @@ beforeAll(async () => {
   // A second tenant with one approval request (cross-tenant isolation).
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Approval test tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', '{}', $3)`,
+     VALUES ($1, $2, 'Approval test tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', '{"maxOutlets":1,"maxActiveEmployees":1,"maxDevices":1,"aiRequestsPerMonth":0,"whatsappCostCapIdr":0,"aiCostCapIdr":0,"emailCostCapIdr":0}', $3)`,
     [tenantB, `approval-${tenantB}`, tenantBUser],
   );
   await owner.query(
