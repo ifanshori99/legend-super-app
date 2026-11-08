@@ -10,13 +10,13 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 
 | Cabang | SHA | Tingkat | Alasan | Review Claude | Status |
 |---|---|---|---|---|---|
-| ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan Opus+architect jalan | Codex R1 |
-| ws/refund-approval | 5b6a707 | K | refund, approval | pasangan jalan | Codex R2 |
-| ws/journals | aafe04c | K | jurnal | pasangan jalan | Codex R3 |
+| ws/pos-shift | 580d0db | K | uang kas, 5 migration | pasangan: PERLU FIX (brief 79) | fix, lalu Codex R1 |
+| ws/refund-approval | 5b6a707 | K | refund, approval | pasangan: PERLU FIX (brief 81) | fix, lalu Codex R2 |
+| ws/journals | aafe04c | K | jurnal | pasangan: PERLU FIX (brief 78) | fix, lalu Codex R3 |
 | ws/payroll-pph21-tests | a0bf212+ | K | pajak | setelah G70ms lapor | Codex R4 |
-| ws/edc-framework | 5f797fe | K | pembayaran | pasangan jalan | Codex R5 |
-| ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan jalan | Codex R5 (tunggu detail sandbox DOIT) |
-| ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan jalan | Codex R6 |
+| ws/edc-framework | 5f797fe | K | pembayaran | pasangan: PERLU FIX (brief 76) | fix, lalu Codex R5 |
+| ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
+| ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
 | ws/edge-registry-pull (+device-registry 7caa7be) | 9932716 | K | auth device, sinkron offline | setelah G1u8c lapor | Codex R6 |
 | ws/stock-opname | e96f678+ | K | nilai stok, akses counter | architect sudah; fix G8zyp; Opus reviewer setelah fix | Codex R7 |
 | ws/recipe-bom | f0cec09 | K | HPP | pasangan gelombang 2 | Codex R7 |
@@ -28,13 +28,15 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/hris-leave | 576cb1e+ | S | cuti (Opus: domain rumit) | architect + Opus reviewer setelah G5klp lapor | gabung milestone |
 | ws/kds | 4a1f613 | S | dapur | architect sudah; fix brief 74 | gabung milestone |
 | ws/hris-sop | (G4ali) | S | SOP | Sonnet setelah lapor | gabung milestone |
-| ws/checklist-engine | e3ac2ef | S | checklist | Sonnet jalan | gabung milestone |
-| fix/worktree-shared | 4ab45cc | S | tooling | Sonnet jalan | gabung milestone |
+| ws/checklist-engine | e3ac2ef | S | checklist | Sonnet: PERLU FIX (board B11) | fix, lalu gabung |
+| fix/worktree-shared | 4ab45cc | S | tooling | Sonnet: LOLOS | DIGABUNG milestone 4478360 |
 | ws/print-agent | cb385ab | S | cetak (nomor dari receipt) | Opus reviewer gelombang 2 | gabung milestone |
 | ui/pos-kasir-shift | 91a6c5e | S | UI mock | founder Q12 dilewati, tanya ulang | tunggu founder |
 
 ### Catatan merge milestone (WAJIB, dari architect jurnal)
 Drizzle 0.45 hanya menjalankan migration dengan `when` > `created_at` migration terakhir yang sudah jalan. Migration cabang yang `when`-nya lebih tua dari 0067 di main akan DILEWATI diam-diam di DB yang sudah migrasi. Saat merge cabang ke `milestone/m1`: jangan sekadar ganti nomor; hapus migration cabang + snapshot lalu `drizzle-kit generate` ulang (when baru), SQL custom (RLS) disalin ke migration custom baru. Verifikasi: fresh DB + DB yang sudah di 0067 sama-sama lulus migrate.
+
+Keputusan CTO 21:40: Codex dijalankan pada SHA setelah fix review Claude, supaya kuota tidak dipakai untuk temuan yang sudah diketahui. Jendela Codex yang datang sebelum ada fix siap: pakai untuk cabang K berikutnya yang belum direview (recipe/BOM, tenant config export, AI tool catalog).
 
 ### Antrean second-opinion Codex v3.3
 
