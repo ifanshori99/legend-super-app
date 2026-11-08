@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-06 recipe / BOM, modifier rules, auto stock deduction (legend-db6).
+export * from "./recipe";

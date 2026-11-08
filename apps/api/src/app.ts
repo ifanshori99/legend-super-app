@@ -35,6 +35,8 @@ import { resolveHostname } from "./services/org-resolve.service";
 import { deviceTenantCredential } from "./services/platform-tenant.service";
 import { edgeRouteGuard } from "./edge/mode.ts";
 import { setPosOrderPromoPort } from "./services/pos-order-ports.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
 
 // Sensitive tenant writes (RBAC, approval matrix) append their audit row on
 // the caller's transaction (PRD §3.7, §6 B audit_logs; bead legend-wt33).
@@ -50,6 +52,8 @@ setTableSessionSettlementLookup(qrOrderSettlementLookup);
 // points tenders keep their fail-closed defaults (pos-order-ports.ts) until
 // those beads land.
 setPosOrderPromoPort(orderPromoPort);
+// INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
+setInventoryRecipeSource(recipeBomSource);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 

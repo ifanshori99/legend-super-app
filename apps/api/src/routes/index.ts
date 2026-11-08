@@ -9,6 +9,7 @@ import { healthRouter } from "./health.routes";
 import { inventoryRouter } from "./inventory.routes";
 import { createInventoryOpsRouter } from "./inventory-ops.routes.ts";
 import { createInventorySetupRouter } from "./inventory-setup.routes";
+import { createRecipeRouter } from "./recipe.routes.ts";
 import { createAccountingApFaRouter } from "./accounting-ap-fa.routes";
 import { meRouter } from "./me.routes";
 import { notesRouter } from "./notes.routes";
@@ -94,6 +95,8 @@ apiRouter.use("/inventory", inventoryRouter);
 apiRouter.use("/inventory", createInventorySetupRouter());
 // Production, waste, transfers, expiry/par alerts, suggestions (WS-06, legend-ugo).
 apiRouter.use("/inventory", createInventoryOpsRouter());
+// Recipes / BOM, modifier rules, auto stock deduction, duty meals (WS-06, legend-db6).
+apiRouter.use("/inventory", createRecipeRouter());
 // Customer payment links and intents (WS-05, PRD §3.13). Public by token.
 apiRouter.use("/payments/admin", paymentAdminRouter);
 apiRouter.use("/payments", paymentRouter);

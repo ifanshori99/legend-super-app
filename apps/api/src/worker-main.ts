@@ -24,6 +24,9 @@ import { expireDueApprovalRequests } from "./services/platform-approval.service.
 import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import { deliverRecipeDeductionEvent } from "./services/recipe-deduction.service.ts";
+import { setInventoryRecipeSource } from "./services/inventory-ops.shared.ts";
+import { recipeBomSource } from "./services/recipe-bom.service.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
@@ -57,6 +60,8 @@ const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
+// INV-02 (legend-db6): recipe source for the stock deduction consumer.
+setInventoryRecipeSource(recipeBomSource);
 const registry = new Pool({ connectionString: workerUrl, max: 1 });
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
@@ -109,6 +114,9 @@ const runtime = createWorkerRuntime({
           // expired/failed QR payment re-offers a code or voids the order.
           // Each consumer re-reads its locked rows, so a replay is a no-op.
           await deliverOrderPaymentEvent(context, event, tx);
+          // INV-02/KDS-07 (legend-db6): a paid order, a remake/comp and the
+          // day close deduct recipe stock in this consumption transaction.
+          await deliverRecipeDeductionEvent(context, event, tx);
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
