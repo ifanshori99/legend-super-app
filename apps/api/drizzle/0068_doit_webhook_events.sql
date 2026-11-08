@@ -1,3 +1,16 @@
+-- legend-b9i: the migrator may be a plain table owner (no SUPERUSER, no
+-- BYPASSRLS). FORCE ROW LEVEL SECURITY would apply the tenant policies to it,
+-- and with no app.tenant_id set they raise 42501 while the foreign keys below
+-- are validated (outlets, payment_intents, tenant_integrations). Lift FORCE for
+-- this transaction only and restore it before commit, like 0065 (drizzle
+-- applies pending migrations in one transaction, so no other session ever sees
+-- the lifted state).
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.tenant_integrations NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "gateway_webhook_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -32,4 +45,9 @@ CREATE UNIQUE INDEX "gateway_webhook_events_event_key" ON "gateway_webhook_event
 CREATE UNIQUE INDEX "gateway_webhook_events_rejected_hash_uq" ON "gateway_webhook_events" USING btree ("tenant_id","payload_hash") WHERE NOT "gateway_webhook_events"."signature_valid";--> statement-breakpoint
 CREATE INDEX "gateway_webhook_events_status_idx" ON "gateway_webhook_events" USING btree ("tenant_id","status","received_at");--> statement-breakpoint
 CREATE INDEX "gateway_webhook_events_provider_ref_idx" ON "gateway_webhook_events" USING btree ("tenant_id","provider","provider_ref");--> statement-breakpoint
-ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_gateway_integration_fk" FOREIGN KEY ("gateway_integration_id") REFERENCES "public"."tenant_integrations"("id") ON DELETE no action ON UPDATE no action;
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_gateway_integration_fk" FOREIGN KEY ("gateway_integration_id") REFERENCES "public"."tenant_integrations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE public.tenant_integrations FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.payment_intents FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
