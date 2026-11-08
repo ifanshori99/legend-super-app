@@ -10,7 +10,7 @@ It includes working accounts, a blank protected app page, a Notes feature that s
 
 ## Start here
 
-Install **Node.js 22.12 or newer** and **Docker Desktop**, then start Docker Desktop. Run `corepack enable` once if you don't have pnpm. Open this project folder in your AI editor and prompt:
+Install **Node.js 22.18 or newer** and **Docker Desktop**, then start Docker Desktop. Run `corepack enable` once if you don't have pnpm. Open this project folder in your AI editor and prompt:
 
 > Build a personal reading list with accounts. Set up this project, run it, and let each person manage their own books.
 

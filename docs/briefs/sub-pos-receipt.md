@@ -4,7 +4,7 @@ Worktree: `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/pos-re
 
 ## Already done (read, do not edit)
 
-- Schema: `apps/api/src/db/schema/pos-receipt.ts` — `receiptSequences`, `posReceipts`, `posReceiptLinks`, `posReceiptDeliveries`, `posInvoices`. DB triggers in `pos-receipt.custom.sql` (migrations 0063/0064): receipts never deleted, number immutable, only issued→voided + reprint_count++; receipt INSERT must match its sequence (prefix, device, outlet, `sequence_number <= last_number`); sequence last_number never decreases; links/invoices append-only.
+- Schema: `apps/api/src/db/schema/pos-receipt.ts` — `receiptSequences`, `posReceipts`, `posReceiptLinks`, `posReceiptDeliveries`, `posInvoices`. DB triggers in `pos-receipt.custom.sql` (migrations 0068/0069, renumbered from 0063/0064 after main merge): receipts never deleted, number immutable, only issued→voided + reprint_count++; receipt INSERT must match its sequence (prefix, device, outlet, `sequence_number <= last_number`); sequence last_number never decreases; links/invoices append-only.
 - Contract (final): `packages/shared/src/pos/receipts.ts` (formatReceiptNumber, nextReceiptNumber, mergeDeviceReceiptSequence, receiptGaps, assertGaplessReceipts), `packages/shared/src/pos/schemas.ts` (~1110-1175 receiptSequenceSchema/posReceiptSchema; ~1300-1490 document/invoice/delivery/link schemas), `packages/shared/src/pos/endpoints.ts:455-430` (issuePosReceipt, getPosReceiptDocument, getPosReceiptByNumber, createPosReceiptLink, createPosInvoice). Errors: `PosError("RECEIPT_SEQUENCE_GAP" | "RECEIPT_SEQUENCE_REGRESSION" | "RECEIPT_PREFIX_MISMATCH" | "RECEIPT_ALREADY_VOIDED")`, generic `CoreError(code, msgIndonesian)`.
 - Port to implement: `PosReceiptPort` in `apps/api/src/services/pos-order-ports.ts` (issueForSale / findForOrder / voidForOrder, all `(tx, ScopedTenantContext, …)` inside the caller's order transaction). Callers: `pos-order.service.ts:1107` (completion), `pos-order-corrections.ts:211` (linked void).
 - Patterns: `withTenant(db, context, tx => …)` in `db/tenant.ts`; `Tx` type from `services/permission-resolver.ts`; outlet permission middleware in `routes/pos-order.routes.ts:62-90`; public tenant-from-host routes in `routes/qr.routes.ts`; `sealSecret/openSecret(plaintext|sealed, aad)` in `lib/secrets.ts`; worker job example `worker/menu-print.job.ts`; `EmailProvider` / `emailRequestSchema` in `packages/shared/src/adapters/providers.ts`.
@@ -137,7 +137,7 @@ Run one file: from repo root `pnpm test` runs all; for one file see `scripts/tes
 
 ## Review fixes (round 1)
 
-Done by lead: trigger padding no longer truncates ordinals > 999999 (migration 0064); `pos_receipt_deliveries_email_check` now lets an email row drop `destination_sealed` once it is not `queued` (0063).
+Done by lead: trigger padding no longer truncates ordinals > 999999 (migration 0069); `pos_receipt_deliveries_email_check` now lets an email row drop `destination_sealed` once it is not `queued` (0068).
 
 F-B (files: services/pos-receipt-delivery.service.ts, routes/pos-receipt.routes.ts, worker/pos-receipt-email.job.ts, app.ts, middleware/public-rate-limit.ts):
 
@@ -160,7 +160,7 @@ F-D (file: test/pos-receipt.test.ts only): add tests for: ordinal 1,000,000 inse
 
 ## Round 2 fixes (second-opinion; CTO brief `legend/docs/briefs/55-fix-pos-receipt-round2.md`)
 
-Done by lead: `pos_receipts.outlet_snapshot` jsonb NOT NULL, type `PosReceiptOutletSnapshot = { outletName; outletAddress; legalName: string | null; npwpLast4: string | null }` exported from `db/schema/pos-receipt.ts`; migration 0063 regenerated. The retained trigger already freezes it.
+Done by lead: `pos_receipts.outlet_snapshot` jsonb NOT NULL, type `PosReceiptOutletSnapshot = { outletName; outletAddress; legalName: string | null; npwpLast4: string | null }` exported from `db/schema/pos-receipt.ts`; migration 0068 regenerated. The retained trigger already freezes it.
 
 R2-A (file: `services/pos-receipt.service.ts` only):
 

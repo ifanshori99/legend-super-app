@@ -21,9 +21,8 @@ import {
   createUlid,
   idr,
   toIsoDateTime,
+  ulidSchema,
   ulidToUuid,
-  uuidSchema,
-  uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
   type UserId,
@@ -40,6 +39,7 @@ import {
   type PosTender,
 } from "@starter/shared/pos";
 import {
+  approvalRequests,
   domainEventOutbox,
   floorZones,
   menuItems,
@@ -70,7 +70,7 @@ import {
   type PosBillLine,
 } from "./pos-order-pricing.ts";
 import { posReceiptPort } from "./pos-order-ports.ts";
-import { depositCreditFor } from "./qr-order-ports.ts";
+import { depositCreditFor, lockSessionDeposit } from "./qr-order-ports.ts";
 
 export type OrderRow = typeof orders.$inferSelect;
 export type OrderItemRow = typeof orderItems.$inferSelect;
@@ -109,6 +109,7 @@ const AUDIT_SAFE_FIELDS = [
   "reason",
   "approvedBy",
   "approvalRequestId",
+  "overrideId",
   "receiptNumber",
   "version",
 ] as const;
@@ -393,6 +394,7 @@ export async function bumpPos(
       | "voidReasonNote"
       | "voidApprovedBy"
       | "voidApprovalRequestId"
+      | "voidOverrideId"
     >
   > = {},
 ): Promise<PosRow> {
@@ -644,12 +646,16 @@ const APPROVAL_ERROR = {
 
 /**
  * Verifies the supervisor approval a void / discount / refund names and
- * consumes it (one approval, one action). `approvalRequestId` is either the
- * `pos_overrides` row id (UUID form of its ULID; supervisor PIN) or the WS-01
- * approval chain id of a phone approval. The override must be approved, on
- * this outlet, for this action and object, requested by the caller, approved
- * by `approvedBy` (never the requester, AUTH-06) and worth at least the value
- * acted on. Anything else is the contract's *_APPROVAL_REQUIRED (fail closed).
+ * consumes it (one approval, one action). `overrideId` is the `pos_overrides`
+ * row (ULID) the supervisor approved, by PIN or by phone (legend-0gy1: the
+ * client names the exact row; there is no "newest unused override" guess). The
+ * override must be approved, on this outlet, for this action and object,
+ * requested by the caller, approved by `approvedBy` (never the requester,
+ * AUTH-06), fresh (approved within PIN_APPROVAL_WINDOW_MS of `now`, for both
+ * methods; a phone approval counts from its last chain level's `decidedAt`) and worth at least the value acted on. Anything else is the
+ * contract's *_APPROVAL_REQUIRED (fail closed). Returns the override row:
+ * callers store `override.id` and `override.approvalRequestId` (the WS-01 chain
+ * id, null for a PIN) on rows, events and audit, never client input.
  */
 export async function consumeApproval(
   tx: Tx,
@@ -663,79 +669,34 @@ export async function consumeApproval(
     objectId: string;
     requesterId: string;
     approvedBy: string;
-    approvalRequestId: string;
+    overrideId: string;
     minValueIdr: number;
+    now: Date;
   },
-): Promise<void> {
+): Promise<typeof posOverrides.$inferSelect> {
   const refuse = () => new PosError(APPROVAL_ERROR[input.action]);
-  const requestId = uuidSchema.safeParse(input.approvalRequestId);
-  if (!requestId.success) throw refuse();
+  const overrideId = ulidSchema.safeParse(input.overrideId);
+  if (!overrideId.success) throw refuse();
   if (input.approvedBy.toLowerCase() === input.requesterId.toLowerCase())
     throw refuse();
-  let overrideIdFromRequest: string | null = null;
-  try {
-    overrideIdFromRequest = uuidToUlid(requestId.data);
-  } catch {
-    overrideIdFromRequest = null;
-  }
   const tenantId = context.tenant.tenantId;
-  const candidates = await tx
+  // FOR UPDATE: two concurrent uses of one override queue here, so the second
+  // sees the first one's `pos_order_approval_uses` row.
+  const [override] = await tx
     .select()
     .from(posOverrides)
     .where(
       and(
         eq(posOverrides.tenantId, tenantId),
         eq(posOverrides.outletId, input.outletId),
-        eq(posOverrides.status, "approved"),
-        eq(posOverrides.action, input.action),
-        eq(posOverrides.objectType, input.objectType),
-        sql`lower(${posOverrides.objectId}) = ${input.objectId.toLowerCase()}`,
-        sql`lower(${posOverrides.requestedBy}) = ${input.requesterId.toLowerCase()}`,
+        eq(posOverrides.id, overrideId.data),
       ),
     )
-    .orderBy(desc(posOverrides.createdAt))
     .for("update");
-  // 1. The named approval: phone chain id, or the override id itself.
-  // 2. Decision (contract gap: a PIN override has no approval request and its
-  //    ULID id rarely parses as an RFC UUID): the newest unused PIN override
-  //    for exactly this action, object, requester and approver, at most
-  //    PIN_APPROVAL_WINDOW_MS old. Single use is enforced below either way.
-  // Only the candidates' uses (not the tenant's whole approval ledger).
-  const used = new Set(
-    candidates.length === 0
-      ? []
-      : (
-          await tx
-            .select({ overrideId: posOrderApprovalUses.overrideId })
-            .from(posOrderApprovalUses)
-            .where(
-              and(
-                eq(posOrderApprovalUses.tenantId, tenantId),
-                inArray(
-                  posOrderApprovalUses.overrideId,
-                  candidates.map((row) => row.id),
-                ),
-              ),
-            )
-        ).map((row) => row.overrideId),
-  );
-  const fresh = Date.now() - PIN_APPROVAL_WINDOW_MS;
-  const override =
-    candidates.find(
-      (row) =>
-        row.approvalRequestId === requestId.data ||
-        (overrideIdFromRequest !== null && row.id === overrideIdFromRequest),
-    ) ??
-    candidates.find(
-      (row) =>
-        row.method === "supervisor_pin" &&
-        !used.has(row.id) &&
-        row.createdAt.getTime() >= fresh &&
-        row.valueIdr >= input.minValueIdr &&
-        row.approvedBy?.toLowerCase() === input.approvedBy.toLowerCase(),
-    );
   if (
     !override ||
+    override.status !== "approved" ||
+    override.action !== input.action ||
     override.approvedBy === null ||
     override.approvedBy.toLowerCase() !== input.approvedBy.toLowerCase() ||
     override.requestedBy.toLowerCase() !== input.requesterId.toLowerCase() ||
@@ -744,6 +705,32 @@ export async function consumeApproval(
     override.objectId.toLowerCase() !== input.objectId.toLowerCase() ||
     override.valueIdr < input.minValueIdr
   )
+    throw refuse();
+  // Freshness is measured from the approval, against the caller's injected
+  // clock, never Date.now(). A PIN override is approved when it is created, so
+  // `resolvedAt` (the row has no `approvedAt`; `createdAt` if missing) is the
+  // approval. A phone approval is NOT: its `resolvedAt` is when the consumer
+  // or poll processed it, which can be long after the supervisor decided
+  // (legend-0gy1 round 2). It is as old as the last level of its WS-01
+  // `approval_requests` chain was decided; no decided chain = fail closed.
+  let approvedAt: Date;
+  if (override.method === "supervisor_phone") {
+    if (override.approvalRequestId === null) throw refuse();
+    const [last] = await tx
+      .select({ decidedAt: approvalRequests.decidedAt })
+      .from(approvalRequests)
+      .where(
+        and(
+          eq(approvalRequests.tenantId, tenantId),
+          eq(approvalRequests.chainId, override.approvalRequestId),
+        ),
+      )
+      .orderBy(desc(approvalRequests.level))
+      .limit(1);
+    if (!last?.decidedAt) throw refuse();
+    approvedAt = last.decidedAt;
+  } else approvedAt = override.resolvedAt ?? override.createdAt;
+  if (input.now.getTime() - approvedAt.getTime() > PIN_APPROVAL_WINDOW_MS)
     throw refuse();
   const consumed = await tx
     .insert(posOrderApprovalUses)
@@ -757,9 +744,10 @@ export async function consumeApproval(
     .onConflictDoNothing()
     .returning({ id: posOrderApprovalUses.id });
   if (consumed.length === 0) throw refuse();
+  return override;
 }
 
-/** PRD silent: a supervisor PIN approval is used within 15 minutes. */
+/** PRD silent: an approved override (PIN or phone) is used within 15 minutes. */
 const PIN_APPROVAL_WINDOW_MS = 15 * 60_000;
 
 // ---- Repricing ------------------------------------------------------------------
@@ -798,6 +786,9 @@ async function depositFor(
   const tenantId = context.tenant.tenantId;
   const credit = await depositCreditFor(tx, tenantId, order.tableSessionId);
   if (credit <= 0) return 0;
+  // legend-94qt: one lock per session shared with the QR checkout, held until
+  // commit, so concurrent reprices never apply the same remaining credit twice.
+  await lockSessionDeposit(tx, tenantId, order.tableSessionId);
   const [used] = await tx
     .select({
       used: sql<string>`coalesce(sum(${orders.depositAppliedIdr}), 0)::text`,
@@ -997,6 +988,7 @@ export async function orderDetail(
     voidApprovedBy: order.status === "voided" ? pos.voidApprovedBy : null,
     voidApprovalRequestId:
       order.status === "voided" ? pos.voidApprovalRequestId : null,
+    voidOverrideId: order.status === "voided" ? pos.voidOverrideId : null,
     items: items.map(({ item, pos: extra }) => {
       const voided = item.status === "voided";
       return {
@@ -1030,6 +1022,7 @@ export async function orderDetail(
         voidApprovalRequestId: voided
           ? (extra?.voidApprovalRequestId ?? null)
           : null,
+        voidOverrideId: voided ? (extra?.voidOverrideId ?? null) : null,
         costSnapshotIdr: item.costSnapshotIdr ?? 0,
         createdAt: item.createdAt.toISOString(),
       };
@@ -1048,6 +1041,7 @@ export async function orderDetail(
       appliedBy: row.appliedBy,
       approvedBy: row.approvedBy,
       approvalRequestId: row.approvalRequestId,
+      overrideId: row.overrideId,
       createdAt: row.createdAt.toISOString(),
     })),
     receipt,

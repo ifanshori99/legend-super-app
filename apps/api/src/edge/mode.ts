@@ -27,6 +27,8 @@
 // every other path answers 404 on the edge. Nothing is rendered from the
 // internet, so /pos, /kds, /expo, /pickup, /fasilitas, /operasional and
 // /wifi keep working offline; /wifi is served `no-store` (§5 site map).
+import type { IncomingMessage, Server } from "node:http";
+import type { Duplex } from "node:stream";
 import type { RequestHandler } from "express";
 import { HttpError } from "../lib/http-error.ts";
 
@@ -41,18 +43,39 @@ export const EDGE_WEB_PREFIXES = [
   "/wifi",
 ] as const;
 
-/** API prefixes served on the edge. Deny by default for everything else. */
+/**
+ * API paths served on the edge. Deny by default for everything else.
+ *
+ * Each entry matches on whole segments: the path itself or anything below
+ * it. A `:name` segment matches exactly one non-empty segment (an id).
+ * Entries are as narrow as the edge needs (legend-zinn): a broad prefix such
+ * as `/api/auth` or `/api/outlets` would serve Better Auth sign-up, its admin
+ * plugin and every outlet back-office router against the LOCAL replica, and
+ * writes there never sync to the cloud.
+ */
 export const EDGE_API_PREFIXES = [
   "/api/health",
   "/api/edge",
   // Staff sign-in and device sessions against the local replica (AUTH-06).
-  "/api/auth",
+  // Only sign-in, sign-out, the session read, the caller's identity, device
+  // sessions and the MFA step of sign-in. Sign-up, the Better Auth admin
+  // plugin (/api/auth/admin/*), magic links, Google, WhatsApp/email login
+  // challenges and MFA enrolment need the cloud (legend-zinn).
+  "/api/auth/sign-in/email",
+  "/api/auth/sign-out",
+  "/api/auth/get-session",
+  "/api/auth/me",
+  "/api/auth/sessions",
+  "/api/auth/mfa/verify",
   "/api/me",
   "/api/staff-pins",
   "/api/pos-overrides",
   // Floor and table sessions for captain order (§4 Alur F step 3).
   "/api/floor",
-  "/api/outlets",
+  // Only the operational outlet routers: POS orders and the floor plan
+  // (legend-zinn). Add KDS/expo/pickup subpaths here when their routers land.
+  "/api/outlets/:outletId/pos",
+  "/api/outlets/:outletId/floor",
   "/api/tables",
   "/api/table-sessions",
   // Facility boards and access (FAC, offline smart lock via the edge).
@@ -65,7 +88,13 @@ export const EDGE_ONLY_API_PREFIXES = ["/api/edge"] as const;
 export type ApiRouteClass = "edge_only" | "edge_and_cloud" | "cloud_only";
 
 function matchesPrefix(path: string, prefix: string): boolean {
-  return path === prefix || path.startsWith(`${prefix}/`);
+  const pathSegments = path.split("/");
+  const prefixSegments = prefix.split("/");
+  if (pathSegments.length < prefixSegments.length) return false;
+  return prefixSegments.every((segment, index) => {
+    const actual = pathSegments[index] ?? "";
+    return segment.startsWith(":") ? actual.length > 0 : actual === segment;
+  });
 }
 
 /** Classifies an absolute request path (no query string). */
@@ -80,6 +109,69 @@ export function classifyApiPath(path: string): ApiRouteClass {
   return "cloud_only";
 }
 
+export type RouteRefusal = {
+  readonly status: 400 | 404;
+  readonly code: "BAD_REQUEST_TARGET" | "CLOUD_ONLY_ROUTE" | "EDGE_ONLY_ROUTE";
+  readonly message: string;
+};
+
+/**
+ * The route split for one raw request target (`req.originalUrl` or an
+ * upgrade request's `url`): null to serve it, otherwise the refusal. Shared
+ * by the HTTP guard and the WebSocket upgrade guard, so both apply the same
+ * rule (legend-zinn).
+ */
+export function edgeRouteRefusal(
+  raw: string,
+  options: { edgeMode: boolean },
+): RouteRefusal | null {
+  // Only origin-form request targets ("/path"). An absolute-form target
+  // ("http://host/api/...") would skip the prefix check below while the
+  // router still resolves its pathname (review fix: guard bypass).
+  if (!raw.startsWith("/"))
+    return {
+      status: 400,
+      code: "BAD_REQUEST_TARGET",
+      message: "Alamat permintaan tidak valid.",
+    };
+  const path = raw.split("?", 1)[0] ?? "";
+  // Dot segments ("/../", "%2e%2e") and backslashes are resolved by WHATWG
+  // URL parsing, which Better Auth (and ws upgrade handlers) apply to the
+  // target, while the prefix check below reads it raw: an allowed prefix
+  // followed by "/../admin" would reach a cloud-only route. A target that
+  // URL parsing would rewrite is refused outright (legend-zinn).
+  if (!isCanonicalPath(path))
+    return {
+      status: 400,
+      code: "BAD_REQUEST_TARGET",
+      message: "Alamat permintaan tidak valid.",
+    };
+  if (!path.toLowerCase().startsWith("/api")) return null;
+  const routeClass = classifyApiPath(path);
+  if (options.edgeMode && routeClass === "cloud_only")
+    return {
+      status: 404,
+      code: "CLOUD_ONLY_ROUTE",
+      message: "Layanan ini hanya tersedia di cloud.",
+    };
+  if (!options.edgeMode && routeClass === "edge_only")
+    return {
+      status: 404,
+      code: "EDGE_ONLY_ROUTE",
+      message: "Layanan ini hanya tersedia di edge node outlet.",
+    };
+  return null;
+}
+
+function isCanonicalPath(path: string): boolean {
+  if (path.includes("\\")) return false;
+  try {
+    return new URL(path, "http://route-split.invalid").pathname === path;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Mount once, before the API routers (and before Better Auth's catch-all so
  * /api/auth is covered by the same rule). Uses the original URL, so it works
@@ -87,31 +179,51 @@ export function classifyApiPath(path: string): ApiRouteClass {
  */
 export function edgeRouteGuard(options: { edgeMode: boolean }): RequestHandler {
   return (req, _res, next) => {
-    const raw = req.originalUrl ?? req.url;
-    // Only origin-form request targets ("/path"). An absolute-form target
-    // ("http://host/api/...") would skip the prefix check below while the
-    // router still resolves its pathname (review fix: guard bypass).
-    if (!raw.startsWith("/"))
-      throw new HttpError(
-        400,
-        "BAD_REQUEST_TARGET",
-        "Alamat permintaan tidak valid.",
-      );
-    const path = raw.split("?", 1)[0] ?? "";
-    if (!path.toLowerCase().startsWith("/api")) return next();
-    const routeClass = classifyApiPath(path);
-    if (options.edgeMode && routeClass === "cloud_only")
-      throw new HttpError(
-        404,
-        "CLOUD_ONLY_ROUTE",
-        "Layanan ini hanya tersedia di cloud.",
-      );
-    if (!options.edgeMode && routeClass === "edge_only")
-      throw new HttpError(
-        404,
-        "EDGE_ONLY_ROUTE",
-        "Layanan ini hanya tersedia di edge node outlet.",
-      );
+    const refusal = edgeRouteRefusal(req.originalUrl ?? req.url, options);
+    if (refusal)
+      throw new HttpError(refusal.status, refusal.code, refusal.message);
     next();
+  };
+}
+
+const STATUS_TEXT = { 400: "Bad Request", 404: "Not Found" } as const;
+
+/**
+ * WebSocket upgrades never pass through Express, so edgeRouteGuard does not
+ * see them: on the edge the notification stream (/api/notifications, cloud
+ * only over HTTP) would still upgrade (legend-zinn). This applies the same
+ * route split to every `upgrade` event of the server, whatever listener
+ * handles it and whenever it was attached: a refused upgrade is answered and
+ * destroyed before any listener runs.
+ */
+export function guardEdgeUpgrades(
+  server: Server,
+  options: { edgeMode: boolean },
+): () => void {
+  const emit = server.emit;
+  const guarded = function (
+    this: Server,
+    event: string | symbol,
+    ...args: unknown[]
+  ): boolean {
+    if (event === "upgrade") {
+      const [request, socket] = args as [IncomingMessage, Duplex];
+      const refusal = edgeRouteRefusal(request.url ?? "", options);
+      if (refusal) {
+        if (!socket.destroyed) {
+          // Destroy once the refusal is flushed (as ws abortHandshake does).
+          socket.once("finish", () => socket.destroy());
+          socket.end(
+            `HTTP/1.1 ${refusal.status} ${STATUS_TEXT[refusal.status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+          );
+        }
+        return true;
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean;
+  } as Server["emit"];
+  server.emit = guarded;
+  return () => {
+    if (server.emit === guarded) server.emit = emit;
   };
 }

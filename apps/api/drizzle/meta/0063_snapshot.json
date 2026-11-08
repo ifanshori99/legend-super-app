@@ -1,5 +1,5 @@
 {
-  "id": "b7d520e4-434b-4c23-8b4c-a78449b3f1bc",
+  "id": "b19fed12-5408-4f0a-87e6-d41d0607ee4f",
   "prevId": "72500ebb-2ca7-4201-928e-db949562135e",
   "version": "7",
   "dialect": "postgresql",
@@ -11012,6 +11012,285 @@
       },
       "isRLSEnabled": false
     },
+    "public.fiscal_period_snapshot_lines": {
+      "name": "fiscal_period_snapshot_lines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot_id": {
+          "name": "snapshot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "debit_idr": {
+          "name": "debit_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        },
+        "credit_idr": {
+          "name": "credit_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "0"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "fiscal_period_snapshot_lines_tenant_id_tenants_id_fk": {
+          "name": "fiscal_period_snapshot_lines_tenant_id_tenants_id_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshot_lines_snapshot_fk": {
+          "name": "fiscal_period_snapshot_lines_snapshot_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "fiscal_period_snapshots",
+          "columnsFrom": [
+            "tenant_id",
+            "snapshot_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshot_lines_account_fk": {
+          "name": "fiscal_period_snapshot_lines_account_fk",
+          "tableFrom": "fiscal_period_snapshot_lines",
+          "tableTo": "chart_of_accounts",
+          "columnsFrom": [
+            "tenant_id",
+            "account_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "fiscal_period_snapshot_lines_snapshot_account_key": {
+          "name": "fiscal_period_snapshot_lines_snapshot_account_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "snapshot_id",
+            "account_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "fiscal_period_snapshot_lines_amounts_check": {
+          "name": "fiscal_period_snapshot_lines_amounts_check",
+          "value": "\"fiscal_period_snapshot_lines\".\"debit_idr\" >= 0 AND \"fiscal_period_snapshot_lines\".\"credit_idr\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.fiscal_period_snapshots": {
+      "name": "fiscal_period_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "legal_entity_id": {
+          "name": "legal_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fiscal_period_id": {
+          "name": "fiscal_period_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period": {
+          "name": "period",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "taken_by": {
+          "name": "taken_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "taken_at": {
+          "name": "taken_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "fiscal_period_snapshots_idempotency_key": {
+          "name": "fiscal_period_snapshots_idempotency_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"fiscal_period_snapshots\".\"idempotency_key\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "fiscal_period_snapshots_tenant_id_tenants_id_fk": {
+          "name": "fiscal_period_snapshots_tenant_id_tenants_id_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshots_legal_entity_fk": {
+          "name": "fiscal_period_snapshots_legal_entity_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "legal_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "legal_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "fiscal_period_snapshots_fiscal_period_fk": {
+          "name": "fiscal_period_snapshots_fiscal_period_fk",
+          "tableFrom": "fiscal_period_snapshots",
+          "tableTo": "fiscal_periods",
+          "columnsFrom": [
+            "tenant_id",
+            "fiscal_period_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "fiscal_period_snapshots_tenant_period_version_key": {
+          "name": "fiscal_period_snapshots_tenant_period_version_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "fiscal_period_id",
+            "version"
+          ]
+        },
+        "fiscal_period_snapshots_tenant_id_key": {
+          "name": "fiscal_period_snapshots_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "fiscal_period_snapshots_period_check": {
+          "name": "fiscal_period_snapshots_period_check",
+          "value": "\"fiscal_period_snapshots\".\"period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'"
+        },
+        "fiscal_period_snapshots_version_check": {
+          "name": "fiscal_period_snapshots_version_check",
+          "value": "\"fiscal_period_snapshots\".\"version\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.fiscal_periods": {
       "name": "fiscal_periods",
       "schema": "",
@@ -11719,6 +11998,228 @@
         "journal_lines_line_no_check": {
           "name": "journal_lines_line_no_check",
           "value": "\"journal_lines\".\"line_no\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.period_reopen_requests": {
+      "name": "period_reopen_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "legal_entity_id": {
+          "name": "legal_entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fiscal_period_id": {
+          "name": "fiscal_period_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period": {
+          "name": "period",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decision_note": {
+          "name": "decision_note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "period_reopen_requests_pending_key": {
+          "name": "period_reopen_requests_pending_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "fiscal_period_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"period_reopen_requests\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "period_reopen_requests_entity_idx": {
+          "name": "period_reopen_requests_entity_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "legal_entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requested_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "period_reopen_requests_tenant_id_tenants_id_fk": {
+          "name": "period_reopen_requests_tenant_id_tenants_id_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "period_reopen_requests_legal_entity_fk": {
+          "name": "period_reopen_requests_legal_entity_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "legal_entities",
+          "columnsFrom": [
+            "tenant_id",
+            "legal_entity_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "period_reopen_requests_fiscal_period_fk": {
+          "name": "period_reopen_requests_fiscal_period_fk",
+          "tableFrom": "period_reopen_requests",
+          "tableTo": "fiscal_periods",
+          "columnsFrom": [
+            "tenant_id",
+            "fiscal_period_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "period_reopen_requests_tenant_id_key": {
+          "name": "period_reopen_requests_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "period_reopen_requests_period_check": {
+          "name": "period_reopen_requests_period_check",
+          "value": "\"period_reopen_requests\".\"period\" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'"
+        },
+        "period_reopen_requests_status_check": {
+          "name": "period_reopen_requests_status_check",
+          "value": "\"period_reopen_requests\".\"status\" IN ('pending', 'approved', 'rejected', 'cancelled')"
+        },
+        "period_reopen_requests_reason_check": {
+          "name": "period_reopen_requests_reason_check",
+          "value": "length(btrim(\"period_reopen_requests\".\"reason\")) > 0"
+        },
+        "period_reopen_requests_decided_check": {
+          "name": "period_reopen_requests_decided_check",
+          "value": "(\"period_reopen_requests\".\"status\" IN ('approved', 'rejected')) = (\"period_reopen_requests\".\"decided_by\" IS NOT NULL AND \"period_reopen_requests\".\"decided_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -32280,1023 +32781,6 @@
         "pos_orders_version_check": {
           "name": "pos_orders_version_check",
           "value": "\"pos_orders\".\"version\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.pos_invoices": {
-      "name": "pos_invoices",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "receipt_id": {
-          "name": "receipt_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "billed_to_name": {
-          "name": "billed_to_name",
-          "type": "varchar(150)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "billed_to_address": {
-          "name": "billed_to_address",
-          "type": "varchar(300)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "billed_to_npwp": {
-          "name": "billed_to_npwp",
-          "type": "varchar(25)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "due_date": {
-          "name": "due_date",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "notes": {
-          "name": "notes",
-          "type": "varchar(500)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pos_invoices_order_idx": {
-          "name": "pos_invoices_order_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pos_invoices_tenant_id_tenants_id_fk": {
-          "name": "pos_invoices_tenant_id_tenants_id_fk",
-          "tableFrom": "pos_invoices",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_invoices_outlet_id_outlets_id_fk": {
-          "name": "pos_invoices_outlet_id_outlets_id_fk",
-          "tableFrom": "pos_invoices",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_invoices_receipt_fk": {
-          "name": "pos_invoices_receipt_fk",
-          "tableFrom": "pos_invoices",
-          "tableTo": "pos_receipts",
-          "columnsFrom": [
-            "tenant_id",
-            "receipt_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_invoices_pos_order_fk": {
-          "name": "pos_invoices_pos_order_fk",
-          "tableFrom": "pos_invoices",
-          "tableTo": "pos_orders",
-          "columnsFrom": [
-            "tenant_id",
-            "order_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "order_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_invoices_outlet_fk": {
-          "name": "pos_invoices_outlet_fk",
-          "tableFrom": "pos_invoices",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "pos_invoices_tenant_id_id_key": {
-          "name": "pos_invoices_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "pos_invoices_idempotency_key": {
-          "name": "pos_invoices_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "order_id",
-            "idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.pos_receipt_deliveries": {
-      "name": "pos_receipt_deliveries",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "receipt_id": {
-          "name": "receipt_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "channel": {
-          "name": "channel",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_masked": {
-          "name": "destination_masked",
-          "type": "varchar(120)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "destination_sealed": {
-          "name": "destination_sealed",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "sent_at": {
-          "name": "sent_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_reason": {
-          "name": "failure_reason",
-          "type": "varchar(200)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "requested_by": {
-          "name": "requested_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pos_receipt_deliveries_queue_idx": {
-          "name": "pos_receipt_deliveries_queue_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "channel",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pos_receipt_deliveries_tenant_id_tenants_id_fk": {
-          "name": "pos_receipt_deliveries_tenant_id_tenants_id_fk",
-          "tableFrom": "pos_receipt_deliveries",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_deliveries_outlet_id_outlets_id_fk": {
-          "name": "pos_receipt_deliveries_outlet_id_outlets_id_fk",
-          "tableFrom": "pos_receipt_deliveries",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_deliveries_receipt_fk": {
-          "name": "pos_receipt_deliveries_receipt_fk",
-          "tableFrom": "pos_receipt_deliveries",
-          "tableTo": "pos_receipts",
-          "columnsFrom": [
-            "tenant_id",
-            "receipt_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_deliveries_outlet_fk": {
-          "name": "pos_receipt_deliveries_outlet_fk",
-          "tableFrom": "pos_receipt_deliveries",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "pos_receipt_deliveries_tenant_id_id_key": {
-          "name": "pos_receipt_deliveries_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "pos_receipt_deliveries_idempotency_key": {
-          "name": "pos_receipt_deliveries_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "receipt_id",
-            "idempotency_key",
-            "channel"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "pos_receipt_deliveries_channel_check": {
-          "name": "pos_receipt_deliveries_channel_check",
-          "value": "\"pos_receipt_deliveries\".\"channel\" IN ('print', 'link', 'email')"
-        },
-        "pos_receipt_deliveries_status_check": {
-          "name": "pos_receipt_deliveries_status_check",
-          "value": "\"pos_receipt_deliveries\".\"status\" IN ('queued', 'sent', 'failed')"
-        },
-        "pos_receipt_deliveries_sent_check": {
-          "name": "pos_receipt_deliveries_sent_check",
-          "value": "(\"pos_receipt_deliveries\".\"status\" = 'sent') = (\"pos_receipt_deliveries\".\"sent_at\" IS NOT NULL)"
-        },
-        "pos_receipt_deliveries_failed_check": {
-          "name": "pos_receipt_deliveries_failed_check",
-          "value": "\"pos_receipt_deliveries\".\"status\" <> 'failed' OR \"pos_receipt_deliveries\".\"failure_reason\" IS NOT NULL"
-        },
-        "pos_receipt_deliveries_email_check": {
-          "name": "pos_receipt_deliveries_email_check",
-          "value": "(\"pos_receipt_deliveries\".\"channel\" <> 'email' AND \"pos_receipt_deliveries\".\"destination_sealed\" IS NULL)\n        OR (\"pos_receipt_deliveries\".\"channel\" = 'email' AND (\"pos_receipt_deliveries\".\"status\" <> 'queued' OR \"pos_receipt_deliveries\".\"destination_sealed\" IS NOT NULL))"
-        },
-        "pos_receipt_deliveries_attempts_check": {
-          "name": "pos_receipt_deliveries_attempts_check",
-          "value": "\"pos_receipt_deliveries\".\"attempts\" BETWEEN 0 AND 20"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.pos_receipt_links": {
-      "name": "pos_receipt_links",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "receipt_id": {
-          "name": "receipt_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token_hash": {
-          "name": "token_hash",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_by": {
-          "name": "created_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "pos_receipt_links_tenant_id_tenants_id_fk": {
-          "name": "pos_receipt_links_tenant_id_tenants_id_fk",
-          "tableFrom": "pos_receipt_links",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_links_outlet_id_outlets_id_fk": {
-          "name": "pos_receipt_links_outlet_id_outlets_id_fk",
-          "tableFrom": "pos_receipt_links",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_links_receipt_fk": {
-          "name": "pos_receipt_links_receipt_fk",
-          "tableFrom": "pos_receipt_links",
-          "tableTo": "pos_receipts",
-          "columnsFrom": [
-            "tenant_id",
-            "receipt_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipt_links_outlet_fk": {
-          "name": "pos_receipt_links_outlet_fk",
-          "tableFrom": "pos_receipt_links",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "pos_receipt_links_tenant_id_id_key": {
-          "name": "pos_receipt_links_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "pos_receipt_links_token_key": {
-          "name": "pos_receipt_links_token_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "token_hash"
-          ]
-        },
-        "pos_receipt_links_idempotency_key": {
-          "name": "pos_receipt_links_idempotency_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "receipt_id",
-            "idempotency_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "pos_receipt_links_token_hash_check": {
-          "name": "pos_receipt_links_token_hash_check",
-          "value": "\"pos_receipt_links\".\"token_hash\" ~ '^[0-9a-f]{64}$'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.pos_receipts": {
-      "name": "pos_receipts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sequence_id": {
-          "name": "sequence_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "device_id": {
-          "name": "device_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "number": {
-          "name": "number",
-          "type": "varchar(22)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sequence_number": {
-          "name": "sequence_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(10)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'issued'"
-        },
-        "issued_at": {
-          "name": "issued_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "voided_at": {
-          "name": "voided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "void_reason": {
-          "name": "void_reason",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "voided_by": {
-          "name": "voided_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reprint_count": {
-          "name": "reprint_count",
-          "type": "smallint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "outlet_snapshot": {
-          "name": "outlet_snapshot",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pos_receipts_outlet_issued_idx": {
-          "name": "pos_receipts_outlet_issued_idx",
-          "columns": [
-            {
-              "expression": "tenant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outlet_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issued_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pos_receipts_tenant_id_tenants_id_fk": {
-          "name": "pos_receipts_tenant_id_tenants_id_fk",
-          "tableFrom": "pos_receipts",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipts_outlet_id_outlets_id_fk": {
-          "name": "pos_receipts_outlet_id_outlets_id_fk",
-          "tableFrom": "pos_receipts",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipts_sequence_fk": {
-          "name": "pos_receipts_sequence_fk",
-          "tableFrom": "pos_receipts",
-          "tableTo": "receipt_sequences",
-          "columnsFrom": [
-            "tenant_id",
-            "sequence_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipts_pos_order_fk": {
-          "name": "pos_receipts_pos_order_fk",
-          "tableFrom": "pos_receipts",
-          "tableTo": "pos_orders",
-          "columnsFrom": [
-            "tenant_id",
-            "order_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "order_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "pos_receipts_outlet_fk": {
-          "name": "pos_receipts_outlet_fk",
-          "tableFrom": "pos_receipts",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "pos_receipts_tenant_id_id_key": {
-          "name": "pos_receipts_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "pos_receipts_order_key": {
-          "name": "pos_receipts_order_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "order_id"
-          ]
-        },
-        "pos_receipts_sequence_ordinal_key": {
-          "name": "pos_receipts_sequence_ordinal_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "sequence_id",
-            "sequence_number"
-          ]
-        },
-        "pos_receipts_number_key": {
-          "name": "pos_receipts_number_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "number"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "pos_receipts_status_check": {
-          "name": "pos_receipts_status_check",
-          "value": "\"pos_receipts\".\"status\" IN ('issued', 'voided')"
-        },
-        "pos_receipts_sequence_number_check": {
-          "name": "pos_receipts_sequence_number_check",
-          "value": "\"pos_receipts\".\"sequence_number\" BETWEEN 1 AND 999999999"
-        },
-        "pos_receipts_reprint_count_check": {
-          "name": "pos_receipts_reprint_count_check",
-          "value": "\"pos_receipts\".\"reprint_count\" BETWEEN 0 AND 99"
-        },
-        "pos_receipts_void_fields_check": {
-          "name": "pos_receipts_void_fields_check",
-          "value": "(\"pos_receipts\".\"status\" = 'voided') = (\"pos_receipts\".\"voided_at\" IS NOT NULL AND \"pos_receipts\".\"void_reason\" IS NOT NULL AND \"pos_receipts\".\"voided_by\" IS NOT NULL)\n        AND (\"pos_receipts\".\"status\" = 'voided' OR (\"pos_receipts\".\"voided_at\" IS NULL AND \"pos_receipts\".\"void_reason\" IS NULL AND \"pos_receipts\".\"voided_by\" IS NULL))"
-        },
-        "pos_receipts_outlet_snapshot_check": {
-          "name": "pos_receipts_outlet_snapshot_check",
-          "value": "jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\") = 'object'\n        AND jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\" -> 'outletName') = 'string'\n        AND jsonb_typeof(\"pos_receipts\".\"outlet_snapshot\" -> 'outletAddress') = 'string'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.receipt_sequences": {
-      "name": "receipt_sequences",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "tenant_id": {
-          "name": "tenant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outlet_id": {
-          "name": "outlet_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "device_id": {
-          "name": "device_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prefix": {
-          "name": "prefix",
-          "type": "varchar(12)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_number": {
-          "name": "last_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "receipt_sequences_tenant_id_tenants_id_fk": {
-          "name": "receipt_sequences_tenant_id_tenants_id_fk",
-          "tableFrom": "receipt_sequences",
-          "tableTo": "tenants",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "receipt_sequences_outlet_id_outlets_id_fk": {
-          "name": "receipt_sequences_outlet_id_outlets_id_fk",
-          "tableFrom": "receipt_sequences",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "receipt_sequences_outlet_fk": {
-          "name": "receipt_sequences_outlet_fk",
-          "tableFrom": "receipt_sequences",
-          "tableTo": "outlets",
-          "columnsFrom": [
-            "tenant_id",
-            "outlet_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "receipt_sequences_tenant_id_id_key": {
-          "name": "receipt_sequences_tenant_id_id_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "id"
-          ]
-        },
-        "receipt_sequences_device_key": {
-          "name": "receipt_sequences_device_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "device_id"
-          ]
-        },
-        "receipt_sequences_prefix_key": {
-          "name": "receipt_sequences_prefix_key",
-          "nullsNotDistinct": false,
-          "columns": [
-            "tenant_id",
-            "outlet_id",
-            "prefix"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "receipt_sequences_prefix_check": {
-          "name": "receipt_sequences_prefix_check",
-          "value": "\"receipt_sequences\".\"prefix\" ~ '^[A-Z0-9]([A-Z0-9-]{0,10}[A-Z0-9])?$'"
-        },
-        "receipt_sequences_last_number_check": {
-          "name": "receipt_sequences_last_number_check",
-          "value": "\"receipt_sequences\".\"last_number\" BETWEEN 0 AND 999999999"
         }
       },
       "isRLSEnabled": false

@@ -1,6 +1,6 @@
 -- Custom SQL migration file, put your code below! --
 -- legend-93a (WS-04 receipts, POS-06/POS-07): RLS and the invariants drizzle
--- cannot express for the tables created in 0063. Source: schema/pos-receipt.custom.sql.
+-- cannot express for the tables created in 0068. Source: schema/pos-receipt.custom.sql.
 -- Custom SQL migration fragment for legend-93a (WS-04 receipts, POS-06/POS-07).
 -- Append AFTER the drizzle-generated CREATE TABLE statements for
 -- receipt_sequences, pos_receipts, pos_receipt_links, pos_receipt_deliveries

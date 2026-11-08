@@ -1364,6 +1364,7 @@ test("POS-04 order.refunded rejects a revenue split that does not equal the refu
     reasonNote: "Pelanggan komplain",
     approvedBy: fixtureRefund.approvedBy,
     approvalRequestId: fixtureRefund.approvalRequestId,
+    overrideId: fixtureRefund.overrideId,
     grossSalesIdr: 52_000,
     discountIdr: 0,
     serviceChargeIdr: 2_600,

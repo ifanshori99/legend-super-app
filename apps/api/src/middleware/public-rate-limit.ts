@@ -28,6 +28,7 @@
 import type { Request, RequestHandler } from "express";
 import { MINUTE_MS } from "@starter/shared/identity";
 import { env } from "../config/env";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import { HttpError } from "../lib/http-error";
 import { whatsAppDigest } from "../lib/identity-digest";
 import { findTenantContext } from "./tenant";
@@ -74,52 +75,9 @@ export type PublicRateLimitOptions = {
   now?: () => number;
 };
 
-type Window = { windowStart: number; count: number };
-
-/**
- * Fixed-window counter with the shape of services/session-extend-limiter.ts:
- * a bounded Map, the least recently used key evicted first, and a few expired
- * keys swept per call so cleanup cost does not grow with the map.
- */
-export function createFixedWindowCounter(options: {
-  limit: number;
-  windowMs: number;
-  capacity: number;
-}) {
-  const hits = new Map<string, Window>();
-  return {
-    size: () => hits.size,
-    /**
-     * Counts one request. Returns null while the key is inside its limit, or
-     * the whole seconds left in the window once it is over.
-     */
-    take(key: string, now: number): number | null {
-      // Check a small number per request, keeping cleanup work bounded.
-      let checked = 0;
-      for (const [entryKey, hit] of hits) {
-        if (now - hit.windowStart >= options.windowMs) hits.delete(entryKey);
-        if (++checked === 4) break;
-      }
-      let hit = hits.get(key);
-      if (!hit || now - hit.windowStart >= options.windowMs) {
-        if (!hit && hits.size >= options.capacity) {
-          const oldest = hits.keys().next().value;
-          if (oldest !== undefined) hits.delete(oldest);
-        }
-        hit = { windowStart: now, count: 0 };
-      }
-      hit.count += 1;
-      // Move the active key to the end so churn evicts the least recent one.
-      hits.delete(key);
-      hits.set(key, hit);
-      if (hit.count <= options.limit) return null;
-      return Math.max(
-        1,
-        Math.ceil((hit.windowStart + options.windowMs - now) / 1000),
-      );
-    },
-  };
-}
+// The counter lives in lib/fixed-window-counter.ts (env-free, so the edge
+// link server can use it too: legend-wg5t); re-exported for existing callers.
+export { createFixedWindowCounter };
 
 /** The address Express resolved; never a raw client-supplied header. */
 function clientIp(req: Request): string {
