@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/refund-approval`, cabang `ws/refund-approval` 09385266, digabung ke `milestone/m1` lewat `prep/refund-approval` SHA `55084e9c` (merge m1 `1056e208`, migration diregen jadi 0079).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/refund-approval`, cabang `ws/refund-approval` 7c24b7b8, digabung ke `milestone/m1` lewat `prep/refund-approval` SHA `55084e9c` (merge m1 `1056e208`, migration diregen jadi 0079).
 Rentang diff: `git diff e4938167 1056e208` (isi cabang saja di atas m1; abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`: menyeret isi m1 lain.
 
 ## Berkas berisiko
