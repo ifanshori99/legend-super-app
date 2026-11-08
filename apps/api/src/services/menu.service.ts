@@ -136,6 +136,7 @@ function toMenuItem(
     description: row.description,
     type: row.type,
     stationId: row.stationId,
+    stationType: row.stationType,
     course: row.course,
     recipeId: row.recipeId,
     taxRuleId: row.taxRuleId,
@@ -885,9 +886,9 @@ async function requireStationOfBrand(
   context: ScopedTenantContext,
   stationId: string,
   brandId: string,
-): Promise<void> {
+): Promise<string> {
   const [row] = await tx
-    .select({ id: stations.id, brandId: outlets.brandId })
+    .select({ id: stations.id, brandId: outlets.brandId, type: stations.type })
     .from(stations)
     .innerJoin(
       outlets,
@@ -910,6 +911,7 @@ async function requireStationOfBrand(
       "VALIDATION_ERROR",
       "Stasiun berada di brand lain.",
     );
+  return row.type;
 }
 
 /** Q23: an item without a photo can never be active (published). */
@@ -1017,6 +1019,7 @@ export async function createItem(
     description: string;
     type: "single" | "combo";
     stationId?: string | null;
+    stationType?: MenuItemAdmin["stationType"];
     course?: string | null;
     recipeId?: string | null;
     taxRuleId?: string | null;
@@ -1040,8 +1043,9 @@ export async function createItem(
       now,
     );
     await requireCategory(tx, context, input.categoryId, brandId);
-    if (input.stationId)
-      await requireStationOfBrand(tx, context, input.stationId, brandId);
+    const stationTypeOfStation = input.stationId
+      ? await requireStationOfBrand(tx, context, input.stationId, brandId)
+      : null;
     if (input.mediaId) await requireMedia(tx, context, input.mediaId);
     // Q23: every item needs a photo. Creating one as active without a photo is
     // the publish action and is refused; without `isActive` it is a draft.
@@ -1059,6 +1063,7 @@ export async function createItem(
         description: input.description,
         type: input.type,
         stationId: input.stationId ?? null,
+        stationType: input.stationType ?? stationTypeOfStation,
         course: input.course ?? null,
         recipeId: input.recipeId ?? null,
         taxRuleId: input.taxRuleId ?? null,
@@ -1104,6 +1109,7 @@ export async function updateItem(
     description?: string;
     type?: "single" | "combo";
     stationId?: string | null;
+    stationType?: MenuItemAdmin["stationType"];
     course?: string | null;
     recipeId?: string | null;
     taxRuleId?: string | null;
@@ -1128,13 +1134,15 @@ export async function updateItem(
     );
     if (input.categoryId !== undefined)
       await requireCategory(tx, context, input.categoryId, existing.brandId);
-    if (input.stationId !== undefined && input.stationId !== null)
-      await requireStationOfBrand(
-        tx,
-        context,
-        input.stationId,
-        existing.brandId,
-      );
+    const stationTypeOfStation =
+      input.stationId !== undefined && input.stationId !== null
+        ? await requireStationOfBrand(
+            tx,
+            context,
+            input.stationId,
+            existing.brandId,
+          )
+        : null;
     if (input.mediaId !== undefined && input.mediaId !== null)
       await requireMedia(tx, context, input.mediaId);
     // Q23: activation and photo removal are the two writes that could publish
@@ -1167,6 +1175,12 @@ export async function updateItem(
         ...(input.stationId !== undefined
           ? { stationId: input.stationId }
           : {}),
+        // An explicit type wins; otherwise a new station carries its type.
+        ...(input.stationType !== undefined
+          ? { stationType: input.stationType }
+          : stationTypeOfStation !== null
+            ? { stationType: stationTypeOfStation }
+            : {}),
         ...(input.course !== undefined ? { course: input.course } : {}),
         ...(input.recipeId !== undefined ? { recipeId: input.recipeId } : {}),
         ...(input.taxRuleId !== undefined

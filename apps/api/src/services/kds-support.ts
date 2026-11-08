@@ -261,6 +261,8 @@ export async function auditKitchen(
   input: {
     action: string;
     ticket: Pick<TicketRow, "id" | "outletId">;
+    /** Audited object; default the ticket. */
+    objectType?: "kitchen_ticket" | "order";
     actor: KdsActor | null;
     before: Record<string, unknown> | null;
     after: Record<string, unknown> | null;
@@ -279,7 +281,7 @@ export async function auditKitchen(
       actorId: input.actor?.userId ?? null,
       deviceId: input.actor?.deviceId ?? null,
       action: input.action,
-      objectType: "kitchen_ticket",
+      objectType: input.objectType ?? "kitchen_ticket",
       objectId: input.ticket.id,
       reason: input.reason ?? null,
       maskedChanges: {

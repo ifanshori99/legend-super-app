@@ -72,8 +72,9 @@ const ids = {
   kopi: randomUUID(), // -> bar A
   nasi: randomUUID(), // -> kitchen A
   air: randomUUID(), // no station: not a kitchen item
-  teh: randomUUID(), // mapped to bar B (other outlet) -> falls back to bar A
-  roti: randomUUID(), // mapped to a pastry station that exists only in outlet B
+  teh: randomUUID(), // beverage_bar, override bar B (outlet B only) -> bar A here
+  roti: randomUUID(), // pastry: a station type that exists only in outlet B
+  mie: randomUUID(), // hot_kitchen type only, no station override -> kitchen A
   // stations
   barA: randomUUID(),
   kitchenA: randomUUID(),
@@ -100,6 +101,7 @@ let cook: Member; // kds.ticket.process, tenant scope
 let barista: Member; // kds.ticket.process on station bar A only
 let outletBStaff: Member; // kds.ticket.process on outlet B only
 let noKds: Member; // POS cashier role without kds permission
+let outletCashier: Member; // POS cashier limited to outlet A (legend-s2dh)
 let tenantBCook: Member; // kds.ticket.process in the other tenant
 
 // ---- Receipt numbering double (same as pos-order.test.ts) ----------------------
@@ -228,7 +230,7 @@ beforeAll(async () => {
       "pos.discount.apply",
       "pos.void.request",
     ],
-    ["tenant"],
+    ["tenant", "outlet"],
   );
   await insertRole(
     tenant.tenantId,
@@ -278,6 +280,12 @@ beforeAll(async () => {
     ids.supervisorRole,
     { type: "tenant", id: null },
     "KDS Supervisor",
+  );
+  outletCashier = await member(
+    tenant,
+    ids.cashierRole,
+    { type: "outlet", id: tenant.outletId },
+    "KDS Kasir Outlet A",
   );
   noKds = await member(
     tenant,
@@ -341,17 +349,20 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, 'KDS Uji', 0)`,
       [ids.category, tenant.tenantId, tenant.brandId],
     );
-    const items: [string, string, string | null][] = [
-      [ids.kopi, "Kopi Susu", ids.barA],
-      [ids.nasi, "Nasi Goreng", ids.kitchenA],
-      [ids.air, "Air Mineral", null],
-      [ids.teh, "Teh Tarik", ids.barB],
-      [ids.roti, "Roti Bakar", ids.pastryB],
+    // Brand-level menu: a station TYPE, plus an optional station override
+    // that only applies inside that station's outlet (legend-s2dh).
+    const items: [string, string, string | null, string | null][] = [
+      [ids.kopi, "Kopi Susu", ids.barA, "beverage_bar"],
+      [ids.nasi, "Nasi Goreng", ids.kitchenA, "hot_kitchen"],
+      [ids.air, "Air Mineral", null, null],
+      [ids.teh, "Teh Tarik", ids.barB, "beverage_bar"],
+      [ids.roti, "Roti Bakar", ids.pastryB, "pastry"],
+      [ids.mie, "Mie Goreng", null, "hot_kitchen"],
     ];
-    for (const [id, name, stationId] of items)
+    for (const [id, name, stationId, stationType] of items)
       await client.query(
-        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_id)
-         VALUES ($1, $2, $3, $4, $5, true, $6, $7)`,
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_id, station_type)
+         VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8)`,
         [
           id,
           tenant.tenantId,
@@ -360,6 +371,7 @@ beforeAll(async () => {
           name,
           randomUUID(),
           stationId,
+          stationType,
         ],
       );
     await client.query(
@@ -367,7 +379,7 @@ beforeAll(async () => {
        VALUES ($1, $2, $3, 'takeaway', '2026-01-01')`,
       [ids.priceList, tenant.tenantId, tenant.outletId],
     );
-    for (const id of [ids.kopi, ids.nasi, ids.air, ids.teh, ids.roti])
+    for (const id of [ids.kopi, ids.nasi, ids.air, ids.teh, ids.roti, ids.mie])
       await client.query(
         `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
          VALUES ($1, $2, $3, $4, 20000)`,
@@ -412,6 +424,10 @@ afterAll(async () => {
 type Line = { menuItemId: string; quantity?: number; note?: string };
 
 function pos(who: Member = cashier) {
+  return posAs(who);
+}
+
+function posAs(who: Member = cashier) {
   const base = `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders`;
   const send = (path: string, body: Record<string, unknown>) =>
     who.client
@@ -462,8 +478,9 @@ function linesOf(body: { items: PlacedLine[] }): PlacedLine[] {
 /** Create (+ submit) an order and make sure every non-held line is fired. */
 async function placeOrder(
   lines: Line[],
-  options: { hold?: boolean } = {},
+  options: { hold?: boolean; who?: Member } = {},
 ): Promise<Placed> {
+  const pos = () => posAs(options.who);
   const created = await pos().create(
     lines,
     options.hold ? { holdItems: true } : {},
@@ -829,6 +846,38 @@ describe("KDS-01 routing: an item reaches the right station", () => {
     expect(detail.items[0]?.name).toBe("Teh Tarik");
   });
 
+  it("KDS-01 a cashier limited to one outlet fires lines whose menu names a station type; each lands on this outlet's station of that type (legend-s2dh)", async () => {
+    // Teh Tarik's override is bar B in outlet B, which outlet RLS hides from
+    // this cashier; the brand-level type still resolves to bar A (no 409).
+    const placed = await placeOrder(
+      [
+        { menuItemId: ids.teh },
+        { menuItemId: ids.mie },
+        { menuItemId: ids.air },
+      ],
+      { who: outletCashier },
+    );
+    const tickets = await ticketsOfOrder(placed.orderId);
+    expect(tickets.map((ticket) => ticket.stationId).sort()).toEqual(
+      [ids.barA, ids.kitchenA].sort(),
+    );
+    const onBar = await ticketDetail(await ticketOn(placed.orderId, ids.barA));
+    expect(onBar.items.map((item) => item.name)).toEqual(["Teh Tarik"]);
+    const onKitchen = await ticketDetail(
+      await ticketOn(placed.orderId, ids.kitchenA),
+    );
+    expect(onKitchen.items.map((item) => item.name)).toEqual(["Mie Goreng"]);
+  });
+
+  it("KDS-01 a station override applies only in its own outlet", async () => {
+    // Kopi Susu's override is bar A itself: used as-is in outlet A.
+    const placed = await placeOrder([{ menuItemId: ids.kopi }], {
+      who: outletCashier,
+    });
+    const tickets = await ticketsOfOrder(placed.orderId);
+    expect(tickets.map((ticket) => ticket.stationId)).toEqual([ids.barA]);
+  });
+
   it("KDS-01 a station that cannot be resolved in the outlet rejects the whole fire and persists nothing", async () => {
     const placed = await placeOrder(
       [{ menuItemId: ids.nasi }, { menuItemId: ids.roti }],
@@ -967,6 +1016,66 @@ describe("KDS-02 gapless feed and cursor resync", () => {
 // ===== KDS-03 =====================================================================
 
 describe("KDS-03 an item cancelled after firing is cancelled on the KDS", () => {
+  it("KDS-03 a void on the KDS stays kitchen-only and tells the POS through an order event", async () => {
+    const placed = await placeOrder([
+      { menuItemId: ids.kopi },
+      { menuItemId: ids.nasi },
+    ]);
+    const before = await pos().get(placed.orderId);
+    expect(before.status).toBe(200);
+    const kopiLine = lineOf(placed, ids.kopi);
+    const nasiLine = lineOf(placed, ids.nasi);
+
+    const barTicket = await ticketOn(placed.orderId, ids.barA);
+    const voided = await kds().voidTicket(barTicket, { reason: "Susu habis" });
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+    const kitchenTicket = await ticketDetail(
+      await ticketOn(placed.orderId, ids.kitchenA),
+    );
+    const voidedLine = await kds().item(kitchenTicket.items[0]!.id, "void");
+    expect(voidedLine.status, JSON.stringify(voidedLine.body)).toBe(200);
+
+    // The bill is untouched: lines and total change only through a POS void.
+    const after = await pos().get(placed.orderId);
+    expect(after.body.data.totalIdr).toBe(before.body.data.totalIdr);
+    expect(
+      after.body.data.items.map((item: { status: string }) => item.status),
+    ).toEqual(
+      before.body.data.items.map((item: { status: string }) => item.status),
+    );
+
+    // The cashier sees both KDS voids in the order's event log, in order.
+    const events = await cashier.client
+      .get(
+        `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/orders/${placed.orderId}/events?limit=50`,
+      )
+      .set(headers)
+      .set(originHeader);
+    expect(events.status, JSON.stringify(events.body)).toBe(200);
+    const notices = (
+      events.body.data as {
+        type: string;
+        actorId: string | null;
+        payload: Record<string, unknown>;
+      }[]
+    ).filter((event) => event.type === "order.kitchen_voided");
+    expect(notices).toHaveLength(2);
+    expect(notices[0]?.actorId).toBe(cook.userId);
+    expect(notices[0]?.payload).toMatchObject({
+      ticketId: barTicket,
+      stationId: ids.barA,
+      orderItemIds: [kopiLine.id],
+      ticketCancelled: true,
+      reason: "Susu habis",
+    });
+    expect(notices[1]?.payload).toMatchObject({
+      ticketId: kitchenTicket.id,
+      stationId: ids.kitchenA,
+      orderItemIds: [nasiLine.id],
+      ticketCancelled: true,
+    });
+  });
+
   it("KDS-03 voiding one fired line voids its ticket item; the ticket stays while another line is live", async () => {
     const placed = await placeOrder([
       { menuItemId: ids.kopi },
@@ -1523,7 +1632,14 @@ describe("KDS isolation and authorization", () => {
     expect((await asBarista.feed(ids.kitchenA, 0)).status).toBe(403);
     expect((await asBarista.ticket(target.ticketId)).status).toBe(403);
     expect((await asBarista.start(target.ticketId)).status).toBe(403);
+    expect(
+      (await asBarista.voidTicket(target.ticketId, { reason: "Uji" })).status,
+    ).toBe(403);
     expect((await ticketDetail(target.ticketId)).status).toBe("new");
+    // A void on their own station works for a station-only cook too (it
+    // locks the order to tell the POS).
+    const ownVoid = await asBarista.voidTicket(barTicket, { reason: "Uji" });
+    expect(ownVoid.status, JSON.stringify(ownVoid.body)).toBe(200);
     expect(
       (await changesOf(target.ticketId)).map((row) => row.to_status),
     ).toEqual(["new"]);

@@ -1,20 +1,25 @@
 // KDS routing and ticket lifecycle (bead legend-4d5; PRD v1.7 §3 F12 "KDS,
 // Expo & Pickup Display"; contract @starter/shared/kitchen).
 //
-// - KDS-01: a POS fire routes each fired line to the station of its menu item
-//   inside the fire transaction (`routeFiredItemsToKitchen`), one ticket per
-//   station per fire. A mapped station that cannot be resolved in the order's
-//   outlet fails the whole fire (fail closed: no line silently vanishes).
+// - KDS-01: a POS or QR fire routes each fired line to the station of its menu
+//   item inside the fire transaction (`routeFiredItemsToKitchen`), one ticket
+//   per station per fire. The menu names a station TYPE that each outlet
+//   resolves to its own station (legend-s2dh); a rule that cannot be resolved
+//   in the order's outlet fails the whole fire (no line silently vanishes).
 // - KDS-02: every ticket change appends one gapless per-station feed row
 //   (kds-support.ts `appendStationFeed`); displays resume from their cursor.
 // - KDS-03: voiding a fired POS line voids its ticket line in the same
-//   transaction; a ticket whose lines are all voided is cancelled.
+//   transaction; a ticket whose lines are all voided is cancelled. A void on
+//   the KDS stays kitchen-only (the bill changes only through an approved POS
+//   void) but appends an `order.kitchen_voided` order event so the cashier
+//   sees it.
 // - KDS-04: every status change writes an append-only status change row with
 //   time, actor and source.
 //
-// Lock order: the POS paths already hold the `orders` row; ticket rows are
-// locked (ordered by id) before any station cursor row, so two writers never
-// wait on each other in a cycle.
+// Lock order: `orders` row, then ticket rows (ordered by station, id), then
+// station cursor rows. The POS paths already hold the `orders` row; a KDS void
+// takes it before its ticket, so two writers never wait on each other in a
+// cycle.
 
 import {
   and,
@@ -39,6 +44,7 @@ import {
   outletIdSchema,
   type OutletId,
   type ScopedTenantContext,
+  userIdSchema,
 } from "@starter/shared/core";
 import {
   canTransitionKitchenTicket,
@@ -61,8 +67,9 @@ import {
   kitchenTicketItems,
   kitchenTickets,
 } from "../db/schema/kds.ts";
-import { orderItems } from "../db/schema/qr-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { appendOrderEvent } from "./pos-order-support.ts";
 import {
   actorSource,
   appendKitchenEvent,
@@ -204,13 +211,24 @@ export async function routeFiredItemsToKitchen(
     itemIds: readonly string[];
     actor: KdsActor | null;
     now: Date;
+    /**
+     * `fail` (POS, default): a line whose station cannot be resolved rolls
+     * the fire back, so the cashier sees it before anything happens. `skip`
+     * (QR, possibly after the guest paid): such lines stay unrouted and are
+     * audited (`kitchen_ticket.unrouted`) instead of failing the order.
+     */
+    onUnresolved?: "fail" | "skip";
   },
-): Promise<{ ticketIds: string[] }> {
+): Promise<{ ticketIds: string[]; unroutedItemIds: string[] }> {
   const outletId = outletIdSchema.parse(input.outletId);
-  if (input.itemIds.length === 0) return { ticketIds: [] };
+  if (input.itemIds.length === 0) return { ticketIds: [], unroutedItemIds: [] };
   const tenantId = context.tenant.tenantId;
   const rows = await tx
-    .select({ item: orderItems, mappedStationId: menuItems.stationId })
+    .select({
+      item: orderItems,
+      overrideStationId: menuItems.stationId,
+      stationType: menuItems.stationType,
+    })
     .from(orderItems)
     .innerJoin(
       menuItems,
@@ -233,25 +251,31 @@ export async function routeFiredItemsToKitchen(
         eq(orderItems.orderId, input.orderId),
         inArray(orderItems.id, [...input.itemIds]),
         ne(orderItems.status, "voided"),
-        isNotNull(menuItems.stationId),
+        or(isNotNull(menuItems.stationType), isNotNull(menuItems.stationId)),
         isNull(kitchenTicketItems.id),
       ),
     )
     .orderBy(asc(orderItems.id));
-  if (rows.length === 0) return { ticketIds: [] };
+  if (rows.length === 0) return { ticketIds: [], unroutedItemIds: [] };
 
+  const skipUnresolved = input.onUnresolved === "skip";
   const resolved = await resolveStations(
     tx,
     context,
     outletId,
-    rows.flatMap(({ mappedStationId }) =>
-      mappedStationId === null ? [] : [mappedStationId],
-    ),
+    rows,
+    skipUnresolved,
   );
   const byStation = new Map<string, (typeof rows)[number]["item"][]>();
-  for (const { item, mappedStationId } of rows) {
-    const stationId = resolved.get(mappedStationId ?? "");
-    if (stationId === undefined) throw new Error("Station resolution missed");
+  const unroutedItemIds: string[] = [];
+  for (const row of rows) {
+    const { item } = row;
+    const stationId = resolved.get(stationRuleKey(row));
+    if (stationId === undefined) {
+      if (!skipUnresolved) throw new Error("Station resolution missed");
+      unroutedItemIds.push(item.id);
+      continue;
+    }
     const list = byStation.get(stationId) ?? [];
     list.push(item);
     byStation.set(stationId, list);
@@ -354,60 +378,172 @@ export async function routeFiredItemsToKitchen(
     );
     ticketIds.push(ticket.id);
   }
-  return { ticketIds };
+  if (unroutedItemIds.length > 0)
+    await auditKitchen(
+      tx,
+      context,
+      {
+        action: "kitchen_ticket.unrouted",
+        ticket: { id: input.orderId, outletId },
+        objectType: "order",
+        actor: input.actor,
+        before: null,
+        after: { orderId: input.orderId, itemIds: unroutedItemIds },
+        reason: "Stasiun dapur untuk menu ini belum diatur di outlet ini.",
+      },
+      now,
+    );
+  return { ticketIds, unroutedItemIds };
 }
 
+type StationRule = {
+  overrideStationId: string | null;
+  stationType: string | null;
+};
+
+const stationRuleKey = (rule: StationRule) =>
+  `${rule.overrideStationId ?? ""}|${rule.stationType ?? ""}`;
+
 /**
- * Mapped station -> station that receives the ticket in `outletId`: itself if
- * active in this outlet, else the active station of the same type there
- * (first by name, id). None ⇒ CONFLICT so the fire rolls back.
+ * Menu routing rule -> station that receives the ticket in `outletId`
+ * (bead legend-s2dh). A menu item is brand level and names a station TYPE;
+ * each outlet resolves it to its own active station of that type (first by
+ * name, id). The item's `station_id` is only an override inside that
+ * station's outlet: elsewhere it is ignored (and usually invisible under
+ * outlet RLS). A legacy row with an override but no type falls back to the
+ * override's type when the caller can see it. Nothing resolves => CONFLICT,
+ * so the fire rolls back instead of losing the line.
  */
 async function resolveStations(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: OutletId,
-  mappedIds: readonly string[],
+  rules: readonly StationRule[],
+  skipUnresolved = false,
 ): Promise<Map<string, string>> {
   const tenantId = context.tenant.tenantId;
-  const unique = [...new Set(mappedIds)];
-  const mapped = await tx
-    .select()
-    .from(stations)
-    .where(and(eq(stations.tenantId, tenantId), inArray(stations.id, unique)));
-  const byId = new Map(mapped.map((station) => [station.id, station]));
+  const overrideIds = [
+    ...new Set(
+      rules.flatMap((rule) =>
+        rule.overrideStationId === null ? [] : [rule.overrideStationId],
+      ),
+    ),
+  ];
+  const overrides =
+    overrideIds.length === 0
+      ? []
+      : await tx
+          .select()
+          .from(stations)
+          .where(
+            and(
+              eq(stations.tenantId, tenantId),
+              inArray(stations.id, overrideIds),
+            ),
+          );
+  const overrideById = new Map(overrides.map((row) => [row.id, row]));
   const byType = new Map<string, string | null>();
-  const result = new Map<string, string>();
-  for (const id of unique) {
-    const station = byId.get(id);
-    // Outlet RLS hides a mapped station of another outlet from an
-    // outlet-scoped caller, so its type (and the fallback) is unknown here:
-    // fail closed until menus carry a per-outlet station mapping.
-    if (!station) throw unresolvedStation();
-    if (station.outletId === outletId && station.deletedAt === null) {
-      result.set(id, station.id);
-      continue;
-    }
-    if (!byType.has(station.type)) {
-      const [fallback] = await tx
+  const stationOfType = async (type: string) => {
+    if (!byType.has(type)) {
+      const [found] = await tx
         .select({ id: stations.id })
         .from(stations)
         .where(
           and(
             eq(stations.tenantId, tenantId),
             eq(stations.outletId, outletId),
-            eq(stations.type, station.type),
+            eq(stations.type, type),
             isNull(stations.deletedAt),
           ),
         )
         .orderBy(asc(stations.name), asc(stations.id))
         .limit(1);
-      byType.set(station.type, fallback?.id ?? null);
+      byType.set(type, found?.id ?? null);
     }
-    const fallbackId = byType.get(station.type) ?? null;
-    if (fallbackId === null) throw unresolvedStation();
-    result.set(id, fallbackId);
+    return byType.get(type) ?? null;
+  };
+  const result = new Map<string, string>();
+  for (const rule of rules) {
+    const key = stationRuleKey(rule);
+    if (result.has(key)) continue;
+    const override =
+      rule.overrideStationId === null
+        ? undefined
+        : overrideById.get(rule.overrideStationId);
+    if (
+      override &&
+      override.outletId === outletId &&
+      override.deletedAt === null
+    ) {
+      result.set(key, override.id);
+      continue;
+    }
+    const type = rule.stationType ?? override?.type ?? null;
+    const stationId = type === null ? null : await stationOfType(type);
+    if (stationId === null) {
+      if (skipUnresolved) continue;
+      throw unresolvedStation();
+    }
+    result.set(key, stationId);
   }
   return result;
+}
+
+type OrderRef = Pick<typeof orders.$inferSelect, "id" | "outletId">;
+
+/**
+ * Locks the ticket's order row before any ticket row (the POS lock order), so
+ * a KDS void can append the order event the cashier reads.
+ */
+async function lockOrderOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<OrderRef> {
+  const [order] = await tx
+    .select({ id: orders.id, outletId: orders.outletId })
+    .from(orders)
+    .where(
+      and(eq(orders.tenantId, context.tenant.tenantId), eq(orders.id, orderId)),
+    )
+    .for("update");
+  if (!order) throw ticketNotFound();
+  return order;
+}
+
+/**
+ * KDS void -> POS notice. The bill is untouched (voiding a billed line needs
+ * an approved POS void); the cashier reads this event on the order.
+ */
+async function notifyPosOfKitchenVoid(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: OrderRef;
+    ticket: TicketRow;
+    orderItemIds: readonly string[];
+    ticketCancelled: boolean;
+    reason: string | null;
+    actor: KdsActor;
+    now: Date;
+  },
+): Promise<void> {
+  await appendOrderEvent(tx, context, {
+    order: input.order,
+    type: "order.kitchen_voided",
+    payload: {
+      ticketId: input.ticket.id,
+      stationId: input.ticket.stationId,
+      orderItemIds: [...input.orderItemIds],
+      ticketCancelled: input.ticketCancelled,
+      reason: input.reason,
+    },
+    caller: {
+      userId: userIdSchema.parse(input.actor.userId),
+      deviceId: input.actor.deviceId,
+    },
+    now: input.now,
+  });
 }
 
 /** True while the ticket still has a line that is not voided. */
@@ -603,6 +739,14 @@ export async function applyKitchenTicketAction(
   const outletId = outletIdSchema.parse(outletRef);
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
+    const order =
+      action === "void"
+        ? await lockOrderOf(
+            tx,
+            context,
+            (await readTicket(tx, context, outletId, ticketId, false)).orderId,
+          )
+        : null;
     const ticket = await readTicket(tx, context, outletId, ticketId, true);
     await assertStationPermission(
       tx,
@@ -625,6 +769,7 @@ export async function applyKitchenTicketAction(
       status: next,
       updatedAt: now,
     };
+    const voidedLines: string[] = [];
     if (action === "start") {
       patch.startedAt = ticket.startedAt ?? now;
       await tx
@@ -653,7 +798,7 @@ export async function applyKitchenTicketAction(
         .where(and(ticketFilter, eq(kitchenTicketItems.status, "ready")));
     } else {
       patch.cancelledAt = now;
-      await tx
+      const voided = await tx
         .update(kitchenTicketItems)
         .set({ status: "voided", voidedAt: now, updatedAt: now })
         .where(
@@ -661,7 +806,9 @@ export async function applyKitchenTicketAction(
             ticketFilter,
             notInArray(kitchenTicketItems.status, ["served", "voided"]),
           ),
-        );
+        )
+        .returning({ orderItemId: kitchenTicketItems.orderItemId });
+      voidedLines.push(...voided.map((line) => line.orderItemId));
     }
     const [updated] = await tx
       .update(kitchenTickets)
@@ -739,6 +886,16 @@ export async function applyKitchenTicketAction(
       },
       now,
     );
+    if (order)
+      await notifyPosOfKitchenVoid(tx, context, {
+        order,
+        ticket,
+        orderItemIds: voidedLines.sort(),
+        ticketCancelled: true,
+        reason,
+        actor,
+        now,
+      });
     return freshTicketDetail(tx, context, ticket.id);
   });
 }
@@ -809,7 +966,10 @@ export async function applyKitchenItemAction(
     const tenantId = context.tenant.tenantId;
     assertOutletInScope(context.outletScope, outletId);
     const [found] = await tx
-      .select({ ticketId: kitchenTicketItems.ticketId })
+      .select({
+        ticketId: kitchenTicketItems.ticketId,
+        orderId: kitchenTicketItems.orderId,
+      })
       .from(kitchenTicketItems)
       .where(
         and(
@@ -819,7 +979,9 @@ export async function applyKitchenItemAction(
         ),
       );
     if (!found) throw itemNotFound();
-    // Ticket row first, then the line: same lock order as ticket actions.
+    // Order row (void only), ticket row, then the line: the ticket-action order.
+    const order =
+      action === "void" ? await lockOrderOf(tx, context, found.orderId) : null;
     const ticket = await readTicket(
       tx,
       context,
@@ -980,6 +1142,16 @@ export async function applyKitchenItemAction(
       ticketId: ticket.id,
       now,
     });
+    if (order)
+      await notifyPosOfKitchenVoid(tx, context, {
+        order,
+        ticket,
+        orderItemIds: [item.orderItemId],
+        ticketCancelled: ticketAfter === "cancelled",
+        reason: null,
+        actor,
+        now,
+      });
     return ticketItemDto(updatedItem);
   });
 }

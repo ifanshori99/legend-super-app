@@ -55,3 +55,11 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+## legend-4d5 KDS backend (engineer, cabang `ws/kds`)
+
+- Selesai: routing tiket POS/QR ke stasiun, siklus tiket + jejak status, feed per stasiun + WebSocket resync (migrasi 0063/0064).
+- Keputusan CTO 2026-11-08 dikerjakan: QR masuk KDS (QR tidak pernah gagal karena stasiun kosong; baris tanpa stasiun diaudit `kitchen_ticket.unrouted`); menu menyimpan tipe stasiun per brand, diselesaikan per outlet, `station_id` hanya override di outletnya (legend-s2dh, migrasi 0065 + backfill); void di KDS tetap hanya dapur, kasir dapat order event `order.kitchen_voided`.
+- Bukti: `heavy pnpm check` 138 file / 1246 test lulus, build lulus, format/color/tenant-hardcode lulus, 2 reviewer konteks segar (1 temuan High dibetulkan).
+- Lanjutan (bead): legend-0ixe (UI POS tampilkan void KDS), legend-0frf (UI admin menu tipe stasiun), legend-078b (alert baris QR tanpa stasiun + notifikasi void untuk order QR).
+- Menunggu: review CTO, merge ke `main` oleh gerbang founder.

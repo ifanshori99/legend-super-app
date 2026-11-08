@@ -42,6 +42,7 @@ import {
   priceListSchema,
   scheduleSchema,
   stationSchema,
+  stationTypeSchema,
   variantSchema,
   channelSchema,
 } from "./schemas.ts";
@@ -158,19 +159,13 @@ export const reorderCategories = defineEndpoint({
   body: reorderInputSchema,
 });
 
+export { stationTypeSchema };
+
 // ---- Stations (outlet scoped, routing) ------------------------------------
 
 export const stationListQuerySchema = cursorPageQuerySchema.extend({
   outletId: outletIdSchema.optional(),
 });
-
-export const stationTypeSchema = z.enum([
-  "coffee_bar",
-  "beverage_bar",
-  "hot_kitchen",
-  "cold_kitchen",
-  "pastry",
-]);
 
 export const createStationInputSchema = clientInputSchema({
   outletId: outletIdSchema.optional(),
@@ -241,6 +236,7 @@ export const createItemInputSchema = clientInputSchema({
   description: z.string().max(1000).default(""),
   type: z.enum(["single", "combo"]).default("single"),
   stationId: uuidSchema.nullable().optional(),
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable().optional(),
   recipeId: uuidSchema.nullable().optional(),
   taxRuleId: uuidSchema.nullable().optional(),
@@ -263,6 +259,7 @@ export const updateItemInputSchema = clientInputSchema({
   description: z.string().max(1000).optional(),
   type: z.enum(["single", "combo"]).optional(),
   stationId: uuidSchema.nullable().optional(),
+  stationType: stationTypeSchema.nullable().optional(),
   course: z.string().max(20).nullable().optional(),
   recipeId: uuidSchema.nullable().optional(),
   taxRuleId: uuidSchema.nullable().optional(),
