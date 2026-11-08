@@ -58,3 +58,5 @@ export * from "./operations";
 export * from "./edge-node";
 // WS-04 POS order service (legend-kk7).
 export * from "./pos-order";
+// WS-06 stock count / stok opname (legend-j5x).
+export * from "./inventory-count";

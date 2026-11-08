@@ -1,0 +1,1 @@
+ALTER TABLE "stock_counts" ADD COLUMN "counter_ids" text[] DEFAULT '{}'::text[] NOT NULL;
