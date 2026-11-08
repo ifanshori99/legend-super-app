@@ -39,6 +39,7 @@ import { createShareholderDocumentsRouter } from "./shareholder-documents.routes
 import { approvalRouter } from "./platform-approval.routes";
 import { promotionsRouter, vouchersRouter } from "./crm-promo.routes";
 import { reservationRouter } from "./reservation.routes";
+import { reservationPublicRouter } from "./reservation-public.routes";
 import { facilityRouter } from "./facility.routes";
 import { wifiConfigRouter } from "./wifi.routes";
 import { hrisRouter } from "./hris.routes";
@@ -139,6 +140,8 @@ apiRouter.use("/promotions", promotionsRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);
+// Guest self-service via signed link (legend-o5gr): full paths inside.
+apiRouter.use(reservationPublicRouter);
 // WS-09 facility slots (legend-nm4f).
 apiRouter.use("/facility", facilityRouter);
 // WS-09 Wi-Fi policy configuration writes (legend-8dpm).

@@ -39,6 +39,8 @@ export * from "./device-pin";
 // WS-03 QR order carts/orders (legend-e2x).
 export * from "./qr-order";
 export * from "./reservation";
+// Guest reservation self-service links (legend-o5gr).
+export * from "./reservation-public";
 export * from "./facility";
 export * from "./hris";
 // WS-07 AP/AR, fixed assets, budgets (legend-hpgo).
