@@ -16,6 +16,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Sedang (dihentikan di tengah)
 - Fix temuan review legend-18qw: commit WIP `5a6070d` di `ws/worker-transport`. Kode untuk 9 fix (#1-#9 brief 06) sudah ditulis, test baru sudah ditambah, tapi BELUM dijalankan sama sekali (typecheck terakhir lulus sebelum test baru). Sisa urutan: `heavy pnpm check` via test-runner (rawan: insert `roles`/`tenants` test tenant C, regex `status (\d{3})`), subagent reviewer cek diff fix, buat 3 bead lanjutan (cloud-sync tenant-wide di edge, healthcheck worker, cek backfill sequence sebelum deploy pertama), tutup `legend-3a0y`, rapikan pesan commit WIP agar merujuk `legend-18qw`. Thread lama "engineer: worker event transport" (S30:P9mkl:G7rl2) bisa di-reopen untuk konteks.
 
+## Sesi CTO baru (2026-11-08, lanjutan)
+- Thread "Engineer: selesaikan fix worker" (brief 07): lanjut fix brief 06 di `ws/worker-transport`.
+- Thread "Designer: riset warna mockup" (brief 08, Codex): `design/COLOR-RESEARCH.md` + ulang `final-a-*`.
+
 ## Keputusan founder Q6 (mockup final): UBAH DULU
 - Catatan founder apa adanya: "Coba riset warna termasuk warna button secara psikologis yang mendorong pembelian serta membuat orang memesan banyak".
 - Langkah: riset psikologi warna untuk F&B order (warna CTA/tombol, warna yang mendorong nafsu makan dan nilai pesanan lebih besar, bukti dari sumber kredibel, bedakan mitos vs bukti, tetap lolos kontras WCAG), tulis `design/COLOR-RESEARCH.md`, lalu designer (Codex) ulang `final-a-*` dengan palet baru, review founder lagi. Pola upsell/menambah pesanan (rekomendasi "tambah minuman", bundling) boleh diusulkan bersama.
