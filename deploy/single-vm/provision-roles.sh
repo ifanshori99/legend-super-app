@@ -32,7 +32,8 @@ value_of() {
   sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$2[[:space:]]*[=:][[:space:]]*//p" "$1" |
     tail -n 1 | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
-defines() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*[=:]" "$1"; }
+# A bare KEY line also counts: Compose then copies the value from its shell.
+defines() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*([=:]|\$)" "$1"; }
 service_file() {
   path=$(value_of "$env_file" "$1")
   case "$path" in /*) ;; *) fail "$1 in the compose env file must be an absolute path." ;; esac

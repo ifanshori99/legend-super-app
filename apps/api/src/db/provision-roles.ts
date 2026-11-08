@@ -92,6 +92,14 @@ function quoteVerifier(verifier: string) {
   return `'${verifier}'`;
 }
 
+async function serverVersion(client: ClientBase): Promise<number> {
+  return (
+    await client.query(
+      "SELECT current_setting('server_version_num')::int AS version",
+    )
+  ).rows[0].version;
+}
+
 async function currentDatabase(client: ClientBase) {
   const name: string = (await client.query("SELECT current_database() AS name"))
     .rows[0].name;
@@ -136,6 +144,18 @@ async function upsertLogin(client: ClientBase, login: Login, label: string) {
   await client.query(
     `ALTER ROLE "${login.user}" IN DATABASE "${await currentDatabase(client)}" RESET ALL`,
   );
+  // A non-superuser admin silently keeps superuser-only settings (for example
+  // session_replication_role), so prove the reset took effect.
+  const left = await client.query(
+    `SELECT count(*)::int AS count FROM pg_db_role_setting s
+     WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = $1)
+       AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))`,
+    [login.user],
+  );
+  if (left.rows[0].count)
+    throw new ProvisionError(
+      `The ${label} role has role-level settings this login cannot reset; a superuser must run ALTER ROLE ... RESET ALL.`,
+    );
   return "updated";
 }
 
@@ -178,10 +198,26 @@ async function assertRestricted(
     throw new ProvisionError(
       `The ${label} role has or inherits predefined roles: ${predefined.rows[0].roles.join(", ")}.`,
     );
+  // PostgreSQL 16+ records INHERIT per grant: a membership without it gives
+  // the login no privileges. ADMIN would let the login hand the group out.
+  const inherit =
+    (await serverVersion(client)) >= 160000 ? "m.inherit_option" : "true";
   const groups = await client.query(
-    "SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1",
+    `SELECT g.rolname, m.admin_option, ${inherit} AS inherit
+     FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member
+     WHERE u.rolname = $1`,
     [user],
   );
+  const flawed = groups.rows
+    .filter(
+      (row: { admin_option: boolean; inherit: boolean }) =>
+        row.admin_option || !row.inherit,
+    )
+    .map((row: { rolname: string }) => row.rolname);
+  if (flawed.length)
+    throw new ProvisionError(
+      `The ${label} role's membership in ${flawed.join(", ")} must have INHERIT and no ADMIN OPTION.`,
+    );
   const extra = groups.rows
     .map((row: { rolname: string }) => row.rolname)
     .filter((name: string) => !allowedGroups.includes(name));
@@ -259,6 +295,14 @@ async function assertTableRights(
        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
        AND has_table_privilege($1, c.oid, p.privilege)
+       -- Extension views such as pg_stat_statements are readable by PUBLIC by
+       -- design; that is not a right of this login. Only extension-owned
+       -- relations are exempt, never application tables granted to PUBLIC.
+       AND NOT (
+         p.privilege = 'SELECT'
+         AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) a WHERE a.grantee = 0 AND a.privilege_type = 'SELECT')
+         AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+       )
      ORDER BY 1, 2`,
     [user, ownSchemas],
   );
@@ -327,7 +371,20 @@ async function provisionApp(client: ClientBase, login: Login) {
   // no-op on newer servers and is verified below either way.
   await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
   const outcome = await upsertLogin(client, login, "application");
-  await client.query(`GRANT ${APP_GROUP} TO "${login.user}"`);
+  // Normalise an existing membership: no ADMIN OPTION, and INHERIT on 16+.
+  const member = await client.query(
+    "SELECT 1 FROM pg_auth_members m WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1) AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)",
+    [APP_GROUP, login.user],
+  );
+  if (member.rows.length)
+    await client.query(
+      `REVOKE ADMIN OPTION FOR ${APP_GROUP} FROM "${login.user}"`,
+    );
+  await client.query(
+    (await serverVersion(client)) >= 160000
+      ? `GRANT ${APP_GROUP} TO "${login.user}" WITH INHERIT TRUE`
+      : `GRANT ${APP_GROUP} TO "${login.user}"`,
+  );
   await assertRestricted(client, login.user, "application", [APP_GROUP], []);
   await assertTableRights(client, login.user, "application", [], {
     "*": ["SELECT", "INSERT", "UPDATE", "DELETE"],

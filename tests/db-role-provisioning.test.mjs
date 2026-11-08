@@ -38,6 +38,15 @@ function runJob(env) {
   );
 }
 
+// DROP DATABASE ... WITH (FORCE) in teardown terminates any idle connection
+// still open to the scratch database; without a listener that surfaces as
+// an unhandled "error" event and fails the test after it already passed.
+function quietPool(options) {
+  const pool = new Pool(options);
+  pool.on("error", () => undefined);
+  return pool;
+}
+
 function withDatabase(url, database) {
   const next = new URL(url);
   next.pathname = `/${database}`;
@@ -65,12 +74,12 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
   const roles = [appUrl, workerUrl].map((url) =>
     decodeURIComponent(new URL(url).username),
   );
-  const cluster = new Pool({ connectionString: shared, max: 1 });
+  const cluster = quietPool({ connectionString: shared, max: 1 });
   await cluster.query(`CREATE DATABASE ${database}`);
-  const admin = new Pool({ connectionString: adminUrl, max: 1 });
+  const admin = quietPool({ connectionString: adminUrl, max: 1 });
   const pools = [];
   const open = (url) => {
-    const pool = new Pool({ connectionString: url, max: 1 });
+    const pool = quietPool({ connectionString: url, max: 1 });
     pools.push(pool);
     return pool;
   };
@@ -340,6 +349,11 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
           /owns tables, functions, types or schemas/,
         ],
       ];
+      drifts.push([
+        "CREATE VIEW public.zoqc_public AS SELECT 1 AS x; GRANT SELECT ON public.zoqc_public TO PUBLIC",
+        "DROP VIEW public.zoqc_public",
+        /queue role has table rights it must not have: SELECT on public\.zoqc_public/,
+      ]);
       for (const [grant, revoke, message] of drifts) {
         await admin.query(grant);
         try {
@@ -350,6 +364,26 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
           await admin.query(revoke);
         }
       }
+      // Extension views readable by PUBLIC (pg_stat_statements) are not a
+      // right of the login and must not block provisioning.
+      await admin.query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
+      const extension = job({});
+      assert.equal(extension.status, 0, extension.stderr);
+      // A membership without INHERIT (no privileges at all on 16+) or with
+      // ADMIN OPTION is normalised, not reported as fine.
+      await admin.query(`REVOKE legend_app FROM "${roles[0]}"`);
+      await admin.query(
+        `GRANT legend_app TO "${roles[0]}" WITH INHERIT FALSE, ADMIN TRUE`,
+      );
+      const membership = job({});
+      assert.equal(membership.status, 0, membership.stderr);
+      const grant = (
+        await admin.query(
+          "SELECT m.inherit_option, m.admin_option FROM pg_auth_members m WHERE m.roleid = 'legend_app'::regrole AND m.member = $1::regrole",
+          [roles[0]],
+        )
+      ).rows;
+      assert.deepEqual(grant, [{ inherit_option: true, admin_option: false }]);
       // Drift that only breaks or bends the login is normalised on re-run.
       await admin.query(
         `ALTER ROLE "${roles[0]}" NOINHERIT VALID UNTIL '2000-01-01' CONNECTION LIMIT 0`,
@@ -399,7 +433,7 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   const roles = [appUrl, workerUrl].map((url) =>
     decodeURIComponent(new URL(url).username),
   );
-  const cluster = new Pool({ connectionString: shared, max: 1 });
+  const cluster = quietPool({ connectionString: shared, max: 1 });
   await cluster.query(
     `CREATE ROLE ${owner} LOGIN CREATEROLE BYPASSRLS PASSWORD '${ownerPassword}'`,
   );
@@ -433,7 +467,20 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, new RegExp(`${roles[1]} ${outcome}`));
   }
-  const worker = new Pool({ connectionString: workerUrl, max: 1 });
+  // Superuser-only role settings survive a non-superuser RESET ALL; the job
+  // must refuse rather than report the login as clean.
+  await cluster.query(
+    `ALTER ROLE "${roles[0]}" SET session_replication_role = replica`,
+  );
+  const stuck = runJob({
+    MIGRATION_DATABASE_URL: adminUrl,
+    APP_DATABASE_URL: appUrl,
+    WORKER_DATABASE_URL: workerUrl,
+  });
+  assert.equal(stuck.status, 1);
+  assert.match(stuck.stderr, /settings this login cannot reset/);
+  await cluster.query(`ALTER ROLE "${roles[0]}" RESET ALL`);
+  const worker = quietPool({ connectionString: workerUrl, max: 1 });
   try {
     await worker.query("CREATE TABLE pgboss.zoqc_probe (id integer)");
   } finally {
@@ -540,6 +587,10 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       ],
       [
         { worker: `${files.worker}  MIGRATION_DATABASE_URL = x\n` },
+        /contains MIGRATION_DATABASE_URL/,
+      ],
+      [
+        { web: `${files.web}MIGRATION_DATABASE_URL\n` },
         /contains MIGRATION_DATABASE_URL/,
       ],
       [

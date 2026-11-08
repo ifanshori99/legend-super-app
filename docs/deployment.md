@@ -404,7 +404,10 @@ run, inside one locked transaction, creates a missing login or re-keys an
 existing one to the password in the env file (so changing the password there
 and re-running is how to rotate it; restart the API and worker afterwards). It
 also resets drift that would only break or bend a login (`NOINHERIT`, an
-expiry, a connection limit, role-level settings such as `search_path`). It then
+expiry, a connection limit, role-level settings such as `search_path`, a
+`legend_app` membership without `INHERIT` or with `ADMIN OPTION`). Settings a
+non-superuser owner cannot reset (for example `session_replication_role`) make
+the job fail until a superuser runs `ALTER ROLE ... RESET ALL`. It then
 fails, changing nothing, if `legend_app` can log in or has elevated attributes,
 or if a login:
 
@@ -415,7 +418,9 @@ or if a login:
 - can create objects in the database or any schema outside its own;
 - holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
   beyond `SELECT` on `app.active_tenant_registry` (queue). `TRUNCATE` ignores
-  RLS and is always refused.
+  RLS and is always refused. Extension views readable by everyone (such as
+  `pg_stat_statements`) are not counted; application tables granted to
+  `PUBLIC` are.
 
 An existing role with unsafe attributes is never adopted; fix or drop it by
 hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
