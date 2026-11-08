@@ -17,7 +17,7 @@ Cabang milestone: `milestone/m1` (dari `main` 1f0b6d2). Slice yang lolos review 
 | ws/edc-framework | 5f797fe | K | pembayaran | pasangan: PERLU FIX (brief 76) | fix, lalu Codex R5 |
 | ws/doit-provider | be35d6b | K | pembayaran, webhook | pasangan: PERLU FIX (brief 80) | Codex R5 (tunggu detail sandbox DOIT) |
 | ws/pos-receipt | d379023 | K | nomor struk, offline | pasangan: PERLU FIX (brief 77) | fix, lalu Codex R6 |
-| ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38 | K | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40), gate milestone jalan | Codex R6 |
+| ws/edge-registry-pull (+device-registry 7caa7be) | 3f8ffe38 | K | auth device, sinkron offline | Opus reviewer LOLOS + architect (thread) LOLOS; digabung ke milestone/m1 1e476101 (21:40); gate milestone lulus 22:05 (check 1414 test, build ok; journal when monoton > 0067) | Codex R6 |
 | ws/stock-opname | 3abd2cc3 | K | nilai stok, akses counter | fix G8zyp selesai (gate hijau, 7 fix second-opinion); review pasangan K kedua jalan 21:50; merge wajib regenerate 0064-0066 | Codex R7 (SHA 3abd2cc3) |
 | ws/recipe-bom | f0cec09 | K | HPP | pasangan gelombang 2 | Codex R7 |
 | ws/procurement | ae09d1d | K | approval, nilai PO | architect sudah; fix brief 73 | Codex R8 |
