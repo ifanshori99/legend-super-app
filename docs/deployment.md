@@ -287,9 +287,10 @@ Copy `deploy/single-vm/compose.env.example` outside the repository and set its
 values and absolute paths. Create separate private env files for migrator, API,
 web and worker; give each process only the credentials it needs. The runtime
 example lists settings, not a complete production secret configuration. Provision
-restricted app and worker database roles after migration using
-`scripts/provision-app-role.mjs`; configure the worker's trusted transport and
-notification adapters before starting it.
+restricted app and worker database roles after migration with
+`deploy/single-vm/provision-roles.sh` (see "First boot: restricted database
+roles" below); configure the worker's trusted transport and notification
+adapters before starting it.
 
 #### Worker transport and notification settings (legend-18qw)
 
@@ -348,12 +349,87 @@ On a new VM, prepare the private pgBackRest configuration and transport module
 before starting application services. Start PostgreSQL and run the migration job
 separately using the same `--env-file` and Compose file as the deploy script.
 Then initialize and check the pgBackRest stanza as the container's `postgres`
-user, provision the restricted application and queue roles against the migrated
-database, and confirm a successful base backup to both repositories. The role
-provisioner exports functions; it is not a standalone CLI. Run it from a trusted
-operator environment with connectivity to the private database and dependencies
-installed, and never put the administrator credentials into application env
-files. Provisioning is a first-boot prerequisite; the deploy script does not
-perform it. See `deploy/backup/README.md` for the supplied systemd timer example
-and restore-drill procedure. Once those prerequisites and the transport adapter
-are ready, use the deploy script for subsequent releases.
+user, provision the restricted application and queue roles (next section), and
+confirm a successful base backup to both repositories. Provisioning is a
+first-boot prerequisite; the deploy script does not perform it. See
+`deploy/backup/README.md` for the supplied systemd timer example and
+restore-drill procedure. Once those prerequisites and the transport adapter are
+ready, use the deploy script for subsequent releases.
+
+### First boot: restricted database roles (legend-zoqc)
+
+The API and worker never receive the migration (administrator) credentials.
+They log in with two restricted roles that a one-shot job creates after the
+migrations (PRD §3 F3, TEN-02):
+
+| Login                     | Env key (file)                                                 | What it can do                                                                                                                                             |
+| ------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects. |
+| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                    |
+
+1. Generate each login name and password on the VM, and write them into the
+   private env files; never commit or paste them anywhere else:
+
+   ```sh
+   echo "legend_runtime_$(openssl rand -hex 8)"   # application login name
+   echo "legend_worker_$(openssl rand -hex 8)"    # queue login name
+   openssl rand -hex 24                            # a password (one per login)
+   ```
+
+   `api.env`: `APP_DATABASE_URL` and `DATABASE_URL` set to
+   `postgresql://<app login>:<app password>@postgres:5432/legend`.
+   `worker.env`: the same two lines plus `WORKER_DATABASE_URL` with the queue
+   login. `migrator.env` alone holds `MIGRATION_DATABASE_URL`.
+
+2. Run the job from the private network, on the VM:
+
+   ```sh
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env --dry-run
+   deploy/single-vm/provision-roles.sh --env-file /absolute/path/compose.env
+   ```
+
+   The script first refuses to continue if `api.env`, `web.env` or `worker.env`
+   contains `MIGRATION_DATABASE_URL`, if `web.env` holds any database URL, or if
+   `api.env` and `worker.env` disagree on the application login. It then starts
+   PostgreSQL, applies migrations, and runs the `provision-roles` service (the
+   migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
+   two restricted URLs taken from the services' own env files. The URLs reach
+   the container through the environment, never a command line.
+
+3. Expect `Restricted database roles are ready.` Only role names are printed.
+   Then start the services with `deploy.sh`.
+
+The job is idempotent and doubles as an audit: run it again at any time. Each
+run, inside one locked transaction, creates a missing login or re-keys an
+existing one to the password in the env file (so changing the password there
+and re-running is how to rotate it; restart the API and worker afterwards). It
+also resets drift that would only break or bend a login (`NOINHERIT`, an
+expiry, a connection limit, role-level settings such as `search_path`). It then
+fails, changing nothing, if `legend_app` can log in or has elevated attributes,
+or if a login:
+
+- is a superuser or has `BYPASSRLS`, `CREATEDB`, `CREATEROLE` or `REPLICATION`,
+  directly or inherited, or inherits any predefined `pg_*` role;
+- belongs to a role other than `legend_app` (the queue login: to none);
+- owns any table, function, type or schema outside its own (`pgboss`);
+- can create objects in the database or any schema outside its own;
+- holds table rights beyond `SELECT/INSERT/UPDATE/DELETE` (application) or
+  beyond `SELECT` on `app.active_tenant_registry` (queue). `TRUNCATE` ignores
+  RLS and is always refused.
+
+An existing role with unsafe attributes is never adopted; fix or drop it by
+hand. Passwords are sent to PostgreSQL as SCRAM-SHA-256 verifiers, so the
+plaintext never reaches the server or its logs. The migration login must be a
+superuser (the Compose `POSTGRES_USER`) or, on managed PostgreSQL, a
+`CREATEROLE` + `BYPASSRLS` owner holding `ADMIN` on `legend_app`; existing data
+migrations run under forced RLS. With a non-superuser owner on PostgreSQL 16+
+the job grants that owner `SET` (never `INHERIT`) on the queue login so it can
+hand it the `pgboss` schema.
+
+Outside Compose (another host on the private network, with the API bundle or
+the repository), run `node dist/provision-roles.js` or
+`pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
+`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set. Each
+may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
+job does not read `.env` files. Local development keeps using
+`pnpm dev:prepare`, which provisions its own random login through the same code.
