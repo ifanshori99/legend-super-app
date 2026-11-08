@@ -10,9 +10,9 @@
 // printed: messages name only services and keys. Exit 0 when the
 // configuration matches, 1 otherwise.
 //
-// provision-roles.sh runs it inside the migrator image (node), with this file
-// mounted read-only:
-//   compose config --format json | compose run -T ... node check-compose-env.mjs
+// provision-roles.sh runs it with node from the migrator image, in a
+// container with no network and this file mounted read-only:
+//   compose config --format json | docker run --rm -i --network none ... node check-compose-env.mjs
 
 const JOB_SERVICES = new Set(["migrate", "provision-roles"]);
 const URL_KEYS = ["DATABASE_URL", "APP_DATABASE_URL", "WORKER_DATABASE_URL"];

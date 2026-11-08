@@ -417,9 +417,14 @@ migrations (PRD §3 F3, TEN-02):
    unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
    (or `_FILE`), `web` receives no database URL, and the URLs `api` and
    `worker` receive equal the ones just validated. Its messages name only
-   services and keys, never values. `--dry-run` skips this check (it needs
-   the migrator image); `deploy.sh` always runs it through `--audit` before
-   any service starts. It then starts
+   services and keys, never values. Compose fills `${VAR}` in env files from
+   the shell and `compose.env`, so the configuration is read with the same
+   environment the later Compose calls get; the two validated URLs go to the
+   checker only. `MIGRATOR_IMAGE` must be a plain image reference, and if the
+   checker cannot start (image not pulled, no `node`) the script says so and
+   stops. `--dry-run` skips this check (it needs the migrator image);
+   `deploy.sh` always runs it through `--audit` before any service starts.
+   It then starts
    PostgreSQL, applies migrations, and runs the `provision-roles` service (the
    migrator image, `node dist/provision-roles.js`) with `migrator.env` plus the
    two restricted URLs taken from the services' own env files. The URLs reach
