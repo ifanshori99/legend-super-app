@@ -289,10 +289,27 @@ web and worker; give each process only the credentials it needs. The runtime
 example lists settings, not a complete production secret configuration. Provision
 restricted app and worker database roles after migration using
 `scripts/provision-app-role.mjs`; configure the worker's trusted transport and
-notification adapters before starting it. Set `WORKER_TRANSPORT_PATH` to the
-absolute path of the trusted transport module, which compose mounts read-only.
-These adapters are not supplied yet
-(legend-18qw), so event delivery must not be considered operational.
+notification adapters before starting it.
+
+#### Worker transport and notification settings (legend-18qw)
+
+The worker refuses to start unless its transport and every notification channel
+are configured. Compose sets `WORKER_TRANSPORT=builtin`; put the rest in
+`worker.env`:
+
+| Key                              | Values              | Notes                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WORKER_TRANSPORT`               | `builtin`           | Built-in outbox transport. On the cloud a `cloud-sync` event is consumed locally (the consumption row is the durable, idempotent acknowledgement). With `EDGE_MODE=true` it is queued on the authenticated edge link (`/api/edge-link`) to the cloud. `WORKER_TRANSPORT_MODULE` / `WORKER_CONFIG_MODULE` still override it with a trusted module. |
+| `NOTIFICATION_EMAIL_PROVIDER`    | `disabled`, `brevo` | Required. `brevo` also needs `BREVO_API_KEY` and `NOTIFICATION_EMAIL_FROM` (optional `NOTIFICATION_EMAIL_FROM_NAME`). The provider account and sender domain (SPF/DKIM) are bead legend-wwuc.                                                                                                                                                     |
+| `NOTIFICATION_PUSH_PROVIDER`     | `disabled`          | Required. Web push (VAPID) is bead legend-hyq.                                                                                                                                                                                                                                                                                                    |
+| `NOTIFICATION_WHATSAPP_PROVIDER` | `disabled`          | Required. WhatsApp templates are bead legend-hyq.                                                                                                                                                                                                                                                                                                 |
+
+A disabled channel is never planned for a recipient: in-app notifications are
+still written and the attempt is skipped, never reported as sent. A gap in an
+outbox stream (an event whose earlier sequence never arrived) is recorded in
+`domain_event_gap_requests` and logged as `Outbox sequence gap`; that aggregate
+stays held until the missing event arrives. Watch for that log line: it means a
+producer bug, and nothing skips the gap automatically.
 
 Run `deploy/single-vm/deploy.sh --env-file /absolute/path/compose.env --dry-run`
 to validate without starting services. Without `--dry-run`, it starts PostgreSQL,
