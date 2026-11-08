@@ -707,6 +707,19 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
       await admin.query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
       const extension = job({});
       assert.equal(extension.status, 0, extension.stderr);
+      // The TEN-02 check compares policy text; an admin search_path that
+      // includes app must not make healthy tables fail it.
+      await admin.query(
+        `ALTER ROLE "${adminUser}" IN DATABASE ${database} SET search_path = app, public`,
+      );
+      try {
+        const pathed = job({});
+        assert.equal(pathed.status, 0, pathed.stderr);
+      } finally {
+        await admin.query(
+          `ALTER ROLE "${adminUser}" IN DATABASE ${database} RESET search_path`,
+        );
+      }
       // A membership without INHERIT (no privileges at all on 16+) or with
       // ADMIN OPTION is normalised, not reported as fine.
       await admin.query(`REVOKE legend_app FROM "${roles[0]}"`);
@@ -1423,6 +1436,12 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
         },
         /worker\.env has a non-ASCII character .* before a key on line 4;/,
       ],
+      [
+        {
+          worker: `${files.worker}NOTE="a\nb"\n\u00A0MIGRATION_DATABASE_URL=postgresql://x:y@postgres/legend\n`,
+        },
+        /worker\.env has a non-ASCII character .* before a key on line 6;/,
+      ],
     ];
     for (const [overrides, message] of refusals) {
       write(overrides);
@@ -1435,8 +1454,10 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
     write({ migrator: "MIGRATION_DATABASE_URL_FILE=/run/secrets/migration\n" });
     const fromFile = run(["--dry-run"]);
     assert.equal(fromFile.status, 0, fromFile.stderr);
-    // Non-ASCII in a value or a comment is fine.
-    write({ web: `${files.web}# caf\u00E9\nBRAND=Caf\u00E9\n` });
+    // Non-ASCII in a value (also one spanning lines) or a comment is fine.
+    write({
+      web: `${files.web}# caf\u00E9\nBRAND=Caf\u00E9\nWELCOME="Halo\nSelamat datang \u2014 \\" ok"\n`,
+    });
     const accented = run(["--dry-run"]);
     assert.equal(accented.status, 0, accented.stderr);
   } finally {

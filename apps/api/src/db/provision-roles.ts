@@ -606,7 +606,7 @@ async function assertTenantRls(client: ClientBase, user: string) {
   });
   if (broken.length)
     throw new ProvisionError(
-      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. Restore them (SELECT app.enforce_tenant_rls('<table>'::regclass) as the migration owner), then re-run.`,
+      `Tenant tables must enable and force row-level security with the restrictive tenant policy (TEN-02); these do not: ${broken.slice(0, 5).join("; ")}${broken.length > 5 ? "; ..." : ""}. As the migration owner: for "disabled" run ALTER TABLE <table> ENABLE ROW LEVEL SECURITY, for "not forced" ALTER TABLE <table> FORCE ROW LEVEL SECURITY; for a missing or altered policy drop the table's tenant_access and tenant_isolation policies, then run SELECT app.enforce_tenant_rls('<table>'::regclass) (never on tenant_domains or payment_link_tokens, which only need RLS enabled). Then re-run.`,
     );
 }
 
@@ -688,6 +688,9 @@ async function withAdmin<T>(
         `PostgreSQL 16 or newer is required; this server reports version ${Math.floor(version / 10000)}.`,
       );
     await client.query("BEGIN");
+    // Catalog text (pg_get_expr) is compared exactly; a search_path that
+    // includes app would print app.require_tenant_id() without its schema.
+    await client.query("SET LOCAL search_path = pg_catalog");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
       LOCK_KEY,
     ]);

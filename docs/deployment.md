@@ -402,7 +402,8 @@ migrations (PRD §3 F3, TEN-02):
    with a non-ASCII character before a key on some line (a byte-order mark or
    a no-break space, which Compose silently skips, so a hidden
    `MIGRATION_DATABASE_URL` would reach the service) is refused with only the
-   line number shown; save such files as plain text. Compose output
+   line number shown (lines inside a double-quoted value that spans lines are
+   not keys and may hold any text); save such files as plain text. Compose output
    is hidden during validation because Compose echoes an unparsable env line,
    secrets included. It then starts
    PostgreSQL, applies migrations, and runs the `provision-roles` service (the
@@ -476,8 +477,15 @@ Five tables are documented exceptions, the same list as
 (must keep row-level security enabled; reads are open, writes are
 tenant-checked), and `session`, `login_challenges` and `wa_inbound_messages`
 (read before a tenant is known; scoped by the services). A table that fails
-the check stops the job; restore it with
-`SELECT app.enforce_tenant_rls('<table>'::regclass)` as the migration owner.
+the check stops the job. As the migration owner, fix "disabled" with
+`ALTER TABLE <table> ENABLE ROW LEVEL SECURITY` and "not forced" with
+`ALTER TABLE <table> FORCE ROW LEVEL SECURITY`. For a missing or altered policy,
+drop the table's `tenant_access` and `tenant_isolation` policies, then run
+`SELECT app.enforce_tenant_rls('<table>'::regclass)` (it creates both and fails
+if either exists). Never run it on `tenant_domains` or `payment_link_tokens`:
+they only need row-level security enabled. The job compares the policy text
+with `search_path` set to `pg_catalog`, so a custom `search_path` does not
+matter.
 
 After committing, the job signs in with each URL exactly as given and checks
 that PostgreSQL reports that login (not a superuser) on the same database. URLs

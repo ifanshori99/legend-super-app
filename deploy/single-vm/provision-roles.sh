@@ -43,8 +43,15 @@ defines() { grep -Eq "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*([=:]|\$)"
 # could slip past them. Refuse any byte outside printable ASCII (tab and CR
 # aside) before the first =, : or # of a line. Only the line number is shown.
 # (awk, not grep: BSD grep skips a leading byte-order mark.)
+# Lines inside a double-quoted value that spans lines are value text, not keys.
 ascii_keys() {
-  line=$(LC_ALL=C awk '{ k = $0; sub(/[#=:].*/, "", k); gsub(/[\t\r -~]/, "", k); if (k != "") { print NR; exit } }' "$1")
+  line=$(LC_ALL=C awk '
+    inq { v = $0; gsub(/\\./, "", v); if (v ~ /"/) inq = 0; next }
+    { k = $0; sub(/[#=:].*/, "", k); gsub(/[\t\r -~]/, "", k); if (k != "") { print NR; exit } }
+    /^[^#=:]*[=:]/ {
+      v = $0; sub(/^[^=:]*[=:][ \t]*/, "", v)
+      if (v ~ /^"/) { v = substr(v, 2); gsub(/\\./, "", v); if (v !~ /"/) inq = 1 }
+    }' "$1")
   [ -z "$line" ] ||
     fail "$(basename "$1") has a non-ASCII character (byte-order mark, no-break space, ...) before a key on line $line; save it as plain text without them."
 }
