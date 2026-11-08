@@ -42,6 +42,7 @@ import {
   type ShareholderDocumentViewer,
   type ShareholderMembership,
 } from "../services/shareholder-documents.service";
+import type { MalwareScanner } from "../services/core-image";
 
 const BASE = "/api/accounting";
 const route = (path: string) => path.slice(BASE.length) || "/";
@@ -74,6 +75,7 @@ async function resolveViewer(req: Request): Promise<{
 export function createShareholderDocumentsRouter(
   options: {
     storage?: ObjectStorage | null;
+    scanner?: MalwareScanner | null;
     membership?: ShareholderMembership;
   } = {},
 ) {
@@ -87,6 +89,16 @@ export function createShareholderDocumentsRouter(
         "Penyimpanan dokumen belum tersedia.",
       );
     return options.storage;
+  };
+  // Fail closed: uploads are never stored unscanned.
+  const scanner = (): MalwareScanner => {
+    if (!options.scanner)
+      throw new HttpError(
+        503,
+        "SERVICE_UNAVAILABLE",
+        "Pemindai malware belum tersedia.",
+      );
+    return options.scanner;
   };
   // Scoped to this resource: the router shares the /accounting mount with the
   // core and AP/FA routers, which run their own guards.
@@ -143,9 +155,10 @@ export function createShareholderDocumentsRouter(
   router.post(
     route(uploadShareholderDocumentFile.path),
     manage,
-    // 503 before multer buffers up to 10 MiB when no storage is wired.
+    // 503 before multer buffers up to 10 MiB when no storage or scanner is wired.
     (_req, _res, next) => {
       storage();
+      scanner();
       next();
     },
     parseUpload,
@@ -158,7 +171,7 @@ export function createShareholderDocumentsRouter(
         actorId(req),
         metadata,
         req.file.buffer,
-        { storage: storage() },
+        { storage: storage(), scanner: scanner() },
       );
       res.status(201).json({ data });
     },

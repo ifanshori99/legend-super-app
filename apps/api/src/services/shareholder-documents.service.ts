@@ -43,6 +43,7 @@ import {
   uniqueViolation,
   type TenantTransaction,
 } from "./accounting-shared";
+import type { MalwareScanner } from "./core-image";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const SIGNED_URL_SECONDS = 300;
@@ -115,7 +116,7 @@ export async function uploadShareholderDocumentFileService(
   actorId: UserId,
   input: unknown,
   bytes: Uint8Array,
-  deps: { storage: ObjectStorage },
+  deps: { storage: ObjectStorage; scanner: MalwareScanner },
 ): Promise<ShareholderDocumentFile> {
   assertTrustedScopedContext(context);
   const { profitEntityId } =
@@ -130,6 +131,8 @@ export async function uploadShareholderDocumentFileService(
       "UNSUPPORTED_MEDIA_TYPE",
       "Only PDF files are accepted.",
     );
+  // Rejects on detection or scanner failure: nothing is stored either way.
+  await deps.scanner.scan(bytes);
   const id = randomUUID();
   const fileKey = `shareholder-documents/${id}.pdf`;
   const lookup = {

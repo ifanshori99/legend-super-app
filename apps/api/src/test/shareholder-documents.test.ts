@@ -28,6 +28,10 @@ import { limitAuthBody } from "../middleware/body";
 import { errorHandler, notFound } from "../middleware/error-handler";
 import { tenantContext } from "../middleware/tenant";
 import { createShareholderDocumentsRouter } from "../routes/shareholder-documents.routes";
+import {
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "../services/core-image";
 import { resolveHostname } from "../services/org-resolve.service";
 import { deviceTenantCredential } from "../services/platform-tenant.service";
 import { agent, originHeader, signUp } from "./helpers";
@@ -67,6 +71,15 @@ class CountingStorage extends FakeObjectStorage {
   }
 }
 const storage = new CountingStorage();
+const scanner = new NoopMalwareScanner();
+/** Rejects any object containing the marker, like a scanner flagging malware. */
+const INFECTED = "X5O!P%@AP-EICAR-TEST";
+const infectionScanner: MalwareScanner = {
+  async scan(bytes) {
+    if (Buffer.from(bytes).includes(INFECTED))
+      throw new Error("malware detected");
+  },
+};
 
 function buildApp(
   tenantId: string,
@@ -105,21 +118,34 @@ function buildApp(
 
 const appA = buildApp(
   tenantA,
-  createShareholderDocumentsRouter({ storage, membership }),
+  createShareholderDocumentsRouter({ storage, scanner, membership }),
 );
 const appB = buildApp(
   tenantB,
-  createShareholderDocumentsRouter({ storage, membership }),
+  createShareholderDocumentsRouter({ storage, scanner, membership }),
 );
 // No storage wired: upload answers 503 (after the permission check).
 const appNoStorage = buildApp(
   tenantA,
-  createShareholderDocumentsRouter({ storage: null, membership }),
+  createShareholderDocumentsRouter({ storage: null, scanner, membership }),
 );
 // No membership option: production default, fail closed.
 const appFailClosed = buildApp(
   tenantA,
-  createShareholderDocumentsRouter({ storage }),
+  createShareholderDocumentsRouter({ storage, scanner }),
+);
+// Scanner variants: one that flags infected bytes, one not wired at all.
+const appInfection = buildApp(
+  tenantA,
+  createShareholderDocumentsRouter({
+    storage,
+    scanner: infectionScanner,
+    membership,
+  }),
+);
+const appNoScanner = buildApp(
+  tenantA,
+  createShareholderDocumentsRouter({ storage, membership }),
 );
 
 const BASE = "/api/accounting/shareholder-documents";
@@ -423,6 +449,31 @@ describe("legend-69yq shareholder documents", () => {
     expect(rows.rowCount).toBe(0);
     // Nor was any object written to storage.
     expect(storage.puts).toBe(putsBefore);
+  });
+
+  it("2b. an infected PDF is rejected and not stored; without a scanner upload is 503", async () => {
+    const entityId = entity();
+    const putsBefore = storage.puts;
+
+    const infectedMgr = await manager(appInfection);
+    const infected = await upload(infectedMgr, entityId, pdf(INFECTED));
+    expect(infected.status).toBeGreaterThanOrEqual(400);
+    expect(infected.status).not.toBe(201);
+    // A clean PDF through the same scanner is accepted.
+    expect((await upload(infectedMgr, entityId, pdf())).status).toBe(201);
+
+    const mgr = await manager(appNoScanner);
+    expect((await upload(mgr, entityId, pdf())).status).toBe(503);
+    const stranger = await signedIn(appNoScanner, "Docs Nobody No Scanner");
+    expect((await upload(stranger, entityId, pdf())).status).toBe(403);
+
+    // Only the one clean upload was written and recorded.
+    expect(storage.puts).toBe(putsBefore + 1);
+    const rows = await owner.query(
+      "SELECT 1 FROM shareholder_document_files WHERE tenant_id = $1 AND profit_entity_id = $2",
+      [tenantA, entityId],
+    );
+    expect(rows.rowCount).toBe(1);
   });
 
   it("3. create rejects a file not uploaded, from another profit entity or already used (422)", async () => {
