@@ -24,6 +24,9 @@
 // - edge_sync_conflicts: events the conflict rules refused to apply (cloud
 //   wins master data; transaction events are never overwritten). The full
 //   envelope is kept, so a refused event is never lost. Append-only.
+// - edge_pull_checkpoints: edge side only, per node and pulled stream, the
+//   watermark of the last fully applied cloud pull (legend-2lp.7). It cannot
+//   be derived from the replica (heartbeats bump devices.updated_at locally).
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -305,6 +308,35 @@ export const edgeInboundEvents = pgTable(
   ],
 );
 
+// Cloud-side registry of edge_to_cloud event ids, one row per (tenant, event)
+// whichever node delivered it first (legend-wg5t). Primary and standby of one
+// outlet may both send the same event id (the standby took over with the
+// primary's outbox); receipts in edge_inbound_events stay per node and
+// append-only, so the tenant-wide "already received" check and its race
+// guard (primary key) live here instead of in a unique index on the
+// receipts, which pre-existing duplicate receipts would break. Migration 0065
+// backfills it from the receipts. Append-only like the receipts.
+export const edgeReceivedEvents = pgTable(
+  "edge_received_events",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    eventId: ulidInUuid("event_id").notNull(),
+    firstEdgeNodeId: uuid("first_edge_node_id").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.eventId] }),
+    foreignKey({
+      name: "edge_received_events_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.firstEdgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+  ],
+);
+
 export const edgeSyncConflicts = pgTable(
   "edge_sync_conflicts",
   {
@@ -354,6 +386,42 @@ export const edgeSyncConflicts = pgTable(
     check(
       "edge_sync_conflicts_resolution_check",
       sql`${table.resolution} IN ('cloud_wins', 'append_only')`,
+    ),
+  ],
+);
+
+// Edge-side pull checkpoint (legend-2lp.7; PRD §3 F5 device registry
+// replica). One row per (node, stream): `watermark` is the cursor returned by
+// the last pull that applied every page (null = the cloud had no records
+// yet), `last_success_at` is when that pull finished, so replica staleness
+// survives a restart. Written only after a pull returned, never mid-pull.
+export const edgePullCheckpoints = pgTable(
+  "edge_pull_checkpoints",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    edgeNodeId: uuid("edge_node_id").notNull(),
+    stream: varchar("stream", { length: 40 })
+      .$type<"device_registry">()
+      .notNull(),
+    watermark: text("watermark"),
+    lastSuccessAt: timestamp("last_success_at", {
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tenantId, table.edgeNodeId, table.stream] }),
+    foreignKey({
+      name: "edge_pull_checkpoints_edge_node_fk",
+      columns: [table.tenantId, table.outletId, table.edgeNodeId],
+      foreignColumns: [edgeNodes.tenantId, edgeNodes.outletId, edgeNodes.id],
+    }),
+    check(
+      "edge_pull_checkpoints_stream_check",
+      sql`${table.stream} IN ('device_registry')`,
     ),
   ],
 );

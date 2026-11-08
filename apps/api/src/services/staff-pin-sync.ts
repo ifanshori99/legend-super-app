@@ -19,6 +19,8 @@
 // - Settle window: rows updated in the last STAFF_PIN_SYNC_SETTLE_MS are held
 //   back, so a transaction that took its `updated_at` before a concurrent one
 //   but commits after it is not skipped by an already-advanced watermark.
+//   The cutoff is `now() - window` evaluated by the database, never the app
+//   clock, so app/DB clock skew cannot release unsettled rows (legend-wg5t).
 //   Residual risk: a writer whose commit lags its `updated_at` by more than the
 //   window (follow-up: a commit-ordered sync version column).
 //
@@ -207,6 +209,11 @@ function encodeWatermark(mark: Watermark): string {
 const versionOf = sql<string>`to_char(${staffPins.updatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
 export type ListStaffPinRecordsOptions = {
+  /**
+   * Explicit clock override for tests only. Production leaves it unset: the
+   * settle cutoff is then computed from the DATABASE clock (legend-wg5t item 5),
+   * the same clock that stamped `updated_at`.
+   */
   readonly now?: Date;
   /** Override the settle window (tests); never negative. */
   readonly settleMs?: number;
@@ -224,9 +231,14 @@ export async function listStaffPinRecordsSince(
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { limit } = staffPinSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
-  const now = options.now ?? new Date();
   const settleMs = Math.max(0, options.settleMs ?? STAFF_PIN_SYNC_SETTLE_MS);
-  const cutoff = new Date(now.getTime() - settleMs);
+  // legend-wg5t item 5: `updated_at` comes from the database, so the cutoff
+  // must too. An app clock ahead of the DB would release rows that are still
+  // inside the settle window and let the edge's watermark skip a late commit.
+  const cutoff =
+    options.now === undefined
+      ? sql`now() - (${settleMs}::double precision * interval '1 millisecond')`
+      : new Date(options.now.getTime() - settleMs);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
     brandId: null,

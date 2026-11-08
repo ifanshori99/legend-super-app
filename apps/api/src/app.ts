@@ -149,6 +149,7 @@ export function createApp({
         "Content-Type",
         "Authorization",
         "Idempotency-Key",
+        "X-Reservation-Link-Token",
         "X-Request-Id",
       ],
       exposedHeaders: ["X-Request-Id", "Location"],

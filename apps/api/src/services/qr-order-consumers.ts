@@ -14,8 +14,9 @@
 // covered by verified money. A replay finds the order `sent` and changes
 // nothing. A payment for a voided order (paid after its code expired, which
 // the PRD accepts and WS-05 flags `late_payment`) never revives it: the stock
-// and promotion were released; the money stays on the WS-05 bill for refund
-// (follow-up bead legend-dahl).
+// and promotion were released; the money WS-05 booked on the bill goes back
+// through one pending system refund request per intent (`system:qr`,
+// qr-order-late-payment.ts; beads legend-b0au, legend-dahl).
 //
 // payment.expired / payment.failed (bead note: an expired code or link must
 // not strand the order in `awaiting_payment`). PRD silent on the exact rule;
@@ -27,7 +28,8 @@
 //   limit and promotion released exactly once), but only after
 //   LATE_PAYMENT_GRACE_MS past the last code's expiry for a local timeout,
 //   because a payment made at the last second may still settle. A provider-
-//   declared failure/expiry voids at once;
+//   declared expiry voids at once; a failure waits the grace too, because
+//   WS-05 still accepts a verified settlement after `failed` (legend-b0au);
 // - an order with no open code for UNPAID_ORDER_ABANDON_MS is abandoned and
 //   voided by `sweepUnpaidQrOrders` (relay tick), which also covers guests
 //   who stop polling (no expiry event is produced then).
@@ -45,6 +47,7 @@ import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import type { Tx } from "./menu-internals.ts";
+import { requestQrLatePaymentRefund } from "./qr-order-late-payment.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   fireQrOrder,
@@ -104,8 +107,9 @@ export type UnpaidQrOrderDecision =
 
 /**
  * What to do with an unpaid pay-first order whose payment code closed.
- * `providerFinal`: the gateway itself declared the code failed/expired, so no
- * late payment can follow and the grace is skipped.
+ * `providerFinal`: the gateway itself declared the code expired, so no late
+ * payment can follow and the grace is skipped. Never set for a failure: WS-05
+ * still accepts a verified settlement after `failed` (legend-b0au).
  */
 export function decideUnpaidQrOrder(
   state: UnpaidQrOrderState,
@@ -286,10 +290,19 @@ export async function handleQrOrderPaymentPaid(
         ),
       );
     if (late?.status !== "paid") return "unchanged";
-    // Identifiers only; the refund follow-up finds it on the WS-05 bill.
+    // WS-05 booked the money on this voided order's bill; it is never the
+    // order's revenue. One system refund request per intent returns it
+    // (beads legend-b0au, legend-dahl); a replay finds the first one.
+    const refundId = await requestQrLatePaymentRefund(tx, context, {
+      order,
+      paymentLinkId,
+      intentId,
+      now,
+    });
+    // Identifiers only.
     logger.warn(
-      { orderId: order.id, intentId },
-      "QR order: payment settled after the unpaid order was voided",
+      { orderId: order.id, intentId, refundId },
+      "QR order: payment settled after the unpaid order was voided; refund requested",
     );
     return "late_payment_on_voided_order";
   }
@@ -371,8 +384,12 @@ export async function handleQrOrderPaymentClosed(
     order.paymentIntentId !== payload.data.intentId
   )
     return "unchanged";
+  // A gateway-declared expiry is final. `payment.failed` is not (beads
+  // legend-b0au, legend-dahl): WS-05 still accepts a verified settlement after
+  // `failed`, so the order waits the late-payment grace like a local timeout
+  // instead of being voided while the guest's money may still land.
   const providerFinal =
-    event.name === "payment.failed" || payload.data.reason === "gateway";
+    event.name === "payment.expired" && payload.data.reason === "gateway";
   const decision = decideUnpaidQrOrder(
     await loadUnpaidState(tx, context, order, now),
     now,

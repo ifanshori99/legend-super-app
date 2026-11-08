@@ -10,6 +10,7 @@ import {
   uuidToUlid,
 } from "@starter/shared/core";
 import { databaseUrl } from "./db/connection";
+import { verifyQueueConnection } from "./db/role";
 import { withTenant } from "./db/tenant.ts";
 import { db, pool } from "./db";
 import {
@@ -27,6 +28,9 @@ import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
+import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.ts";
+import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
+import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
 import { createPaymentReservationDepositPort } from "./services/reservation-deposit-payment.ts";
 import { setReservationDepositPort } from "./services/reservation-ports.ts";
@@ -45,6 +49,8 @@ import {
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
 import { runInventoryExpiryJob } from "./worker/inventory-expiry.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runDueRecurringJournals } from "./services/accounting-journal-recurring.service.ts";
+import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
 
@@ -59,7 +65,11 @@ const workerUrl = databaseUrl(process.env.WORKER_DATABASE_URL);
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
-const registry = new Pool({ connectionString: workerUrl, max: 1 });
+const registry = new Pool({
+  connectionString: workerUrl,
+  max: 1,
+  verify: verifyQueueConnection,
+});
 registry.on("error", () => console.error("Worker registry connection error"));
 async function resolveContext(tenantId: string) {
   const parsed = tenantIdSchema.parse(tenantId);
@@ -117,6 +127,11 @@ const runtime = createWorkerRuntime({
           // PRD §3.18 (legend-9yz): a decided purchasing chain settles its PR/PO
           // from the chain re-read under the row lock; replays are no-ops.
           await handlePurchasingApprovalResolved(context, event);
+          // WS-10 (legend-hggk): approved/rejected leave and overtime settle
+          // from the chain outcome re-read under the request row lock.
+          await handleHrisApprovalResolved(context, event);
+          // Manual/recurring journals (legend-vmyg): settle from the chain.
+          await handleJournalApprovalResolved(context, event);
           await handlers.deliverEvent(context, event, key, tx, route);
         }
       },
@@ -160,6 +175,14 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Approval deadline sweep failed");
     }
+    // legend-arj.1: leave accrual, carry-over and carry-over expiry once per
+    // local day (idempotent through the ledger). Fail closed: an error leaves
+    // no day marker, so the next tick retries, and never blocks the relay.
+    try {
+      await runScheduledLeaveJobs(context);
+    } catch {
+      console.error("Scheduled leave jobs failed");
+    }
     // TEN-04: record lapsed support-access sessions exactly once.
     try {
       await expireDueSupportAccessGrants(context);
@@ -196,6 +219,20 @@ const relay = createRelayRuntime({
       await runDueDepreciation(context, new Date());
     } catch {
       console.error("Depreciation job sweep failed");
+    }
+    // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved
+    // templates, one transaction per period. Fail closed, next tick resumes.
+    try {
+      const recurring = await runDueRecurringJournals(context, new Date());
+      // Counts only (no template data); the per-template reason is stored on
+      // recurring_journals.last_error for finance.
+      if (recurring.failed > 0)
+        logger.warn(
+          { job: "recurring_journals", ...recurring },
+          "recurring journal generation had failures",
+        );
+    } catch {
+      console.error("Recurring journal sweep failed");
     }
     // §3 F16 par-level critical + FEFO expiry alerts (legend-ugo); self-throttled.
     try {
