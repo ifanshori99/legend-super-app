@@ -167,3 +167,8 @@ Akun Claude #1 habis (reset 23:09); CTO berhenti. Thread dipindah ke akun #2. Be
 - Thread jalan: G5rd6 pos-shift (gerbang 78a274a jalan), G7cu9 EDC (gerbang), G9d1y struk (brief 77), G7pk4 procurement (brief 73), G7wwc KDS (brief 74).
 - Codex: cron d29dba1e 23:36 (R1, akun 3) dan 8763dcff 00:24 (R2, akun 2) ada di sesi CTO lama; cron sesi tidak ikut pindah, jadwalkan ulang di sesi baru. Brief R4 PPh21, R6–R9 belum ditulis.
 - Jawaban founder "berapa task lagi": 440 kartu non-epic terbuka, 35 P0/P1 (7 P0 semua EXT pihak luar). Inti rilis: 10 cabang antrean merge, Codex R1–R9, jembatan inventori→GL (legend-w1vo), migrator role production (legend-jtnd, legend-k1np), e2e A–Z (legend-hmz2, legend-o2on), runbook (legend-71d), monitoring (legend-az9), review founder Q6 + Q12, akun production. Usulan ke founder: tetapkan daftar potong rilis (WS-12 AI, sebagian WS-09/WS-14 pascarilis).
+
+### Keputusan founder 23:15
+- Fitur kamar mandi / smart lock ditunda (legend-3dm8, legend-bzih, legend-2ke, legend-s20 → deferred). Rilis menyusul.
+- Tidak ada transfer bank. Metode bayar: QRIS, virtual account, debit/kartu kredit, bayar di kasir (tunai, EDC). Transfer bank kode unik DOIT tetap mati; tidak perlu perluasan skema `hosted_url`. Cek apakah rail kartu (debit/CC online) DOIT sudah tercakup di `ws/doit-provider`.
+- Fitur AI, Wi-Fi, ojol: founder belum menunda, anggap tetap dalam cakupan.
