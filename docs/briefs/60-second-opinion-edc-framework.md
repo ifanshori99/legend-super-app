@@ -4,8 +4,8 @@
 Baca `~/.agents/team/roles/second-opinion.md` lalu ikuti.
 
 ## Repo
-Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/edc-framework`, cabang `ws/edc-framework`, SHA `5f797fe`.
-Rentang diff: `git diff $(git merge-base main 5f797fe)..5f797fe` (abaikan drizzle `meta/*.json`).
+Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/edc-framework`, cabang `ws/edc-framework`, SHA `a6d022d3`.
+Rentang diff: `git diff $(git merge-base main a6d022d3)..a6d022d3` (abaikan drizzle `meta/*.json`).
 
 ## Berkas berisiko
 - `apps/api/src/db/schema/edc.ts`
