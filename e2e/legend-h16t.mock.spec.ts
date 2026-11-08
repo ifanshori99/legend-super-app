@@ -13,9 +13,17 @@ const table = `v1.${"A".repeat(40)}.${"B".repeat(43)}`; // A03, sample menu
 
 async function joinTable(page: Page) {
   await page.goto(`/t/${table}`);
-  // The guest-count dialog opens on the first visit (PRD §3 "Scan & Sesi Meja").
-  await page.getByRole("button", { name: "Mulai pesan" }).click();
-  await expect(page.getByRole("dialog")).toBeHidden();
+  // The guest count is asked inline in the menu (PRD §3 "Scan & Sesi Meja").
+  // A click before hydration is lost, so retry it until the panel is open.
+  const save = page.getByRole("button", { name: "Simpan" });
+  await expect(async () => {
+    await page.getByRole("button", { name: /Pilih jumlah tamu/ }).click();
+    await expect(save).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 30_000 });
+  await save.click();
+  await expect(
+    page.getByRole("button", { name: /Pilih jumlah tamu/ }),
+  ).toHaveCount(0);
 }
 
 const cards = (page: Page) =>
@@ -36,7 +44,10 @@ test("Q22 the menu card leads with a square photo plate and prints the sample la
   page,
 }) => {
   await joinTable(page);
-  await expect(page.getByText("Contoh data")).toBeVisible();
+  // The sample label sits in the mobile and the desktop header; one shows.
+  await expect(
+    page.getByText("Contoh data").filter({ visible: true }),
+  ).toBeVisible();
 
   const first = cards(page).first();
   const plate = first.locator('[data-slot="media-plate"]');
@@ -79,7 +90,7 @@ test("Q22 a sold-out card greys its photo, says Habis and offers no add button",
 
   const card = cards(page).filter({ hasText: "Mie Kuah" });
   await expect(card).toBeVisible();
-  await expect(card.getByText("Habis")).toBeVisible();
+  await expect(card.getByText("Habis hari ini")).toBeVisible();
   await expect(card.getByRole("button", { name: /^Tambah / })).toHaveCount(0);
   // Greyscale is what marks the photo as unavailable (DESIGN.md v2).
   await expect(card.locator("img")).toHaveClass(/grayscale/);
@@ -101,8 +112,9 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
     "src",
     /\/sample\/menu\/cappuccino\.jpg$/,
   );
-  // 3:2, and flush with the sheet edge (only the 1px border of the sheet is
-  // allowed between them). The sheet animates open, and a measurement taken
+  // 3:2, and it fills the sheet's content width: the glass-era sheet insets the
+  // hero by the sheet padding (1.5rem each side from lg, legend-2re1) instead of
+  // running to the edge. The sheet animates open, and a measurement taken
   // mid-transition sees a narrower hero (seen once in a sharded run: 487 vs
   // 495), so retry the measurement until the geometry settles — the contract
   // below is unchanged.
@@ -113,7 +125,7 @@ test("Q22 the item sheet opens on a full-bleed hero photo with the close on it",
     ]);
     expect(sheetBox?.width ?? 0).toBeGreaterThan(0);
     expect(heroBox?.width ?? 0).toBeGreaterThanOrEqual(
-      (sheetBox?.width ?? 0) - 4,
+      (sheetBox?.width ?? 0) - 2 * 24 - 4,
     );
     expect(heroBox?.height ?? 0).toBeCloseTo(
       (heroBox?.width ?? 0) * (2 / 3),
@@ -137,14 +149,17 @@ test("Q22 a cart line keeps a 72px photo plate next to its name", async ({
   const sheet = page.getByRole("dialog");
   await sheet.getByRole("radio", { name: "Panas" }).click();
   await sheet.getByRole("radio", { name: "Normal" }).click();
-  await sheet.getByRole("button", { name: "Tambah ke keranjang" }).click();
+  await sheet.getByRole("button", { name: /^Tambah · / }).click();
   await expect(sheet).toBeHidden();
 
-  await page.getByRole("link", { name: /^Keranjang/ }).click();
+  await page.getByRole("link", { name: "Lihat keranjang" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "Keranjang meja" }),
+    page.getByRole("heading", { level: 1, name: "Keranjang & bayar" }),
   ).toBeVisible();
-  await expect(page.getByText("Contoh data")).toBeVisible();
+  // The sample label sits in the mobile and the desktop header; one shows.
+  await expect(
+    page.getByText("Contoh data").filter({ visible: true }),
+  ).toBeVisible();
 
   const row = page.getByRole("listitem").filter({ hasText: "Cappuccino" });
   const thumb = row.locator('[data-slot="media-plate"]');

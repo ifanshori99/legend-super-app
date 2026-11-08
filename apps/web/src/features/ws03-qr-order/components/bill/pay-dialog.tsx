@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { RadioGroup } from "radix-ui";
-import { QrCode, Wallet } from "lucide-react";
+import { CircleAlert, QrCode, Wallet } from "lucide-react";
 import { cn } from "cn";
 import type {
   GuestPaymentMethod,
@@ -106,8 +106,8 @@ export function PayDialog({
               key={value}
               value={value}
               className={cn(
-                "flex min-h-14 items-center gap-3 rounded-container border-(length:--border-w) border-input p-3 text-left transition-colors duration-(--duration-fast) hover:bg-surface-2",
-                "data-[state=checked]:border-primary data-[state=checked]:bg-primary-tint data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
+                "group flex min-h-14 items-center gap-3 rounded-qr-media border-(length:--border-w) border-input bg-card p-3 text-left transition-colors duration-(--duration-fast) hover:bg-qr-selection",
+                "data-[state=checked]:border-primary data-[state=checked]:bg-qr-selection data-[state=checked]:ring-1 data-[state=checked]:ring-primary",
               )}
             >
               <Icon className="size-6 shrink-0" aria-hidden="true" />
@@ -115,12 +115,22 @@ export function PayDialog({
                 <span className="font-semibold">{t(label)}</span>
                 <span className="text-sm text-muted-foreground">{t(hint)}</span>
               </span>
+              <span
+                aria-hidden="true"
+                className="ml-auto grid size-6 shrink-0 place-items-center rounded-full border-2 border-input group-data-[state=checked]:border-primary"
+              >
+                <RadioGroup.Indicator className="size-3 rounded-full bg-primary" />
+              </span>
             </RadioGroup.Item>
           ))}
         </RadioGroup.Root>
         <div aria-live="polite">
           {start.isError && (
-            <p className="text-sm font-medium text-danger">
+            <p className="flex items-start gap-2 rounded-qr-media border-l-[3px] border-danger bg-danger-subtle p-3 text-sm font-medium text-foreground">
+              <CircleAlert
+                className="mt-0.5 size-4 shrink-0 text-danger"
+                aria-hidden="true"
+              />
               {t("qrOrders.bill.payFailed")}
             </p>
           )}

@@ -1,6 +1,8 @@
 // A group of options with a min/max rule (variants, modifiers). Single choice
-// uses a radio group, multiple choice uses checkboxes; the row is the touch
-// target (48px+). Sold-out options stay visible but cannot be chosen (ORD-05).
+// is a row of pill radios (selected = warm fill, darker edge, rust dot);
+// multiple choice is a list of checkbox rows with "+ Rp x" on the right. The
+// whole pill/row is the touch target (44px+). Sold-out options stay visible
+// but cannot be chosen (ORD-05).
 import { useId } from "react";
 import { cn } from "cn";
 import { RadioGroup } from "radix-ui";
@@ -19,8 +21,10 @@ export type ChoiceOption = {
   soldOut?: boolean;
 };
 
-const ROW =
-  "flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-container border-(length:--border-w) bg-card px-3 py-2 text-left transition-colors duration-(--duration-fast) has-[:disabled]:cursor-not-allowed has-[:disabled]:text-muted-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring";
+const FOCUS =
+  "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring has-[:disabled]:cursor-not-allowed has-[:disabled]:text-muted-foreground";
+const PILL = `inline-flex min-h-11 cursor-pointer items-center gap-2.5 rounded-full border-(length:--border-w) bg-card px-4 py-2 text-base transition-colors duration-(--duration-fast) ${FOCUS}`;
+const CHECK_ROW = `flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-qr-cta px-1 py-1.5 text-base ${FOCUS}`;
 
 function OptionPrice({ option }: { option: ChoiceOption }) {
   const t = useT();
@@ -29,9 +33,9 @@ function OptionPrice({ option }: { option: ChoiceOption }) {
   if (option.priceIdr === null) return null;
   if (option.priceMode !== "absolute" && option.priceIdr === 0) return null;
   return (
-    <span className="text-sm text-muted-foreground">
-      {option.priceMode === "absolute" ? null : "+"}
-      <Money amount={option.priceIdr} size="sm" />
+    <span className="text-base text-muted-foreground">
+      {option.priceMode === "absolute" ? null : "+ "}
+      <Money amount={option.priceIdr} size="md" />
     </span>
   );
 }
@@ -62,7 +66,7 @@ export function ChoiceGroup({
         aria-invalid={invalid || undefined}
         value={selected[0] ?? ""}
         onValueChange={onToggle}
-        className="grid gap-2"
+        className="flex flex-wrap gap-2"
       >
         {options.map((option) => {
           const checked = selected.includes(option.id);
@@ -72,20 +76,19 @@ export function ChoiceGroup({
               key={option.id}
               htmlFor={id}
               className={cn(
-                ROW,
-                checked ? "border-primary bg-primary-tint" : "border-border",
-                invalid && !checked && "border-danger",
+                PILL,
+                checked ? "border-foreground bg-qr-selection" : "border-input",
               )}
             >
               <RadioGroup.Item
                 id={id}
                 value={option.id}
                 disabled={option.soldOut}
-                className="grid size-check shrink-0 place-items-center rounded-full border-(length:--border-w) border-input bg-background data-[state=checked]:border-primary data-[state=checked]:bg-primary"
+                className="grid size-5 shrink-0 place-items-center rounded-full border-2 border-input bg-card data-[state=checked]:border-primary"
               >
-                <RadioGroup.Indicator className="size-[40%] rounded-full bg-primary-foreground" />
+                <RadioGroup.Indicator className="size-2.5 rounded-full bg-primary" />
               </RadioGroup.Item>
-              <span className="min-w-0 flex-1 font-medium">{option.name}</span>
+              <span className="min-w-0 font-medium">{option.name}</span>
               <OptionPrice option={option} />
             </label>
           );
@@ -97,22 +100,16 @@ export function ChoiceGroup({
       role="group"
       aria-label={name}
       aria-describedby={describedBy}
-      className="grid gap-2"
+      className="grid gap-0.5"
     >
       {options.map((option) => {
         const checked = selected.includes(option.id);
         const id = `${baseId}-${option.id}`;
         return (
-          <label
-            key={option.id}
-            htmlFor={id}
-            className={cn(
-              ROW,
-              checked ? "border-primary bg-primary-tint" : "border-border",
-            )}
-          >
+          <label key={option.id} htmlFor={id} className={CHECK_ROW}>
             <Checkbox
               id={id}
+              className="size-6! rounded-sm bg-card"
               checked={checked}
               disabled={option.soldOut}
               onCheckedChange={() => onToggle(option.id)}

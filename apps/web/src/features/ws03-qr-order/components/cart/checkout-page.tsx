@@ -1,16 +1,17 @@
-// Checkout (PRD §3 F10 "Mode Bayar", "Estimasi Waktu Saji", "Login Opsional").
-// Pay-first: place the order, then pay; the kitchen sees it only after the
-// gateway confirms (ORD-02). Open bill: the order goes straight to the kitchen
-// and is paid at the end. Menu prices exclude tax and service charge, so the
-// breakdown shows both before the total (owner rule, ORD-03).
-import { useRef, useState } from "react";
+// "Keranjang & bayar": the shared cart and checkout on one page (legend-2re1,
+// mockup final-a-checkout-mobile; PRD §3 F10 "Mode Bayar", "Estimasi Waktu
+// Saji", "Login Opsional"). Pay-first: place the order, then pay by QRIS or
+// e-wallet, or hold it for the cashier (founder Q3); the kitchen sees it only
+// after payment is confirmed (ORD-02). Open bill: the order goes straight to
+// the kitchen and is paid at the end. Menu prices exclude tax and service
+// charge, so the breakdown shows both (owner rule, ORD-03).
+import { useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouteContext } from "@tanstack/react-router";
-import { Clock, ShoppingBasket } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, ShoppingBasket } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
-import type { GuestPaymentTarget } from "@starter/shared/qr-order";
+import type { OrderId } from "@starter/shared/qr-order";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,12 +19,27 @@ import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { useTableJourney } from "../../context";
 import { orderHasPaidShare } from "../../domain.ts";
-import { usePlaceOrder, useQuote, useSessionBill } from "../../hooks";
+import {
+  useChangeCartLine,
+  usePlaceOrder,
+  useQuote,
+  useRemoveCartLine,
+  useSessionBill,
+  useStartPayment,
+} from "../../hooks";
 import { idempotencyKey } from "../../lib/ids.ts";
-import { PayDialog } from "../bill/pay-dialog";
+import { CompanionOffer, useCompanion } from "../glass/companion-offer";
+import {
+  QrFooter,
+  QrTopBar,
+  qrRoundIcon,
+  qrTextLink,
+} from "../glass/qr-primitives";
 import { Notice } from "../notice";
 import { SessionEnded } from "../session-states";
+import { CartLineRow } from "./cart-line-row";
 import { CodeField } from "./code-field";
+import { PaymentMethods, useCtaLabel, type PayMethod } from "./payment-methods";
 import { PriceBreakdown } from "./price-breakdown";
 import { SignInNudge } from "./sign-in-nudge";
 
@@ -47,10 +63,57 @@ function errorText(t: ReturnType<typeof useT>, error: unknown): string {
   }
 }
 
+/** The page frame: glass nav with back to the menu, then the content. */
+function Shell({
+  qrToken,
+  children,
+}: {
+  qrToken: string;
+  children: ReactNode;
+}) {
+  const t = useT();
+  return (
+    <div className="grid gap-4">
+      <QrTopBar
+        title={t("qrGlass.checkout.title")}
+        leading={
+          <Link
+            to="/t/$token"
+            params={{ token: qrToken }}
+            className={qrRoundIcon}
+          >
+            <ChevronLeft aria-hidden="true" />
+            <span className="sr-only">{t("qrGlass.checkout.back")}</span>
+          </Link>
+        }
+      />
+      {children}
+    </div>
+  );
+}
+
+// One key per order and method for the whole visit: the guest leaves for
+// /pay/$id and may come back ("Ganti metode bayar", browser back), and a
+// remounted page must not open a second payment intent for the same order.
+const payKeys = new Map<string, string>();
+function payKey(orderId: string, method: string) {
+  const id = `${orderId}:${method}`;
+  let key = payKeys.get(id);
+  if (!key) {
+    key = idempotencyKey("pay");
+    payKeys.set(id, key);
+  }
+  return key;
+}
+function forgetPayKey(orderId: string, method: string) {
+  payKeys.delete(`${orderId}:${method}`);
+}
+
 export function CheckoutPage() {
   const t = useT();
   const toast = useToast();
   const navigate = useNavigate();
+  const ctaLabel = useCtaLabel();
   const { session } = useRouteContext({ strict: false }) as {
     session?: unknown;
   };
@@ -61,12 +124,15 @@ export function CheckoutPage() {
     guest,
     view,
     viewError,
+    participantId,
     ended,
     awaitingConfirmation,
     openJoin,
   } = useTableJourney();
   const cartVersion = view?.cart.version ?? 0;
   const [code, setCode] = useState<string | null>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [method, setMethod] = useState<PayMethod>("qris");
   const codes = code
     ? VOUCHER.test(code)
       ? { voucherCode: code }
@@ -75,51 +141,58 @@ export function CheckoutPage() {
   const base = useQuote(sessionId, cartVersion, {});
   const coded = useQuote(code ? sessionId : null, cartVersion, codes);
   const place = usePlaceOrder(sessionId ?? "none");
+  const start = useStartPayment(sessionId ?? "none");
+  const change = useChangeCartLine(sessionId ?? "none");
+  const remove = useRemoveCartLine(sessionId ?? "none");
+  const companion = useCompanion();
   // Only needed to see whether a waiting pay-first order is already being paid per share.
   const bill = useSessionBill(
     view?.orders.some((order) => order.status === "awaiting_payment")
       ? sessionId
       : null,
   );
-  const [payTarget, setPayTarget] = useState<{
-    target: GuestPaymentTarget;
-    amountIdr: number;
-  } | null>(null);
   // One key per cart state: a double tap or retry returns the same order.
   const keyRef = useRef<{ version: number; key: string } | null>(null);
 
   if (ended) return <SessionEnded />;
   if (!guest)
     return (
-      <EmptyState
-        icon={ShoppingBasket}
-        title={t("qrCart.cart.noSessionTitle")}
-        description={t("qrCart.cart.noSessionHint")}
-        action={
-          <Button type="button" onClick={() => openJoin()}>
-            {t("qrCart.cart.noSessionAction")}
-          </Button>
-        }
-      />
+      <Shell qrToken={qrToken}>
+        <EmptyState
+          icon={ShoppingBasket}
+          title={t("qrCart.cart.noSessionTitle")}
+          description={t("qrCart.cart.noSessionHint")}
+          action={
+            <Button type="button" onClick={() => openJoin()}>
+              {t("qrCart.cart.noSessionAction")}
+            </Button>
+          }
+        />
+      </Shell>
     );
   if (viewError)
     return (
-      <ErrorState
-        title={t("qrCart.cart.errorTitle")}
-        description={t("qrCart.cart.errorHint")}
-        onRetry={() => window.location.reload()}
-      />
+      <Shell qrToken={qrToken}>
+        <ErrorState
+          title={t("qrCart.cart.errorTitle")}
+          description={t("qrCart.cart.errorHint")}
+          onRetry={() => window.location.reload()}
+        />
+      </Shell>
     );
   if (!view || !menu || !sessionId)
     return (
-      <div aria-busy="true" className="grid gap-3">
-        <span className="sr-only">
-          {t("qrCart.checkout.breakdown.loading")}
-        </span>
-        <Skeleton className="h-9 w-1/2" />
-        <Skeleton className="h-32 w-full rounded-container" />
-        <Skeleton className="h-48 w-full rounded-container" />
-      </div>
+      <Shell qrToken={qrToken}>
+        <div aria-busy="true" className="grid gap-3">
+          <span className="sr-only">
+            {t("qrCart.checkout.breakdown.loading")}
+          </span>
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-24 w-full rounded-qr-media" />
+          <Skeleton className="h-16 w-full rounded-qr-media" />
+          <Skeleton className="h-28 w-full rounded-qr-media" />
+        </div>
+      </Shell>
     );
 
   const payFirst = view.session.paymentMode === "pay_first";
@@ -133,88 +206,201 @@ export function CheckoutPage() {
     null;
   const codeInvalid = code !== null && coded.isError;
   const codeApplied = code !== null && coded.isSuccess ? code : null;
-  const hasLines = view.cart.lines.length > 0;
+  const lines = view.cart.lines;
+  const hasLines = lines.length > 0;
+  const subtitle = (
+    <p className="text-sm leading-5 text-muted-foreground">
+      {t("qrGlass.checkout.tableShared", { table: menu.table.code })}
+    </p>
+  );
+  const openItem = (itemId: string) =>
+    void navigate({
+      to: "/t/$token",
+      params: { token: qrToken },
+      search: { item: itemId },
+    });
 
-  // The cart was already placed and is waiting for payment (pay-first).
-  if (!hasLines && awaitingOrder)
-    return (
-      <div className="grid gap-4">
-        <h1 className="type-display-xl">{t("qrCart.checkout.title")}</h1>
-        <Card>
-          <CardContent className="grid gap-3">
-            <p className="type-title tabular">{awaitingOrder.number}</p>
-            <Money amount={awaitingOrder.totalIdr} size="stat" />
-            {orderHasPaidShare(
-              bill.data?.data.splits ?? [],
-              awaitingOrder.id,
-            ) ? (
-              <>
-                {/* ORD-06: shares are being paid; the whole order must not be charged again. */}
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {t("qrCart.checkout.splitInProgress")}
-                </p>
-                <Button asChild size="lg">
-                  <Link to="/t/$token/bill" params={{ token: qrToken }}>
-                    {t("qrCart.checkout.toBill")}
-                  </Link>
-                </Button>
-              </>
-            ) : (
-              <>
-                <p className="text-sm leading-5 text-muted-foreground">
-                  {t("qrCart.checkout.modePayFirstHint")}
-                </p>
-                <Button
-                  type="button"
-                  size="lg"
-                  onClick={() =>
-                    setPayTarget({
-                      target: { kind: "order", orderId: awaitingOrder.id },
-                      amountIdr: awaitingOrder.totalIdr,
-                    })
-                  }
-                >
-                  {t("qrCart.checkout.payFirstSubmit", {
-                    total: formatRupiah(awaitingOrder.totalIdr),
-                  })}
-                </Button>
-              </>
-            )}
-          </CardContent>
-        </Card>
-        {payTarget && (
-          <PayDialog
-            open
-            onOpenChange={(open) => !open && setPayTarget(null)}
-            qrToken={qrToken}
-            sessionId={sessionId}
-            target={payTarget.target}
-            amountIdr={payTarget.amountIdr}
-          />
-        )}
+  // Pay an order that is already placed: gateway for QRIS / e-wallet, the
+  // cashier code screen for "Bayar di kasir", the demo VA / card screen
+  // (mock mode only: the picker disables them with the real API, and that
+  // screen itself shows "not available" there, so neither ever reaches
+  // useStartPayment, whose contract takes only QRIS / e-wallet).
+  const payOrder = (orderId: OrderId, fresh = false) => {
+    if (method === "va" || method === "card") {
+      void navigate({
+        to: "/t/$token/bayar/$orderId",
+        params: { token: qrToken, orderId },
+        search: { metode: method === "va" ? "va" : "kartu" },
+      });
+      return;
+    }
+    if (method === "cashier") {
+      void navigate({
+        to: "/t/$token/kasir/$orderId",
+        params: { token: qrToken, orderId },
+      });
+      return;
+    }
+    start.mutate(
+      {
+        target: { kind: "order", orderId },
+        method,
+        idempotencyKey: payKey(orderId, method),
+      },
+      {
+        onSuccess: (result) => {
+          // A replayed key returns the same payment; once it has expired or
+          // failed, retrying must open a new one (one fresh attempt).
+          if (
+            !fresh &&
+            (result.data.status === "expired" ||
+              result.data.status === "failed")
+          ) {
+            forgetPayKey(orderId, method);
+            payOrder(orderId, true);
+            return;
+          }
+          void navigate({
+            to: "/t/$token/pay/$paymentId",
+            params: { token: qrToken, paymentId: result.data.id },
+          });
+        },
+      },
+    );
+  };
+
+  const payFailure = start.isError && (
+    <Notice tone="danger" title={t("qrOrders.bill.payFailed")} />
+  );
+  const total = (amount: number) => (
+    <div className="flex items-baseline justify-between gap-3 px-1">
+      <span>{t("qrGlass.checkout.total")}</span>
+      <span className="text-[1.75rem] leading-8 font-bold tracking-tight tabular">
+        {formatRupiah(amount)}
+      </span>
+    </div>
+  );
+  // The aside card is solid paper from lg up; below it the footer floats.
+  const asideClass =
+    "grid content-start gap-4 lg:sticky lg:top-6 lg:rounded-qr-media lg:bg-card lg:p-5 lg:shadow-raised";
+
+  // The cart was already placed and is waiting for payment (pay-first):
+  // show the order and the same method picker, e.g. after "Ganti metode bayar".
+  if (!hasLines && awaitingOrder) {
+    const splitPaid = orderHasPaidShare(
+      bill.data?.data.splits ?? [],
+      awaitingOrder.id,
+    );
+    const action = (
+      <div className="grid gap-3">
+        {payFailure}
+        {total(awaitingOrder.totalIdr)}
+        <Button
+          type="button"
+          size="lg"
+          className="w-full"
+          loading={start.isPending}
+          onClick={() => payOrder(awaitingOrder.id)}
+        >
+          {ctaLabel(method, awaitingOrder.totalIdr)}
+          <ChevronRight aria-hidden="true" />
+        </Button>
       </div>
     );
+    return (
+      <Shell qrToken={qrToken}>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start lg:gap-8">
+          <div className="grid min-w-0 content-start gap-4">
+            {subtitle}
+            <section className="grid gap-3 rounded-qr-media bg-card p-4">
+              <h2 className="type-heading">
+                {t("qrGlass.checkout.awaitingOrderTitle", {
+                  number: awaitingOrder.number,
+                })}
+              </h2>
+              <ul className="grid gap-2">
+                {awaitingOrder.items.map((item) => (
+                  <li
+                    key={item.id}
+                    className="flex items-baseline justify-between gap-3"
+                  >
+                    <span className="min-w-0">
+                      <span className="tabular">{item.quantity}×</span>{" "}
+                      {item.name}
+                    </span>
+                    <Money amount={item.lineTotalIdr} />
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {splitPaid
+                  ? /* ORD-06: shares are being paid; the whole order must not be charged again. */
+                    t("qrCart.checkout.splitInProgress")
+                  : t("qrGlass.checkout.awaitingOrderHint")}
+              </p>
+            </section>
+            {splitPaid && (
+              <Button asChild size="lg">
+                <Link to="/t/$token/bill" params={{ token: qrToken }}>
+                  {t("qrCart.checkout.toBill")}
+                </Link>
+              </Button>
+            )}
+          </div>
+          {!splitPaid && (
+            <aside className={asideClass}>
+              <PaymentMethods
+                value={method}
+                onChange={setMethod}
+                disabled={start.isPending}
+              />
+              <div className="hidden border-t border-border pt-4 lg:block">
+                {action}
+              </div>
+            </aside>
+          )}
+        </div>
+        {!splitPaid && <QrFooter className="lg:hidden">{action}</QrFooter>}
+      </Shell>
+    );
+  }
 
   if (!hasLines || !quote)
     return (
-      <EmptyState
-        icon={ShoppingBasket}
-        title={t("qrCart.cart.emptyTitle")}
-        description={t("qrCart.checkout.empty")}
-        action={
-          <Button asChild>
-            <Link to="/t/$token" params={{ token: qrToken }}>
-              {t("qrCart.cart.toMenu")}
-            </Link>
-          </Button>
-        }
-      />
+      <Shell qrToken={qrToken}>
+        <EmptyState
+          icon={ShoppingBasket}
+          title={t("qrCart.cart.emptyTitle")}
+          description={t("qrCart.checkout.empty")}
+          action={
+            <Button asChild>
+              <Link to="/t/$token" params={{ token: qrToken }}>
+                {t("qrCart.cart.toMenu")}
+              </Link>
+            </Button>
+          }
+        />
+      </Shell>
     );
 
   const shortfall = quote.minimumSpend.shortfallIdr;
+  const busy = place.isPending || start.isPending;
   const blocked =
     shortfall > 0 || quote.lines.length === 0 || awaitingConfirmation;
   const names = quote.removedLines.map((line) => line.name).join(", ");
+  const soldOutIds = new Set(
+    menu.items.filter((item) => item.status === "sold_out").map((i) => i.id),
+  );
+  const lineBusy = change.isPending || remove.isPending;
+  const lineFailure = change.error ?? remove.error;
+  const onLineError = (error: unknown) =>
+    toast({
+      title:
+        error instanceof ApiError && error.status === 409
+          ? t("qrCart.cart.conflict")
+          : t("qrCart.cart.updateError"),
+      tone: "danger",
+    });
 
   const submit = (afterPlaced: "pay" | "split" = "pay") => {
     if (keyRef.current?.version !== cartVersion)
@@ -227,11 +413,7 @@ export function CheckoutPage() {
             void navigate({ to: "/t/$token/bill", params: { token: qrToken } });
             return;
           }
-          if (data.kitchenFire === "held_for_payment")
-            setPayTarget({
-              target: { kind: "order", orderId: data.order.id },
-              amountIdr: data.order.totalIdr,
-            });
+          if (data.kitchenFire === "held_for_payment") payOrder(data.order.id);
           else {
             toast({
               title: t("qrCart.checkout.sentToast"),
@@ -247,163 +429,231 @@ export function CheckoutPage() {
     );
   };
 
-  return (
-    <div className="grid gap-5">
-      <header className="grid gap-1">
-        <h1 className="type-display-xl">{t("qrCart.checkout.title")}</h1>
-        <Button asChild variant="link" className="w-fit">
-          <Link to="/t/$token/cart" params={{ token: qrToken }}>
-            {t("qrCart.checkout.backToCart")}
-          </Link>
-        </Button>
-      </header>
-      {quote.removedLines.length > 0 && (
-        <Notice tone="warning" title={t("qrCart.checkout.removedTitle")}>
-          {t("qrCart.checkout.removedBody", { names })}
-        </Notice>
+  // The order is placed without the promo / voucher code (the place contract
+  // has no code field), so the amount actually charged is the plain quote.
+  const payable = codeApplied
+    ? (base.data?.data.totalIdr ?? view.quote?.totalIdr ?? quote.totalIdr)
+    : quote.totalIdr;
+  const blockedReason =
+    shortfall > 0
+      ? t("qrGlass.checkout.blockedMinimum", {
+          shortfall: formatRupiah(shortfall),
+        })
+      : awaitingConfirmation
+        ? t("qrCart.checkout.awaitingTitle")
+        : null;
+  const action = (
+    <div className="grid gap-3">
+      {place.isError && (
+        <Notice tone="danger" title={errorText(t, place.error)} />
       )}
-      {quote.priceChanges.map((change) => (
+      {payFailure}
+      {codeApplied && payable !== quote.totalIdr && (
         <Notice
-          key={change.cartLineId}
-          tone="info"
-          title={t("qrCart.checkout.priceChangedTitle")}
-        >
-          {t("qrCart.checkout.priceChangedBody", {
-            name: change.name,
-            from: formatRupiah(change.previousUnitPriceIdr),
-            to: formatRupiah(change.unitPriceIdr),
-          })}
-        </Notice>
-      ))}
-      {awaitingConfirmation && (
-        <Notice tone="waiting" title={t("qrCart.checkout.awaitingTitle")}>
-          {t("qrCart.checkout.awaitingHint")}
-        </Notice>
-      )}
-      <section aria-labelledby="mode-title" className="grid gap-2">
-        <h2 id="mode-title" className="sr-only">
-          {t("qrCart.checkout.modeTitle")}
-        </h2>
-        <div className="rounded-container bg-surface-2 p-3">
-          <p className="font-semibold">
-            {payFirst
-              ? t("qrCart.checkout.modePayFirst")
-              : t("qrCart.checkout.modeOpenBill")}
-          </p>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {payFirst
-              ? t("qrCart.checkout.modePayFirstHint")
-              : t("qrCart.checkout.modeOpenBillHint")}
-          </p>
-        </div>
-      </section>
-      {quote.servingEstimate && (
-        <div className="flex items-center gap-3 rounded-container border-(length:--border-w) p-3">
-          <Clock
-            className="size-6 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <div>
-            <p className="text-sm text-muted-foreground">
-              {t("qrCart.checkout.estimateTitle")}
-            </p>
-            <p className="text-lg leading-6 font-semibold tabular">
-              {t("qrCart.checkout.estimate", {
-                min: quote.servingEstimate.minMinutes,
-                max: quote.servingEstimate.maxMinutes,
-              })}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              {t("qrCart.checkout.estimateHint")}
-            </p>
-          </div>
-        </div>
-      )}
-      <section aria-labelledby="items-title" className="grid gap-2">
-        <h2 id="items-title" className="type-title">
-          {t("qrCart.checkout.itemsTitle")}
-        </h2>
-        <ul className="grid gap-2">
-          {quote.lines.map((line) => (
-            <li
-              key={line.cartLineId}
-              className="flex items-baseline justify-between gap-3"
-            >
-              <span className="min-w-0">
-                <span className="tabular">{line.quantity}×</span> {line.name}
-              </span>
-              <Money amount={line.lineSubtotalIdr} />
-            </li>
-          ))}
-        </ul>
-      </section>
-      <CodeField
-        applied={codeApplied}
-        invalid={codeInvalid}
-        checking={coded.isFetching}
-        onApply={setCode}
-        onRemove={() => setCode(null)}
-      />
-      <PriceBreakdown quote={quote} />
-      {shortfall > 0 && (
-        <Notice
-          tone="danger"
-          title={t("qrCart.checkout.minimumSpend", {
-            required: formatRupiah(quote.minimumSpend.requiredIdr),
-            shortfall: formatRupiah(shortfall),
+          tone="warning"
+          title={t("qrGlass.checkout.codeNotCharged", {
+            total: formatRupiah(payable),
           })}
         />
       )}
-      <div className="sticky bottom-0 z-10 order-last -mx-gutter grid gap-2 border-t bg-background px-gutter py-3 sm:static sm:order-none">
-        {place.isError && (
-          <Notice tone="danger" title={errorText(t, place.error)} />
-        )}
-        <Button
-          type="button"
-          size="lg"
-          className="w-full"
-          loading={place.isPending}
-          disabled={blocked}
-          onClick={() => submit()}
-        >
-          {payFirst
-            ? t("qrCart.checkout.payFirstSubmit", {
-                total: formatRupiah(quote.totalIdr),
-              })
-            : t("qrCart.checkout.openBillSubmit")}
-        </Button>
-        {payFirst && (
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            className="w-full"
-            disabled={blocked || place.isPending}
-            onClick={() => submit("split")}
-          >
-            {t("qrCart.checkout.splitSubmit")}
-          </Button>
-        )}
-        {payFirst && (
-          <p className="text-center text-sm leading-5 text-muted-foreground">
-            {t("qrCart.checkout.splitHint")}
-          </p>
-        )}
+      {total(payable)}
+      {blocked && blockedReason && (
+        <p className="px-1 text-sm leading-5 text-muted-foreground">
+          {blockedReason}
+        </p>
+      )}
+      <Button
+        type="button"
+        size="lg"
+        className="w-full"
+        loading={busy}
+        disabled={blocked}
+        onClick={() => submit()}
+      >
+        {payFirst
+          ? ctaLabel(method, payable)
+          : t("qrCart.checkout.openBillSubmit")}
+        <ChevronRight aria-hidden="true" />
+      </Button>
+    </div>
+  );
+
+  return (
+    <Shell qrToken={qrToken}>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start lg:gap-8">
+        <div className="grid min-w-0 content-start gap-4">
+          {subtitle}
+          {lineFailure && !lineBusy && (
+            <Notice
+              tone="warning"
+              title={
+                lineFailure instanceof ApiError && lineFailure.status === 409
+                  ? t("qrCart.cart.conflict")
+                  : t("qrCart.cart.updateError")
+              }
+            />
+          )}
+          {quote.removedLines.length > 0 && (
+            <Notice tone="warning" title={t("qrCart.checkout.removedTitle")}>
+              {t("qrCart.checkout.removedBody", { names })}
+            </Notice>
+          )}
+          {quote.priceChanges.map((change) => (
+            <Notice
+              key={change.cartLineId}
+              tone="info"
+              title={t("qrCart.checkout.priceChangedTitle")}
+            >
+              {t("qrCart.checkout.priceChangedBody", {
+                name: change.name,
+                from: formatRupiah(change.previousUnitPriceIdr),
+                to: formatRupiah(change.unitPriceIdr),
+              })}
+            </Notice>
+          ))}
+          {awaitingConfirmation && (
+            <Notice tone="waiting" title={t("qrCart.checkout.awaitingTitle")}>
+              {t("qrCart.checkout.awaitingHint")}
+            </Notice>
+          )}
+          <ul className="grid gap-2">
+            {lines.map((line) => (
+              <CartLineRow
+                key={line.id}
+                line={line}
+                token={qrToken}
+                photoUrl={
+                  menu.items.find((item) => item.id === line.menuItemId)
+                    ?.photoUrl ?? null
+                }
+                soldOut={soldOutIds.has(line.menuItemId)}
+                mine={
+                  line.addedByParticipantId === null || participantId === null
+                    ? null
+                    : line.addedByParticipantId === participantId
+                }
+                busy={busy || lineBusy}
+                onQuantity={(quantity) =>
+                  change.mutate(
+                    {
+                      lineId: line.id,
+                      cartVersion,
+                      patch: { quantity },
+                    },
+                    { onError: onLineError },
+                  )
+                }
+                onRemove={() =>
+                  remove.mutate(
+                    { lineId: line.id, cartVersion },
+                    {
+                      onError: onLineError,
+                      onSuccess: () =>
+                        toast({
+                          title: t("qrCart.cart.removed", { name: line.name }),
+                          tone: "info",
+                        }),
+                    },
+                  )
+                }
+              />
+            ))}
+          </ul>
+          {companion && menu.orderingOpen && !awaitingConfirmation && (
+            <CompanionOffer
+              item={companion}
+              onOpenItem={openItem}
+              disabled={busy || lineBusy}
+            />
+          )}
+          {quote.servingEstimate && (
+            <p className="flex items-center gap-2 leading-6">
+              <Clock className="size-5 shrink-0" aria-hidden="true" />
+              <span>{t("qrCart.checkout.estimateTitle")}</span>
+              <strong className="tabular">
+                {t("qrCart.checkout.estimate", {
+                  min: quote.servingEstimate.minMinutes,
+                  max: quote.servingEstimate.maxMinutes,
+                })}
+              </strong>
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-x-4">
+            <Link
+              to="/t/$token"
+              params={{ token: qrToken }}
+              className={`${qrTextLink} min-h-11 text-sm`}
+            >
+              {t("qrGlass.checkout.addMenu")}
+            </Link>
+            <button
+              type="button"
+              aria-expanded={codeOpen}
+              className={`${qrTextLink} min-h-11 text-sm`}
+              onClick={() => {
+                if (codeOpen && codeInvalid) setCode(null);
+                setCodeOpen(!codeOpen);
+              }}
+            >
+              {t("qrGlass.checkout.codeToggle")}
+            </button>
+            {payFirst && (
+              <button
+                type="button"
+                disabled={blocked || busy}
+                className={`${qrTextLink} min-h-11 text-sm disabled:opacity-50`}
+                onClick={() => submit("split")}
+              >
+                {t("qrCart.checkout.splitSubmit")}
+              </button>
+            )}
+          </div>
+          <CodeField
+            applied={codeApplied}
+            invalid={codeInvalid}
+            checking={coded.isFetching}
+            open={codeOpen}
+            onApply={setCode}
+            onRemove={() => setCode(null)}
+          />
+          <PriceBreakdown quote={quote} />
+          {shortfall > 0 && (
+            <Notice
+              tone="danger"
+              title={t("qrCart.checkout.minimumSpend", {
+                required: formatRupiah(quote.minimumSpend.requiredIdr),
+                shortfall: formatRupiah(shortfall),
+              })}
+            />
+          )}
+        </div>
+        <aside className={asideClass}>
+          {payFirst ? (
+            <PaymentMethods
+              value={method}
+              onChange={setMethod}
+              disabled={busy}
+            />
+          ) : (
+            <section className="grid gap-1">
+              <h2 className="type-heading">
+                {t("qrCart.checkout.modeOpenBill")}
+              </h2>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("qrCart.checkout.modeOpenBillHint")}
+              </p>
+            </section>
+          )}
+          <div className="hidden border-t border-border pt-4 lg:block">
+            {action}
+          </div>
+        </aside>
       </div>
       {/* PRD §3 F10 "Login Opsional": guests order without an account; this
           only invites sign-in and never gates the actions above. legend-yoo9:
           `/masuk?redirect=` resumes this checkout after sign-in. */}
       {!session && <SignInNudge returnTo={`/t/${qrToken}/checkout`} />}
-      {payTarget && (
-        <PayDialog
-          open
-          onOpenChange={(open) => !open && setPayTarget(null)}
-          qrToken={qrToken}
-          sessionId={sessionId}
-          target={payTarget.target}
-          amountIdr={payTarget.amountIdr}
-        />
-      )}
-    </div>
+      <QrFooter className="lg:hidden">{action}</QrFooter>
+    </Shell>
   );
 }

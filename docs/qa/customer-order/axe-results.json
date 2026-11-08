@@ -1,0 +1,375 @@
+[
+  {
+    "name": "01-menu-awal-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "02-jumlah-tamu-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "03-menu-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "04-detail-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "03b-menu-terisi-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "05-checkout-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "05-checkout-full-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "06-qris-menunggu-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "07-berhasil-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "10-pesanan-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "11-tagihan-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "08-kode-kasir-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "09-stok-habis-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "09b-menu-gagal-diperbarui-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "05b-checkout-va-dipilih-mobile",
+    "serious": 1,
+    "overflow": false,
+    "blur": 2,
+    "violations": [
+      {
+        "id": "target-size",
+        "impact": "serious",
+        "nodes": 1,
+        "sample": [
+          ".flex-wrap > .min-h-6.underline.decoration-1:nth-child(1) ::   Target has insufficient size because it is partially obscured (smallest space is 93.5px by 23px, should be at least 24px by 24px)"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "12-va-instruksi-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "12-va-instruksi-full-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "12b-va-disalin-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13-kartu-alih-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13-kartu-alih-full-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13b-kartu-demo-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "20-menu-loading-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "21-menu-error-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "22-menu-kosong-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "23-menu-320-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "24-kontras-tinggi-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 0,
+    "violations": []
+  },
+  {
+    "name": "25-tanpa-transparansi-mobile",
+    "serious": 0,
+    "overflow": false,
+    "blur": 0,
+    "violations": []
+  },
+  {
+    "name": "01-menu-awal-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "03-menu-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "04-detail-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "03b-menu-terisi-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "05-checkout-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "05-checkout-full-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "06-qris-menunggu-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "07-berhasil-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "10-pesanan-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "11-tagihan-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "08-kode-kasir-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "09-stok-habis-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "09b-menu-gagal-diperbarui-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "05b-checkout-va-dipilih-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 1,
+    "violations": []
+  },
+  {
+    "name": "12-va-instruksi-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "12-va-instruksi-full-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "12b-va-disalin-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13-kartu-alih-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13-kartu-alih-full-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "13b-kartu-demo-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "20-menu-loading-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "21-menu-error-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "22-menu-kosong-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 2,
+    "violations": []
+  },
+  {
+    "name": "24-kontras-tinggi-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 0,
+    "violations": []
+  },
+  {
+    "name": "25-tanpa-transparansi-desktop",
+    "serious": 0,
+    "overflow": false,
+    "blur": 0,
+    "violations": []
+  }
+]

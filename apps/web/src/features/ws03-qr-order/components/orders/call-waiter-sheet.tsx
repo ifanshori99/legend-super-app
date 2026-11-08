@@ -108,17 +108,17 @@ function CallWaiterForm({
             <label
               key={value}
               className={cn(
-                "flex min-h-control cursor-pointer items-center gap-3 rounded-control border-(length:--border-w) px-4 text-(length:--density-text) font-medium",
+                "flex min-h-control cursor-pointer items-center gap-3 rounded-qr-media border-(length:--border-w) px-4 text-(length:--density-text) font-medium",
                 reason === value
-                  ? "border-foreground bg-muted"
-                  : "bg-background",
+                  ? "border-primary bg-qr-selection"
+                  : "border-input bg-card",
               )}
             >
               <RadioGroup.Item
                 value={value}
-                className="grid size-5 shrink-0 place-items-center rounded-full border-2 border-input data-[state=checked]:border-foreground"
+                className="grid size-5 shrink-0 place-items-center rounded-full border-2 border-input data-[state=checked]:border-primary"
               >
-                <RadioGroup.Indicator className="size-2.5 rounded-full bg-foreground" />
+                <RadioGroup.Indicator className="size-2.5 rounded-full bg-primary" />
               </RadioGroup.Item>
               {t(label)}
             </label>
@@ -187,17 +187,22 @@ function CallWaiterForm({
 export function CallWaiterSheet({
   sessionId,
   disabled,
+  variant = "outline",
+  icon: Icon = Bell,
 }: {
   sessionId: string;
   disabled: boolean;
+  /** "ghost" in the QR desktop header (legend-2re1). */
+  variant?: "outline" | "ghost";
+  icon?: React.ComponentType<{ "aria-hidden"?: boolean | "true" }>;
 }) {
   const t = useT();
   const [open, setOpen] = React.useState(false);
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
-        <Button variant="outline" disabled={disabled}>
-          <Bell aria-hidden="true" />
+        <Button variant={variant} disabled={disabled}>
+          <Icon aria-hidden="true" />
           {t("qrOrders.status.waiter.callButton")}
         </Button>
       </SheetTrigger>
