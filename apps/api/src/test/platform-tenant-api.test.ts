@@ -52,7 +52,7 @@ async function createTenantPair(
       : `${slug(label)}.contoh.example`;
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, $3, 'lengkap', $4, 'shared', '{"modules":[]}', $5, $6)`,
+     VALUES ($1, $2, $3, 'lengkap', $4, 'shared', '{"modules":[],"integrationProviders":[]}', $5, $6)`,
     [
       pairTenantId,
       slug(`uji-${label}`),

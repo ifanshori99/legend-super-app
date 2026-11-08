@@ -104,7 +104,7 @@ beforeAll(async () => {
     throw new Error("Requires the disposable test database");
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
-     VALUES ($1, $2, 'Worker transport tenant', 'lengkap', 'active', 'shared', '{"modules":[]}', $3, $4)`,
+     VALUES ($1, $2, 'Worker transport tenant', 'lengkap', 'active', 'shared', '{"modules":[],"integrationProviders":[]}', $3, $4)`,
     [
       tenantId,
       `uji-wt-${tenantId.slice(0, 8)}`,
