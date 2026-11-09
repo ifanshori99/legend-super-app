@@ -131,6 +131,41 @@ export type DeviceReceiptSequenceBinding = {
 };
 
 /**
+ * legend-jcby0: most write-offs one pull page carries. The list is the outlet's
+ * full list on every page (append-only and rare; no cursor). Past this the
+ * cloud sends the newest ones and logs a warning: older rows are already on the
+ * edge and never removed, so the newest still arrive; a number not copied keeps
+ * Tutup Hari refused (fails closed, never wrong).
+ */
+export const RECEIPT_WRITEOFF_SYNC_MAX = 1000;
+
+/**
+ * legend-jcby0: a receipt number write-off (legend-0hzqw) as the cloud hands it
+ * to the edge. Write-offs are created only on the cloud; the edge copies them
+ * so its own gap check (Tutup Hari) counts the number as written off. No tenant
+ * field: the edge takes it from its own context. The edge inserts a row only
+ * when it holds the named run with the same outlet and prefix and the run has
+ * reached `sequenceNumber`, and no local receipt carries that number.
+ *
+ * Strict per row, and the edge parses the list as a whole: one bad row refuses
+ * the whole list. So a new row field needs a new opt-in query parameter; older
+ * edges would refuse every list that carries it.
+ */
+export const deviceReceiptWriteoffSyncSchema = z.strictObject({
+  id: uuidSchema,
+  outletId: outletIdSchema,
+  sequenceId: uuidSchema,
+  prefix: receiptPrefixSchema,
+  sequenceNumber: z.number().int().min(1).max(999_999_999),
+  reason: z.string().min(10).max(500),
+  writtenOffBy: uuidSchema,
+  createdAt: isoDateTimeSchema,
+});
+export type DeviceReceiptWriteoffSync = z.infer<
+  typeof deviceReceiptWriteoffSyncSchema
+>;
+
+/**
  * legend-yd0h8: what an edge reports about its own database on a device-records
  * pull: the local counter of every current local device run, `prefix -> last
  * number`. The cloud compares it with a high-water per run to spot a restored
@@ -272,6 +307,17 @@ export const deviceSyncPageSchema = z.strictObject({
    * parses it apart from the page, so a bad list never refuses the page.
    */
   receiptSequences: z.array(deviceReceiptSequenceSyncSchema).optional(),
+  /**
+   * legend-jcby0: the outlet's receipt number write-offs (listed oldest first;
+   * past `RECEIPT_WRITEOFF_SYNC_MAX` the newest ones), sent on each page. The
+   * edge applies the list once per pull. Left out when the cloud read failed.
+   * Optional: the cloud adds it only for `?receiptWriteoffs=1`. The edge parses
+   * it apart from the page, so a bad list never refuses the page.
+   */
+  receiptWriteoffs: z
+    .array(deviceReceiptWriteoffSyncSchema)
+    .max(RECEIPT_WRITEOFF_SYNC_MAX)
+    .optional(),
   /**
    * legend-yd0h8: `true` when the cloud suspects a restored or cloned edge
    * database on this node (repeated regressions). Sent only to an edge that

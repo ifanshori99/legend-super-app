@@ -57,9 +57,17 @@ Kemungkinan penolakan:
 
 ### Outlet dengan edge
 
-`GET` dan `POST` ditolak dengan `409` jika outlet berjalan di edge. Riwayat write-off hanya ada di cloud. Write-off juga tidak disinkronkan ke edge node. Jika Tutup Hari berjalan di edge, outlet tetap ditolak setelah write-off dibuat di cloud. Sampai ada kartu tindak lanjut, tutup hari lewat cloud.
+`GET` dan `POST` ke edge node ditolak dengan `409`: riwayat write-off hanya dikelola di cloud. Write-off tetap dibuat di cloud. Edge node menyalinnya saat sinkronisasi registri perangkat berikutnya (legend-jcby0), lalu Tutup Hari di edge menghitung nomor itu sebagai ada, sama seperti di cloud. Setelah tersalin, Tutup Hari di edge tetap berjalan walau edge sedang offline.
 
-> Keputusan pending untuk CTO: perilaku Tutup Hari di edge setelah write-off, dan kapan kartu tindak lanjut dikerjakan.
+1. Buat write-off di cloud seperti di atas.
+2. Tunggu sinkronisasi edge berikutnya (edge harus online sebentar). Write-off yang dibuat saat edge offline baru sampai setelah edge tersambung lagi.
+3. Jalankan Tutup Hari di edge.
+
+Jika Tutup Hari di edge masih ditolak:
+
+- Edge belum sinkron sejak write-off dibuat. Cek status sinkronisasi edge, lalu ulangi.
+- Edge masih versi lama (sebelum legend-jcby0) dan tidak meminta write-off. Tutup hari lewat cloud, atau perbarui edge.
+- Run di edge berbeda dengan run di cloud (misalnya database edge dipulihkan dari cadangan). Edge sengaja tidak memakai write-off untuk run yang tidak cocok. Hubungi tim teknis.
 
 ## Jika struk datang terlambat
 
@@ -110,6 +118,8 @@ ORDER BY tenant_id;
 ```
 
 Tenant dari query 1 tidak bisa write-off. Laporkan daftarnya ke CTO sebelum rilis; cara perbaikannya (misalnya seed ulang template) perlu keputusan dan diuji terpisah, jangan menambah baris template dengan tangan. Role custom dari query 2 harus dicabut kodenya (lihat rollback (a)) atau dicatat sebagai keputusan.
+
+**Sinkron ke edge (legend-jcby0).** Tanpa migrasi baru: edge memakai tabel `receipt_number_writeoffs` dari 0156. Rilis cloud dulu, lalu build edge. Edge baru ke cloud lama: cloud menolak parameter `receiptWriteoffs` (400), edge mengulang halaman tanpa parameter itu, dan Tutup Hari di edge tetap butuh jalan lewat cloud sampai cloud diperbarui.
 
 **Rollback (a): cabut izin dari semua role.** Lakukan sebelum API lama dinyalakan. Kode ini harus dicabut dari template owner dan dari role custom, karena API lama menolak role yang memegang kode yang tidak dikenalnya. UPDATE ini tidak menulis audit atau access event, jadi catat audit manual: siapa, kapan, jumlah role per tenant (simpan hasil query preflight 2). Jangan memutar ulang access event yang memuat kode baru ke API lama; parsingnya juga ketat.
 
