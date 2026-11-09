@@ -7,7 +7,8 @@
 // - One savepoint per family: a failing reader rolls back its own rows only.
 // - Upsert writes a row only when its value, finality or definition version
 //   moved, so `updated_at` moves only on change. Rows the reader no longer
-//   returns are deleted (its own metric codes and dimensions only).
+//   returns are deleted (its own metric codes and dimensions only, and the
+//   total row only when it declares `writesTotal`).
 // - Finality of a stored row: settled (day end + settle delay) and, for point
 //   of sale readers, closed (`pos_daily_closes`).
 import { and, eq, sql } from "drizzle-orm";
@@ -27,10 +28,11 @@ import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { loadOutletClock } from "./ai-anomaly.service.ts";
 import { dailyReaders } from "./metric-sources/index.ts";
-import type {
-  DailyMetricReader,
-  DailyMetricValue,
-  Tx,
+import {
+  readerWritesTotal,
+  type DailyMetricReader,
+  type DailyMetricValue,
+  type Tx,
 } from "./metric-sources/types.ts";
 
 /** Wait after the business day end before a stored row can be final. */
@@ -131,11 +133,9 @@ async function writeFamily(
   });
 
   // Rows this reader owns: its split dimensions, and the total row when it
-  // writes one. Another reader of the same code in another dimension keeps its
-  // rows.
-  const ownsTotal =
-    reader.dimensions.length === 0 ||
-    values.some((entry) => entry.dimension === null);
+  // declares `writesTotal`. Another reader of the same code in another
+  // dimension keeps its rows.
+  const ownsTotal = readerWritesTotal(reader);
   const ownDimensions = [
     ...(ownsTotal ? [sql`dimension_key IS NULL`] : []),
     ...(reader.dimensions.length > 0

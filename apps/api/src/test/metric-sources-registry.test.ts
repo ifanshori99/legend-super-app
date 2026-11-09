@@ -15,6 +15,7 @@ import {
   dailyReaders,
   metricSourceOf,
   metricSplitOf,
+  readerWritesTotal,
   type DailyMetricReader,
   type MetricSourceModule,
 } from "../services/metric-sources";
@@ -363,11 +364,166 @@ describe("assertRegistry", () => {
           sources: [],
           splits: [
             { code, dimension: first, reader: readerFor(code, [first]) },
-            { code, dimension: second, reader: readerFor(code, [second]) },
+            {
+              code,
+              dimension: second,
+              reader: { ...readerFor(code, [second]), writesTotal: false },
+            },
           ],
         }),
       ]),
     ).not.toThrow();
+  });
+
+  it("refuses two readers that both write the total row of one code", () => {
+    const { code, first, second } = twiceSplittableGlCode();
+    const writesTotal = (dimension: string) => ({
+      ...readerFor(code, [dimension] as never),
+      writesTotal: true,
+    });
+    expect(() =>
+      assertRegistry([
+        glModule,
+        moduleOf({
+          sources: [],
+          splits: [
+            { code, dimension: first, reader: writesTotal(first) },
+            { code, dimension: second, reader: writesTotal(second) },
+          ],
+        }),
+      ]),
+    ).toThrow(new RegExp(`"${code}" is written by two readers.*total`));
+    // Only one of them owns the total: fine.
+    expect(() =>
+      assertRegistry([
+        glModule,
+        moduleOf({
+          sources: [],
+          splits: [
+            { code, dimension: first, reader: writesTotal(first) },
+            {
+              code,
+              dimension: second,
+              reader: { ...readerFor(code, [second]), writesTotal: false },
+            },
+          ],
+        }),
+      ]),
+    ).not.toThrow();
+  });
+
+  it("registers no two readers that write the same total in the real registry", () => {
+    expect(() => assertRegistry()).not.toThrow();
+    const owners = new Map<string, number>();
+    for (const { reader } of dailyReaders()) {
+      if (!readerWritesTotal(reader)) continue;
+      for (const code of reader.metricCodes)
+        owners.set(code, (owners.get(code) ?? 0) + 1);
+    }
+    for (const [code, count] of owners) expect(count, code).toBe(1);
+  });
+
+  describe("weightCode", () => {
+    const average = "avg_dwell_minutes";
+    const weight = "closed_session_count";
+    const average2 = (
+      reader: DailyMetricReader,
+      weightCode: string,
+      code = average,
+    ) => ({ kind: "daily", code, reader, weightCode }) as const;
+    const both = (extra: Partial<DailyMetricReader> = {}) => ({
+      ...readerFor(average),
+      metricCodes: [average, weight],
+      ...extra,
+    });
+    const weightSource = (reader: DailyMetricReader) =>
+      ({ kind: "daily", code: weight, reader }) as const;
+
+    it("accepts a registered daily count written by the same reader", () => {
+      const reader = both();
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [average2(reader, weight), weightSource(reader)],
+            splits: [],
+          }),
+        ]),
+      ).not.toThrow();
+    });
+
+    it("refuses an unregistered weight", () => {
+      const reader = both();
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({ sources: [average2(reader, weight)], splits: [] }),
+        ]),
+      ).toThrow(/weight "closed_session_count" is not registered/);
+    });
+
+    it("refuses a weight that is not a daily source", () => {
+      const reader = both();
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [
+              average2(reader, weight),
+              { kind: "unavailable", code: weight, reason: "source_not_built" },
+            ],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/weight "closed_session_count" is not a daily source/);
+    });
+
+    it("refuses a weight whose unit is not count", () => {
+      const reader = { ...both(), metricCodes: [average, "gross_sales"] };
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [
+              average2(reader, "gross_sales"),
+              { kind: "daily", code: "gross_sales", reader },
+            ],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/weight "gross_sales" is not a count/);
+    });
+
+    it("refuses a weight written by another reader", () => {
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [
+              average2(readerFor(average), weight),
+              weightSource(readerFor(weight)),
+            ],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/weight "closed_session_count" .*same reader/);
+    });
+
+    it("refuses a weight on a metric that is not an average", () => {
+      const reader = { ...both(), metricCodes: ["gross_sales", weight] };
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [
+              average2(reader, weight, "gross_sales"),
+              weightSource(reader),
+            ],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/"gross_sales" has a weight but is not an average/);
+    });
   });
 
   describe("share sources", () => {
@@ -418,6 +574,33 @@ describe("assertRegistry", () => {
           }),
         ]),
       ).toThrow(/share "menu_popularity_pct" .*"payment_method"/);
+    });
+
+    it("refuses a share whose metric is not a percent", () => {
+      expect(reportMetricByCode.get("refund_amount")?.dimensions).toContain(
+        "channel",
+      );
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [
+              {
+                kind: "daily",
+                code: "menu_sold_qty",
+                reader: readerFor("menu_sold_qty", ["channel"]),
+              },
+              {
+                kind: "share",
+                code: "refund_amount",
+                of: "menu_sold_qty",
+                dimension: "channel",
+              },
+            ],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/share "refund_amount" .*percent/);
     });
 
     it("refuses a share whose code has no split by the dimension", () => {

@@ -292,8 +292,12 @@ function netByMethod(orders: readonly OrderFact[]): Entry[] {
         tender.method,
         (merged.get(tender.method) ?? 0) + tender.amount,
       );
-    if (merged.size === 0)
+    // Tenders captured at 0 in total carry no weight: same as none.
+    const captured = [...merged.values()].reduce((a, b) => a + b, 0);
+    if (captured <= 0) {
+      merged.clear();
       merged.set(order.intentMethod ?? PAYMENT_METHOD_UNASSIGNED, 1);
+    }
     const methods = [...merged.keys()];
     const parts = allocateByWeight(order.net, [...merged.values()]);
     methods.forEach((method, at) =>

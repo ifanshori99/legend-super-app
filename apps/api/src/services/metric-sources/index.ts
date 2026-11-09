@@ -17,12 +17,13 @@ import { paymentsTaxSources } from "./payments-tax";
 import { reservationDeliverySources } from "./reservation-delivery";
 import { salesSources } from "./sales";
 import { trafficOperationsSources } from "./traffic-operations";
-import type {
-  DailyMetricReader,
-  MetricSource,
-  MetricSourceFamily,
-  MetricSourceModule,
-  MetricSplitSource,
+import {
+  readerWritesTotal,
+  type DailyMetricReader,
+  type MetricSource,
+  type MetricSourceFamily,
+  type MetricSourceModule,
+  type MetricSplitSource,
 } from "./types";
 
 export type {
@@ -37,7 +38,7 @@ export type {
   MetricSplitSource,
   Tx,
 } from "./types";
-export { METRIC_SOURCE_FAMILIES } from "./types";
+export { METRIC_SOURCE_FAMILIES, readerWritesTotal } from "./types";
 
 export const METRIC_SOURCE_MODULES: readonly MetricSourceModule[] = [
   glSources,
@@ -76,9 +77,12 @@ function checkReader(
   }
 }
 
-/** Dimensions a reader writes; a reader without any writes the total only. */
+/** Row keys a reader writes: its dimensions plus the total when it owns it. */
 function writtenDimensions(reader: DailyMetricReader): readonly string[] {
-  return reader.dimensions.length > 0 ? reader.dimensions : ["(total)"];
+  return [
+    ...(readerWritesTotal(reader) ? ["(total)"] : []),
+    ...reader.dimensions,
+  ];
 }
 
 /**
@@ -108,7 +112,7 @@ function checkWriterOverlap(
         const taken = new Set(writtenDimensions(first.reader));
         if (writtenDimensions(second.reader).some((key) => taken.has(key)))
           throw new Error(
-            `Metric registry: code "${code}" is written by two readers, ${first.label} and ${second.label}`,
+            `Metric registry: code "${code}" is written by two readers, ${first.label} and ${second.label} (same dimension or both write the total row)`,
           );
       }
 }
@@ -119,8 +123,10 @@ function checkWriterOverlap(
  * derived source with an unregistered input, a split on a code that is not
  * `gl` (or on a dimension the definition lacks), a reader that does not
  * list the code it writes, two readers that write the same code in the
- * same dimension, or a share whose input is unregistered or not split by
- * its dimension.
+ * same dimension (or both its total row, `writesTotal`), a `weightCode` that
+ * is not a registered daily count of the same reader on an average metric,
+ * or a share that is not a percent, whose input is unregistered or not
+ * split by its dimension.
  */
 export function assertRegistry(
   modules: readonly MetricSourceModule[] = METRIC_SOURCE_MODULES,
@@ -188,6 +194,10 @@ export function assertRegistry(
     }
   }
 
+  for (const source of sources.values())
+    if (source.kind === "daily" && source.weightCode !== undefined)
+      checkWeight(source, sources);
+
   const splits = new Set<string>();
   for (const module of modules) {
     for (const split of module.splits) {
@@ -229,8 +239,32 @@ export function assertRegistry(
 }
 
 /**
- * A share needs a registered `of` that splits by `dimension`, on a dimension
- * the share's own definition declares (else every query of it would answer
+ * `weightCode` of an average: a registered `daily` count code written by the
+ * same reader, on a metric that aggregates as `average`.
+ */
+function checkWeight(
+  source: Extract<MetricSource, { kind: "daily" }>,
+  sources: ReadonlyMap<string, MetricSource>,
+): void {
+  const weightCode = source.weightCode!;
+  const label = `Metric registry: "${source.code}" weight "${weightCode}"`;
+  if (reportMetricByCode.get(source.code)?.aggregation !== "average")
+    throw new Error(
+      `Metric registry: "${source.code}" has a weight but is not an average`,
+    );
+  const weight = sources.get(weightCode);
+  if (!weight) throw new Error(`${label} is not registered`);
+  if (weight.kind !== "daily")
+    throw new Error(`${label} is not a daily source`);
+  if (reportMetricByCode.get(weightCode)?.unit !== "count")
+    throw new Error(`${label} is not a count`);
+  if (weight.reader !== source.reader)
+    throw new Error(`${label} is not written by the same reader`);
+}
+
+/**
+ * A share is a percent and needs a registered `of` that splits by
+ * `dimension`, on a dimension the share's own definition declares (else every query of it would answer
  * `dimension_not_supported`).
  */
 function checkShare(
@@ -239,6 +273,8 @@ function checkShare(
   splits: ReadonlySet<string>,
 ): void {
   const label = `Metric registry: share "${source.code}"`;
+  if (reportMetricByCode.get(source.code)?.unit !== "percent")
+    throw new Error(`${label} is not a percent`);
   if (
     !reportMetricByCode.get(source.code)?.dimensions.includes(source.dimension)
   )

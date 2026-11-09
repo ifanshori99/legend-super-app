@@ -649,6 +649,28 @@ describe("sales metric source: net_sales by payment method and category", () => 
     expect(split).toBe(135_001);
   });
 
+  it("pure: tenders captured at 0 fall back to the intent method, then unassigned", () => {
+    const facts = {
+      orders: [
+        order("1", 8_000, [{ method: "cash", amount: 0 }], "edc"),
+        order("2", 2_000, [
+          { method: "cash", amount: 0 },
+          { method: "qris", amount: 0 },
+        ]),
+      ],
+      lines: [],
+      promos: [],
+      voids: [],
+      refundLines: [],
+      target: 0,
+    };
+    const rows = salesRows("net_sales", facts, D1);
+    expect(amountOf(rows, "payment_method", "edc")).toBe(8_000);
+    expect(amountOf(rows, "payment_method", "unassigned")).toBe(2_000);
+    expect(amountOf(rows, "payment_method", "cash")).toBeUndefined();
+    expect(amountOf(rows, "payment_method", "qris")).toBeUndefined();
+  });
+
   it("pure: category parts of an order add up to its net exactly", () => {
     const facts = {
       orders: [order("1", 100, [{ method: "cash", amount: 100 }])],

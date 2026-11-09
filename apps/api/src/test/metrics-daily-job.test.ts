@@ -135,6 +135,7 @@ function makeReader(input: {
   metricCodes: string[];
   dimensions?: "channel"[];
   requiresDailyClose?: boolean;
+  writesTotal?: boolean;
   rows: () => {
     metricCode: string;
     dimension: { key: "channel"; value: string } | null;
@@ -146,6 +147,9 @@ function makeReader(input: {
     metricCodes: input.metricCodes,
     dimensions: input.dimensions ?? [],
     requiresDailyClose: input.requiresDailyClose ?? false,
+    ...(input.writesTotal === undefined
+      ? {}
+      : { writesTotal: input.writesTotal }),
     async compute() {
       if (input.throws) throw new Error("reader boom");
       return input.rows();
@@ -370,6 +374,7 @@ describe("refreshMetricsDaily: idempotent writes", () => {
     const byChannel = makeReader({
       metricCodes: ["transaction_count"],
       dimensions: ["channel"],
+      writesTotal: false,
       rows: () => [
         {
           metricCode: "transaction_count",
@@ -400,6 +405,70 @@ describe("refreshMetricsDaily: idempotent writes", () => {
       [null, null],
       ["channel", "dine_in"],
     ]);
+  });
+
+  it("owns the stale total row unless the reader says writesTotal: false", async () => {
+    let withTotal = true;
+    const rows = () => [
+      ...(withTotal
+        ? [
+            {
+              metricCode: "transaction_count",
+              dimension: null,
+              value: count(4),
+            },
+          ]
+        : []),
+      {
+        metricCode: "transaction_count",
+        dimension: { key: "channel" as const, value: "dine_in" },
+        value: count(4),
+      },
+    ];
+    const declared = makeReader({
+      metricCodes: ["transaction_count"],
+      dimensions: ["channel"],
+      writesTotal: true,
+      rows,
+    });
+    const readers = [{ family: "sales", reader: declared }];
+    await refresh(world, "2025-06-26", LATE, readers);
+    withTotal = false;
+    const result = await refresh(world, "2025-06-26", LATE, readers);
+    expect(result.deleted).toBe(1);
+    expect(
+      (await rowsOf(world.tenantId, world.outlet1, "2025-06-26")).map((r) => [
+        r.dimension_key,
+        r.dimension_value,
+      ]),
+    ).toEqual([["channel", "dine_in"]]);
+
+    // A split reader that does not own the total never deletes it.
+    const split = makeReader({
+      metricCodes: ["transaction_count"],
+      dimensions: ["channel"],
+      writesTotal: false,
+      rows: () => [
+        {
+          metricCode: "transaction_count",
+          dimension: { key: "channel" as const, value: "dine_in" },
+          value: count(4),
+        },
+      ],
+    });
+    const total = makeReader({
+      metricCodes: ["transaction_count"],
+      rows: () => [
+        { metricCode: "transaction_count", dimension: null, value: count(4) },
+      ],
+    });
+    const both = [
+      { family: "traffic-operations", reader: split },
+      { family: "sales", reader: total },
+    ];
+    await refresh(world, "2025-06-27", LATE, both);
+    const again = await refresh(world, "2025-06-27", LATE, both);
+    expect(again.deleted).toBe(0);
   });
 
   it("writes only the outlet-date asked for", async () => {

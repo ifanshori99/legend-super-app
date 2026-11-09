@@ -295,7 +295,7 @@ export const dashboardQuerySchema = clientInputSchema({
   outletIds: z.array(outletIdSchema).min(1).max(50).optional(),
   /**
    * Management home only: narrows the tiles to this role's plus the shared
-   * ones (`dashboardTilesFor`). Unknown roles are a 400; other dashboards
+   * ones (`dashboardTilesFor`). Unknown roles are a 422; other dashboards
    * ignore it. Absent keeps every management tile.
    */
   managerRole: managementRoleSchema.optional(),
