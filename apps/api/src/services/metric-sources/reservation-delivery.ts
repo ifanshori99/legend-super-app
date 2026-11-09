@@ -223,6 +223,9 @@ const deliverySalesReader: DailyMetricReader = {
       const net = row.grossIdr - row.commissionIdr;
       total += net;
       bump(byChannel, row.platform, net);
+      // Never empty: CHECK delivery_channel_orders_lines_check (migration
+      // 0122) requires at least one line, so every order's net reaches a menu
+      // row and the menu rows add up to the total.
       const lines = row.lines;
       const parts = shareNet(
         net,
