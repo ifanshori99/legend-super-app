@@ -304,16 +304,98 @@ describe("legend-eyqvo staff resend of a needs_action order", () => {
     });
     expect(references).toEqual([`${orderId}:accepted`]);
 
-    const events = await auditEvents(orderId, "delivery_order.platform_resend");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const outcomeOf = (event: Record<string, unknown> | undefined) =>
+      (event?.maskedChanges as { after?: { outcome?: string } }).after?.outcome;
+    const requested = await auditEvents(
+      orderId,
+      "delivery_order.platform_resend",
+    );
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({
       actorType: "user",
       actorId: handlerA.userId,
     });
+    expect(outcomeOf(requested[0])).toBe("requested");
+    const results = await auditEvents(
+      orderId,
+      "delivery_order.platform_resend_result",
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      actorType: "user",
+      actorId: handlerA.userId,
+    });
+    expect(outcomeOf(results[0])).toBe("accepted");
+  });
+
+  it("legend-eyqvo the click is audited even when the row moves on during the platform call", async () => {
+    const { tenant, handlerA, seedOrder, readSync, auditEvents, call } =
+      await setup();
+    const orderId = await seedOrder("needs_action");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { references } = installAdapter(() => "accept", gate);
+
+    const pending = call(handlerA.client, "resend", orderId, {
+      body: {},
+    }).then((r) => r);
+    await waitUntil(() => references.length === 1);
+    // A newer staff step replaces the held intent while the call is in flight.
+    await asOwnerTenant(tenant, (db) =>
+      db.query(
+        `UPDATE delivery_channel_orders
+            SET platform_sync_state = 'retrying', platform_sync_action = 'update_order',
+                platform_sync_status = 'accepted', platform_sync_attempts = 1,
+                platform_sync_next_at = now() + interval '2 minutes'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, orderId],
+      ),
+    );
+    release();
+    const res = await pending;
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The newer intent wins: the stale result changes nothing.
+    expect(await readSync(orderId)).toMatchObject({
+      state: "retrying",
+      action: "update_order",
+      attempts: 1,
+    });
+    const requested = await auditEvents(
+      orderId,
+      "delivery_order.platform_resend",
+    );
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({ actorId: handlerA.userId });
     expect(
-      (events[0]!.maskedChanges as { after?: { outcome?: string } }).after
-        ?.outcome,
-    ).toBe("accepted");
+      await auditEvents(orderId, "delivery_order.platform_resend_result"),
+    ).toHaveLength(0);
+  });
+
+  it("legend-eyqvo resend of an order that moved on clears the stale flag without a platform call", async () => {
+    const { tenant, handlerA, seedOrder, readSync, call } = await setup();
+    const orderId = await seedOrder("needs_action");
+    // The webhook advanced the order past the held step.
+    await asOwnerTenant(tenant, (db) =>
+      db.query(
+        `UPDATE delivery_channel_orders SET status = 'ready'
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, orderId],
+      ),
+    );
+    const { references } = installAdapter(() => "accept");
+
+    const res = await call(handlerA.client, "resend", orderId, { body: {} });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(deliveryChannelOrderSchema.parse(res.body.data).platformSync).toBe(
+      "ok",
+    );
+    expect(references).toEqual([]);
+    expect(await readSync(orderId)).toMatchObject({
+      state: "ok",
+      action: null,
+    });
   });
 
   it("legend-eyqvo resend refused by the platform: still needs_action, no backoff restart, sweep never resends", async () => {

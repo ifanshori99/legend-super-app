@@ -436,8 +436,11 @@ async function auditStaffSync(
   context: ScopedTenantContext,
   caller: DeliverySyncCaller,
   row: { id: string; outletId: string; platform: string; status: string },
-  action: "delivery_order.platform_resend" | "delivery_order.platform_resolved",
-  outcome: "accepted" | "refused" | "unknown" | "resolved",
+  action:
+    | "delivery_order.platform_resend"
+    | "delivery_order.platform_resend_result"
+    | "delivery_order.platform_resolved",
+  outcome: "requested" | "accepted" | "refused" | "unknown" | "resolved",
   reason: string | null,
   now: Date,
 ): Promise<void> {
@@ -490,40 +493,66 @@ export async function resendDeliveryOrderSync(
   now = new Date(),
 ): Promise<DeliveryChannelOrder> {
   assertOutletInScope(context.outletScope, outletId);
-  const claim = await withTenant(db, context, async (tx): Promise<Claim> => {
-    const row = await lockPendingOrder(tx, context, outletId, deliveryOrderId);
-    // The order moved on (webhook): nothing is held for the old step.
-    if (
-      !row.platformSyncAction ||
-      !row.platformSyncStatus ||
-      row.platformSyncStatus !== row.status
-    )
-      throw syncNotPending();
-    const attempt = row.platformSyncAttempts + 1;
-    await tx
-      .update(deliveryChannelOrders)
-      .set({
-        platformSyncState: "retrying",
-        platformSyncAttempts: attempt,
-        platformSyncNextAt: new Date(now.getTime() + PLATFORM_SYNC_LEASE_MS),
-      })
-      .where(
-        and(
-          eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
-          eq(deliveryChannelOrders.id, row.id),
-        ),
+  const claimed = await withTenant(
+    db,
+    context,
+    async (tx): Promise<Claim | DeliveryChannelOrder> => {
+      const row = await lockPendingOrder(
+        tx,
+        context,
+        outletId,
+        deliveryOrderId,
       );
-    return {
-      id: row.id,
-      outletId: row.outletId,
-      platform: row.platform,
-      externalOrderId: row.externalOrderId,
-      closeReason: row.closeReason,
-      action: row.platformSyncAction,
-      status: row.platformSyncStatus,
-      attempt,
-    };
-  });
+      // The order moved on (webhook): the held step no longer applies. Clear
+      // the flag like the sweep does instead of resending a stale step.
+      if (
+        !row.platformSyncAction ||
+        !row.platformSyncStatus ||
+        row.platformSyncStatus !== row.status
+      ) {
+        await markPlatformSynced(tx, context.tenant.tenantId, row.id);
+        return toDeliveryChannelOrder({ ...row, platformSyncState: "ok" });
+      }
+      const attempt = row.platformSyncAttempts + 1;
+      await tx
+        .update(deliveryChannelOrders)
+        .set({
+          platformSyncState: "retrying",
+          platformSyncAttempts: attempt,
+          platformSyncNextAt: new Date(now.getTime() + PLATFORM_SYNC_LEASE_MS),
+        })
+        .where(
+          and(
+            eq(deliveryChannelOrders.tenantId, context.tenant.tenantId),
+            eq(deliveryChannelOrders.id, row.id),
+          ),
+        );
+      // Written with the claim, so the click is on record even when the
+      // platform call outlives the lease or the row moves on before the result.
+      await auditStaffSync(
+        tx,
+        context,
+        caller,
+        row,
+        "delivery_order.platform_resend",
+        "requested",
+        null,
+        now,
+      );
+      return {
+        id: row.id,
+        outletId: row.outletId,
+        platform: row.platform,
+        externalOrderId: row.externalOrderId,
+        closeReason: row.closeReason,
+        action: row.platformSyncAction,
+        status: row.platformSyncStatus,
+        attempt,
+      };
+    },
+  );
+  if (!("attempt" in claimed)) return claimed;
+  const claim = claimed;
   const startedAt = Date.now();
   const outcome = await callPlatform(context, claim);
   const settledAt = new Date(now.getTime() + (Date.now() - startedAt));
@@ -554,8 +583,8 @@ export async function resendDeliveryOrderSync(
         tx,
         context,
         caller,
-        { ...claim, status: claim.status },
-        "delivery_order.platform_resend",
+        claim,
+        "delivery_order.platform_resend_result",
         outcome,
         null,
         settledAt,
