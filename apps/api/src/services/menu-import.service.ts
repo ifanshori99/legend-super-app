@@ -49,6 +49,7 @@ import {
   stations,
 } from "../db/schema/menu.ts";
 import { menuImportJobs } from "../db/schema/menu-import.ts";
+import { guardDataImport } from "../config/data-import.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -408,6 +409,8 @@ export async function commitMenuImport(
   now = new Date(),
 ): Promise<ImportCommitResult> {
   assertTrustedScopedContext(context);
+  // Data import guard (legend-v4ld): classify the upload before any write.
+  guardDataImport("menu-import.commit");
   const key = idempotencyKeySchema.parse(idempotencyKey);
   const channel = input.channel ?? "dine_in";
   const onDuplicate = input.onDuplicate ?? "reject";

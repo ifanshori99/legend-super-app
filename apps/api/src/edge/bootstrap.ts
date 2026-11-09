@@ -51,6 +51,7 @@ import {
   outlets,
   tenants,
 } from "../db/schema/platform-org.ts";
+import { guardDataImport } from "../config/data-import.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
 import { edgeBootstrapSignatureMatches } from "../services/edge-bootstrap.service.ts";
@@ -251,6 +252,15 @@ export async function bootstrapEdgeNodeIfNeeded(
       }
     }
     return "present";
+  }
+  // Data import guard (legend-v4ld/legend-rhwb): this node's own deployment
+  // policy must allow the rows (real data only in production). It does not
+  // compare the cloud's environment with the node's: the bundle does not
+  // declare one (follow-up bead). Report the reason as a boot code.
+  try {
+    guardDataImport("edge.bootstrap");
+  } catch {
+    throw bootError("DATA_IMPORT_BLOCKED");
   }
 
   const bundle = await fetchVerifiedBundle(config, claims, options);
