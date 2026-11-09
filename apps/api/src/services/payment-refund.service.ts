@@ -28,21 +28,27 @@ import {
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { approvalResolvedEvent, IdentityError } from "@starter/shared/identity";
+import { paymentRefundEscalatedEvent } from "@starter/shared/payment";
 import type * as contract from "@starter/shared/payment/admin";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
   approvalRequests,
   paymentEvidence,
   paymentIntents,
+  paymentRefundEscalationSettings,
   paymentRefunds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  emitOperationsEvent,
+  OPERATIONS_NOTIFICATION_DESTINATION,
+} from "./operations-events.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
   authorize,
@@ -1497,6 +1503,134 @@ export async function runRefundPayout(
   });
 }
 
+const ESCALATION_PENDING_UNAPPROVED_HOURS = 24;
+const ESCALATION_PROVIDER_PENDING_HOURS = 72;
+
+/**
+ * Marks refunds that wait too long as escalated, once per reason, and tells
+ * outlet managers and finance through the notification outbox. Case
+ * `pending_unapproved`: `pending` with no approval chain, aged from
+ * `created_at` (default 24 h). Case `provider_pending`: `approved` with the
+ * provider still answering `pending`, aged from `decided_at` (default 72 h).
+ * Thresholds are per tenant (`payment_refund_escalation_settings`). It writes
+ * only `escalated_at` and `escalation_reason`: it never cancels, pays, or
+ * touches `status`, `updated_at` (the payout backoff reads it) or any payout
+ * column. Returns the number of refunds escalated.
+ */
+export async function escalateStaleRefunds(
+  context: ScopedTenantContext,
+  now: Date = new Date(),
+  limit = 100,
+): Promise<number> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [settings] = await tx
+      .select()
+      .from(paymentRefundEscalationSettings)
+      .where(eq(paymentRefundEscalationSettings.tenantId, tenantId));
+    const cases = [
+      {
+        reason: "pending_unapproved",
+        hours:
+          settings?.pendingUnapprovedHours ??
+          ESCALATION_PENDING_UNAPPROVED_HOURS,
+        age: sql`${paymentRefunds.createdAt}`,
+        stale: and(
+          eq(paymentRefunds.status, "pending"),
+          isNull(paymentRefunds.approvalChainId),
+          isNull(paymentRefunds.escalatedAt),
+        ),
+      },
+      {
+        reason: "provider_pending",
+        hours:
+          settings?.providerPendingHours ?? ESCALATION_PROVIDER_PENDING_HOURS,
+        age: sql`coalesce(${paymentRefunds.decidedAt}, ${paymentRefunds.createdAt})`,
+        stale: and(
+          eq(paymentRefunds.status, "approved"),
+          sql`${paymentRefunds.payoutPendingPolls} > 0`,
+          sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'provider_pending'`,
+        ),
+      },
+    ] as const;
+    let escalated = 0;
+    for (const item of cases) {
+      const guard = and(
+        eq(paymentRefunds.tenantId, tenantId),
+        item.stale,
+        sql`${item.age} + ${item.hours} * interval '1 hour' <= ${now}`,
+      );
+      const candidates = await tx
+        .select({
+          id: paymentRefunds.id,
+          before: paymentRefunds.escalationReason,
+          beforeAt: paymentRefunds.escalatedAt,
+          waitingSince: sql<Date>`${item.age}`,
+        })
+        .from(paymentRefunds)
+        .where(guard)
+        .orderBy(asc(item.age), asc(paymentRefunds.id))
+        .limit(limit)
+        .for("update", { skipLocked: true });
+      if (candidates.length === 0) continue;
+      const updated = await tx
+        .update(paymentRefunds)
+        .set({ escalatedAt: now, escalationReason: item.reason })
+        .where(
+          and(
+            guard,
+            inArray(
+              paymentRefunds.id,
+              candidates.map((row) => row.id),
+            ),
+          ),
+        )
+        .returning();
+      const before = new Map(candidates.map((row) => [row.id, row]));
+      for (const row of updated) {
+        const candidate = before.get(row.id);
+        await refundAudit(tx, context, {
+          actorId: null,
+          row,
+          action: "payment.refund_escalated",
+          now,
+          reason: null,
+          before: {
+            escalationReason: candidate?.before ?? null,
+            escalatedAt: candidate?.beforeAt?.toISOString() ?? null,
+          },
+          after: {
+            escalationReason: item.reason,
+            escalatedAt: now.toISOString(),
+            status: row.status,
+            thresholdHours: item.hours,
+          },
+        });
+        await emitOperationsEvent(tx, context, paymentRefundEscalatedEvent, {
+          aggregateId: row.id,
+          outletId: row.outletId,
+          actor: { type: "system" },
+          payload: {
+            refundId: row.id,
+            outletId: row.outletId,
+            amountIdr: row.amountIdr,
+            reason: item.reason,
+            waitingSince: new Date(
+              candidate?.waitingSince ?? row.createdAt,
+            ).toISOString(),
+            thresholdHours: item.hours,
+            escalatedAt: now.toISOString(),
+          },
+          destination: OPERATIONS_NOTIFICATION_DESTINATION,
+          now,
+        });
+        escalated += 1;
+      }
+    }
+    return escalated;
+  });
+}
+
 /**
  * Worker sweep for `approved` refunds whose payout is not finished: lease free,
  * oldest first, with backoff by attempts (2^attempts minutes, at most an hour
@@ -1504,7 +1638,9 @@ export async function runRefundPayout(
  * counter). After `PAYOUT_MAX_ATTEMPTS` unknown outcomes, or a `pending` answer
  * older than 72 hours, the refund stays `approved`, is flagged
  * `MANUAL_RECONCILIATION` and logged for ops. A round stops claiming new
- * refunds once `budgetMs` is spent.
+ * refunds once `budgetMs` is spent. First it escalates refunds that wait too
+ * long (`escalateStaleRefunds`, also without a gateway); a failure there is
+ * logged and never blocks payouts.
  */
 export async function sweepApprovedRefundPayouts(
   context: ScopedTenantContext,
@@ -1513,9 +1649,19 @@ export async function sweepApprovedRefundPayouts(
   budgetMs = PAYOUT_SWEEP_BUDGET_MS,
   /** Checked before each claim (worker shutdown): stop starting new payouts. */
   shouldStop: () => boolean = () => false,
-): Promise<{ attempted: number; exhausted: number }> {
+): Promise<{ attempted: number; exhausted: number; escalated: number }> {
+  let escalated = 0;
+  try {
+    escalated = await escalateStaleRefunds(context, now);
+  } catch {
+    logger.warn(
+      { tenantId: context.tenant.tenantId },
+      "Refund escalation sweep failed",
+    );
+  }
   // No gateway: claim nothing and flag nothing (see runRefundPayout).
-  if (!refundGatewayInstalled()) return { attempted: 0, exhausted: 0 };
+  if (!refundGatewayInstalled())
+    return { attempted: 0, exhausted: 0, escalated };
   const tenantId = context.tenant.tenantId;
   const leaseFree = sql`(${paymentRefunds.payoutClaimedUntil} IS NULL OR ${paymentRefunds.payoutClaimedUntil} <= ${now})`;
   const decidedAtOrCreated = sql`coalesce(${paymentRefunds.decidedAt}, ${paymentRefunds.createdAt})`;
@@ -1578,7 +1724,7 @@ export async function sweepApprovedRefundPayouts(
       logger.warn({ refundId: row.id }, "Refund payout sweep attempt failed");
     }
   }
-  return { attempted, exhausted: exhausted.length };
+  return { attempted, exhausted: exhausted.length, escalated };
 }
 
 const quarantined = () =>
@@ -1798,6 +1944,9 @@ async function actOnQuarantine(
             lastPayoutError: null,
             payoutClaimedUntil: null,
             payoutClaimToken: null,
+            // A reopened refund starts a new wait: it may escalate again (legend-n9kn).
+            escalatedAt: null,
+            escalationReason: null,
             updatedAt: now,
           })
           .where(

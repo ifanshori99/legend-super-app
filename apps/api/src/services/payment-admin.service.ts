@@ -7,7 +7,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import * as contract from "@starter/shared/payment/admin";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
@@ -146,6 +146,11 @@ export async function refundView(
     failureReason: refund.failureReason,
     payoutAttempts: refund.payoutAttempts,
     lastPayoutError: refund.lastPayoutError,
+    escalatedAt: refund.escalatedAt?.toISOString() ?? null,
+    escalationReason: refund.escalationReason as
+      | "pending_unapproved"
+      | "provider_pending"
+      | null,
     completedAt: refund.completedAt?.toISOString() ?? null,
   });
 }
@@ -254,6 +259,10 @@ export async function refundAudit(
       "approvalChainId",
       "approvedBy",
       "decidedAt",
+      // Escalation of a long-waiting refund (legend-n9kn): codes and times only.
+      "escalationReason",
+      "escalatedAt",
+      "thresholdHours",
     ],
   );
 }
@@ -431,6 +440,15 @@ export async function listRefunds(
             ? eq(paymentRefunds.outletId, query.outletId)
             : undefined,
           query.status ? eq(paymentRefunds.status, query.status) : undefined,
+          query.escalated === "true"
+            ? // Open cases only: a completed or failed refund needs no one any more.
+              and(
+                isNotNull(paymentRefunds.escalatedAt),
+                inArray(paymentRefunds.status, ["pending", "approved"]),
+              )
+            : query.escalated === "false"
+              ? isNull(paymentRefunds.escalatedAt)
+              : undefined,
           cursor,
         ),
       )

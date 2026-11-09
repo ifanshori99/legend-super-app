@@ -1613,7 +1613,11 @@ describe("legend-0ogy: no refund gateway installed claims nothing", () => {
     const spentId = await seedApprovedRefund(financeSupId, "0 seconds", 99);
     setPaymentRefundGateway(null);
 
-    await expect(sweep()).resolves.toEqual({ attempted: 0, exhausted: 0 });
+    // `escalated` (legend-n9kn) counts long-waiting refunds of the shared tenant.
+    await expect(sweep()).resolves.toMatchObject({
+      attempted: 0,
+      exhausted: 0,
+    });
 
     expect(await refundRow(refundId)).toMatchObject({
       status: "approved",

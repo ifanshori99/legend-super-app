@@ -51,6 +51,7 @@ import {
   type Reachability,
 } from "@starter/shared/notification";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
+import { paymentRefundEscalatedPayloadSchema } from "@starter/shared/payment";
 import type * as schema from "../db/schema/index.ts";
 import {
   notificationPolicies,
@@ -520,6 +521,50 @@ async function checklistRule(
   };
 }
 
+/** A refund waited past its tenant threshold: outlet managers (their outlet)
+ * and finance (tenant-wide) decide. Body carries no amount or customer data. */
+async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
+  const payload = paymentRefundEscalatedPayloadSchema.parse(
+    input.event.payload,
+  );
+  const audience = await audienceOf(input.tx, input.event);
+  const managers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["outlet_manager"] as never[]),
+    audience,
+  );
+  const finance = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["finance"] as never[]),
+    { kind: "tenant" },
+  );
+  const handlers = [...new Set([...managers, ...finance])].sort();
+  // Nobody to escalate to: the owners (tenant-wide) take the alert instead.
+  const userIds =
+    handlers.length > 0
+      ? handlers
+      : await activeAssignees(
+          input.tx,
+          input.tenantId,
+          eq(roles.templateKey, "owner"),
+          { kind: "tenant" },
+        );
+  return {
+    userIds,
+    content: {
+      category: "approval_request",
+      title: "Refund menunggu terlalu lama",
+      body:
+        payload.reason === "pending_unapproved"
+          ? "Ada refund yang belum diproses dan sudah melewati batas waktu tunggu. Mohon ditinjau."
+          : "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.",
+      link: null,
+    },
+  };
+}
+
 async function ruleFor(input: RuleInput): Promise<Rule> {
   switch (input.event.name) {
     case "approval.requested":
@@ -533,6 +578,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
     case "checklist.missed":
     case "checklist.failed":
       return checklistRule(input, input.event.name);
+    case "payment.refund_escalated":
+      return refundEscalatedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

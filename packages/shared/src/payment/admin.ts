@@ -241,6 +241,12 @@ export const refundViewSchema = z.strictObject({
   /** Provider payout tries so far; an `approved` refund with a last error is awaiting retry. */
   payoutAttempts: z.number().int().nonnegative().optional(),
   lastPayoutError: z.string().max(100).nullable().optional(),
+  /** Set once when the refund waited past the tenant threshold; never changes money state. */
+  escalatedAt: isoDateTimeSchema.nullable().optional(),
+  escalationReason: z
+    .enum(["pending_unapproved", "provider_pending"])
+    .nullable()
+    .optional(),
   completedAt: isoDateTimeSchema.nullable().optional(),
 });
 export type RefundView = z.infer<typeof refundViewSchema>;
@@ -492,6 +498,7 @@ export const listRefunds = defineEndpoint({
   query: cursorPageQuerySchema.extend({
     ...outletFilter,
     status: refundStatusSchema.optional(),
+    escalated: z.enum(["true", "false"]).optional(),
   }),
   response: cursorPageSchema(refundViewSchema),
 });
