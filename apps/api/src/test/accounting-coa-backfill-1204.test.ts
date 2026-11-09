@@ -1,4 +1,4 @@
-// legend-s8a3: data migration 0134 backfills account 1204 / 6110 / 6111 and the
+// legend-s8a3: data migration 0147 (was 0134 on its branch) backfills account 1204 / 6110 / 6111 and the
 // employee_receivable / reimbursement_expense / pph21_borne_expense mappings for entities that were
 // provisioned before the payroll journal. Written as the migration owner, so
 // the SQL is proven directly, twice (idempotent), like the 0115 data test.
@@ -18,7 +18,7 @@ const unique = () => randomBytes(6).toString("hex");
 const migration = readFileSync(
   resolve(
     import.meta.dirname,
-    "../../drizzle/0134_accounting_coa_backfill_1204.sql",
+    "../../drizzle/0147_accounting_coa_backfill_1204.sql",
   ),
   "utf8",
 );
