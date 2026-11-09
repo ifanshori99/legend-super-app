@@ -672,7 +672,9 @@ async function qrSaleGatewayOf(
  * On a split bill every code that put money toward it (evidence less its
  * unallocated funds, a status that never reverts) backs `min(due, that)`,
  * the pinned one included; same parts as the payout guard (intentBackedAt,
- * legend-05cm9) and qrSaleInUseOfIntent (payment-admin.service.ts).
+ * legend-05cm9) and allocatedIdrByIntent (qr-order-consumers.ts).
+ * qrSaleInUseOfIntent (payment-admin.service.ts) holds the pinned code's whole
+ * due instead, which is stricter.
  */
 async function qrSaleSharesOf(
   tx: Tx,
