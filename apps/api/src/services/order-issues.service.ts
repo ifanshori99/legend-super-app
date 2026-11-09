@@ -1,0 +1,475 @@
+// Remake / comp / complaint log (bead legend-4b5; PRD v1.7 §6 C `order_issues`,
+// F41 "Remake & Comp", KDS-07, R25; contract @starter/shared/kitchen
+// `reportOrderIssue` + `listOrderIssues`).
+//
+// - Permission `kds.remake_comp.record`: held on the named station, or (no
+//   station) on the outlet. A station-only account sees and files only its own
+//   station (TEN-03, legend-fsb7).
+// - The ingredient cost is computed here from the recipe at the sale location
+//   moving-average cost; the client never sends it (KDS-07).
+// - Stock: a remake always appends `order_issue.recorded` (the kitchen cooks
+//   the line again; the sale deduction stays). A comp appends it only when the
+//   order line is voided (not billed): a comp of a still-billed line is already
+//   drawn by `order.paid`, and a second draw would count it twice
+//   (recipe-deduction.service.ts, consumer comment). complaint and
+//   unfulfillable draw nothing.
+// - R25: a manual refund names a supervisor who holds `pos.refund.approve` in
+//   the outlet and who is not the reporter. The id alone is never proof.
+
+import { and, desc, eq, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
+import {
+  assertOutletInScope,
+  CoreError,
+  createUlid,
+  encodeCursor,
+  outletIdSchema,
+  toIsoDateTime,
+  userIdSchema,
+  type OutletId,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import {
+  orderIssueRecordedEvent,
+  orderIssueRecordedPayloadSchema,
+} from "@starter/shared/inventory";
+import {
+  orderIssueSchema,
+  type CreateOrderIssueInput,
+  type OrderIssue,
+  type OrderIssueType,
+} from "@starter/shared/kitchen";
+import { db } from "../db/index.ts";
+import { stations } from "../db/schema/index.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
+import { posOrderItems } from "../db/schema/pos-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { roleAssignments } from "../db/schema/platform-access.ts";
+import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
+import {
+  cursorInstant,
+  cursorKeys,
+  cursorUuid,
+  type CursorPage,
+} from "./inventory-ops.shared.ts";
+import type { Tx } from "./menu-internals.ts";
+import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
+import {
+  assertStationPermission,
+  permittedStationIds,
+} from "./station-access.ts";
+
+const RECORD = "kds.remake_comp.record";
+const REFUND_APPROVE = "pos.refund.approve";
+const EVENT_DESTINATION = "cloud-sync";
+const DEFAULT_LIMIT = 50;
+const AUDIT_SAFE_FIELDS = ["id", "type", "reason", "stationId", "costIdr"];
+
+const deniedOutlet = () =>
+  new AccessError(
+    "PERMISSION_DENIED",
+    "Anda tidak dapat mencatat remake atau comp di outlet ini.",
+  );
+const orderNotFound = () =>
+  new CoreError("NOT_FOUND", "Pesanan tidak ditemukan di outlet ini.");
+const itemNotFound = () =>
+  new CoreError("NOT_FOUND", "Item pesanan tidak ditemukan pada pesanan ini.");
+const unprocessable = (message: string) =>
+  new HttpError(422, "VALIDATION_ERROR", message);
+
+type IssueRow = typeof orderIssues.$inferSelect;
+
+function toIssue(row: IssueRow): OrderIssue {
+  return orderIssueSchema.parse({
+    id: row.id,
+    tenantId: row.tenantId,
+    outletId: row.outletId,
+    orderId: row.orderId,
+    orderItemId: row.orderItemId,
+    type: row.type,
+    reason: row.reason,
+    reasonNote: row.reasonNote,
+    stationId: row.stationId,
+    employeeId: row.employeeId,
+    reportedBy: row.reportedBy,
+    resolution: row.resolution,
+    replacementItemId: row.replacementItemId,
+    voucherId: row.voucherId,
+    priceDifferenceIdr: row.priceDifferenceIdr,
+    approvedBy: row.approvedBy,
+    costIdr: row.costIdr,
+    status: row.status,
+    createdAt: toIsoDateTime(row.createdAt),
+    resolvedAt: row.resolvedAt ? toIsoDateTime(row.resolvedAt) : null,
+  });
+}
+
+/** A user with an active role assignment in this tenant (a staff member). */
+async function isTenantStaff(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  now: Date,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: roleAssignments.id })
+    .from(roleAssignments)
+    .where(
+      and(
+        eq(roleAssignments.tenantId, context.tenant.tenantId),
+        eq(roleAssignments.userId, userId),
+        sql`${roleAssignments.validFrom} <= ${now}`,
+        or(
+          isNull(roleAssignments.validUntil),
+          sql`${roleAssignments.validUntil} > ${now}`,
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+async function assertStationInOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  stationId: string,
+): Promise<void> {
+  const [station] = await tx
+    .select({ id: stations.id })
+    .from(stations)
+    .where(
+      and(
+        eq(stations.tenantId, context.tenant.tenantId),
+        eq(stations.outletId, outletId),
+        eq(stations.id, stationId),
+        isNull(stations.deletedAt),
+      ),
+    );
+  if (!station)
+    throw new CoreError(
+      "NOT_FOUND",
+      "Stasiun dapur tidak ditemukan di outlet ini.",
+    );
+}
+
+export async function reportOrderIssue(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletIdRaw: string,
+  orderId: string,
+  input: CreateOrderIssueInput,
+  now: Date,
+): Promise<OrderIssue> {
+  const outletId = outletIdSchema.parse(outletIdRaw);
+  assertOutletInScope(context.outletScope, outletId);
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    const snapshot = await accessSnapshotInTransaction(
+      tx,
+      context,
+      actorUserId,
+      now,
+    );
+    if (input.stationId !== null) {
+      await assertStationPermission(
+        tx,
+        context,
+        actorUserId,
+        RECORD,
+        input.stationId,
+        now,
+      );
+      await assertStationInOutlet(tx, context, outletId, input.stationId);
+    } else if (!snapshot.allows(RECORD, { type: "outlet", id: outletId })) {
+      throw deniedOutlet();
+    }
+
+    const [order] = await tx
+      .select({ id: orders.id, businessDate: orders.businessDate })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.outletId, outletId),
+          eq(orders.id, orderId),
+        ),
+      );
+    if (!order) throw orderNotFound();
+    const [line] = await tx
+      .select({
+        id: orderItems.id,
+        menuItemId: orderItems.menuItemId,
+        variantId: orderItems.variantId,
+        quantity: orderItems.quantity,
+        modifiers: orderItems.modifiers,
+        status: orderItems.status,
+        posVoidedAt: posOrderItems.voidedAt,
+      })
+      .from(orderItems)
+      .leftJoin(
+        posOrderItems,
+        and(
+          eq(posOrderItems.tenantId, orderItems.tenantId),
+          eq(posOrderItems.itemId, orderItems.id),
+        ),
+      )
+      .where(
+        and(
+          eq(orderItems.tenantId, tenantId),
+          eq(orderItems.outletId, outletId),
+          eq(orderItems.orderId, orderId),
+          eq(orderItems.id, input.orderItemId),
+        ),
+      );
+    if (!line) throw itemNotFound();
+
+    if (
+      input.employeeId !== null &&
+      !(await isTenantStaff(tx, context, input.employeeId, now))
+    )
+      throw unprocessable("Staf yang dicatat bukan staf tenant ini.");
+    if (input.resolution === "manual_refund") {
+      const approver = input.approvedBy;
+      if (approver === null || approver === actorUserId)
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Refund manual harus disetujui supervisor lain.",
+        );
+      const approverAccess = await accessSnapshotInTransaction(
+        tx,
+        context,
+        approver,
+        now,
+      );
+      if (
+        !approverAccess.allows(REFUND_APPROVE, { type: "outlet", id: outletId })
+      )
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Penyetuju tidak berwenang menyetujui refund di outlet ini.",
+        );
+    }
+
+    if (input.type === "comp") {
+      const [existing] = await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.orderItemId, input.orderItemId),
+            eq(orderIssues.type, "comp"),
+            ne(orderIssues.status, "cancelled"),
+          ),
+        )
+        .limit(1);
+      if (existing)
+        throw new CoreError("CONFLICT", "Item ini sudah pernah di-comp.");
+    }
+
+    const modifierIds = (line.modifiers ?? []).map(
+      (modifier) => modifier.modifierId,
+    );
+    const costIdr = await estimateDeductionCostIdr(tx, context, outletId, [
+      {
+        menuItemId: line.menuItemId,
+        variantId: line.variantId ?? null,
+        modifierIds,
+        quantity: line.quantity,
+      },
+    ]);
+
+    const [row] = await tx
+      .insert(orderIssues)
+      .values({
+        tenantId,
+        outletId,
+        orderId,
+        orderItemId: input.orderItemId,
+        type: input.type,
+        reason: input.reason,
+        reasonNote: input.reasonNote,
+        stationId: input.stationId,
+        employeeId: input.employeeId,
+        reportedBy: actorUserId,
+        resolution: input.resolution,
+        replacementItemId: input.replacementItemId,
+        voucherId: input.voucherId,
+        approvedBy: input.approvedBy,
+        costIdr,
+        // A resolution given with the report settles the issue at once.
+        status: input.resolution === null ? "open" : "resolved",
+        createdAt: now,
+        resolvedAt: input.resolution === null ? null : now,
+      })
+      .returning();
+    if (!row) throw new Error("order issue not stored");
+
+    const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
+    const drawsStock =
+      input.type === "remake" || (input.type === "comp" && lineVoided);
+    if (drawsStock) {
+      const payload = orderIssueRecordedPayloadSchema.parse({
+        issueId: row.id,
+        orderId,
+        orderItemId: input.orderItemId,
+        outletId,
+        businessDate: order.businessDate,
+        type: input.type,
+        reason: input.reason,
+        stationId: input.stationId,
+        recordedBy: userIdSchema.parse(actorUserId),
+        menuItemId: line.menuItemId,
+        variantId: line.variantId ?? null,
+        modifierIds,
+        quantity: line.quantity,
+        occurredAt: toIsoDateTime(now),
+      });
+      const event = orderIssueRecordedEvent.envelopeSchema.parse({
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId,
+        name: orderIssueRecordedEvent.name,
+        version: orderIssueRecordedEvent.version,
+        aggregateType: orderIssueRecordedEvent.entry.aggregateType,
+        aggregateId: row.id,
+        // One aggregate per issue: a single, immutable event.
+        sequence: 1,
+        occurredAt: toIsoDateTime(now),
+        actor: { type: "user", id: actorUserId },
+        deviceId: null,
+        idempotencyKey: `order_issue.recorded:${row.id}`,
+        payloadSchemaRef: orderIssueRecordedEvent.payloadSchemaRef,
+        payload,
+      });
+      await appendOutbox(tx, context, {
+        id: createUlid(now.getTime()),
+        event,
+        destination: EVENT_DESTINATION,
+        direction: null,
+        peerId: null,
+      });
+    }
+
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: `order_issue.${input.type}`,
+        objectType: "order",
+        objectId: orderId,
+        reason: input.reasonNote,
+        maskedChanges: {
+          before: null,
+          after: {
+            id: row.id,
+            type: input.type,
+            reason: input.reason,
+            stationId: input.stationId,
+            costIdr,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: toIsoDateTime(now),
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+    return toIssue(row);
+  });
+}
+
+export type ListOrderIssuesQuery = {
+  type?: OrderIssueType;
+  stationId?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export async function listOrderIssues(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletIdRaw: string,
+  query: ListOrderIssuesQuery,
+  now: Date,
+): Promise<CursorPage<OrderIssue>> {
+  const outletId = outletIdSchema.parse(outletIdRaw);
+  assertOutletInScope(context.outletScope, outletId);
+  const limit = query.limit ?? DEFAULT_LIMIT;
+  return withTenant(db, context, async (tx) => {
+    const snapshot = await accessSnapshotInTransaction(
+      tx,
+      context,
+      actorUserId,
+      now,
+    );
+    const filters: SQL[] = [
+      eq(orderIssues.tenantId, context.tenant.tenantId),
+      eq(orderIssues.outletId, outletId),
+    ];
+    if (!snapshot.allows(RECORD, { type: "outlet", id: outletId })) {
+      // Station-only caller: only the stations they reach; outlet-level
+      // issues (no station) stay outside their reach.
+      const reach = await permittedStationIds(
+        tx,
+        context,
+        actorUserId,
+        RECORD,
+        now,
+      );
+      if (reach.length === 0) throw deniedOutlet();
+      filters.push(
+        sql`${orderIssues.stationId} IN (${sql.join(
+          reach.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`,
+      );
+    }
+    if (query.type) filters.push(eq(orderIssues.type, query.type));
+    if (query.stationId)
+      filters.push(eq(orderIssues.stationId, query.stationId));
+    const [createdAt, id] = cursorKeys(query.cursor, 2);
+    if (createdAt !== undefined && id !== undefined) {
+      const at = cursorInstant(createdAt);
+      filters.push(
+        or(
+          lt(orderIssues.createdAt, at),
+          and(
+            eq(orderIssues.createdAt, at),
+            sql`${orderIssues.id} < ${cursorUuid(id)}::uuid`,
+          ),
+        )!,
+      );
+    }
+    const rows = await tx
+      .select()
+      .from(orderIssues)
+      .where(and(...filters))
+      .orderBy(desc(orderIssues.createdAt), desc(orderIssues.id))
+      .limit(limit + 1);
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      data: page.map(toIssue),
+      meta: {
+        limit,
+        nextCursor:
+          rows.length > limit && last
+            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            : null,
+      },
+    };
+  });
+}

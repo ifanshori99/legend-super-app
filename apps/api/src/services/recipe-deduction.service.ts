@@ -71,7 +71,7 @@ import {
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { inventorySettings } from "../db/schema/inventory-setup.ts";
-import { stockLocations } from "../db/schema/inventory.ts";
+import { stockBalances, stockLocations } from "../db/schema/inventory.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
 import { orderItems } from "../db/schema/qr-order.ts";
@@ -413,6 +413,43 @@ export async function recordRecipeDeduction(
   );
   if (config.mode === "real_time") return postRecipeDeduction(tx, context, id);
   return loadDeduction(tx, tenantId, id, true);
+}
+
+/**
+ * Ingredient cost (whole rupiah) of drawing `lines` from the outlet sale
+ * location now: exploded recipe quantities x the location moving-average cost
+ * (KDS-07 "biaya bahan", computed server-side). 0 when it cannot be computed
+ * (no sale location, no recipe, broken recipe) or an item has no balance yet.
+ */
+export async function estimateDeductionCostIdr(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: string,
+  lines: readonly DeductionMenuLine[],
+): Promise<number> {
+  const config = await loadDeductionConfig(tx, context, outletId);
+  if (config.saleLocationId === null) return 0;
+  const plan = await planDeduction(tx, context, config.saleLocationId, lines);
+  if (!plan.ok) return 0;
+  const balances = await tx
+    .select({
+      inventoryItemId: stockBalances.inventoryItemId,
+      avgCostIdr: stockBalances.avgCostIdr,
+    })
+    .from(stockBalances)
+    .where(
+      and(
+        eq(stockBalances.tenantId, context.tenant.tenantId),
+        eq(stockBalances.locationId, config.saleLocationId),
+        inArray(stockBalances.inventoryItemId, [...plan.items.keys()]),
+      ),
+    );
+  let scaled = 0n;
+  for (const balance of balances)
+    scaled +=
+      (plan.items.get(balance.inventoryItemId) ?? 0n) *
+      parseDecimal4(balance.avgCostIdr);
+  return scaledCostToIdr(scaled);
 }
 
 // -------------------------------------------------------------------- post

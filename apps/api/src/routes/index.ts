@@ -69,6 +69,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
+import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
 import { posReceiptWriteoffRouter } from "./pos-receipt-writeoff.routes.ts";
@@ -158,6 +159,9 @@ apiRouter.use("/outlets/:outletId/pos", posReceiptRouter);
 apiRouter.use("/outlets/:outletId/pos", posReceiptWriteoffRouter);
 // WS-04 KDS (legend-4d5): /api/outlets/:outletId/kitchen/* tickets and feeds.
 apiRouter.use("/outlets/:outletId/kitchen", kdsRouter);
+// WS-04 remake / comp log (legend-4b5): /api/outlets/:outletId/orders/:orderId/issues
+// and /api/outlets/:outletId/order-issues; per-route middleware (shared prefix).
+apiRouter.use("/outlets/:outletId", orderIssuesRouter);
 // WS-04 cashier shift, cash movements and end of day (legend-6c0), same prefix.
 apiRouter.use("/outlets/:outletId/pos", posShiftRouter);
 // WS-08 delivery channels, orders and commission reconciliation (legend-5bn3).
