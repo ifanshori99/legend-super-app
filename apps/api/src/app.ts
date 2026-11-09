@@ -60,11 +60,17 @@ setPosShiftLookup(findOpenShiftId);
 
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 const PUBLIC_PO_TOKEN_PATH = /^(\/api\/public\/purchase-orders\/)[^/]+/i;
+const ABSOLUTE_FORM_URL = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i;
 
 // Path plus query, with values of credential-like parameters (Better Auth's
 // verification tokens, OAuth codes) blanked out before they reach a log.
 function safeUrl(url: string) {
-  const [rawPath, query] = url.split("?", 2);
+  // A client may send an absolute-form request target (RFC 9112 3.2.2), so
+  // drop scheme and authority first: the path regexes anchor at the path.
+  const target = url.replace(ABSOLUTE_FORM_URL, "") || "/";
+  const queryStart = target.indexOf("?");
+  const rawPath = queryStart === -1 ? target : target.slice(0, queryStart);
+  const query = queryStart === -1 ? "" : target.slice(queryStart + 1);
   // The purchase order share token is a path segment: bearer credential.
   const path = rawPath.replace(PUBLIC_PO_TOKEN_PATH, "$1[redacted]");
   if (!query) return path;
