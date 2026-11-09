@@ -1,0 +1,840 @@
+// End-of-day recap and "Tutup Hari" (bead legend-6c0; PRD v1.7 §3 F8; POS-05
+// "Total penjualan harian di POS, akuntansi, dan dashboard identik").
+//
+// One recap function builds the figures for the live (open) view and for the
+// close; the close freezes that recap in `pos_daily_closes.recap` and appends
+// `day.closed` with the same totals, so POS, accounting and the dashboard read
+// one set of numbers. The identity the contract enforces is
+//   Σ tender net = sales − refunds − voided paid sales.
+//
+// How the figures are derived (read the columns the order rows carry):
+// - Sales set: `pos_orders` rows whose `orders` row has this business date and
+//   status `completed`. A paid sale voided by correction (pos-order-corrections)
+//   keeps status `completed` and a `pos_order_voids` row, so it stays in the
+//   sales set and its amount is deducted as a void. Totals are the stored
+//   `orders` columns (the table check forces total = subtotal − discount +
+//   service + tax + rounding).
+// - Voids and refunds belong to the business date of `voided_at` /
+//   `refunded_at` (outlet clock), attributed to the original order's device.
+// - A void is paid back through the tenders the sale was captured with.
+// - A reservation deposit has no tender row, so a sale whose captured tenders
+//   do not equal its total cannot keep the identity: the recap fails closed
+//   (CONFLICT) instead of publishing figures that disagree.
+//
+// Lock order of the close: advisory lock (tenant, outlet, date) -> reads ->
+// pos_daily_closes insert + outbox + audit, all in one withTenant transaction.
+
+import { createHash, randomUUID } from "node:crypto";
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  inArray,
+  lt,
+  lte,
+  notInArray,
+  sql,
+} from "drizzle-orm";
+import { z } from "zod";
+import { maskAuditChanges } from "@starter/shared/audit";
+import type { PermissionCode } from "@starter/shared/access";
+import {
+  assertOutletInScope,
+  businessDateOf,
+  businessDayRange,
+  CoreError,
+  createUlid,
+  toIsoDateTime,
+  type OutletId,
+  type ScopedTenantContext,
+  type UserId,
+} from "@starter/shared/core";
+import {
+  closeBusinessDayInputSchema,
+  endOfDayRecapSchema,
+  PosError,
+  POS_TENDER_METHODS,
+  posEvents,
+  type EndOfDayRecap,
+} from "@starter/shared/pos";
+import { db } from "../db/index.ts";
+import { domainEventOutbox, outlets } from "../db/schema/index.ts";
+import {
+  posOrderRefunds,
+  posOrders,
+  posOrderTenders,
+  posOrderVoids,
+} from "../db/schema/pos-order.ts";
+import { posDailyCloses, posShifts } from "../db/schema/pos-shift.ts";
+import { orders } from "../db/schema/qr-order.ts";
+import { withTenant } from "../db/tenant.ts";
+import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
+import { outletTarget } from "./device-pin-support.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
+import {
+  loadTenantAccessInTransaction,
+  resolveAccessSnapshot,
+  type Tx,
+} from "./permission-resolver.ts";
+import { posDayInventoryPort, posReceiptGapsPort } from "./pos-shift-ports.ts";
+
+type DayCaller = { userId: UserId };
+type CloseBusinessDayInput = z.infer<typeof closeBusinessDayInputSchema>;
+
+const NIL_DEVICE = "00000000-0000-0000-0000-000000000000";
+const EVENT_DESTINATION = "cloud-sync";
+// Founder Q9 (2026-11-08): only the outlet manager closes the business day
+// (`pos.day.close`, granted to outlet_manager and general_manager). Shift
+// supervisors may read the recap but not close it.
+const CLOSE_PERMISSIONS = ["pos.day.close"] as const;
+const READ_PERMISSIONS = [
+  "pos.day.close",
+  "shift.cash.view_all",
+  "shift.cash.approve_close",
+] as const;
+const AUDIT_SAFE_FIELDS = [
+  "id",
+  "businessDate",
+  "orderCount",
+  "totalSalesIdr",
+  "totalRefundsIdr",
+  "totalVoidsIdr",
+  "totalVarianceIdr",
+  "inventoryDeductionApplied",
+] as const;
+
+// ---- Helpers ----------------------------------------------------------------
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Fingerprint of the request; key order is fixed, so the JSON is canonical. */
+function closeFingerprint(
+  userId: string,
+  outletId: string,
+  input: CloseBusinessDayInput,
+): string {
+  return sha256(
+    JSON.stringify({
+      op: "pos_day.close",
+      outletId,
+      userId,
+      body: {
+        businessDate: input.businessDate,
+        inventoryDeduction: input.inventoryDeduction,
+      },
+    }),
+  );
+}
+
+async function loadOutlet(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+): Promise<typeof outlets.$inferSelect> {
+  assertOutletInScope(context.outletScope, outletId);
+  const [row] = await tx
+    .select()
+    .from(outlets)
+    .where(
+      and(
+        eq(outlets.tenantId, context.tenant.tenantId),
+        eq(outlets.id, outletId),
+      ),
+    );
+  if (!row) throw new CoreError("NOT_FOUND", "Outlet tidak ditemukan.");
+  return row;
+}
+
+/** Fail closed: the caller must hold one of `permissions` on the outlet. */
+async function assertApprover(
+  tx: Tx,
+  context: ScopedTenantContext,
+  userId: string,
+  outletId: OutletId,
+  now: Date,
+  permissions: readonly PermissionCode[],
+): Promise<void> {
+  assertOutletInScope(context.outletScope, outletId);
+  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  const snapshot = resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId,
+    ...data,
+    mfaVerified: false,
+    now,
+  });
+  const allowed = permissions.some((code) =>
+    snapshot.allows(code, outletTarget(outletId)),
+  );
+  if (!allowed)
+    throw new CoreError(
+      "FORBIDDEN",
+      "Anda tidak berwenang melihat atau menutup hari kerja outlet ini.",
+    );
+}
+
+// ---- Recap ------------------------------------------------------------------
+
+type DeviceAcc = {
+  deviceId: string;
+  orderCount: number;
+  grossSalesIdr: number;
+  discountIdr: number;
+  serviceChargeIdr: number;
+  taxIdr: number;
+  roundingIdr: number;
+  totalIdr: number;
+  voidedOrderCount: number;
+  voidedAmountIdr: number;
+  refundCount: number;
+  refundAmountIdr: number;
+  shiftCount: number;
+  cashVarianceIdr: number;
+  closed: boolean;
+};
+
+function newDevice(deviceId: string): DeviceAcc {
+  return {
+    deviceId,
+    orderCount: 0,
+    grossSalesIdr: 0,
+    discountIdr: 0,
+    serviceChargeIdr: 0,
+    taxIdr: 0,
+    roundingIdr: 0,
+    totalIdr: 0,
+    voidedOrderCount: 0,
+    voidedAmountIdr: 0,
+    refundCount: 0,
+    refundAmountIdr: 0,
+    shiftCount: 0,
+    cashVarianceIdr: 0,
+    closed: true,
+  };
+}
+
+/** The recap of one business date, computed live from the rows (status open). */
+async function computeRecap(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outlet: typeof outlets.$inferSelect,
+  outletId: OutletId,
+  businessDate: string,
+  now: Date,
+): Promise<EndOfDayRecap> {
+  const tenantId = context.tenant.tenantId;
+  const range = businessDayRange(
+    businessDate as never,
+    outletBusinessDayClock(outlet),
+  );
+
+  const devices = new Map<string, DeviceAcc>();
+  const deviceOf = (id: string | null | undefined): DeviceAcc => {
+    const key = (id ?? NIL_DEVICE).toLowerCase();
+    let acc = devices.get(key);
+    if (!acc) {
+      acc = newDevice(key);
+      devices.set(key, acc);
+    }
+    return acc;
+  };
+
+  // Sales set.
+  const sales = await tx
+    .select({
+      id: orders.id,
+      channel: orders.channel,
+      subtotalIdr: orders.subtotalIdr,
+      discountIdr: orders.discountIdr,
+      serviceChargeIdr: orders.serviceChargeIdr,
+      taxIdr: orders.taxIdr,
+      roundingIdr: orders.roundingIdr,
+      totalIdr: orders.totalIdr,
+      deviceId: posOrders.deviceId,
+      shiftDeviceId: posShifts.deviceId,
+    })
+    .from(orders)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, orders.tenantId),
+        eq(posOrders.orderId, orders.id),
+        eq(posOrders.outletId, orders.outletId),
+      ),
+    )
+    .leftJoin(
+      posShifts,
+      and(
+        eq(posShifts.tenantId, posOrders.tenantId),
+        eq(posShifts.outletId, posOrders.outletId),
+        eq(posShifts.id, posOrders.shiftId),
+      ),
+    )
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.outletId, outletId),
+        eq(orders.businessDate, businessDate),
+        eq(orders.status, "completed"),
+      ),
+    );
+  const channels = new Map<string, { orderCount: number; totalIdr: number }>();
+  let salesTotal = 0;
+  for (const row of sales) {
+    const acc = deviceOf(row.deviceId ?? row.shiftDeviceId);
+    acc.orderCount += 1;
+    acc.grossSalesIdr += Number(row.subtotalIdr);
+    acc.discountIdr += Number(row.discountIdr);
+    acc.serviceChargeIdr += Number(row.serviceChargeIdr);
+    acc.taxIdr += Number(row.taxIdr);
+    acc.roundingIdr += Number(row.roundingIdr);
+    acc.totalIdr += Number(row.totalIdr);
+    salesTotal += Number(row.totalIdr);
+    const channel = channels.get(row.channel) ?? { orderCount: 0, totalIdr: 0 };
+    channel.orderCount += 1;
+    channel.totalIdr += Number(row.totalIdr);
+    channels.set(row.channel, channel);
+  }
+
+  // Captured tenders of the sales set, per method.
+  const capturedRows = await tx
+    .select({
+      method: posOrderTenders.method,
+      amount: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
+    })
+    .from(posOrderTenders)
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posOrderTenders.tenantId),
+        eq(orders.id, posOrderTenders.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.outletId, outletId),
+        eq(posOrderTenders.status, "captured"),
+        eq(orders.tenantId, tenantId),
+        eq(orders.outletId, outletId),
+        eq(orders.businessDate, businessDate),
+        eq(orders.status, "completed"),
+      ),
+    )
+    .groupBy(posOrderTenders.method);
+  const captured = new Map<string, number>();
+  let capturedTotal = 0;
+  for (const row of capturedRows) {
+    captured.set(row.method, Number(row.amount));
+    capturedTotal += Number(row.amount);
+  }
+  if (capturedTotal !== salesTotal)
+    throw new CoreError(
+      "CONFLICT",
+      "Rekap hari ini tidak seimbang: pembayaran yang diterima tidak sama dengan total penjualan.",
+    );
+
+  // Voids (paid sales voided by correction) dated this business day.
+  const refunded = new Map<string, number>();
+  const addRefunded = (method: string, amount: number) =>
+    refunded.set(method, (refunded.get(method) ?? 0) + amount);
+  const voids = await tx
+    .select({
+      orderId: posOrderVoids.orderId,
+      amountIdr: posOrderVoids.amountIdr,
+      deviceId: posOrders.deviceId,
+      shiftDeviceId: posShifts.deviceId,
+    })
+    .from(posOrderVoids)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderVoids.tenantId),
+        eq(posOrders.orderId, posOrderVoids.orderId),
+        eq(posOrders.outletId, posOrderVoids.outletId),
+      ),
+    )
+    .leftJoin(
+      posShifts,
+      and(
+        eq(posShifts.tenantId, posOrders.tenantId),
+        eq(posShifts.outletId, posOrders.outletId),
+        eq(posShifts.id, posOrders.shiftId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, tenantId),
+        eq(posOrderVoids.outletId, outletId),
+        gte(posOrderVoids.voidedAt, range.start),
+        lt(posOrderVoids.voidedAt, range.end),
+      ),
+    );
+  if (voids.length > 0) {
+    const tenders = await tx
+      .select({
+        orderId: posOrderTenders.orderId,
+        method: posOrderTenders.method,
+        amountIdr: posOrderTenders.amountIdr,
+      })
+      .from(posOrderTenders)
+      .where(
+        and(
+          eq(posOrderTenders.tenantId, tenantId),
+          eq(posOrderTenders.outletId, outletId),
+          eq(posOrderTenders.status, "captured"),
+          inArray(
+            posOrderTenders.orderId,
+            voids.map((row) => row.orderId),
+          ),
+        ),
+      )
+      .orderBy(asc(posOrderTenders.requestedAt), asc(posOrderTenders.id));
+    for (const row of voids) {
+      const acc = deviceOf(row.deviceId ?? row.shiftDeviceId);
+      acc.voidedOrderCount += 1;
+      acc.voidedAmountIdr += Number(row.amountIdr);
+      // The cash (or other tender) goes back through what the sale paid with.
+      let remaining = Number(row.amountIdr);
+      for (const tender of tenders) {
+        if (remaining === 0) break;
+        if (tender.orderId.toLowerCase() !== row.orderId.toLowerCase())
+          continue;
+        const part = Math.min(remaining, Number(tender.amountIdr));
+        addRefunded(tender.method, part);
+        remaining -= part;
+      }
+      if (remaining !== 0)
+        throw new CoreError(
+          "CONFLICT",
+          "Rekap hari ini tidak seimbang: void tidak dapat dialokasikan ke pembayaran asal.",
+        );
+    }
+  }
+
+  // Refunds dated this business day.
+  const refunds = await tx
+    .select({
+      amountIdr: posOrderRefunds.amountIdr,
+      lines: posOrderRefunds.lines,
+      deviceId: posOrders.deviceId,
+      shiftDeviceId: posShifts.deviceId,
+    })
+    .from(posOrderRefunds)
+    .innerJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderRefunds.tenantId),
+        eq(posOrders.orderId, posOrderRefunds.orderId),
+        eq(posOrders.outletId, posOrderRefunds.outletId),
+      ),
+    )
+    .leftJoin(
+      posShifts,
+      and(
+        eq(posShifts.tenantId, posOrders.tenantId),
+        eq(posShifts.outletId, posOrders.outletId),
+        eq(posShifts.id, posOrders.shiftId),
+      ),
+    )
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        eq(posOrderRefunds.outletId, outletId),
+        gte(posOrderRefunds.refundedAt, range.start),
+        lt(posOrderRefunds.refundedAt, range.end),
+      ),
+    );
+  for (const row of refunds) {
+    const acc = deviceOf(row.deviceId ?? row.shiftDeviceId);
+    acc.refundCount += 1;
+    acc.refundAmountIdr += Number(row.amountIdr);
+    const lineTotal = row.lines.reduce(
+      (sum, line) => sum + Number(line.amountIdr),
+      0,
+    );
+    if (lineTotal !== Number(row.amountIdr))
+      throw new CoreError(
+        "CONFLICT",
+        "Rekap hari ini tidak seimbang: baris refund tidak sama dengan nilai refund.",
+      );
+    for (const line of row.lines)
+      addRefunded(line.method, Number(line.amountIdr));
+  }
+
+  // Shifts of this business day: count, variance, all closed?
+  const shifts = await tx
+    .select({
+      deviceId: posShifts.deviceId,
+      status: posShifts.status,
+      varianceIdr: posShifts.varianceIdr,
+    })
+    .from(posShifts)
+    .where(
+      and(
+        eq(posShifts.tenantId, tenantId),
+        eq(posShifts.outletId, outletId),
+        eq(posShifts.businessDate, businessDate),
+      ),
+    );
+  for (const row of shifts) {
+    const acc = deviceOf(row.deviceId);
+    acc.shiftCount += 1;
+    if (row.status === "closed")
+      acc.cashVarianceIdr += Number(row.varianceIdr ?? 0);
+    else acc.closed = false;
+  }
+
+  if (devices.size === 0) deviceOf(NIL_DEVICE);
+  const deviceRows = [...devices.values()].sort((a, b) =>
+    a.deviceId.localeCompare(b.deviceId),
+  );
+
+  const methods = POS_TENDER_METHODS.filter(
+    (method) => captured.has(method) || refunded.has(method),
+  );
+  const tenderRows = (methods.length > 0 ? methods : (["cash"] as const)).map(
+    (method) => {
+      const capturedIdr = captured.get(method) ?? 0;
+      const refundedIdr = refunded.get(method) ?? 0;
+      return {
+        method,
+        capturedIdr,
+        refundedIdr,
+        netIdr: capturedIdr - refundedIdr,
+      };
+    },
+  );
+  const channelRows =
+    channels.size > 0
+      ? [...channels.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([channel, value]) => ({ channel, ...value }))
+      : [{ channel: "pos", orderCount: 0, totalIdr: 0 }];
+
+  const sum = (pick: (device: DeviceAcc) => number) =>
+    deviceRows.reduce((total, device) => total + pick(device), 0);
+  return endOfDayRecapSchema.parse({
+    id: randomUUID(),
+    tenantId,
+    outletId,
+    businessDate,
+    status: "open",
+    generatedAt: toIsoDateTime(now),
+    closedAt: null,
+    closedBy: null,
+    devices: deviceRows,
+    tenders: tenderRows,
+    channels: channelRows,
+    totalSalesIdr: sum((device) => device.totalIdr),
+    totalRefundsIdr: sum((device) => device.refundAmountIdr),
+    totalVoidsIdr: sum((device) => device.voidedAmountIdr),
+    totalVarianceIdr: sum((device) => device.cashVarianceIdr),
+    inventoryDeductionApplied: false,
+    accountingSync: { status: "pending", journalCount: 0, postedAt: null },
+  });
+}
+
+// ---- Public API -------------------------------------------------------------
+
+/** GET end-of-day recap: the frozen recap of a closed day, else the live one. */
+export async function getEndOfDayRecap(
+  context: ScopedTenantContext,
+  caller: DayCaller,
+  outletId: OutletId,
+  businessDate: string,
+): Promise<EndOfDayRecap> {
+  const now = new Date();
+  return withTenant(db, context, async (tx) => {
+    const outlet = await loadOutlet(tx, context, outletId);
+    await assertApprover(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      now,
+      READ_PERMISSIONS,
+    );
+    const [closed] = await tx
+      .select({ recap: posDailyCloses.recap })
+      .from(posDailyCloses)
+      .where(
+        and(
+          eq(posDailyCloses.tenantId, context.tenant.tenantId),
+          eq(posDailyCloses.outletId, outletId),
+          eq(posDailyCloses.businessDate, businessDate),
+        ),
+      );
+    if (closed) return endOfDayRecapSchema.parse(closed.recap);
+    return computeRecap(tx, context, outlet, outletId, businessDate, now);
+  });
+}
+
+/** POST close business day (Tutup Hari): freezes the recap, emits `day.closed`. */
+export async function closePosDay(
+  context: ScopedTenantContext,
+  caller: DayCaller,
+  outletId: OutletId,
+  input: CloseBusinessDayInput,
+): Promise<EndOfDayRecap> {
+  const body = closeBusinessDayInputSchema.parse(input);
+  const now = new Date();
+  const tenantId = context.tenant.tenantId;
+  const fingerprint = closeFingerprint(caller.userId, outletId, body);
+  return withTenant(db, context, async (tx) => {
+    const outlet = await loadOutlet(tx, context, outletId);
+    await assertApprover(
+      tx,
+      context,
+      caller.userId,
+      outletId,
+      now,
+      CLOSE_PERMISSIONS,
+    );
+    // Same per-outlet lock as openPosShift first, so a shift cannot open on
+    // a day that is closing (check-then-insert on both sides), then the day.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`pos-shift-open:${tenantId}:${outletId}`}, 0))`,
+    );
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`pos-day:${tenantId}:${outletId}:${body.businessDate}`}))`,
+    );
+
+    // Replay by key: same body -> the stored recap, other body -> refused.
+    const [replay] = await tx
+      .select({
+        recap: posDailyCloses.recap,
+        fingerprint: posDailyCloses.requestFingerprint,
+      })
+      .from(posDailyCloses)
+      .where(
+        and(
+          eq(posDailyCloses.tenantId, tenantId),
+          eq(posDailyCloses.outletId, outletId),
+          eq(posDailyCloses.idempotencyKey, body.idempotencyKey),
+        ),
+      );
+    if (replay) {
+      if (replay.fingerprint !== fingerprint)
+        throw new CoreError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "Kunci idempotensi sudah dipakai untuk permintaan lain.",
+        );
+      return endOfDayRecapSchema.parse(replay.recap);
+    }
+
+    const [existing] = await tx
+      .select({ id: posDailyCloses.id })
+      .from(posDailyCloses)
+      .where(
+        and(
+          eq(posDailyCloses.tenantId, tenantId),
+          eq(posDailyCloses.outletId, outletId),
+          eq(posDailyCloses.businessDate, body.businessDate),
+        ),
+      );
+    if (existing) throw new PosError("BUSINESS_DAY_ALREADY_CLOSED");
+
+    // A day is closed only once it has started on the outlet clock: closing a
+    // future date would lock tomorrow's shifts before anyone could open them.
+    if (body.businessDate > businessDateOf(now, outletBusinessDayClock(outlet)))
+      throw new CoreError(
+        "CONFLICT",
+        "Hari kerja ini belum dimulai dan belum dapat ditutup.",
+      );
+
+    const [openShift] = await tx
+      .select({ id: posShifts.id })
+      .from(posShifts)
+      .where(
+        and(
+          eq(posShifts.tenantId, tenantId),
+          eq(posShifts.outletId, outletId),
+          lte(posShifts.businessDate, body.businessDate),
+          eq(posShifts.status, "open"),
+        ),
+      )
+      .limit(1);
+    if (openShift)
+      throw new CoreError("CONFLICT", "Masih ada shift kasir yang terbuka.");
+
+    // QR orders never reach `completed`; only orders the POS owns must be final.
+    const [pending] = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .innerJoin(
+        posOrders,
+        and(
+          eq(posOrders.tenantId, orders.tenantId),
+          eq(posOrders.orderId, orders.id),
+          eq(posOrders.outletId, orders.outletId),
+        ),
+      )
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.outletId, outletId),
+          eq(orders.businessDate, body.businessDate),
+          notInArray(orders.status, ["completed", "voided"]),
+        ),
+      )
+      .limit(1);
+    if (pending)
+      throw new CoreError("CONFLICT", "Masih ada pesanan yang belum selesai.");
+
+    const open = await computeRecap(
+      tx,
+      context,
+      outlet,
+      outletId,
+      body.businessDate,
+      now,
+    );
+
+    for (const device of open.devices) {
+      if (device.deviceId === NIL_DEVICE) continue;
+      const gaps = await posReceiptGapsPort()(tx, context, {
+        outletId,
+        deviceId: device.deviceId,
+      });
+      if (gaps.length > 0) throw new PosError("RECEIPT_SEQUENCE_GAP");
+    }
+
+    if (body.inventoryDeduction)
+      await posDayInventoryPort()(tx, context, {
+        outletId,
+        businessDate: body.businessDate,
+        closedBy: caller.userId,
+      });
+
+    const closedAt = toIsoDateTime(now);
+    const recap = endOfDayRecapSchema.parse({
+      ...open,
+      status: "closed",
+      generatedAt: closedAt,
+      closedAt,
+      closedBy: caller.userId,
+      inventoryDeductionApplied: body.inventoryDeduction,
+    });
+    const orderCount = recap.devices.reduce(
+      (total, device) => total + device.orderCount,
+      0,
+    );
+
+    await tx.insert(posDailyCloses).values({
+      id: recap.id,
+      tenantId,
+      outletId,
+      businessDate: body.businessDate,
+      orderCount,
+      totalSalesIdr: recap.totalSalesIdr,
+      totalRefundsIdr: recap.totalRefundsIdr,
+      totalVoidsIdr: recap.totalVoidsIdr,
+      totalVarianceIdr: recap.totalVarianceIdr,
+      inventoryDeductionApplied: recap.inventoryDeductionApplied,
+      recap: recap as unknown as Record<string, unknown>,
+      closedBy: caller.userId,
+      closedAt: now,
+      idempotencyKey: body.idempotencyKey,
+      requestFingerprint: fingerprint,
+    });
+
+    // day.closed on the outbox (same envelope/destination as appendPosEvent).
+    const definition = posEvents["day.closed"];
+    const [last] = await tx
+      .select({
+        last: sql<number>`coalesce(max(${domainEventOutbox.sequence}), 0)`,
+      })
+      .from(domainEventOutbox)
+      .where(
+        and(
+          eq(domainEventOutbox.tenantId, tenantId),
+          eq(domainEventOutbox.destination, EVENT_DESTINATION),
+          eq(domainEventOutbox.aggregateType, definition.entry.aggregateType),
+          eq(domainEventOutbox.aggregateId, recap.id),
+        ),
+      );
+    const sequence = Number(last?.last ?? 0) + 1;
+    const event = definition.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId,
+      name: definition.name,
+      version: definition.version,
+      aggregateType: definition.entry.aggregateType,
+      aggregateId: recap.id,
+      sequence,
+      occurredAt: closedAt,
+      actor: { type: "user", id: caller.userId },
+      deviceId: null,
+      idempotencyKey: `${definition.name}:${recap.id}:${sequence}`.slice(
+        0,
+        100,
+      ),
+      payloadSchemaRef: definition.payloadSchemaRef,
+      payload: {
+        outletId,
+        businessDate: body.businessDate,
+        orderCount,
+        totalSalesIdr: recap.totalSalesIdr,
+        totalRefundsIdr: recap.totalRefundsIdr,
+        totalVoidsIdr: recap.totalVoidsIdr,
+        totalVarianceIdr: recap.totalVarianceIdr,
+        inventoryDeductionApplied: recap.inventoryDeductionApplied,
+        accountingSyncStatus: "pending",
+        closedBy: caller.userId,
+        closedAt,
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination: EVENT_DESTINATION,
+      direction: null,
+      peerId: null,
+    });
+
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId,
+        actorType: "user",
+        actorId: caller.userId,
+        deviceId: null,
+        action: "pos_day.closed",
+        objectType: "pos_daily_close",
+        objectId: recap.id,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: maskAuditChanges(
+            {
+              id: recap.id,
+              businessDate: body.businessDate,
+              orderCount,
+              totalSalesIdr: recap.totalSalesIdr,
+              totalRefundsIdr: recap.totalRefundsIdr,
+              totalVoidsIdr: recap.totalVoidsIdr,
+              totalVarianceIdr: recap.totalVarianceIdr,
+              inventoryDeductionApplied: recap.inventoryDeductionApplied,
+            },
+            AUDIT_SAFE_FIELDS,
+          ),
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: closedAt,
+      },
+      AUDIT_SAFE_FIELDS,
+    );
+    return recap;
+  });
+}

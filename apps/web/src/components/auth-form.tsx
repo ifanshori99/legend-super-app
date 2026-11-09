@@ -42,7 +42,7 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
       }
       // Re-run route guards with the new cookie, then move to the app.
       await router.invalidate();
-      await navigate({ to: siteConfig.homePath, replace: true });
+      await navigate({ to: siteConfig.appHomePath, replace: true });
     } catch {
       setError(
         "We couldn't reach the server. Check your connection and try again.",

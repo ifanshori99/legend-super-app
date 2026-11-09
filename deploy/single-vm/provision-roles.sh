@@ -3,11 +3,18 @@
 # operator who owns the private env files, after a migration and before the
 # application services start. Safe to run again: it re-keys and re-verifies.
 #
-#   provision-roles.sh --env-file /absolute/path/compose.env [--dry-run | --audit]
+#   provision-roles.sh --env-file /absolute/path/compose.env [--dry-run | --audit | --migrator]
 #
 # --dry-run validates the env files only. --audit changes nothing: it checks
 # that the restricted logins exist, keep their limits and match the env files
-# (deploy.sh runs it after every migration).
+# (deploy.sh runs it after every migration). --migrator runs ONCE, before the
+# first migration (legend-jtnd): it creates the dedicated migration login
+# named in MIGRATION_DATABASE_URL (legend_migrator_<16 hex>: BYPASSRLS,
+# CREATEROLE, not superuser, owner of the database). It connects as the
+# bootstrap superuser (POSTGRES_USER and POSTGRES_PASSWORD in compose.env),
+# which reaches the job through its environment only and never belongs in a
+# service env file. Provisioning (no flag) first runs the pre-deploy check
+# (legend-jtnd, legend-k1np) and stops before migrating when it fails.
 #
 # The restricted URLs are read from the same api.env and worker.env the
 # services use, so the database always matches them. They travel to the job
@@ -15,14 +22,14 @@
 # printed. The migration credentials stay in migrator.env only; this script
 # refuses to run if an application env file carries them.
 set -eu
-usage() { echo "Usage: $0 --env-file /absolute/path/to/compose.env [--dry-run | --audit]" >&2; exit 2; }
+usage() { echo "Usage: $0 --env-file /absolute/path/to/compose.env [--dry-run | --audit | --migrator]" >&2; exit 2; }
 [ "${1:-}" = --env-file ] || usage
 [ "$#" -ge 2 ] || usage
 env_file=$2
 shift 2
 case "$env_file" in /*) ;; *) usage ;; esac
 [ -f "$env_file" ] || { echo "Environment file not found" >&2; exit 1; }
-case "${1:-}" in --dry-run) mode=dry-run; shift ;; --audit) mode=audit; shift ;; '') mode=provision ;; *) usage ;; esac
+case "${1:-}" in --dry-run) mode=dry-run; shift ;; --audit) mode=audit; shift ;; --migrator) mode=migrator; shift ;; '') mode=provision ;; *) usage ;; esac
 [ "$#" -eq 0 ] || usage
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 compose() { docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" "$@"; }
@@ -142,6 +149,29 @@ else
     fail "migrator.env must set MIGRATION_DATABASE_URL (or MIGRATION_DATABASE_URL_FILE)."
 fi
 
+# --migrator needs the bootstrap superuser from compose.env and a migration
+# URL naming the generated migrator login, checked here so a typo fails before
+# docker runs. The URL must be written out in migrator.env (not _FILE): the
+# format cannot be checked in a file this script does not read.
+if [ "$mode" = migrator ]; then
+  bootstrap_user=$(value_of "$env_file" POSTGRES_USER)
+  bootstrap_password=$(value_of "$env_file" POSTGRES_PASSWORD)
+  [ -n "$bootstrap_user" ] && [ -n "$bootstrap_password" ] ||
+    fail "compose.env must set POSTGRES_USER and POSTGRES_PASSWORD (the bootstrap superuser) for --migrator."
+  # Compose resolves $, backslash and quotes in an env file value its own
+  # way, so the value it hands the job could differ from value_of's. Refuse
+  # them; the message names the key only.
+  for key in POSTGRES_USER POSTGRES_PASSWORD; do
+    case $(value_of "$env_file" "$key") in
+      *[\$\\\"\']*) fail "$key in compose.env must not contain \$, a backslash or a quote character for --migrator." ;;
+    esac
+  done
+  [ -n "$migration_url" ] ||
+    fail "--migrator needs MIGRATION_DATABASE_URL written out in migrator.env (not MIGRATION_DATABASE_URL_FILE)."
+  [ -n "$(endpoint_of "$migration_url" 'legend_migrator_[a-f0-9]{16}' '[a-f0-9]{48}' 1)" ] ||
+    fail "MIGRATION_DATABASE_URL must look like postgresql://legend_migrator_<16 hex>:<48 hex>@host:port/database for --migrator."
+fi
+
 # Compose prints the offending line, secrets included, when an env file does
 # not parse, so its output is discarded and only a fixed message is shown.
 compose config --quiet >/dev/null 2>&1 ||
@@ -180,6 +210,19 @@ case "$check_status" in
   1) fail "the configuration docker compose would apply does not match the checked env files (reason above)." ;;
   *) fail "could not run the configuration check (docker exit $check_status). Is MIGRATOR_IMAGE pulled, and does it contain node?" ;;
 esac
+if [ "$mode" = migrator ]; then
+  compose up -d --wait postgres
+  # The bootstrap credentials reach the job through its environment only.
+  (
+    BOOTSTRAP_DATABASE_USER=$bootstrap_user
+    BOOTSTRAP_DATABASE_PASSWORD=$bootstrap_password
+    APP_DATABASE_URL=$app_url
+    WORKER_DATABASE_URL=$worker_url
+    export BOOTSTRAP_DATABASE_USER BOOTSTRAP_DATABASE_PASSWORD APP_DATABASE_URL WORKER_DATABASE_URL
+    compose --profile provisioning run --rm -e BOOTSTRAP_DATABASE_USER -e BOOTSTRAP_DATABASE_PASSWORD provision-roles node dist/provision-roles.js --migrator
+  )
+  exit 0
+fi
 APP_DATABASE_URL=$app_url
 WORKER_DATABASE_URL=$worker_url
 export APP_DATABASE_URL WORKER_DATABASE_URL
@@ -188,5 +231,6 @@ if [ "$mode" = audit ]; then
   exit 0
 fi
 compose up -d --wait postgres
+compose --profile migration run --rm migrate node dist/predeploy-check.js
 compose --profile migration run --rm migrate
 compose --profile provisioning run --rm provision-roles
