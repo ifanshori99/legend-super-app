@@ -269,3 +269,8 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Diperiksa: typecheck, lint, `heavy pnpm build`, `pnpm format:check` hijau. Reviewer Opus 2 putaran + architect; temuan dibetulkan.
 - Test: `src/test/inventory-gl.test.ts` 18/18 lulus; `heavy pnpm check` hijau (156 file, 1545 lulus, 1 skip). Sisa tanpa test: gerbang edge di worker-main, jalur `consumeOutbox` sungguhan.
 - Keputusan: satu jurnal per dokumen sumber per tanggal bisnis; nilai dari baris ledger, bukan harga rata-rata saat ini.
+
+## legend-s5c1 PPh 21 prior-year builder (engineer, cabang `ws/pph21-prior`, 2026-11-09)
+- Sudah: `buildPph21Prior` (payslip-tax.ts) mengisi semua field `prior`, termasuk tunjangan pajak gross-up dan basis skema. `PayslipTax` kini menyimpan `grossSchemeBaseIdr`/`employerSchemeBaseIdr`. Run service menerima `priorPeriods` (payslip masa kerja berjalan), bukan jumlah mentah.
+- Bukti: 231 test terarah lulus (11 file payroll/PPh 21), typecheck shared/api/web dan eslint bersih. Reviewer Opus 2x (fuzz 40k + 30k tahun) tanpa temuan, architect: arah benar, saran simpan basis diterapkan.
+- Sisa: sambungan lock ke `lockPayrollRunTax` menunggu run service (legend-07eg). Bug engine pembagian shortfall: legend-6q7o (K, P1). Merge BPA1 rehire: legend-70dm.

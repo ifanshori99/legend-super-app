@@ -205,6 +205,61 @@ function withholdingStatusOf(
   return status.replace("K/I/", "K/") as PtkpStatus;
 }
 
+type SchemeSplit = {
+  benefit: bigint;
+  /** G: gross lines + employer benefit. */
+  g: bigint;
+  grossLines: bigint;
+  /** U: gross_up lines. */
+  u: bigint;
+  /** N: net lines. */
+  n: bigint;
+  /** Part of G + U + N on the employee's (gross) scheme. */
+  employeeG: bigint;
+};
+
+function schemeSplit(
+  taxableLines: readonly Pph21Line[],
+  employerBenefitIdr: Idr | number,
+): SchemeSplit {
+  const benefit = nonNegativeInt(employerBenefitIdr, "employerBenefitIdr");
+  let grossLines = 0n;
+  let u = 0n;
+  let n = 0n;
+  for (const line of taxableLines) {
+    const amount = nonNegativeInt(line.amountIdr, "line amountIdr");
+    if (line.taxScheme === "gross") grossLines += amount;
+    else if (line.taxScheme === "gross_up") u += amount;
+    else if (line.taxScheme === "net") n += amount;
+    else throw new RangeError("Unknown taxScheme");
+  }
+  const g = benefit + grossLines;
+  // Employer BPJS (in g) is taxable income. Its tax follows the schemes of the
+  // month's lines: the gross lines' share (floor) is the employee's, the rest
+  // is the company's (it joins the employer-covered tax: allowance or borne,
+  // never take-home). Gross-only pay (no net / gross-up line) keeps all of it.
+  const lineBase = grossLines + u + n;
+  const employeeG =
+    u + n === 0n || lineBase === 0n
+      ? g
+      : grossLines + (benefit * grossLines) / lineBase;
+  return { benefit, g, grossLines, u, n, employeeG };
+}
+
+/**
+ * Employee (gross-scheme) part of one period's taxable lines and employer
+ * benefit, split as the engine splits them: the gross lines plus their share
+ * (floor) of the benefit, all of the benefit for gross-only pay. The rest of
+ * X (gross-up / net lines, their benefit share, the covered tax) is the
+ * employer's. Stored on the payslip (payslip-tax.ts) for `buildPph21Prior`.
+ */
+export function pph21GrossSchemeBase(
+  taxableLines: readonly Pph21Line[],
+  employerBenefitIdr: Idr | number,
+): Idr {
+  return toIdr(schemeSplit(taxableLines, employerBenefitIdr).employeeG);
+}
+
 type PeriodTax = {
   tax: bigint;
   terRateBp: number | null;
@@ -226,23 +281,10 @@ export function computePph21Period(
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
 
-  const benefit = nonNegativeInt(
+  const { g, u, n, employeeG } = schemeSplit(
+    input.taxableLines,
     input.employerBenefitIdr,
-    "employerBenefitIdr",
   );
-  let g = benefit;
-  let grossLines = 0n;
-  let u = 0n;
-  let n = 0n;
-  for (const line of input.taxableLines) {
-    const amount = nonNegativeInt(line.amountIdr, "line amountIdr");
-    if (line.taxScheme === "gross") {
-      g += amount;
-      grossLines += amount;
-    } else if (line.taxScheme === "gross_up") u += amount;
-    else if (line.taxScheme === "net") n += amount;
-    else throw new RangeError("Unknown taxScheme");
-  }
   const deductible = nonNegativeInt(
     input.employeeDeductibleIdr,
     "employeeDeductibleIdr",
@@ -290,15 +332,6 @@ export function computePph21Period(
   else if (priorMix > 0n)
     priorEmployerTax = (priorTax * priorEmployerScheme) / priorMix;
   const priorEmployeeTax = priorTax - priorEmployerTax;
-  // Employer BPJS (in g) is taxable income. Its tax follows the schemes of the
-  // month's lines: the gross lines' share (floor) is the employee's, the rest
-  // is the company's (it joins the employer-covered tax: allowance or borne,
-  // never take-home). Gross-only pay (no net / gross-up line) keeps all of it.
-  const lineBase = grossLines + u + n;
-  const employeeG =
-    u + n === 0n || lineBase === 0n
-      ? g
-      : grossLines + (benefit * grossLines) / lineBase;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
   const category = tables.ter.categoryByPtkpStatus[status];

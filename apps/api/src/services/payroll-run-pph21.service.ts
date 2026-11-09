@@ -11,12 +11,19 @@
 // caller (`statutoryVersionsForRun`) and passed in. Each payslip goes through
 // `computePayslipTax`, the same step the mock payslip builder uses.
 //
-// No permission check: the run caller has authorised its user, like
-// `resolvePph21PolicyFor`.
+// An employee's year-to-date history is passed as the earlier payslips
+// (`priorPeriods`), never as raw sums: `buildPph21Prior` fills every field the
+// last period needs from the stored taxes, the gross-up tax allowance and the
+// scheme mix included (bead legend-s5c1). Pass only the payslips of the
+// current period of service: after the latest annual recalculation of the
+// year (a rehire in the same year starts a new one), with `monthsWorked` of
+// that period. The run service locks through `lockPayrollRunTax` inside its
+// lock transaction, which pins the policy ref from the same computation.
 
 import type { BusinessDate, ScopedTenantContext } from "@starter/shared/core";
 import {
   PayrollError,
+  buildPph21Prior,
   computePayslipTax,
   isSamePph21PolicyRef,
   pph21PolicyForRun,
@@ -26,6 +33,7 @@ import {
   type PayslipTaxInput,
   type Pph21PolicyParameters,
   type Pph21PolicyRef,
+  type Pph21PriorPeriod,
   type Pph21Tables,
 } from "@starter/shared/hris/payroll";
 import { loadPph21PolicyVersionsForRun } from "./payroll-pph21-policy.service.ts";
@@ -39,9 +47,14 @@ export type PayrollRunTaxRun = {
 
 export type PayrollRunTaxEmployee = Omit<
   PayslipTaxInput,
-  "tables" | "policy"
+  "tables" | "policy" | "prior"
 > & {
   employeeId: string;
+  /**
+   * Earlier payslips of the current period of service in this tax year
+   * (after the latest annual recalculation; none: []).
+   */
+  priorPeriods: readonly Pph21PriorPeriod[];
 };
 
 export type PayrollRunTaxInput = {
@@ -65,14 +78,17 @@ function taxOfPayslips(
   return {
     pph21Policy: ref,
     parameters,
-    payslips: input.employees.map(({ employeeId, ...employee }) => ({
-      employeeId,
-      tax: computePayslipTax({
-        ...employee,
-        tables: input.tables,
-        policy: parameters,
-      }).tax,
-    })),
+    payslips: input.employees.map(
+      ({ employeeId, priorPeriods, ...employee }) => ({
+        employeeId,
+        tax: computePayslipTax({
+          ...employee,
+          prior: buildPph21Prior(priorPeriods),
+          tables: input.tables,
+          policy: parameters,
+        }).tax,
+      }),
+    ),
   };
 }
 

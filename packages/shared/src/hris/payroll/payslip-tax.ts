@@ -4,13 +4,19 @@
 // rupiah. It maps payslip earnings to the PPh 21 engine (pph21.ts): taxable
 // earnings carry their component's tax scheme, non-taxable earnings and the
 // tax allowance itself never enter the base. The engine owns every rule.
+//
+// `buildPph21Prior` (bead legend-s5c1) sums the earlier payslips of the tax
+// year into the engine's `prior`, with the employer-funded tax allowance and
+// the scheme mix: without them the last period charges a gross-up employee
+// the company-funded shortfall and refunds them tax the company paid.
 
+import { idr } from "../../core/index.ts";
 import type { Idr } from "../../core/index.ts";
 import type { PtkpStatus } from "../organization.ts";
 import type { TaxScheme } from "./components.ts";
 import type { PayslipTax } from "./payslips.ts";
 import type { Pph21PolicyParameters } from "./pph21-policy.ts";
-import { computePph21Period } from "./pph21.ts";
+import { computePph21Period, pph21GrossSchemeBase } from "./pph21.ts";
 import type {
   Pph21PeriodInput,
   Pph21PeriodResult,
@@ -44,22 +50,27 @@ export type PayslipTaxResult = {
 };
 
 export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
+  const taxableLines = input.earnings
+    .filter((earning) => earning.taxable)
+    .map((earning) => ({
+      amountIdr: earning.amountIdr,
+      taxScheme: earning.taxScheme,
+    }));
   const result = computePph21Period(input.tables, input.policy, {
     ptkpStatus: input.ptkpStatus,
     hasTaxId: input.hasTaxId,
     lastTaxPeriod: input.lastTaxPeriod,
     monthsWorked: input.monthsWorked,
     partialYearTaxSubject: input.partialYearTaxSubject ?? false,
-    taxableLines: input.earnings
-      .filter((earning) => earning.taxable)
-      .map((earning) => ({
-        amountIdr: earning.amountIdr,
-        taxScheme: earning.taxScheme,
-      })),
+    taxableLines,
     employerBenefitIdr: input.employerBenefitIdr,
     employeeDeductibleIdr: input.employeeDeductibleIdr,
     prior: input.prior,
   });
+  const grossSchemeBaseIdr = pph21GrossSchemeBase(
+    taxableLines,
+    input.employerBenefitIdr,
+  );
   return {
     result,
     tax: {
@@ -75,6 +86,122 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
       pph21RefundIdr: result.pph21RefundIdr,
       pph21EmployerRefundIdr: result.pph21EmployerRefundIdr,
       noTaxIdSurchargeApplied: result.noTaxIdSurchargeApplied,
+      grossSchemeBaseIdr,
+      employerSchemeBaseIdr: idr(result.taxableGrossIdr - grossSchemeBaseIdr),
     },
+  };
+}
+
+/** One earlier payslip of the tax year, as stored by the run that made it. */
+export type Pph21PriorPeriod = {
+  /** The payslip's stored tax (scheme bases included). */
+  tax: PayslipTax;
+  /** Employee JHT + JP of that payslip. */
+  employeeDeductibleIdr: Idr | number;
+};
+
+/** `prior` for the engine with every field filled. */
+export type Pph21Prior = {
+  [K in keyof Pph21PeriodInput["prior"]]-?: Idr;
+};
+
+function wholeRupiah(value: number, name: string): bigint {
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new RangeError(`${name} must be a non-negative whole rupiah amount`);
+  return BigInt(value);
+}
+
+/**
+ * The engine's `prior` from the earlier payslips of the CURRENT period of
+ * service in the tax year at this employer: sums of X, employee JHT/JP,
+ * withheld and borne tax, the gross-up tax allowance inside the withheld tax
+ * (the company's, like the borne tax) and the stored scheme mix of every X.
+ * The caller passes only the payslips after the latest annual recalculation
+ * (a rehire in the same year starts a new period with its own bukti potong);
+ * an annual recalculation or lebih potong refund among them, and a stored tax
+ * that does not add up, are refused with a RangeError.
+ */
+export function buildPph21Prior(
+  periods: readonly Pph21PriorPeriod[],
+): Pph21Prior {
+  let taxableGross = 0n;
+  let deductible = 0n;
+  let withheld = 0n;
+  let borne = 0n;
+  let allowance = 0n;
+  let grossScheme = 0n;
+  let employerScheme = 0n;
+  periods.forEach((period, index) => {
+    const at = `prior period ${index}`;
+    const { tax } = period;
+    if (tax.method !== "ter")
+      throw new RangeError(`${at} is an annual recalculation`);
+    if (
+      wholeRupiah(tax.pph21RefundIdr, `${at} pph21RefundIdr`) > 0n ||
+      wholeRupiah(tax.pph21EmployerRefundIdr, `${at} pph21EmployerRefundIdr`) >
+        0n
+    )
+      throw new RangeError(`${at} has a lebih potong refund`);
+    const x = wholeRupiah(tax.taxableGrossIdr, `${at} taxableGrossIdr`);
+    const periodWithheld = wholeRupiah(
+      tax.pph21WithheldIdr,
+      `${at} pph21WithheldIdr`,
+    );
+    const periodAllowance = wholeRupiah(
+      tax.taxAllowanceIdr,
+      `${at} taxAllowanceIdr`,
+    );
+    const periodBorne = wholeRupiah(
+      tax.pph21EmployerBorneIdr,
+      `${at} pph21EmployerBorneIdr`,
+    );
+    const periodGrossScheme = wholeRupiah(
+      tax.grossSchemeBaseIdr,
+      `${at} grossSchemeBaseIdr`,
+    );
+    const periodEmployerScheme = wholeRupiah(
+      tax.employerSchemeBaseIdr,
+      `${at} employerSchemeBaseIdr`,
+    );
+    if (periodAllowance > periodWithheld)
+      throw new RangeError(`${at} taxAllowanceIdr exceeds pph21WithheldIdr`);
+    if (
+      wholeRupiah(tax.pph21Idr, `${at} pph21Idr`) !==
+      periodWithheld + periodBorne
+    )
+      throw new RangeError(
+        `${at} pph21Idr is not pph21WithheldIdr + pph21EmployerBorneIdr`,
+      );
+    if (periodGrossScheme + periodEmployerScheme !== x)
+      throw new RangeError(`${at} scheme bases do not sum to taxableGrossIdr`);
+    // The covered tax (allowance + borne) is part of X on the employer's side.
+    if (periodAllowance + periodBorne > periodEmployerScheme)
+      throw new RangeError(
+        `${at} employer-covered tax exceeds employerSchemeBaseIdr`,
+      );
+    taxableGross += x;
+    deductible += wholeRupiah(
+      Number(period.employeeDeductibleIdr),
+      `${at} employeeDeductibleIdr`,
+    );
+    withheld += periodWithheld;
+    borne += periodBorne;
+    allowance += periodAllowance;
+    grossScheme += periodGrossScheme;
+    employerScheme += periodEmployerScheme;
+  });
+  const out = (value: bigint, name: string): Idr => {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new RangeError(`prior ${name} is too large`);
+    return idr(Number(value));
+  };
+  return {
+    taxableGrossIdr: out(taxableGross, "taxableGrossIdr"),
+    employeeDeductibleIdr: out(deductible, "employeeDeductibleIdr"),
+    pph21WithheldIdr: out(withheld, "pph21WithheldIdr"),
+    pph21EmployerBorneIdr: out(borne, "pph21EmployerBorneIdr"),
+    taxAllowanceIdr: out(allowance, "taxAllowanceIdr"),
+    grossSchemeBaseIdr: out(grossScheme, "grossSchemeBaseIdr"),
+    employerSchemeBaseIdr: out(employerScheme, "employerSchemeBaseIdr"),
   };
 }

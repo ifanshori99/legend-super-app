@@ -65,7 +65,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { businessDateSchema } from "@starter/shared/core";
+import { businessDateSchema, idr } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -187,27 +187,23 @@ const DECEMBER_PAY_DATE = date("2026-12-28");
 /** Policies are published on this day, before both effective dates. */
 const NOW = new Date("2026-11-08T03:00:00Z");
 
-const ZERO_PRIOR = {
-  taxableGrossIdr: 0,
-  employeeDeductibleIdr: 0,
-  pph21WithheldIdr: 0,
-  pph21EmployerBorneIdr: 0,
-};
-
 const employee = (
   employeeId: string,
   fields: Omit<
     PayrollRunTaxEmployee,
-    "employeeId" | "lastTaxPeriod" | "monthsWorked" | "prior"
+    "employeeId" | "lastTaxPeriod" | "monthsWorked" | "priorPeriods"
   > &
     Partial<
-      Pick<PayrollRunTaxEmployee, "lastTaxPeriod" | "monthsWorked" | "prior">
+      Pick<
+        PayrollRunTaxEmployee,
+        "lastTaxPeriod" | "monthsWorked" | "priorPeriods"
+      >
     >,
 ): PayrollRunTaxEmployee => ({
   employeeId,
   lastTaxPeriod: false,
   monthsWorked: 11,
-  prior: ZERO_PRIOR,
+  priorPeriods: [],
   ...fields,
 });
 
@@ -284,8 +280,14 @@ const expectedTax = (
     | "taxAllowanceIdr"
     | "pph21EmployerBorneIdr"
     | "noTaxIdSurchargeApplied"
+    | "grossSchemeBaseIdr"
   >,
-): PlainTax => ({ ...NO_REFUND, ...fields });
+): PlainTax => ({
+  ...NO_REFUND,
+  ...fields,
+  // The rest of X (gross-up / net lines, covered tax) is the employer's.
+  employerSchemeBaseIdr: fields.taxableGrossIdr - fields.grossSchemeBaseIdr,
+});
 
 // Policy v1 (rounding down).
 const EXPECTED_V1: Record<string, PlainTax> = {
@@ -298,6 +300,7 @@ const EXPECTED_V1: Record<string, PlainTax> = {
     pph21WithheldIdr: 122_333,
     taxAllowanceIdr: 0,
     pph21EmployerBorneIdr: 0,
+    grossSchemeBaseIdr: 8_155_567,
     noTaxIdSurchargeApplied: false,
   }),
   E2: expectedTax({
@@ -309,6 +312,7 @@ const EXPECTED_V1: Record<string, PlainTax> = {
     pph21WithheldIdr: 705_263,
     taxAllowanceIdr: 105_264,
     pph21EmployerBorneIdr: 0,
+    grossSchemeBaseIdr: 12_000_000,
     noTaxIdSurchargeApplied: false,
   }),
   E3: expectedTax({
@@ -320,6 +324,7 @@ const EXPECTED_V1: Record<string, PlainTax> = {
     pph21WithheldIdr: 134_999,
     taxAllowanceIdr: 0,
     pph21EmployerBorneIdr: 92_072,
+    grossSchemeBaseIdr: 6_000_000,
     noTaxIdSurchargeApplied: false,
   }),
   E4: expectedTax({
@@ -331,6 +336,7 @@ const EXPECTED_V1: Record<string, PlainTax> = {
     pph21WithheldIdr: 189_006,
     taxAllowanceIdr: 0,
     pph21EmployerBorneIdr: 0,
+    grossSchemeBaseIdr: 9_000_333,
     noTaxIdSurchargeApplied: true,
   }),
   E5: expectedTax({
@@ -342,6 +348,7 @@ const EXPECTED_V1: Record<string, PlainTax> = {
     pph21WithheldIdr: 1_600_000,
     taxAllowanceIdr: 0,
     pph21EmployerBorneIdr: 0,
+    grossSchemeBaseIdr: 20_000_007,
     noTaxIdSurchargeApplied: false,
   }),
 };
@@ -590,12 +597,28 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
       earnings: [{ amountIdr: 8_000_000, taxable: true, taxScheme: "gross" }],
       employerBenefitIdr: 0,
       employeeDeductibleIdr: 120_000,
-      prior: {
-        taxableGrossIdr: 88_000_000,
-        employeeDeductibleIdr: 1_320_000,
-        pph21WithheldIdr: 1_320_000,
-        pph21EmployerBorneIdr: 0,
-      },
+      // Jan-Nov: 8_000_000 gross a month, TER A 1.5% = 120_000 withheld,
+      // JHT/JP 120_000. Sums: X 88_000_000, deductible 1_320_000, withheld
+      // 1_320_000, borne 0.
+      priorPeriods: Array.from({ length: 11 }, () => ({
+        employeeDeductibleIdr: 120_000,
+        tax: {
+          ptkpStatus: "TK/0" as const,
+          method: "ter" as const,
+          terCategory: "A" as const,
+          terRateBp: 150,
+          taxableGrossIdr: idr(8_000_000),
+          pph21Idr: idr(120_000),
+          pph21WithheldIdr: idr(120_000),
+          taxAllowanceIdr: idr(0),
+          pph21EmployerBorneIdr: idr(0),
+          pph21RefundIdr: idr(0),
+          pph21EmployerRefundIdr: idr(0),
+          noTaxIdSurchargeApplied: false,
+          grossSchemeBaseIdr: idr(8_000_000),
+          employerSchemeBaseIdr: idr(0),
+        },
+      })),
     });
     const result = await calculate(draftRun(DECEMBER_PAY_DATE), [december]);
     // v2 is in force on 2026-12-28.
@@ -616,6 +639,8 @@ describe("payroll run PPh 21: one run from draft to lock to a newer policy", () 
           pph21RefundIdr: 0,
           pph21EmployerRefundIdr: 0,
           noTaxIdSurchargeApplied: false,
+          grossSchemeBaseIdr: 8_000_000,
+          employerSchemeBaseIdr: 0,
         },
       },
     ]);
