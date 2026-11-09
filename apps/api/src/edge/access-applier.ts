@@ -464,7 +464,7 @@ async function applyParked(
  */
 export async function drainParkedAccessEvents(
   tx: EdgeTx,
-  meta: EdgeApplyMeta,
+  meta: Omit<EdgeApplyMeta, "edgeNodeId">,
   outletId: OutletId,
   limit: number = DRAIN_LIMIT,
 ): Promise<number> {
