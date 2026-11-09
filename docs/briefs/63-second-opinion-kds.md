@@ -19,3 +19,5 @@ Worktree `/Users/ifanshori99/Projects/legend super app/legend/.worktrees/kds`, c
 
 ## Laporan
 Temuan urut paling berat: file:baris, masalah, skenario gagal konkret, fix. "Tidak ada blocker" bila memang tidak ada.
+
+Digabung ke `milestone/m1` sebagai merge `5c04f1b2` lewat `prep2/kds` 07130a4e (migration diregen 0094-0096; FK ke outlets/stations/orders/order_items kini dibungkus NO FORCE/FORCE). Rentang diff isi cabang di atas m1: `git diff 9f446f9b 5c04f1b2` (abaikan drizzle `meta/*.json`). Jangan pakai `merge-base main`.
