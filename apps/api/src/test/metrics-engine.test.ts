@@ -562,7 +562,7 @@ describe("ledger splits: operational rows plus the ledger residual", () => {
   it("a declared split without a split source is dimension_not_supported", async () => {
     const result = await evaluate({
       metricCodes: ["net_sales"],
-      groupBy: ["payment_method"],
+      groupBy: ["promo"],
     });
     expect(result.availability[0]).toMatchObject({
       status: "unavailable",

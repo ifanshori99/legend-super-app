@@ -553,7 +553,7 @@ describe("sales metric source: backfill and registry", () => {
     expect((await stored(world, world.outlet1)).length).toBe(before.length);
   });
 
-  it("claims its codes and keeps the 12 ledger codes on gl", () => {
+  it("claims its codes and keeps the 15 ledger codes on gl", () => {
     for (const code of [
       "gross_sales",
       "refund_amount",
@@ -571,7 +571,7 @@ describe("sales metric source: backfill and registry", () => {
       "target_achievement_pct",
     ])
       expect(metricSourceOf(code).kind, code).toBe("derived");
-    expect(Object.keys(GL_METRIC_SOURCES)).toHaveLength(12);
+    expect(Object.keys(GL_METRIC_SOURCES)).toHaveLength(15);
     for (const code of Object.keys(GL_METRIC_SOURCES))
       expect(metricSourceOf(code).kind, code).toBe("gl");
     for (const dimension of [

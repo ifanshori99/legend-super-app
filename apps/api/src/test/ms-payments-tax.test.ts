@@ -450,7 +450,13 @@ describe("registry of the payments-tax family", () => {
   it("stays a valid registry and claims the daily readers, no net_sales split", () => {
     expect(() => assertRegistry()).not.toThrow();
     // Sales (F1) owns the net_sales split readers; two readers would clash.
-    expect(metricSplitOf("net_sales", "payment_method")).toBeNull();
+    expect(metricSplitOf("net_sales", "payment_method")).not.toBeNull();
+    expect(
+      dailyReaders().find(
+        ({ reader }) =>
+          reader === metricSplitOf("net_sales", "payment_method")!.reader,
+      )?.family,
+    ).toBe("sales");
     expect(
       FAMILY_READERS.flatMap(({ reader }) => reader.metricCodes),
     ).not.toContain("net_sales");
@@ -459,13 +465,7 @@ describe("registry of the payments-tax family", () => {
   });
 
   it("answers unavailable for what has no data source in the schema", () => {
-    for (const code of [
-      "gateway_settlement",
-      "edc_settlement",
-      "tax_collected",
-      "service_charge_collected",
-      "tax_payable",
-    ])
+    for (const code of ["gateway_settlement", "edc_settlement"])
       expect(metricSourceOf(code), code).toMatchObject({
         kind: "unavailable",
         reason: "source_not_built",
@@ -589,7 +589,7 @@ describe("payments.methods: net sales by payment method", () => {
     expect(await computeNetSales(world, "2025-08-02")).toEqual([[null, 0]]);
   });
 
-  it("payments.methods stays unavailable for the split; the ledger total is intact", async () => {
+  it("payments.methods reads the sales split; split plus residual is the ledger total", async () => {
     const day = "2025-08-03";
     await seedOrder(world, {
       day,
@@ -604,10 +604,15 @@ describe("payments.methods: net sales by payment method", () => {
       end: day,
       groupBy: ["payment_method"],
     });
-    expect(split.availability[0]).toMatchObject({
-      status: "unavailable",
-      reason: "dimension_not_supported",
-    });
+    // Sales owns the split (ca6a9498); without its rows the residual row
+    // still makes the split add up to the ledger total.
+    expect(split.availability[0]).toMatchObject({ status: "available" });
+    expect(
+      [...figures(split, "net_sales").values()].reduce(
+        (sum, entry) => sum + (entry.value ?? 0),
+        0,
+      ),
+    ).toBe(60_000);
     expect(
       native(
         (
@@ -866,7 +871,160 @@ describe("the 12 ledger metrics are unchanged by this family", () => {
       "labor_cost_pct",
       "prime_cost_pct",
       "gross_margin_pct",
+      "tax_collected",
+      "service_charge_collected",
+      "tax_payable",
     ])
       expect(metricSourceOf(code).kind, code).toBe("gl");
+  });
+});
+
+describe("tax and service charge from the ledger (legend-iwsrp 8)", () => {
+  let tax: World;
+  let pbjt: string;
+  let service: string;
+
+  beforeAll(async () => {
+    tax = await makeWorld("tax");
+    pbjt = randomUUID();
+    service = randomUUID();
+    await owner.query(
+      `INSERT INTO chart_of_accounts (id, tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $3, $4, '2201', 'Utang PBJT', 'liability', 'current_liability'),
+              ($2, $3, $4, '2202', 'Service charge', 'liability', 'current_liability')`,
+      [pbjt, service, tax.tenantId, tax.entityId],
+    );
+    await owner.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       VALUES ($1, $2, 'tax_payable_pbjt', $3), ($1, $2, 'service_charge', $4)
+       ON CONFLICT DO NOTHING`,
+      [tax.tenantId, tax.entityId, pbjt, service],
+    );
+    const post = (
+      day: string,
+      outlet: string,
+      sourceType: "sale" | "manual",
+      lines: JournalLineInput[],
+    ) => {
+      const ctx = context(tax.tenantId);
+      return withTenant(db, ctx, (tx) =>
+        postJournalInTransaction(tx, ctx, {
+          legalEntityId: tax.entityId,
+          outletId: outletIdSchema.parse(outlet),
+          entryDate: date(day),
+          sourceType,
+          sourceId: randomUUID(),
+          description: "Uji pajak buku besar",
+          lines,
+          postedBy: null,
+          idempotencyKey: `ms-payments-tax-gl-${randomUUID()}`,
+        }),
+      );
+    };
+    const o1 = tax.outlet1;
+    const o2 = tax.outlet2;
+    // 1 Sep, outlet 1: sale 100k + PBJT 10k + service charge 5k.
+    await post("2025-09-01", o1, "sale", [
+      line(tax.cash, 115_000, 0, o1),
+      line(tax.revenue, 0, 100_000, o1),
+      line(pbjt, 0, 10_000, o1),
+      line(service, 0, 5_000, o1),
+    ]);
+    // 10 Sep, outlet 1: the PBJT of outlet 1 is paid to the tax office.
+    await post("2025-09-10", o1, "manual", [
+      line(pbjt, 10_000, 0, o1),
+      line(tax.cash, 0, 10_000, o1),
+    ]);
+    // 15 Sep, outlet 2: sale 200k + PBJT 20k + service charge 10k.
+    await post("2025-09-15", o2, "sale", [
+      line(tax.cash, 230_000, 0, o2),
+      line(tax.revenue, 0, 200_000, o2),
+      line(pbjt, 0, 20_000, o2),
+      line(service, 0, 10_000, o2),
+    ]);
+  });
+
+  const byOutlet = (result: EvaluatedMetrics, code: string) =>
+    new Map(
+      result.series
+        .filter((series) => series.metricCode === code)
+        .map((series) => [
+          series.dimensions[0]?.value ?? null,
+          native(series.points[0]),
+        ]),
+    );
+
+  it("tax_collected and service_charge_collected are the period movement", async () => {
+    const codes = ["tax_collected", "service_charge_collected"];
+    const early = await evaluate(tax, {
+      metricCodes: codes,
+      start: "2025-09-01",
+      end: "2025-09-05",
+    });
+    expect(early.availability.map((entry) => entry.status)).toEqual([
+      "available",
+      "available",
+    ]);
+    expect(native(early.series[0]!.points[0])).toBe(10_000);
+    expect(native(early.series[1]!.points[0])).toBe(5_000);
+    const late = await evaluate(tax, {
+      metricCodes: codes,
+      start: "2025-09-11",
+      end: "2025-09-30",
+      groupBy: ["outlet"],
+    });
+    expect(byOutlet(late, "tax_collected")).toEqual(
+      new Map([[tax.outlet2, 20_000]]),
+    );
+    expect(byOutlet(late, "service_charge_collected")).toEqual(
+      new Map([[tax.outlet2, 10_000]]),
+    );
+  });
+
+  it("tax_payable is the balance through the period end, not the movement", async () => {
+    const through = async (start: string, end: string) =>
+      native(
+        (
+          await evaluate(tax, {
+            metricCodes: ["tax_payable"],
+            start,
+            end,
+          })
+        ).series[0]!.points[0],
+      );
+    expect(await through("2025-09-01", "2025-09-05")).toBe(10_000);
+    // Lines before the period count; the payment on 10 Sep clears outlet 1.
+    expect(await through("2025-09-11", "2025-09-12")).toBe(0);
+    expect(await through("2025-09-11", "2025-09-30")).toBe(20_000);
+    const split = await evaluate(tax, {
+      metricCodes: ["tax_payable"],
+      start: "2025-09-11",
+      end: "2025-09-30",
+      groupBy: ["outlet"],
+    });
+    const outlets = byOutlet(split, "tax_payable");
+    expect(outlets.get(tax.outlet1)).toBe(0);
+    expect(outlets.get(tax.outlet2)).toBe(20_000);
+    // Day buckets: each one is the balance at its own end.
+    const days = await evaluate(tax, {
+      metricCodes: ["tax_payable"],
+      start: "2025-09-09",
+      end: "2025-09-11",
+      bucket: "day",
+    });
+    expect(days.series[0]!.points.map(native)).toEqual([10_000, 0, 0]);
+  });
+
+  it("tax_collected by menu_category has no split: dimension_not_supported", async () => {
+    const result = await evaluate(tax, {
+      metricCodes: ["tax_collected"],
+      start: "2025-09-01",
+      end: "2025-09-30",
+      groupBy: ["menu_category"],
+    });
+    expect(result.availability[0]).toMatchObject({
+      status: "unavailable",
+      reason: "dimension_not_supported",
+    });
   });
 });

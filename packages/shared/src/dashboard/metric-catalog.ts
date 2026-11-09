@@ -974,11 +974,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "8f95b3a9-584a-48e8-a2ca-7404acddd2d4",
     code: "tax_collected",
+    version: 2,
     name: "Pajak terkumpul",
-    description: "Nilai pajak yang dipungut dari transaksi pada periode.",
+    description:
+      "Gerak akun PBJT keluaran di buku besar pada periode (penjualan dikurangi refund), dari jurnal yang sudah diposting.",
     ownerModule: "accounting",
     formulaRef: "accounting.tax_collected",
-    expression: "sum(tax_line.amount_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'tax_payable_pbjt' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "menu_category"],
@@ -989,11 +992,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "eaaaf372-871b-4acf-8570-4bc37299ac60",
     code: "service_charge_collected",
+    version: 2,
     name: "Service charge terkumpul",
-    description: "Nilai service charge yang dipungut pada periode.",
+    description:
+      "Gerak akun service charge di buku besar pada periode, dari jurnal yang sudah diposting.",
     ownerModule: "accounting",
     formulaRef: "accounting.service_charge_collected",
-    expression: "sum(service_charge.amount_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'service_charge' incl. child accounts",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet"],
@@ -1004,11 +1010,14 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
   defineMetric({
     id: "1908def5-45ea-4d45-9ea9-d44a3179ab79",
     code: "tax_payable",
+    version: 2,
     name: "Utang pajak",
-    description: "Saldo pajak yang belum disetor pada saat data.",
+    description:
+      "Saldo akun utang PBJT di buku besar per akhir periode (semua jurnal yang sudah diposting sampai tanggal akhir).",
     ownerModule: "accounting",
     formulaRef: "accounting.tax_payable",
-    expression: "latest(tax_payable.balance_idr)",
+    expression:
+      "sum(journal_lines.credit_idr - journal_lines.debit_idr) where account_mappings.role = 'tax_payable_pbjt' incl. child accounts and journal_entries.entry_date <= period end",
     unit: "idr",
     aggregation: "latest",
     dimensions: ["outlet"],

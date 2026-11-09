@@ -118,8 +118,9 @@ function checkWriterOverlap(
  * missing from the catalog, a unit that does not fit the source kind, a
  * derived source with an unregistered input, a split on a code that is not
  * `gl` (or on a dimension the definition lacks), a reader that does not
- * list the code it writes, or two readers that write the same code in the
- * same dimension.
+ * list the code it writes, two readers that write the same code in the
+ * same dimension, or a share whose input is unregistered or not split by
+ * its dimension.
  */
 export function assertRegistry(
   modules: readonly MetricSourceModule[] = METRIC_SOURCE_MODULES,
@@ -145,11 +146,21 @@ export function assertRegistry(
       );
     }
     if (source.kind === "gl") {
-      const expected = source.gl.kind === "amount" ? "idr" : "percent";
+      const expected = source.gl.kind === "ratio" ? "percent" : "idr";
       if (definition.unit !== expected) {
         throw new Error(
           `Metric registry: ledger code "${source.code}" is ${definition.unit}, its source needs ${expected}`,
         );
+      }
+      if (source.gl.kind === "ratio" && source.gl.splitFrom) {
+        for (const input of [
+          source.gl.splitFrom.numerator,
+          source.gl.splitFrom.denominator,
+        ])
+          if (!reportMetricByCode.has(input))
+            throw new Error(
+              `Metric registry: ledger percent "${source.code}" splits from unknown code "${input}"`,
+            );
       }
     } else if (source.kind === "daily") {
       checkReader(source.reader, `"${source.code}"`, source.code);
@@ -212,6 +223,38 @@ export function assertRegistry(
     }
   }
   checkWriterOverlap(writers);
+
+  for (const source of sources.values())
+    if (source.kind === "share") checkShare(source, sources, splits);
+}
+
+/**
+ * A share needs a registered `of` that splits by `dimension`, on a dimension
+ * the share's own definition declares (else every query of it would answer
+ * `dimension_not_supported`).
+ */
+function checkShare(
+  source: Extract<MetricSource, { kind: "share" }>,
+  sources: ReadonlyMap<string, MetricSource>,
+  splits: ReadonlySet<string>,
+): void {
+  const label = `Metric registry: share "${source.code}"`;
+  if (
+    !reportMetricByCode.get(source.code)?.dimensions.includes(source.dimension)
+  )
+    throw new Error(
+      `${label} is on "${source.dimension}" its definition lacks`,
+    );
+  const of = sources.get(source.of);
+  if (!of) throw new Error(`${label} of "${source.of}" is not registered`);
+  const splitsBy =
+    of.kind === "daily"
+      ? (of.reader.dimensions as readonly string[]).includes(source.dimension)
+      : of.kind === "gl" && splits.has(splitKey(source.of, source.dimension));
+  if (!splitsBy)
+    throw new Error(
+      `${label}: "${source.of}" has no "${source.dimension}" split`,
+    );
 }
 
 assertRegistry();

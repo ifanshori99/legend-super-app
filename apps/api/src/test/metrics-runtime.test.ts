@@ -50,6 +50,7 @@ import {
   GL_METRIC_SOURCES,
   NON_GL_MONEY_METRICS,
 } from "../services/metrics-gl-sources";
+import { METRIC_SOURCE_MODULES } from "../services/metric-sources";
 import { createIsolatedTenant, owner } from "./floor-test-helpers";
 
 type World = {
@@ -910,7 +911,7 @@ describe("review K: one formula source", () => {
       const definition = reportMetricByCode.get(code);
       expect(definition, code).toBeDefined();
       expect(definition!.unit, code).toBe(
-        source.kind === "amount" ? "idr" : "percent",
+        source.kind === "ratio" ? "percent" : "idr",
       );
     }
   });
@@ -919,10 +920,21 @@ describe("review K: one formula source", () => {
     const mapped = new Set(Object.keys(GL_METRIC_SOURCES));
     const nonGl = new Set(NON_GL_MONEY_METRICS);
     for (const code of nonGl) expect(mapped.has(code), code).toBe(false);
+    // A rupiah metric a family card claims as a non-ledger source (stored,
+    // derived, or unavailable with its own reason, such as
+    // menu_gross_margin) is neither ledger-mapped nor a ledger gap.
+    const familyClaimed = new Set(
+      METRIC_SOURCE_MODULES.filter((module) => module.family !== "gl").flatMap(
+        (module) => module.sources.map((source) => source.code),
+      ),
+    );
+    const registeredNonGl = (code: string) => familyClaimed.has(code);
     for (const definition of reportMetricByCode.values())
       if (definition.unit === "idr")
         expect(
-          mapped.has(definition.code) || nonGl.has(definition.code),
+          mapped.has(definition.code) ||
+            nonGl.has(definition.code) ||
+            registeredNonGl(definition.code),
           definition.code,
         ).toBe(true);
     for (const code of nonGl)

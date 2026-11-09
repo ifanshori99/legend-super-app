@@ -31,12 +31,27 @@ export type GlTerm = {
 export type GlComponent = readonly GlTerm[];
 
 export type GlMetricSource =
+  /** Movement of the bucket: lines dated inside it. */
   | { readonly kind: "amount"; readonly component: GlComponent }
+  /**
+   * Balance at the bucket end: every line dated up to the last day of the
+   * bucket, from the first posting on (a liability such as PBJT payable).
+   */
+  | { readonly kind: "balance"; readonly component: GlComponent }
   /** Percent = numerator / denominator × 100, recomputed per bucket. */
   | {
       readonly kind: "ratio";
       readonly numerator: GlComponent;
       readonly denominator: GlComponent;
+      /**
+       * The registry codes of numerator and denominator. A non-outlet split
+       * of the percent splits both codes first and divides per split value
+       * (DECISIONS 2026-11-10 point 1); without it the percent is not split.
+       */
+      readonly splitFrom?: {
+        readonly numerator: string;
+        readonly denominator: string;
+      };
     };
 
 const INCOME_STATEMENT_GROUPS: readonly ReportGroup[] = [
@@ -54,6 +69,7 @@ const GROSS_PROFIT: GlComponent = [
   { reportGroups: ["revenue"], sign: 1 },
   { reportGroups: ["cogs"], sign: 1 },
 ];
+const PBJT: GlComponent = [{ roles: ["tax_payable_pbjt"], sign: 1 }];
 const LABOR: GlComponent = [
   { roles: ["salary_expense", "bpjs_expense"], sign: -1 },
 ];
@@ -86,7 +102,12 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     kind: "amount",
     component: [{ roles: ["gateway_fee_expense"], sign: -1 }],
   },
-  food_cost_pct: { kind: "ratio", numerator: COGS, denominator: NET_SALES },
+  food_cost_pct: {
+    kind: "ratio",
+    numerator: COGS,
+    denominator: NET_SALES,
+    splitFrom: { numerator: "cogs", denominator: "net_sales" },
+  },
   labor_cost_pct: { kind: "ratio", numerator: LABOR, denominator: NET_SALES },
   prime_cost_pct: {
     kind: "ratio",
@@ -97,6 +118,19 @@ export const GL_METRIC_SOURCES: Readonly<Record<string, GlMetricSource>> = {
     kind: "ratio",
     numerator: GROSS_PROFIT,
     denominator: NET_SALES,
+  },
+  // Output tax and service charge: the movement of the period on their
+  // accounts (sales credit them, refunds debit them).
+  tax_collected: { kind: "amount", component: PBJT },
+  service_charge_collected: {
+    kind: "amount",
+    component: [{ roles: ["service_charge"], sign: 1 }],
+  },
+  // Own component object: the engine keys sums by component, and a balance
+  // must not share its sums with the movement of tax_collected.
+  tax_payable: {
+    kind: "balance",
+    component: [{ roles: ["tax_payable_pbjt"], sign: 1 }],
   },
 };
 
@@ -126,15 +160,12 @@ export const NON_GL_MONEY_METRICS: readonly string[] = [
   "delivery_sales",
   "stock_value",
   "purchase_total",
-  "tax_collected",
-  "service_charge_collected",
-  "tax_payable",
   "gateway_settlement",
   "edc_settlement",
 ];
 
 export function glComponentsOf(source: GlMetricSource): GlComponent[] {
-  return source.kind === "amount"
+  return source.kind !== "ratio"
     ? [source.component]
     : [source.numerator, source.denominator];
 }

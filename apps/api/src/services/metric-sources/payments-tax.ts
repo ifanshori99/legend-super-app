@@ -23,10 +23,9 @@
 // Not built (no source data in the schema, they answer `unavailable`):
 // - `gateway_settlement`, `edc_settlement`: no settlement table; the settlement
 //   events have no emitter yet (packages/shared/src/payment/settlement-events.ts).
-// - `tax_collected`, `service_charge_collected`, `tax_payable`: the ledger
-//   posts them (roles tax_payable_pbjt, service_charge), so they must become
-//   ledger sources in `metrics-gl-sources.ts` (shared thread request); a
-//   balance and a menu-category split need the same shared work.
+// - `tax_collected`, `service_charge_collected`, `tax_payable` are ledger
+//   sources in `metrics-gl-sources.ts` (roles tax_payable_pbjt,
+//   service_charge; brief 272 S7); a menu-category split is not built.
 // - `payment_fee` by payment method: nothing writes `payment_intents.fee_idr`
 //   and settlement fees carry no method, so no split is registered.
 // - `transaction_count` by payment method: that code belongs to the sales card.
@@ -254,13 +253,6 @@ export const paymentsTaxSources: MetricSourceFamilyModule = {
       reason: "source_not_built",
     },
     { kind: "unavailable", code: "edc_settlement", reason: "source_not_built" },
-    { kind: "unavailable", code: "tax_collected", reason: "source_not_built" },
-    {
-      kind: "unavailable",
-      code: "service_charge_collected",
-      reason: "source_not_built",
-    },
-    { kind: "unavailable", code: "tax_payable", reason: "source_not_built" },
   ],
   splits: [],
 };

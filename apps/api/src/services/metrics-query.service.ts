@@ -500,7 +500,8 @@ async function ledgerRows(
   tx: Tx,
   tenantId: string,
   accountIds: readonly string[],
-  range: Range,
+  /** start null: every line up to `end` (balances). */
+  range: { start: string | null; end: string },
   outletFilter: ReturnType<typeof outletIdsForQuery>,
 ): Promise<LedgerRow[]> {
   if (accountIds.length === 0) return [];
@@ -523,7 +524,9 @@ async function ledgerRows(
       and(
         eq(journalLines.tenantId, tenantId),
         inArray(journalLines.accountId, [...accountIds]),
-        gte(journalEntries.entryDate, range.start),
+        range.start === null
+          ? undefined
+          : gte(journalEntries.entryDate, range.start),
         lte(journalEntries.entryDate, range.end),
         outletFilter.kind === "outlets"
           ? inArray(journalLines.outletId, [...outletFilter.outletIds])
@@ -596,8 +599,17 @@ class LedgerIndex {
     /** Current buckets, in date order, then the comparison range if any. */
     ranges: readonly Range[],
     currentCount: number,
+    /** Balance components and their lines up to the last range end. */
+    balance: {
+      components: ReadonlySet<GlComponent>;
+      rows: readonly LedgerRow[];
+    } = { components: new Set(), rows: [] },
   ) {
     const byAccount = new Map<
+      string,
+      { component: GlComponent; sign: 1 | -1 }[]
+    >();
+    const balanceByAccount = new Map<
       string,
       { component: GlComponent; sign: 1 | -1 }[]
     >();
@@ -606,26 +618,46 @@ class LedgerIndex {
         component,
         ranges.map(() => new Map()),
       );
+      const target = balance.components.has(component)
+        ? balanceByAccount
+        : byAccount;
       for (const [accountId, sign] of map) {
-        const list = byAccount.get(accountId) ?? [];
+        const list = target.get(accountId) ?? [];
         list.push({ component, sign });
-        byAccount.set(accountId, list);
+        target.set(accountId, list);
       }
     }
+    const add = (
+      component: GlComponent,
+      bucket: number,
+      row: LedgerRow,
+      sign: 1 | -1,
+    ) => {
+      const byOutlet = this.sums.get(component)![bucket]!;
+      const amount = sign === 1 ? row.net : -row.net;
+      for (const key of [outletKeyOf(row.outletId), ALL_OUTLETS]) {
+        const sum = byOutlet.get(key);
+        if (sum) sum.value += amount;
+        else byOutlet.set(key, { value: amount, hasData: true });
+      }
+    };
     for (const row of rows) {
       const targets = byAccount.get(row.accountId);
       if (!targets) continue;
       const bucket = rangeIndexOf(ranges, currentCount, row.date);
       if (bucket < 0) continue;
-      for (const { component, sign } of targets) {
-        const byOutlet = this.sums.get(component)![bucket]!;
-        const amount = sign === 1 ? row.net : -row.net;
-        for (const key of [outletKeyOf(row.outletId), ALL_OUTLETS]) {
-          const sum = byOutlet.get(key);
-          if (sum) sum.value += amount;
-          else byOutlet.set(key, { value: amount, hasData: true });
-        }
-      }
+      for (const { component, sign } of targets)
+        add(component, bucket, row, sign);
+    }
+    // A balance line counts in every range that ends on or after its date.
+    for (const row of balance.rows) {
+      const targets = balanceByAccount.get(row.accountId);
+      if (!targets) continue;
+      ranges.forEach((range, bucket) => {
+        if (row.date > range.end) return;
+        for (const { component, sign } of targets)
+          add(component, bucket, row, sign);
+      });
     }
   }
 
@@ -659,7 +691,7 @@ function evaluate(
   range: number,
   outletKey: string,
 ): MetricValue | null {
-  if (source.kind === "amount") {
+  if (source.kind !== "ratio") {
     const sum = index.sum(source.component, range, outletKey);
     return sum.hasData ? idrValue(sum.value) : null;
   }
@@ -954,7 +986,23 @@ function planOf(
         if (shape.splitKey === null)
           return { kind: "gl", gl: source.gl, split: null };
         // A percent split is recomputed from split numerator and denominator
-        // (DECISIONS 2026-11-10 point 1); no card builds one yet.
+        // (DECISIONS 2026-11-10 point 1): both codes split first, then
+        // divided per split value; a side without that split answers
+        // dimension_not_supported.
+        if (source.gl.kind === "ratio") {
+          const from = source.gl.splitFrom;
+          if (!from) return NOT_SUPPORTED;
+          for (const input of [from.numerator, from.denominator]) {
+            const inputPlan = planOf(input, shape, sources, plans, visiting);
+            if (inputPlan.kind === "unavailable") return inputPlan;
+          }
+          return {
+            kind: "derived",
+            numerator: from.numerator,
+            denominator: from.denominator,
+            scale: 100,
+          };
+        }
         if (source.gl.kind !== "amount") return NOT_SUPPORTED;
         const split = sources.splitOf(code, shape.splitKey);
         return split ? { kind: "gl", gl: source.gl, split } : NOT_SUPPORTED;
@@ -1128,17 +1176,37 @@ export async function evaluateMetrics(
     tenantId,
     glPlans.flatMap((plan) => glComponentsOf(plan.gl)),
   );
-  const accountIds = [
-    ...new Set([...accounts.values()].flatMap((map) => [...map.keys()])),
+  const balanceComponents = new Set(
+    glPlans.flatMap((plan) =>
+      plan.gl.kind === "balance" ? [plan.gl.component] : [],
+    ),
+  );
+  const accountIdsOf = (balances: boolean) => [
+    ...new Set(
+      [...accounts.entries()].flatMap(([component, map]) =>
+        balanceComponents.has(component) === balances ? [...map.keys()] : [],
+      ),
+    ),
   ];
   const ledger = await ledgerRows(
     tx,
     tenantId,
-    accountIds,
+    accountIdsOf(false),
     { start: previous?.start ?? range.start, end: range.end },
     outletFilter,
   );
-  const index = new LedgerIndex(accounts, ledger, ranges, currentCount);
+  // Balances read every line up to the period end, not only the period's.
+  const balanceLedger = await ledgerRows(
+    tx,
+    tenantId,
+    accountIdsOf(true),
+    { start: null, end: range.end },
+    outletFilter,
+  );
+  const index = new LedgerIndex(accounts, ledger, ranges, currentCount, {
+    components: balanceComponents,
+    rows: balanceLedger,
+  });
 
   // One metrics_daily read for every stored code and ledger split.
   const storedCodes = [...plans.entries()].flatMap(([code, plan]) =>

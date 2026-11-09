@@ -540,8 +540,10 @@ describe("menu-cogs figures", () => {
       expect((await status(code, ["menu_item"])).status, code).toBe(
         "unavailable",
       );
+    // food_cost_pct by menu item: cogs and net_sales both split by menu item
+    // (brief 272 S7 item 3), so the percent is their split ratio.
     expect((await status("food_cost_pct", ["menu_item"])).status).toBe(
-      "unavailable",
+      "available",
     );
   });
 });

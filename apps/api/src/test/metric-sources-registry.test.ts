@@ -79,8 +79,8 @@ describe("metric source registry", () => {
     expect(() => assertRegistry()).not.toThrow();
   });
 
-  it("resolves the 12 ledger metrics to kind gl", () => {
-    expect(GL_CODES).toHaveLength(12);
+  it("resolves the 15 ledger metrics to kind gl", () => {
+    expect(GL_CODES).toHaveLength(15);
     for (const code of GL_CODES) {
       const source = metricSourceOf(code);
       expect(source.kind).toBe("gl");
@@ -368,5 +368,74 @@ describe("assertRegistry", () => {
         }),
       ]),
     ).not.toThrow();
+  });
+
+  describe("share sources", () => {
+    const share = (dimension: string, of = "menu_sold_qty") =>
+      ({
+        kind: "share",
+        code: "menu_popularity_pct",
+        of,
+        dimension,
+      }) as const;
+    const soldQty = (dimensions: DailyMetricReader["dimensions"]) =>
+      ({
+        kind: "daily",
+        code: "menu_sold_qty",
+        reader: readerFor("menu_sold_qty", dimensions),
+      }) as const;
+
+    it("accepts a share of a registered code split by its dimension", () => {
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [soldQty(["menu_item"]), share("menu_item")],
+            splits: [],
+          }),
+        ]),
+      ).not.toThrow();
+    });
+
+    it("refuses a share of an unregistered code", () => {
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({ sources: [share("menu_item")], splits: [] }),
+        ]),
+      ).toThrow(
+        /share "menu_popularity_pct" .*"menu_sold_qty" is not registered/,
+      );
+    });
+
+    it("refuses a share on a dimension its definition lacks", () => {
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [soldQty(["menu_item"]), share("payment_method")],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/share "menu_popularity_pct" .*"payment_method"/);
+    });
+
+    it("refuses a share whose code has no split by the dimension", () => {
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({
+            sources: [soldQty([]), share("menu_item")],
+            splits: [],
+          }),
+        ]),
+      ).toThrow(/"menu_sold_qty" has no "menu_item" split/);
+      expect(() =>
+        assertRegistry([
+          glModule,
+          moduleOf({ sources: [share("menu_item", "net_sales")], splits: [] }),
+        ]),
+      ).toThrow(/share "menu_popularity_pct"/);
+    });
   });
 });
