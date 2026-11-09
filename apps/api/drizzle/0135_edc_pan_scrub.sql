@@ -36,7 +36,21 @@
 -- until the whole batch commits. lock_timeout makes the ALTER give up (and the
 -- whole batch roll back, safe to retry) instead of queueing POS/EDC traffic
 -- behind it while an open transaction holds the table.
-SET LOCAL lock_timeout = '5s';
+--
+-- The migrator's own lock_timeout (MIGRATION_LOCK_TIMEOUT, legend-jluo) is
+-- saved first and put back after the last ALTER (legend-76azz). "SET LOCAL
+-- lock_timeout TO DEFAULT" would restore the role/database default instead
+-- (0 = wait forever on most servers) for every later file in the batch. The
+-- saved value rides in a transaction-local setting because this file is split
+-- into statements; 0143 does the same inside one DO block. Run statement by
+-- statement in autocommit the saved value is gone by the last statement, so
+-- the restore then keeps the current lock_timeout instead of failing.
+DO $lock$
+BEGIN
+  PERFORM set_config('legend.lock_timeout_before_0135', current_setting('lock_timeout'), true);
+  PERFORM set_config('lock_timeout', '5s', true);
+END
+$lock$;
 --> statement-breakpoint
 ALTER TABLE "edc_transactions" NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
@@ -77,4 +91,4 @@ WHERE "card_type" ~ '[0-9]([ -]?[0-9]){11,}'
 --> statement-breakpoint
 ALTER TABLE "edc_transactions" FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
-SET LOCAL lock_timeout TO DEFAULT;
+SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0135', true), ''), current_setting('lock_timeout')), true);
