@@ -119,6 +119,26 @@ const rule = (
 
 const AUTO = "§3.19 Jurnal Otomatis";
 
+/** Amount keys come from `payrollJournalAmounts` (payroll-journal.ts). */
+const PAYROLL_JOURNAL_LINES: L[] = [
+  ["salary_expense", "debit", "salaryExpenseIdr"],
+  ["salary_expense", "debit", "pph21EmployerBorneIdr"],
+  ["service_charge", "debit", "serviceChargeIdr"],
+  ["reimbursement_expense", "debit", "reimbursementIdr"],
+  ["bpjs_expense", "debit", "bpjsCompanyIdr"],
+  // Founder B8: an employee's PPh 21 shortfall is a receivable, not a
+  // company cost. New receivable debits; collection from this run's pay
+  // credits (it reduces salaries_payable's net, see netIdr).
+  ["employee_receivable", "debit", "pph21ReceivableIdr"],
+  ["salaries_payable", "credit", "netIdr"],
+  ["bpjs_payable", "credit", "bpjsTotalIdr"],
+  ["pph21_payable", "credit", "pph21Idr"],
+  ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
+  ["employee_receivable", "credit", "loanRepaymentIdr"],
+  ["salary_expense", "credit", "otherDeductionsIdr"],
+  ["salary_expense", "credit", "pph21EmployerRefundIdr"],
+];
+
 /** Default rules (system data; tenants change accounts through mappings, not rules). */
 export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
   rule(
@@ -243,21 +263,44 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     ],
   ),
   rule(
-    { event: "payroll_run.completed" },
+    { event: "payroll.locked" },
     "payroll",
     "Payroll dikunci",
     `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-04`,
+    PAYROLL_JOURNAL_LINES,
+  ),
+  rule(
+    { event: "payroll.reversed" },
+    "payroll",
+    "Payroll dibatalkan (jurnal balik)",
+    `${AUTO} (payroll); §3 Jurnal Payroll; PAYR-05`,
+    // Same amounts as the locked totals in the payload, sides swapped.
+    PAYROLL_JOURNAL_LINES.map(([role, side, amount]): L => [
+      role,
+      side === "debit" ? "credit" : "debit",
+      amount,
+    ]),
+  ),
+  rule(
+    { event: "employee_loan.disbursed" },
+    "payroll",
+    "Kasbon karyawan dicairkan (piutang karyawan)",
+    `${AUTO} (payroll); §3 Jurnal Payroll`,
     [
-      ["salary_expense", "debit", "grossPayIdr"],
-      ["bpjs_expense", "debit", "employerBpjsIdr"],
-      ["salaries_payable", "credit", "netPayIdr"],
-      ["bpjs_payable", "credit", "totalBpjsIdr"],
-      ["pph21_payable", "credit", "pph21Idr"],
-      // Founder B8: an employee's PPh 21 shortfall is a receivable, not a
-      // company cost. New receivable debits; collection from this run's pay
-      // credits (it reduces salaries_payable's net, see netPayIdr).
-      ["employee_receivable", "debit", "pph21ReceivableIdr"],
-      ["employee_receivable", "credit", "pph21ReceivableCollectedIdr"],
+      ["employee_receivable", "debit", "principalIdr"],
+      ["cash_on_hand", "credit", "principalIdr"],
+    ],
+  ),
+  // Payout `payroll` posts nothing here: the run's journal carries it
+  // (reimbursement_expense on payroll.locked). Only a cash payout posts.
+  rule(
+    { event: "reimbursement.paid", variant: "cash" },
+    "payroll",
+    "Reimbursement dibayar tunai",
+    `${AUTO} (payroll); §3 reimbursement via payroll atau kas`,
+    [
+      ["reimbursement_expense", "debit", "amountIdr"],
+      ["cash_on_hand", "credit", "amountIdr"],
     ],
   ),
   rule(

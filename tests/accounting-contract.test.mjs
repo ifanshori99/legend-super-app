@@ -985,17 +985,69 @@ describe("Posting rules (§3.19 Jurnal Otomatis)", () => {
     );
   });
 
-  test("ACC-01 payroll rule matches PAYR-04 identity", () => {
-    const rule = acc.resolvePostingRule(acc.defaultPostingRules, {
-      eventName: "payroll_run.completed",
-    });
-    assert.deepEqual(acc.postingRuleAmountKeys(rule), [
-      "employerBpjsIdr",
-      "grossPayIdr",
-      "netPayIdr",
+  test("ACC-01 payroll rules are fed by payrollJournalAmounts and balance", () => {
+    const keys = [
+      "bpjsCompanyIdr",
+      "bpjsTotalIdr",
+      "loanRepaymentIdr",
+      "netIdr",
+      "otherDeductionsIdr",
+      "pph21EmployerBorneIdr",
+      "pph21EmployerRefundIdr",
       "pph21Idr",
-      "totalBpjsIdr",
-    ]);
+      "pph21ReceivableCollectedIdr",
+      "pph21ReceivableIdr",
+      "reimbursementIdr",
+      "salaryExpenseIdr",
+      "serviceChargeIdr",
+    ];
+    for (const eventName of ["payroll.locked", "payroll.reversed"]) {
+      const rule = acc.resolvePostingRule(acc.defaultPostingRules, {
+        eventName,
+      });
+      assert.deepEqual(acc.postingRuleAmountKeys(rule), keys);
+    }
+    throwsCode(
+      () =>
+        acc.resolvePostingRule(acc.defaultPostingRules, {
+          eventName: "payroll_run.completed",
+        }),
+      "POSTING_RULE_MISSING",
+    );
+    const amounts = acc.payrollJournalAmounts({
+      employeeCount: 1,
+      grossIdr: 42_000_000,
+      deductionsIdr: 1_470_000,
+      netIdr: 40_530_000,
+      bpjsEmployeeIdr: 840_000,
+      bpjsCompanyIdr: 2_184_000,
+      pph21Idr: 630_000,
+      pph21WithheldIdr: 630_000,
+      pph21EmployerBorneIdr: 0,
+      pph21RefundIdr: 0,
+      pph21EmployerRefundIdr: 0,
+      loanRepaymentIdr: 0,
+      pph21ReceivableIdr: 0,
+      pph21ReceivableCollectedIdr: 0,
+      otherDeductionsIdr: 0,
+      serviceChargeIdr: 0,
+      reimbursementIdr: 0,
+      bankTransferIdr: 40_530_000,
+      cashIdr: 0,
+    });
+    assert.deepEqual(Object.keys(amounts).sort(), keys);
+    for (const eventName of ["payroll.locked", "payroll.reversed"]) {
+      const lines = acc.buildJournalLinesFromRule(
+        acc.resolvePostingRule(acc.defaultPostingRules, { eventName }),
+        amounts,
+        map,
+        { outletId: null },
+      );
+      assert.equal(
+        lines.reduce((sum, l) => sum + l.debitIdr, 0),
+        lines.reduce((sum, l) => sum + l.creditIdr, 0),
+      );
+    }
   });
 
   test("every default rule has a unique key, catalogued event and fully mapped roles", () => {

@@ -1,7 +1,8 @@
 // Payroll journal with the employee PPh 21 receivable (brief
 // docs/briefs/sub-pph21-receivable.md, implementer B; founder decision B8).
-// Pure rule tests, no database: the `payroll_run.completed` rule, the new
-// `employee_receivable` role and the standard chart account 1204.
+// Pure rule tests, no database: the `payroll.locked` rule (fed from run totals
+// by `payrollJournalAmounts`, legend-s8a3), the new `employee_receivable` role
+// and the standard chart account 1204.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -12,10 +13,12 @@ import {
   buildJournalLinesFromRule,
   defaultPostingRules,
   legalEntityIdSchema,
+  payrollJournalAmounts,
   resolvePostingRule,
   standardFnbChartTemplate,
   type PostingAccountRole,
 } from "@starter/shared/accounting";
+import { payrollRunTotalsSchema } from "@starter/shared/hris/payroll";
 
 const entity = legalEntityIdSchema.parse(
   "11111111-1111-4111-8111-111111111111",
@@ -42,8 +45,42 @@ const mappings = standardFnbChartTemplate.flatMap((row) =>
 );
 const accountMap = accountMapFor(mappings, entity);
 const rule = resolvePostingRule(defaultPostingRules, {
-  eventName: "payroll_run.completed",
+  eventName: "payroll.locked",
 });
+
+/** Run totals of one payroll with the new receivable and the collection. */
+function totalsOf(parts: {
+  gross: number;
+  bpjsEmp: number;
+  bpjsCo: number;
+  withheld: number;
+  receivable: number;
+  collected: number;
+}) {
+  const deductions = parts.bpjsEmp + parts.withheld + parts.collected;
+  const net = parts.gross - deductions;
+  return payrollRunTotalsSchema.parse({
+    employeeCount: 1,
+    grossIdr: parts.gross,
+    deductionsIdr: deductions,
+    netIdr: net,
+    bpjsEmployeeIdr: parts.bpjsEmp,
+    bpjsCompanyIdr: parts.bpjsCo,
+    pph21Idr: parts.withheld + parts.receivable,
+    pph21WithheldIdr: parts.withheld,
+    pph21EmployerBorneIdr: 0,
+    pph21RefundIdr: 0,
+    pph21EmployerRefundIdr: 0,
+    loanRepaymentIdr: 0,
+    pph21ReceivableIdr: parts.receivable,
+    pph21ReceivableCollectedIdr: parts.collected,
+    otherDeductionsIdr: 0,
+    serviceChargeIdr: 0,
+    reimbursementIdr: 0,
+    bankTransferIdr: net,
+    cashIdr: 0,
+  });
+}
 
 /** Sum of debit and credit per account code for the built lines. */
 function post(amounts: Record<string, number>) {
@@ -66,18 +103,20 @@ function post(amounts: Record<string, number>) {
   };
 }
 
+const postTotals = (parts: Parameters<typeof totalsOf>[0]) =>
+  post(payrollJournalAmounts(totalsOf(parts)));
+
 // gross 10.000.000, employer BPJS 400.000, employee BPJS 300.000 (total
 // 700.000), withheld W 800.000, new receivable 500.000, collected 200.000:
 // net = gross - employee BPJS - W - collected = 8.700.000; deposit T = W + new
 // receivable = 1.300.000.
 const base = {
-  grossPayIdr: 10_000_000,
-  employerBpjsIdr: 400_000,
-  netPayIdr: 8_700_000,
-  totalBpjsIdr: 700_000,
-  pph21Idr: 1_300_000,
-  pph21ReceivableIdr: 500_000,
-  pph21ReceivableCollectedIdr: 200_000,
+  gross: 10_000_000,
+  bpjsEmp: 300_000,
+  bpjsCo: 400_000,
+  withheld: 800_000,
+  receivable: 500_000,
+  collected: 200_000,
 };
 
 describe("employee receivable role and account (founder B8)", () => {
@@ -108,51 +147,41 @@ describe("employee receivable role and account (founder B8)", () => {
   });
 });
 
-describe("payroll_run.completed with PPh 21 receivable", () => {
+describe("payroll.locked with PPh 21 receivable", () => {
   it("balances with a new receivable and a collection above zero", () => {
-    const { byCode, debit, credit } = post(base);
+    const { byCode, debit, credit } = postTotals(base);
     expect(debit).toBe(credit);
     expect(byCode.get("1204")).toEqual({ debit: 500_000, credit: 200_000 });
   });
 
   it("balances with only a new receivable", () => {
-    const { byCode, debit, credit } = post({
-      ...base,
-      netPayIdr: 8_900_000,
-      pph21Idr: 1_300_000,
-      pph21ReceivableCollectedIdr: 0,
-    });
+    const { byCode, debit, credit } = postTotals({ ...base, collected: 0 });
     expect(debit).toBe(credit);
     expect(byCode.get("1204")).toEqual({ debit: 500_000, credit: 0 });
   });
 
   it("balances with only a collection", () => {
-    const { byCode, debit, credit } = post({
-      ...base,
-      netPayIdr: 8_700_000,
-      pph21Idr: 800_000,
-      pph21ReceivableIdr: 0,
-    });
+    const { byCode, debit, credit } = postTotals({ ...base, receivable: 0 });
     expect(debit).toBe(credit);
     expect(byCode.get("1204")).toEqual({ debit: 0, credit: 200_000 });
   });
 
   it("zero receivable and collection post no employee receivable line", () => {
-    const { byCode, debit, credit } = post({
-      grossPayIdr: 42_000_000,
-      employerBpjsIdr: 2_184_000,
-      netPayIdr: 40_530_000,
-      totalBpjsIdr: 3_024_000,
-      pph21Idr: 630_000,
-      pph21ReceivableIdr: 0,
-      pph21ReceivableCollectedIdr: 0,
+    const { byCode, debit, credit } = postTotals({
+      gross: 42_000_000,
+      bpjsEmp: 840_000,
+      bpjsCo: 2_184_000,
+      withheld: 630_000,
+      receivable: 0,
+      collected: 0,
     });
     expect(debit).toBe(credit);
     expect(byCode.has("1204")).toBe(false);
   });
 
   it("fails closed when the receivable amount keys are missing", () => {
-    const { pph21ReceivableIdr, pph21ReceivableCollectedIdr, ...legacy } = base;
+    const { pph21ReceivableIdr, pph21ReceivableCollectedIdr, ...legacy } =
+      payrollJournalAmounts(totalsOf(base));
     void pph21ReceivableIdr;
     void pph21ReceivableCollectedIdr;
     expect(() => post(legacy)).toThrow(/pph21ReceivableIdr/);
