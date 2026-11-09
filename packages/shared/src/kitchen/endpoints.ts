@@ -143,12 +143,31 @@ export const getExpoBoard = defineEndpoint({
   response: dataResponseSchema(expoBoardSchema),
 });
 
-/** Expo runner assignment (F12). */
+/**
+ * Expo runner assignment (F12). Once the order is delivered, naming a
+ * different runner fails 409 EXPO_ORDER_DELIVERED; naming the same runner is a
+ * repeat (200, unchanged). Before delivery, reassigning replaces the runner.
+ */
 export const assignExpoRunner = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/expo/:orderId/runner",
   params: orderParams,
   body: clientInputSchema({ runnerId: userIdSchema }),
+  response: dataResponseSchema(expoTicketSchema),
+});
+
+/**
+ * "Diantar": the runner marks the order delivered from their phone (PRD §4
+ * flow D step 4, flow G step 3; bead legend-usw3). No body: the server stamps
+ * `deliveredAt` and the acting user from the session. Allowed when the ticket
+ * is complete and has a runner (`expoDeliveryBlock`); otherwise 409
+ * EXPO_ORDER_NOT_COMPLETE or EXPO_RUNNER_NOT_ASSIGNED. Idempotent: repeating
+ * answers 200 with the ticket unchanged and the first `deliveredAt`.
+ */
+export const markExpoOrderDelivered = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/expo/:orderId/delivered",
+  params: orderParams,
   response: dataResponseSchema(expoTicketSchema),
 });
 
@@ -173,10 +192,31 @@ export const getPickupDisplay = defineEndpoint({
   response: dataResponseSchema(pickupDisplaySchema),
 });
 
-/** "Panggil": show and announce a pickup number. */
+/**
+ * "Panggil": show and announce a pickup number (assigned -> called). Calling a
+ * called number re-announces it and keeps the first `calledAt`; a picked-up
+ * number fails 409 PICKUP_CALL_CLOSED.
+ */
 export const callPickupNumber = defineEndpoint({
   method: "POST",
   path: "/api/outlets/:outletId/pickup-calls/:callId/call",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    callId: uuidSchema,
+  }),
+  response: dataResponseSchema(pickupCallSchema),
+});
+
+/**
+ * "Diambil": the customer or delivery driver collected the order, closing the
+ * number (called -> picked_up; bead legend-usw3). No body: the server stamps
+ * `pickedUpAt`. `PICKUP_CALL_TRANSITIONS` is the rule: from `assigned` it
+ * fails 409 PICKUP_CALL_NOT_CALLED; repeating on `picked_up` answers 200 with
+ * the call unchanged and the first `pickedUpAt`.
+ */
+export const markPickupPickedUp = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pickup-calls/:callId/picked-up",
   params: z.strictObject({
     outletId: outletIdSchema,
     callId: uuidSchema,

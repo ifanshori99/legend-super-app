@@ -242,6 +242,170 @@ test("PRD §3 F12 pickup display: call numbers are unique per outlet per day", (
   );
 });
 
+test("legend-usw3 pickup: called -> picked_up is explicit, repeat is idempotent", () => {
+  const {
+    assigned,
+    called,
+    picked_up: pickedUp,
+  } = kitchen.PICKUP_CALL_TRANSITIONS;
+  assert.deepEqual(assigned, { call: "called" });
+  assert.deepEqual(called, { call: "called", pickup: "picked_up" });
+  assert.deepEqual(pickedUp, { pickup: "picked_up" });
+
+  // Valid moves.
+  assert.equal(kitchen.transitionPickupCall("assigned", "call"), "called");
+  assert.equal(kitchen.transitionPickupCall("called", "pickup"), "picked_up");
+  // Invalid: a number cannot be picked up before it is called, and picked_up
+  // is terminal (no re-call, no reopen).
+  assert.equal(kitchen.canTransitionPickupCall("assigned", "pickup"), false);
+  assert.equal(kitchen.canTransitionPickupCall("picked_up", "call"), false);
+  assert.throws(
+    () => kitchen.transitionPickupCall("assigned", "pickup"),
+    RangeError,
+  );
+  assert.throws(
+    () => kitchen.transitionPickupCall("picked_up", "call"),
+    RangeError,
+  );
+  // Refusal codes are shared, not left to the API.
+  assert.equal(
+    kitchen.pickupCallBlock("assigned", "pickup"),
+    "PICKUP_CALL_NOT_CALLED",
+  );
+  assert.equal(
+    kitchen.pickupCallBlock("picked_up", "call"),
+    "PICKUP_CALL_CLOSED",
+  );
+  assert.equal(kitchen.pickupCallBlock("called", "pickup"), null);
+  assert.equal(kitchen.pickupCallBlock("picked_up", "pickup"), null);
+  // Repeats keep the status, so the API answers 200 with the first timestamp.
+  assert.equal(kitchen.isPickupCallRepeat("picked_up", "pickup"), true);
+  assert.equal(kitchen.isPickupCallRepeat("called", "call"), true);
+  assert.equal(kitchen.isPickupCallRepeat("called", "pickup"), false);
+  assert.equal(
+    kitchen.transitionPickupCall("picked_up", "pickup"),
+    "picked_up",
+  );
+
+  // The fixture of every status is consistent with the table.
+  for (const call of fixtures.pickupDisplay.calls)
+    assert.ok(kitchen.pickupCallSchema.safeParse(call).success);
+
+  // Endpoint shape: POST, no body, outlet scope in the path only (TEN-02).
+  const endpoint = kitchen.markPickupPickedUp;
+  assert.equal(endpoint.method, "POST");
+  assert.equal(
+    endpoint.path,
+    "/api/outlets/:outletId/pickup-calls/:callId/picked-up",
+  );
+  assert.equal(endpoint.body, undefined);
+  assert.equal(
+    endpoint.params.safeParse({
+      outletId: fixtures.pickupDisplay.outletId,
+      callId: fixtures.pickupDisplay.calls[1].id,
+    }).success,
+    true,
+  );
+  assert.equal(
+    endpoint.params.safeParse({
+      outletId: fixtures.pickupDisplay.outletId,
+      callId: "not-a-uuid",
+    }).success,
+    false,
+  );
+  // The response must carry pickedUpAt once picked up.
+  assert.equal(
+    endpoint.response.safeParse({
+      data: { ...fixtures.pickupDisplay.calls[1], status: "picked_up" },
+    }).success,
+    false,
+    "picked_up without pickedUpAt is rejected",
+  );
+});
+
+test("legend-usw3 expo: delivered needs a complete order and a runner, repeat is idempotent", () => {
+  const [open, , , readyWithRunner] = fixtures.expo.tickets;
+  assert.equal(readyWithRunner.deliveredAt, null);
+  for (const ticket of fixtures.expo.tickets)
+    assert.equal(ticket.deliveredAt, null, "fixtures start undelivered");
+
+  // Rule: allowed, or the exact refusal code.
+  assert.equal(kitchen.expoDeliveryBlock(readyWithRunner), null);
+  assert.equal(kitchen.expoDeliveryBlock(open), "EXPO_ORDER_NOT_COMPLETE");
+  assert.equal(
+    kitchen.expoDeliveryBlock({
+      ...readyWithRunner,
+      runnerId: null,
+      runnerAssignedAt: null,
+    }),
+    "EXPO_RUNNER_NOT_ASSIGNED",
+  );
+  // A repeat on a delivered ticket is not a block (idempotent 200).
+  const delivered = {
+    ...readyWithRunner,
+    deliveredAt: "2026-11-01T04:20:00.000Z",
+  };
+  assert.equal(kitchen.expoDeliveryBlock(delivered), null);
+
+  // Schema: the delivered state cannot exist without completeness and a runner.
+  assert.equal(kitchen.expoTicketSchema.safeParse(delivered).success, true);
+  assert.equal(
+    kitchen.expoTicketSchema.safeParse({
+      ...open,
+      deliveredAt: "2026-11-01T04:20:00.000Z",
+    }).success,
+    false,
+    "an order without a runner cannot be delivered",
+  );
+  assert.equal(
+    kitchen.expoTicketSchema.safeParse({
+      ...delivered,
+      runnerId: null,
+      runnerAssignedAt: null,
+    }).success,
+    false,
+    "a delivered order keeps its runner",
+  );
+  // A recall after delivery must not make the whole board unparsable.
+  assert.equal(
+    kitchen.expoTicketSchema.safeParse({
+      ...delivered,
+      isComplete: false,
+      readyAt: null,
+    }).success,
+    true,
+  );
+
+  // Endpoint shape.
+  const endpoint = kitchen.markExpoOrderDelivered;
+  assert.equal(endpoint.method, "POST");
+  assert.equal(endpoint.path, "/api/outlets/:outletId/expo/:orderId/delivered");
+  assert.equal(endpoint.body, undefined);
+  assert.equal(
+    endpoint.params.safeParse({
+      outletId: readyWithRunner.outletId,
+      orderId: readyWithRunner.orderId,
+    }).success,
+    true,
+  );
+});
+
+test("legend-usw3 errors: pickup and expo refusals are 409 with Indonesian fallbacks", () => {
+  assert.deepEqual(Object.keys(kitchen.kitchenErrorHttpStatus).sort(), [
+    "EXPO_ORDER_DELIVERED",
+    "EXPO_ORDER_NOT_COMPLETE",
+    "EXPO_RUNNER_NOT_ASSIGNED",
+    "PICKUP_CALL_CLOSED",
+    "PICKUP_CALL_NOT_CALLED",
+  ]);
+  for (const code of kitchen.KITCHEN_ERROR_CODES) {
+    const error = new kitchen.KitchenError(code);
+    assert.equal(error.code, code);
+    assert.equal(error.status, 409);
+    assert.ok(error.message.length > 0 && !error.message.includes(code));
+  }
+});
+
 test("PRD §3 F12 + KDS-06: serving-time estimate and samples carry their basis", () => {
   kitchen.servingTimeEstimateSchema.parse(fixtures.servingTimeEstimate);
   assert.equal(
@@ -454,6 +618,11 @@ test("F12 endpoints: paths, params and responses stay in step with the fixtures"
       assert.ok(runnerIds.has(row.runnerId), "assigned runner is assignable");
   respond(kitchen.getPickupDisplay, fixtures.pickupDisplay);
   respond(kitchen.callPickupNumber, fixtures.pickupDisplay.calls[1]);
+  respond(kitchen.markPickupPickedUp, fixtures.pickupDisplay.calls[2]);
+  respond(kitchen.markExpoOrderDelivered, {
+    ...fixtures.expo.tickets[3],
+    deliveredAt: "2026-11-01T04:20:00.000Z",
+  });
   respond(kitchen.getPacing, fixtures.pacing);
   respond(kitchen.updateCapacityRules, fixtures.capacityRules.slice(0, 1));
   respond(kitchen.estimateServingTime, fixtures.servingTimeEstimate);
