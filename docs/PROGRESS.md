@@ -485,3 +485,10 @@ Keputusan CTO sesi ini (rinci di timeline): Q32=B open bill rilis pertama; Q33=A
 Catatan rilis (kumulatif): deploy cloud sebelum edge, API dan web bersamaan; migrasi di luar jam operasional dan sebelum kode hidup; 0149 mengunci pos_shifts, hitungan sebelum 0149 dianggap basi; 0150 menghapus binding printer yang tidak valid, manajer bind ulang; query runbook SALE_MISSING sekali per tenant; DB dev yang menjalankan 0147 lama dibuat ulang; DB cloud synchronous_commit=on dan fsync=on; edc-pan-scrub di luar jam operasional (`psql -1 -v ON_ERROR_STOP=1`); KDS 403 jadi 404; approval HP tutup shift sebelum deploy ditolak; approval refund batas 7 hari; backfill tenant-defaults di luar jam operasional; DOIT_REFUNDS_ENABLED tetap mati sampai syaratnya terpenuhi.
 
 Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 413 req, subagent Haiku 770k, Opus 808k, Sonnet 560k), 41 subagent, compact 3.
+
+## CTO G8flk mulai 9 Nov 18:50
+
+- Thread G9syc, G781b, G4oo4, G0kln, G4xjf diadopsi (`coordinator link`).
+- Cron sesi: retro tiap 2 jam menit :13; one-shot 20:47 antrean Codex (G4xjf carry on, lalu run berikut).
+- Slot Claude 8/8 penuh (termasuk sesi CTO lama G16xk dan "Perawatan SSD mingguan" G0lpx di project lain). Brief siap mulai saat slot lowong: 189 (legend-9z1vm), 190 (legend-awg5p, tunggu batch16 di m1), 191 (legend-lg45). Board B1-B3.
+- Kuota: Claude #3 5h 86% (reset 20:49), #1 5h 10% (pakai #1 untuk thread baru). Codex #2 dan #3 habis sampai 20:37/20:44.
