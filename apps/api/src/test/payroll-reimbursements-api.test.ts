@@ -120,6 +120,7 @@ async function grantRole(
 }
 
 const createdEmployees: { tenantId: string; id: string }[] = [];
+const createdReceiptObjects: string[] = [];
 const createdPositions: { tenantId: string; id: string }[] = [];
 
 async function seedPosition(tenantId: string) {
@@ -188,7 +189,9 @@ const categoryBody = (overrides: Record<string, unknown> = {}) => ({
     {
       positionId: positionA,
       perClaimLimitIdr: 100_000,
-      perMonthLimitIdr: 300_000,
+      // High on purpose: these tests pile up claims for one employee; the
+      // monthly cap itself is covered in payroll-reimbursements-caps.test.ts.
+      perMonthLimitIdr: 100_000_000,
     },
   ],
   idempotencyKey: key(),
@@ -374,6 +377,10 @@ afterAll(async () => {
           await db.query(
             "DELETE FROM reimbursements WHERE tenant_id = $1 AND employee_id = ANY($2)",
             [tenantId, createdEmployees.map((row) => row.id)],
+          );
+          await db.query(
+            "DELETE FROM core_storage_objects WHERE tenant_id = $1 AND id = ANY($2)",
+            [tenantId, createdReceiptObjects],
           );
           await db.query(
             "DELETE FROM reimbursement_categories WHERE tenant_id = $1 AND (name LIKE $2 OR name = 'Kategori B')",
@@ -644,13 +651,29 @@ describe("my reimbursements API: submit and list", () => {
       .set(originHeader)
       .send(claimBody(receipt.id));
     expect(without.status).toBe(422);
+    // The receipt must be a fresh `receipt` object of the home outlet.
+    const receiptObjectId = randomUUID();
+    createdReceiptObjects.push(receiptObjectId);
+    await asTenant(tenant.id, (db) =>
+      db.query(
+        `INSERT INTO core_storage_objects
+           (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
+         VALUES ($1, $2, $3, 'receipt', $4, 'image/jpeg', 1024)`,
+        [
+          tenant.id,
+          outletId,
+          receiptObjectId,
+          `${receiptObjectId}/original.jpg`,
+        ],
+      ),
+    );
     const withRef = await selfClient
       .post(ME)
       .set(originHeader)
-      .send(claimBody(receipt.id, { receiptUploadRef: "uploads/struk-1" }));
+      .send(claimBody(receipt.id, { receiptUploadRef: receiptObjectId }));
     expect(withRef.status).toBe(201);
-    // The upload reference is never returned (the signed URL is null for now).
-    expect(JSON.stringify(withRef.body)).not.toContain("uploads/struk-1");
+    // The upload reference is never returned (no signer is wired: URL is null).
+    expect(JSON.stringify(withRef.body)).not.toContain(receiptObjectId);
 
     const inactive = await createCategory({ name: `Nonaktif ${label}` });
     await asTenant(tenant.id, (db) =>

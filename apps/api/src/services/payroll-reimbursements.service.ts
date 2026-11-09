@@ -13,7 +13,9 @@ import {
   asc,
   desc,
   eq,
+  gte,
   inArray,
+  isNotNull,
   lt,
   or,
   sql,
@@ -28,6 +30,7 @@ import {
   DEFAULT_BUSINESS_DAY_CLOCK,
   encodeCursor,
   idr,
+  type BusinessDate,
   type CursorPage,
   type ScopedTenantContext,
   type UserId,
@@ -56,7 +59,9 @@ import {
   type ReimbursementId,
 } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
-import { employees, positions } from "../db/schema/hris.ts";
+import { coreStorageObjects } from "../db/schema/core-storage.ts";
+import { employeeDocuments, employees, positions } from "../db/schema/hris.ts";
+import { leaveRequests } from "../db/schema/hris-leave.ts";
 import {
   reimbursementCategories,
   reimbursements,
@@ -72,6 +77,10 @@ import {
   uniqueViolation,
 } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
+import {
+  noHrisFileSigner,
+  type HrisFileSigner,
+} from "./hris-contract.service.ts";
 import { assertPayrollTenantCan, loadPayrollSelf } from "./payroll-access.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -92,6 +101,197 @@ type Page<T> = CursorPage<T>;
 
 const unprocessable = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A receipt must be uploaded shortly before the claim that uses it. */
+const RECEIPT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Serialises writers that share `key` for the rest of the transaction. */
+async function lockKey(tx: Tx, key: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
+}
+
+/** First day of the expense month and of the next one. */
+function monthBounds(expenseDate: BusinessDate): [BusinessDate, BusinessDate] {
+  const [year, month] = expenseDate.split("-").map(Number) as [number, number];
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const next = month === 12 ? [year + 1, 1] : [year, month + 1];
+  return [
+    businessDateSchema.parse(`${year}-${pad(month)}-01`),
+    businessDateSchema.parse(`${next[0]}-${pad(next[1]!)}-01`),
+  ];
+}
+
+/**
+ * One lock per employee, category and month: two claims (or a claim and an
+ * approval) of the same month cannot both read the usage before either one
+ * is stored.
+ */
+const capLockKey = (
+  context: ScopedTenantContext,
+  employeeId: string,
+  categoryId: string,
+  expenseDate: BusinessDate,
+) =>
+  `payroll:reimbursement-cap:${context.tenant.tenantId}:${employeeId}:${categoryId}:${expenseDate.slice(0, 7)}`;
+
+/**
+ * Month usage of one employee in one category: claimed amount of submitted
+ * claims (reserved until decided) plus approved amount of approved and paid
+ * ones. Rejected and cancelled claims free their amount.
+ */
+async function monthUsageIdr(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: string,
+  categoryId: string,
+  expenseDate: BusinessDate,
+  statuses: readonly string[],
+) {
+  const [from, to] = monthBounds(expenseDate);
+  const [row] = await tx
+    .select({
+      total: sql<string>`COALESCE(SUM(CASE WHEN ${reimbursements.status} = 'submitted' THEN ${reimbursements.amountIdr} ELSE ${reimbursements.approvedAmountIdr} END), 0)`,
+    })
+    .from(reimbursements)
+    .where(
+      and(
+        eq(reimbursements.tenantId, context.tenant.tenantId),
+        eq(reimbursements.employeeId, employeeId),
+        eq(reimbursements.categoryId, categoryId as ClaimRow["categoryId"]),
+        gte(reimbursements.expenseDate, from),
+        lt(reimbursements.expenseDate, to),
+        inArray(reimbursements.status, [...statuses]),
+      ),
+    );
+  return idr(Number(row?.total ?? 0));
+}
+
+/**
+ * The receipt must be a fresh private `receipt` object of this tenant at the
+ * claimant's home outlet that nothing else references. `core_storage_objects`
+ * records no uploader, so tenant, outlet, freshness and single use are what
+ * stop attaching another tenant's (or another claim's) private file to read it
+ * back through the signed URL.
+ */
+async function assertReceiptUsable(
+  tx: Tx,
+  context: ScopedTenantContext,
+  homeOutletId: string,
+  uploadRef: string,
+  now: Date,
+): Promise<string> {
+  const invalid = () =>
+    unprocessable("Foto bukti tidak ditemukan atau tidak valid.");
+  if (!UUID_PATTERN.test(uploadRef)) throw invalid();
+  const ref = uploadRef.toLowerCase();
+  const tenantId = context.tenant.tenantId;
+  // Two claims racing for the same upload: the second one sees the first.
+  await lockKey(tx, `payroll:reimbursement-receipt:${tenantId}:${ref}`);
+  const [object] = await tx
+    .select({
+      outletId: coreStorageObjects.outletId,
+      purpose: coreStorageObjects.purpose,
+      createdAt: coreStorageObjects.createdAt,
+    })
+    .from(coreStorageObjects)
+    .where(
+      and(
+        eq(coreStorageObjects.tenantId, tenantId),
+        eq(coreStorageObjects.id, ref),
+      ),
+    )
+    .limit(1);
+  if (
+    !object ||
+    object.purpose !== "receipt" ||
+    object.outletId.toLowerCase() !== homeOutletId.toLowerCase() ||
+    object.createdAt.getTime() < now.getTime() - RECEIPT_MAX_AGE_MS
+  )
+    throw invalid();
+  const [claim] = await tx
+    .select({ id: reimbursements.id })
+    .from(reimbursements)
+    .where(
+      and(
+        eq(reimbursements.tenantId, tenantId),
+        eq(reimbursements.receiptUploadRef, ref),
+      ),
+    )
+    .limit(1);
+  const [document] = await tx
+    .select({ id: employeeDocuments.id })
+    .from(employeeDocuments)
+    .where(
+      and(
+        eq(employeeDocuments.tenantId, tenantId),
+        eq(employeeDocuments.storageObjectId, ref),
+      ),
+    )
+    .limit(1);
+  const [leave] = await tx
+    .select({ id: leaveRequests.id })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.tenantId, tenantId),
+        eq(leaveRequests.attachmentKey, ref),
+      ),
+    )
+    .limit(1);
+  if (claim || document || leave) throw invalid();
+  return ref;
+}
+
+/**
+ * Fills `receiptUrl` after the transaction: the stored idempotent response
+ * never holds a signed URL (it expires), and a signer failure only hides the
+ * photo instead of failing the read.
+ */
+async function withReceiptUrls(
+  context: ScopedTenantContext,
+  claims: Reimbursement[],
+  signer: HrisFileSigner,
+): Promise<Reimbursement[]> {
+  if (signer === noHrisFileSigner || claims.length === 0) return claims;
+  const refs = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        id: reimbursements.id,
+        ref: reimbursements.receiptUploadRef,
+      })
+      .from(reimbursements)
+      .where(
+        and(
+          eq(reimbursements.tenantId, context.tenant.tenantId),
+          inArray(
+            reimbursements.id,
+            claims.map((claim) => claim.id),
+          ),
+          isNotNull(reimbursements.receiptUploadRef),
+        ),
+      ),
+  );
+  const refOf = new Map(refs.map((row) => [row.id as string, row.ref]));
+  return Promise.all(
+    claims.map(async (claim) => {
+      const ref = refOf.get(claim.id);
+      if (!ref) return claim;
+      const receiptUrl = await signer(context, ref).catch(() => null);
+      return { ...claim, receiptUrl };
+    }),
+  );
+}
+
+const withReceiptUrl = async (
+  context: ScopedTenantContext,
+  claim: Reimbursement,
+  signer: HrisFileSigner,
+): Promise<Reimbursement> =>
+  (await withReceiptUrls(context, [claim], signer))[0] ?? claim;
 
 const toCategory = (row: CategoryRow): ReimbursementCategory =>
   reimbursementCategorySchema.parse({
@@ -115,9 +315,8 @@ const toClaim = (row: ClaimRow): Reimbursement =>
     amountIdr: row.amountIdr,
     approvedAmountIdr: row.approvedAmountIdr,
     description: row.description,
-    // TODO legend-8399r: sign `receiptUploadRef` (private bucket, short-lived
-    // URL) once the payroll router receives a storage signer. Until then the
-    // reference is never exposed and the URL is null.
+    // Signed after the transaction by `withReceiptUrls`; the stored reference
+    // is never exposed.
     receiptUrl: null,
     payout: row.payout,
     status: row.status,
@@ -363,8 +562,9 @@ export async function listReimbursements(
   context: ScopedTenantContext,
   actorUserId: string,
   query: z.output<typeof listReimbursementsEndpoint.query>,
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<Page<Reimbursement>> {
-  return withTenant(db, context, async (tx) => {
+  const page = await withTenant(db, context, async (tx) => {
     await assertPayrollTenantCan(tx, context, actorUserId, APPROVE_CODE);
     const extra: SQL[] = [];
     if (query.status) extra.push(eq(reimbursements.status, query.status));
@@ -372,6 +572,7 @@ export async function listReimbursements(
       extra.push(eq(reimbursements.employeeId, query.employeeId));
     return listClaims(tx, context, query, extra);
   });
+  return { ...page, data: await withReceiptUrls(context, page.data, signer) };
 }
 
 /** HR-01: own claims only; the employee comes from the session. */
@@ -379,13 +580,15 @@ export async function listMyReimbursements(
   context: ScopedTenantContext,
   actorUserId: string,
   query: z.output<typeof listMyReimbursementsEndpoint.query>,
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<Page<Reimbursement>> {
-  return withTenant(db, context, async (tx) => {
+  const page = await withTenant(db, context, async (tx) => {
     const self = await loadPayrollSelf(tx, context, actorUserId, SELF_CODE);
     return listClaims(tx, context, query, [
       eq(reimbursements.employeeId, self.employeeId),
     ]);
   });
+  return { ...page, data: await withReceiptUrls(context, page.data, signer) };
 }
 
 // ---- Claims: writes -------------------------------------------------------
@@ -395,10 +598,11 @@ export async function createMyReimbursement(
   actorUserId: string,
   input: ClaimInput,
   now: Date = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<Reimbursement> {
   const { idempotencyKey, ...body } =
     createReimbursementInputSchema.parse(input);
-  return withTenant(db, context, async (tx) => {
+  const claim = await withTenant(db, context, async (tx) => {
     const self = await loadPayrollSelf(tx, context, actorUserId, SELF_CODE);
     return idempotentHrisWrite(
       tx,
@@ -445,17 +649,42 @@ export async function createMyReimbursement(
           throw unprocessable(
             "Karyawan yang sudah tidak aktif tidak bisa mengajukan reimbursement.",
           );
-        // Per-claim limit of the employee's position (or the default row).
-        // TODO legend-8399r: the per-month cap needs the approved+paid sum of
-        // the month; 0 is passed until then, so only one claim above the
-        // monthly cap is refused.
+        const receiptRef =
+          body.receiptUploadRef === null
+            ? null
+            : await assertReceiptUsable(
+                tx,
+                context,
+                employee.homeOutletId,
+                body.receiptUploadRef,
+                now,
+              );
+        // Per-claim and per-month limit of the employee's position (or the
+        // default row). The lock makes parallel claims queue up, so the second
+        // one sees the first one's amount.
+        await lockKey(
+          tx,
+          capLockKey(
+            context,
+            self.employeeId,
+            body.categoryId,
+            body.expenseDate,
+          ),
+        );
         assertReimbursementWithinLimit(
           reimbursementLimitFor(
             toCategory(category),
             positionIdSchema.nullable().parse(employee.positionId),
           ),
           body.amountIdr,
-          idr(0),
+          await monthUsageIdr(
+            tx,
+            context,
+            self.employeeId,
+            body.categoryId,
+            body.expenseDate,
+            ["submitted", "approved", "paid"],
+          ),
         );
 
         const [row] = await tx
@@ -467,7 +696,7 @@ export async function createMyReimbursement(
             expenseDate: body.expenseDate,
             amountIdr: body.amountIdr,
             description: body.description,
-            receiptUploadRef: body.receiptUploadRef,
+            receiptUploadRef: receiptRef,
             payout: body.payout,
             status: "submitted",
             submittedAt: now,
@@ -486,6 +715,7 @@ export async function createMyReimbursement(
       },
     );
   });
+  return withReceiptUrl(context, claim, signer);
 }
 
 async function lockClaim(
@@ -550,10 +780,11 @@ export async function decideReimbursement(
   reimbursementId: ReimbursementId,
   input: DecisionInput,
   now: Date = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<Reimbursement> {
   const { idempotencyKey, ...body } =
     decideReimbursementEndpoint.body.parse(input);
-  return withTenant(db, context, async (tx) => {
+  const claim = await withTenant(db, context, async (tx) => {
     const actor = await assertPayrollTenantCan(
       tx,
       context,
@@ -597,6 +828,7 @@ export async function decideReimbursement(
           throw unprocessable(
             "Jumlah disetujui tidak boleh melebihi jumlah klaim.",
           );
+        await assertMonthWithinLimitAtApproval(tx, context, row, approved);
         return moveClaim(tx, context, actor, now, row, "approve", {
           approvedAmountIdr: approved,
           decidedBy: actor,
@@ -605,6 +837,61 @@ export async function decideReimbursement(
       },
     );
   });
+  return withReceiptUrl(context, claim, signer);
+}
+
+/**
+ * Approval re-checks the month under the same lock as a new claim: what is
+ * already approved or paid plus this approved amount stays within the cap of
+ * the claimant's current position. Submitted claims are not counted: each one
+ * was admitted against the usage at its own submission.
+ */
+async function assertMonthWithinLimitAtApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: ClaimRow,
+  approvedIdr: ClaimRow["amountIdr"],
+): Promise<void> {
+  await lockKey(
+    tx,
+    capLockKey(context, row.employeeId, row.categoryId, row.expenseDate),
+  );
+  const [category] = await tx
+    .select()
+    .from(reimbursementCategories)
+    .where(
+      and(
+        eq(reimbursementCategories.tenantId, context.tenant.tenantId),
+        eq(reimbursementCategories.id, row.categoryId),
+      ),
+    )
+    .limit(1);
+  const [employee] = await tx
+    .select({ positionId: employees.positionId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, context.tenant.tenantId),
+        eq(employees.id, row.employeeId),
+      ),
+    )
+    .limit(1);
+  if (!category || !employee) throw notFound();
+  assertReimbursementWithinLimit(
+    reimbursementLimitFor(
+      toCategory(category),
+      positionIdSchema.nullable().parse(employee.positionId),
+    ),
+    idr(approvedIdr),
+    await monthUsageIdr(
+      tx,
+      context,
+      row.employeeId,
+      row.categoryId,
+      row.expenseDate,
+      ["approved", "paid"],
+    ),
+  );
 }
 
 export async function payReimbursementCash(
@@ -613,8 +900,9 @@ export async function payReimbursementCash(
   reimbursementId: ReimbursementId,
   idempotencyKey: string,
   now: Date = new Date(),
+  signer: HrisFileSigner = noHrisFileSigner,
 ): Promise<Reimbursement> {
-  return withTenant(db, context, async (tx) => {
+  const claim = await withTenant(db, context, async (tx) => {
     const actor = await assertPayrollTenantCan(
       tx,
       context,
@@ -649,4 +937,5 @@ export async function payReimbursementCash(
       },
     );
   });
+  return withReceiptUrl(context, claim, signer);
 }
