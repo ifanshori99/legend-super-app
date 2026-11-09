@@ -1333,3 +1333,8 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Belum ada pemanggil `createDoitPaymentReader`: resolver (reference Legend ke id DOIT) dan pemasangan ke worker/poller adalah langkah berikut.
 - Bukti merah dulu: 49 dari 54 tes gagal tanpa implementasi; cek outlet resolver: 1 gagal tanpa cek, 57/57 hijau dengan cek. Review K (architect): 1 sedang (outlet resolver tidak dicocokkan) dibetulkan + 2 tes celah; tidak ada migrasi.
 - Gelombang: sesi `21802f2a` 8 menit, 9 subagent (3 Explore, web-fetch, implementer, test-writer, doc-writer, architect, test-runner), puncak 3 bersamaan, biaya* 1446k; `parallel-report` 02:15: rata-rata 0,79 subagent berjalan, 15 langkah tanpa subagent (sesi `21802f`).
+
+## 2026-11-10: WS-07 jurnal retur pembelian dan pembelian sederhana (legend-1xbs, legend-v3lh)
+- Sudah: aturan `purchase_return.recorded` (Dr GRNI bagian belum ditagih, Dr utang usaha plus PPN bagian sudah ditagih, Cr persediaan, Cr PPN masukan) dan `petty_purchase.recorded` (Dr 5104 beban pembelian langsung, Cr kas kecil 1102), fact builder di consumer auto-jurnal, event baru `petty_purchase.recorded`, source type jurnal baru, migrasi 0205 (constraint plus backfill 5104). Keputusan: `docs/DECISIONS.md`.
+- Bukti: merah dulu 9 dari 12 tes api gagal tanpa sumber; typecheck shared, api, web bersih; review K (architect) 1 temuan (label web) dibetulkan; brief Codex `docs/briefs/298b-second-opinion-purchase-return-posting.md` (belum dijalankan).
+- Belum: emitter retur dan pembelian sederhana tidak ada di m1 (kartu `legend-316`); jurnal `goods_receipt.recorded` (kartu `legend-29vw`) harus jadi sebelum emitter retur aktif, kalau tidak GRNI bersaldo debit.

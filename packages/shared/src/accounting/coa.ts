@@ -211,6 +211,8 @@ export const POSTING_ACCOUNT_ROLES = {
   cogs: "expense",
   waste_expense: "expense",
   inventory_adjustment: "expense",
+  /** Direct cash purchases paid from petty cash (PRD §3.18 pembelian sederhana). */
+  petty_purchase_expense: "expense",
   salary_expense: "expense",
   /** Employee reimbursements (PRD §3 reimbursement via payroll or kas). */
   reimbursement_expense: "expense",
@@ -456,6 +458,13 @@ const standardRows: Row[] = [
   ["5101", "HPP Makanan dan Minuman", "cogs", "5100", ["cogs"]],
   ["5102", "Waste dan Spoilage", "cogs", "5100", ["waste_expense"]],
   ["5103", "Selisih Stok Opname", "cogs", "5100", ["inventory_adjustment"]],
+  [
+    "5104",
+    "Pembelian Langsung (Kas Kecil)",
+    "cogs",
+    "5100",
+    ["petty_purchase_expense"],
+  ],
   ["6100", "Beban Operasional", "operating_expense", null],
   [
     "6101",

@@ -102,6 +102,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "cashier_shift.closed",
   "settlement.reconciled",
   "edc_transaction.settled",
+  "purchase_return.recorded",
+  "petty_purchase.recorded",
 ] as const;
 export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
 
@@ -236,6 +238,30 @@ const shiftClosedSchema = z.object({
   closedAt: time,
 });
 
+// Purchasing (legend-1xbs, legend-v3lh). The payload is the whole fact, there
+// is no backing guard: the emitting transaction already split the value.
+// goods_receipt.recorded is not journaled here (legend-29vw).
+const purchaseReturnRecordedSchema = z.object({
+  purchaseReturnId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  valueIdr: idr.nonnegative(),
+  uninvoicedValueIdr: idr.nonnegative(),
+  invoicedValueIdr: idr.nonnegative(),
+  ppnIdr: idr.nonnegative(),
+  returnedAt: time,
+});
+
+const pettyPurchaseRecordedSchema = z.object({
+  pettyPurchaseId: z.string().uuid(),
+  outletId: z.string().uuid(),
+  amountIdr: idr.nonnegative(),
+  businessDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((value) => !Number.isNaN(Date.parse(value))),
+  paidAt: time,
+});
+
 const PAYMENT_SCHEMAS = {
   "payment.paid": paymentPaidSchema,
   "payment.funds_unallocated": fundsUnallocatedSchema,
@@ -327,6 +353,16 @@ export function storedEventOf(event: {
       assertEnvelopeOutlet(event, payload.outletId);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
+    case "purchase_return.recorded": {
+      const payload = purchaseReturnRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "petty_purchase.recorded": {
+      const payload = pettyPurchaseRecordedSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
   }
 }
 
@@ -386,6 +422,10 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:settlement:${String(p.settlementId)}`);
     case "edc_transaction.settled":
       return boundedKey(`aj:edc-settlement:${String(p.settlementBatchId)}`);
+    case "purchase_return.recorded":
+      return boundedKey(`aj:purchase-return:${String(p.purchaseReturnId)}`);
+    case "petty_purchase.recorded":
+      return boundedKey(`aj:petty-purchase:${String(p.pettyPurchaseId)}`);
   }
 }
 
@@ -1241,6 +1281,48 @@ export async function autoJournalFactOf(
         outletId: p.outletId,
         moneyTime: new Date(`${p.settledOn}T00:00:00.000Z`),
         entryDate: p.settledOn,
+      };
+    }
+    // The posting rule reads debitNoteIdr (accounts payable cleared by the
+    // return: the invoiced value plus its PPN), the emitter sends the parts.
+    // Nothing returned books nothing (ignored). The journal date is the
+    // outlet business date of returnedAt.
+    case "purchase_return.recorded": {
+      const p = purchaseReturnRecordedSchema.parse(stored.payload);
+      if (p.valueIdr === 0) return null;
+      if (p.valueIdr !== p.uninvoicedValueIdr + p.invoicedValueIdr)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return valueIdr differs from its uninvoiced and invoiced parts",
+        );
+      if (p.ppnIdr > 0 && p.invoicedValueIdr === 0)
+        throw new AutoJournalPayloadInvalid(
+          "purchase_return ppnIdr without an invoiced value",
+        );
+      return {
+        ruleEvent: "purchase_return.recorded",
+        amounts: {
+          uninvoicedValueIdr: p.uninvoicedValueIdr,
+          debitNoteIdr: p.invoicedValueIdr + p.ppnIdr,
+          valueIdr: p.valueIdr,
+          ppnIdr: p.ppnIdr,
+        },
+        sourceId: p.purchaseReturnId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.returnedAt),
+      };
+    }
+    // Dated by the petty purchase business date as is (entryDate), like a
+    // bank settlement: the outlet already decided which day it belongs to.
+    case "petty_purchase.recorded": {
+      const p = pettyPurchaseRecordedSchema.parse(stored.payload);
+      if (p.amountIdr === 0) return null;
+      return {
+        ruleEvent: "petty_purchase.recorded",
+        amounts: { amountIdr: p.amountIdr },
+        sourceId: p.pettyPurchaseId,
+        outletId: p.outletId,
+        moneyTime: new Date(p.paidAt),
+        entryDate: p.businessDate,
       };
     }
   }

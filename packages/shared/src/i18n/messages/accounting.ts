@@ -348,6 +348,8 @@ export const accountingMessages = {
     purchase: "Pembelian",
     supplier_invoice: "Tagihan supplier",
     supplier_payment: "Pembayaran supplier",
+    purchase_return: "Retur pembelian",
+    petty_purchase: "Pembelian kas kecil",
     production: "Produksi",
     payroll: "Payroll",
     loyalty: "Poin loyalty",

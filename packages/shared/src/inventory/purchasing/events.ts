@@ -18,6 +18,7 @@
 //   amount and approval, not the journal.
 
 import {
+  businessDateSchema,
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
@@ -31,6 +32,7 @@ import {
   purchaseDocumentNumberSchema,
   purchaseOrderIdSchema,
   purchaseOrderSourceSchema,
+  pettyPurchaseIdSchema,
   purchaseReturnIdSchema,
   supplierIdSchema,
   supplierInvoiceIdSchema,
@@ -38,6 +40,11 @@ import {
   supplierPaymentIdSchema,
   supplierPaymentMethodSchema,
 } from "./schemas.ts";
+
+const nonNegativeIdrSchema = idrSchema.refine(
+  (value) => value >= 0,
+  "Amount must be >= 0",
+);
 
 export const purchasingEventNames = [
   "purchase_order.created",
@@ -47,6 +54,7 @@ export const purchasingEventNames = [
   "supplier_invoice.matched",
   "supplier_payment.paid",
   "purchase_return.recorded",
+  "petty_purchase.recorded",
 ] as const;
 export type PurchasingEventName = (typeof purchasingEventNames)[number];
 
@@ -159,16 +167,58 @@ export type SupplierPaymentPaidEventPayload = z.infer<
  * stock-ledger rows themselves travel as `stock.moved` from the inventory
  * contract, so a consumer that needs the movement subscribes there.
  */
-export const purchaseReturnRecordedEventPayloadSchema = z.strictObject({
-  purchaseReturnId: purchaseReturnIdSchema,
-  supplierId: supplierIdSchema,
-  number: purchaseDocumentNumberSchema,
-  valueIdr: idrSchema,
-  returnedBy: userIdSchema,
-  returnedAt: isoDateTimeSchema,
-});
+export const purchaseReturnRecordedEventPayloadSchema = z
+  .strictObject({
+    purchaseReturnId: purchaseReturnIdSchema,
+    supplierId: supplierIdSchema,
+    outletId: outletIdSchema,
+    number: purchaseDocumentNumberSchema,
+    valueIdr: idrSchema,
+    /** Part of `valueIdr` still on GRNI (goods received, not yet invoiced). */
+    uninvoicedValueIdr: nonNegativeIdrSchema,
+    /** Part of `valueIdr` already on a supplier invoice (debit note against AP). */
+    invoicedValueIdr: nonNegativeIdrSchema,
+    /** PPN masukan reversed on the invoiced part. */
+    ppnIdr: nonNegativeIdrSchema,
+    returnedBy: userIdSchema,
+    returnedAt: isoDateTimeSchema,
+  })
+  // The accounting posting rule consumes these keys; refuse a split whose
+  // journal would not balance, or PPN with no invoiced part to reverse it from.
+  .refine(
+    (payload) =>
+      payload.valueIdr ===
+      payload.uninvoicedValueIdr + payload.invoicedValueIdr,
+    {
+      path: ["valueIdr"],
+      message: "valueIdr = uninvoicedValueIdr + invoicedValueIdr",
+    },
+  )
+  .refine((payload) => payload.ppnIdr === 0 || payload.invoicedValueIdr > 0, {
+    path: ["ppnIdr"],
+    message: "ppnIdr needs an invoiced value",
+  });
 export type PurchaseReturnRecordedEventPayload = z.infer<
   typeof purchaseReturnRecordedEventPayloadSchema
+>;
+
+/**
+ * Id-only payload for a simple purchase paid from petty cash (PRD §3.18
+ * Pembelian Sederhana); WS-07 posts Dr petty purchase expense / Cr petty cash.
+ */
+export const pettyPurchaseRecordedEventPayloadSchema = z.strictObject({
+  pettyPurchaseId: pettyPurchaseIdSchema,
+  outletId: outletIdSchema,
+  amountIdr: idrSchema.refine(
+    (amount) => amount > 0,
+    "The amount must be greater than zero",
+  ),
+  businessDate: businessDateSchema,
+  paidBy: userIdSchema,
+  paidAt: isoDateTimeSchema,
+});
+export type PettyPurchaseRecordedEventPayload = z.infer<
+  typeof pettyPurchaseRecordedEventPayloadSchema
 >;
 
 /** Payload schema per event name, for the outbox writer and consumers. */
@@ -180,6 +230,7 @@ export const purchasingEventPayloadSchemas = {
   "supplier_invoice.matched": supplierInvoiceMatchedEventPayloadSchema,
   "supplier_payment.paid": supplierPaymentPaidEventPayloadSchema,
   "purchase_return.recorded": purchaseReturnRecordedEventPayloadSchema,
+  "petty_purchase.recorded": pettyPurchaseRecordedEventPayloadSchema,
 } as const;
 
 /**

@@ -363,6 +363,31 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
       ["accounts_payable", "credit", "payableIdr"],
     ],
   ),
+  // debitNoteIdr = invoicedValueIdr + ppnIdr, reduced by the fact builder.
+  // valueIdr = uninvoicedValueIdr + invoicedValueIdr (event refine), so the
+  // journal balances; a zero amount drops its line.
+  rule(
+    { event: "purchase_return.recorded" },
+    "purchase_return",
+    "Retur pembelian",
+    `${AUTO} (pembelian); INV-05; §3.18 Retur Pembelian`,
+    [
+      ["grni", "debit", "uninvoicedValueIdr"],
+      ["accounts_payable", "debit", "debitNoteIdr"],
+      ["inventory", "credit", "valueIdr"],
+      ["ppn_input", "credit", "ppnIdr"],
+    ],
+  ),
+  rule(
+    { event: "petty_purchase.recorded" },
+    "petty_purchase",
+    "Pembelian sederhana dari kas kecil",
+    `${AUTO} (pembelian); §3.18 Pembelian Sederhana`,
+    [
+      ["petty_purchase_expense", "debit", "amountIdr"],
+      ["petty_cash", "credit", "amountIdr"],
+    ],
+  ),
   rule(
     { event: "production.completed" },
     "production",
