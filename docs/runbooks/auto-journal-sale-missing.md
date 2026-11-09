@@ -65,6 +65,33 @@ sale through its key `aj:sale:<orderId>`: if your manual journal does not carry
 that key the row parks `AUTO_JOURNAL_SALE_MISSING` again (attempts +1) and
 needs a finance decision instead of a retry.
 
+## Payouts and QR sales that wait on a parked POS refund (legend-hxpd5)
+
+A payout of a payment intent (`aj:payout:<refundId>`) or a QR pay-first sale
+of it subtracts the gateway part a POS refund gave back only once that POS
+refund's journal (`aj:order-refund:<refundId>`) is posted. While the POS
+refund is parked `AUTO_JOURNAL_SALE_MISSING`, it counts as "can still post",
+so a payout that does not fit without it parks retryable
+`AUTO_JOURNAL_RECEIPT_PENDING` and the sweep retries it every 10 minutes.
+Once the sale posts (by replay, or by hand plus the step above) the refund
+posts and the next sweep posts the payout.
+
+If the sale will never post (finance decided to leave it), those payouts keep
+retrying with `AUTO_JOURNAL_RECEIPT_PENDING` and a growing `attempts`. Find
+them with:
+
+```sql
+SELECT idempotency_key, event_name, error_code, attempts, last_failed_at
+  FROM auto_journal_parked
+ WHERE tenant_id = :tenant_id
+   AND error_code = 'AUTO_JOURNAL_RECEIPT_PENDING'
+   AND attempts > 20
+ ORDER BY first_failed_at;
+```
+
+and resolve them together with the parked sale (manual journal for the sale
+or the payout). Nothing is posted wrongly while they wait.
+
 ## Warnings
 
 - Never run the UPDATE without `tenant_id` and `payload->>'orderId'`. Rows of

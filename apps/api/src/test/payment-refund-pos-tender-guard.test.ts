@@ -581,7 +581,13 @@ describe("PAY-04 an authorized tender holds every intent of its payment link (le
     const intentId = await paidIntent(100_000);
     const other = await paidIntent(100_000);
     const orderId = await posOrder(100_000, "awaiting_payment");
-    await qrisTender(orderId, other, 100_000, "authorized", await linkOf(other));
+    await qrisTender(
+      orderId,
+      other,
+      100_000,
+      "authorized",
+      await linkOf(other),
+    );
 
     const response = await requestRefund(intentId, 100_000);
 

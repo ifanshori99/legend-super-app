@@ -574,7 +574,8 @@ async function intentBackedAt(
   // Only a POS refund whose journal posted counts, like the receipt: one that
   // can still post makes the check wait (posRefundPending), one that never
   // posts is not subtracted (fail closed).
-  const filters = { sales: salesAt(bound), posRefunds: posRefundsAt(bound) };
+  // salesAt is and() of defined parts, never undefined at runtime.
+  const filters = { sales: salesAt(bound)!, posRefunds: posRefundsAt(bound) };
   const candidates = (
     await tx.execute(posRefundsOfIntentSql(tenantId, intentId, filters))
   ).rows.map((row) => String(row.id));
