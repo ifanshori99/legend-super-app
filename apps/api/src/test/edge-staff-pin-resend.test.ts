@@ -434,4 +434,90 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
         .some((event) => materialOf(event)?.pinHash === rowA.pin_hash),
     ).toBe(false);
   });
+  it("resends every materialless pin of the outlet once, and a second run resends nothing", async () => {
+    const users = [await newUser(), await newUser(), await newUser()];
+    for (const [index, userId] of users.entries())
+      await setPinWithoutMaterial(
+        userId,
+        `70${index}${index}${index}9`,
+        new Date(Date.now() - HOUR),
+      );
+
+    const first = await resendMateriallessStaffPinSets(tenant, outletA);
+    expect(first.resent).toBe(3);
+    for (const userId of users) {
+      const events = await setEvents(userId);
+      expect(events).toHaveLength(2);
+      expect(materialOf(events[1]!)?.pinHash).toBe(
+        (await pinRow(userId)).pin_hash,
+      );
+    }
+
+    const second = await resendMateriallessStaffPinSets(tenant, outletA);
+    expect(second.resent).toBe(0);
+    for (const userId of users) expect(await setEvents(userId)).toHaveLength(2);
+  });
+
+  // legend-gauz3 follow-up: the job locked every pin row in one statement, in
+  // local id order, while the PIN pull locks rows in cloud id order. Another
+  // transaction holding the higher-id row and then asking for the lower-id one
+  // formed a lock cycle (40P01) that the one-shot job never retried. The job
+  // now holds one row lock per transaction, so it waits for the held row
+  // without owning any other.
+  it("holds one row lock at a time, so a transaction that locks two pins in the opposite order does not deadlock with it", async () => {
+    const users = [await newUser(), await newUser()];
+    for (const [index, userId] of users.entries())
+      await setPinWithoutMaterial(
+        userId,
+        `81${index}${index}${index}4`,
+        new Date(Date.now() - HOUR),
+      );
+    const [lowId, highId] = (
+      await Promise.all(users.map(async (userId) => (await pinRow(userId)).id))
+    ).sort();
+
+    const holder = await owner.connect();
+    let job: ReturnType<typeof resendMateriallessStaffPinSets> | null = null;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM staff_pins WHERE id = $1 FOR UPDATE", [
+        highId,
+      ]);
+      const {
+        rows: [{ pid }],
+      } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+
+      job = resendMateriallessStaffPinSets(tenant, outletA);
+      const settled = job.then(
+        () => "done",
+        () => "failed",
+      );
+      // The job has reached the high row: it is blocked behind the holder.
+      let blocked = false;
+      for (let attempt = 0; attempt < 400 && !blocked; attempt++) {
+        const { rowCount } = await owner.query(
+          `SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
+          [pid],
+        );
+        blocked = (rowCount ?? 0) > 0;
+        if (!blocked) {
+          if ((await Promise.race([settled, "pending"])) !== "pending") break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      expect(blocked).toBe(true);
+
+      // The opposite order: with the job holding the low row this is a cycle.
+      await holder.query("SELECT 1 FROM staff_pins WHERE id = $1 FOR UPDATE", [
+        lowId,
+      ]);
+      await holder.query("COMMIT");
+      expect((await job).resent).toBe(2);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      await job?.catch(() => undefined);
+    }
+    for (const userId of users) expect(await setEvents(userId)).toHaveLength(2);
+  });
 });
