@@ -32,10 +32,10 @@ Catatan untuk item 1 dan 8: `doitRefundDeclineCode` hanya memetakan kode `409 pa
 
 Kunci disimpan sebagai kredensial integrasi DOIT, bukan di `.env`.
 
-| Secret                 | Dipakai untuk                                        | Di mana di portal DOIT                                                                        | Di mana di aplikasi                                   |
-| ---------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| API key sandbox        | `Authorization: Bearer` pada semua panggilan ke DOIT | Menu API key di dashboard sandbox (nama menu persis dikonfirmasi saat founder membuka portal) | Settings > Integrations > DOIT, field `apiKey`        |
-| Webhook signing secret | Verifikasi header `PayBridge-Signature`              | Menu webhook di dashboard sandbox (nama menu persis dikonfirmasi saat founder membuka portal) | Settings > Integrations > DOIT, field `webhookSecret` |
+| Secret                 | Dipakai untuk                                        | Di mana di portal DOIT                                                                | Di mana di aplikasi                                   |
+| ---------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| API key sandbox        | `Authorization: Bearer` pada semua panggilan ke DOIT | Menu **Developer**, buat aplikasi; kunci tampil sekali saat dibuat, awalan `pb_test_` | Settings > Integrations > DOIT, field `apiKey`        |
+| Webhook signing secret | Verifikasi header `PayBridge-Signature`              | Menu **Developer** (signing secret aplikasi yang sama)                                | Settings > Integrations > DOIT, field `webhookSecret` |
 
 Aturan:
 
@@ -45,17 +45,28 @@ Aturan:
 - Jangan cetak nilai kunci di log, chat, atau dokumen. Jangan tulis ke `.env` atau `.env.local`.
 - Jangan taruh kunci sandbox di baris perintah curl (masuk riwayat shell dan `ps`). Pakai berkas header dengan izin `chmod 600`, isinya `Authorization: Bearer ...`, disimpan di luar repo, dan dihapus setelah dipakai. Contoh: `curl -H @"$KEYFILE" ...`.
 
+### Host sandbox (hasil cek dokumentasi publik DOIT, 9 Nov 2026)
+
+Sumber: <https://doit.id/docs/en/>.
+
+- Sandbox dan live memakai host yang sama: `https://pay.doit.id`. Dokumentasi: "The environment is determined by the key prefix, not the base URL". Jadi `DOIT_BASE_URL` di kode sudah benar dan `config.baseUrl` tidak perlu diisi untuk sandbox.
+- Kunci sandbox berawalan `pb_test_`, kunci live berawalan `pb_live_`. Sebelum menyimpan, cek awalannya saja (jangan cetak sisanya).
+- Akun baru mulai dalam mode sandbox. Perilaku sandbox sama dengan production (endpoint, format, error), kecuali tidak ada uang nyata dan pelunasan dipicu manual lewat tombol simulasi di portal (buka payment di portal, tekan "Simulate paid"). Tombol itu ada di portal, bukan di halaman checkout.
+- API key dibuat per aplikasi di menu **Developer** portal dan hanya ditampilkan **sekali** saat dibuat. Signing secret webhook juga ada di menu **Developer**. URL webhook diatur per aplikasi.
+- Dokumentasi tidak menjelaskan perilaku refund khusus sandbox. Yang tertulis umum: `POST /v1/payments/{id}/refunds`, `amount` opsional (default penuh), hanya payment `paid` yang bisa direfund, refund parsial boleh berulang sampai total sama dengan jumlah awal. Butir checklist bagian 1 tetap harus dibuktikan di sandbox.
+- Mode compat (Duitku/Xendit) memakai host yang sama. Legend memakai API native, jadi isi field webhook native, jangan aktifkan compat.
+
 ## 3. Langkah portal untuk founder
 
-Dilakukan founder sendiri di portal DOIT sandbox. Nama menu dikonfirmasi saat membuka portal.
+Dilakukan founder sendiri di portal DOIT (akun masih mode sandbox). Semua pengaturan ada di menu **Developer**.
 
 1. Login ke portal DOIT sandbox dengan akun merchant sandbox.
-2. Buka menu API key, buat atau salin API key sandbox. Simpan di password manager.
-3. Buka menu webhook. Daftarkan URL berikut:
+2. Buka menu **Developer**, buat aplikasi (misalnya `Legend sandbox`). Salin API key yang tampil (hanya tampil sekali, awalan `pb_test_`). Simpan di password manager.
+3. Di aplikasi yang sama (menu **Developer**), isi URL webhook native:
    `https://<tunnel-host>/api/webhooks/payments/doit/<tenantId>`
    Ganti `<tunnel-host>` dengan host tunnel (bagian 5) dan `<tenantId>` dengan ID tenant sandbox.
 4. Pilih event: `payment.paid`, `payment.expired`, `refund.succeeded`, `refund.failed`. Tambahkan `webhook.test` bila ada.
-5. Salin webhook signing secret. Simpan di password manager.
+5. Salin signing secret webhook dari menu **Developer**. Simpan di password manager.
 6. Kirim kedua nilai ke tim lewat `ghostex secret request`, bukan lewat chat.
 
 ## 4. Setup lokal di worktree ini
