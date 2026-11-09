@@ -1,4 +1,5 @@
 import {
+  listKitchenStationLabels,
   listKitchenStations,
   getKitchenBoard,
   startKitchenTicket,
@@ -78,21 +79,18 @@ export async function updateItem(
   ).data;
 }
 
-/** Station names and target times belong to the menu contract. */
-export async function fetchMenuStations(signal?: AbortSignal) {
-  const { listStations } = await import("@starter/shared/menu");
-  const rows: import("@starter/shared/menu").Station[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await callEndpoint(
-      listStations,
-      { query: { outletId: KITCHEN_OUTLET_ID, limit: 100, cursor } },
+/**
+ * Station names and target times for the KDS (legend-gt7f): the KDS read the
+ * cook is allowed (`kds.ticket.process`), not the menu station list.
+ */
+export async function fetchStationLabels(signal?: AbortSignal) {
+  return (
+    await callEndpoint(
+      listKitchenStationLabels,
+      { params: { outletId: KITCHEN_OUTLET_ID } },
       { signal },
-    );
-    rows.push(...page.data);
-    cursor = page.meta.nextCursor ?? undefined;
-  } while (cursor);
-  return rows;
+    )
+  ).data;
 }
 
 /** F12 86: find the outlet's availability record before issuing its action. */

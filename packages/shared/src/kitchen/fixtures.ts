@@ -8,7 +8,12 @@
 // three contracts reference the same records.
 
 import { z, cafeLegendFixtures } from "../core/index.ts";
-import { kitchenFixtureSchema, orderIssueViewSchema } from "./schemas.ts";
+import {
+  kitchenFixtureSchema,
+  orderIssueViewSchema,
+  stationCapacityRuleSchema,
+  stationLabelSchema,
+} from "./schemas.ts";
 
 // Fixtures are written as plain data (`z.input`): branded ids appear only after
 // the schema parses them, which is what the fixture test and the API do.
@@ -1303,6 +1308,56 @@ export const stationSummary: KitchenFixtureInput["stationSummary"] = {
     ).length,
   })),
 };
+
+/** What a cook reads (legend-gt7f); names and types follow the menu stations. */
+export const stationLabels: z.input<typeof stationLabelSchema>[] = [
+  {
+    stationId: stationId.coffee,
+    name: "Kopi",
+    type: "coffee_bar",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.beverage,
+    name: "Nonkopi",
+    type: "beverage_bar",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.kitchen,
+    name: "Dapur",
+    type: "hot_kitchen",
+    targetSeconds: 600,
+  },
+  {
+    stationId: stationId.pastry,
+    name: "Pastry",
+    type: "pastry",
+    targetSeconds: 600,
+  },
+];
+
+/** The cook's slim view of a station's capacity rules (legend-gt7f). */
+export const stationCapacityRules: z.input<typeof stationCapacityRuleSchema>[] =
+  capacityRules
+    .filter((rule) => rule.stationId === stationId.kitchen)
+    .map(
+      ({
+        stationId: station,
+        windowMinutes,
+        capacityPoints,
+        nearCapacityBp,
+        schedule,
+        channelPriority,
+      }) => ({
+        stationId: station,
+        windowMinutes,
+        capacityPoints,
+        nearCapacityBp,
+        schedule,
+        channelPriority,
+      }),
+    );
 
 export const cafeLegendKitchenFixtures: KitchenFixtureInput = {
   stationConfigs,
