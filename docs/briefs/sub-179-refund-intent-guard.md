@@ -17,3 +17,14 @@ Perilaku baru (engineer yang mengedit): handler `order.refunded` memeriksa `back
 - N2: penjualan parkir `POSTING_AMOUNTS_MISMATCH` (non-retryable) lalu refund bagian gateway → parkir SALE_MISSING, tidak ada jurnal refund, saldo `customer_deposit` tidak berubah.
 - N3: penjualan posted → refund terposting seperti sekarang.
 Test lama (suite F19 :1584 dll.) yang memposting refund tanpa penjualan posted diubah agar penjualan diposting dulu; laporkan yang diubah. N1 dan N2 harus GAGAL di fee69d45; laporkan barisnya.
+
+Catatan untuk test-writer: jangan mengembalikan berkas service di worktree ini untuk menguji kode lama; pakai worktree sementara di scratchpad (`git worktree add --detach <path> <sha>`).
+
+## Test A (riqu), berkas baru `apps/api/src/test/payment-refund-pos-tender-guard.test.ts` (pola dan helper dari `reservation-deposit-refund-guard.test.ts`: test :626 menanam `pos_orders` + `pos_order_tenders` captured, :547 insert `payment_refunds` mentah + `/approve`)
+Perilaku baru (engineer yang mengedit): `refundableBalance` mengurangi `posSaleInUse` dari `cap` = jumlah tender POS `captured` yang memakai intent itu, dikurangi bagian gateway yang sudah diretur lewat refund POS (`pos_order_refunds.lines`, metode sama, hanya bila semua tender metode itu di pesanan tersebut memakai intent yang sama). Kode 409 baru `REFUND_INTENT_IN_POS_SALE`.
+- R1: intent I lunas Rp100.000 lewat tender POS QRIS captured (`payment_intent_id = I`, intent tanpa `order_id`). Permintaan refund Rp100.000 → 409 `REFUND_INTENT_IN_POS_SALE`, tidak ada baris refund.
+- R2: refund pending di I (insert mentah, seolah dibuat sebelum tender) lalu approve → 409 `REFUND_INTENT_IN_POS_SALE`; refund `failed` (`cap_exceeded`); tidak ada payout.
+- R3: pesanan itu diretur sebagian lewat refund POS (baris `qris` Rp30.000, boleh insert `pos_order_refunds` mentah) → refund intent Rp30.000 diterima; Rp30.001 → 409 `REFUND_INTENT_IN_POS_SALE`.
+- R4: intent tanpa tender POS → perilaku lama.
+- R5: daftar refundable payments (endpoint listing di payment-admin) menunjukkan `refundableAmountIdr` tanpa bagian yang dipakai tender.
+R1, R2, R3 (bagian Rp30.001), R5 harus GAGAL di fee69d45: uji kode lama di worktree sementara, jangan mengembalikan berkas service.

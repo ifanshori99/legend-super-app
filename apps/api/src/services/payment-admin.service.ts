@@ -37,6 +37,13 @@ export const missing = () =>
   new HttpError(404, "NOT_FOUND", "Payment or refund not found.");
 export const conflict = (message: string) =>
   new HttpError(409, "CONFLICT", message);
+/** legend-riqu: the intent's money is still held by a captured POS tender. */
+export const posSaleInUseRefused = (refundableIdr: bigint) =>
+  new HttpError(
+    409,
+    "REFUND_INTENT_IN_POS_SALE",
+    `Payment still pays a POS sale; refund that sale at the POS first. At most ${refundableIdr} IDR can be refunded now.`,
+  );
 
 export type Intent = typeof paymentIntents.$inferSelect;
 export type Refund = typeof paymentRefunds.$inferSelect;
@@ -90,9 +97,66 @@ export async function refundableBalance(
     { lock: lockDeposit },
   );
   const forfeited = BigInt(String(row.forfeited));
-  const held = depositInUse + forfeited;
+  const posSaleInUse = await posSaleInUseOfIntent(
+    tx,
+    intent.tenantId,
+    intent.id,
+  );
+  const held = depositInUse + forfeited + posSaleInUse;
   const cap = paid > held ? paid - held : 0n;
-  return { cap, reserved, paid, depositInUse, forfeited };
+  return { cap, reserved, paid, depositInUse, forfeited, posSaleInUse };
+}
+
+/**
+ * legend-riqu: money of the intent a captured POS tender still holds. Per
+ * order and tender method: the captured tenders paid by the intent, less what
+ * POS refunds of that order already gave back for that method (owed to the
+ * guest, paid out by an intent refund). A POS refund line names a method, not
+ * a tender, so it counts for the intent only when every captured tender of
+ * that method on the order is paid by this intent; otherwise the intent keeps
+ * the whole amount held (fail closed: no refund of money a sale may still
+ * hold). Read under the intent row lock the writers hold.
+ */
+async function posSaleInUseOfIntent(
+  tx: Tx,
+  tenantId: Intent["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    WITH used AS (
+      SELECT t.order_id, t.method,
+             sum(t.amount_idr) FILTER (WHERE t.payment_intent_id = ${intentId}::uuid) AS on_intent,
+             sum(t.amount_idr) AS on_method
+        FROM pos_order_tenders t
+       WHERE t.tenant_id = ${tenantId}
+         AND t.status = 'captured'
+         AND t.order_id IN (
+           SELECT u.order_id FROM pos_order_tenders u
+            WHERE u.tenant_id = ${tenantId}
+              AND u.payment_intent_id = ${intentId}::uuid
+              AND u.status = 'captured')
+       GROUP BY t.order_id, t.method
+    ), returned AS (
+      SELECT r.order_id, l.value->>'method' AS method,
+             sum((l.value->>'amountIdr')::numeric) AS amount
+        FROM pos_order_refunds r
+       CROSS JOIN LATERAL jsonb_array_elements(r.lines) AS l(value)
+       WHERE r.tenant_id = ${tenantId}
+         AND r.order_id IN (SELECT order_id FROM used)
+       GROUP BY r.order_id, l.value->>'method'
+    )
+    SELECT coalesce(sum(
+             u.on_intent - CASE
+               WHEN u.on_intent = u.on_method
+                 THEN least(coalesce(f.amount, 0), u.on_intent)
+               ELSE 0
+             END), 0)::text AS held
+      FROM used u
+      LEFT JOIN returned f ON f.order_id = u.order_id AND f.method = u.method
+     WHERE u.on_intent IS NOT NULL
+  `);
+  const held = BigInt(String(result.rows[0]?.held ?? "0"));
+  return held > 0n ? held : 0n;
 }
 
 async function paymentInfo(tx: Tx, intent: Intent) {
@@ -353,9 +417,15 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
-        const { cap, reserved, paid, depositInUse, forfeited } =
+        const { cap, reserved, paid, depositInUse, forfeited, posSaleInUse } =
           await refundableBalance(tx, intent);
         if (reserved + BigInt(body.amountIdr) > cap) {
+          // legend-riqu: a captured POS tender still holds this money.
+          if (
+            posSaleInUse > 0n &&
+            reserved + BigInt(body.amountIdr) <= cap + posSaleInUse
+          )
+            throw posSaleInUseRefused(cap > reserved ? cap - reserved : 0n);
           // legend-fsl5: the reservation DP was forfeited to the outlet.
           if (
             forfeited > 0n &&
