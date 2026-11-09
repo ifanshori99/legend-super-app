@@ -331,18 +331,6 @@ export async function getPosOrder(
   });
 }
 
-/** The current order version, for the `ETag` header after a write. */
-export async function posOrderVersion(
-  context: ScopedTenantContext,
-  outletId: OutletId,
-  orderId: string,
-): Promise<number> {
-  return withTenant(db, context, async (tx) => {
-    const locked = await readPosOrder(tx, context, outletId, orderId);
-    return locked.pos.version;
-  });
-}
-
 /**
  * GET .../events — the §6 append-only log, oldest first, keyset on sequence.
  * Only the event types the contract declares (posOrderEventTypeSchema) are
