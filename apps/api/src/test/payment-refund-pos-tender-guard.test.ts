@@ -121,7 +121,10 @@ async function paidIntent(amountIdr: number): Promise<string> {
 }
 
 /** A completed POS order of `totalIdr` (orders + pos_orders). */
-async function posOrder(totalIdr: number): Promise<string> {
+async function posOrder(
+  totalIdr: number,
+  status: "completed" | "awaiting_payment" = "completed",
+): Promise<string> {
   const id = randomUUID();
   orderIds.push(id);
   await asOwner(async (client) => {
@@ -130,13 +133,14 @@ async function posOrder(totalIdr: number): Promise<string> {
          subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
          status, business_date, placed_at)
        VALUES ($1, $2, $3, $4, 'pos', 'takeaway', 'pay_first', $5, 0, 0, 0, 0, $5,
-         'completed', '2026-11-09', now())`,
+         $6, '2026-11-09', now())`,
       [
         id,
         seededTenantId,
         seededOutletA,
         `TG-${randomUUID().slice(0, 8)}`,
         totalIdr,
+        status,
       ],
     );
     await client.query(
@@ -153,13 +157,21 @@ async function qrisTender(
   orderId: string,
   intentId: string,
   amountIdr: number,
-  status: "captured" | "voided" = "captured",
+  status: "captured" | "voided" | "authorized" = "captured",
 ) {
   await owner.query(
     `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
         payment_intent_id, amount_idr, status, requested_at, resolved_at)
-     VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, $6, now(), now())`,
-    [seededTenantId, seededOutletA, orderId, intentId, amountIdr, status],
+     VALUES ($1, $2, $3, 'qris', 'doit', $4, $5, $6, now(), $7)`,
+    [
+      seededTenantId,
+      seededOutletA,
+      orderId,
+      intentId,
+      amountIdr,
+      status,
+      status === "authorized" ? null : new Date(),
+    ],
   );
 }
 
@@ -485,6 +497,30 @@ describe("PAY-04 review fixes: voided sales and fully returned methods hold noth
     expect(one.status, JSON.stringify(one.body)).toBe(201);
     const two = await requestRefund(second, 40_000);
     expect(two.status, JSON.stringify(two.body)).toBe(201);
+  });
+});
+
+describe("PAY-04 an authorized tender of an open order holds the intent too", () => {
+  it("PAY-04 R8 the paid webhook has not captured the tender yet: refunding the intent is refused with REFUND_INTENT_IN_POS_SALE", async () => {
+    const intentId = await paidIntent(100_000);
+    const orderId = await posOrder(100_000, "awaiting_payment");
+    await qrisTender(orderId, intentId, 100_000, "authorized");
+
+    const response = await requestRefund(intentId, 100_000);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error.code).toBe(GUARD_CODE);
+    expect(await refundRows(intentId)).toHaveLength(0);
+  });
+
+  it("PAY-04 R8 an authorized tender of a completed order is never captured (late payment): the intent is refundable in full", async () => {
+    const intentId = await paidIntent(100_000);
+    const orderId = await posOrder(100_000);
+    await qrisTender(orderId, intentId, 100_000, "authorized");
+
+    const response = await requestRefund(intentId, 100_000);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
   });
 });
 

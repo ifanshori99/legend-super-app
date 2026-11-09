@@ -118,6 +118,11 @@ export async function refundableBalance(
  * hold), unless the POS refunds returned the whole method (nothing left to
  * attribute). A voided sale (`pos_order_voids`) holds nothing: the void keeps
  * the tenders captured and the QRIS part goes back through an intent refund.
+ * An `authorized` tender of an open order counts as captured: the paid
+ * webhook captures it later without taking the intent lock, so a refund
+ * approved in between would pay the guest for a sale that then completes. An
+ * authorized tender of a completed or voided order is never captured (its
+ * money goes back as a late payment refund) and holds nothing.
  * Read under the intent row lock the writers hold.
  */
 async function posSaleInUseOfIntent(
@@ -131,13 +136,16 @@ async function posSaleInUseOfIntent(
              sum(t.amount_idr) FILTER (WHERE t.payment_intent_id = ${intentId}::uuid) AS on_intent,
              sum(t.amount_idr) AS on_method
         FROM pos_order_tenders t
+        JOIN orders o ON o.tenant_id = t.tenant_id AND o.id = t.order_id
        WHERE t.tenant_id = ${tenantId}
-         AND t.status = 'captured'
+         AND (t.status = 'captured'
+              OR (t.status = 'authorized'
+                  AND o.status NOT IN ('completed', 'voided')))
          AND t.order_id IN (
            SELECT u.order_id FROM pos_order_tenders u
             WHERE u.tenant_id = ${tenantId}
               AND u.payment_intent_id = ${intentId}::uuid
-              AND u.status = 'captured')
+              AND u.status IN ('captured', 'authorized'))
          AND NOT EXISTS (
            SELECT 1 FROM pos_order_voids v
             WHERE v.tenant_id = ${tenantId}

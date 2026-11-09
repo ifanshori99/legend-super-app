@@ -679,3 +679,11 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Gate: test gagal dulu (migrasi 2/14, pola 1/20), lalu 3 file `edc-pan*` 44/44; 14 file EDC/POS EDC 189/189; `edc-contract` 6/6; tsc api dan shared lewat heavy, eslint, prettier lulus.
 - Bead baru: `legend-lg45` (P2, sisa PAN di pesan yang terpotong 200 karakter oleh jalur tulis lama; celah lama, bukan dari diff ini).
 - Berikut: second opinion Codex run 2 (brief 150b, bagian Run 2), urutan merge 0141 vs `ws/shift-close-fix`.
+
+## legend-riqu + legend-ni6o: refund intent tidak memakai uang tender POS, refund jurnal menunggu penjualan (engineer, cabang `ws/refund-intent-guard` dari `milestone/m1` fee69d45, 2026-11-09)
+
+- Sudah: ni6o (71ddaf57) `order.refunded` parkir `AUTO_JOURNAL_SALE_PENDING` (retryable, sweep) sampai `aj:sale:<orderId>` posted; `SALE_MISSING` non-retryable seperti void. riqu (e8f1faa4) `refundableBalance` mengurangi `posSaleInUse` (tender POS yang masih memakai intent, dikurangi retur gateway refund POS per metode); permintaan dan approval menjawab 409 `REFUND_INTENT_IN_POS_SALE`; approval di bawah kunci `lockIntentsForFact`, waktu fakta dari kunci.
+- Perbaikan review K (e23edfa5 + commit berikut): pesanan ber-void tidak menahan intent; retur penuh satu metode membebaskan semua intent metode itu; tender `authorized` pada pesanan terbuka ikut menahan (webhook paid menangkapnya tanpa kunci intent).
+- Bukti: test repro gagal di kode lama (ni6o :1651/:1726; riqu :331/:341/:367/:389/:428/:444; R6/R7 :466/:485 di e8f1faa4; R8 :511 di e23edfa5). 20 file test refund/jurnal: 611 lulus, 8 skip. Root contract node: 92 lulus.
+- Bead sisa: legend-r5brx (capture tender kunci intent), legend-hxpd5 (guard GL payout tanpa retur POS, P1), legend-3bsyh (parkir SALE_MISSING tidak diulang), legend-8v2yl (baris refund POS per tender).
+- Berikut: second opinion Codex `docs/briefs/179b-second-opinion-refund-intent-guard.md` (folder utama), gerbang merge CTO.
