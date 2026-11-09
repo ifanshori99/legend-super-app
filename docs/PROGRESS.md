@@ -568,3 +568,42 @@ Biaya sesi CTO G16xk (43f2390f, 15:04-18:49): biaya* 11551k (Opus utama 9414k 41
 - hfq3z self-heal terverifikasi (12 file, 264 lulus, tanpa migrasi; 0158 kosong), antre batch28 bersama paket kontrak 0159 dan 15 spec mock kasir.
 - G878y lanjut `legend-jcby0` (brief 210, basis f448cf94 + 996cc889). G5gti lanjut `legend-nd3cu` (desain kolom peer_instance_id/peer_seq_offset di sync_cursors disetujui, migrasi 0162 when 1794241000000). G3chm: tiga temuan DOIT diperbaiki (3eeb3fa0, 7b2cdfae), scope diperluas ke celah adapter (sendBy) dan webhook tanpa fakta sah.
 - Pesanan migrasi: 0160 c9kbk, 0161 jcby0, 0162 nd3cu. Merge train boleh menomori ulang idx sesuai urutan masuk, `when` harus naik.
+
+## Serah terima CTO 9 Nov 21:25 (sesi G8flk compact 2x)
+
+Keputusan founder hari ini:
+- Q41: admin tenant boleh mengatur semuanya, termasuk batas biaya WhatsApp (legend-kz1m dikomentari; catatan PRD masih perlu). Tidak mencakup membuat Owner baru (legend-7vsby).
+- Q42: Codex hanya untuk uang, pajak, login/akses, dan database, digabung per area; sisanya architect Claude konteks segar. Prosedur: `docs/briefs/217-review-queue-procedure.md`. Q berikut: Q43.
+
+Selesai sejak 20:56:
+- 214 (legend-l56xd, legend-xlvvl) G6yu3: ws/receipt-writeoff-hardening c4c347ef, verifikasi test-runner 7 file 152/152 (termasuk 2 test migrasi). Diantrekan ke G9syc untuk batch sesudah batch28. G6yu3 di-resolve.
+
+Thread berjalan (Claude 8/8, Codex 2/3):
+- G9syc merge train: batch27 f448cf94 gate penuh berjalan (lulus: m1 fast-forward ke batch27). batch28 (self-heal 996cc889 + small-contracts 3790e77a/0159) targeted lulus; tinggal 14 spec kasir mock lewat heavy + gate batch28. Lalu 214.
+- G6qm6 brief 220 legend-7vsby (P1 auth: template Owner bisa diberikan tanpa owner), dari c4c347ef.
+- G2ulr brief 208 mks0q (QR double-pay, migrasi 0160 sudah dipakai c9kbk: minta nomor bila perlu).
+- G3chm brief 212 DOIT (2ol8g, 3usn8, kl46s) + perluasan sendBy; sesudahnya Codex 212b.
+- G93mi brief 211 c9kbk (support read_write owner approval, 0160).
+- G878y brief 210 jcby0 (write-off edge sync, 0161).
+- G5gti brief 215 nd3cu (link edge per instance, 0162).
+- G28n3 Codex 218 (auth/PIN edge: 160, 183b, 188b, 166), akun #3.
+- G7w5m Codex 219 (pajak: 170b, 177b, 173b), akun #2.
+- Subagent architect di sesi G8flk (hasil ke `docs/briefs/<id>.result-architect.md`, kartu bd label second-opinion): A 187b/192b/192c/204b, B 196b/199b, D 200b. CTO baru: cek berkas hasil, jangan jalankan ulang bila berkasnya ada.
+
+Slot Codex ketiga sengaja kosong: kuota mingguan #2 ±90% dan #3 ±86% terpakai (reset 15 Nov, ±3% per run). Lihat konsumsi 218/219 dulu.
+
+Antrean Codex (Q42, gabung per area):
+- 2 support/impersonate: 193b, 195b, 206b, 211b, 214b, 220b, 184b, 191b, grup C (176c, 190b, 190c).
+- 3 refund inti: 154 Run 4, 168b, 179b, 189b, 189c, 212b, 208b.
+- 4 refund lanjutan: 172b, 175b, 181b, 185b, 186b.
+- 5 tutup shift kas: 167, 176b.
+- 7 payroll: 174b, 182b, 197b.
+- Migrasi: 210b, 215b.
+
+Reservasi migrasi: 0155 payroll, 0156 write-off (13ce6220), 0157 edge PIN, 0158 kosong, 0159 small contracts (when 1794238000000), 0160 c9kbk (1794239000000), 0161 jcby0 (1794240000000), 0162 nd3cu (1794241000000). Berikut: 0163 when 1794242000000. Verifikasi cabang migrasi selalu sertakan `src/test/edge-received-events-migration.test.ts` dan `src/test/migration-fk-force-rls.test.ts`.
+
+Langkah berikut CTO baru:
+1. Tiap laporan thread: verifikasi test-runner, antrekan ke G9syc, resolve.
+2. Slot lowong: brief 213 (legend-76azz, lock_timeout 0135), lalu legend-3k8no, verifikasi k7x4p, legend-umzos, paket triase (vm6+usw3+5rzy, 316, j2l2, 5f7+m0k).
+3. Catatan PRD Q41; page review founder legend-31fi; sesudah m1 berisi ekaca: `heavy pnpm lighthouse` (legend-6crc).
+4. Retro cron (:13 tiap 2 jam) milik sesi G8flk: buat ulang di sesi baru.
