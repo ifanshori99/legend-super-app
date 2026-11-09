@@ -42,6 +42,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -206,6 +207,39 @@ export const accountingOpenItemSettlements = pgTable(
   ],
 );
 
+// -------------------------------------------------------- asset categories
+
+/**
+ * Tenant list of fixed asset categories (legend-dux2: "kategori aset" of the
+ * aset-tetap register). A name is unique per tenant ignoring case.
+ */
+export const assetCategories = pgTable(
+  "asset_categories",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    name: varchar("name", { length: 80 }).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("asset_categories_tenant_id_key").on(table.tenantId, table.id),
+    uniqueIndex("asset_categories_tenant_name_key").on(
+      table.tenantId,
+      sql`lower(${table.name})`,
+    ),
+    check(
+      "asset_categories_name_check",
+      sql`length(btrim(${table.name})) > 0`,
+    ),
+  ],
+);
+
 // -------------------------------------------------------- fixed assets
 
 /** §6 F `fixed_assets` (contract assets.ts `fixedAssetSchema`). */
@@ -216,6 +250,10 @@ export const fixedAssets = pgTable(
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     legalEntityId: uuid("legal_entity_id").notNull(),
     outletId: uuid("outlet_id").$type<OutletId>(),
+    /** Register number, unique per tenant + legal entity (legend-dux2). */
+    code: varchar("code", { length: 40 }).notNull(),
+    /** Tenant category (`asset_categories`); null = uncategorised. */
+    categoryId: uuid("category_id"),
     name: varchar("name", { length: 150 }).notNull(),
     acquiredOn: businessDate("acquired_on").notNull(),
     /** Gross carrying basis; restated by a revaluation (elimination method). */
@@ -261,6 +299,16 @@ export const fixedAssets = pgTable(
       table.legalEntityId,
       table.id,
     ),
+    unique("fixed_assets_tenant_entity_code_key").on(
+      table.tenantId,
+      table.legalEntityId,
+      table.code,
+    ),
+    foreignKey({
+      name: "fixed_assets_category_fk",
+      columns: [table.tenantId, table.categoryId],
+      foreignColumns: [assetCategories.tenantId, assetCategories.id],
+    }),
     foreignKey({
       name: "fixed_assets_legal_entity_fk",
       columns: [table.tenantId, table.legalEntityId],
@@ -304,6 +352,7 @@ export const fixedAssets = pgTable(
       sql`(${table.status} = 'disposed') = (${table.disposedOn} IS NOT NULL AND ${table.disposalProceedsIdr} IS NOT NULL) AND (${table.disposalProceedsIdr} IS NULL OR ${table.disposalProceedsIdr} >= 0) AND (${table.disposedOn} IS NULL OR ${table.disposedOn} >= ${table.acquiredOn})`,
     ),
     check("fixed_assets_name_check", sql`length(btrim(${table.name})) > 0`),
+    check("fixed_assets_code_check", sql`length(btrim(${table.code})) > 0`),
     index("fixed_assets_entity_idx").on(
       table.tenantId,
       table.legalEntityId,
@@ -453,6 +502,43 @@ export const fixedAssetRevaluations = pgTable(
     index("fixed_asset_revaluations_asset_idx").on(
       table.tenantId,
       table.fixedAssetId,
+    ),
+  ],
+);
+
+// -------------------------------------------------------- finance policy
+
+/**
+ * Per-tenant finance policy (legend-pxcs): the bank matching date tolerance
+ * and ACC-05 "batas hari" for cash left undeposited. One row per tenant; no
+ * row means the shared defaults (2 days / 2 days).
+ */
+export const financePolicies = pgTable(
+  "finance_policies",
+  {
+    tenantId: tenantIdColumn(() => tenants.id)
+      .primaryKey()
+      .notNull(),
+    bankMatchingDateToleranceDays: integer("bank_matching_date_tolerance_days")
+      .notNull()
+      .default(2),
+    maxDaysUndeposited: integer("max_days_undeposited").notNull().default(2),
+    updatedBy: text("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "finance_policies_tolerance_check",
+      sql`${table.bankMatchingDateToleranceDays} BETWEEN 0 AND 14`,
+    ),
+    check(
+      "finance_policies_undeposited_check",
+      sql`${table.maxDaysUndeposited} BETWEEN 0 AND 30`,
     ),
   ],
 );
