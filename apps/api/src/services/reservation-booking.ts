@@ -389,14 +389,17 @@ async function attachDeposit(
       now,
     });
   } catch (error) {
-    await withTenant(db, context, async (tx) => {
+    const keepBooking = await withTenant(db, context, async (tx) => {
       const locked = await lockReservation(
         tx,
         context,
         outletId,
         reservationId,
       );
-      if (locked.status !== "pending_deposit") return;
+      if (locked.status !== "pending_deposit") return false;
+      // A staff resend stored a payable link while this attempt was failing:
+      // the booking is still collectable, so it is neither cancelled nor released.
+      if (locked.depositPaymentLinkId !== null) return true;
       await tx
         .update(reservations)
         .set({
@@ -429,7 +432,9 @@ async function attachDeposit(
           policyVersion: snapshot.version,
         },
       });
+      return false;
     });
+    if (keepBooking) return buildCreated(context, outletId, reservationId);
     throw error;
   }
   return withTenant(db, context, async (tx) => {

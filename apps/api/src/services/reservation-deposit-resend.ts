@@ -89,15 +89,9 @@ function validStoredLink(
 /** Why the link cannot be (re)sent for this row, or null when it can. */
 function statusBlock(row: ReservationRow, now: Date): ReservationError | null {
   if (row.status !== "pending_deposit" || row.depositIdr <= 0)
-    return new ReservationError(
-      "RESERVATION_TRANSITION_INVALID",
-      "Tautan DP hanya bisa dikirim ulang untuk reservasi yang menunggu DP.",
-    );
+    return new ReservationError("RESERVATION_DEPOSIT_NOT_PENDING");
   if (now >= windowEnd(row))
-    return new ReservationError(
-      "RESERVATION_TRANSITION_INVALID",
-      "Batas waktu pembayaran DP sudah lewat.",
-    );
+    return new ReservationError("RESERVATION_DEPOSIT_WINDOW_CLOSED");
   return null;
 }
 
@@ -117,10 +111,7 @@ async function oldLinkBlock(
     return null;
   const state = await loadDepositState(tx, context, row);
   if (state.settledIntentId === null && state.payableUntil <= now) return null;
-  return new ReservationError(
-    "RESERVATION_TRANSITION_INVALID",
-    "Tamu sedang membayar DP lewat tautan sebelumnya. Tunggu pembayaran selesai.",
-  );
+  return new ReservationError("RESERVATION_DEPOSIT_PAYMENT_PENDING");
 }
 
 async function auditResend(
@@ -196,10 +187,7 @@ export async function resendReservationDepositLink(
         if (stored === null)
           return {
             kind: "refused",
-            error: new ReservationError(
-              "RESERVATION_TRANSITION_INVALID",
-              "Tautan DP sudah tidak berlaku. Kirim ulang dengan permintaan baru.",
-            ),
+            error: new ReservationError("RESERVATION_DEPOSIT_LINK_EXPIRED"),
           };
         return { kind: "done", link: stored };
       }
@@ -220,13 +208,17 @@ export async function resendReservationDepositLink(
       }
       const live = await oldLinkBlock(tx, context, row, now);
       if (live) return { kind: "refused", error: live };
-      return {
-        kind: "mint",
-        expiresInMinutes: Math.max(
-          1,
-          Math.ceil((windowEnd(row).getTime() - now.getTime()) / MINUTE),
-        ),
-      };
+      // Whole minutes, rounded down: the new link must not outlive the frozen
+      // window. Under a minute left there is nothing worth opening.
+      const expiresInMinutes = Math.floor(
+        (windowEnd(row).getTime() - now.getTime()) / MINUTE,
+      );
+      if (expiresInMinutes < 1)
+        return {
+          kind: "refused",
+          error: new ReservationError("RESERVATION_DEPOSIT_WINDOW_CLOSED"),
+        };
+      return { kind: "mint", expiresInMinutes };
     },
   );
   if (first.kind === "refused") throw first.error;

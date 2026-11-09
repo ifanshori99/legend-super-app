@@ -22,12 +22,16 @@ import {
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
 import { confirmPayment, createIntent } from "../services/payment.service.ts";
-import { createReservation } from "../services/reservation-booking.ts";
+import { createReservation, linkAad } from "../services/reservation-booking.ts";
+import { sealSecret } from "../lib/secrets.ts";
 import { createPaymentReservationDepositPort } from "../services/reservation-deposit-payment.ts";
 import { resendReservationDepositLink } from "../services/reservation-deposit-resend.ts";
 import { cancelReservation } from "../services/reservation-lifecycle.ts";
 import { zonedInstant } from "../services/reservation-plan.ts";
-import { setReservationDepositPort } from "../services/reservation-ports.ts";
+import {
+  depositUnavailable,
+  setReservationDepositPort,
+} from "../services/reservation-ports.ts";
 import { originHeader } from "./helpers";
 import {
   createIsolatedTenant,
@@ -368,7 +372,7 @@ describe("legend-gbkw staff resend of the DP link", () => {
     );
     const res = await resend(created.reservation.id);
     expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe("RESERVATION_TRANSITION_INVALID");
+    expect(res.body.error.code).toBe("RESERVATION_DEPOSIT_NOT_PENDING");
   });
 
   it("409 once the frozen payment window has ended", async () => {
@@ -446,7 +450,7 @@ describe("legend-gbkw staff resend of the DP link", () => {
     );
     const replay = await resend(created.reservation.id, seededOutletA, k);
     expect(replay.status).toBe(409);
-    expect(replay.body.error.code).toBe("RESERVATION_TRANSITION_INVALID");
+    expect(replay.body.error.code).toBe("RESERVATION_DEPOSIT_NOT_PENDING");
   });
 
   it("expired link with a pending intent: 409, the old link is kept (no orphaned payment)", async () => {
@@ -462,7 +466,7 @@ describe("legend-gbkw staff resend of the DP link", () => {
     );
     const res = await resend(id);
     expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe("RESERVATION_TRANSITION_INVALID");
+    expect(res.body.error.code).toBe("RESERVATION_DEPOSIT_PAYMENT_PENDING");
     const row = await reservationRow(id);
     expect(row.status).toBe("pending_deposit");
     expect(row.deposit_payment_link_id).toBe(created.deposit!.paymentLinkId);
@@ -487,5 +491,94 @@ describe("legend-gbkw staff resend of the DP link", () => {
     expect(row.status).toBe("confirmed");
     expect(row.deposit_payment_link_id).toBe(created.deposit!.paymentLinkId);
     expect(await auditCount(id)).toBe(0);
+  });
+  it("a re-minted link never outlives the frozen window (rounded down)", async () => {
+    const created = await book("2027-06-10");
+    const id = created.reservation.id;
+    await asOwner((client) =>
+      client.query(
+        "UPDATE reservations SET created_at = now() - interval '49.5 minutes', deposit_payment_link_id = NULL, deposit_link_sealed = NULL, deposit_link_expires_at = NULL WHERE id = $1",
+        [id],
+      ),
+    );
+    const res = await resend(id);
+    expect(res.status).toBe(200);
+    const { rows } = await asOwner((client) =>
+      client.query<{ window_end: Date; link_end: Date }>(
+        "SELECT created_at + interval '60 minutes' AS window_end, deposit_link_expires_at AS link_end FROM reservations WHERE id = $1",
+        [id],
+      ),
+    );
+    expect(rows[0]!.link_end.getTime()).toBeLessThanOrEqual(
+      rows[0]!.window_end.getTime(),
+    );
+  });
+
+  it("409 with the window-closed code when under a minute is left", async () => {
+    const created = await book("2027-06-11");
+    const id = created.reservation.id;
+    await asOwner((client) =>
+      client.query(
+        "UPDATE reservations SET created_at = now() - interval '59.5 minutes', deposit_payment_link_id = NULL, deposit_link_sealed = NULL, deposit_link_expires_at = NULL WHERE id = $1",
+        [id],
+      ),
+    );
+    const res = await resend(id);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("RESERVATION_DEPOSIT_WINDOW_CLOSED");
+    expect((await reservationRow(id)).deposit_payment_link_id).toBeNull();
+  });
+
+  it("a booking whose own link attempt fails keeps the link a resend stored meanwhile", async () => {
+    await setPolicy("required", 100_000);
+    const f = await floor(1);
+    const real = createPaymentReservationDepositPort();
+    const sealedTables: string[] = [];
+    setReservationDepositPort({
+      assertReady: real.assertReady,
+      // The resend wins the race: its link is stored, then this attempt fails.
+      async openDeposit(input) {
+        const opened = await real.openDeposit(input);
+        await asOwner((client) =>
+          client.query(
+            `UPDATE reservations SET deposit_payment_link_id = $2, deposit_link_sealed = $3, deposit_link_expires_at = $4 WHERE id = $1`,
+            [
+              input.reservationId,
+              opened.paymentLinkId,
+              sealSecret(
+                opened.paymentPath,
+                linkAad(seededTenantId, input.reservationId),
+              ),
+              opened.expiresAt,
+            ],
+          ),
+        );
+        sealedTables.push(input.reservationId);
+        throw depositUnavailable();
+      },
+    });
+    try {
+      const created = await createReservation(
+        tenantScope(),
+        outletA,
+        booking(f.zoneId, "2027-06-12"),
+        key(),
+      );
+      expect(sealedTables).toEqual([created.reservation.id]);
+      expect(created.reservation.status).toBe("pending_deposit");
+      expect(created.deposit?.paymentPath).toMatch(/^\/bayar\/pl_/);
+      const row = await reservationRow(created.reservation.id);
+      expect(row.status).toBe("pending_deposit");
+      expect(row.deposit_payment_link_id).toBe(created.deposit!.paymentLinkId);
+      const { rows } = await asOwner((client) =>
+        client.query(
+          "SELECT 1 FROM reservation_tables WHERE reservation_id = $1 AND released_at IS NULL",
+          [created.reservation.id],
+        ),
+      );
+      expect(rows).toHaveLength(1);
+    } finally {
+      setReservationDepositPort(createPaymentReservationDepositPort());
+    }
   });
 });
