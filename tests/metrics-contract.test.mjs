@@ -334,6 +334,74 @@ test("metric query requests default the bucket and refuse client tenant fields",
     );
 });
 
+test("metric query responses require availability in definitions order and null unavailable points", () => {
+  const response = fixtures.queryResponse;
+  const withoutAvailability = { ...response.data, availability: undefined };
+  assert.equal(
+    metrics.metricQueryResponseSchema.safeParse({
+      ...response,
+      data: withoutAvailability,
+    }).success,
+    false,
+    "availability is required",
+  );
+  assert.equal(
+    metrics.metricQueryResponseSchema.safeParse({
+      ...response,
+      data: {
+        ...response.data,
+        availability: [...response.data.availability].reverse(),
+      },
+    }).success,
+    false,
+    "availability follows definitions order",
+  );
+  const unavailable = (valueOf) => ({
+    ...response,
+    data: {
+      ...response.data,
+      availability: response.data.availability.map((entry) =>
+        entry.metricCode === "net_sales"
+          ? {
+              metricCode: "net_sales",
+              status: "unavailable",
+              reason: "source_not_built",
+              message: metrics.METRIC_UNAVAILABLE_MESSAGES.source_not_built,
+            }
+          : entry,
+      ),
+      series: response.data.series.map((series) =>
+        series.metricCode === "net_sales"
+          ? {
+              ...series,
+              points: series.points.map((point) => ({
+                ...point,
+                value: valueOf(point),
+                comparison: null,
+              })),
+            }
+          : series,
+      ),
+    },
+  });
+  assert.equal(
+    metrics.metricQueryResponseSchema.safeParse(
+      unavailable((point) => point.value),
+    ).success,
+    false,
+    "unavailable metric with a value is rejected",
+  );
+  assert.ok(
+    metrics.metricQueryResponseSchema.parse(unavailable(() => null)),
+    "unavailable metric with null points is accepted",
+  );
+  assert.equal(
+    metrics.metricUnavailableReasonSchema.safeParse("nope").success,
+    false,
+  );
+  assert.equal(metrics.METRIC_LEDGER_ADJUSTMENT, "__ledger_adjustment__");
+});
+
 test("metric query responses link series to registered definitions and valid units", () => {
   const response = fixtures.queryResponse;
   assert.ok(metrics.metricQueryResponseSchema.parse(response));

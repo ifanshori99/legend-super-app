@@ -23,6 +23,7 @@ import {
   z,
 } from "../core/index.ts";
 import {
+  metricAvailabilitySchema,
   metricBucketSchema,
   metricCodeSchema,
   metricDefinitionRefSchema,
@@ -288,6 +289,11 @@ export const reportResultSchema = z
       .array(metricDefinitionRefSchema)
       .min(1)
       .max(REPORT_BUILDER_MAX_METRICS),
+    /** One entry per definition, same order. */
+    availability: z
+      .array(metricAvailabilitySchema)
+      .min(1)
+      .max(REPORT_BUILDER_MAX_METRICS),
     groupBy: z
       .array(metricDimensionKeySchema)
       .max(REPORT_BUILDER_MAX_DIMENSIONS),
@@ -311,6 +317,22 @@ export const reportResultSchema = z
         message: "Definitions repeat a metric code",
         path: ["definitions"],
       });
+    if (
+      result.availability.length !== codes.length ||
+      result.availability.some(
+        (entry, position) => entry.metricCode !== codes[position],
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        message: "Availability must list the definitions in the same order",
+        path: ["availability"],
+      });
+    const unavailable = new Set(
+      result.availability
+        .filter((entry) => entry.status === "unavailable")
+        .map((entry) => entry.metricCode),
+    );
     const byCode = new Map(
       result.definitions.map((definition) => [definition.code, definition]),
     );
@@ -346,6 +368,12 @@ export const reportResultSchema = z
             code: "custom",
             message: "Row values must follow definitions order",
             path: ["rows", index, "values", position, "metricCode"],
+          });
+        if (cell.value !== null && unavailable.has(cell.metricCode))
+          ctx.addIssue({
+            code: "custom",
+            message: "An unavailable metric carries only null values",
+            path: ["rows", index, "values", position, "value"],
           });
         if (cell.value !== null && cell.value.unit !== definition.unit)
           ctx.addIssue({

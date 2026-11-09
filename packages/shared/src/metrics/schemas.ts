@@ -551,6 +551,45 @@ export type MetricAccountingPeriod = z.infer<
   typeof metricAccountingPeriodSchema
 >;
 
+// ---- Availability ----------------------------------------------------------
+
+/** Why a metric has no value: its source or dimension is not built yet. */
+export const METRIC_UNAVAILABLE_REASONS = [
+  "source_not_built",
+  "dimension_not_supported",
+] as const;
+export const metricUnavailableReasonSchema = z.enum(METRIC_UNAVAILABLE_REASONS);
+export type MetricUnavailableReason = z.infer<
+  typeof metricUnavailableReasonSchema
+>;
+
+/** One entry per requested metric: available, or unavailable with a reason. */
+export const metricAvailabilitySchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    metricCode: metricCodeSchema,
+    status: z.literal("available"),
+  }),
+  z.strictObject({
+    metricCode: metricCodeSchema,
+    status: z.literal("unavailable"),
+    reason: metricUnavailableReasonSchema,
+    message: z.string().min(1).max(200),
+  }),
+]);
+export type MetricAvailability = z.infer<typeof metricAvailabilitySchema>;
+
+/** Indonesian user-facing sentence per unavailable reason. */
+export const METRIC_UNAVAILABLE_MESSAGES: Record<
+  MetricUnavailableReason,
+  string
+> = {
+  source_not_built: "Data metrik ini belum tersedia.",
+  dimension_not_supported: "Metrik ini belum bisa dirinci menurut dimensi itu.",
+};
+
+/** Residual row of a ledger-controlled split (DASH-02). */
+export const METRIC_LEDGER_ADJUSTMENT = "__ledger_adjustment__";
+
 export const metricQueryResponseSchema = z.strictObject({
   data: z
     .strictObject({
@@ -559,6 +598,8 @@ export const metricQueryResponseSchema = z.strictObject({
       /** One entry per requested metric, including metrics without data. */
       definitions: z.array(metricDefinitionRefSchema).min(1).max(30),
       series: z.array(metricSeriesSchema).max(3000),
+      /** One entry per definition, same order. */
+      availability: z.array(metricAvailabilitySchema).min(1).max(30),
     })
     .superRefine((data, ctx) => {
       const definitionCodes = data.definitions.map(
@@ -572,6 +613,22 @@ export const metricQueryResponseSchema = z.strictObject({
         });
       const byCode = new Map(
         data.definitions.map((definition) => [definition.code, definition]),
+      );
+      if (
+        data.availability.length !== definitionCodes.length ||
+        data.availability.some(
+          (entry, position) => entry.metricCode !== definitionCodes[position],
+        )
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Availability must list the definitions in the same order",
+          path: ["availability"],
+        });
+      const unavailable = new Set(
+        data.availability
+          .filter((entry) => entry.status === "unavailable")
+          .map((entry) => entry.metricCode),
       );
       const seriesKeys = data.series.map((series) => metricSeriesKey(series));
       if (new Set(seriesKeys).size !== seriesKeys.length)
@@ -590,6 +647,15 @@ export const metricQueryResponseSchema = z.strictObject({
           });
           continue;
         }
+        if (
+          unavailable.has(series.metricCode) &&
+          series.points.some((point) => point.value !== null)
+        )
+          ctx.addIssue({
+            code: "custom",
+            message: "An unavailable metric carries only null points",
+            path: ["series", index, "points"],
+          });
         if (
           series.definition.code !== definition.code ||
           series.definition.version !== definition.version ||
