@@ -1,6 +1,6 @@
 {
-  "id": "744ee49a-4af4-4768-bc4e-f7741957dfd2",
-  "prevId": "f40ac8e5-259c-4259-892e-deb473746a0f",
+  "id": "408ea47b-e20b-4061-97dc-125e0462b20f",
+  "prevId": "48f1a86e-0172-404f-81f6-33163d1043d0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -45938,7 +45938,7 @@
         },
         "recipe_deductions_reversal_reason_check": {
           "name": "recipe_deductions_reversal_reason_check",
-          "value": "\"recipe_deductions\".\"reversal_reason\" IS NULL OR \"recipe_deductions\".\"reversal_reason\" IN ('void', 'refund')"
+          "value": "\"recipe_deductions\".\"reversal_reason\" IS NULL OR \"recipe_deductions\".\"reversal_reason\" IN ('void')"
         },
         "recipe_deductions_skipped_check": {
           "name": "recipe_deductions_skipped_check",

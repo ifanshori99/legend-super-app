@@ -423,7 +423,7 @@ export const recipeDeductions = pgTable(
     ),
     check(
       "recipe_deductions_reversal_reason_check",
-      sql`${table.reversalReason} IS NULL OR ${table.reversalReason} IN ('void', 'refund')`,
+      sql`${table.reversalReason} IS NULL OR ${table.reversalReason} IN ('void')`,
     ),
     check(
       "recipe_deductions_skipped_check",

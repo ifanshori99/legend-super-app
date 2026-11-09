@@ -167,7 +167,7 @@ export type RecipeDeductionSkipReason = z.infer<
 >;
 
 /** Why a sale deduction was reversed (legend-9w46). */
-export const recipeDeductionReversalReasonSchema = z.enum(["void", "refund"]);
+export const recipeDeductionReversalReasonSchema = z.enum(["void"]);
 export type RecipeDeductionReversalReason = z.infer<
   typeof recipeDeductionReversalReasonSchema
 >;

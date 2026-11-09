@@ -99,7 +99,7 @@ CREATE TABLE "recipe_deductions" (
 	CONSTRAINT "recipe_deductions_reversed_check" CHECK (("recipe_deductions"."status" = 'reversed') = ("recipe_deductions"."reversed_at" IS NOT NULL)),
 	CONSTRAINT "recipe_deductions_reversal_source_check" CHECK (("recipe_deductions"."reversed_at" IS NOT NULL OR "recipe_deductions"."reversal_failed_at" IS NOT NULL) = ("recipe_deductions"."reversal_reason" IS NOT NULL AND "recipe_deductions"."reversal_source_id" IS NOT NULL)),
 	CONSTRAINT "recipe_deductions_reversal_failed_check" CHECK ("recipe_deductions"."reversal_failed_at" IS NULL OR "recipe_deductions"."status" = 'posted'),
-	CONSTRAINT "recipe_deductions_reversal_reason_check" CHECK ("recipe_deductions"."reversal_reason" IS NULL OR "recipe_deductions"."reversal_reason" IN ('void', 'refund')),
+	CONSTRAINT "recipe_deductions_reversal_reason_check" CHECK ("recipe_deductions"."reversal_reason" IS NULL OR "recipe_deductions"."reversal_reason" IN ('void')),
 	CONSTRAINT "recipe_deductions_skipped_check" CHECK ("recipe_deductions"."status" <> 'skipped' OR "recipe_deductions"."skip_reason" IS NOT NULL)
 );
 --> statement-breakpoint

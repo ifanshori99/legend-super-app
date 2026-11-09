@@ -150,7 +150,7 @@ test("INV-02 recipe deduction record: kinds, statuses and skip reasons", () => {
       }),
     ).success,
   );
-  // legend-9w46: a reversed sale (final void / full refund).
+  // legend-9w46: a reversed sale (final void only; a refund never reverses).
   assert.ok(
     schema.safeParse(
       deduction({
@@ -160,10 +160,12 @@ test("INV-02 recipe deduction record: kinds, statuses and skip reasons", () => {
       }),
     ).success,
   );
-  assert.equal(
-    schema.safeParse(deduction({ reversalReason: "partial" })).success,
-    false,
-  );
+  for (const reason of ["refund", "partial"])
+    assert.equal(
+      schema.safeParse(deduction({ reversalReason: reason })).success,
+      false,
+      reason,
+    );
   assert.equal(schema.safeParse(deduction({ kind: "waste" })).success, false);
   assert.equal(
     schema.safeParse(deduction({ skipReason: "other" })).success,

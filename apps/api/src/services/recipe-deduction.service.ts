@@ -24,8 +24,8 @@
 // movement `duty_meal`, source `duty_meal`, sourceId = the deduction id.
 //
 // Reversal (legend-9w46): the sale deduction of an order is reversed once when
-// the order is finally voided (`order.voided` with `voidedFinalOrder`) or
-// fully refunded (`order.refunded`, cumulative). A posted deduction gets one
+// the order is finally voided (`order.voided` with `voidedFinalOrder`). A refund,
+// full or partial, never reverses stock: the food was consumed. A posted deduction gets one
 // `return/order` ledger row per line at the line's ORIGINAL unit cost, so the
 // GL return journal offsets the HPP journal exactly; a pending one is just
 // marked reversed. A reversal that arrives before `order.paid` leaves a
@@ -67,18 +67,13 @@ import {
 import {
   dayClosedPayloadSchema,
   orderPaidPayloadSchema,
-  orderRefundedPayloadSchema,
   orderVoidedPayloadSchema,
 } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { inventorySettings } from "../db/schema/inventory-setup.ts";
 import { stockLocations } from "../db/schema/inventory.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
-import {
-  posOrderItems,
-  posOrderRefunds,
-  posOrderTenders,
-} from "../db/schema/pos-order.ts";
+import { posOrderItems } from "../db/schema/pos-order.ts";
 import { orderItems } from "../db/schema/qr-order.ts";
 import {
   outletInventorySettings,
@@ -557,10 +552,10 @@ export async function postPendingDeductions(
 export type ReverseOrderSaleDeductionInput = {
   outletId: string;
   orderId: string;
-  reason: "void" | "refund";
-  /** Void id or refund id that caused the reversal. */
+  reason: "void";
+  /** Void id that caused the reversal. */
   reversalSourceId: string;
-  /** ISO instant of the void / refund. */
+  /** ISO instant of the void. */
   occurredAt: string;
 };
 
@@ -677,37 +672,6 @@ export async function reverseOrderSaleDeduction(
       );
     return;
   }
-}
-
-/** True when the refunds of the order now cover everything it captured. */
-async function isOrderFullyRefunded(
-  tx: Tx,
-  context: ScopedTenantContext,
-  orderId: string,
-): Promise<boolean> {
-  const tenantId = context.tenant.tenantId;
-  const tenders = await tx
-    .select({ amountIdr: posOrderTenders.amountIdr })
-    .from(posOrderTenders)
-    .where(
-      and(
-        eq(posOrderTenders.tenantId, tenantId),
-        eq(posOrderTenders.orderId, orderId),
-        eq(posOrderTenders.status, "captured"),
-      ),
-    );
-  const refunds = await tx
-    .select({ amountIdr: posOrderRefunds.amountIdr })
-    .from(posOrderRefunds)
-    .where(
-      and(
-        eq(posOrderRefunds.tenantId, tenantId),
-        eq(posOrderRefunds.orderId, orderId),
-      ),
-    );
-  const paid = tenders.reduce((sum, row) => sum + Number(row.amountIdr), 0);
-  const refunded = refunds.reduce((sum, row) => sum + Number(row.amountIdr), 0);
-  return paid > 0 && refunded >= paid;
 }
 
 /**
@@ -907,19 +871,6 @@ async function consumeInTransaction(
       reversalSourceId: payload.voidId,
       occurredAt: payload.voidedAt,
     });
-  } else if (event.name === "order.refunded") {
-    const parsed = orderRefundedPayloadSchema.safeParse(event.payload);
-    if (!parsed.success) return;
-    const payload = parsed.data;
-    // A partial refund is money-only (no line data to map to stock).
-    if (!(await isOrderFullyRefunded(tx, context, payload.orderId))) return;
-    await reverseSafely(tx, context, {
-      outletId: payload.outletId,
-      orderId: payload.orderId,
-      reason: "refund",
-      reversalSourceId: payload.refundId,
-      occurredAt: payload.refundedAt,
-    });
   } else if (event.name === "day.closed") {
     const parsed = dayClosedPayloadSchema.safeParse(event.payload);
     if (!parsed.success) return;
@@ -935,7 +886,6 @@ export const RECIPE_DEDUCTION_EVENT_NAMES = [
   "order.paid",
   "order_issue.recorded",
   "order.voided",
-  "order.refunded",
   "day.closed",
 ] as const;
 

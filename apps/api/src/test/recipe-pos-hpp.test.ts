@@ -11,16 +11,17 @@
 // (the real POS correction needs approvals and shifts); case (a) is also
 // driven through the real POS complete path.
 //
+// Only a final void reverses stock (CTO decision 2026-11-09): a refund, full or
+// partial, is money-only because the food was consumed.
+//
 // Assumptions where the spec is silent:
 // - A reversal is a ledger row `return` / source `order` / source id = the
 //   order, +quantity at the ORIGINAL unit cost of the sale line; the GL
 //   journal of it is Dr inventory / Cr cogs (the sale journal mirrored).
-// - "Fully refunded" = the cumulative `pos_order_refunds` amounts of the
-//   order reach the order total (orders.total_idr = sum of captured tenders).
-//   Synthetic orders are seeded with total = tender = Rp50.000, as the
+// - Synthetic orders are seeded with total = tender = Rp50.000, as the
 //   `order.paid` payload carries.
-// - A void or refund reverses at most once; a later void/refund of an
-//   already reversed order changes nothing (reason and source id are kept).
+// - A void reverses at most once; a later void of an already reversed order
+//   changes nothing (reason and source id are kept).
 // - A reversal consumed before `order.paid` leaves a line-less `sale` row in
 //   status `reversed` (key `sale:order:<orderId>`); the late `order.paid`
 //   then draws nothing.
@@ -1071,7 +1072,7 @@ describe("HPP through the real POS complete path (a)", () => {
   }, 30_000);
 });
 
-describe("HPP reversal on a final void and refunds (c, d)", () => {
+describe("HPP reversal on a final void; refunds never reverse (c, d)", () => {
   it("HPP-POS-c a final void returns the stock at the ORIGINAL cost and its journal mirrors the HPP journal; a replay and a later full refund change nothing", async () => {
     const kit = await buildKit();
     const { order, businessDate } = await sell(kit);
@@ -1155,9 +1156,12 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
     expect(await journalsOf(order.ulid)).toHaveLength(2);
   });
 
-  it("HPP-POS-d a partial refund leaves the stock alone; the refund that makes the cumulative total whole reverses the sale", async () => {
+  it("HPP-POS-d partial and full refund never move stock or post a reversal journal; the deduction stays posted", async () => {
     const kit = await buildKit();
     const { order, businessDate } = await sell(kit);
+    const saleLedger = await orderLedger(order);
+    await deliverToGl(saleLedger);
+    const hpp = (await journalsOf(order.ulid))[0]!;
 
     const partialId = await insertRefund(order.uuid, 20000);
     const partial = refundedEvent(order.ulid, businessDate, partialId, 20000);
@@ -1171,25 +1175,23 @@ describe("HPP reversal on a final void and refunds (c, d)", () => {
     const rest = refundedEvent(order.ulid, businessDate, restId, 30000);
     await deliver(rest);
     expect(await saleDeductionOf(order)).toMatchObject({
-      status: "reversed",
-      reversal_reason: "refund",
-      reversal_source_id: restId,
+      status: "posted",
+      reversal_reason: null,
+      reversal_source_id: null,
     });
-    const returns = byType(await orderLedger(order), "return");
-    expect(returns).toHaveLength(2);
-    expect(
-      Number(
-        returns.find((r) => r.inventory_item_id === kit.beans)!.unit_cost_idr,
-      ),
-    ).toBe(100);
-    expect(await onHand(kit.location, kit.beans)).toBe("1000.0000");
-    expect(await onHand(kit.location, kit.milk)).toBe("10000.0000");
+    const after = await orderLedger(order);
+    expect(after).toHaveLength(saleLedger.length);
+    expect(byType(after, "return")).toHaveLength(0);
+    expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
+    expect(await onHand(kit.location, kit.milk)).toBe("9600.0000");
 
-    // Replaying either refund event changes nothing.
+    // Replaying either refund event changes nothing, and no reversal journal.
     await deliver(partial);
     await deliver(rest);
-    expect(byType(await orderLedger(order), "return")).toHaveLength(2);
-    expect(await onHand(kit.location, kit.beans)).toBe("1000.0000");
+    expect(await orderLedger(order)).toHaveLength(saleLedger.length);
+    expect(await onHand(kit.location, kit.beans)).toBe("964.0000");
+    await deliverToGl(await orderLedger(order));
+    expect(await journalsOf(order.ulid)).toEqual([hpp]);
   });
 });
 
