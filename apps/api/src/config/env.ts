@@ -24,6 +24,18 @@ const origin = (message: string) =>
     );
   }, message);
 
+/** Comma-separated secrets (rotation); unset becomes an empty list. */
+const secretList = () =>
+  z
+    .string()
+    .optional()
+    .transform((value) =>
+      (value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    );
+
 const postgresUrl = z.url().refine((value) => {
   const url = new URL(value);
   return (
@@ -154,6 +166,12 @@ const schema = z
           .map((item) => item.trim())
           .filter(Boolean),
       ),
+    // Delivery platform webhook signing secrets (legend-5bn3). Comma-separated
+    // while a secret rotates. A platform without a secret is disabled: its
+    // webhook answers 503 and processes nothing.
+    DELIVERY_GOFOOD_WEBHOOK_SECRET: secretList(),
+    DELIVERY_GRABFOOD_WEBHOOK_SECRET: secretList(),
+    DELIVERY_SHOPEEFOOD_WEBHOOK_SECRET: secretList(),
     // Shared secret Caddy sends with its on-demand TLS ask (X-Tls-Ask-Token).
     // Unset in local development; set it wherever a public proxy calls the ask.
     TLS_ASK_TOKEN: z.string().min(16).max(200).optional(),

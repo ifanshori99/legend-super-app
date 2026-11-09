@@ -30,6 +30,10 @@ import {
 } from "./services/inventory-gl-consumer.ts";
 import { parseEdgeRuntimeConfig } from "./edge/config.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
+import {
+  deliverDeliveryChannelEvent,
+  syncStaleDeliveryChannels,
+} from "./services/delivery-sync-consumer.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -137,6 +141,12 @@ const runtime = createWorkerRuntime({
           // missing mapping parks the source for the sweep, never fails this.
           if (postsInventoryGl)
             await deliverInventoryGlEvent(context, event, tx);
+          // WS-08 (legend-5bn3), cloud only: 86 and menu/price changes reach
+          // the open delivery channels through their adapters. A platform
+          // failure never fails this event: the channel is marked error/stale
+          // for the delivery sync sweep below.
+          if (postsInventoryGl)
+            await deliverDeliveryChannelEvent(context, event, tx);
           // AUTH-06 (legend-obh5): a phone-approved POS override settles from
           // the approval chain re-read under its row lock.
           await handleApprovalResolved(context, event);
@@ -244,6 +254,16 @@ const relay = createRelayRuntime({
         await retryBlockedInventoryGl(context, new Date());
       } catch {
         console.error("Inventory GL retry sweep failed");
+      }
+    }
+    // WS-08 (legend-5bn3), cloud only: trailing edge of the delivery menu
+    // debounce. Pushes open channels left stale/error (menu change inside the
+    // window, refused 86, reopened store). A sweep error never blocks the relay.
+    if (postsInventoryGl) {
+      try {
+        await syncStaleDeliveryChannels(context, new Date());
+      } catch {
+        console.error("Delivery channel sync sweep failed");
       }
     }
     // §3.19 Jurnal Berulang (legend-vmyg): post due occurrences of approved

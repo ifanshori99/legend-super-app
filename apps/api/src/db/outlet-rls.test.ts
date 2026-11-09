@@ -144,11 +144,21 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
     // tenant or outlet context exists (TEN-02; see db/rls.test.ts).
     // public.brand_websites: brand-level public site content (legend-qgr6).
     // Its outlet_id names the featured outlet, it is data and not an access
-    // scope; the public read and every staff read/write run with a tenant-wide
-    // outlet scope (assertTenantWide in public-site.service.ts), so only the
-    // tenant policy applies (website.custom.sql). Adding to this list needs an
-    // Opus/owner review.
-    const allowlist = ["public.payment_link_tokens", "public.brand_websites"];
+    // scope. Every staff read/write calls assertTenantWide
+    // (public-site.service.ts getBrandWebsiteContent/saveBrandWebsiteContent);
+    // the public read gets a tenant-wide scope from the host in
+    // routes/public-site.routes.ts and only reads. The DB enforces tenant-wide
+    // access itself through the restrictive tenant_wide_only policy
+    // (website.custom.sql; tested below), on top of the tenant policy.
+    // Approved by CTO 9 Nov 2026 after Opus + architect review. Adding to this
+    // list needs an Opus/owner review.
+    // public.delivery_store_index: webhook store-id lookup before any tenant
+    // context (legend-5bn3 D3, CTO decision); ids only, see db/rls.test.ts.
+    const allowlist = [
+      "public.payment_link_tokens",
+      "public.brand_websites",
+      "public.delivery_store_index",
+    ];
     const result = await ownerPool.query<{ table: string }>(
       `SELECT n.nspname || '.' || c.relname AS table
        FROM pg_class c
@@ -276,6 +286,91 @@ describe("TEN-03 outlet isolation at the database (legend-tjey)", () => {
           );
         },
       );
+    }
+  });
+
+  it("TEN-03 brand_websites is tenant-wide only: an outlet scope sees and writes nothing", async () => {
+    const brandId = cafeLegendFixtures.brand.id;
+    // The dev seed may already publish this brand's site; reuse its row then,
+    // and only delete the row this test inserted.
+    let insertedId: string | null = null;
+    const ownerClient = await ownerPool.connect();
+    try {
+      await ownerClient.query("BEGIN");
+      await ownerClient.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      const inserted = await ownerClient.query<{ id: string }>(
+        `INSERT INTO brand_websites (tenant_id, brand_id, outlet_id, content, updated_by)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'uji-rls')
+         ON CONFLICT (tenant_id, brand_id) DO NOTHING
+         RETURNING id`,
+        [tenantId, brandId, outletA],
+      );
+      insertedId = inserted.rows[0]?.id ?? null;
+      await ownerClient.query("COMMIT");
+    } catch (error) {
+      await ownerClient.query("ROLLBACK");
+      throw error;
+    } finally {
+      ownerClient.release();
+    }
+    try {
+      const policy = await ownerPool.query(
+        `SELECT 1 FROM pg_policy p
+         WHERE p.polrelid = 'public.brand_websites'::regclass
+           AND p.polname = 'tenant_wide_only' AND NOT p.polpermissive`,
+      );
+      expect(policy.rowCount).toBe(1);
+      const seen = await withTenant(appDb, outletScope(outletA), (tx) =>
+        tx.execute(
+          sql`SELECT id FROM brand_websites WHERE brand_id = ${brandId}`,
+        ),
+      );
+      expect(seen.rows).toEqual([]);
+      await withTenant(appDb, outletScope(outletA), async (tx) => {
+        const updated = await tx.execute(
+          sql`UPDATE brand_websites SET updated_by = 'bocor' WHERE brand_id = ${brandId}`,
+        );
+        expect(updated.rowCount).toBe(0);
+      });
+      await expect(
+        withTenant(appDb, outletScope(outletA), (tx) =>
+          tx.execute(
+            sql`INSERT INTO brand_websites (tenant_id, brand_id, outlet_id, content, updated_by)
+                VALUES (${tenantId}, ${brandId}, ${outletA}, '{}'::jsonb, 'bocor')`,
+          ),
+        ),
+      ).rejects.toMatchObject(rlsViolation);
+      // The tenant-wide scope still reads and updates the row.
+      await withTenant(appDb, tenantScope(), async (tx) => {
+        const rows = await tx.execute(
+          sql`SELECT id FROM brand_websites WHERE brand_id = ${brandId}`,
+        );
+        expect(rows.rows).toHaveLength(1);
+        const updated = await tx.execute(
+          sql`UPDATE brand_websites SET updated_by = updated_by WHERE brand_id = ${brandId}`,
+        );
+        expect(updated.rowCount).toBe(1);
+      });
+    } finally {
+      if (insertedId) {
+        const cleanup = await ownerPool.connect();
+        try {
+          await cleanup.query("BEGIN");
+          await cleanup.query(
+            "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+            [tenantId],
+          );
+          await cleanup.query("DELETE FROM brand_websites WHERE id = $1", [
+            insertedId,
+          ]);
+          await cleanup.query("COMMIT");
+        } finally {
+          cleanup.release();
+        }
+      }
     }
   });
 

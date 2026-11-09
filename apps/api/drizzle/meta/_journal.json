@@ -673,6 +673,20 @@
       "when": 1794183899243,
       "tag": "0095_delivery_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794187196394,
+      "tag": "0096_delivery_store_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794187201395,
+      "tag": "0097_delivery_store_index_rls",
+      "breakpoints": true
     }
   ]
 }

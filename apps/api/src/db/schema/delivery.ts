@@ -24,6 +24,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   type PgTableExtraConfigValue,
   timestamp,
   unique,
@@ -90,6 +91,14 @@ export const deliveryChannels = pgTable(
       table.outletId,
       table.platform,
     ),
+    // Target of delivery_store_index's foreign key: an index row always
+    // names the channel's current store id.
+    unique("delivery_channels_store_ref_key").on(
+      table.tenantId,
+      table.outletId,
+      table.platform,
+      table.storeExternalId,
+    ),
     // The webhook finds the channel by the platform's store id alone.
     uniqueIndex("delivery_channels_store_key")
       .on(table.platform, table.storeExternalId)
@@ -143,6 +152,17 @@ export const deliveryChannelOrders = pgTable(
     commissionIdr: idrColumn("commission_idr").notNull(),
     /** SHA-256 hex of the raw payload (manual rows: of the typed input). */
     payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    /**
+     * Every webhook payload hash already applied to this order (newest last,
+     * capped by the service): a replay of any of them is a duplicate, never a
+     * second update.
+     */
+    seenPayloadHashes: varchar("seen_payload_hashes", { length: 64 })
+      .array()
+      .notNull()
+      .default(sql`'{}'::varchar[]`),
+    /** Signed instant of the newest applied webhook; older ones are ignored. */
+    lastSignedAt: timestamp("last_signed_at", { withTimezone: true }),
     customerNote: varchar("customer_note", { length: 300 }),
     lines: jsonb("lines").$type<DeliveryOrderLine[]>().notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
@@ -272,7 +292,10 @@ export const deliverySettlementLines = pgTable(
     foreignKey({
       name: "delivery_settlement_lines_order_fk",
       columns: [table.tenantId, table.deliveryChannelOrderId],
-      foreignColumns: [deliveryChannelOrders.tenantId, deliveryChannelOrders.id],
+      foreignColumns: [
+        deliveryChannelOrders.tenantId,
+        deliveryChannelOrders.id,
+      ],
     }),
     index("delivery_settlement_lines_period_idx").on(
       table.tenantId,
@@ -295,6 +318,60 @@ export const deliverySettlementLines = pgTable(
     check(
       "delivery_settlement_lines_order_link_check",
       sql`(${table.status} = 'unknown_order') = (${table.deliveryChannelOrderId} IS NULL)`,
+    ),
+  ],
+);
+
+/**
+ * `delivery_store_index`: the platform webhook knows only the platform's store
+ * id, before any tenant context exists (TEN-02), so this index of
+ * (platform, store id) -> (tenant, outlet) is readable without one, exactly
+ * like `payment_link_tokens` and `tenant_domains`: SELECT is open. The app
+ * role cannot write it: a SECURITY DEFINER trigger on `delivery_channels`
+ * keeps it in step from the (tenant-checked) channel row (delivery.custom.sql),
+ * so no service writes it by hand. It holds ids only, never an amount or a
+ * name; the row cascades away with its channel.
+ */
+export const deliveryStoreIndex = pgTable(
+  "delivery_store_index",
+  {
+    platform: varchar("platform", { length: 20 })
+      .$type<DeliveryPlatform>()
+      .notNull(),
+    storeExternalId: varchar("store_external_id", { length: 100 }).notNull(),
+    tenantId: uuid("tenant_id").notNull(),
+    outletId: uuid("outlet_id").notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({
+      name: "delivery_store_index_pkey",
+      columns: [table.platform, table.storeExternalId],
+    }),
+    // One index row per channel; it can only point at a channel of the same
+    // tenant AND at that channel's current store id.
+    foreignKey({
+      name: "delivery_store_index_channel_fk",
+      columns: [
+        table.tenantId,
+        table.outletId,
+        table.platform,
+        table.storeExternalId,
+      ],
+      foreignColumns: [
+        deliveryChannels.tenantId,
+        deliveryChannels.outletId,
+        deliveryChannels.platform,
+        deliveryChannels.storeExternalId,
+      ],
+    }).onDelete("cascade"),
+    unique("delivery_store_index_channel_key").on(
+      table.tenantId,
+      table.outletId,
+      table.platform,
+    ),
+    check(
+      "delivery_store_index_platform_check",
+      sql`${table.platform} IN ${sql.raw(PLATFORMS)}`,
     ),
   ],
 );
