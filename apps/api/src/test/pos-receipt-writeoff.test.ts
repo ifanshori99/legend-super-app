@@ -18,6 +18,17 @@
 //   422 VALIDATION_ERROR; an outlet of another tenant answers 403 or 404 (either hides it).
 // - The audit row is read from audit_logs: event.action, actorId, reason and
 //   maskedChanges.after carry outletId, prefix, sequenceNumber and number.
+// - POST also needs a session whose second factor was verified (AUTH-05):
+//   without it the API answers 403 MFA_REQUIRED (the status AccessError maps
+//   to, as in payment-refund-manual-settle.test.ts) and writes nothing. GET
+//   does not need it. Members that POST are verified with verifySessionMfa.
+// - A receipt that arrives later for a written-off number makes the write-off
+//   drop out of the shift report's writtenOff list and the gap count; the
+//   audit row stays.
+// - The edge refusal is 409 (CONFLICT) and is toggled through
+//   setEdgeRuntimeStateForTests, like pos-day-receipt-gaps.test.ts.
+// - A user holding the permission only through an outlet-scoped assignment is
+//   refused (403 or 404) on another outlet of the same tenant.
 // - An open shift does not block the close; as in pos-receipt-gaps-prefix.test.ts
 //   the shift is opened (owner SQL) only to read the shift report.
 // - The DB backstop (BEFORE INSERT trigger) refuses a number that has a receipt
@@ -35,9 +46,19 @@ import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
-import { ulidToUuid } from "@starter/shared/core";
+import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { formatReceiptNumber } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import {
+  getEdgeRuntimeState,
+  setEdgeRuntimeStateForTests,
+} from "../edge/runtime.ts";
 import {
   setPosOutletReceiptGapsPort,
   setPosReceiptGapsPort,
@@ -46,7 +67,7 @@ import {
   receiptGapsForDevice,
   receiptGapsForOutletFast,
 } from "../services/pos-receipt.service.ts";
-import { agent, originHeader, signUp } from "./helpers.ts";
+import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 import {
   createIsolatedTenant,
   fixtures,
@@ -68,6 +89,7 @@ const ids = {
   cashierRole: randomUUID(),
   managerRole: randomUUID(),
   ownerRole: randomUUID(),
+  outletOwnerRole: randomUUID(),
   otherOwnerRole: randomUUID(),
 };
 
@@ -78,6 +100,8 @@ type Member = { client: ReturnType<typeof agent>; userId: string };
 let cashier: Member;
 let manager: Member;
 let ownerA: Member;
+// An owner whose session never verified a second factor.
+let ownerNoMfa: Member;
 // A second tenant whose owner must never reach tenant A.
 let otherTenant: IsolatedTenant;
 let otherHeaders: { Host: string };
@@ -119,16 +143,29 @@ async function member(
   roleId: string,
   label: string,
   tenantId: string = tenant.tenantId,
+  options: {
+    /** Mark the session's second factor as verified (default false). */
+    mfa?: boolean;
+    /** Assign the role to one outlet instead of the whole tenant. */
+    outletId?: string;
+  } = {},
 ): Promise<Member> {
   const client = agent(app);
-  await signUp(client, label);
+  const email = await signUp(client, label);
+  if (options.mfa) await verifySessionMfa(email);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   await owner.query(
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
-    [tenantId, userId, roleId],
+     VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute', $2)`,
+    [
+      tenantId,
+      userId,
+      roleId,
+      options.outletId ? "outlet" : "tenant",
+      options.outletId ?? null,
+    ],
   );
   return { client, userId };
 }
@@ -239,11 +276,15 @@ beforeAll(async () => {
     );
   cashier = await member(ids.cashierRole, "Kasir Writeoff");
   manager = await member(ids.managerRole, "Manajer Writeoff");
-  ownerA = await member(ids.ownerRole, "Pemilik Writeoff");
+  ownerA = await member(ids.ownerRole, "Pemilik Writeoff", tenant.tenantId, {
+    mfa: true,
+  });
+  ownerNoMfa = await member(ids.ownerRole, "Pemilik Tanpa 2FA");
   ownerB = await member(
     ids.otherOwnerRole,
     "Pemilik Lain",
     otherTenant.tenantId,
+    { mfa: true },
   );
   await asOwnerTenant(tenant.tenantId, async (client) => {
     await client.query(
@@ -504,6 +545,83 @@ async function outletWithHole(prefix: string) {
   );
   return { outletId, closingDate: active.businessDate, idle };
 }
+
+/** Sequences of the outlet that miss ordinals (what the outlet port reports). */
+async function outletGaps(outletId: string) {
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
+  );
+  return withTenant(db, context, (tx) =>
+    receiptGapsForOutletFast(tx as never, context, outletId),
+  );
+}
+
+/**
+ * Owner SQL: a receipt for `ordinal` arrives after the fact (a device synced
+ * late), on the run `prefix` of the outlet. Same shape as seedDevice's rows.
+ */
+async function insertLateReceipt(
+  outletId: string,
+  prefix: string,
+  ordinal: number,
+  daysBefore = 1,
+) {
+  const orderId = await draftOrder(outletId);
+  const orderUuid = ulidToUuid(orderId);
+  const { rows } = await owner.query<{ id: string; device_id: string }>(
+    `SELECT id, device_id FROM receipt_sequences
+      WHERE tenant_id = $1 AND outlet_id = $2 AND prefix = $3`,
+    [tenant.tenantId, outletId, prefix],
+  );
+  const sequence = rows[0]!;
+  await asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      `UPDATE pos_orders SET device_id = $3 WHERE tenant_id = $1 AND order_id = $2::uuid`,
+      [tenant.tenantId, orderUuid, sequence.device_id],
+    );
+    await client.query(
+      `UPDATE orders
+          SET subtotal_idr = 0, discount_idr = 0, service_charge_idr = 0,
+              tax_idr = 0, rounding_idr = 0, total_idr = 0, status = 'completed',
+              business_date = business_date - $3::int
+        WHERE tenant_id = $1 AND id = $2::uuid`,
+      [tenant.tenantId, orderUuid, daysBefore],
+    );
+    await client.query(
+      `INSERT INTO pos_receipts
+         (tenant_id, outlet_id, order_id, sequence_id, device_id, number, sequence_number, status, issued_at, outlet_snapshot)
+       VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, 'issued', now(), $8::jsonb)`,
+      [
+        tenant.tenantId,
+        outletId,
+        orderUuid,
+        sequence.id,
+        sequence.device_id,
+        formatReceiptNumber(prefix, ordinal),
+        ordinal,
+        SEED_SNAPSHOT,
+      ],
+    );
+  });
+}
+
+/** Runs `run` with edge mode on and always restores the previous state. */
+async function inEdgeMode<T>(run: () => Promise<T>): Promise<T> {
+  const previous = getEdgeRuntimeState();
+  setEdgeRuntimeStateForTests({ ...previous, edgeMode: true });
+  try {
+    return await run();
+  } finally {
+    setEdgeRuntimeStateForTests(previous);
+  }
+}
+
+type ShiftGap = { prefix: string; missing: number[]; writtenOff?: string[] };
 
 describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
   it("only the owner role template holds pos.receipt.writeoff", () => {
@@ -775,5 +893,158 @@ describe("audited write-off of a lost receipt number (legend-0hzqw)", () => {
     // A manager without the permission cannot read the list either.
     const denied = await listWriteOffs(manager, outletId);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+  });
+
+  it("an owner whose session has no verified second factor is refused on POST (403 MFA_REQUIRED) and nothing is written", async () => {
+    const { outletId, closingDate } = await outletWithHole("WM1");
+    const refused = await writeOff(ownerNoMfa, outletId, {
+      prefix: "WM1",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(errorCode(refused.body)).toBe("MFA_REQUIRED");
+    expect(await writeoffRows(outletId)).toEqual([]);
+
+    // Reading the list does not need the second factor.
+    const listed = await listWriteOffs(ownerNoMfa, outletId);
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.data).toEqual([]);
+
+    const stillBlocked = await closeDay(outletId, closingDate);
+    expect(stillBlocked.status).toBe(409);
+    expect(errorCode(stillBlocked.body)).toBe("RECEIPT_SEQUENCE_GAP");
+  });
+
+  it("a receipt that arrives later for a written-off number leaves the writtenOff list, the day closes, and the audit row stays", async () => {
+    const { outletId, closingDate, idle } = await outletWithHole("WL");
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WL",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    await insertLateReceipt(outletId, "WL", 2);
+
+    // Close first: the shift report helper opens a shift, which blocks the close.
+    const closed = await closeDay(outletId, closingDate);
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    expect(await dailyCloseCount(outletId)).toBe(1);
+
+    const gaps = (await shiftReportGaps(
+      outletId,
+      idle.deviceId,
+      closingDate,
+    )) as ShiftGap[];
+    const entry = gaps.find((gap) => gap.prefix === "WL");
+    // No entry at all is as good as an entry that lists nothing.
+    if (entry) {
+      expect(entry.missing).toEqual([]);
+      expect(entry.writtenOff ?? []).toEqual([]);
+    }
+
+    // The audit evidence is never removed.
+    expect(await writeoffRows(outletId)).toHaveLength(1);
+  });
+
+  it("a late receipt does not hide a real gap: receipt 1, write-off 2, late receipt 2 still reports 3 as missing", async () => {
+    const outletId = await freshOutlet();
+    await seedActiveDevice(outletId);
+    await seedDevice(
+      outletId,
+      [
+        {
+          prefix: "WN1",
+          lastNumber: 3,
+          present: [1],
+          ageMinutes: 60,
+          retired: { reason: "claim_rotated", edgeReportedNumber: 0 },
+        },
+      ],
+      { daysBefore: 1 },
+    );
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WN1",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    // Written off 2 + receipt 1 = 2 of 3: number 3 is still missing.
+    expect(await outletGaps(outletId)).toEqual([
+      expect.objectContaining({ prefix: "WN1", missing: [3] }),
+    ]);
+
+    await insertLateReceipt(outletId, "WN1", 2);
+    // Receipts 1 and 2, write-off no longer counts: 3 must still be missing,
+    // not hidden because 2 receipts + 1 write-off add up to 3.
+    expect(await outletGaps(outletId)).toEqual([
+      expect.objectContaining({ prefix: "WN1", missing: [3] }),
+    ]);
+  });
+
+  it("fast path mix: one clean run and one run whose only hole is written off report no gaps", async () => {
+    const { outletId } = await outletWithHole("WO1");
+    expect(await outletGaps(outletId)).toEqual([
+      expect.objectContaining({ prefix: "WO1", missing: [2] }),
+    ]);
+    const created = await writeOff(ownerA, outletId, {
+      prefix: "WO1",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(await outletGaps(outletId)).toEqual([]);
+  });
+
+  it("a user holding the permission only through an outlet-scoped assignment on outlet X is refused on outlet Y (403/404)", async () => {
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Pemilik Satu Outlet', false, NULL, $3, false, '["tenant","outlet"]')`,
+      [
+        ids.outletOwnerRole,
+        tenant.tenantId,
+        JSON.stringify(["pos.receipt.writeoff"]),
+      ],
+    );
+    const outletX = await outletWithHole("WP1");
+    const outletY = await outletWithHole("WQ1");
+    const scoped = await member(
+      ids.outletOwnerRole,
+      "Pemilik Outlet X",
+      tenant.tenantId,
+      { mfa: true, outletId: outletX.outletId },
+    );
+
+    const refused = await writeOff(scoped, outletY.outletId, {
+      prefix: "WQ1",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect([403, 404], JSON.stringify(refused.body)).toContain(refused.status);
+    expect(await writeoffRows(outletY.outletId)).toEqual([]);
+    const listing = await listWriteOffs(scoped, outletY.outletId);
+    expect([403, 404], JSON.stringify(listing.body)).toContain(listing.status);
+
+    // Control: the same user may write off on outlet X.
+    const allowed = await writeOff(scoped, outletX.outletId, {
+      prefix: "WP1",
+      sequenceNumber: 2,
+      reason: REASON,
+    });
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(201);
+    expect(await writeoffRows(outletX.outletId)).toHaveLength(1);
+  });
+
+  it("with the edge state on, a write-off is refused (409) and nothing is written; in the cloud it works", async () => {
+    const { outletId } = await outletWithHole("WR1");
+    const body = { prefix: "WR1", sequenceNumber: 2, reason: REASON };
+    const refused = await inEdgeMode(() => writeOff(ownerA, outletId, body));
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(await writeoffRows(outletId)).toEqual([]);
+
+    // The state is restored: the same request now succeeds.
+    const created = await writeOff(ownerA, outletId, body);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
   });
 });

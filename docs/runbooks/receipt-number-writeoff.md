@@ -20,6 +20,8 @@ Jangan dipakai untuk menutupi nomor yang masih mungkin dikirim perangkat. Write-
 
 Hanya owner tenant yang punya izin `pos.receipt.writeoff`. Endpoint hanya berjalan di cloud, tidak di edge.
 
+Penulisan write-off wajib 2FA. Verifikasi 2FA di sesi ini dulu. Jika belum, permintaan ditolak dengan `MFA_REQUIRED`. Membaca daftar (`GET`) tidak memerlukan 2FA.
+
 Ganti `:outletId` dengan ID outlet.
 
 Tulis write-off (`POST`):
@@ -39,12 +41,23 @@ Respons berhasil `201` dengan `{ "data": ... }`. Setelah berhasil, jalankan lagi
 
 Kemungkinan penolakan:
 
+- `MFA_REQUIRED`, sesi belum terverifikasi 2FA. Verifikasi 2FA, lalu ulangi.
 - `409`, nomor di luar rentang yang sudah terbit (lebih besar dari nomor terakhir).
 - `409`, nomor ini sudah punya struk.
 - `409`, nomor ini sudah di-write-off sebelumnya.
 - `404`, prefix tidak dikenal.
 - `403`, pengguna bukan owner.
 - `400`, alasan kurang dari 10 karakter.
+
+### Outlet dengan edge
+
+Write-off tidak disinkronkan ke edge node. Jika Tutup Hari berjalan di edge, outlet tetap ditolak setelah write-off dibuat di cloud. Sampai ada kartu tindak lanjut, tutup hari lewat cloud.
+
+> Keputusan pending untuk CTO: perilaku Tutup Hari di edge setelah write-off, dan kapan kartu tindak lanjut dikerjakan.
+
+## Jika struk datang terlambat
+
+Jika struk untuk nomor yang sudah di-write-off kemudian masuk (perangkat mengirim data), nomor itu dihitung ada lewat struk tersebut. Nomor keluar dari daftar write-off. Baris audit tetap ada. Cek perangkat yang sudah mengirim struk itu.
 
 ## Yang tercatat
 
@@ -56,3 +69,43 @@ Di laporan shift, nomor tersebut tampil sebagai "di-write-off", bukan sebagai ce
 
 - Nomor struk itu tidak akan muncul lagi dan tidak bisa dikembalikan.
 - Transaksi baru tetap memakai nomor berikutnya seperti biasa.
+
+---
+
+## Untuk tim teknis: rilis dan rollback
+
+**Urutan rilis.** Migrasi 0155 (payroll) harus ikut atau dirilis sebelum 0156. Migrator melewati `when` yang lebih lama jika sudah ada `when` yang lebih baru yang diterapkan.
+
+**Rollback.** Utamakan perbaikan maju (fix forward). Rollback membuat Tutup Hari kembali diblokir. Sebelum rollback, ekspor dulu isi tabel: baris itu bukti audit.
+
+```sql
+-- 1. Ekspor baris (bukti audit), lalu simpan hasilnya.
+\copy (SELECT * FROM public.receipt_number_writeoffs) TO 'receipt_number_writeoffs_export.csv' CSV HEADER
+
+-- 2. Hapus trigger, fungsi, lalu tabel.
+DROP TRIGGER IF EXISTS receipt_number_writeoffs_check_insert_trg ON public.receipt_number_writeoffs;
+DROP TRIGGER IF EXISTS receipt_number_writeoffs_append_only_trg ON public.receipt_number_writeoffs;
+DROP FUNCTION IF EXISTS app.receipt_number_writeoffs_check_insert();
+DROP FUNCTION IF EXISTS app.receipt_number_writeoffs_append_only();
+DROP TABLE IF EXISTS public.receipt_number_writeoffs;
+
+-- 3. Cabut izin pos.receipt.writeoff dari template owner, per tenant.
+--    Pola sama dengan loop di apps/api/drizzle/0156_receipt_number_writeoffs.sql.
+DO $$
+DECLARE
+  target uuid;
+  previous_tenant text;
+BEGIN
+  previous_tenant := current_setting('app.tenant_id', true);
+  FOR target IN SELECT id FROM public.tenants LOOP
+    PERFORM set_config('app.tenant_id', target::text, true);
+    UPDATE public.roles
+    SET permissions = permissions - 'pos.receipt.writeoff',
+        updated_at = now()
+    WHERE tenant_id = target
+      AND is_template
+      AND template_key = 'owner';
+  END LOOP;
+  PERFORM set_config('app.tenant_id', coalesce(previous_tenant, ''), true);
+END $$;
+```
