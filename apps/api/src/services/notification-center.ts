@@ -173,7 +173,9 @@ export function createNotificationService(
                   : {
                       tenantId: context.tenant.tenantId,
                       webPushEnabled: true,
-                      emailEnabled: true,
+                      // No policy row = web push only, like the worker's
+                      // loadPolicy (legend-cz6aq): email needs an explicit opt-in.
+                      emailEnabled: false,
                       whatsapp: {
                         enabled: false,
                         allowedCategories: [],
