@@ -40,6 +40,8 @@ export type PayslipTaxInput = {
   /** Earnings of the period, without the tax allowance line. */
   earnings: readonly PayslipTaxEarning[];
   employerBenefitIdr: Idr | number;
+  /** Scheme of the employment agreement this period (see pph21.ts). */
+  contractTaxScheme?: TaxScheme;
   employeeDeductibleIdr: Idr | number;
   prior: Pph21PeriodInput["prior"];
 };
@@ -64,12 +66,16 @@ export function computePayslipTax(input: PayslipTaxInput): PayslipTaxResult {
     partialYearTaxSubject: input.partialYearTaxSubject ?? false,
     taxableLines,
     employerBenefitIdr: input.employerBenefitIdr,
+    ...(input.contractTaxScheme === undefined
+      ? {}
+      : { contractTaxScheme: input.contractTaxScheme }),
     employeeDeductibleIdr: input.employeeDeductibleIdr,
     prior: input.prior,
   });
   const grossSchemeBaseIdr = pph21GrossSchemeBase(
     taxableLines,
     input.employerBenefitIdr,
+    input.contractTaxScheme,
   );
   return {
     result,

@@ -386,9 +386,16 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     //   T = 3_529_350 - 2_531_969 = 997_381 = S. OK.
     //   W = floor(T x G / X) = 0 (G = 0); A = floor(S x U/(U+N)) = S = 997_381; B = 0.
     //   Withheld = W + A = 997_381. Employee take-home = G + U + N - W = 10_000_000 (exact).
+    // History split (legend-6q7o rule A/B): the prior withheld tax is all tunjangan
+    // (prior.taxAllowanceIdr = 2_531_969 = 11 x 230_179), so pET = 2_531_969 and the
+    // employer owns all of the Jan-Nov shortfall:
+    //   H = annualTax(112_531_969) - 2_531_969: cost 5_626_598 (5%), net 106_905_371,
+    //   PKP 52_905_000, tax 2_645_250 => H = 113_281;
+    //   employerHistory = floor(113_281 x 2_531_969 / 2_531_969) = 113_281, employeeHistory = 0.
+    //   W = 0 + floor((T - H) x 0 / X) = 0, so the result below is unchanged.
     const r = run({
       taxableLines: [{ amountIdr: 10_000_000, taxScheme: "gross_up" }],
-      prior: prior(112_531_969, 2_531_969),
+      prior: { ...prior(112_531_969, 2_531_969), taxAllowanceIdr: 2_531_969 },
     });
     expect(r.method).toBe("annual_recalculation");
     expect(r.taxAllowanceIdr).toBe(997_381);
@@ -753,24 +760,38 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     //   net = 115_150_895; raw PKP = 61_150_895 => PKP 61_150_000;
     //   tax = 3_000_000 + 1_150_000 x 15% = 172_500 => 3_172_500.
     //   T = 3_172_500 - (1_200_000 + 1_150_895) = 3_172_500 - 2_350_895 = 821_605.
-    //   G = X, so W = T: the employee pays all of December; the employer's earlier borne tax is not re-charged.
+    //   (Superseded by legend-6q7o: this X = 10_000_000 / W = T = 821_605 was the old result.)
+    //
+    // History split (legend-6q7o rules A-D), proportional (the default policy):
+    //   H = annualTax(prior alone) - priorTax: cost 5% x 111_150_895 = 5_557_544 (< cap),
+    //   net 105_593_351, PKP 51_593_000, tax 2_579_650 => H = 2_579_650 - 2_350_895 = 228_755.
+    //   No scheme base, no allowance (E = 0): pET = priorBorne = 1_150_895, priorTax = 2_350_895,
+    //   employerHistory = floor(228_755 x 1_150_895 / 2_350_895) = 111_988, employeeHistory = 116_767.
+    //   The employer's 111_988 is borne tax, hence taxable: X = 10_000_000 + S, G* = 10_000_000.
+    //   S_{k+1} = T(X) - W(X), W = employeeHistory + floor((T - H) x G* / X):
+    //   0 -> 111_988 -> 118_740 -> 119_155 -> 119_181 -> 119_183 -> 119_183 stable.
+    //   S = 119_183: X = 10_119_183; gross = 121_270_078; cost 6_000_000; net = 115_270_078;
+    //   PKP = 61_270_000; tax = 3_000_000 + 1_270_000 x 15% = 190_500 => 3_190_500.
+    //   T = 3_190_500 - 2_350_895 = 839_605.
+    //   W = 116_767 + floor((839_605 - 228_755) x 10_000_000 / 10_119_183) = 116_767 + 603_655 = 720_422.
+    //   B = T - W = 119_183 = S (the employer's earlier borne share of the history stays the employer's).
     const r = run({ prior: prior(111_150_895, 1_200_000, 1_150_895) });
     expect(r.method).toBe("annual_recalculation");
-    expect(r.taxableGrossIdr).toBe(10_000_000);
+    expect(r.taxableGrossIdr).toBe(10_119_183);
     expect(r.taxAllowanceIdr).toBe(0);
-    expect(r.pph21Idr).toBe(821_605);
-    expect(r.pph21WithheldIdr).toBe(821_605);
-    expect(r.pph21EmployerBorneIdr).toBe(0);
+    expect(r.pph21Idr).toBe(839_605);
+    expect(r.pph21WithheldIdr).toBe(720_422);
+    expect(r.pph21EmployerBorneIdr).toBe(119_183);
     expect(r.pph21RefundIdr).toBe(0);
     expect(r.annual).toEqual({
-      grossIdr: 121_150_895,
+      grossIdr: 121_270_078,
       occupationalCostIdr: 6_000_000,
       deductibleIdr: 0,
-      netIdr: 115_150_895,
-      annualizedNetIdr: 115_150_895,
+      netIdr: 115_270_078,
+      annualizedNetIdr: 115_270_078,
       ptkpIdr: 54_000_000,
-      taxableIncomeIdr: 61_150_000,
-      annualTaxIdr: 3_172_500,
+      taxableIncomeIdr: 61_270_000,
+      annualTaxIdr: 3_190_500,
       priorPph21Idr: 2_350_895,
     });
   });
@@ -785,26 +806,40 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     //   raw PKP = 62_352_800 => PKP 62_352_000; tax = 3_000_000 + 2_352_000 x 15% = 352_800 => 3_352_800.
     //   T = 3_352_800 - (1_000_000 + 1_381_074) = 3_352_800 - 2_381_074 = 971_726 = S.
     //   G = U = 0 => W = 0, A = 0, B = T = 971_726. Withheld 0, borne 971_726.
+    //   (Superseded by legend-6q7o: the employee did pay 1_000_000 of the year's tax in
+    //   Jul-Nov, so they keep their part of the Jan-Jun shortfall below.)
+    //
+    // History split (legend-6q7o rules A-D), proportional (default policy), G* = 0:
+    //   H = annualTax(111_381_074) - 2_381_074: cost 5% = 5_569_053, net 105_812_021,
+    //   PKP 51_812_000, tax 2_590_600 => H = 209_526.
+    //   pET = priorBorne = 1_381_074 (no allowance, E = 0); priorTax = 2_381_074;
+    //   employerHistory = floor(209_526 x 1_381_074 / 2_381_074) = 121_529; employeeHistory = 87_997.
+    //   W = 87_997 + floor((T - H) x 0 / X) = 87_997 (G* = 0, only the history share).
+    //   Fixed point, S_{k+1} = T(X) - W, X = 10_000_000 + S:
+    //   0 -> 738_079 -> 848_779 -> 865_279 -> 867_829 -> 868_129 -> 868_279 -> 868_279 stable.
+    //   S = 868_279: X = 10_868_279; gross = 122_249_353; net = 116_249_353;
+    //   PKP = 62_249_000; tax = 3_000_000 + 2_249_000 x 15% = 337_350 => 3_337_350.
+    //   T = 3_337_350 - 2_381_074 = 956_276. W = 87_997; A = 0 (U = 0); B = 956_276 - 87_997 = 868_279.
     const r = run({
       taxableLines: [{ amountIdr: 10_000_000, taxScheme: "net" }],
       prior: prior(111_381_074, 1_000_000, 1_381_074),
     });
     expect(r.method).toBe("annual_recalculation");
-    expect(r.taxableGrossIdr).toBe(10_971_726);
+    expect(r.taxableGrossIdr).toBe(10_868_279);
     expect(r.taxAllowanceIdr).toBe(0);
-    expect(r.pph21Idr).toBe(971_726);
-    expect(r.pph21WithheldIdr).toBe(0);
-    expect(r.pph21EmployerBorneIdr).toBe(971_726);
+    expect(r.pph21Idr).toBe(956_276);
+    expect(r.pph21WithheldIdr).toBe(87_997);
+    expect(r.pph21EmployerBorneIdr).toBe(868_279);
     expect(r.pph21RefundIdr).toBe(0);
     expect(r.annual).toEqual({
-      grossIdr: 122_352_800,
+      grossIdr: 122_249_353,
       occupationalCostIdr: 6_000_000,
       deductibleIdr: 0,
-      netIdr: 116_352_800,
-      annualizedNetIdr: 116_352_800,
+      netIdr: 116_249_353,
+      annualizedNetIdr: 116_249_353,
       ptkpIdr: 54_000_000,
-      taxableIncomeIdr: 62_352_000,
-      annualTaxIdr: 3_352_800,
+      taxableIncomeIdr: 62_249_000,
+      annualTaxIdr: 3_337_350,
       priorPph21Idr: 2_381_074,
     });
   });
@@ -1095,13 +1130,17 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     // Annual tax of X: gross = 110_000_000 + X; cost 6_000_000; PKP = floor((gross - 60_000_000)/1000)x1000;
     //   tax = 3_000_000 + 15% x (PKP - 60_000_000); T(X) = tax - 2_200_000.
     //
-    // proportional: W(X) = floor(T(X) x G / X), C(S) = T(X) - W(X).
-    //   S: 0 -> 320_000 -> 354_977 -> 358_787 -> 359_222 -> 359_306 -> 359_310 -> 359_310 stable.
-    //   S = 359_310: X = 10_359_310; gross = 120_359_310; net = 114_359_310;
-    //   PKP = floor(60_359_310/1000)x1000 = 60_359_000; tax = 3_000_000 + 359_000 x 15% = 53_850 => 3_053_850.
-    //   T = 3_053_850 - 2_200_000 = 853_850.
-    //   W = floor(853_850 x 6_000_000 / 10_359_310) = floor(494_540.66) = 494_540. A = 0.
-    //   B = 853_850 - 494_540 = 359_310 = S. Withheld = 494_540, borne = 359_310.
+    // proportional (legend-6q7o rule C, H > 0): W(X) = employeeHistory + floor((T(X) - H) x G* / X),
+    //   C(S) = T(X) - W(X). (Old rule W = floor(T x G / X): S = 359_310, W = 494_540.)
+    //   H = annualTax(110 jt) - 2_200_000: cost 5_500_000, net 104_500_000, PKP 50_500_000,
+    //   tax 2_525_000 => H = 325_000. Pure gross history (no borne, no allowance):
+    //   pET = 0, employerHistory = 0, employeeHistory = 325_000. G* = 6_000_000.
+    //   S: 0 -> 190_000 -> 207_033 -> 208_579 -> 208_686 -> 208_689 -> 208_689 stable.
+    //   S = 208_689: X = 10_208_689; gross = 120_208_689; net = 114_208_689;
+    //   PKP = floor(60_208_689/1000)x1000 = 60_208_000; tax = 3_000_000 + 208_000 x 15% = 31_200 => 3_031_200.
+    //   T = 3_031_200 - 2_200_000 = 831_200.
+    //   W = 325_000 + floor((831_200 - 325_000) x 6_000_000 / 10_208_689) = 325_000 + 297_511 = 622_511. A = 0.
+    //   B = 831_200 - 622_511 = 208_689 = S. Withheld = 622_511, borne = 208_689.
     //
     // gross_first: W = min(T(X), max(0, Talone)) with Talone = T(G = 6_000_000):
     //   gross 116_000_000; cost = 5% x 116_000_000 = 5_800_000; PKP = 116_000_000 - 5_800_000 - 54_000_000
@@ -1110,6 +1149,8 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
     //   S = 223_450: X = 10_223_450; gross = 120_223_450; net = 114_223_450; PKP = 60_223_000;
     //   tax = 3_000_000 + 223_000 x 15% = 33_450 => 3_033_450. T = 833_450.
     //   W = min(833_450, 610_000) = 610_000; B = 833_450 - 610_000 = 223_450. Withheld 610_000, borne 223_450.
+    //   (Rule E re-check: Talone = tax(116 jt) - 2_200_000 - H + employeeHistory = 610_000 - 325_000 + 325_000
+    //   = 610_000, so gross_first is unchanged by legend-6q7o.)
     // Employee take-home = G + U + N - W (exact): 10_000_000 - W.
     const lines = [
       { amountIdr: 6_000_000, taxScheme: "gross" as const },
@@ -1119,21 +1160,21 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
       { taxableLines: lines, prior: prior(110_000_000, 2_200_000) },
       { mixedSchemeAllocation: "proportional" },
     );
-    expect(proportional.taxableGrossIdr).toBe(10_359_310);
+    expect(proportional.taxableGrossIdr).toBe(10_208_689);
     expect(proportional.taxAllowanceIdr).toBe(0);
-    expect(proportional.pph21Idr).toBe(853_850);
-    expect(proportional.pph21WithheldIdr).toBe(494_540);
-    expect(proportional.pph21EmployerBorneIdr).toBe(359_310);
+    expect(proportional.pph21Idr).toBe(831_200);
+    expect(proportional.pph21WithheldIdr).toBe(622_511);
+    expect(proportional.pph21EmployerBorneIdr).toBe(208_689);
     expect(proportional.pph21RefundIdr).toBe(0);
     expect(proportional.annual).toEqual({
-      grossIdr: 120_359_310,
+      grossIdr: 120_208_689,
       occupationalCostIdr: 6_000_000,
       deductibleIdr: 0,
-      netIdr: 114_359_310,
-      annualizedNetIdr: 114_359_310,
+      netIdr: 114_208_689,
+      annualizedNetIdr: 114_208_689,
       ptkpIdr: 54_000_000,
-      taxableIncomeIdr: 60_359_000,
-      annualTaxIdr: 3_053_850,
+      taxableIncomeIdr: 60_208_000,
+      annualTaxIdr: 3_031_200,
       priorPph21Idr: 2_200_000,
     });
 
@@ -1162,13 +1203,21 @@ describe("PPh 21 annual recalculation (R19-R62)", () => {
 });
 
 describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round 2)", () => {
-  it("R62b proportional December, mixed gross 6 jt + net 4 jt + employer BPJS 500_000: T (Jan-Nov shortfall included) follows the per-scheme gross share", () => {
-    // CTO decision 2026-11-08: the employer benefit's tax splits by the month's
-    // line schemes, and under `proportional` the whole T (Jan-Nov shortfall
-    // included) follows that per-scheme gross share.
-    //   employee base G = 6_000_000 + floor(500_000 x 6_000_000 / 10_000_000) = 6_300_000;
+  it("R62b proportional December, mixed gross 6 jt + net 4 jt + employer BPJS 500_000: W = employeeHistory + floor((T - H) x G* / X)", () => {
+    // CTO decision 2026-11-08 (the employer benefit's tax splits by the month's line
+    // schemes) is superseded by legend-6q7o rule C: under `proportional` with a
+    // history shortfall H > 0, only T - H follows the per-scheme gross share; H
+    // follows the payer history.
+    //   employee base G* = 6_000_000 + floor(500_000 x 6_000_000 / 10_000_000) = 6_300_000;
     //   the net line's 200_000 of the benefit is the company's.
-    //   W = floor(T x 6_300_000 / X). The old all-or-nothing rule used 6_500_000.
+    //   H = annualTax(110 jt) - 2_200_000 = 2_525_000 - 2_200_000 = 325_000 (cost 5_500_000,
+    //   PKP 50_500_000); pure gross history => employerHistory 0, employeeHistory 325_000.
+    //   X0 = 6_500_000 + 4_000_000 = 10_500_000. S: 0 -> 220_000 -> 240_379 -> 242_270 -> 242_454
+    //   -> 242_460 -> 242_460 stable. S = 242_460: X = 10_742_460; gross = 120_742_460;
+    //   net = 114_742_460; PKP = 60_742_000; tax = 3_000_000 + 742_000 x 15% = 111_300 => 3_111_300.
+    //   T = 3_111_300 - 2_200_000 = 911_300.
+    //   W = 325_000 + floor((911_300 - 325_000) x 6_300_000 / 10_742_460) = 325_000 + 343_840 = 668_840.
+    //   B = 911_300 - 668_840 = 242_460 = S.
     const lines = [
       { amountIdr: 6_000_000, taxScheme: "gross" as const },
       { amountIdr: 4_000_000, taxScheme: "net" as const },
@@ -1183,9 +1232,14 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     );
     const x = BigInt(r.taxableGrossIdr);
     const t = BigInt(r.pph21Idr);
-    expect(t).toBeGreaterThan(0n);
-    expect(BigInt(r.pph21WithheldIdr)).toBe((t * 6_300_000n) / x);
-    expect(BigInt(r.pph21WithheldIdr)).toBeLessThan((t * 6_500_000n) / x);
+    const history = 325_000n;
+    expect(x).toBe(10_742_460n);
+    expect(t).toBe(911_300n);
+    expect(BigInt(r.pph21WithheldIdr)).toBe(
+      history + ((t - history) * 6_300_000n) / x,
+    );
+    expect(r.pph21WithheldIdr).toBe(668_840);
+    expect(r.pph21EmployerBorneIdr).toBe(242_460);
     expect(r.taxAllowanceIdr).toBe(0);
     expect(r.pph21WithheldIdr + r.pph21EmployerBorneIdr).toBe(r.pph21Idr);
     expect(r.pph21RefundIdr).toBe(0);
@@ -1305,16 +1359,21 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     expect(r.pph21EmployerBorneIdr).toBe(396_800);
   });
 
-  it("R71 half gross-scheme, half net-scheme year that paid no tax: the employee carries half of the Jan-Nov shortfall", () => {
+  it("R71 half gross-scheme, half net-scheme year that paid no tax: the employer carries the whole Jan-Nov shortfall (the gross-scheme half owes no tax on its own)", () => {
     // As R69 with prior base 29_700_000 gross scheme + 29_700_000 employer scheme.
-    // H = 121_500; employer part floor(121_500 x 29.7/59.4) = 60_750,
-    // employee part 60_750. G = 0 => gross_first share = tax(prior) - H + 60_750
-    // = 60_750. December net 5_400_000, X = 5_400_000 + S, C = T - min(T, 60_750):
-    //   S0=0       T 378_000 -> 317_250
-    //   S1=317_250 X 5_717_250 T 393_050 -> 332_300
-    //   S2=332_300 X 5_732_300 T 393_750 -> 333_000
-    //   S3=333_000 X 5_733_000 T 393_800 -> 333_050
-    //   S4=333_050 X 5_733_050 T 393_800 -> 333_050 stop.
+    // H = tax(59_400_000) - 0 = 121_500 (cost 2_970_000, net 56_430_000, PKP 2_430_000).
+    // Rule B (gross_first, legend-6q7o): employeeHistory = clamp(annual(Gs) - (priorTax - pET), 0, H).
+    //   annual(Gs = 29_700_000): cost 1_485_000, net 28_215_000, PKP 0 => tax 0;
+    //   priorTax = pET = 0 => employeeHistory = clamp(0 - 0, 0, 121_500) = 0.
+    //   (The old base-ratio rule gave the employee half of H, 60_750; the gross
+    //   half of the year never reached the taxable threshold on its own.)
+    // G* = 0 => employee share W = tax(prior) - H + employeeHistory = 0.
+    // December net 5_400_000, X = 5_400_000 + S, S = T (W = 0), same as R69:
+    //   S0=0       X 5_400_000 T 378_000
+    //   S1=378_000 X 5_778_000 T 395_950
+    //   S2=395_950 X 5_795_950 T 396_800
+    //   S3=396_800 X 5_796_800 T 396_800 stop.
+    //   X = 5_796_800, T = 396_800, withheld 0, borne 396_800.
     const r = run(
       {
         taxableLines: [{ amountIdr: 5_400_000, taxScheme: "net" }],
@@ -1326,10 +1385,10 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
       },
       { mixedSchemeAllocation: "gross_first" },
     );
-    expect(r.taxableGrossIdr).toBe(5_733_050);
-    expect(r.pph21Idr).toBe(393_800);
-    expect(r.pph21WithheldIdr).toBe(60_750);
-    expect(r.pph21EmployerBorneIdr).toBe(333_050);
+    expect(r.taxableGrossIdr).toBe(5_796_800);
+    expect(r.pph21Idr).toBe(396_800);
+    expect(r.pph21WithheldIdr).toBe(0);
+    expect(r.pph21EmployerBorneIdr).toBe(396_800);
   });
 
   for (const allocation of ["gross_first", "proportional"] as const) {
@@ -1412,23 +1471,25 @@ describe("PPh 21 history shortfall and unpaid last period (R63-R65, review round
     expect(grossFirst.pph21RefundIdr).toBe(2_000_000);
   });
 
-  it("R75 gross-up year without a reported prior allowance: the earlier employer scheme base stands in for it", () => {
+  it("R75 gross-up year without a reported prior allowance: rejected (legend-6p71 rule A)", () => {
     // As R72 gross_first, but the caller gives only the scheme mix
-    // (employer scheme 90_200_000 of 90_200_000): the prior tax is all the
-    // employer's, so the same result as R72.
-    const r = run(
-      {
-        taxableLines: [{ amountIdr: 8_000_000, taxScheme: "gross_up" }],
-        prior: {
-          ...prior(90_200_000, 220_000, 0),
-          employerSchemeBaseIdr: 90_200_000,
+    // (employer scheme 90_200_000 of 90_200_000) and prior withheld 220_000 > 0.
+    // The withheld tax of a history with employer-scheme pay may hide gross-up
+    // allowance that cannot be told apart from tax the employee paid, and the
+    // scheme-base ratio no longer stands in for it: prior.taxAllowanceIdr is
+    // required (0 when none) => RangeError. (Old: 1_831_450 via the ratio.)
+    expect(() =>
+      run(
+        {
+          taxableLines: [{ amountIdr: 8_000_000, taxScheme: "gross_up" }],
+          prior: {
+            ...prior(90_200_000, 220_000, 0),
+            employerSchemeBaseIdr: 90_200_000,
+          },
         },
-      },
-      { mixedSchemeAllocation: "gross_first" },
-    );
-    expect(r.pph21Idr).toBe(1_831_450);
-    expect(r.taxAllowanceIdr).toBe(1_831_450);
-    expect(r.pph21WithheldIdr).toBe(1_831_450);
+        { mixedSchemeAllocation: "gross_first" },
+      ),
+    ).toThrow(RangeError);
   });
 
   it("R76 rejects a prior allowance above the prior withheld tax", () => {

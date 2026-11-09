@@ -34,7 +34,10 @@
 // Let G = gross lines + employer BPJS benefit, U = gross_up lines, N = net
 // lines, S = employer-covered tax (allowance A + borne B), X = G+U+N+S. The
 // employee's share W of the tax follows the policy (`proportional`: T x G / X;
-// `gross_first`: the tax G would carry alone, capped at T). S is the least
+// `gross_first`: the tax G would carry alone, capped at T). In the last
+// period the Jan-Nov shortfall H inside T is split first, by the earlier
+// scheme mix (else the payer history), under both policies; only T - H
+// follows this month's mix. S is the least
 // fixed point of S = T(X(S)) - W(X(S)), iterated from 0 (monotone, so it rises
 // to the least solution). A = S x U / (U + N), B = T - W - A. Withheld = W + A,
 // so the employee's take-home is exactly G + U + N - W: the allowance cancels
@@ -82,6 +85,14 @@ export type Pph21PeriodInput = {
   taxableLines: readonly Pph21Line[];
   /** Employer JKK + JKM + BPJS Kesehatan shares (taxable benefit). */
   employerBenefitIdr: Idr | number;
+  /**
+   * Tax scheme of the employment agreement in force this period (bead
+   * legend-m9gx). Required when the period has an employer benefit but its
+   * taxable lines add up to 0 (none, or only zero amounts; e.g. unpaid leave
+   * with BPJS still paid): the benefit then follows the agreement's scheme.
+   * Ignored when a taxable line has an amount.
+   */
+  contractTaxScheme?: TaxScheme;
   /** Employee JHT + JP of the period (deductible in the annual computation). */
   employeeDeductibleIdr: Idr | number;
   /** Earlier periods of the tax year at this employer (last period only). */
@@ -216,11 +227,15 @@ type SchemeSplit = {
   n: bigint;
   /** Part of G + U + N on the employee's (gross) scheme. */
   employeeG: bigint;
+  /** Weights splitting the employer-covered tax into allowance (gross-up) and borne (net). */
+  coverU: bigint;
+  coverN: bigint;
 };
 
 function schemeSplit(
   taxableLines: readonly Pph21Line[],
   employerBenefitIdr: Idr | number,
+  contractTaxScheme: TaxScheme | undefined,
 ): SchemeSplit {
   const benefit = nonNegativeInt(employerBenefitIdr, "employerBenefitIdr");
   let grossLines = 0n;
@@ -239,11 +254,35 @@ function schemeSplit(
   // is the company's (it joins the employer-covered tax: allowance or borne,
   // never take-home). Gross-only pay (no net / gross-up line) keeps all of it.
   const lineBase = grossLines + u + n;
+  // No line but a benefit (unpaid leave, BPJS still paid): the benefit follows
+  // the employment agreement's scheme (bead legend-m9gx), so a gross-up or
+  // net employee keeps no part of its tax and the company's cover is an
+  // allowance (gross-up) or borne (net).
+  if (lineBase === 0n && benefit > 0n) {
+    if (contractTaxScheme === undefined)
+      throw new RangeError(
+        "contractTaxScheme is required for a period with only an employer benefit",
+      );
+    if (
+      contractTaxScheme !== "gross" &&
+      contractTaxScheme !== "gross_up" &&
+      contractTaxScheme !== "net"
+    )
+      throw new RangeError("Unknown contractTaxScheme");
+    return {
+      benefit,
+      g,
+      grossLines,
+      u,
+      n,
+      employeeG: contractTaxScheme === "gross" ? g : 0n,
+      coverU: contractTaxScheme === "gross_up" ? benefit : 0n,
+      coverN: contractTaxScheme === "net" ? benefit : 0n,
+    };
+  }
   const employeeG =
-    u + n === 0n || lineBase === 0n
-      ? g
-      : grossLines + (benefit * grossLines) / lineBase;
-  return { benefit, g, grossLines, u, n, employeeG };
+    u + n === 0n ? g : grossLines + (benefit * grossLines) / lineBase;
+  return { benefit, g, grossLines, u, n, employeeG, coverU: u, coverN: n };
 }
 
 /**
@@ -256,8 +295,11 @@ function schemeSplit(
 export function pph21GrossSchemeBase(
   taxableLines: readonly Pph21Line[],
   employerBenefitIdr: Idr | number,
+  contractTaxScheme?: TaxScheme,
 ): Idr {
-  return toIdr(schemeSplit(taxableLines, employerBenefitIdr).employeeG);
+  return toIdr(
+    schemeSplit(taxableLines, employerBenefitIdr, contractTaxScheme).employeeG,
+  );
 }
 
 type PeriodTax = {
@@ -281,9 +323,10 @@ export function computePph21Period(
   if (partialYear && !input.lastTaxPeriod)
     throw new RangeError("partialYearTaxSubject applies to the last period");
 
-  const { g, u, n, employeeG } = schemeSplit(
+  const { g, u, n, employeeG, coverU, coverN } = schemeSplit(
     input.taxableLines,
     input.employerBenefitIdr,
+    input.contractTaxScheme,
   );
   const deductible = nonNegativeInt(
     input.employeeDeductibleIdr,
@@ -323,14 +366,22 @@ export function computePph21Period(
       "prior.taxAllowanceIdr exceeds prior.pph21WithheldIdr",
     );
   const priorMix = priorGrossScheme + priorEmployerScheme;
-  // Employer-funded share of the tax paid so far: borne + allowance when the
-  // caller reports the allowance, else the earlier scheme mix when given (a
-  // gross-up allowance sits in `withheld`, so borne alone would call it the
-  // employee's), else the borne tax alone.
-  let priorEmployerTax = priorBorne;
-  if (priorAllowance !== null) priorEmployerTax = priorBorne + priorAllowance;
-  else if (priorMix > 0n)
-    priorEmployerTax = (priorTax * priorEmployerScheme) / priorMix;
+  // Both bases or neither: one alone would read the rest of the income as the
+  // other scheme.
+  if (priorMix > 0n && priorMix !== priorGross)
+    throw new RangeError(
+      "prior scheme bases must add up to prior.taxableGrossIdr",
+    );
+  // Employer-funded share of the tax paid so far, exact: the borne tax plus
+  // the gross-up allowance inside `withheld` (bead legend-6p71). A history
+  // with employer-scheme pay and withheld tax may hide an allowance in the
+  // withheld tax, so the caller must report it (0 when none); a ratio of the
+  // scheme bases would overwrite the tax the company actually paid.
+  if (priorAllowance === null && priorWithheld > 0n && priorEmployerScheme > 0n)
+    throw new RangeError(
+      "prior.taxAllowanceIdr is required for a history with employer-scheme pay",
+    );
+  const priorEmployerTax = priorBorne + (priorAllowance ?? 0n);
   const priorEmployeeTax = priorTax - priorEmployerTax;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
@@ -348,17 +399,10 @@ export function computePph21Period(
   const mode: RoundingMode = policy.roundingMode;
   const months = BigInt(input.monthsWorked);
 
-  const taxOf = (x: bigint): PeriodTax => {
-    if (!input.lastTaxPeriod) {
-      const rateBp = terRateBp(tables.ter.bracketsByCategory[category], x);
-      return {
-        tax: divideRounded(x * BigInt(rateBp) * factor, BP * BP, mode),
-        terRateBp: rateBp,
-        annual: null,
-      };
-    }
+  // Pasal 17 annual tax on a year's gross `gross` with this period's
+  // deductions, cap, PTKP, partial-year rule and surcharge.
+  const annualOf = (gross: bigint) => {
     const params = tables.annual;
-    const gross = priorGross + x;
     const rawCost = (gross * BigInt(params.occupationalCostRateBp)) / BP;
     const annualCap = BigInt(params.occupationalCostAnnualCapIdr);
     const cap =
@@ -378,6 +422,21 @@ export function computePph21Period(
       BP * BP * 12n,
       mode,
     );
+    return { cost, totalDeductible, net, annualizedNet, pkp, annualTax };
+  };
+
+  const taxOf = (x: bigint): PeriodTax => {
+    if (!input.lastTaxPeriod) {
+      const rateBp = terRateBp(tables.ter.bracketsByCategory[category], x);
+      return {
+        tax: divideRounded(x * BigInt(rateBp) * factor, BP * BP, mode),
+        terRateBp: rateBp,
+        annual: null,
+      };
+    }
+    const gross = priorGross + x;
+    const { cost, totalDeductible, net, annualizedNet, pkp, annualTax } =
+      annualOf(gross);
     return {
       tax: annualTax - priorTax,
       terRateBp: null,
@@ -400,14 +459,33 @@ export function computePph21Period(
   // part follows the year's payer history, like a refund: the share the
   // employer bore before stays with the employer.
   const history = input.lastTaxPeriod ? taxOf(0n).tax : 0n;
-  // With nothing paid yet (priorTax = 0) the payer history is unknown, so the
-  // shortfall follows the earlier scheme mix, else this month's mix.
+  // Split of H (bead legend-6q7o). With the earlier scheme mix known, the
+  // annual tax on the prior income (H + priorTax) is shared by scheme base
+  // and each payer owes its share minus what it already paid, clamped to
+  // [0, H]: pay that was on the employer's scheme stays the employer's even
+  // when the employee paid tax in other months (TER 0% net months, then taxed
+  // gross months). Without the mix, H follows the payer history, else (nothing
+  // paid yet) this month's mix.
+  // gross_first with the mix known: the employee's part of the prior year's
+  // tax is the annual tax on their gross-scheme pay alone (the company covers
+  // everything on top), minus what they already paid, clamped to [0, H].
   const historyBase0 = g + u + n;
   let employerHistory = 0n;
-  if (history > 0n && priorTax > 0n)
-    employerHistory = (history * priorEmployerTax) / priorTax;
+  const clampH = (v: bigint) => (v < 0n ? 0n : v > history ? history : v);
+  if (
+    history > 0n &&
+    priorMix > 0n &&
+    policy.mixedSchemeAllocation === "gross_first"
+  )
+    employerHistory =
+      history - clampH(annualOf(priorGrossScheme).annualTax - priorEmployeeTax);
   else if (history > 0n && priorMix > 0n)
-    employerHistory = (history * priorEmployerScheme) / priorMix;
+    employerHistory = clampH(
+      ((history + priorTax) * priorEmployerScheme) / priorMix -
+        priorEmployerTax,
+    );
+  else if (history > 0n && priorTax > 0n)
+    employerHistory = (history * priorEmployerTax) / priorTax;
   else if (history > 0n && historyBase0 > 0n)
     employerHistory = (history * (historyBase0 - employeeG)) / historyBase0;
   const employeeHistory = history - employerHistory;
@@ -421,17 +499,27 @@ export function computePph21Period(
   // Employee gross share of the period tax T at base x.
   const employeeShare = (tax: bigint, x: bigint): bigint => {
     if (tax <= 0n) return 0n;
-    // Nothing paid this period (last period only can owe tax at X = 0): no
-    // employer benefit exists to carry it, so the employee owes it all.
-    if (x === 0n) return tax;
+    // Nothing paid this period (last period only can owe tax at X = 0): the
+    // employee owes their part of H; the employer bears its part, which then
+    // becomes taxable borne pay (X > 0) in the fixed point below.
+    if (x === 0n) {
+      const part = history > 0n ? employeeHistory : tax;
+      return part < tax ? part : tax;
+    }
     if (policy.mixedSchemeAllocation === "gross_first") {
       const alone = grossFirstShare > 0n ? grossFirstShare : 0n;
       return alone < tax ? alone : tax;
     }
-    // proportional: the whole tax T, Jan-Nov shortfall included, follows this
+    // proportional: the employee's part of H follows the payer history (as
+    // under gross_first); the tax this month adds on top, T - H, follows this
     // month's gross share per scheme (employeeG: gross lines plus their share
     // of the employer benefit), so the net / gross-up part is the company's and
-    // a net-only employee is never charged for it.
+    // a net-only employee is never charged for it. T >= H (the annual tax
+    // rises with the base). With no shortfall the whole T follows the mix.
+    if (history > 0n) {
+      const share = employeeHistory + ((tax - history) * employeeG) / x;
+      return share < tax ? share : tax;
+    }
     return (tax * employeeG) / x;
   };
 
@@ -463,7 +551,8 @@ export function computePph21Period(
   if (tax >= 0n) {
     const w = employeeShare(tax, x);
     const employerPart = tax - w;
-    allowance = u + n > 0n ? (covered * u) / (u + n) : 0n;
+    allowance =
+      coverU + coverN > 0n ? (covered * coverU) / (coverU + coverN) : 0n;
     if (allowance > employerPart) allowance = employerPart;
     borne = employerPart - allowance;
     withheld = w + allowance;
