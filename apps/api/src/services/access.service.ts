@@ -691,11 +691,17 @@ export async function grantRoleAssignment(
     /** Last successful re-authentication of the grantor, or null (denied). */
     reauthenticatedAt: Date | null;
     mfaVerified: boolean;
-    now?: Date;
   },
 ): Promise<RoleAssignment> {
-  const now = options.now ?? new Date();
   return withTenant(db, context, async (tx) => {
+    // legend-8ajy4: the same per-tenant lock as endRoleAssignment and the
+    // platform Owner path, taken first, and "now" read after it. A grantor
+    // whose assignment another caller ended while this one waited is then
+    // seen as ended (READ COMMITTED re-reads below) and cannot still grant.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
+    );
+    const now = new Date();
     const [roleRow] = await tx
       .select()
       .from(roles)
@@ -928,8 +934,9 @@ export async function endRoleAssignment(
     // hold their target row and wait for the other's in the Owner check
     // (deadlock → 40P01 → 500). The second caller now waits here and
     // re-reads the Owner set after the first commits (READ COMMITTED).
-    // The platform Owner path (platform-tenant-owner.service.ts) takes the
-    // same lock.
+    // The platform Owner path (platform-tenant-owner.service.ts) and
+    // grantRoleAssignment (legend-8ajy4) take the same lock; the key keeps
+    // its "-end" name so all three stay in step.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
     );
