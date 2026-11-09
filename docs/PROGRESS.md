@@ -445,6 +445,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Tanpa migrasi (`db:generate` kosong). Test: `apps/api/src/test/provisioning-defaults.test.ts`.
 - Follow-up: legend-9ppw (lokasi, UOM, CoA belum ikut ke edge node; celah sudah ada sebelumnya).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
+
 ## Brief 131 tiga bug kecil POS dan stok (engineer, cabang `ws/small-bugs-pos-stock`)
 
 - Sudah: `legend-2tcj` reject stock count kini mengunci kepala chain (`resolveApprovalChainOutcome`) sebelum membaca hasil approval; test balapan di `approval-expiry-race-modules.test.ts` (pg_locks, merah tanpa fix). `legend-t8xt` urutan outbox di `pos-shift.test.ts` kini `ORDER BY created_at, sequence, id` (sequence per agregat bisa sama); 3 run 62/62.
@@ -459,6 +460,7 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Review K reservasi: order POS `channel: reservation` dengan `serviceType` takeaway/delivery tidak ditolak dan kini kena service 5% (belum ada pemanggil di kode; jalur POS di luar scope): diperbaiki di legend-6u81: `createPosOrder` menolak `reservation` selain `dine_in` (VALIDATION_ERROR). `posPriceChannel` dan `order.paid` tidak diubah. Review K: tidak ada jalur lain yang membuat order reservation.
 - Follow-up: legend-mdh0 (publish boleh membuat tie aturan, `TAX_RULE_AMBIGUOUS` memblokir checkout; lock seed di `createServiceChargeRule`; actor `createOutlet`), legend-9flj (pertanyaan founder: channel reservation).
 - Belum: second-opinion Codex (tingkat K) diantre CTO sebelum gerbang rilis.
+
 ## Brief 129 reset refund lama + persiapan sandbox DOIT (engineer, cabang `ws/doit-sandbox`, 2026-11-09)
 
 - Sudah: legend-d21p `pnpm db:reset-preswitch-refunds` (`apps/api/src/db/reset-preswitch-refund-payouts.ts`). Default dry-run; `--apply` wajib `--touched-before <waktu deploy 5316426a>` dan `--ids <file yang ditinjau finance>`. Reset `payout_attempts=0`, `last_payout_error` NULL kecuali `PAYOUT_QUARANTINED`, satu audit `payment.refund_payout_preswitch_reset` per baris dalam transaksi yang sama. Guard: flag di env script, jejak kiriman DOIT (provider_ref, polls, `DOIT_%`, provider_declined). Test 11/11.
