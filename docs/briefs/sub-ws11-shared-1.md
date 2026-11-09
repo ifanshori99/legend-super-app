@@ -25,3 +25,11 @@ Tambah test, harus hijau tanpa ubah kode route (bila merah: lapor, jangan ubah r
 3. `report-run.service.ts` ~287-291: jalur "tanpa series → satu baris periode penuh" dihapus atau dibangun per bucket.
 4. Refine kontrak: bucket `day` → bucketStart = bucketEnd; baris dengan bucketStart sama punya bucketEnd sama. Kasus baru di `tests/dashboard-contract.test.mjs`.
 5. Test bucket `week` dan `month` dengan minggu/bulan awal dan akhir terpotong periode.
+
+## P4 legend-e0fhh: mock handler report-runs menghormati bucket
+Berkas: `apps/web/src/lib/mock/handlers/report-runs.ts`, `tests/ws11-fixture-reconcile.test.mjs` saja. Aturan sama dengan atas.
+- Kunci run mock (`questionKey`) memuat bucket: saat daftar dari `result.bucket`, saat minta dari `body.bucket` (default `total`). `hasMockReportRun` dapat parameter opsional `bucket` terakhir, default `"total"` (pemanggil lama di `ws11-reports/mock.ts:499` dan `ws11-shareholder/mock.ts:223` tetap jalan tanpa diubah).
+- Permintaan bucket yang tidak terdaftar dijawab 400 `REPORT_FILTER_NOT_SUPPORTED` (seperti split yang tidak dibangun), bukan run `total` diam-diam.
+- Run `total` dan run `day` untuk pertanyaan sama boleh berbeda angka (bukan DASH-02 ganda).
+- Test gagal-dulu: describe baru di `tests/ws11-fixture-reconcile.test.mjs` (pola describe "the run key carries the outlet"): daftar run `total` dan run `day` (baris per hari dengan bucketStart/End, `day` 2-3 hari, tanggal unik yang belum dipakai test lain) → minta `day` dapat baris harian, minta `total` dapat total, minta `week` → `REPORT_FILTER_NOT_SUPPORTED`; `hasMockReportRun(..., "day")` true. Tunjukkan merah di handler lama, lalu hijau.
+- Bukti: `node --test tests/ws11-*.test.mjs tests/dashboard-contract.test.mjs tests/metrics-contract.test.mjs` hijau; prettier + eslint dua berkas.
