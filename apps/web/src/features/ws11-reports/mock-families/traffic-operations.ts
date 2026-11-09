@@ -19,8 +19,8 @@ type Figures = Atoms & Record<keyof typeof derived, number>;
 /** Mock-only average: nothing in the day model moves it. */
 const AVERAGE_SERVING_SECONDS = 780;
 const AVERAGE_DWELL_MINUTES = "52.0000";
-const TABLE_TURNOVER = "3.2000";
-const TABLE_OCCUPANCY_PCT = "61.5000";
+const TABLE_TURNOVER = "1.8400";
+const TABLE_OCCUPANCY_PCT = "62.5000";
 
 export function cellFor(metricCode: string, atoms: Figures): Cell | undefined {
   switch (metricCode) {

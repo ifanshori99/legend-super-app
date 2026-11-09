@@ -411,7 +411,6 @@ const SALES_REPORTS = sales.SALES_REPORTS;
 
 const SERVED_REPORTS: readonly string[] = [
   ...SALES_REPORTS,
-  ...sales.SALES_VIEWER_ONLY_REPORTS,
   ...menuCogs.reportsByPrefix.menu,
   ...paymentsTax.reportsByPrefix.payments,
   ...paymentsTax.reportsByPrefix.tax,
@@ -425,6 +424,8 @@ const SERVED_REPORTS: readonly string[] = [
   ...hr.reportsByPrefix.attendance,
   ...hr.reportsByPrefix.payroll,
   ...hr.reportsByPrefix.performance,
+  ...trafficOperations.reportsByPrefix.traffic,
+  ...trafficOperations.reportsByPrefix.operations,
 ];
 
 /**

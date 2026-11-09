@@ -9,7 +9,10 @@ import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import * as model from "../apps/web/src/features/ws11-reports/mock-day-model.ts";
-import { buildSalesRuns } from "../apps/web/src/features/ws11-reports/mock.ts";
+import {
+  buildReportRuns,
+  buildSalesRuns,
+} from "../apps/web/src/features/ws11-reports/mock.ts";
 import { buildPreviewResult } from "../apps/web/src/features/ws11-report-builder/mock-preview.ts";
 
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
@@ -125,5 +128,51 @@ describe("shared report mock day model · legend-c3uq", () => {
       assert.doesNotMatch(source, /CLOSED_MONTH_NET_SALES =/, path);
       assert.doesNotMatch(source, /412_800_000/, path);
     }
+  });
+  test("legend-iwsrp 6: the day model owns the day_of_week split, summing to the period", () => {
+    const range = { startDate: "2026-10-01", endDate: "2026-10-31" };
+    const spec = model.splitSpecFor("day_of_week", range);
+    assert.ok(spec, "splitSpecFor serves day_of_week");
+    assert.deepEqual(spec.values, ["1", "2", "3", "4", "5", "6", "7"]);
+    const net = model.distribute(
+      model.periodAtoms(range).net,
+      spec.weights.net,
+    );
+    assert.equal(
+      net.reduce((a, b) => a + b, 0),
+      model.periodAtoms(range).net,
+    );
+  });
+
+  test("legend-iwsrp 6: the builder previews sales_target and target_achievement_pct", () => {
+    const range = {
+      startDate: model.BUSINESS_DATE,
+      endDate: model.BUSINESS_DATE,
+    };
+    const preview = buildPreviewResult({
+      metricCodes: ["net_sales", "sales_target", "target_achievement_pct"],
+      period: range,
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
+    const [net, target, pct] = preview.rows[0].values.map((cell) => cell.value);
+    assert.ok(target, "sales_target has a figure");
+    assert.equal(target.valueIdr, Math.round(net.valueIdr * 1.05));
+    assert.ok(pct, "target_achievement_pct has a figure");
+  });
+
+  test("legend-iwsrp 6: the viewer serves the target, weekday and category sales reports", () => {
+    const codes = new Set(buildSalesRuns().map((run) => run.reportCode));
+    for (const code of ["sales.target", "sales.by_day", "sales.by_category"])
+      assert.ok(codes.has(code), `${code} is in the sales runs`);
+  });
+  test("legend-iwsrp 6: the served reports include traffic and operations", () => {
+    const prefixes = new Set(
+      buildReportRuns().map((run) => run.reportCode?.split(".")[0]),
+    );
+    assert.ok(prefixes.has("traffic"), "traffic runs");
+    assert.ok(prefixes.has("operations"), "operations runs");
   });
 });

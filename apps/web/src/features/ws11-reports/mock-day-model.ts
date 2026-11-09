@@ -251,12 +251,30 @@ export const SPLITS: Readonly<Record<string, SplitSpec>> = {
 export const OPEN_DAY_HOURS = ["08", "09", "10", "11"] as const;
 export const OPEN_DAY_HOUR_WEIGHTS = [2, 3, 5, 8] as const;
 
+/** Weekday split computed from the model's own days (exact, not invented). */
+function weekdaySplit(range: DateRange): SplitSpec {
+  const sums = Array.from({ length: 7 }, zeroAtoms);
+  for (const day of eachDay(range)) {
+    const atoms = dayAtoms(day);
+    const bucket = sums[weekdayIndex(day)] as Atoms;
+    for (const key of ATOM_KEYS) bucket[key] += atoms[key];
+  }
+  const present = sums
+    .map((atoms, index) => ({ atoms, value: String(index + 1) }))
+    .filter((item) => item.atoms.net > 0);
+  const weights = Object.fromEntries(
+    ATOM_KEYS.map((key) => [key, present.map((item) => item.atoms[key])]),
+  ) as unknown as SplitSpec["weights"];
+  return { values: present.map((item) => item.value), weights };
+}
+
 /**
  * The fixed split for a dimension, or `null` when the model cannot break it
  * down. `outlet` is handled by `outletSplit`, because its value is the
- * caller's label.
+ * caller's label. `day_of_week` is computed from the model's own days.
  */
 export function splitSpecFor(key: string, range: DateRange): SplitSpec | null {
+  if (key === "day_of_week") return weekdaySplit(range);
   const spec = SPLITS[key];
   if (spec === undefined) return null;
   if (

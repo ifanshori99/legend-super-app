@@ -58,14 +58,6 @@ export const SALES_REPORTS = [
   "sales.void",
   "sales.discount",
   "sales.refund",
-] as const;
-
-/**
- * Sales reports the report builder's preview mock does not know (target, day
- * of week, category): served by the viewer only, so `buildSalesRuns` (the
- * builder comparison, DASH-02) keeps to `SALES_REPORTS`.
- */
-export const SALES_VIEWER_ONLY_REPORTS = [
   "sales.target",
   "sales.by_day",
   "sales.by_category",
@@ -73,5 +65,5 @@ export const SALES_VIEWER_ONLY_REPORTS = [
 
 /** Report codes served here, by code prefix. */
 export const reportsByPrefix = {
-  sales: [...SALES_REPORTS, ...SALES_VIEWER_ONLY_REPORTS],
+  sales: SALES_REPORTS,
 } as const;
