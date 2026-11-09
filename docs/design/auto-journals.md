@@ -23,8 +23,8 @@ Gateway money uses a **receipt-first** model with one liability role, `customer_
 | Completed sale voided                                       | `order.voided` (voidedFinalOrder true)                                   | reverses the `aj:sale:<orderId>` journal (cash-only sales; section 10). Open-order void: ignored                                                                                                                              |
 | DP forfeited                                                | `reservation.cancelled`, `reservation.no_show` (depositForfeitedIdr > 0) | Dr customer_deposit (gateway_clearing if the DP predates the cutover) / Cr deposit_forfeit_income                                                                                                                             |
 | Cash over/short                                             | `cashier_shift.closed`                                                   | existing rule (differenceIdr)                                                                                                                                                                                                 |
-| Gateway settlement + MDR                                    | `settlement.reconciled`                                                  | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross)                                                                                                                                            |
-| EDC settlement + MDR                                        | `edc_transaction.settled`                                                | existing rule (Cr edc_clearing gross)                                                                                                                                                                                         |
+| Gateway settlement + MDR                                    | `settlement.reconciled`                                                  | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross). Journal date = `settledOn`. No backing guard: over-settlement is a reconciliation case, not a park                                        |
+| EDC settlement + MDR                                        | `edc_transaction.settled`                                                | existing rule (Dr bank net, Dr gateway_fee_expense fee, Cr edc_clearing gross). Journal date = `settledOn`. No backing guard, same as gateway settlement                                                                      |
 | Cash deposit to bank                                        | `cash_deposit.recorded` / document `cash_deposit`                        | existing rule (Dr bank / Cr cash_on_hand)                                                                                                                                                                                     |
 | End of day                                                  | `day.closed`                                                             | **no journal** (recap only; posting it would double count sales)                                                                                                                                                              |
 
@@ -141,6 +141,19 @@ Rule: before computing the date, look the key up in `journal_entries`. Found -> 
 (rolled-forward) date than the first post. A `pg_advisory_xact_lock(hashtext(key))` serializes
 the consumer and the sweep.
 
+Emitter contract for settlement events (beads legend-3a5m, legend-jlqi, legend-cs7):
+
+- Each bank payout has exactly one emitter and one event. EDC payouts (stored as provider
+  `edc_<bank>`) are emitted only as `edc_transaction.settled`; `settlement.reconciled` rejects
+  a provider starting with `edc_`.
+- One event per outlet. `settlementId` / `settlementBatchId` is unique per tenant: the emitter
+  dedupes by provider + bank statement line or provider reference, so a re-imported bank file
+  never makes a new id.
+- Emit once, when the settlement is final. A replay with other amounts is ignored
+  (`already_posted`), so a correction is a manual journal.
+- `netSettledIdr` must be >= 0. A day where refunds exceed the payout is booked manually by finance.
+- Net goes to the entity's single `bank` mapping. A `bankAccountId` field is a v2 (breaking) change.
+
 ## 5. Late-adjustment date logic (CTO decision 1, applied to every event of this consumer)
 
 1. `naturalDate = businessDateOf(moneyTime, outletBusinessDayClock(outlet))` (`outlet-clock.ts`).
@@ -213,8 +226,12 @@ B. Hand-written: RLS for `auto_journal_parked`, then per legal entity:
 | 1     | Roles, rules, source type, late-adjustment, parking, backfill, consumer for order.paid (POS), order.refunded, payment.paid, payment.refunded; wiring patch                                                                                                                                                                                                                                                                                                                                                      | now                                                                                             |
 | 2     | DP applied: `paidDepositIdr` in order.paid schema, remove fail-closed at `pos-order.service.ts:1141`, no DP leg on order.refunded (verified); forfeit handler; `cashier_shift.closed` handler                                                                                                                                                                                                                                                                                                                   | after 1                                                                                         |
 | 3     | kej3: emit `order.paid` from QR fire path (`qr-order-consumers.ts` ~:341), gateway intent tender, paidAt = intent.paidAt, paidDepositIdr = depositApplied; shared `order-revenue.ts` `orderRevenueSplit()` (exclusive if subtotal - discount + svc + tax + rounding = total, gross = subtotal; inclusive if subtotal - discount + rounding = total, gross = subtotal - svc - tax; else fail closed). fbms design A: schema nonnegative, drop `if (order.totalIdr > 0)` (:1220), consumer skips all-zero amounts | after batch3 + batch4 are in m1 (inclusive QR, recipe deduction, qr-order-consumers +167 lines) |
-| 4     | Settlement + MDR: payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events. Emitters need a settlement import ledger (new WS-05 bead; `payment-admin-reconciliation.service.ts:144`)                                                                                                                                                                                                                                                             | after 1                                                                                         |
+| 4     | Settlement + MDR: **done in code** (payload schemas for `settlement.reconciled` / `edc_transaction.settled`, consumer handlers, tests with synthetic events). Business date = `settledOn`. No backing guard: over-settlement is a reconciliation case, not a park. Emitters pending: legend-3a5m, legend-jlqi, legend-cs7 (settlement import ledger, `payment-admin-reconciliation.service.ts:144`)                                                                                                             | after 1                                                                                         |
 | 5     | Cash deposit: `accounting-cash-deposit.service.ts` posting document `cash_deposit` + emitting `cash_deposit.recorded`; route registration through a second wiring patch                                                                                                                                                                                                                                                                                                                                         | after 1                                                                                         |
+
+Slice 4 emitters must follow the emitter contract in section 4: one emitter per payout, EDC only
+via `edc_transaction.settled`, one event per outlet, id unique per tenant and bank line, emit once
+when final (corrections are manual), net >= 0, `bankAccountId` is v2.
 
 Slices 1 and 3 must both land before the release gate: until 3, QR receipts sit in
 `customer_deposit` with no sale.

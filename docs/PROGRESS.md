@@ -358,3 +358,13 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 - Bukti: gate 37 file test API 569 lulus 1 skip; ulang 5 file accounting setelah perubahan terakhir 169 lulus 1 skip (auto-journal 86/86); kontrak node 131 lulus; tsc api/shared/web, eslint, prettier bersih. Commit 84218ab4. Brief Codex `docs/briefs/142b-second-opinion-fix142.md` (main checkout, tidak di-commit, 3 run).
 - Biaya sesi 9d8aab (08:10-08:31 UTC): total biaya* 5316k (utama Opus 2324k, subagent Opus 1133k, Sonnet 1689k, Haiku 170k), 15 subagent.
 - Berikut: tunggu CTO, lalu gabung `ws/aj-fix142` ke `ws/aj-settlement` dan mulai slice 4.
+
+### Slice 4: settlement gateway dan EDC + MDR (cabang `ws/aj-settlement`, 2026-11-09)
+
+- Gabung `ws/aj-fix142` ke `ws/aj-settlement` (ab1c5aab).
+- Schema shared v1 `settlement.reconciled` dan `edc_transaction.settled` (`packages/shared/src/payment/settlement-events.ts`): strict, gross = net + fee, fee dan net >= 0, provider `edc_*` ditolak di event gateway. Header berisi kontrak emitter (satu emitter per payout, satu event per outlet, id unik per tenant, emit sekali saat final, koreksi lewat jurnal manual, net >= 0, `bankAccountId` v2).
+- Consumer: kunci `aj:settlement:<id>` dan `aj:edc-settlement:<batchId>`; tanggal jurnal = `settledOn` persis (`AutoJournalFact.entryDate`, tidak lewat jam dan cutoff outlet); periode tutup ke hari buka pertama dengan audit; outlet envelope harus sama dengan payload; tanpa guard penopang (kelebihan settlement = kasus rekonsiliasi).
+- Review K (reviewer Opus + architect): tanpa cacat kode. Dibetulkan: test AJ-SET-04 kini cutoff 08:00 (uji mutasi: tanpa `entryDate` test gagal), AJ-SET-07 pakai outlet nyata entitas lain, provider `edc_` ditolak (AJ-SET-17), kontrak emitter ditulis di header dan desain §4/§8.
+- Cek CTO 84218ab4: (1) aggregateType `order.paid` = `order` (catalog `name.split(".")[0]`, `appendPosEvent` pakai `entry.aggregateType`), cocok dengan guard sale; (2) `auditAccountingChange` menerima `actorId: null` (actorType system).
+- Bukti: gate 33 file 489 lulus 1 skip (sebelum perbaikan review); ulang 10 file accounting setelah perbaikan 217 lulus 1 skip (auto-journal 104/104); kontrak node 137 lulus; tsc shared/api/web, eslint, prettier bersih.
+- Emitter tetap milik legend-3a5m, legend-jlqi, legend-cs7.

@@ -426,10 +426,11 @@ async function postAutoJournal(
   if (!outlet.legalEntityId) throw new OutletLegalEntityMissing();
   const legalEntityId = outlet.legalEntityId;
 
-  const naturalDate = businessDateOf(
-    target.moneyTime,
-    outletBusinessDayClock(outlet),
-  );
+  // A date fact (bank settlement date) is used as is; an instant becomes the
+  // outlet business date.
+  const naturalDate =
+    (fact?.entryDate as ReturnType<typeof businessDateOf> | undefined) ??
+    businessDateOf(target.moneyTime, outletBusinessDayClock(outlet));
   // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
   const blocked = await wouldPostingBeBlockedByClosedPeriod(
     tx,

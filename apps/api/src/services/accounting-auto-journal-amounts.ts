@@ -24,6 +24,11 @@
 // reservation.no_show book the forfeited DP the same way; cashier_shift.closed
 // books the signed drawer difference checked against the shift row.
 //
+// Slice 4 adds the bank settlements: settlement.reconciled (gateway) and
+// edc_transaction.settled (EDC) post Dr bank net, Dr gateway_fee_expense fee,
+// Cr clearing gross, dated settledOn (AutoJournalFact.entryDate). The payload
+// is the whole fact; there is no backing guard (see autoJournalFactOf).
+//
 // legend-9pz9 (design section 10): a payout, a forfeit and a sale are judged
 // at their own moment (accounting-auto-journal-guards.ts), never against
 // current state, so the verdict does not depend on event delivery order.
@@ -41,6 +46,10 @@ import { z } from "zod";
 import { AccountingError } from "@starter/shared/accounting";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { tenderBucket } from "@starter/shared/pos";
+import {
+  edcTransactionSettledPayloadSchema,
+  settlementReconciledPayloadSchema,
+} from "@starter/shared/payment";
 import {
   orders,
   paymentIntents,
@@ -75,6 +84,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "reservation.cancelled",
   "reservation.no_show",
   "cashier_shift.closed",
+  "settlement.reconciled",
+  "edc_transaction.settled",
 ] as const;
 export type AutoJournalEventName = (typeof AUTO_JOURNAL_EVENTS)[number];
 
@@ -222,6 +233,12 @@ export type AutoJournalFact = {
   readonly sourceId: string;
   readonly outletId: string;
   readonly moneyTime: Date;
+  /**
+   * Business date of the journal when the fact is a date, not an instant
+   * (bank settlement date). The consumer uses it as is, instead of deriving a
+   * date from `moneyTime` (timezone and business-day cutoff would shift it).
+   */
+  readonly entryDate?: string;
 };
 
 /**
@@ -273,7 +290,28 @@ export function storedEventOf(event: {
       const payload = shiftClosedSchema.parse(event.payload);
       return { ...base, outletId: payload.outletId, occurredAt, payload };
     }
+    case "settlement.reconciled": {
+      const payload = settlementReconciledPayloadSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
+    case "edc_transaction.settled": {
+      const payload = edcTransactionSettledPayloadSchema.parse(event.payload);
+      assertEnvelopeOutlet(event, payload.outletId);
+      return { ...base, outletId: payload.outletId, occurredAt, payload };
+    }
   }
+}
+
+/** An envelope outlet, when set, must be the payload outlet. */
+function assertEnvelopeOutlet(
+  event: { name: string; outletId: string | null },
+  payloadOutletId: string,
+): void {
+  if (event.outletId !== null && event.outletId !== payloadOutletId)
+    throw new AutoJournalPayloadInvalid(
+      `${event.name} envelope outlet differs from the payload outlet`,
+    );
 }
 
 const IDEMPOTENCY_KEY_MAX = 100;
@@ -317,6 +355,10 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
     case "cashier_shift.closed":
       return boundedKey(`aj:shift:${String(p.shiftId)}`);
+    case "settlement.reconciled":
+      return boundedKey(`aj:settlement:${String(p.settlementId)}`);
+    case "edc_transaction.settled":
+      return boundedKey(`aj:edc-settlement:${String(p.settlementBatchId)}`);
   }
 }
 
@@ -828,6 +870,41 @@ export async function autoJournalFactOf(
         sourceId: p.shiftId,
         outletId: shift.outletId,
         moneyTime: new Date(p.closedAt),
+      };
+    }
+    // No backing guard (design section 10): the bank statement is the fact,
+    // finance reconciles the clearing account, so an over-settlement is a
+    // reconciliation case, not a park. A zero fee posts Dr bank / Cr clearing
+    // only (buildJournalLinesFromRule skips a zero amount). The journal is
+    // dated settledOn exactly: entryDate, not a date derived from an instant.
+    case "settlement.reconciled": {
+      const p = settlementReconciledPayloadSchema.parse(stored.payload);
+      return {
+        ruleEvent: "settlement.reconciled",
+        amounts: {
+          grossIdr: p.grossIdr,
+          feeIdr: p.feeIdr,
+          netSettledIdr: p.netSettledIdr,
+        },
+        sourceId: p.settlementId,
+        outletId: p.outletId,
+        moneyTime: new Date(`${p.settledOn}T00:00:00.000Z`),
+        entryDate: p.settledOn,
+      };
+    }
+    case "edc_transaction.settled": {
+      const p = edcTransactionSettledPayloadSchema.parse(stored.payload);
+      return {
+        ruleEvent: "edc_transaction.settled",
+        amounts: {
+          grossIdr: p.grossIdr,
+          feeIdr: p.feeIdr,
+          netSettledIdr: p.netSettledIdr,
+        },
+        sourceId: p.settlementBatchId,
+        outletId: p.outletId,
+        moneyTime: new Date(`${p.settledOn}T00:00:00.000Z`),
+        entryDate: p.settledOn,
       };
     }
   }

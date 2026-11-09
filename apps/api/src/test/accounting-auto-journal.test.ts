@@ -36,6 +36,15 @@
 // - Journal lines are compared per role with each side summed, so a rule that
 //   splits one role over two lines (customer_deposit on order.paid) still
 //   matches.
+// - Slice 4 (settlement + MDR): the payloads are synthetic
+//   (`settlement.reconciled` {settlementId, provider, outletId, settledOn,
+//   grossIdr, feeIdr, netSettledIdr}; `edc_transaction.settled` with
+//   settlementBatchId + terminalId). The journal's entry date is `settledOn`
+//   exactly (a business date, never derived from the event instant, so the
+//   envelope's occurredAt is deliberately a different day/instant). A
+//   gross != net + fee payload parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID
+//   and is found by error code (+ outlet), not by key. The parked key of a
+//   mapping failure is `aj:settlement:<settlementId>`.
 // - Slice 2: order.paid carries `paidDepositIdr` (the reservation DP applied,
 //   equal to `orders.deposit_applied_idr`); the DP is found through
 //   `reservation_deposit_allocations` of the order's table session and its
@@ -58,6 +67,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import {
+  edcTransactionSettledPayloadSchema,
+  settlementReconciledPayloadSchema,
+} from "@starter/shared/payment";
 import {
   eventEnvelopeSchema,
   type EventEnvelope,
@@ -106,7 +119,9 @@ type Role =
   | "service_charge"
   | "rounding"
   | "deposit_forfeit_income"
-  | "cash_over_short";
+  | "cash_over_short"
+  | "bank"
+  | "gateway_fee_expense";
 
 const CHART: [Role, string, string, string, string][] = [
   ["cash_on_hand", "1101", "Kas", "asset", "current_asset"],
@@ -145,6 +160,14 @@ const CHART: [Role, string, string, string, string][] = [
     "other_income",
   ],
   ["cash_over_short", "6108", "Selisih Kas", "expense", "operating_expense"],
+  ["bank", "1103", "Bank Operasional", "asset", "current_asset"],
+  [
+    "gateway_fee_expense",
+    "6109",
+    "Biaya Gateway (MDR)",
+    "expense",
+    "operating_expense",
+  ],
 ];
 
 type Tenant = { id: string; brandId: string };
@@ -243,7 +266,7 @@ async function mapRole(
 /** A legal entity + outlet + CoA with every posting role + open periods. */
 async function makeWorld(
   tenant: Tenant = shared,
-  options: { unmapped?: Role[] } = {},
+  options: { unmapped?: Role[]; cutoff?: string } = {},
 ): Promise<World> {
   const entity = randomUUID();
   const outletId = randomUUID();
@@ -253,13 +276,14 @@ async function makeWorld(
   );
   await owner.query(
     `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
-     VALUES ($1, $2, $3, $4, $5, 'Outlet AJ', 'Jl. AJ', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+     VALUES ($1, $2, $3, $4, $5, 'Outlet AJ', 'Jl. AJ', 'Asia/Jakarta', $6, '{}', 'active')`,
     [
       outletId,
       tenant.id,
       tenant.brandId,
       entity,
       `AJ-${short()}`.toUpperCase(),
+      options.cutoff ?? "04:00",
     ],
   );
   const accounts = {} as Record<Role, string>;
@@ -3546,4 +3570,560 @@ describe("Codex 142 fixes", () => {
       expect(await balanceOf(world, "customer_deposit")).toBe(0);
     });
   }
+});
+
+// ============================================================================
+// Slice 4: settlement + MDR (legend-9pz9; design: docs/design/auto-journals.md).
+// settlement.reconciled -> gateway_settlement: Dr bank net, Dr gateway_fee_expense
+// fee, Cr gateway_clearing gross. edc_transaction.settled -> edc_settlement: the
+// same with edc_clearing. No backing guard: the bank statement is the fact.
+
+describe("F19 slice 4 settlement", () => {
+  type SettlementOptions = {
+    id?: string;
+    settlementId?: string;
+    settledOn?: string;
+    provider?: string;
+    occurredAt?: string;
+    grossIdr?: number;
+    feeIdr?: number;
+    netSettledIdr?: number;
+    outletId?: string;
+    envelopeOutletId?: string;
+  };
+
+  function amountsOf(options: SettlementOptions) {
+    const grossIdr = options.grossIdr ?? 100_000;
+    const feeIdr = options.feeIdr ?? 700;
+    return {
+      grossIdr,
+      feeIdr,
+      netSettledIdr: options.netSettledIdr ?? grossIdr - feeIdr,
+    };
+  }
+
+  // occurredAt defaults to another day than settledOn on purpose.
+  function settlementReconciled(
+    world: World,
+    options: SettlementOptions = {},
+  ): EventEnvelope {
+    const settlementId = options.settlementId ?? randomUUID();
+    const event = envelope(world, {
+      ...(options.id === undefined ? {} : { id: options.id }),
+      name: "settlement.reconciled",
+      aggregateType: "settlement",
+      aggregateId: settlementId,
+      occurredAt: options.occurredAt ?? "2026-10-17T05:00:00.000Z",
+      payload: {
+        settlementId,
+        provider: options.provider ?? "doku",
+        outletId: options.outletId ?? world.outletId,
+        settledOn: options.settledOn ?? "2026-10-15",
+        ...amountsOf(options),
+      },
+    });
+    return options.envelopeOutletId === undefined
+      ? event
+      : {
+          ...event,
+          outletId: options.envelopeOutletId as EventEnvelope["outletId"],
+        };
+  }
+
+  function edcSettled(
+    world: World,
+    options: SettlementOptions = {},
+  ): EventEnvelope {
+    const settlementBatchId = options.settlementId ?? randomUUID();
+    return envelope(world, {
+      ...(options.id === undefined ? {} : { id: options.id }),
+      name: "edc_transaction.settled",
+      aggregateType: "edc_transaction",
+      aggregateId: settlementBatchId,
+      occurredAt: options.occurredAt ?? "2026-10-17T05:00:00.000Z",
+      payload: {
+        settlementBatchId,
+        terminalId: randomUUID(),
+        outletId: options.outletId ?? world.outletId,
+        settledOn: options.settledOn ?? "2026-10-15",
+        ...amountsOf(options),
+      },
+    });
+  }
+
+  it("AJ-SET-01 gateway settlement: Dr bank net, Dr gateway_fee_expense fee, Cr gateway_clearing gross, on settledOn", async () => {
+    const world = await makeWorld();
+
+    const result = await post(
+      world,
+      settlementReconciled(world, {
+        grossIdr: 100_000,
+        feeIdr: 700,
+        netSettledIdr: 99_300,
+      }),
+    );
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "bank", debit: 99_300, credit: 0 },
+      { role: "gateway_clearing", debit: 0, credit: 100_000 },
+      { role: "gateway_fee_expense", debit: 700, credit: 0 },
+    ]);
+    const entry = await entryOf(world, result.journalEntryId);
+    expect(entry.entry_date).toBe("2026-10-15");
+    expect(entry.late_adjustment_from).toBeNull();
+    expect(result.entryDate).toBe("2026-10-15");
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-SET-02 EDC settlement: same shape against edc_clearing, on settledOn", async () => {
+    const world = await makeWorld();
+
+    const result = await post(
+      world,
+      edcSettled(world, { grossIdr: 250_000, feeIdr: 1_750 }),
+    );
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "bank", debit: 248_250, credit: 0 },
+      { role: "edc_clearing", debit: 0, credit: 250_000 },
+      { role: "gateway_fee_expense", debit: 1_750, credit: 0 },
+    ]);
+    expect((await entryOf(world, result.journalEntryId)).entry_date).toBe(
+      "2026-10-15",
+    );
+    await expectBalanced(world, result.journalEntryId);
+  });
+
+  it("AJ-SET-03 a zero fee posts two lines only: Dr bank / Cr clearing (gateway and EDC)", async () => {
+    const world = await makeWorld();
+
+    const gateway = await post(
+      world,
+      settlementReconciled(world, { grossIdr: 40_000, feeIdr: 0 }),
+    );
+    expect(await linesOf(world, gateway.journalEntryId)).toEqual([
+      { role: "bank", debit: 40_000, credit: 0 },
+      { role: "gateway_clearing", debit: 0, credit: 40_000 },
+    ]);
+    const edc = await post(
+      world,
+      edcSettled(world, { grossIdr: 60_000, feeIdr: 0 }),
+    );
+    expect(await linesOf(world, edc.journalEntryId)).toEqual([
+      { role: "bank", debit: 60_000, credit: 0 },
+      { role: "edc_clearing", debit: 0, credit: 60_000 },
+    ]);
+  });
+
+  it("AJ-SET-04 the entry date is the settledOn business date, not the event instant", async () => {
+    // Outlet cutoff 08:00 Asia/Jakarta. Every case below has an event instant
+    // whose own business date (or calendar date) differs from settledOn, so
+    // only the payload's settledOn can produce the expected entry date.
+    const world = await makeWorld(shared, { cutoff: "08:00" });
+
+    // settledOn month-end 2026-10-31; the event instant 2026-11-01T02:00Z is
+    // 09:00 Jakarta, past the cutoff: business date 2026-11-01.
+    const result = await post(
+      world,
+      settlementReconciled(world, {
+        settledOn: "2026-10-31",
+        occurredAt: "2026-11-01T02:00:00.000Z",
+      }),
+    );
+    expect(result.entryDate).toBe("2026-10-31");
+    expect((await entryOf(world, result.journalEntryId)).entry_date).toBe(
+      "2026-10-31",
+    );
+    expect(result.lateAdjustmentFrom).toBeNull();
+
+    // settledOn 2026-10-30; the event instant 2026-11-01T00:00Z is 07:00
+    // Jakarta, before the 08:00 cutoff: business date 2026-10-31 (calendar
+    // date 2026-11-01). Neither equals settledOn.
+    const cutoff = await post(
+      world,
+      edcSettled(world, {
+        settledOn: "2026-10-30",
+        occurredAt: "2026-11-01T00:00:00.000Z",
+      }),
+    );
+    expect((await entryOf(world, cutoff.journalEntryId)).entry_date).toBe(
+      "2026-10-30",
+    );
+
+    // settledOn 2026-09-30; the event instant 2026-10-01T02:00Z is 09:00
+    // Jakarta: business date 2026-10-01. 2026-09 is open in this world.
+    const early = await post(
+      world,
+      edcSettled(world, {
+        settledOn: "2026-09-30",
+        occurredAt: "2026-10-01T02:00:00.000Z",
+      }),
+    );
+    expect((await entryOf(world, early.journalEntryId)).entry_date).toBe(
+      "2026-09-30",
+    );
+  });
+
+  it("AJ-SET-05 the same settlement under another event id (or replayed) posts once", async () => {
+    const world = await makeWorld();
+    const settlementId = randomUUID();
+    const first = settlementReconciled(world, { settlementId });
+    const result = await post(world, first);
+
+    for (const again of [first, settlementReconciled(world, { settlementId })])
+      expect(await deliver(world.tenant, again)).toEqual({
+        status: "already_posted",
+        journalEntryId: result.journalEntryId,
+      });
+    expect(await journalCount(world)).toBe(1);
+
+    const batchId = randomUUID();
+    const edc = await post(world, edcSettled(world, { settlementId: batchId }));
+    expect(
+      await deliver(world.tenant, edcSettled(world, { settlementId: batchId })),
+    ).toEqual({ status: "already_posted", journalEntryId: edc.journalEntryId });
+    expect(await journalCount(world)).toBe(2);
+  });
+
+  it("AJ-SET-06 gross != net + fee parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID and is not retried", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+
+    for (const event of [
+      settlementReconciled(world, {
+        grossIdr: 100_000,
+        feeIdr: 700,
+        netSettledIdr: 99_000,
+      }),
+      edcSettled(world, {
+        grossIdr: 100_000,
+        feeIdr: 700,
+        netSettledIdr: 100_000,
+      }),
+    ])
+      expect(await deliver(tenant, event)).toEqual({
+        status: "parked",
+        code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+        retryable: false,
+      });
+    expect(await journalCount(world)).toBe(0);
+    const parked = await parkedByCode(
+      tenant,
+      "AUTO_JOURNAL_PAYLOAD_INVALID",
+      world.outletId,
+    );
+    expect(parked.map((row) => row.event_name).sort()).toEqual([
+      "edc_transaction.settled",
+      "settlement.reconciled",
+    ]);
+    expect(parked.every((row) => row.retryable === false)).toBe(true);
+
+    // The sweep never retries a non-retryable row.
+    expect(await sweep(tenant)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await journalCount(world)).toBe(0);
+  });
+
+  it("AJ-SET-07 an envelope outlet that differs from the payload outlet parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+    // A real second outlet of the same tenant, in another legal entity: the
+    // mismatch is about the two ids differing, not about an unknown outlet.
+    const other = await makeWorld(tenant);
+    expect(other.outletId).not.toBe(world.outletId);
+
+    const event = settlementReconciled(world, { outletId: other.outletId });
+    expect(event.outletId).toBe(world.outletId);
+    const outcome = await deliver(tenant, event);
+    expect(outcome).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await journalCount(other)).toBe(0);
+    const parked = await parkedByCode(
+      tenant,
+      "AUTO_JOURNAL_PAYLOAD_INVALID",
+      world.outletId,
+    );
+    expect(parked.map((row) => row.event_name)).toEqual([
+      "settlement.reconciled",
+    ]);
+    expect(parked.every((row) => row.retryable === false)).toBe(true);
+
+    // Not retried by the sweep.
+    expect(await sweep(tenant)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await journalCount(world)).toBe(0);
+    expect(await journalCount(other)).toBe(0);
+  });
+
+  it("AJ-SET-08 settledOn in a closed month rolls to the first open day, flagged with settledOn, with an audit row", async () => {
+    const world = await makeWorld();
+    await closePeriods(world, ["2026-10"]);
+
+    const result = await post(
+      world,
+      settlementReconciled(world, { settledOn: "2026-10-15" }),
+    );
+    expect(result.entryDate).toBe("2026-11-01");
+    expect(result.lateAdjustmentFrom).toBe("2026-10-15");
+    const entry = await entryOf(world, result.journalEntryId);
+    expect(entry.entry_date).toBe("2026-11-01");
+    expect(entry.late_adjustment_from).toBe("2026-10-15");
+    expect(await lateAuditCount(world.tenant, result.journalEntryId)).toBe(1);
+    expect(await linesOf(world, result.journalEntryId)).toEqual([
+      { role: "bank", debit: 99_300, credit: 0 },
+      { role: "gateway_clearing", debit: 0, credit: 100_000 },
+      { role: "gateway_fee_expense", debit: 700, credit: 0 },
+    ]);
+
+    const edc = await post(
+      world,
+      edcSettled(world, { settledOn: "2026-10-20" }),
+    );
+    expect(edc.entryDate).toBe("2026-11-01");
+    expect(edc.lateAdjustmentFrom).toBe("2026-10-20");
+  });
+
+  it("AJ-SET-09 a missing bank or fee-expense mapping parks retryable ACCOUNT_MAPPING_MISSING; after mapping the sweep posts once", async () => {
+    for (const role of ["bank", "gateway_fee_expense"] as const) {
+      const tenant = await makeTenant();
+      const world = await makeWorld(tenant, { unmapped: [role] });
+      const settlementId = randomUUID();
+      const event = settlementReconciled(world, { settlementId });
+
+      expect(await deliver(tenant, event)).toEqual({
+        status: "parked",
+        code: "ACCOUNT_MAPPING_MISSING",
+        retryable: true,
+      });
+      expect(await journalCount(world)).toBe(0);
+      const parked = await parkedOf(tenant, `aj:settlement:${settlementId}`);
+      expect(parked).toHaveLength(1);
+      expect(parked[0]).toMatchObject({
+        error_code: "ACCOUNT_MAPPING_MISSING",
+        retryable: true,
+        event_name: "settlement.reconciled",
+        outlet_id: world.outletId,
+      });
+
+      await mapRole(world, role, world.accounts[role]);
+      expect(await sweep(tenant)).toEqual({
+        posted: 1,
+        stillParked: 0,
+        failed: 0,
+      });
+      expect(await journalCount(world)).toBe(1);
+      expect(
+        await parkedOf(tenant, `aj:settlement:${settlementId}`),
+      ).toHaveLength(0);
+      expect(await balanceOf(world, "bank")).toBe(99_300);
+      expect(await balanceOf(world, "gateway_clearing")).toBe(-100_000);
+      expect((await deliver(tenant, event)).status).toBe("already_posted");
+    }
+  });
+
+  it("AJ-SET-10 an EDC mapping failure parks under the batch key aj:edc-settlement:<batchId>", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant, { unmapped: ["edc_clearing"] });
+    const batchId = randomUUID();
+
+    expect(
+      await deliver(tenant, edcSettled(world, { settlementId: batchId })),
+    ).toEqual({
+      status: "parked",
+      code: "ACCOUNT_MAPPING_MISSING",
+      retryable: true,
+    });
+    const parked = await parkedOf(tenant, `aj:edc-settlement:${batchId}`);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]!.event_name).toBe("edc_transaction.settled");
+
+    await mapRole(world, "edc_clearing", world.accounts.edc_clearing);
+    expect(await sweep(tenant)).toEqual({
+      posted: 1,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await balanceOf(world, "edc_clearing")).toBe(-100_000);
+  });
+
+  it("AJ-SET-11 no backing guard: a settlement with no prior receipt or clearing balance still posts", async () => {
+    const world = await makeWorld();
+    expect(await balanceOf(world, "gateway_clearing")).toBe(0);
+
+    await post(world, settlementReconciled(world));
+    expect(await balanceOf(world, "gateway_clearing")).toBe(-100_000);
+  });
+
+  it("AJ-SET-17 settlement.reconciled with an edc_ provider parks non-retryable AUTO_JOURNAL_PAYLOAD_INVALID: EDC payouts use edc_transaction.settled", async () => {
+    const tenant = await makeTenant();
+    const world = await makeWorld(tenant);
+
+    expect(
+      await deliver(
+        tenant,
+        settlementReconciled(world, { provider: "edc_bca" }),
+      ),
+    ).toEqual({
+      status: "parked",
+      code: "AUTO_JOURNAL_PAYLOAD_INVALID",
+      retryable: false,
+    });
+    expect(await journalCount(world)).toBe(0);
+    const parked = await parkedByCode(
+      tenant,
+      "AUTO_JOURNAL_PAYLOAD_INVALID",
+      world.outletId,
+    );
+    expect(parked.map((row) => row.event_name)).toEqual([
+      "settlement.reconciled",
+    ]);
+    expect(parked.every((row) => row.retryable === false)).toBe(true);
+    expect(await sweep(tenant)).toEqual({
+      posted: 0,
+      stillParked: 0,
+      failed: 0,
+    });
+    expect(await journalCount(world)).toBe(0);
+
+    // The same payout through its own event posts.
+    const edc = await post(world, edcSettled(world));
+    expect(await journalCount(world)).toBe(1);
+    expect(edc.entryDate).toBe("2026-10-15");
+  });
+
+  describe("shared payload schemas", () => {
+    const base = {
+      settlementId: randomUUID(),
+      provider: "doku",
+      outletId: randomUUID(),
+      settledOn: "2026-10-15",
+      grossIdr: 100_000,
+      feeIdr: 700,
+      netSettledIdr: 99_300,
+    };
+    const edcBase = {
+      settlementBatchId: randomUUID(),
+      terminalId: randomUUID(),
+      outletId: randomUUID(),
+      settledOn: "2026-10-15",
+      grossIdr: 100_000,
+      feeIdr: 700,
+      netSettledIdr: 99_300,
+    };
+
+    it("AJ-SET-12 a valid payload parses; a zero fee is allowed", () => {
+      expect(settlementReconciledPayloadSchema.safeParse(base).success).toBe(
+        true,
+      );
+      expect(
+        edcTransactionSettledPayloadSchema.safeParse(edcBase).success,
+      ).toBe(true);
+      expect(
+        settlementReconciledPayloadSchema.safeParse({
+          ...base,
+          feeIdr: 0,
+          netSettledIdr: 100_000,
+        }).success,
+      ).toBe(true);
+    });
+
+    it("AJ-SET-13 strict: an unknown key is rejected", () => {
+      expect(
+        settlementReconciledPayloadSchema.safeParse({ ...base, extra: 1 })
+          .success,
+      ).toBe(false);
+      expect(
+        edcTransactionSettledPayloadSchema.safeParse({ ...edcBase, extra: 1 })
+          .success,
+      ).toBe(false);
+    });
+
+    it("AJ-SET-14 a negative fee or net, a zero gross, or a fractional amount is rejected", () => {
+      for (const bad of [
+        { feeIdr: -1, netSettledIdr: 100_001 },
+        { grossIdr: 0, feeIdr: 0, netSettledIdr: 0 },
+        { grossIdr: 100_000.5, feeIdr: 0.5, netSettledIdr: 100_000 },
+        { grossIdr: 100, feeIdr: 200, netSettledIdr: -100 },
+      ]) {
+        expect(
+          settlementReconciledPayloadSchema.safeParse({ ...base, ...bad })
+            .success,
+        ).toBe(false);
+        expect(
+          edcTransactionSettledPayloadSchema.safeParse({ ...edcBase, ...bad })
+            .success,
+        ).toBe(false);
+      }
+    });
+
+    it("AJ-SET-15 gross != net + fee is rejected with a message naming the fields", () => {
+      for (const result of [
+        settlementReconciledPayloadSchema.safeParse({
+          ...base,
+          netSettledIdr: 99_000,
+        }),
+        edcTransactionSettledPayloadSchema.safeParse({
+          ...edcBase,
+          netSettledIdr: 99_000,
+        }),
+      ]) {
+        expect(result.success).toBe(false);
+        if (result.success) continue;
+        const message = result.error.issues
+          .map((issue) => issue.message)
+          .join(" ");
+        expect(message).toContain("grossIdr");
+        expect(message).toContain("netSettledIdr");
+        expect(message).toContain("feeIdr");
+      }
+    });
+
+    it("AJ-SET-16 a malformed id, provider or settledOn is rejected", () => {
+      for (const bad of [
+        { settlementId: "bukan-uuid" },
+        { provider: "" },
+        { provider: "x".repeat(65) },
+        { settledOn: "2026-10-15T05:00:00Z" },
+        { settledOn: "15-10-2026" },
+      ])
+        expect(
+          settlementReconciledPayloadSchema.safeParse({ ...base, ...bad })
+            .success,
+        ).toBe(false);
+      expect(
+        edcTransactionSettledPayloadSchema.safeParse({
+          ...edcBase,
+          terminalId: "bukan-uuid",
+        }).success,
+      ).toBe(false);
+    });
+
+    it("AJ-SET-17b an edc_ provider is rejected with the pointer to edc_transaction.settled", () => {
+      for (const provider of ["edc_bca", "edc_mandiri", "edc_"]) {
+        const result = settlementReconciledPayloadSchema.safeParse({
+          ...base,
+          provider,
+        });
+        expect(result.success).toBe(false);
+        if (result.success) continue;
+        expect(
+          result.error.issues.map((issue) => issue.message).join(" "),
+        ).toContain("EDC payouts use edc_transaction.settled");
+      }
+      // Gateway providers, and a name that merely contains edc, stay valid.
+      for (const provider of ["doku", "xendit", "medc_x"])
+        expect(
+          settlementReconciledPayloadSchema.safeParse({ ...base, provider })
+            .success,
+        ).toBe(true);
+    });
+  });
 });

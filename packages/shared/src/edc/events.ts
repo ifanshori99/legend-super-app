@@ -5,6 +5,9 @@
 // - `created`: the write-ahead ledger row was inserted (status `pending`).
 // - `approved` / `declined` / `cancelled` / `failed`: the row reached that
 //   final status. `settled` stays reserved for bank settlement (EDC-06).
+//   Bank settlement of a batch is `edcTransactionSettledEvent`
+//   (payment/settlement-events.ts): batch payload, aggregate id =
+//   settlementBatchId.
 // - `flagged`: the outcome is unknown or a human must reconcile
 //   (`needsReconciliation` true, or status `unknown`).
 //
