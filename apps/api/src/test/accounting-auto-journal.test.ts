@@ -391,8 +391,9 @@ async function seedRefund(
   amountIdr: number,
   unallocatedFundId?: string,
   completedAt: string = REFUND_DAY,
+  fixedId?: string,
 ): Promise<string> {
-  const refundId = randomUUID();
+  const refundId = fixedId ?? randomUUID();
   await owner.query(
     `INSERT INTO payment_refunds
        (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
@@ -6454,5 +6455,206 @@ describe("legend-x1i1h legend-j0ag5 a void or a finance reversal of what backs a
     });
     // receipt + sale + finance reversal
     expect(await journalCount(world)).toBe(3);
+  });
+});
+
+// legend-41li5: payouts with an equal completedAt.
+//
+// The guard orders completed payment_refunds by (completed_at, id). The verdict
+// (posted or parked, and how much money moved) must be a function of the stored
+// rows only, never of the order the events were delivered in. With equal
+// completed_at the tie is broken by id, the same way in every check: a payout
+// is judged together with the payouts that sort before it, so the larger id is
+// the one that parks when the sum does not fit.
+//
+// Assumptions:
+// - The parked verdict is non-retryable POSTING_AMOUNTS_MISMATCH (the code the
+//   existing over-refund tests use). The sweep must not change any verdict.
+// - Refund ids are fixed per world as "<random prefix>-...<n>" so LOW < HIGH
+//   holds in every world, while two worlds never collide on the primary key.
+// - O4 (session DP): each payout fits its own intent; in the session DP check
+//   the payout with the larger id is judged with the other intent's tied
+//   payout counted, so it is the one that parks.
+describe("legend-41li5 payouts with equal completedAt", () => {
+  const MISMATCH = {
+    status: "parked",
+    code: "POSTING_AMOUNTS_MISMATCH",
+    retryable: false,
+  } as const;
+
+  type Payout = {
+    key: string;
+    intentId: string;
+    amountIdr: number;
+    /** Last uuid group: a smaller number sorts first (LOW < HIGH). */
+    rank: number;
+  };
+
+  const verdictOf = (result: AutoJournalResult) =>
+    result.status === "posted" ? ("posted" as const) : result;
+
+  /**
+   * Seeds the payouts (all completed at the same instant) in `seedOrder`,
+   * delivers them in `deliveryOrder`, sweeps, and returns what a user sees.
+   */
+  async function runPayouts(
+    world: World,
+    payouts: Payout[],
+    seedOrder: string[],
+    deliveryOrder: string[],
+  ) {
+    const prefix = randomUUID().slice(0, 24);
+    const byKey = new Map(payouts.map((p) => [p.key, p]));
+    const idOf = (p: Payout) => `${prefix}${String(p.rank).padStart(12, "0")}`;
+    for (const key of seedOrder) {
+      const p = byKey.get(key)!;
+      await seedRefund(
+        world,
+        p.intentId,
+        p.amountIdr,
+        undefined,
+        REFUND_DAY,
+        idOf(p),
+      );
+    }
+    const verdicts: Record<string, unknown> = {};
+    for (const key of deliveryOrder) {
+      const p = byKey.get(key)!;
+      verdicts[key] = verdictOf(
+        await deliver(
+          world.tenant,
+          paymentRefunded(world, idOf(p), p.intentId, p.amountIdr),
+        ),
+      );
+    }
+    const before = {
+      journals: await journalCount(world),
+      deposit: await balanceOf(world, "customer_deposit"),
+    };
+    await sweep(world.tenant);
+    const after = {
+      journals: await journalCount(world),
+      deposit: await balanceOf(world, "customer_deposit"),
+    };
+    // A sweep never turns a parked payout into a different verdict.
+    expect(after).toEqual(before);
+    return { verdicts, ...after };
+  }
+
+  /** One fresh world per delivery order; every world must show the same verdicts. */
+  async function expectSameInBothOrders(
+    low: number,
+    high: number,
+    expected: {
+      low: "posted" | typeof MISMATCH;
+      high: "posted" | typeof MISMATCH;
+      journals: number;
+      deposit: number;
+    },
+  ) {
+    const worlds = [
+      // World A: LOW seeded and delivered first.
+      { seed: ["low", "high"], deliver: ["low", "high"] },
+      // World B: HIGH seeded and delivered first.
+      { seed: ["high", "low"], deliver: ["high", "low"] },
+    ];
+    for (const run of worlds) {
+      const world = await makeWorld();
+      const intentId = await seedIntent(world, { amountIdr: 30_000 });
+      await post(world, paymentPaid(world, intentId, 30_000));
+      const result = await runPayouts(
+        world,
+        [
+          { key: "low", intentId, amountIdr: low, rank: 1 },
+          { key: "high", intentId, amountIdr: high, rank: 2 },
+        ],
+        run.seed,
+        run.deliver,
+      );
+      expect(result.verdicts).toEqual({
+        low: expected.low,
+        high: expected.high,
+      });
+      expect(result.journals).toBe(expected.journals);
+      expect(result.deposit).toBe(expected.deposit);
+    }
+  }
+
+  it("legend-41li5-O1 two payouts that together exceed the intent: the smaller id posts, the larger id parks, in either delivery order", async () => {
+    // 20_000 + 20_000 > 30_000: receipt + LOW payout journals. customer_deposit
+    // is a liability, so debit minus credit is negative: 10_000 still owed.
+    await expectSameInBothOrders(20_000, 20_000, {
+      low: "posted",
+      high: MISMATCH,
+      journals: 2,
+      deposit: -10_000,
+    });
+  });
+
+  it("legend-41li5-O2 two payouts that together fit the intent: both post in either delivery order", async () => {
+    // 25_000 + 5_000 = 30_000: receipt + two payouts, nothing left.
+    await expectSameInBothOrders(25_000, 5_000, {
+      low: "posted",
+      high: "posted",
+      journals: 3,
+      deposit: 0,
+    });
+  });
+
+  it("legend-41li5-O3 the larger id is judged including the smaller one: 5_000 posts, 28_000 parks, in either delivery order", async () => {
+    // 5_000 + 28_000 = 33_000 > 30_000.
+    await expectSameInBothOrders(5_000, 28_000, {
+      low: "posted",
+      high: MISMATCH,
+      journals: 2,
+      deposit: -25_000,
+    });
+  });
+
+  it("legend-41li5-O4 session DP: a sale applied 30_000 of the session DP, so with equal completedAt the payouts A 60_000 (smaller id) posts and B 50_000 (larger id) parks, in every delivery order", async () => {
+    // Session DP = 60_000 (intent A) + 50_000 (intent B). A completed sale
+    // (before the payouts) applied 30_000 of it. Paying out A and B (110_000)
+    // would take back DP the sale used, so the payout judged last, B, parks:
+    // B is judged together with A and the session holds 50_000 - 50_000 = 0 of
+    // the DP the sale used. Each payout alone fits its own intent, so only the
+    // session check can park B.
+    const orders = [
+      ["low", "high"],
+      ["high", "low"],
+    ];
+    for (const deliveryOrder of orders) {
+      const world = await makeWorld();
+      const a = await seedSeatedDeposit(world, 60_000);
+      const b = await seedSeatedDeposit(world, 50_000, a.sessionId);
+      await post(world, paymentPaid(world, a.intentId, 60_000));
+      await post(world, paymentPaid(world, b.intentId, 50_000));
+      const orderUlid = createUlid();
+      const sale: SaleAmounts = {
+        grossSalesIdr: 100_000,
+        pbjtIdr: 10_000,
+        depositIdr: 30_000,
+        tableSessionId: a.sessionId,
+        // Completed (DAY) before the payouts (REFUND_DAY): the sale counts.
+        completedAt: DAY,
+        tenders: [{ method: "cash", amountIdr: 80_000 }],
+      };
+      await seedPosOrder(world, orderUlid, sale);
+      await post(world, orderPaid(world, orderUlid, sale));
+
+      const result = await runPayouts(
+        world,
+        [
+          { key: "low", intentId: a.intentId, amountIdr: 60_000, rank: 1 },
+          { key: "high", intentId: b.intentId, amountIdr: 50_000, rank: 2 },
+        ],
+        deliveryOrder,
+        deliveryOrder,
+      );
+      expect(result.verdicts).toEqual({ low: "posted", high: MISMATCH });
+      // 2 receipts + sale + payout A; customer_deposit: -110_000 + 30_000 +
+      // 60_000 = 20_000 still owed (the sale's DP is used, B stays unpaid).
+      expect(result.journals).toBe(4);
+      expect(result.deposit).toBe(-20_000);
+    }
   });
 });
