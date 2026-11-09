@@ -6,13 +6,22 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
+import { sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { applyStaffPinSet } from "../edge/access-applier.ts";
@@ -26,6 +35,41 @@ import {
   registerEdgeNode,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
+
+// legend-gauz3: lets one test park the resend job between its reads and its
+// append, only for the append that carries `pausePinHash` as material. Every
+// other call passes straight through.
+const appendGate = vi.hoisted(() => ({
+  pausePinHash: null as string | null,
+  onPaused: null as ((pid: number) => void) | null,
+  release: null as Promise<void> | null,
+}));
+
+vi.mock("../services/device-pin-support.ts", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../services/device-pin-support.ts")>();
+  return {
+    ...actual,
+    appendDevicePinEvent: async (
+      ...args: Parameters<typeof actual.appendDevicePinEvent>
+    ) => {
+      const [tx, , , input] = args;
+      const material = (input.payload as { material?: { pinHash?: string } })
+        .material;
+      if (
+        appendGate.pausePinHash !== null &&
+        material?.pinHash === appendGate.pausePinHash
+      ) {
+        const { rows } = await tx.execute<{ pid: number }>(
+          sql`select pg_backend_pid() as pid`,
+        );
+        appendGate.onPaused?.(Number(rows[0]!.pid));
+        await appendGate.release;
+      }
+      return actual.appendDevicePinEvent(...args);
+    },
+  };
+});
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -320,5 +364,74 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
     await resendMateriallessStaffPinSets(tenant, outletA);
 
     expect(await setEvents(userId)).toHaveLength(1);
+  });
+
+  // legend-gauz3: a reset that commits between the job's read and its append
+  // must not be followed by the old material at a higher sequence (the cloud
+  // would re-activate the old pin).
+  it("never emits the old material after a reset that commits while the job is between its read and its append", async () => {
+    const userId = await newUser();
+    await setPinWithoutMaterial(userId, "318642", new Date(Date.now() - HOUR));
+    const rowA = await pinRow(userId);
+
+    let pausedPid: (pid: number) => void = () => undefined;
+    const paused = new Promise<number>((resolve) => (pausedPid = resolve));
+    let releaseJob: () => void = () => undefined;
+    appendGate.pausePinHash = rowA.pin_hash;
+    appendGate.onPaused = pausedPid;
+    appendGate.release = new Promise<void>((resolve) => (releaseJob = resolve));
+
+    const job = resendMateriallessStaffPinSets(tenant, outletA);
+    const jobPid = await Promise.race([
+      paused,
+      job.then(() => {
+        throw new Error("The job finished without reaching its append");
+      }),
+    ]);
+
+    // The reset to B runs while the job is parked. With the row lock held
+    // by the job it must wait; without it, it commits right away.
+    process.env.EDGE_MODE = "true";
+    let resetDone = false;
+    const reset = setStaffPin(
+      tenant,
+      userId,
+      { outletId: outletA, userId },
+      { pin: "975310" },
+    ).finally(() => {
+      resetDone = true;
+    });
+    for (let attempt = 0; attempt < 400 && !resetDone; attempt++) {
+      const { rowCount } = await owner.query(
+        `SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`,
+        [jobPid],
+      );
+      if (rowCount) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    try {
+      releaseJob();
+      await Promise.all([job, reset]);
+    } finally {
+      delete process.env.EDGE_MODE;
+      appendGate.pausePinHash = null;
+      appendGate.onPaused = null;
+      appendGate.release = null;
+    }
+
+    const rowB = await pinRow(userId);
+    expect(rowB.pin_hash).not.toBe(rowA.pin_hash);
+    const events = await setEvents(userId);
+    const last = events[events.length - 1]!;
+    expect(materialOf(last)?.pinHash).toBe(rowB.pin_hash);
+    // Whatever order they ran in, no event after B's carries A's material.
+    const indexOfB = events.findIndex(
+      (event) => materialOf(event)?.pinHash === rowB.pin_hash,
+    );
+    expect(
+      events
+        .slice(indexOfB + 1)
+        .some((event) => materialOf(event)?.pinHash === rowA.pin_hash),
+    ).toBe(false);
   });
 });

@@ -56,7 +56,10 @@ export type StaffPinResendResult = { readonly resent: number };
 /**
  * Appends one material-carrying `staff_pin.set` per local pin of the outlet
  * whose latest set event has none. One transaction under an advisory lock, so
- * two runs on the same outlet never both read "no material" and double-send.
+ * two runs on the same outlet never both read "no material" and double-send,
+ * and under the pins' row locks (legend-gauz3): `appendDevicePinEvent` requires
+ * the caller to hold the aggregate's row lock, and a concurrent reset must not
+ * slip between the read and the append.
  */
 export async function resendMateriallessStaffPinSets(
   tenant: TenantContext,
@@ -82,7 +85,14 @@ export async function resendMateriallessStaffPinSets(
             eq(staffPins.pepperVersion, STAFF_PIN_PEPPER_VERSION),
           ),
         )
-        .orderBy(asc(staffPins.id));
+        .orderBy(asc(staffPins.id))
+        // legend-gauz3: the row lock is taken before the material and the
+        // latest set event are read, and held until the append. A reset
+        // (setStaffPin, which locks one row) then either commits first and
+        // is read here, or waits until this event is appended; the old
+        // material can never get a sequence above a newer set. Rows are
+        // locked in id order and a reset locks only one, so no deadlock.
+        .for("update");
       let resent = 0;
       for (const row of rows) {
         const [latest] = await tx
