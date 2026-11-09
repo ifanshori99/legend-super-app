@@ -223,23 +223,6 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Transaksi ini dibayar dengan DP reservasi dan tidak bisa di-void; hubungi admin untuk koreksi.",
         );
-      // legend-ioyg: the void pays back only cash out of the drawer. A
-      // gateway, EDC or points tender holding money has no return path here
-      // (auto-journal parks such a void as AUTO_JOURNAL_VOID_UNSUPPORTED), so
-      // it is refused before the approval is used; the refund flow returns
-      // money per tender method.
-      const tenders = await tendersOf(tx, context, order.id);
-      if (
-        tenders.some(
-          (tender) =>
-            (tender.status === "captured" || tender.status === "authorized") &&
-            tender.method !== "cash",
-        )
-      )
-        throw new CoreError(
-          "CONFLICT",
-          "Transaksi ini dibayar non-tunai (QRIS, kartu, EDC, atau poin) dan tidak bisa di-void; gunakan refund.",
-        );
       const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",
@@ -266,6 +249,25 @@ export async function voidPosOrderCorrection(
           businessDateFor(await loadOutlet(tx, context, outletId), now),
         ],
       });
+      // legend-ioyg: the void pays back only cash out of the drawer. A
+      // gateway, EDC or points tender holding money has no return path here
+      // (auto-journal parks such a void as AUTO_JOURNAL_VOID_UNSUPPORTED), so
+      // it is refused; the refund flow returns money per tender method. A
+      // closed business day is reported first. The refusal rolls back the
+      // whole transaction, so the approval stays unused and nothing is
+      // written.
+      const tenders = await tendersOf(tx, context, order.id);
+      if (
+        tenders.some(
+          (tender) =>
+            (tender.status === "captured" || tender.status === "authorized") &&
+            tender.method !== "cash",
+        )
+      )
+        throw new CoreError(
+          "CONFLICT",
+          "Transaksi ini dibayar non-tunai (QRIS, kartu, EDC, atau poin) dan tidak bisa di-void; gunakan refund.",
+        );
       // The void pays the sale's captured cash back out of this drawer.
       const voidCashIdr = tenders
         .filter(
