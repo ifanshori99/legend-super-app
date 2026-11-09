@@ -100,6 +100,14 @@ export const staffPins = pgTable(
     syncXid: xid8("sync_xid")
       .notNull()
       .default(sql`pg_current_xact_id()`),
+    /**
+     * Edge copy only (legend-t9ii review K F2): the highest generation key
+     * this edge received from the cloud (`applyStaffPinRecords`). The edge's
+     * own next set caps the carried key at `GREATEST(edge now, this) + 5 min`,
+     * so an edge clock far behind a recent cloud reset still stamps after it.
+     * Never written by the cloud's own paths, so null there.
+     */
+    cloudGenerationAt: timestamp("cloud_generation_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import type { StaffPinEdgeRecord } from "@starter/shared/access/override";
 import {
+  decodeCursor,
   encodeCursor,
   outletIdSchema,
   type ScopedTenantContext,
@@ -171,6 +172,45 @@ async function asEdge<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+let cloudNode: Awaited<ReturnType<typeof authenticateEdgeCredential>> = null;
+
+/**
+ * The cloud applier ingesting an edge `staff_pin.set`, as a standby node
+ * registered once for this file (edge_nodes rows are never deleted).
+ */
+async function adoptOnCloud(event: EventEnvelope, registeredBy: string) {
+  if (cloudNode === null) {
+    const registered = await registerEdgeNode(
+      establishScopedTenantContext(tenant, {
+        kind: "outlets",
+        outletIds: [outletIdSchema.parse(bandung)],
+      }),
+      registeredBy,
+      { outletId: bandung, role: "standby", label: "uji urutan" },
+    );
+    cloudNode = await authenticateEdgeCredential(registered.credential);
+  }
+  const authenticated = cloudNode!;
+  return withTenant(db, authenticated.context, (tx) =>
+    applyStaffPinSet(tx, event, {
+      edgeNodeId: authenticated.scope.edgeNodeId,
+      direction: "edge_to_cloud",
+      kind: "transaction_event",
+      context: authenticated.context,
+    }),
+  );
+}
+
+/** The database epoch the export stamps into a `spin2` cursor. */
+async function databaseEpoch(): Promise<string> {
+  const { rows } = await owner.query<{ epoch: string }>(
+    `SELECT (SELECT system_identifier::text FROM pg_control_system()) || ':' ||
+            (SELECT timeline_id::text FROM pg_control_checkpoint()) || ':' ||
+            ((extract(epoch FROM pg_postmaster_start_time()) * 1000000)::bigint)::text AS epoch`,
+  );
+  return rows[0]!.epoch;
+}
+
 async function deletePin(userId: string) {
   await owner.query(
     "DELETE FROM staff_pins WHERE tenant_id = $1 AND user_id = $2",
@@ -256,26 +296,7 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
       `UPDATE staff_pins SET pin_hash = $2, pin_salt = $3, pin_generation_at = $4::timestamptz WHERE id = $1`,
       [edgeSet.id, recordA.pinHash, recordA.salt, recordA.pinGenerationAt],
     );
-    const registered = await registerEdgeNode(
-      establishScopedTenantContext(tenant, {
-        kind: "outlets",
-        outletIds: [outletIdSchema.parse(bandung)],
-      }),
-      userId,
-      { outletId: bandung, role: "standby", label: "uji urutan" },
-    );
-    const authenticated = await authenticateEdgeCredential(
-      registered.credential,
-    );
-    const outcome = await withTenant(db, authenticated!.context, (tx) =>
-      applyStaffPinSet(tx, event, {
-        edgeNodeId: authenticated!.scope.edgeNodeId,
-        direction: "edge_to_cloud",
-        kind: "transaction_event",
-        context: authenticated!.context,
-      }),
-    );
-    expect(outcome).toBe("applied");
+    expect(await adoptOnCloud(event, userId)).toBe("applied");
     expect((await pinRow(userId)).pin_hash).toBe(material.pinHash);
   });
 
@@ -352,6 +373,55 @@ describe("legend-t9ii edge orders pin generations by the cloud key, never a node
     expect(row.failed_attempts).toBe(3);
     expect(row.pin_generation_at.getTime()).toBe(later.getTime());
   });
+
+  it("legend-t9ii F2 an edge 30 minutes behind a cloud reset made 1 minute ago still stamps its next sets after the cloud key", async () => {
+    const userId = await newStaff();
+    const now = Date.now();
+    // Cloud reset to pin A one minute ago (cloud clock).
+    await setPin(userId, PIN_A, new Date(now - MINUTE));
+    const recordA = (await pullUntil([userId])).records.find(
+      (row) => row.userId === userId,
+    )!;
+    await deletePin(userId);
+    await applyStaffPinRecords(edgeContext, [recordA]);
+    const mirrored = await owner.query<{ cloud: Date | null }>(
+      "SELECT cloud_generation_at AS cloud FROM staff_pins WHERE tenant_id = $1 AND user_id = $2",
+      [tenantId, userId],
+    );
+    expect(mirrored.rows[0]!.cloud?.getTime()).toBe(
+      Date.parse(recordA.pinGenerationAt),
+    );
+
+    // The edge clock runs 30 minutes behind and sets pin B.
+    await asEdge(() => setPin(userId, PIN_B, new Date(now - 30 * MINUTE)));
+    const edgeB = await pinRow(userId);
+    const eventB = await edgeEventOf(userId);
+    const materialB = (
+      eventB.payload as { material: { setAt: string; pinHash: string } }
+    ).material;
+    expect(Date.parse(materialB.setAt)).toBeGreaterThan(
+      Date.parse(recordA.pinGenerationAt),
+    );
+
+    // A second edge set before any re-export still moves the key forward.
+    await asEdge(() =>
+      setPin(userId, PIN_A, new Date(now - 30 * MINUTE + 1_000)),
+    );
+    const eventB2 = await edgeEventOf(userId);
+    const materialB2 = (eventB2.payload as { material: { setAt: string } })
+      .material;
+    expect(Date.parse(materialB2.setAt)).toBeGreaterThan(
+      Date.parse(materialB.setAt),
+    );
+
+    // The cloud (still at generation A) adopts B: its key is strictly newer.
+    await owner.query(
+      `UPDATE staff_pins SET pin_hash = $2, pin_salt = $3, pin_generation_at = $4::timestamptz, cloud_generation_at = NULL WHERE id = $1`,
+      [edgeB.id, recordA.pinHash, recordA.salt, recordA.pinGenerationAt],
+    );
+    expect(await adoptOnCloud(eventB, userId)).toBe("applied");
+    expect((await pinRow(userId)).pin_hash).toBe(materialB.pinHash);
+  });
 });
 
 describe("legend-t9ii commit-ordered export", () => {
@@ -406,7 +476,7 @@ describe("legend-t9ii commit-ordered export", () => {
     expect(byUser.get(newer)?.failedAttempts).toBe(2);
   });
 
-  it("an old spin1 cursor restarts from the beginning, and a tampered spin2 cursor is a validation error", async () => {
+  it("an old spin1 cursor or an old 3-key spin2 cursor restarts from the beginning, and a tampered spin2 cursor is a validation error", async () => {
     const userId = await newStaff();
     await setPin(userId, PIN_A);
     await pullUntil([userId]);
@@ -417,12 +487,19 @@ describe("legend-t9ii commit-ordered export", () => {
     ]);
     const restarted = await pullUntil([userId], spin1);
     expect(restarted.records.some((row) => row.userId === userId)).toBe(true);
+    const oldSpin2 = encodeCursor(["spin2", "1", randomUUID()]);
+    const fromOld = await pullUntil([userId], oldSpin2);
+    expect(fromOld.records.some((row) => row.userId === userId)).toBe(true);
 
+    const epoch = await databaseEpoch();
     for (const keys of [
-      ["spin2", "not-a-number", randomUUID()],
-      ["spin2", "12", "not-a-uuid"],
+      ["spin2", epoch, "not-a-number", randomUUID()],
+      ["spin2", epoch, "12", "not-a-uuid"],
+      ["spin2", "not-an-epoch", "12", randomUUID()],
+      ["spin2", 7, "12", randomUUID()],
+      ["spin2", epoch, "12", randomUUID(), "extra"],
       ["spin2", "12"],
-      ["other", "12", randomUUID()],
+      ["other", epoch, "12", randomUUID()],
     ])
       await expect(
         listStaffPinRecordsSince(node, {
@@ -430,5 +507,59 @@ describe("legend-t9ii commit-ordered export", () => {
           limit: 10,
         }),
       ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("legend-t9ii F1 the cursor carries the database epoch; a cursor of another epoch restarts from the beginning", async () => {
+    const userId = await newStaff();
+    await setPin(userId, PIN_A);
+    const full = await pullUntil([userId]);
+    const keys = decodeCursor(full.watermark!);
+    expect(keys).toHaveLength(4);
+    expect(keys[1]).toBe(await databaseEpoch());
+
+    // Same epoch: the row already passed is not sent again.
+    const caughtUp = await pull(full.watermark);
+    expect(caughtUp.records.some((row) => row.userId === userId)).toBe(false);
+
+    // Another epoch (a restore or a promoted standby): xids may be reused, so
+    // the export restarts and the row comes again.
+    const [epochSystem, epochTimeline, epochStart] = String(keys[1]).split(":");
+    const foreign = encodeCursor([
+      "spin2",
+      `${epochSystem}:999999:${epochStart}`,
+      keys[2],
+      keys[3],
+    ]);
+    // A restore from a snapshot keeps identifier and timeline but restarts
+    // the postmaster (review K round 2): also another epoch.
+    const afterRestart = await pullUntil(
+      [userId],
+      encodeCursor([
+        "spin2",
+        `${epochSystem}:${epochTimeline}:1`,
+        keys[2],
+        keys[3],
+      ]),
+    );
+    expect(afterRestart.records.some((row) => row.userId === userId)).toBe(
+      true,
+    );
+    const restarted = await pullUntil([userId], foreign);
+    expect(restarted.records.some((row) => row.userId === userId)).toBe(true);
+    expect(decodeCursor(restarted.watermark!)[1]).toBe(await databaseEpoch());
+  });
+
+  it("legend-t9ii F1 a cursor naming a transaction id from the future restarts from the beginning", async () => {
+    const userId = await newStaff();
+    await setPin(userId, PIN_A);
+    await pullUntil([userId]);
+    const future = encodeCursor([
+      "spin2",
+      await databaseEpoch(),
+      "99999999999999",
+      randomUUID(),
+    ]);
+    const restarted = await pullUntil([userId], future);
+    expect(restarted.records.some((row) => row.userId === userId)).toBe(true);
   });
 });

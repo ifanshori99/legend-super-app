@@ -16,4 +16,10 @@ BEGIN
   RETURN NEW;
 END $$;--> statement-breakpoint
 CREATE TRIGGER staff_pins_sync_xid BEFORE UPDATE ON public.staff_pins
-  FOR EACH ROW EXECUTE FUNCTION app.stamp_staff_pin_sync_xid();
+  FOR EACH ROW EXECUTE FUNCTION app.stamp_staff_pin_sync_xid();--> statement-breakpoint
+-- Review K F2: edge copy of the highest generation key received from the
+-- cloud. The edge's own set caps its carried key from GREATEST(edge clock,
+-- this) instead of the edge clock alone, so an edge clock far behind a recent
+-- cloud reset still stamps after it. Null on the cloud and for rows the edge
+-- never received from the cloud: no backfill needed.
+ALTER TABLE "staff_pins" ADD COLUMN "cloud_generation_at" timestamp with time zone;

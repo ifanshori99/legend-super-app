@@ -12,19 +12,46 @@
 //   query or a header the client chose (TEN-02).
 // - Records are the hash-only `staffPinEdgeRecordSchema`: hash, salt, scrypt
 //   cost, pepper version and lock state. Never the pin, never the pepper.
-// - Keyset paging on (sync_xid, id), opaque cursor (tag `spin2`). `sync_xid` is
-//   the id of the transaction that last wrote the row (column default on
-//   insert, trigger on update; migration 0144). A row is exported only when
-//   its `sync_xid` is below `pg_snapshot_xmin(pg_current_snapshot())`: every
-//   older transaction has finished, so a watermark can never pass a writer
-//   that commits late. No clock and no settle window are involved, the order
-//   is the commit horizon. A long open transaction anywhere in the database
-//   only delays the export, it never loses a row. `since` is the edge's stored
-//   watermark; the edge follows `meta.nextCursor` while it is non-null,
-//   applies each page durably, then stores `meta.watermark` (EDG-02: the
-//   checkpoint advances only after durable, idempotent application). A
-//   `spin1` cursor (the old (updated_at, id) one) restarts from the beginning:
-//   a full resync is idempotent.
+// - Keyset paging on (sync_xid, id), opaque cursor
+//   `[spin2, epoch, sync_xid, id]`. `sync_xid` is the id of the transaction
+//   that last wrote the row (column default on insert, trigger on update;
+//   migration 0147). A row is exported only when its `sync_xid` is below
+//   `pg_snapshot_xmin(pg_current_snapshot())`: every older transaction has
+//   finished, so a watermark can never pass a writer that commits late. No
+//   clock and no settle window are involved, the order is the commit horizon.
+//   `since` is the edge's stored watermark; the edge follows `meta.nextCursor`
+//   while it is non-null, applies each page durably, then stores
+//   `meta.watermark` (EDG-02: the checkpoint advances only after durable,
+//   idempotent application).
+// - Restarts (a full resync from the beginning, idempotent on the edge): a
+//   `spin1` cursor (the old (updated_at, id) one), a `spin2` cursor without
+//   an epoch (the first 3-key form), a cursor whose epoch differs from this
+//   database's, and a cursor whose xid is not yet assigned here
+//   (`>= pg_snapshot_xmax(pg_current_snapshot())`, "from the future").
+//   Transaction ids are only ordered within one database history: a
+//   point-in-time restore or an async standby promoted after losing commits
+//   hands out xids again that the edge already passed, and the export would
+//   skip those writes forever. The epoch is
+//   `pg_control_system().system_identifier` (changes on initdb, so on a
+//   dump/restore into a new cluster) + ":" + `pg_control_checkpoint().
+//   timeline_id` (changes on PITR and promotion, once the first checkpoint
+//   on the new timeline is written; until then the future-xid check is the
+//   guard) + ":" + `pg_postmaster_start_time()` in microseconds (review K
+//   round 2): a restore from a disk or managed snapshot that ends in crash
+//   recovery keeps the identifier and the timeline but always starts a new
+//   postmaster. The cost is one idempotent full resync per outlet after any
+//   database restart. All three functions are executable by PUBLIC, so the
+//   restricted app role reads them.
+// - Runbook, dump/restore: restored rows keep their old `sync_xid`, which may
+//   lie above the new cluster's counter and stay invisible to the export
+//   until the counter passes it. After such a restore, restamp every row with
+//   an UPDATE that touches each one (e.g. `UPDATE staff_pins SET
+//   sync_xid = sync_xid`, run with FORCE RLS lifted as in migration 0141); the
+//   trigger stamps the current xid.
+// - Long transactions (infra, review K F3): an open write transaction
+//   anywhere in the cluster holds `pg_snapshot_xmin` back, so it delays the
+//   export (never loses a row) until it ends. Follow-up:
+//   `idle_in_transaction_session_timeout` and an alert on the export horizon.
 // - Each record carries `pinGenerationAt`, the exact microsecond order key of
 //   the pin generation (`staff_pins.pin_generation_at`, legend-kyie).
 //
@@ -53,13 +80,16 @@
 // - other hash material (a reset) -> replace when `record key >= local key`
 //   (a tie goes to the cloud, the same rule as the cloud's own set); a newer
 //   local failed attempt cannot block a cloud reset, an older generation
-//   replayed late never wins. The cloud key is stored, so the next edge set,
-//   stamped `GREATEST(edge now, LEAST(key, now + 5 min) + 1 ms)`
-//   (device-pin.service.ts), lands after the generation it replaced even with
-//   a slow clock and the cloud adopts it;
+//   replayed late never wins;
 // - same hash material            -> merge the lock state unconditionally
 //   (higher counter, later lock: it never weakens the edge) and keep the later
 //   key; nothing to change writes nothing.
+// Every insert, replace and merge also raises `cloud_generation_at` to the
+// record key (the highest cloud key this edge has seen). The next edge set is
+// stamped `GREATEST(edge now, LEAST(key, GREATEST(edge now,
+// cloud_generation_at) + 5 min) + 1 ms)` (device-pin.service.ts), so it lands
+// after the cloud generation it replaced even when the edge clock runs far
+// behind a recent cloud reset, and the cloud adopts it.
 // No audit or outbox from apply: it mirrors cloud state, and an event here
 // would echo back to the cloud.
 
@@ -190,32 +220,66 @@ const CURSOR_TAG = "spin2";
 /** The old (updated_at, id) cursor: restarts from the beginning (see header). */
 const LEGACY_CURSOR_TAG = "spin1";
 const XID_PATTERN = /^\d{1,20}$/;
+const XID8_MAX = 18446744073709551615n;
+/** A decimal xid8: 20 digits can exceed 64 bits, and the cast would fail. */
+function isXid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    XID_PATTERN.test(value) &&
+    BigInt(value) <= XID8_MAX
+  );
+}
+/** `<system_identifier>:<timeline_id>:<postmaster start, µs>` (see header). */
+const EPOCH_PATTERN = /^\d{1,20}:\d{1,10}:\d{1,20}$/;
 
-type Watermark = { readonly xid: string; readonly id: string };
+type Watermark = {
+  readonly epoch: string;
+  readonly xid: string;
+  readonly id: string;
+};
 
+function invalidCursor(): never {
+  throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+}
+
+/**
+ * The stored watermark, or null to restart from the beginning (no cursor, a
+ * `spin1` cursor, or a 3-key `spin2` cursor from before the epoch existed).
+ * A malformed cursor is a validation error. The epoch and the "from the
+ * future" checks need the database and run in `listStaffPinRecordsSince`.
+ */
 function parseWatermark(cursor: string | undefined): Watermark | null {
   if (cursor === undefined) return null;
   let keys: unknown[];
   try {
     keys = decodeCursor(cursor);
   } catch {
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
+    invalidCursor();
   }
-  const [tag, xid, id, extra] = keys;
+  const [tag] = keys;
   if (tag === LEGACY_CURSOR_TAG) return null;
+  if (tag !== CURSOR_TAG) invalidCursor();
+  if (keys.length === 3) {
+    const [, xid, id] = keys;
+    if (!isXid(xid) || !uuidSchema.safeParse(id).success) invalidCursor();
+    // No epoch: it cannot be proven to come from this database history.
+    return null;
+  }
+  const [, epoch, xid, id, extra] = keys;
   if (
-    tag !== CURSOR_TAG ||
-    typeof xid !== "string" ||
-    !XID_PATTERN.test(xid) ||
+    keys.length !== 4 ||
+    typeof epoch !== "string" ||
+    !EPOCH_PATTERN.test(epoch) ||
+    !isXid(xid) ||
     !uuidSchema.safeParse(id).success ||
     extra !== undefined
   )
-    throw new CoreError("VALIDATION_ERROR", "Cursor sinkronisasi tidak valid.");
-  return { xid, id: String(id) };
+    invalidCursor();
+  return { epoch, xid, id: String(id) };
 }
 
 function encodeWatermark(mark: Watermark): string {
-  return encodeCursor([CURSOR_TAG, mark.xid, mark.id]);
+  return encodeCursor([CURSOR_TAG, mark.epoch, mark.xid, mark.id]);
 }
 
 /** Exact (microsecond, UTC) ISO text of a timestamptz column. */
@@ -233,7 +297,7 @@ export async function listStaffPinRecordsSince(
 ): Promise<StaffPinSyncPage> {
   const verified = verifiedEdgeNodeSchema.parse(node);
   const { limit } = staffPinSyncQuerySchema.parse(query);
-  const since = parseWatermark(query.since);
+  const stored = parseWatermark(query.since);
   const tenant = establishTenantContext({
     tenantId: verified.tenantId,
     brandId: null,
@@ -241,7 +305,7 @@ export async function listStaffPinRecordsSince(
   });
   const context = outletContext(tenant, verified.outletId);
 
-  const rows = await withTenant(db, context, async (tx) => {
+  const { rows, epoch, since } = await withTenant(db, context, async (tx) => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
       .select({ status: tenants.status })
@@ -267,7 +331,22 @@ export async function listStaffPinRecordsSince(
         "FORBIDDEN",
         "Edge node tidak dapat menyinkronkan outlet ini.",
       );
-    return tx
+    // The database epoch, and whether the stored xid is not yet assigned
+    // here (a cursor "from the future"). Either mismatch means the cursor
+    // comes from another database history (restore, promoted standby), whose
+    // xids may be reused: restart from the beginning (see header).
+    const horizon = await tx.execute<{ epoch: string; future: boolean }>(
+      sql`SELECT (SELECT system_identifier::text FROM pg_control_system()) || ':' ||
+                 (SELECT timeline_id::text FROM pg_control_checkpoint()) || ':' ||
+                 ((extract(epoch FROM pg_postmaster_start_time()) * 1000000)::bigint)::text AS epoch,
+                 ${stored === null ? sql`false` : sql`${stored.xid}::xid8 >= pg_snapshot_xmax(pg_current_snapshot())`} AS future`,
+    );
+    const current = horizon.rows[0]!;
+    const since =
+      stored !== null && stored.epoch === current.epoch && !current.future
+        ? stored
+        : null;
+    const found = await tx
       .select({
         row: staffPins,
         xid: sql<string>`${staffPins.syncXid}::text`,
@@ -287,12 +366,13 @@ export async function listStaffPinRecordsSince(
       )
       .orderBy(asc(staffPins.syncXid), asc(staffPins.id))
       .limit(limit + 1);
+    return { rows: found, epoch: current.epoch, since };
   });
 
   const page = rows.slice(0, limit);
   const last = page.at(-1);
   const lastMark = last
-    ? encodeWatermark({ xid: last.xid, id: last.row.id })
+    ? encodeWatermark({ epoch, xid: last.xid, id: last.row.id })
     : null;
   return staffPinSyncPageSchema.parse({
     data: page.map(({ row, generation }) =>
@@ -315,7 +395,8 @@ export async function listStaffPinRecordsSince(
     meta: {
       limit,
       nextCursor: rows.length > limit ? lastMark : null,
-      // A legacy cursor is not carried over: the edge restarts from the beginning.
+      // A legacy, foreign-epoch or future cursor is not carried over: the
+      // edge restarts from the beginning.
       watermark: lastMark ?? (since === null ? null : encodeWatermark(since)),
     },
   });
@@ -390,6 +471,8 @@ export async function applyStaffPinRecords(
           row: staffPins,
           // 1 = the record key is later, 0 = equal, -1 = earlier.
           keyOrder: sql<number>`CASE WHEN ${key} > ${staffPins.pinGenerationAt} THEN 1 WHEN ${key} = ${staffPins.pinGenerationAt} THEN 0 ELSE -1 END`,
+          // The record key is above the last cloud key this edge stored.
+          cloudKeyLater: sql<boolean>`${staffPins.cloudGenerationAt} IS NULL OR ${key} > ${staffPins.cloudGenerationAt}`,
         })
         .from(staffPins)
         .where(
@@ -443,6 +526,7 @@ export async function applyStaffPinRecords(
             // is stamped after it (see header).
             pinGenerationAt: key,
             pinSetAt: key,
+            cloudGenerationAt: key,
             createdAt: version,
             updatedAt: version,
           }),
@@ -461,6 +545,7 @@ export async function applyStaffPinRecords(
               ...material,
               pinGenerationAt: key,
               pinSetAt: key,
+              cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
               updatedAt: version,
             })
             .where(eq(staffPins.id, local.id)),
@@ -483,6 +568,7 @@ export async function applyStaffPinRecords(
           recordLock.getTime() > local.lockedUntil.getTime());
       if (
         found!.keyOrder <= 0 &&
+        !found!.cloudKeyLater &&
         record.failedAttempts <= local.failedAttempts &&
         !lockLater
       )
@@ -496,6 +582,7 @@ export async function applyStaffPinRecords(
               ? sql`${staffPins.lockedUntil}`
               : sql`GREATEST(${staffPins.lockedUntil}, ${recordLock.toISOString()}::timestamptz)`,
           pinGenerationAt: sql`GREATEST(${staffPins.pinGenerationAt}, ${key})`,
+          cloudGenerationAt: sql`GREATEST(${staffPins.cloudGenerationAt}, ${key})`,
         })
         .where(eq(staffPins.id, local.id));
       applied += 1;

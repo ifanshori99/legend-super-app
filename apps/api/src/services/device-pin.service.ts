@@ -267,9 +267,13 @@ export async function setStaffPin(
                 // The edge caps the carried key at its clock + 5 min (the
                 // cloud's skew window): a key left far ahead by a clock that
                 // ran ahead would otherwise keep every later set refused on
-                // the cloud after the clock is fixed.
+                // the cloud after the clock is fixed. The cap starts from the
+                // later of the edge clock and the last cloud key received
+                // (`cloud_generation_at`, legend-t9ii review K F2): an edge
+                // clock more than 5 min behind a recent cloud reset would
+                // otherwise stamp before the cloud key and never be adopted.
                 pinGenerationAt: edge
-                  ? sql`GREATEST(${generationStamp}::timestamptz, LEAST(${staffPins.pinGenerationAt}, ${generationStamp}::timestamptz + interval '5 minutes') + interval '1 millisecond')`
+                  ? sql`GREATEST(${generationStamp}::timestamptz, LEAST(${staffPins.pinGenerationAt}, GREATEST(${generationStamp}::timestamptz, COALESCE(${staffPins.cloudGenerationAt}, ${generationStamp}::timestamptz)) + interval '5 minutes') + interval '1 millisecond')`
                   : sql`GREATEST(${generationStamp}::timestamptz, ${staffPins.pinGenerationAt} + interval '1 millisecond')`,
               })
               .where(eq(staffPins.id, previous.id))

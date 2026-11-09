@@ -263,6 +263,26 @@ describe("legend-zclb edge job re-sending pre-material pin sets", () => {
     expect(await setEvents(userId)).toHaveLength(2);
   });
 
+  it("caps material.setAt at the job's now when the old event is stamped in the future", async () => {
+    const userId = await newUser();
+    const now = new Date();
+    await setPinWithoutMaterial(
+      userId,
+      "913574",
+      new Date(now.getTime() + 5 * HOUR),
+    );
+    const [old] = await setEvents(userId);
+    expect(Date.parse(old!.occurredAt)).toBeGreaterThan(now.getTime());
+
+    const result = await resendMateriallessStaffPinSets(tenant, outletA, {
+      now,
+    });
+    expect(result.resent).toBe(1);
+
+    const sent = (await setEvents(userId))[1]!;
+    expect(materialOf(sent)!.setAt).toBe(now.toISOString());
+  });
+
   it("emits nothing for a pin whose latest set event already carries material, or that has no local set event", async () => {
     const withMaterial = await newUser();
     process.env.EDGE_MODE = "true";

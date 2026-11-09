@@ -18359,6 +18359,12 @@
           "notNull": true,
           "default": "pg_current_xact_id()"
         },
+        "cloud_generation_at": {
+          "name": "cloud_generation_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",

@@ -16,6 +16,14 @@
 // so re-sending a pin the cloud already holds never resets its lock or
 // attempt counter.
 //
+// `setAt` is capped at the edge clock now. Residual risk (review K): an old
+// set stamped while the edge clock ran hours ahead, followed by a cloud reset
+// before this job runs, still outranks that reset, because those old events
+// never passed the cloud's skew check. The edge cannot tell the real set time
+// apart from a skewed one. The other way round, an edge clock behind when the
+// job runs lowers `setAt` and can make the cloud refuse a set that really is
+// newer than its own pin; the standby then still lacks that pin.
+//
 // Idempotent: afterwards the latest set event of the aggregate carries
 // material, so a rerun emits nothing. Primary and standby may both run it;
 // the duplicate is `not_applicable` on the cloud (tie). The edge outbox is
@@ -122,7 +130,14 @@ export async function resendMateriallessStaffPinSets(
                 keyLength: 32 as const,
               },
               pepperVersion: row.pepperVersion,
-              setAt: old.occurredAt,
+              // Capped at the edge clock now (review K): an old event
+              // stamped by a clock that ran far ahead never passed the
+              // cloud's skew check, so it must not carry a key from the
+              // future. A skew that was already in the past stays a
+              // residual risk (see the job header).
+              setAt: new Date(
+                Math.min(Date.parse(old.occurredAt), now.getTime()),
+              ).toISOString(),
             },
           },
         });

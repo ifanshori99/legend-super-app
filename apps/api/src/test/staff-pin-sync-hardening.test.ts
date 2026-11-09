@@ -20,7 +20,7 @@ import {
   vi,
 } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import type { TenantContext } from "@starter/shared/core";
+import { encodeCursor, type TenantContext } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { mintEdgeCredential } from "../edge/credential.ts";
@@ -251,5 +251,27 @@ describe("legend-wg5t 5 / legend-t9ii the export release does not depend on any 
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(listed).toContain(user);
+  });
+});
+
+describe("legend-t9ii a spin2 cursor xid must fit xid8", () => {
+  const node: VerifiedEdgeNode = {
+    tenantId,
+    outletId: bandung,
+    edgeNodeId: randomUUID(),
+  };
+
+  it("a 20-digit xid above the 64-bit maximum is a validation error", async () => {
+    await expect(
+      listStaffPinRecordsSince(node, {
+        since: encodeCursor([
+          "spin2",
+          "1:1:1",
+          "99999999999999999999",
+          randomUUID(),
+        ]),
+        limit: 10,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

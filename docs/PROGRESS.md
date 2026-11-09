@@ -2,6 +2,13 @@
 
 Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder menghentikan semua kerja untuk dilanjutkan di sesi baru.
 
+## legend-t9ii + legend-zclb + legend-7iti sinkron PIN edge-cloud dan audit override edge (engineer, cabang `ws/edge-pin-sync`, 2026-11-09)
+
+- Sudah: ekspor PIN cloud ke edge berurutan commit (kolom `staff_pins.sync_xid` xid8 + trigger, filter `pg_snapshot_xmin`, cursor `spin2` [tag, epoch, xid, id], epoch = system_identifier:timeline:postmaster start; cursor lama, epoch lain, atau xid dari masa depan mulai ulang dari awal). Edge membandingkan kunci generasi (`pin_generation_at`), bukan jam; kolom baru `cloud_generation_at` menjadi dasar cap set edge, jadi jam edge tertinggal 10 atau 30 menit tetap menang. Job edge sekali jalan `staff-pin-resend.ts` mengirim ulang set PIN v1 tanpa material (setAt = occurredAt lama, dibatasi jam edge). Cloud: material sama = no-op (lock tidak dibuka). Override `cash_shift_close` dari edge membawa `shiftCloseVariance` (hanya proses edge); audit cloud dan edge berisi expectedIdr, countedIdr, varianceIdr, valueIdr = |varians|.
+- Migrasi `0147_staff_pin_sync_xid` (when 1794230000000), merge m1 `bddf8442` sudah masuk. Rilis: cloud dulu, lalu edge.
+- Review K: reviewer Opus + architect + re-review architect; temuan dibetulkan (epoch restore, cap 5 menit, cap setAt resend, rentang xid). Bead lanjutan: legend-yvhw8 (puller edge belum terpasang, P1), legend-rucdm (residu cap), legend-4z2ch (timeout transaksi idle + alert).
+- Berikut: second-opinion Codex brief `docs/briefs/183b-second-opinion-edge-pin-sync.md` (folder utama), merge train.
+
 ## legend-wg5t + legend-ccpn tutup shift butuh approval (merge train batch11, cabang `ws/shift-close-fix` 1c051167, 2026-11-09)
 
 - Sudah: migrasi cabang `0141_cash_shift_close_approval_policies_data` diurutkan ulang menjadi `0145_cash_shift_close_approval_policies_data` (custom apa adanya, NO FORCE dan FORCE pada `roles` dan `approval_policies`), dan `0142_pos_shift_count_cash_watermark` menjadi `0146_pos_shift_count_cash_watermark` (kolom `pos_shift_counts.cash_watermark`, dari `db:generate`). 0145 terdaftar di `MIGRATION_DATA_STATEMENTS`.
