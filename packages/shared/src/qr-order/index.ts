@@ -10,5 +10,5 @@ export * from "./endpoints.ts";
 export * from "./table-operations.ts";
 export * from "./guest.ts";
 export * from "./zone-waiters.ts";
-export * from "./fixtures.ts";
 export * from "./realtime.ts";
+export * from "./open-bill.ts";

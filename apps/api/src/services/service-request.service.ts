@@ -177,7 +177,7 @@ async function zoneWaiterIds(
   return [...new Set(rows.map((row) => row.userId))];
 }
 
-async function buildRecipients(
+export async function buildRecipients(
   tx: Tx,
   tenantId: string,
   userIds: string[],

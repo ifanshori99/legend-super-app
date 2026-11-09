@@ -101,6 +101,11 @@ import {
 } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  assertOpenBillWithinLimit,
+  OpenBillLimitExceeded,
+  refuseOpenBillBreach,
+} from "./open-bill-control.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { zoneOrderingOpen } from "./guest-menu.service.ts";
@@ -1490,7 +1495,13 @@ export async function placeQrOrder(
         throw error;
       }
     },
-  );
+  ).catch(async (error: unknown) => {
+    // The checkout transaction rolled back (stock released); the breach is
+    // recorded in a fresh one, then answered 409 (ORD-10 / F43).
+    if (error instanceof OpenBillLimitExceeded)
+      return refuseOpenBillBreach(context, error);
+    throw error;
+  });
   if (outcome.kind === "all_sold_out")
     throw new CoreError(
       "CONFLICT",
@@ -1606,6 +1617,17 @@ async function checkout(
   if (built.tax === null) throw new Error("A non-empty order has a tax result");
   const quote = built.quote;
   assertQuotePlaceable(quote);
+  // ORD-10 / F43: an open-bill order may not push the session over its limit.
+  await assertOpenBillWithinLimit(tx, context, {
+    sessionId: session.id,
+    outletId: session.outletId,
+    tableId: session.tableId,
+    zoneId: zone.id,
+    paymentMode: session.paymentMode,
+    cartVersion: cart.version,
+    orderTotalIdr: quote.totalIdr,
+    now,
+  });
 
   const orderId = createUlid(now.getTime());
   const payFirst = plan.kitchenFire === "held_for_payment";

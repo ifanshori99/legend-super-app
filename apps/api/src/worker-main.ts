@@ -26,6 +26,7 @@ import { releaseExpiredSlotHolds } from "./services/facility-slots.service.ts";
 import { handlePaymentPaid } from "./services/reservation-consumers.ts";
 import { deliverOrderPaymentEvent } from "./services/order-payment-consumers.ts";
 import { restoreExpiredSoldOut } from "./services/menu-availability.ts";
+import { sweepInactiveOpenBillSessions } from "./services/open-bill-control.service.ts";
 import { sweepUnpaidQrOrders } from "./services/qr-order-consumers.ts";
 import {
   handleRefundApprovalResolved,
@@ -282,6 +283,13 @@ const relay = createRelayRuntime({
       await sweepOverdueServiceRequests(new Date(), context);
     } catch {
       console.error("Service request overdue sweep failed");
+    }
+    // legend-cqrw (PRD §3 F43): alert the zone waiters of open-bill sessions
+    // idle past the outlet's limit, once per idle spell. Same fail-closed rule.
+    try {
+      await sweepInactiveOpenBillSessions(new Date(), context);
+    } catch {
+      console.error("Open bill inactivity sweep failed");
     }
     // legend-1am2 (PRD §8 Ketersediaan): lift every 86 whose soldOutUntil
     // passed and broadcast item.restored (system actor) even with no staff

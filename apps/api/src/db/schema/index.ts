@@ -77,3 +77,5 @@ export * from "./shareholder-documents";
 export * from "./inventory-count";
 // WS-02 device registry + training periods (legend-165).
 export * from "./device";
+// WS-03 open-bill controls per outlet (legend-cqrw).
+export * from "./open-bill";
