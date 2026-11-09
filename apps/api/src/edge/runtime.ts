@@ -46,7 +46,9 @@ import {
 } from "../services/edge-device-sync.ts";
 import {
   loadDeviceRegistryCheckpoint,
+  loadStaffPinCheckpoint,
   saveDeviceRegistryCheckpoint,
+  saveStaffPinCheckpoint,
 } from "../services/edge-device-sync-store.ts";
 import {
   EDGE_LINK_WAKE_CHANNEL,
@@ -70,8 +72,10 @@ import {
 import { purgeExpiredWifiGrants } from "../services/edge-wifi-retention.service.ts";
 import {
   createDeviceRecordsFetcher,
+  createStaffPinRecordsFetcher,
   EdgeCloudHttpError,
 } from "./cloud-http.ts";
+import { createStaffPinPull } from "./staff-pin-pull.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
 import { createDbLinkStore } from "./db-link-store.ts";
 import {
@@ -727,6 +731,41 @@ export async function startEdgeRuntime(
   registryPuller = puller;
   // Not awaited: boot never waits for, or fails on, the cloud.
   puller.start();
+  // legend-yvhw8: staff PINs down-sync. Same schedule, backoff and staleness
+  // as the registry, its own checkpoint. A standby pulls too: it needs the
+  // PINs to take over for a failed primary. Stale PINs are not fatal (the
+  // edge keeps verifying the last ones), so staleness is logged, not acted on.
+  const pinPuller = createDeviceRegistryPuller({
+    pull: createStaffPinPull({
+      context: local.context,
+      fetchPage: createStaffPinRecordsFetcher({
+        cloudUrl: config.cloudUrl,
+        credential: config.credential,
+      }),
+      onRestart: () =>
+        logger.warn("Edge staff pin cursor refused; pulling from the start"),
+    }),
+    load: () => loadStaffPinCheckpoint(local.context, local.scope.edgeNodeId),
+    save: (input) =>
+      saveStaffPinCheckpoint(local.context, local.scope.edgeNodeId, input),
+    intervalMs: config.deviceSyncIntervalMs,
+    staleAfterMs: config.deviceSyncStaleAfterMs,
+    maxBackoffMs: Math.max(
+      config.deviceSyncIntervalMs,
+      MIN_MAX_PULL_BACKOFF_MS,
+    ),
+    onStaleChange: (stale) => {
+      if (stale)
+        logger.error(
+          "Edge staff pin replica is stale; PIN resets may be missing",
+        );
+      else logger.info("Edge staff pin replica is fresh again");
+    },
+    // Class only: a record (hash, salt) must never reach a log line.
+    onError: (error) =>
+      logger.warn(safeError(error), "Edge staff pin pull failed"),
+  });
+  pinPuller.start();
   // legend-zclb: one-shot, not awaited. A failure is logged by class only
   // (the error can quote hash material) and never stops the runtime.
   resendMateriallessStaffPinSets(local.context.tenant, local.scope.outletId)
@@ -756,7 +795,12 @@ export async function startEdgeRuntime(
       stopPrune();
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
-      await Promise.all([puller.stop(), stopWakeups(), client.stop()]);
+      await Promise.all([
+        puller.stop(),
+        pinPuller.stop(),
+        stopWakeups(),
+        client.stop(),
+      ]);
       if (registryPuller === puller) registryPuller = null;
       state = { ...state, link: disconnected };
     },

@@ -13,6 +13,7 @@
 import { logger } from "../lib/logger.ts";
 
 const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
+const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
 
@@ -159,5 +160,27 @@ export function createDeviceRecordsFetcher(
         signal,
       });
     }
+  };
+}
+
+/**
+ * One page of GET /api/edge-sync/staff-pin-records (legend-yvhw8). Same
+ * credential, timeout and error type as the device records; the response is
+ * parsed by the pull, never read into an error (it carries hash material).
+ */
+export function createStaffPinRecordsFetcher(
+  options: DeviceRecordsFetcherOptions,
+): (since: string | null, signal: AbortSignal) => Promise<unknown> {
+  cloudHttpBaseUrl(options.cloudUrl);
+  const limit = options.limit ?? DEFAULT_LIMIT;
+
+  return (since, signal) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (since !== null) query.set("since", since);
+    return cloudGetJson({
+      ...options,
+      path: `${STAFF_PIN_RECORDS_PATH}?${query.toString()}`,
+      signal,
+    });
   };
 }

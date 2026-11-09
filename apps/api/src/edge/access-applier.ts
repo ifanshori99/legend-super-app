@@ -12,6 +12,9 @@
 //   re-exports to the edges (staff-pin-sync.ts). Matched by (tenant, outlet,
 //   user); a different cloud row id is kept. No material (old events, cloud
 //   events) or another pepper version: not applicable, nothing written.
+//   A later set of the node that gave the current generation is adopted
+//   whatever its key (legend-rucdm), and a refused set with other material
+//   re-exports the cloud row (legend-kgbw); see applyStaffPinSet.
 // - staff_pin.locked: copies an active lock that is newer than the pin
 //   generation, bounded by STAFF_PIN_LOCK_MINUTES from now.
 // - pos_override.recorded: the cloud audit row (same shape as
@@ -177,6 +180,17 @@ async function assertTenantUser(
  * The order key is the raw edge `setAt`, never clamped (Codex 160 C1): with
  * an edge clock ahead of the cloud, two sets A then B would both clamp to
  * the cloud clock and B would lose to A. Only `pin_set_at` is clamped.
+ *
+ * legend-rucdm: a set of the node that gave the current generation
+ * (`generation_edge_node_id`) with a higher aggregate sequence is that node's
+ * later set, so it is adopted whatever its key: an edge clock stepping back
+ * while offline would otherwise make the node's own newer pin lose. The
+ * adopted key is GREATEST(setAt, current + 1 ms) so the cloud key never moves
+ * back, and the node id and sequence are stored for the next set.
+ *
+ * legend-kgbw: a refused set with other material (an older or tied key)
+ * touches the cloud row, so the export sends the cloud pin again and the edge
+ * replaces the pin the cloud refused. No event, no audit.
  */
 export async function applyStaffPinSet(
   tx: EdgeTx,
@@ -206,6 +220,10 @@ export async function applyStaffPinSet(
 
   const pinSetAt = sql`LEAST(${material.setAt}::timestamptz, now())`;
   const pinGenerationAt = sql`${material.setAt}::timestamptz`;
+  const provenance = {
+    generationEdgeNodeId: meta.edgeNodeId,
+    generationEdgeSequence: event.sequence,
+  };
   const values = {
     pinHash: material.pinHash,
     pinSalt: material.salt,
@@ -235,26 +253,48 @@ export async function applyStaffPinSet(
       .for("update");
     return row ?? null;
   };
+  // Same material is the same pin (legend-zclb: the edge re-sends a set the
+  // cloud may already hold, or one the edge mirrored from the cloud). Writing
+  // it would clear a live lock and the attempt count for nothing, so it is
+  // neither an adoption nor a refusal to answer.
+  const otherMaterial = sql`(${staffPins.pinHash}, ${staffPins.pinSalt}, ${staffPins.kdfN}, ${staffPins.kdfR}, ${staffPins.kdfP}, ${staffPins.pepperVersion}) IS DISTINCT FROM (${material.pinHash}, ${material.salt}, ${material.params.N}, ${material.params.r}, ${material.params.p}, ${material.pepperVersion})`;
   const update = async (id: string) => {
-    // Strictly newer generation and other material only: a tie keeps the
-    // cloud pin, identical material changes nothing.
+    // A strictly newer key, or a later set of the node that gave the current
+    // generation (legend-rucdm), and other material only: a tie of another
+    // origin keeps the cloud pin.
     const written = await tx
       .update(staffPins)
-      .set({ ...values, pinSetAt, pinGenerationAt })
+      .set({
+        ...values,
+        ...provenance,
+        pinSetAt,
+        pinGenerationAt: sql`GREATEST(${pinGenerationAt}, ${staffPins.pinGenerationAt} + interval '1 millisecond')`,
+      })
       .where(
         and(
           eq(staffPins.tenantId, tenantId),
           eq(staffPins.id, id),
-          sql`${staffPins.pinGenerationAt} < ${pinGenerationAt}`,
-          // Same material is the same pin (legend-zclb: the edge re-sends a
-          // set the cloud may already hold, or one the edge mirrored from the
-          // cloud). Writing it would clear a live lock and the attempt count
-          // for nothing, so it is not an adoption.
-          sql`(${staffPins.pinHash}, ${staffPins.pinSalt}, ${staffPins.kdfN}, ${staffPins.kdfR}, ${staffPins.kdfP}, ${staffPins.pepperVersion}) IS DISTINCT FROM (${material.pinHash}, ${material.salt}, ${material.params.N}, ${material.params.r}, ${material.params.p}, ${material.pepperVersion})`,
+          sql`(${staffPins.pinGenerationAt} < ${pinGenerationAt} OR (${staffPins.generationEdgeNodeId} = ${meta.edgeNodeId}::uuid AND ${staffPins.generationEdgeSequence} < ${event.sequence}))`,
+          otherMaterial,
         ),
       )
       .returning({ id: staffPins.id });
-    return written.length > 0 ? "applied" : "not_applicable";
+    if (written.length > 0) return "applied";
+    // legend-kgbw: refused with other material. The edge holds a pin the
+    // cloud will never take; a write that changes nothing material lets the
+    // trigger restamp sync_xid, so the next pull sends the cloud pin back and
+    // the edge replaces the refused one (its key is older or tied).
+    await tx
+      .update(staffPins)
+      .set({ updatedAt: sql`clock_timestamp()` })
+      .where(
+        and(
+          eq(staffPins.tenantId, tenantId),
+          eq(staffPins.id, id),
+          otherMaterial,
+        ),
+      );
+    return "not_applicable";
   };
   // `staff_pins.id` is a global key and RLS hides other tenants' rows, so an
   // insert never relies on a pre-check (review K F8): ON CONFLICT DO NOTHING
@@ -269,6 +309,7 @@ export async function applyStaffPinSet(
         outletId,
         userId: payload.userId,
         ...values,
+        ...provenance,
         pinSetAt,
         pinGenerationAt,
         createdAt: sql`now()`,
