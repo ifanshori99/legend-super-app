@@ -54,7 +54,6 @@ import {
   cursorSchema,
   decodeCursor,
   encodeCursor,
-  isoDateTimeSchema,
   PAGE_LIMIT_MAX,
   uuidSchema,
   type ScopedTenantContext,
@@ -114,12 +113,6 @@ export const deviceSyncQuerySchema = z.strictObject({
    * (`P1:150,P3:7`, `""` = none). Absent = an old edge: no restore check.
    */
   receiptRuns: receiptRunReportQuerySchema.optional(),
-  /**
-   * legend-yd0h8: edge time the `receiptRuns` report was read. The cloud
-   * orders reports by it, so a report that arrives late (after a timeout)
-   * cannot look like a regression. Ignored without `receiptRuns`.
-   */
-  receiptRunsAt: isoDateTimeSchema.optional(),
 });
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
@@ -200,7 +193,6 @@ export async function listDeviceRecordsSince(
     receiptSequences: withSequences,
     edgeInstance,
     receiptRuns,
-    receiptRunsAt,
   } = deviceSyncQuerySchema.parse(query);
   const since = parseWatermark(query.since);
   const now = options.now ?? new Date();
@@ -280,10 +272,9 @@ export async function listDeviceRecordsSince(
             receiptRuns === undefined
               ? undefined
               : (decodeReceiptRunReport(receiptRuns) ?? undefined),
-          reportedAt:
-            receiptRuns === undefined || receiptRunsAt === undefined
-              ? undefined
-              : new Date(receiptRunsAt),
+          // legend-yd0h8: cloud arrival time orders reports (not the edge
+          // clock); `now` is taken before any pool or outlet lock wait.
+          reportedAt: receiptRuns === undefined ? undefined : now,
         });
         alert = claim.alert;
         // legend-zsdd: a repeated rotation means two databases pull with one

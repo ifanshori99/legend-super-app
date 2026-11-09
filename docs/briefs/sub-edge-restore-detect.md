@@ -118,3 +118,19 @@ Fix contract:
 - Docs (A1): header + claim comment state the two limits plainly.
 
 Sections: F1 schema/trigger/migration (S1 files). F2 service (`pos-receipt.service.ts`). F3 shared schema + `edge-device-sync.ts` + `cloud-http.ts` + `cloud-http.test.ts` (run that test file only). F4 test-writer: add to `apps/api/src/test/pos-receipt-restore-detect.test.ts`: (a) R1 stale report: report P1:3 at t1 arrives after P1:5 at t2>t1 -> no rotation, `stale` 1; (b) same lower count with a NEWER token -> rotation; (c) A3 clone: after one regression rotation, a report of the retired prefix above its frozen high-water with a newer token -> alert at once; (d) trigger: retire without reason refused, `edge_reported_at` cannot go backwards or to NULL; (e) forward-skewed token is clamped (a report at now+1 day, then a lower count at real now+6 min still... choose a case that proves the clamp: report at now+1day raises hw with τ=now+5min; a later regression at now+6min (inject reportedAt) is detected). Use the claim directly or `listDeviceRecordsSince` with `receiptRunsAt`. Run only that file after F1-F3 land: `bash -c 'cd "/Users/ifanshori99/Projects/legend super app/legend/.worktrees/edge-restore-detect" && pwd && LEGEND_TEST_FILES="src/test/pos-receipt-restore-detect.test.ts" heavy pnpm test'`.
+
+## Round 3: re-review fixes (on top of 39d750cc)
+
+Findings: (Q1) the edge-clock token makes a clone or a restore onto a box whose clock is BEHIND undetectable (every report stale). (Q2) an edge clock > 5 min fast loses stale protection (clamp orders by arrival). (Q3) A3 false clone alert: an `edge_regressed` retire keeps the old `edge_reported_at`, so a delayed pre-restore report of the live database looks newer. (Q4, latent, legend-ol6v) cloud `lastNumber` has no stamp.
+
+Lead decision: the token is the CLOUD time the request reached `listDeviceRecordsSince` (its existing `now`, taken before the pool / outlet lock wait), not the edge clock. The puller is single-flight and retries only after the 15 s timeout, so arrival order = read order; one server clock family, no edge skew.
+
+Fix contract:
+
+- Remove `receiptRunsAt` everywhere (query schema, fetcher `now` option + param, tests). Unreleased, no compat needed.
+- `listDeviceRecordsSince` passes `reportedAt: now` to the claim when a report was sent.
+- Claim: `tau = input.reportedAt ?? new Date()`; remove the clamp and `RECEIPT_REPORT_SKEW_MS`. Stale rule unchanged (`edgeReportedAt !== null && tau <= edgeReportedAt`).
+- Q3: the `edge_regressed` retire also sets `edgeReportedAt = tau` (row still current when updated, stamp only moves forward because the report was not stale). Keep `retireSequence` signature simple: optional 5th arg `stampReportedAt?: Date`.
+- Docs/comments: the token is cloud arrival time; say why.
+
+Sections: G1 implementer: `pos-receipt.service.ts`, `edge-device-sync.ts`, `cloud-http.ts`, `cloud-http.test.ts` (run that test only). G2 test-writer: `apps/api/src/test/pos-receipt-restore-detect.test.ts`: drop `receiptRunsAt`/clamp cases; stale cases drive the claim with explicit `reportedAt` (arrival) or `listDeviceRecordsSince(..., { now })`; add (a) a restore whose edge clock is far behind is still rotated (no edge clock involved: two pulls via listDeviceRecordsSince with increasing `now`); (b) Q3: after a regression rotation stamped t3, a report of the retired prefix above its frozen high-water arriving with now=t2.5 does NOT alert, with now>t3 does. Run that file after G1 lands.

@@ -33,10 +33,12 @@
 //   prefix. At most RECEIPT_REGRESSION_ROTATIONS_MAX such rotations per device
 //   in RECEIPT_REGRESSION_WINDOW_HOURS (two live databases on one node id);
 //   beyond that the run is kept and an alert is raised. Every retire path
-//   stores its reason (`retired_reason`). A report carries the edge time it was
-//   read (`receiptRunsAt`): one older than the report that last raised the
-//   high-water (`edge_reported_at`) is stale (a request that timed out and
-//   arrived late) and is skipped, never read as a regression.
+//   stores its reason (`retired_reason`). Reports are ordered by a token, the
+//   CLOUD time the request reached the cloud (not the edge clock, which a
+//   restored box may have behind or ahead): one not newer than the report that
+//   last raised the high-water (`edge_reported_at`) is stale (a request that
+//   timed out and arrived late) and is skipped, never read as a regression.
+//   The puller is single-flight, so arrival order is read order.
 //   Limits, stated plainly: (1) sales between a restore and the first
 //   successful pull still reuse numbers already issued (only legend-ol6v receipt
 //   events can catch them); a backup newer than the last pull is not seen.
@@ -211,18 +213,24 @@ async function insertSequence(
 /**
  * legend-zsdd: closes a run for good; the device continues under a new prefix.
  * legend-yd0h8: `reason` is stored in `retired_reason` (audit, rate limit).
+ * `stampReportedAt` also moves `edge_reported_at` (an `edge_regressed` retire:
+ * a later, older report of this run must not look newer than the retire).
  */
 async function retireSequence(
   tx: Tx,
   tenantId: TenantId,
   sequenceId: string,
   reason: ReceiptSequenceRetiredReason,
+  stampReportedAt?: Date,
 ): Promise<void> {
   const [row] = await tx
     .update(receiptSequences)
     .set({
       retiredAt: sql`now()`,
       retiredReason: reason,
+      ...(stampReportedAt === undefined
+        ? {}
+        : { edgeReportedAt: stampReportedAt }),
       updatedAt: sql`now()`,
     })
     .where(
@@ -767,8 +775,6 @@ const sameBinding = (
 
 export const RECEIPT_REGRESSION_ROTATIONS_MAX = 2;
 export const RECEIPT_REGRESSION_WINDOW_HOURS = 24;
-// legend-yd0h8: how far ahead of the cloud clock a report token may be.
-const RECEIPT_REPORT_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
@@ -800,11 +806,13 @@ const RECEIPT_REPORT_SKEW_MS = 5 * 60 * 1000;
  * high-water with a newer token (a second live database: clone). Report
  * entries for unknown, other retired or foreign-bound prefixes are ignored.
  *
- * `reportedAt` is the edge time the report was read. Token `tau` =
- * min(reportedAt ?? cloud now, cloud now + 5 min) (a forward-skewed edge clock
- * cannot freeze the check). A row whose `edge_reported_at` is not before `tau`
- * is STALE (a late arrival of an older report) and is skipped (`stale`). When
- * the high-water rises, `edge_reported_at` becomes `tau`.
+ * `reportedAt` is the cloud time the request reached the cloud (default now),
+ * never the edge clock: a restored box may have a clock behind or ahead, which
+ * would make every report stale or freeze the check. Token `tau` = reportedAt.
+ * A row whose `edge_reported_at` is not before `tau` is STALE (a late arrival
+ * of an older report) and is skipped (`stale`). When the high-water rises,
+ * `edge_reported_at` becomes `tau`; a regression retire also stamps `tau`, so
+ * a delayed report read before the restore cannot look newer than the retire.
  *
  * Limits: sales between a restore and the first successful pull still reuse
  * numbers already issued; and a clone gets an alarm, not prevention (both
@@ -835,15 +843,8 @@ export async function claimDeviceReceiptSequencesForEdge(
     edgeInstanceId: input.edgeInstanceId,
   };
   await lockOutletSequences(tx, tenantId, outletId);
-  // legend-yd0h8: report token, clamped so a forward-skewed edge clock cannot
-  // freeze the check.
-  const cloudNow = new Date();
-  const tau = new Date(
-    Math.min(
-      (input.reportedAt ?? cloudNow).getTime(),
-      cloudNow.getTime() + RECEIPT_REPORT_SKEW_MS,
-    ),
-  );
+  // legend-yd0h8: report token = cloud arrival time of the request.
+  const tau = input.reportedAt ?? new Date();
   // legend-yd0h8: regression rotations per device of this node in the window.
   const regressions = new Map<string, number>();
   let cloneSeen = false;
@@ -953,7 +954,7 @@ export async function claimDeviceReceiptSequencesForEdge(
         throttled += 1;
         continue;
       }
-      await retireSequence(tx, tenantId, sequence.id, "edge_regressed");
+      await retireSequence(tx, tenantId, sequence.id, "edge_regressed", tau);
       used ??= await prefixesOfOutlet(tx, tenantId, outletId);
       const prefix = nextFreePrefix(used);
       await insertSequence(tx, {

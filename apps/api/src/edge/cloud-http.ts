@@ -113,8 +113,6 @@ export type DeviceRecordsFetcherOptions = CloudGetOptions & {
   limit?: number;
   /** legend-zsdd: this edge database's instance id, sent with the sequences. */
   edgeInstanceId?: string;
-  /** legend-yd0h8: clock for `receiptRunsAt` (tests); default the real time. */
-  now?: () => Date;
 };
 
 export function createDeviceRecordsFetcher(
@@ -127,13 +125,11 @@ export function createDeviceRecordsFetcher(
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
-  const now = options.now ?? (() => new Date());
 
   const pathFor = (
     since: string | null,
     withSequences: boolean,
     receiptRuns?: ReceiptRunReport,
-    receiptRunsAt?: string,
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
@@ -146,23 +142,17 @@ export function createDeviceRecordsFetcher(
         query.set("edgeInstance", options.edgeInstanceId);
       // legend-yd0h8: this database's local counters, so the cloud can spot a
       // restored or cloned database. Absent = no check (an old edge).
-      // The read time orders reports on the cloud (a late one is stale).
-      if (receiptRuns !== undefined && receiptRunsAt !== undefined) {
+      if (receiptRuns !== undefined)
         query.set("receiptRuns", encodeReceiptRunReport(receiptRuns));
-        query.set("receiptRunsAt", receiptRunsAt);
-      }
     }
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };
 
   return async (since, signal, receiptRuns) => {
-    // One stamp per page, kept across the staged retries.
-    const receiptRunsAt =
-      receiptRuns === undefined ? undefined : now().toISOString();
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns, receiptRunsAt),
+        path: pathFor(since, true, receiptRuns),
         signal,
       });
     } catch (error) {
@@ -172,7 +162,7 @@ export function createDeviceRecordsFetcher(
       // second failure is thrown as is, so HTTP_400 recovery still sees it.
       // legend-yd0h8: staged. A request that carried `receiptRuns` first
       // retries WITH sequences and `edgeInstance` but without `receiptRuns`
-      // (a zsdd cloud, which also lacks `receiptRunsAt`); only a second 400
+      // (a zsdd cloud); only a second 400
       // drops the sequences too.
       if (
         options.edgeInstanceId === undefined ||

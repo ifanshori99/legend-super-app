@@ -33,13 +33,20 @@
 //    `receiptRuns`, `receiptRunAlert`, the new columns) does not exist: cases
 //    that need it fail on that missing API. Cases 1 and 2 only use the edge
 //    pull, so they fail on the receipt NUMBER assertion.
-//  - Round 2 (R1 stale token, R2 retire needs a reason, A3 early clone alert):
-//    a report carries `receiptRunsAt` (edge time it was read). The token used
-//    by the cloud is tau = min(receiptRunsAt ?? cloudNow, cloudNow + 5 min);
-//    a row whose `edge_reported_at` is >= tau is skipped as stale (equal token
-//    = stale). The claim is driven directly for the `stale` count, and through
-//    `listDeviceRecordsSince` for page-level facts. The claim runs in the
-//    default (cloud) mode with a tenant-wide test context.
+//  - Round 2/3 (R1 stale token, R2 retire needs a reason, A3 early clone alert,
+//    Q1..Q3): the token of a report is the CLOUD time the request reached
+//    `listDeviceRecordsSince` (its `now` option), never an edge clock; there is
+//    no `receiptRunsAt` and no clamp. A row whose `edge_reported_at` is >= the
+//    token is skipped as stale (equal token = stale). The claim is driven
+//    directly (explicit `reportedAt` = arrival time) for the `stale` count, and
+//    through `listDeviceRecordsSince(..., { now })` for page-level facts. The
+//    claim runs in the default (cloud) mode with a tenant-wide test context.
+//    A pull without an explicit `now` gets a strictly increasing `now` (two
+//    pulls never share a token), all in the future of the real clock so that
+//    nothing is held back by the settle window.
+//  - A regression rotation stamps the retired row `edge_reported_at` with the
+//    token of the rotating pull (Q3), so a delayed report that arrived earlier
+//    cannot look like a second live database.
 //  - Rejected owner SQL is asserted as a rejected query (messages are backend
 //    detail), after a precondition read proves the new columns exist and
 //    followed by a check that nothing moved.
@@ -475,14 +482,21 @@ async function localEdgeNode(
   );
 }
 
+let lastCloudNow = 0;
+/** Strictly increasing cloud arrival time, 10 min ahead of the real clock. */
+function nextCloudNow(): Date {
+  lastCloudNow = Math.max(Date.now() + 10 * 60_000, lastCloudNow + 1);
+  return new Date(lastCloudNow);
+}
+
 /** The cloud answering one device-records pull of node N, instance I. */
 function cloudPull(
   cloudOutletId: string,
   own: Binding,
   options: {
     report?: ReceiptRunReport;
-    /** Edge time the report was read (`receiptRunsAt`); only with a report. */
-    at?: Date;
+    /** Cloud arrival time of the request (the report token). Default: next tick. */
+    now?: Date;
     since?: string | null;
     limit?: number;
   } = {},
@@ -495,9 +509,6 @@ function cloudPull(
     ...(options.report
       ? { receiptRuns: encodeReceiptRunReport(options.report) }
       : {}),
-    ...(options.report && options.at
-      ? { receiptRunsAt: options.at.toISOString() }
-      : {}),
   });
   return listDeviceRecordsSince(
     {
@@ -506,7 +517,7 @@ function cloudPull(
       edgeNodeId: own.edgeNodeId,
     },
     query,
-    { now: new Date(Date.now() + 10 * 60_000), settleMs: 0 },
+    { now: options.now ?? nextCloudNow(), settleMs: 0 },
   );
 }
 
@@ -612,9 +623,9 @@ async function edgeAWithHighWater(sold = 3) {
   return { outletId, deviceId, own, edgeA, firstPage: first.pages[0]! };
 }
 
-/** `at(10)` = 10 s after now: edge-side report times, all inside the 5 min clamp. */
+/** `at(10)` = 10 s after the base: cloud arrival times of reports. */
 function clock(): (seconds: number) => Date {
-  const base = Date.now();
+  const base = Date.now() + 10 * 60_000;
   return (seconds) => new Date(base + seconds * 1000);
 }
 
@@ -634,8 +645,6 @@ function claim(
     }),
   );
 }
-
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- Cases ---------------------------------------------------------------------
 
@@ -966,8 +975,8 @@ describe("yd0h8-5 a clone (two live databases on one node) rotates at most twice
   });
 });
 
-describe("yd0h8-8 a stale report (older edge time than the stored high-water) is skipped", () => {
-  it("POS-06 EDG-02 P1:3 read at t1 arriving after P1:5 read at t2: no rotation, stale 1, high-water and its time kept, the budget is not burned", async () => {
+describe("yd0h8-8 a stale report (arriving with a token not newer than the stored one) is skipped", () => {
+  it("POS-06 EDG-02 P1:3 arriving at t1 after P1:5 at t2 (token not newer): no rotation, stale 1, high-water and its time kept, the budget is not burned", async () => {
     const { outletId, own } = await cloudOutlet(1);
     const at = clock();
     await claim(outletId, own, new Map(), at(10));
@@ -988,7 +997,7 @@ describe("yd0h8-8 a stale report (older edge time than the stored high-water) is
     // Through the page: still the same run handed out, no alert key.
     const page = await cloudPull(outletId, own, {
       report: new Map([["P1", 3]]),
-      at: at(35),
+      now: at(35),
     });
     expect(page.receiptSequences?.map((s) => s.prefix)).toEqual(["P1"]);
     expect("receiptRunAlert" in page).toBe(false);
@@ -1013,7 +1022,7 @@ describe("yd0h8-8 a stale report (older edge time than the stored high-water) is
     expect(regressedCount(after)).toBe(1);
   });
 
-  it("POS-06 EDG-02 the same lower count with a NEWER edge time is a real regression: rotation, stale 0", async () => {
+  it("POS-06 EDG-02 the same lower count with a NEWER arrival token is a real regression: rotation, stale 0", async () => {
     const { outletId, own } = await cloudOutlet(1);
     const at = clock();
     await claim(outletId, own, new Map(), at(10));
@@ -1026,9 +1035,10 @@ describe("yd0h8-8 a stale report (older edge time than the stored high-water) is
       retired_reason: "edge_regressed",
       edge_reported_number: 5,
     });
-    // The retired row keeps the time of its last raise.
+    // Q3: the rotation stamps the retired row with the token of the rotating
+    // report (the high-water number stays frozen at 5).
     expect(rowOf(rows, "P1").edge_reported_at?.getTime()).toBe(
-      at(40).getTime(),
+      at(50).getTime(),
     );
     expect(rowOf(rows, "P2")).toMatchObject({
       retired_at: null,
@@ -1036,38 +1046,29 @@ describe("yd0h8-8 a stale report (older edge time than the stored high-water) is
     });
   });
 
-  it("POS-06 a forward-skewed edge clock is clamped: a report dated +1 day stamps about now+5 min, so a later regression is still detected", async () => {
+  it("POS-06 EDG-02 a restore whose edge clock is far behind is still rotated: the token is the cloud arrival time, no edge clock is involved", async () => {
     const { outletId, own } = await cloudOutlet(1);
     const at = clock();
-    await claim(outletId, own, new Map(), at(10));
+    // Two pulls through the page API with increasing cloud `now`. The
+    // restored box's own clock (say a year behind) is never sent.
+    await cloudPull(outletId, own, { report: new Map(), now: at(10) });
+    const live = await cloudPull(outletId, own, {
+      report: new Map([["P1", 5]]),
+      now: at(20),
+    });
+    expect(live.receiptSequences?.map((s) => s.prefix)).toEqual(["P1"]);
 
-    const before = Date.now();
-    const skewed = await claim(
-      outletId,
-      own,
-      new Map([["P1", 10]]),
-      new Date(before + 24 * 3_600_000),
-    );
-    const afterSkewed = Date.now();
-    expect(skewed).toMatchObject({ regressed: 0, stale: 0 });
-    const stamp = rowOf(await runRows(outletId), "P1").edge_reported_at;
-    expect(stamp).not.toBeNull();
-    expect(stamp!.getTime()).toBeGreaterThanOrEqual(before + 5 * 60_000);
-    expect(stamp!.getTime()).toBeLessThanOrEqual(afterSkewed + 5 * 60_000);
-
-    // Without the clamp this report (now+6 min) would be older than the +1 day
-    // stamp and skipped as stale. Pause so the cloud clock is strictly later.
-    await pause(15);
-    const regressed = await claim(
-      outletId,
-      own,
-      new Map([["P1", 2]]),
-      new Date(Date.now() + 6 * 60_000),
-    );
-    expect(regressed).toMatchObject({ regressed: 1, stale: 0 });
+    const restored = await cloudPull(outletId, own, {
+      report: new Map([["P1", 2]]),
+      now: at(30),
+    });
+    expect(restored.receiptSequences?.map((s) => s.prefix)).toEqual(["P2"]);
     const rows = await runRows(outletId);
     expect(rowOf(rows, "P1").retired_reason).toBe("edge_regressed");
     expect(rowOf(rows, "P2").retired_at).toBeNull();
+    expect(regressedCount(rows)).toBe(1);
+    // A single restore: no alert.
+    expect("receiptRunAlert" in restored).toBe(false);
   });
 });
 
@@ -1093,7 +1094,7 @@ describe("yd0h8-9 a clone is alerted at the first rotation", () => {
     // ... but above it with a newer token: a second live database exists.
     const page = await cloudPull(outletId, own, {
       report: new Map([["P1", 4]]),
-      at: at(30),
+      now: at(30),
     });
     expect(page.receiptRunAlert).toBe(true);
     // Only one rotation so far: the alert did not come from the count.
@@ -1109,6 +1110,50 @@ describe("yd0h8-9 a clone is alerted at the first rotation", () => {
     // An old edge (no report) never sees the alert.
     const old = await cloudPull(outletId, own);
     expect("receiptRunAlert" in old).toBe(false);
+  });
+
+  it("POS-06 EDG-02 Q3: a report of the retired prefix above its frozen high-water that arrives before the rotation stamp is not a clone; one arriving after it is", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    const at = clock();
+    await cloudPull(outletId, own, { report: new Map(), now: at(10) });
+    await cloudPull(outletId, own, {
+      report: new Map([["P1", 3]]),
+      now: at(20),
+    });
+    // t3 = at(30): the restore is rotated; P1 is retired and stamped with t3.
+    const rotation = await cloudPull(outletId, own, {
+      report: new Map([["P1", 1]]),
+      now: at(30),
+    });
+    expect(rotation.receiptSequences?.map((s) => s.prefix)).toEqual(["P2"]);
+    const afterRotation = await runRows(outletId);
+    expect(rowOf(afterRotation, "P1")).toMatchObject({
+      retired_reason: "edge_regressed",
+      edge_reported_number: 3,
+    });
+    expect(rowOf(afterRotation, "P1").edge_reported_at?.getTime()).toBe(
+      at(30).getTime(),
+    );
+
+    // t2.5 = at(25): the live database's delayed report (read before the
+    // restore) is older than the rotation stamp: no second database, no alert.
+    const delayed = await cloudPull(outletId, own, {
+      report: new Map([["P1", 4]]),
+      now: at(25),
+    });
+    expect("receiptRunAlert" in delayed).toBe(false);
+    expect(regressedCount(await runRows(outletId))).toBe(1);
+
+    // After the stamp the same report means a database still numbering P1.
+    const live = await cloudPull(outletId, own, {
+      report: new Map([["P1", 4]]),
+      now: at(40),
+    });
+    expect(live.receiptRunAlert).toBe(true);
+    // Still one rotation; the retired run stays frozen.
+    const rows = await runRows(outletId);
+    expect(regressedCount(rows)).toBe(1);
+    expect(rowOf(rows, "P1").edge_reported_number).toBe(3);
   });
 });
 

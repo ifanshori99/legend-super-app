@@ -174,23 +174,6 @@ describe("createDeviceRecordsFetcher", () => {
     expect(urls[0]!.searchParams.get("receiptRuns")).toBe("P1:150,P3:7");
     expect(urls[1]!.searchParams.get("receiptRuns")).toBe("");
     expect(urls[2]!.searchParams.has("receiptRuns")).toBe(false);
-    expect(urls[2]!.searchParams.has("receiptRunsAt")).toBe(false);
-  });
-
-  it("legend-yd0h8 stamps receiptRunsAt with the edge clock next to receiptRuns", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ data: [] }));
-    const fetcher = createDeviceRecordsFetcher({
-      cloudUrl: "wss://cloud.example.com/api/edge-link",
-      credential: CREDENTIAL,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      edgeInstanceId: INSTANCE,
-      now: () => new Date("2026-11-09T01:02:03.456Z"),
-    });
-    await fetcher(null, new AbortController().signal, new Map([["P1", 3]]));
-    const url = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
-    expect(url.searchParams.get("receiptRunsAt")).toBe(
-      "2026-11-09T01:02:03.456Z",
-    );
   });
 
   it("legend-yd0h8 HTTP 400 on a request with receiptRuns retries with edgeInstance but without receiptRuns", async () => {
@@ -209,9 +192,7 @@ describe("createDeviceRecordsFetcher", () => {
     const first = new URL((fetchImpl.mock.calls[0] as unknown as [string])[0]);
     const second = new URL((fetchImpl.mock.calls[1] as unknown as [string])[0]);
     expect(first.searchParams.get("receiptRuns")).toBe("P1:3");
-    expect(first.searchParams.has("receiptRunsAt")).toBe(true);
     expect(second.searchParams.has("receiptRuns")).toBe(false);
-    expect(second.searchParams.has("receiptRunsAt")).toBe(false);
     expect(second.searchParams.get("receiptSequences")).toBe("1");
     expect(second.searchParams.get("edgeInstance")).toBe(INSTANCE);
     expect(second.searchParams.get("since")).toBe("v1");
@@ -233,7 +214,6 @@ describe("createDeviceRecordsFetcher", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     const third = new URL((fetchImpl.mock.calls[2] as unknown as [string])[0]);
     expect(third.searchParams.has("receiptRuns")).toBe(false);
-    expect(third.searchParams.has("receiptRunsAt")).toBe(false);
     expect(third.searchParams.has("edgeInstance")).toBe(false);
     expect(third.searchParams.has("receiptSequences")).toBe(false);
 
