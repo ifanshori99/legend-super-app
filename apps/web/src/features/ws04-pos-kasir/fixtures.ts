@@ -151,6 +151,7 @@ export function demoOrder(): EngineOrder {
     checkOutcome: "confirm",
     receiptNo: null,
     receiptPrints: 0,
+    version: 0,
     code: null,
   };
 }
@@ -173,6 +174,7 @@ export function codeOrder(): EngineOrder {
     checkOutcome: "confirm",
     receiptNo: null,
     receiptPrints: 0,
+    version: 0,
     code: "LG-0044",
   };
 }

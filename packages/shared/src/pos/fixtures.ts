@@ -131,6 +131,7 @@ function fullOrder(
     voidApprovedBy: null,
     voidApprovalRequestId: null,
     voidOverrideId: null,
+    version: 0,
     ...input,
   } as Order;
 }

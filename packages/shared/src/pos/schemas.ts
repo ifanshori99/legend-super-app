@@ -292,6 +292,12 @@ export const posOrderShape = {
   voidApprovedBy: userIdSchema.nullable(),
   voidApprovalRequestId: approvalRequestIdSchema.nullable(),
   voidOverrideId: overrideIdSchema.nullable(),
+  /**
+   * legend-63l6: the optimistic-concurrency version (`pos_orders.version`),
+   * bumped by every write. Echo it back as `expectedVersion` (or `If-Match`)
+   * to refuse a stale write.
+   */
+  version: z.number().int().nonnegative(),
 };
 
 export const posOrderBaseSchema = z.strictObject(posOrderShape);

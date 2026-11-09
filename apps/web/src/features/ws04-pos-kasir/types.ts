@@ -395,6 +395,8 @@ export type EngineOrder = {
   checkOutcome: "confirm" | "fail";
   receiptNo: string | null;
   receiptPrints: number;
+  /** Mock of `pos_orders.version`: starts at 0, +1 per mock write. */
+  version: number;
   /** Code shown to customers ("LG-0044"), when the order came from a code. */
   code: string | null;
 };

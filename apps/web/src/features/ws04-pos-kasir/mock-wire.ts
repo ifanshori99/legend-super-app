@@ -165,6 +165,7 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
     voidApprovedBy: null,
     voidApprovalRequestId: null,
     voidOverrideId: null,
+    version: order.version,
     items: lines(order).map((item, index) => ({
       id: `01JBQ9C1${pad(idTail * 10 + index, 18)}`,
       tenantId,

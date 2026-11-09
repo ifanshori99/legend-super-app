@@ -86,7 +86,8 @@ export type Locked = { order: OrderRow; pos: PosRow };
 export type PosCaller = {
   readonly userId: UserId;
   readonly deviceId: string | null;
-  /** `If-Match` order version (legend-63l6); null when the client sent none. */
+  /** Order version the client expects (legend-63l6): body `expectedVersion`
+   * or `If-Match`; null when the client sent neither. */
   readonly expectedVersion: number | null;
 };
 
@@ -1009,6 +1010,7 @@ export async function orderDetail(
     voidApprovalRequestId:
       order.status === "voided" ? pos.voidApprovalRequestId : null,
     voidOverrideId: order.status === "voided" ? pos.voidOverrideId : null,
+    version: pos.version,
     items: items.map(({ item, pos: extra }) => {
       const voided = item.status === "voided";
       return {
