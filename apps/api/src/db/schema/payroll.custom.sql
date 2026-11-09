@@ -3,6 +3,13 @@
 -- Every table is tenant-owned: forced, restrictive tenant RLS (TEN-01/02).
 -- service_charge_pools carries outlet_id NOT NULL, so it also gets the TEN-03
 -- outlet backstop. Every CHECK / unique constraint lives in schema/payroll.ts.
+-- Restore FORCE on the parents lifted at the top of 0167 (legend-m007).
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.statutory_rates'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.payroll_policies'::regclass);

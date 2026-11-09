@@ -1,3 +1,13 @@
+-- legend-m007 pattern 2: the composite foreign keys below are added by
+-- ALTER TABLE and validate against FORCE RLS parents (employees,
+-- legal_entities, outlets). Lift FORCE for this transaction; it is restored
+-- at the start of the custom section (payroll.custom.sql).
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.legal_entities NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 CREATE TABLE "bank_transfer_files" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -368,6 +378,13 @@ CREATE INDEX "thr_schedules_tenant_holiday_idx" ON "thr_schedules" USING btree (
 -- Every table is tenant-owned: forced, restrictive tenant RLS (TEN-01/02).
 -- service_charge_pools carries outlet_id NOT NULL, so it also gets the TEN-03
 -- outlet backstop. Every CHECK / unique constraint lives in schema/payroll.ts.
+-- Restore FORCE on the parents lifted at the top of 0167 (legend-m007).
+ALTER TABLE public.employees FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.legal_entities FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.outlets FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.statutory_rates'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.payroll_policies'::regclass);
