@@ -527,3 +527,9 @@ Diperbarui 2026-11-09 oleh engineer WS-08. Commit lokal saja, belum push/merge.
 - Migrasi: `0138_panoramic_star_brand.sql` (DDL) dan `0139_auto_journals_backfill_rls.sql` (RLS + backfill), diregen dari `0113_auto_journals` + `0114_auto_journals_backfill_rls` di merge train batch7; 0138 dibungkus NO FORCE/FORCE `outlets`, 0139 `legal_entities`, `chart_of_accounts`, `account_mappings` (migrator tanpa BYPASSRLS, legend-wg5t).
 - Berikut: tunggu CTO. Slice 3 setelah batch 3/4 (QR kej3, total 0 fbms), slice 4 settlement + MDR, slice 5 setoran kas.
 - Biaya sesi ee66d9 (05:55-06:42 UTC): total biaya* 9262k (utama Opus 3374k, subagent Opus 3582k, Sonnet 2187k, Haiku 119k), 28 subagent, maks 4 paralel, rata 1.34 berjalan.
+
+## legend-o0w6: selisih tutup shift tidak lagi ikut event pos_override.recorded (engineer, cabang `ws/pos-drawer-guess`, 2026-11-09)
+
+- Bukti jalur: hari ini event ini tidak sampai ke perangkat kasir. Di cloud `cloud-sync` hanya sink lokal; di edge hanya diantre `edge_to_cloud`; cloud→edge hanya `qr_order.placed` (tes routing di `worker-transport.test.ts`).
+- Pertahanan berlapis: untuk `cash_shift_close`, `valueIdr` di payload event null (refine kontrak shared menolak angka). Audit supervisor dan baris override tetap menyimpan nilainya. Aksi lain tidak berubah. Tanpa bump versi: ingest edge→cloud hanya memeriksa envelope generik, jadi event lama tetap tersinkron.
+- Lanjutan: `legend-eadm` (P1, edge→cloud melempar `EdgeEventUnclassifiedError` untuk `pos_override.*`/`staff_pin.*`, terkait `legend-niq9`; event lama masih menyimpan angka di tabel outbox/antrean, hanya akses DB).

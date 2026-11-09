@@ -78,6 +78,44 @@ function orderEvent(
   };
 }
 
+/**
+ * legend-o0w6: a recorded override as the outbox holds it. A shift-close
+ * override carries no value (blind count variance), see
+ * staff-override-consumers.test.ts for the producer side.
+ */
+function overrideRecordedEvent(outletId: string): EventEnvelope {
+  const overrideId = createUlid();
+  clock += 1;
+  return {
+    id: createUlid(clock),
+    tenantId: tenantId as EventEnvelope["tenantId"],
+    outletId: outletId as EventEnvelope["outletId"],
+    name: "pos_override.recorded",
+    version: 1,
+    aggregateType: "pos_override",
+    // The envelope takes a UUID or a canonical ULID; ulidToUuid output is not
+    // a versioned UUID, so the ULID itself is used.
+    aggregateId: overrideId,
+    sequence: 1,
+    occurredAt: new Date(clock).toISOString(),
+    actor: { type: "user", id: randomUUID() },
+    deviceId: null,
+    idempotencyKey: `wt-override-${clock}`,
+    payloadSchemaRef: "pos_override.recorded.v1",
+    payload: {
+      overrideId,
+      action: "cash_shift_close",
+      method: "supervisor_pin",
+      requestedBy: randomUUID(),
+      approvedBy: randomUUID(),
+      valueIdr: null,
+      objectType: "pos_shift_count",
+      objectId: randomUUID(),
+      approvalRequestId: null,
+    },
+  } as unknown as EventEnvelope;
+}
+
 const route = (overrides: Partial<Record<string, string | null>> = {}) => ({
   destination: "cloud-sync",
   direction: null,
@@ -158,6 +196,19 @@ describe("legend-18qw worker transport (cloud)", () => {
       transport.deliverEvent(
         jobContext(),
         orderEvent(outletA, 1),
+        "key",
+        unusedTx,
+        route(),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("legend-o0w6 cloud: a pos_override.recorded row goes to the local sink and nothing is sent (no transaction is touched)", async () => {
+    // `unusedTx` is undefined: any queueing or delivery would throw.
+    await expect(
+      transport.deliverEvent(
+        jobContext(),
+        overrideRecordedEvent(outletA),
         "key",
         unusedTx,
         route(),
@@ -290,5 +341,25 @@ describe("legend-18qw worker transport (edge)", () => {
         route({ destination: "push" }),
       ),
     ).rejects.toThrow("Unsupported outbox destination");
+  });
+
+  it("legend-o0w6 edge: a pos_override.recorded row is queued edge_to_cloud only, never towards a device", async () => {
+    const transport = createBuiltinWorkerTransport({
+      database: db,
+      env: edgeEnv(edgeToken),
+    });
+    const context = jobContext();
+    const event = overrideRecordedEvent(outletA);
+    await withTenant(db, context, (tx) =>
+      transport.deliverEvent(context, event, event.id, tx, route()),
+    );
+    const rows = await withTenant(db, context, (tx) =>
+      tx.execute(
+        sql`SELECT direction, kind FROM edge_outbound_queue WHERE event_id = ${ulidToUuid(event.id)}::uuid`,
+      ),
+    );
+    expect(rows.rows).toEqual([
+      { direction: "edge_to_cloud", kind: "transaction_event" },
+    ]);
   });
 });

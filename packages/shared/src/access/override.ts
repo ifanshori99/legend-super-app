@@ -312,18 +312,36 @@ export const staffPinLockedEvent = defineDomainEvent({
   }),
 });
 
-/** AUTH-06: an approved override, with requester, approver and value. */
+/**
+ * AUTH-06: an approved override, with requester, approver and value. For
+ * `cash_shift_close` the value is the variance of the cashier's blind count,
+ * which is secret from the cashier (legend-o0w6): the event never carries it
+ * (`valueIdr` null). The value stays in the supervisor-only audit and the
+ * override row. The refine acts when the event is written; edge-to-cloud
+ * ingest checks only the generic envelope, so v1 rows written before this
+ * change (with the number) still sync, and still hold the number in the
+ * outbox, edge queue and conflict tables (database access only).
+ */
 export const posOverrideRecordedEvent = defineDomainEvent({
   name: "pos_override.recorded",
-  payload: z.strictObject({
-    overrideId: posOverrideIdSchema,
-    action: z.enum(POS_OVERRIDE_ACTIONS),
-    method: z.enum(POS_OVERRIDE_METHODS),
-    requestedBy: userIdSchema,
-    approvedBy: userIdSchema,
-    valueIdr: overrideValueSchema,
-    objectType: objectTypeSchema,
-    objectId: objectIdSchema,
-    approvalRequestId: z.uuid().toLowerCase().nullable(),
-  }),
+  payload: z
+    .strictObject({
+      overrideId: posOverrideIdSchema,
+      action: z.enum(POS_OVERRIDE_ACTIONS),
+      method: z.enum(POS_OVERRIDE_METHODS),
+      requestedBy: userIdSchema,
+      approvedBy: userIdSchema,
+      valueIdr: overrideValueSchema.nullable(),
+      objectType: objectTypeSchema,
+      objectId: objectIdSchema,
+      approvalRequestId: z.uuid().toLowerCase().nullable(),
+    })
+    .refine(
+      (payload) =>
+        payload.action !== "cash_shift_close" || payload.valueIdr === null,
+      {
+        message: "cash_shift_close must not carry valueIdr (blind count)",
+        path: ["valueIdr"],
+      },
+    ),
 });

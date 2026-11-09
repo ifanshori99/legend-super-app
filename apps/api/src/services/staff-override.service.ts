@@ -224,7 +224,8 @@ async function recordApprovedOverride(
       method: row.method,
       requestedBy: row.requestedBy,
       approvedBy: row.approvedBy,
-      valueIdr: row.valueIdr,
+      // Blind-count variance must not leave the audit (legend-o0w6).
+      valueIdr: row.action === "cash_shift_close" ? null : row.valueIdr,
       objectType: row.objectType,
       objectId: row.objectId,
       approvalRequestId: row.approvalRequestId,
