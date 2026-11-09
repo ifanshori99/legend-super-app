@@ -9,6 +9,7 @@ import type {
 import {
   fetchBankAccounts,
   fetchCashDeposits,
+  fetchFinancePolicy,
   fetchGatewaySettlements,
   fetchMatchJournals,
   fetchReconciliationCase,
@@ -34,6 +35,7 @@ export type StatementLineFilters = {
 
 export const cashBankKeys = {
   all: ["accounting", "cash-bank"] as const,
+  financePolicy: () => [...cashBankKeys.all, "finance-policy"] as const,
   bankAccounts: (legalEntityId: string) =>
     [...cashBankKeys.all, "bank-accounts", legalEntityId] as const,
   lines: () => [...cashBankKeys.all, "statement-lines"] as const,
@@ -61,6 +63,14 @@ export const cashBankKeys = {
   matchJournals: (legalEntityId: string, from: string, to: string) =>
     [...cashBankKeys.all, "match-journals", legalEntityId, from, to] as const,
 };
+
+export function financePolicyQuery() {
+  return queryOptions({
+    queryKey: cashBankKeys.financePolicy(),
+    queryFn: ({ signal }) => fetchFinancePolicy(signal),
+    staleTime: 5 * 60_000,
+  });
+}
 
 export function bankAccountsQuery(legalEntityId: string | undefined) {
   return queryOptions({

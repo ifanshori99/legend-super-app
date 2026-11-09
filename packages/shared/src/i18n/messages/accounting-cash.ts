@@ -147,6 +147,8 @@ export const accountingCashMessages = {
       errorDebitCredit: "Isi hanya salah satu dari debit atau kredit.",
       errorDescription: "Keterangan wajib diisi, maksimal 255 karakter.",
       errorReference: "Referensi maksimal 100 karakter.",
+      errorDedupeKey:
+        "Keterangan atau referensi terlalu panjang setelah dinormalisasi.",
       fixErrors: "Perbaiki {count} baris bermasalah sebelum mengimpor.",
       empty: "Tidak ada baris data yang bisa dibaca.",
     },
@@ -155,6 +157,11 @@ export const accountingCashMessages = {
     result:
       "Impor selesai: {count} baris, {duplicates} duplikat, {auto} cocok otomatis.",
     failed: "Impor gagal tersimpan. Periksa kembali berkas dan pemetaan kolom.",
+    error: {
+      valueTitle: "Berkas ditolak: ada nilai yang tidak bisa dibaca",
+      conflict:
+        "Sebagian mutasi di berkas ini sudah tercatat atau sudah dicocokkan. Muat ulang daftar mutasi lalu coba lagi.",
+    },
     back: "Kembali",
     next: "Lanjut",
   },

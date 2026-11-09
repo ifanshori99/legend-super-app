@@ -307,6 +307,93 @@ tenant, jadi resolusi per tenant cukup diganti di satu titik. Tingkat K
 Celah yang diketahui: DNS rebinding (butir 9) bila `undici` tidak tersedia;
 model tenant di luar daftar harga dihitung dengan harga Opus.
 
+## 2026-11-10: WS-07 cash & bank reconciliation (legend-fnxl)
+
+Context: PRD v1.7 §3.19 "Kas & Bank [P0]", ACC-04 (auto-match ≥ 99%, every
+difference a case with a PIC), ACC-05 (undeposited-cash alert). The contract
+(`packages/shared/src/accounting/banking.ts`, endpoints) already existed
+without tables or handlers. Kas-bank only; gateway/EDC settlement matching
+waits for legend-cs7 (card legend-fnxl.8). Reviewed by one architect
+subagent before the schema landed.
+
+1. **One migration, `0191_cash_bank_recon`** (`when` 1794270000000, prevId =
+   0186 snapshot). Every foreign key sits inside its `CREATE TABLE`
+   (contracts.md FK-into-FORCE pattern 1); tables are created in dependency
+   order. Tenant RLS on all seven tables; `cash_deposits` (outlet_id NOT
+   NULL) also gets outlet RLS. Bank accounts, imports, lines, matches and
+   cases (nullable outlet) rely on the service layer for outlet reach.
+2. **Entity-level work needs tenant scope.** Import, match, exclude, unmatch,
+   case open and bank-account writes call `assertTenantScope`: outlet RLS on
+   deposits would hide documents from an outlet-scoped caller and could turn
+   an ambiguous hit into a wrong automatic match.
+3. **Account numbers are sealed** (lib/secrets.ts AES-GCM, AAD binds tenant,
+   row, field and key version), indexed by a tenant-separated HMAC for
+   "one number per legal entity", and only the last 4 digits are kept in
+   clear for the mask. The GL account FK is (tenant, legal entity, account),
+   so a bank account cannot post to another entity's CoA.
+4. **Re-import adds nothing.** `bank_statement_lines` is UNIQUE (tenant, bank
+   account, `dedupe_key`); lines insert with ON CONFLICT DO NOTHING and the
+   skipped rows count as duplicates. The dedupe key keeps identical rows in
+   one file apart by occurrence. A file with one unreadable row is refused
+   whole, with a message naming the row and column.
+5. **One document, one line.** Matches live in `bank_statement_line_matches`
+   with UNIQUE (tenant, ref_type, ref_id), not in a jsonb column on the line.
+   A collision during auto-match is skipped (ON CONFLICT DO NOTHING); in a
+   manual match it is `STATEMENT_LINE_ALREADY_MATCHED`.
+6. **Automatic match never guesses.** Exact amount, date within the tenant's
+   `matchingPolicy.dateToleranceDays`, and unique both ways: the line has one
+   candidate (shared `findStatementMatch`) and the document is wanted by one
+   line. Candidates: `recorded` cash deposits into the account (local business
+   date in the outlet's time zone) and journals whose net movement on the
+   account's GL account equals the line, excluding reversals, reversed
+   entries, journals behind a cash deposit and write-off adjustment journals.
+   Matching runs over every unmatched line of the account after an import and
+   after a cash deposit is recorded, so late deposits still match.
+7. **Entity lock.** Every write that touches lines, matches or deposits takes
+   one advisory lock per (tenant, legal entity), then row locks. Journals
+   belong to the entity and its GL account, and two bank accounts may share a
+   GL account, so a per-account lock would let them race for one journal.
+8. **Cash collections are not stored.** ACC-05 collections are derived from
+   closed `pos_shifts` per (outlet, business date):
+   `cash_sales − cash_refunds − cash_out + variance`, floored at 0. The
+   variance (counted minus expected) is in, so a short shift does not show
+   cash that never existed as undeposited, and extra cash does show. Cash
+   drops stay in the outlet (not banked) and cash in is float, so neither
+   counts. Deposits in every status cover cash
+   FIFO (shared `undepositedCashAlerts`); alerts are computed on read with
+   `loadCashDepositPolicy`, no alert table.
+9. **Cases** live in `bank_reconciliation_cases` (the gateway-specific
+   `payment_reconciliation_cases` is untouched). Every action (open, start,
+   reassign, resolve, write_off) writes one row in the append-only
+   `bank_reconciliation_case_events` (the app role has no UPDATE/DELETE).
+   A write-off only links an existing journal (same entity, not reversed,
+   debit total = |difference|, used by one case: partial unique index); this
+   bead posts nothing (legend-9pz9 owns automatic journals).
+10. **Case due date is a server default of 7 days** (`reconciliationPolicySchema`)
+    until the finance policy carries `caseDueDays`: adding it now would change
+    the strict PUT contract. Follow-up card filed.
+11. **A line in a case stays `in_case` after the case closes.** Resolving or
+    writing off the case is how that line is reconciled; unmatch refuses
+    `in_case` lines, and deposits in a case stay `discrepancy`. Refs of type
+    `gateway_settlement`, `edc_settlement` and `supplier_payment` are stored
+    on a case as given until legend-cs7 can validate them; nothing acts on them.
+12. **An unmatched pair is never auto-matched again.** Unmatch writes the
+    (line, document) pair to `bank_statement_match_rejections`; automatic
+    matching skips it. A person can still match that pair by hand, which
+    clears the row (review finding, 2026-11-10).
+13. **Uniqueness is counted per GL account, not per bank account.** Two bank
+    accounts of one entity may share a GL account, so the "only one line
+    wants this document" test counts candidate lines of every bank account on
+    that GL account. A document named in a case that is still open is no
+    candidate, cannot be matched by hand, and a case cannot name a document
+    that is already matched (one document, one place).
+14. **Opening a case is idempotent** (`idempotencyKey` added to the
+    open-case body, stored in `bank_reconciliation_cases.idempotency_key`),
+    like every other cash-bank command.
+15. **The dedupe key keeps its readable format** (the web preview compares
+    keys); a row whose normalized key exceeds 400 characters is refused with
+    STATEMENT_VALUE_INVALID instead of failing the insert.
+
 ## 2026-11-10: Metric sources, metrics_daily and report runs (legend-5wzoc, legend-31fi)
 
 Context: founder Q54 puts all 110 standard reports and 89 metrics in scope

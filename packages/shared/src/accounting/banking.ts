@@ -614,4 +614,5 @@ export const openReconciliationCaseInputSchema = z.strictObject({
   differenceIdr: nonZeroIdr,
   ownerId: userIdSchema,
   refs: z.array(reconciliationRefSchema).min(1).max(50),
+  idempotencyKey: idempotencyKeySchema,
 });
