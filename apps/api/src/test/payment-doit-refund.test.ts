@@ -566,8 +566,15 @@ describe("DOIT refund: 2xx responses", () => {
     });
     await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
 
+    // A canonical integer string is read (the DOIT replay sends one, legend-0yd1),
+    // so a different string amount or a non-canonical one is still unknown.
     route = refundRoute({
-      json: refundObject({ amount: "50000", status: "succeeded" }),
+      json: refundObject({ amount: "25000", status: "succeeded" }),
+    });
+    await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
+
+    route = refundRoute({
+      json: refundObject({ amount: "50000.0", status: "succeeded" }),
     });
     await expectUnknownOutcome(makeGateway().gateway.refund(refundRequest()));
   });

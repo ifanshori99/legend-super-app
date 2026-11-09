@@ -7,10 +7,17 @@
 // kept, bounded and normalised, so a stored row re-parses to the same facts
 // (the worker retry reads the stored payload) and no unknown field is stored.
 //
+// Seen in the DOIT sandbox (legend-0yd1, 9 Nov 2026): `refund.succeeded` has a
+// flat `data` `{ amount, refund_id, payment_id }`, no refund object, no
+// idempotency key and no payment object.
+//
 // Pure: no database, no logging.
 
 import { z } from "zod";
-import { doitPaymentStatusSchema } from "./payment-doit-wire";
+import {
+  doitPaymentStatusSchema,
+  parseDoitIntegerString,
+} from "./payment-doit-wire";
 
 export const DOIT_REFUND_EVENT_TYPES = [
   "refund.succeeded",
@@ -47,6 +54,8 @@ export type DoitRefundFacts = {
   amountIdr?: number;
   failureCode?: string;
   payment?: DoitRefundPaymentFacts;
+  /** Provider payment id named by a flat `payment_id` (no payment object). */
+  paymentId?: string;
 };
 
 const textSchema = z.string().min(1).max(100);
@@ -63,7 +72,10 @@ function text(value: unknown): string | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/** An integer amount, or a canonical integer string ("4000") as DOIT sends on
+ * a replay; any other string is dropped. */
 function amount(value: unknown): number | undefined {
+  if (typeof value === "string") return parseDoitIntegerString(value);
   const parsed = amountSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
@@ -104,7 +116,10 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
   const facts: DoitRefundFacts = {};
   const key = text(record.idempotency_key) ?? text(refund.idempotency_key);
   if (key) facts.idempotencyKey = key;
-  const refundId = text(refund.id) ?? (isRefundObject ? text(record.id) : null);
+  const refundId =
+    text(refund.id) ??
+    (isRefundObject ? text(record.id) : undefined) ??
+    (paymentShaped ? undefined : text(record.refund_id));
   if (refundId) facts.refundId = refundId;
   const refundAmount =
     amount(refund.amount) ??
@@ -114,6 +129,8 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
     failureCode(refund.failure_code) ?? failureCode(record.failure_code);
   if (code) facts.failureCode = code;
   if (payment) facts.payment = payment;
+  const paymentId = paymentShaped ? undefined : text(record.payment_id);
+  if (paymentId) facts.paymentId = paymentId;
   return facts;
 }
 
@@ -143,6 +160,7 @@ export const doitRefundWebhookEventSchema =
     const data: Record<string, unknown> = { refund };
     if (facts.idempotencyKey) data.idempotency_key = facts.idempotencyKey;
     if (facts.payment) data.payment = facts.payment;
+    if (facts.paymentId) data.payment_id = facts.paymentId;
     return {
       id: event.id,
       type: event.type,

@@ -817,6 +817,63 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
 });
 
 // ---------------------------------------------------------------------------
+// legend-0yd1: the flat refund.succeeded the DOIT sandbox really sends
+// `{ amount, refund_id, payment_id }` (no refund object, no key, no payment)
+// ---------------------------------------------------------------------------
+
+describe("legend-0yd1 PAY-04 the sandbox's flat refund.succeeded closes the refund", () => {
+  it("PAY-04 refund_id finds the approved refund holding that provider ref and completes it", async () => {
+    const intent = await seedPaidIntent();
+    const knownRef = `rf_${hex(6)}`;
+    const refundId = await seedRefund(intent, {
+      attempts: 1,
+      providerRef: knownRef,
+    });
+    const body = refundEvent("refund.succeeded", {
+      amount: intent.amountIdr,
+      refund_id: knownRef,
+      payment_id: intent.paymentId,
+    });
+
+    const response = await deliver(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("processed");
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "completed",
+      provider_ref: knownRef,
+    });
+    expect(await intentStatus(intent.intentId)).toBe("refunded");
+  });
+
+  it("PAY-04 a payment_id that is not the refund's payment is a REFERENCE_MISMATCH and changes nothing", async () => {
+    const intent = await seedPaidIntent();
+    const knownRef = `rf_${hex(6)}`;
+    const refundId = await seedRefund(intent, {
+      attempts: 1,
+      providerRef: knownRef,
+    });
+    const body = refundEvent("refund.succeeded", {
+      amount: intent.amountIdr,
+      refund_id: knownRef,
+      payment_id: `dp_${hex(8)}`,
+    });
+
+    const response = await deliver(body);
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("ignored");
+    expect(await eventRows(body.id)).toEqual([
+      expect.objectContaining({
+        status: "ignored",
+        last_error_code: "REFERENCE_MISMATCH",
+      }),
+    ]);
+    expect((await refundRow(refundId)).status).toBe("approved");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Path c: a refund.succeeded that carries only the refunded payment object
 // ---------------------------------------------------------------------------
 
