@@ -107,6 +107,10 @@ const edgeRuntime = parseEdgeRuntimeConfig(process.env);
 const postsInventoryGl = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // legend-v3vo: e-receipt links resolve on the cloud only; same fail-closed rule.
 const sendsReceiptEmails = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
+// legend-jm5c: refunds are cloud-only. An edge worker must neither pay out nor
+// escalate them (duplicate alerts, provider calls from the edge); same
+// fail-closed rule.
+const sweepsRefunds = edgeRuntime.ok && !edgeRuntime.config.edgeMode;
 // RSV-02 (legend-t8bz): DP links go through WS-05; fails closed while no
 // payment gateway is installed.
 setReservationDepositPort(createPaymentReservationDepositPort());
@@ -555,7 +559,9 @@ async function stopRefundPayoutSweep() {
 try {
   await runtime.start();
   await relay.start();
-  scheduleRefundPayoutRound();
+  if (sweepsRefunds) {
+    scheduleRefundPayoutRound();
+  }
 } catch (error) {
   refundSweepStopped = true;
   await runtime.stop().catch(() => {});
