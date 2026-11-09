@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
-import { API_URL, headers, PASSWORD, setRole, signUp } from "./helpers";
+import {
+  API_URL,
+  headers,
+  PASSWORD,
+  setPlatformAdmin,
+  setRole,
+  signUp,
+  verifySessionMfa,
+} from "./helpers";
 
 test("admin endpoints answer 401 without a session and 403 for the default role", async ({
   request,
@@ -51,6 +59,8 @@ test("the admin page renders only for a permitted role and can delete any note",
   await expect(page.getByText("Every account’s notes")).toHaveCount(0);
 
   await setRole(email, "admin");
+  await setPlatformAdmin(email);
+  await verifySessionMfa(email);
   await page.goto("/admin");
   await expect(
     page.getByRole("heading", { name: "Every account’s notes" }),
