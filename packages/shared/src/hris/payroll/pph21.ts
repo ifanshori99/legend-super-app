@@ -49,13 +49,17 @@
 //   refund = T, the deposit.
 // - W never exceeds the pay left: cap = gross lines + U + N - employee JHT/JP
 //   (lowered by `employeeWithholdingCapIdr` when given). The employee charge
-//   above the cap (excess) moves to the employer: borne when the employer's
-//   net stays >= 0 (so it enters X), else it only lowers the employer refund
-//   (bead legend-4ndx). Excess 0: the result is unchanged.
+//   above the cap (excess) moves to the employer, applied in every period
+//   (TER months too). Where the employer's net stays >= excess it is borne
+//   (enters X) and reported as `pph21CapExcessIdr`; a later annual
+//   recalculation counts that part as tax the employee already paid, so it is
+//   never charged back. Otherwise the excess first cancels the employer's
+//   credit (lower employer refund) (bead legend-4ndx). Excess 0: the result
+//   is unchanged.
 // S is the least fixed point of S = max(0, Dr(X(S)) + employer balance +
 // excess(X(S))), iterated from 0 (monotone, so it rises to the least
-// solution). A = (S - excess) x U / (U + N), B = the rest: the excess is
-// always borne, never a tax allowance. Withheld = W + A, so the employee's
+// solution). A = (S - excess) x U / (U + N), capped at the employer's own
+// net, B = the rest: the excess never becomes a tax allowance. Withheld = W + A, so the employee's
 // take-home is exactly G + U + N - W + employee refund: the allowance
 // cancels out.
 
@@ -138,6 +142,14 @@ export type Pph21PeriodInput = {
      * company paid for it, so it counts as employer tax like the borne tax.
      */
     taxAllowanceIdr?: Idr | number;
+    /**
+     * Part of `pph21EmployerBorneIdr` that was the employee's own tax taken
+     * over by the employer because the pay left was too small (results'
+     * `pph21CapExcessIdr`, default 0). The benefit was taxed in X, so the
+     * annual recalculation counts it as tax the employee already paid: it is
+     * never charged back to the employee (bead legend-4ndx).
+     */
+    pph21CapExcessIdr?: Idr | number;
   };
 };
 
@@ -176,6 +188,12 @@ export type Pph21PeriodResult = {
   pph21RefundIdr: Idr;
   /** Lebih potong that returns to the employer (tax it bore). */
   pph21EmployerRefundIdr: Idr;
+  /**
+   * Part of `pph21EmployerBorneIdr` that is the employee's own tax above the
+   * withholding cap, taken over by the employer (bead legend-4ndx). Pass the
+   * sum of earlier periods as `prior.pph21CapExcessIdr`.
+   */
+  pph21CapExcessIdr: Idr;
   /**
    * The no-tax-id rule applies in this period (no tax id, the table has a
    * surcharge and the policy surcharges this method), even when the base tax
@@ -401,7 +419,17 @@ export function computePph21Period(
     throw new RangeError(
       "prior.taxAllowanceIdr is required for a history with employer-scheme pay",
     );
-  const priorEmployerTax = priorBorne + (priorAllowance ?? 0n);
+  // Borne tax that was the employee's own above the cap (bead legend-4ndx)
+  // counts as the employee's tax paid, so December never charges it back.
+  const priorCapExcess = nonNegativeInt(
+    input.prior.pph21CapExcessIdr ?? 0,
+    "prior.pph21CapExcessIdr",
+  );
+  if (priorCapExcess > priorBorne)
+    throw new RangeError(
+      "prior.pph21CapExcessIdr exceeds prior.pph21EmployerBorneIdr",
+    );
+  const priorEmployerTax = priorBorne - priorCapExcess + (priorAllowance ?? 0n);
   const priorEmployeeTax = priorTax - priorEmployerTax;
 
   const status = withholdingStatusOf(input.ptkpStatus, policy);
@@ -580,6 +608,9 @@ export function computePph21Period(
     if (allowance > ownNet) allowance = ownNet > 0n ? ownNet : 0n;
     borne = employerNet - allowance;
   } else employerRefund = -employerNet;
+  // The borne part that is the employee's tax above the cap; the rest of the
+  // excess (0 <= employer net < excess) only cancelled an employer credit.
+  const capExcess = employerNet >= 0n ? (excess < borne ? excess : borne) : 0n;
   const withheld = w + allowance;
 
   return {
@@ -594,6 +625,7 @@ export function computePph21Period(
     pph21EmployerBorneIdr: toIdr(borne),
     pph21RefundIdr: toIdr(employeeRefund),
     pph21EmployerRefundIdr: toIdr(employerRefund),
+    pph21CapExcessIdr: toIdr(capExcess),
     noTaxIdSurchargeApplied: surchargeApplies,
     annual: period.annual,
   };

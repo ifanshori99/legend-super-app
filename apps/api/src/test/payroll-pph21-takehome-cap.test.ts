@@ -1,29 +1,36 @@
-// PPh 21 take-home cap in the last tax period (beads legend-4ndx; brief
+// PPh 21 take-home cap (beads legend-4ndx; brief
 // docs/briefs/sub-pph21-takehome-cap.md).
 //
-// Seeded property test: builds a year month by month (TER months, the prior
-// accumulated from each month's result, grossSchemeBaseIdr from
-// pph21GrossSchemeBase, employerSchemeBaseIdr = taxable gross - gross base),
-// then computes December (lastTaxPeriod) and checks, for both
+// Seeded property tests: build a year month by month (TER months, then
+// December as lastTaxPeriod), the prior accumulated from each month's result
+// (including pph21CapExcessIdr), grossSchemeBaseIdr from pph21GrossSchemeBase,
+// employerSchemeBaseIdr = taxable gross - gross base. The cap applies in every
+// period, TER months too, so the fuzz checks every month of the year, for both
 // mixedSchemeAllocation policies:
 //   1. employee withheld W = pph21WithheldIdr - taxAllowanceIdr <= cap, where
 //      cap = max(0, sum of gross + gross_up + net line amounts - deductible),
 //      lowered by employeeWithholdingCapIdr when the caller gives one;
 //   2. withheld + employer borne - refund - employer refund = pph21Idr;
 //   3. take-home = pay - W + refund - employeeDeductible >= 0;
-//   4. refunds >= 0 and no payer is both charged and refunded.
-// Fixed cases (CTO S2, architect C2, caller cap lower / higher than the
-// default) pin the exact amounts, hand computed in the comments below from the
-// brief's decisions (W capped at the available pay, the excess is the
-// company's: borne when the employer's net stays >= 0, else it only lowers the
-// employer refund).
+//   4. refunds >= 0 and no payer is both charged and refunded;
+//   5. pph21CapExcessIdr <= pph21EmployerBorneIdr (and >= 0).
+// The year fuzz also has months with only an employer benefit (no salary, cap
+// 0, so the employee's tax is taken over by the company in a TER month) and
+// months with a benefit beside the lines. Fixed cases (CTO S2, architect C2,
+// reviewer K1, caller cap lower / higher than the default) pin the exact
+// amounts, hand computed in the comments below from the brief's decisions (W
+// capped at the available pay, the excess is the company's: borne when the
+// employer's net stays >= 0, else it only lowers the employer refund; borne
+// excess counts as tax the employee already paid, so December never charges it
+// back).
 //
 // Assumptions (spec silent): a caller cap above the default cap changes nothing
-// (the input can only lower the cap); "pay" is the sum of December line amounts (the
-// cap's own base); a payer is "charged" in December when its withheld (net of
-// the allowance for the employee) or borne tax is > 0; the per-month
+// (the input can only lower the cap); "pay" is the sum of the period's line
+// amounts (the cap's own base); a payer is "charged" in a period when its
+// withheld (net of the allowance for the employee) or borne tax is > 0; the
 // employeeDeductibleIdr is the same in each month of a case (and deducted from
-// December's pay on the same footing).
+// the pay on the same footing), except that a month without salary has none
+// (a BPJS deduction needs pay to come out of).
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PPH21_POLICY,
@@ -74,15 +81,32 @@ type Outcome = {
   x: number;
   borne: number;
   allowance: number;
+  capExcess: number;
 };
 
-function runYear(
-  months: readonly Month[],
-  december: Month,
+/** One month: its lines plus the optional extras the fuzz and K1 need. */
+type Spec = {
+  lines: Month;
+  benefitIdr?: number;
+  /** Scheme of the agreement, needed for a month with only a benefit. */
+  contract?: Scheme;
+  /** Overrides the case's deductible (a month without pay has none). */
+  deductibleIdr?: number;
+  /** employeeWithholdingCapIdr of a TER month (December takes the argument). */
+  capIdr?: number;
+};
+
+const asSpec = (month: Month | Spec): Spec =>
+  Array.isArray(month) ? { lines: month } : month;
+
+/** All twelve periods of the year: index 0..10 TER months, 11 December. */
+function simulate(
+  months: readonly (Month | Spec)[],
+  december: Month | Spec,
   deductibleIdr: number,
   allocation: Pph21PolicyParameters["mixedSchemeAllocation"],
   callerCapIdr?: number,
-): Outcome {
+): Outcome[] {
   const policy = policyOf(allocation);
   const prior = {
     taxableGrossIdr: 0,
@@ -90,66 +114,95 @@ function runYear(
     pph21WithheldIdr: 0,
     pph21EmployerBorneIdr: 0,
     taxAllowanceIdr: 0,
+    pph21CapExcessIdr: 0,
     grossSchemeBaseIdr: 0,
     employerSchemeBaseIdr: 0,
   };
-  months.forEach((lines, index) => {
+  const outcomes: Outcome[] = [];
+  const run = (
+    spec: Spec,
+    lastTaxPeriod: boolean,
+    monthsWorked: number,
+    capArg: number | undefined,
+  ) => {
+    const deductible = spec.deductibleIdr ?? deductibleIdr;
+    const benefit = spec.benefitIdr ?? 0;
     const r = computePph21Period(REFERENCE_TABLES, policy, {
       ptkpStatus: "TK/0",
       hasTaxId: true,
-      lastTaxPeriod: false,
-      monthsWorked: index + 1,
-      taxableLines: lines,
-      employerBenefitIdr: 0,
-      employeeDeductibleIdr: deductibleIdr,
+      lastTaxPeriod,
+      monthsWorked,
+      taxableLines: spec.lines,
+      employerBenefitIdr: benefit,
+      ...(spec.contract === undefined
+        ? {}
+        : { contractTaxScheme: spec.contract }),
+      employeeDeductibleIdr: deductible,
+      ...(capArg === undefined ? {} : { employeeWithholdingCapIdr: capArg }),
       prior: { ...prior },
     });
-    const grossBase = Number(pph21GrossSchemeBase(lines, 0));
+    const pay = spec.lines.reduce((sum, line) => sum + line.amountIdr, 0);
+    const w = r.pph21WithheldIdr - r.taxAllowanceIdr;
+    const refund = r.pph21RefundIdr;
+    const employerRefund = r.pph21EmployerRefundIdr;
+    outcomes.push({
+      pay,
+      cap: Math.min(
+        Math.max(0, pay - deductible),
+        capArg ?? Number.MAX_SAFE_INTEGER,
+      ),
+      w,
+      taxIdr: r.pph21Idr,
+      deposit:
+        r.pph21WithheldIdr + r.pph21EmployerBorneIdr - refund - employerRefund,
+      takeHome: pay - w + refund - deductible,
+      refund,
+      employerRefund,
+      x: r.taxableGrossIdr,
+      borne: r.pph21EmployerBorneIdr,
+      allowance: r.taxAllowanceIdr,
+      capExcess: r.pph21CapExcessIdr,
+      chargedAndRefunded:
+        (refund > 0 && w > 0) ||
+        (employerRefund > 0 && r.pph21EmployerBorneIdr > 0),
+    });
+    const grossBase = Number(
+      pph21GrossSchemeBase(spec.lines, benefit, spec.contract),
+    );
     prior.taxableGrossIdr += r.taxableGrossIdr;
-    prior.employeeDeductibleIdr += deductibleIdr;
+    prior.employeeDeductibleIdr += deductible;
     prior.pph21WithheldIdr += r.pph21WithheldIdr;
     prior.pph21EmployerBorneIdr += r.pph21EmployerBorneIdr;
     prior.taxAllowanceIdr += r.taxAllowanceIdr;
+    prior.pph21CapExcessIdr += r.pph21CapExcessIdr;
     prior.grossSchemeBaseIdr += grossBase;
     prior.employerSchemeBaseIdr += r.taxableGrossIdr - grossBase;
-  });
-  const r = computePph21Period(REFERENCE_TABLES, policy, {
-    ptkpStatus: "TK/0",
-    hasTaxId: true,
-    lastTaxPeriod: true,
-    monthsWorked: 12,
-    taxableLines: december,
-    employerBenefitIdr: 0,
-    employeeDeductibleIdr: deductibleIdr,
-    ...(callerCapIdr === undefined
-      ? {}
-      : { employeeWithholdingCapIdr: callerCapIdr }),
-    prior: { ...prior },
-  });
-  const pay = december.reduce((sum, line) => sum + line.amountIdr, 0);
-  const w = r.pph21WithheldIdr - r.taxAllowanceIdr;
-  const refund = r.pph21RefundIdr;
-  const employerRefund = r.pph21EmployerRefundIdr;
-  return {
-    pay,
-    cap: Math.min(
-      Math.max(0, pay - deductibleIdr),
-      callerCapIdr ?? Number.MAX_SAFE_INTEGER,
-    ),
-    w,
-    taxIdr: r.pph21Idr,
-    deposit:
-      r.pph21WithheldIdr + r.pph21EmployerBorneIdr - refund - employerRefund,
-    takeHome: pay - w + refund - deductibleIdr,
-    refund,
-    employerRefund,
-    x: r.taxableGrossIdr,
-    borne: r.pph21EmployerBorneIdr,
-    allowance: r.taxAllowanceIdr,
-    chargedAndRefunded:
-      (refund > 0 && w > 0) ||
-      (employerRefund > 0 && r.pph21EmployerBorneIdr > 0),
   };
+  months.forEach((month, index) => {
+    const spec = asSpec(month);
+    run(spec, false, index + 1, spec.capIdr);
+  });
+  run(asSpec(december), true, 12, callerCapIdr);
+  return outcomes;
+}
+
+/** December only (the case the earlier rounds of this file pinned). */
+function runYear(
+  months: readonly (Month | Spec)[],
+  december: Month | Spec,
+  deductibleIdr: number,
+  allocation: Pph21PolicyParameters["mixedSchemeAllocation"],
+  callerCapIdr?: number,
+): Outcome {
+  const outcome = simulate(
+    months,
+    december,
+    deductibleIdr,
+    allocation,
+    callerCapIdr,
+  ).at(-1);
+  if (outcome === undefined) throw new Error("no outcome");
+  return outcome;
 }
 
 function violationsOf(o: Outcome): string[] {
@@ -161,6 +214,8 @@ function violationsOf(o: Outcome): string[] {
   if (o.refund < 0 || o.employerRefund < 0)
     found.push(`negative refund ${o.refund} / ${o.employerRefund}`);
   if (o.chargedAndRefunded) found.push("a payer is charged and refunded");
+  if (o.capExcess < 0 || o.capExcess > o.borne)
+    found.push(`cap excess ${o.capExcess} outside 0..borne ${o.borne}`);
   return found;
 }
 
@@ -270,6 +325,78 @@ describe("legend-4ndx: December take-home cap with a caller cap (seeded fuzz)", 
         bad,
         `${bad.length} of ${CASES} cases violate an invariant (${allocation}, caller cap). First: ${bad[0] ?? "none"}`,
       ).toEqual([]);
+    });
+  }
+});
+
+// A year with employer benefits and months without salary, so the cap bites in
+// TER months and the prior carries pph21CapExcessIdr into December.
+function randomBenefitYear(next: () => number) {
+  const base = randomCase(next);
+  const payOf = (lines: Month) =>
+    lines.reduce((sum, line) => sum + line.amountIdr, 0);
+  const benefitOnly = (): Spec => ({
+    lines: [],
+    benefitIdr: roundTo(100_000 + next() * 7_900_000, 1_000),
+    contract: SCHEMES[Math.floor(next() * SCHEMES.length)]!,
+    deductibleIdr: 0,
+  });
+  const months: Spec[] = base.months.map((lines) => {
+    const roll = next();
+    if (roll < 0.2) return benefitOnly();
+    const spec: Spec = { lines };
+    if (roll < 0.55)
+      spec.benefitIdr = roundTo(50_000 + next() * 450_000, 1_000);
+    if (next() < 0.25) {
+      const defaultCap = Math.max(0, payOf(lines) - base.deductibleIdr);
+      spec.capIdr = roundTo(next() * defaultCap, 1_000);
+    }
+    return spec;
+  });
+  const roll = next();
+  const december: Spec =
+    roll < 0.1
+      ? benefitOnly()
+      : roll < 0.4
+        ? {
+            lines: base.december,
+            benefitIdr: roundTo(50_000 + next() * 450_000, 1_000),
+          }
+        : { lines: base.december };
+  return { months, december, deductibleIdr: base.deductibleIdr };
+}
+
+describe("legend-4ndx: the cap holds in every month, benefit-only months included (seeded fuzz)", () => {
+  for (const allocation of ALLOCATIONS) {
+    it(`each of the 12 periods keeps W <= cap, deposit = tax, take-home >= 0, refunds >= 0, cap excess <= borne (${allocation})`, () => {
+      const next = prng(SEED + 2);
+      const bad: string[] = [];
+      let capBitInTerMonth = 0;
+      for (let index = 0; index < CASES; index += 1) {
+        const c = randomBenefitYear(next);
+        const outcomes = simulate(
+          c.months,
+          c.december,
+          c.deductibleIdr,
+          allocation,
+        );
+        outcomes.forEach((o, month) => {
+          if (month < 11 && o.capExcess > 0) capBitInTerMonth += 1;
+          const found = violationsOf(o);
+          if (found.length > 0)
+            bad.push(
+              `month ${month + 1}: ${found.join("; ")} | case ${index}: deductible ${c.deductibleIdr}, months ${JSON.stringify(
+                c.months,
+              )}, december ${JSON.stringify(c.december)}`,
+            );
+        });
+      }
+      expect(
+        bad,
+        `${bad.length} period results violate an invariant (${allocation}, year fuzz). First: ${bad[0] ?? "none"}`,
+      ).toEqual([]);
+      // Guard against a fuzz that never reaches the case it is for.
+      expect(capBitInTerMonth).toBeGreaterThan(0);
     });
   }
 });
@@ -406,4 +533,120 @@ describe("legend-4ndx: C2 (TK/0, gross 10 jt Jan-Nov, December gross 200_000) fo
       expect(o.borne).toBe(141_200);
     });
   }
+});
+
+describe("legend-4ndx: K1 (reviewer round 1) a TER-month cap excess is not charged back in December", () => {
+  // TK/0 with a tax id. January: no salary, only an employer benefit of
+  // 8_000_000 under a `gross` agreement (cap 0: the employee has no pay to
+  // withhold from). February-December: gross 10_000_000 a month, no benefit,
+  // no deductible.
+  //
+  // January (TER A, 1.5% for X between 7_500_000 and 8_550_000). Fixed point on
+  // the employer-covered tax S, X = 8_000_000 + S:
+  //   S0=0         X 8_000_000: tax 120_000
+  //   S1=120_000   X 8_120_000: tax 121_800
+  //   S2=121_800   X 8_121_800: tax 121_827
+  //   S3=121_827   X 8_121_827: tax 121_827 (121_827.405 rounds down), stable.
+  // The whole benefit is the employee's scheme, so the tax splits by their
+  // share of X, the employee's part being above the cap 0 (the excess):
+  //   proportional: floor(121_827 x 8_000_000 / 8_121_827) = 119_999
+  //   gross_first : min(tax of 8_000_000 alone = 120_000, 121_827) = 120_000
+  // The company takes over that excess: W = 0, borne B = 121_827 = T, and
+  // pph21CapExcessIdr = the excess (119_999 / 120_000). Gross scheme base
+  // 8_000_000, employer scheme base 121_827.
+  //
+  // February-November: X = 10_000_000, TER 2% => 200_000 withheld each (ten
+  // months, 2_000_000). Prior at December: X 108_121_827, withheld 2_000_000,
+  // borne 121_827, cap excess E1, gross base 108_000_000, employer base 121_827.
+  // priorTax 2_121_827. The cap excess counts as the employee's own tax paid
+  // (reviewer fix, variant C): prior employer tax = 121_827 - E1 (no allowance).
+  //
+  // December: annual(108_121_827) = cost 5_406_091, net 102_715_736, PKP
+  // 48_715_000, 5% = 2_435_750, so H = 2_435_750 - 2_121_827 = 313_923.
+  // Both policies: the employer's balance only covers its own (tiny) share.
+  //
+  // proportional (E1 = 119_999): prior employer tax 1_828, employee tax
+  //   2_119_999. employer balance = floor(2_435_750 x 121_827 / 108_121_827) -
+  //   1_828 = 2_744 - 1_828 = 916, employee balance = 313_923 - 916 = 313_007.
+  //   Fixed point on S (X = 10_000_000 + S, December tax T = annual - 2_121_827,
+  //   D = T - H, employee part floor(D x 10_000_000 / X)):
+  //   S0=0: T 788_923, D 475_000, employee 475_000, employer 0 -> 916
+  //   S1=916: X 10_000_916, T 788_973 (PKP 58_216_000, 5% 2_910_800), D 475_050,
+  //     employee 475_006, employer 44 -> 960
+  //   S2=960: X 10_000_960, employee 475_004, employer 46 -> 962
+  //   S3=962: X 10_000_962, employee 475_004, employer 46 -> 962 stable.
+  //   X 10_000_962, T 788_973, W = 475_004 + 313_007 = 788_011, B = 962 (every
+  //   gross-scheme month, so no allowance), no refund. Before the fix the
+  //   excess counted as the company's tax, the employee was charged it back and
+  //   W was 908_006.
+  //
+  // gross_first (E1 = 120_000): prior employer tax 1_827, employee tax
+  //   2_120_000; annual(108_000_000) = 2_430_000, so employer balance =
+  //   313_923 - (2_430_000 - 2_120_000) = 3_923, employee balance 310_000.
+  //   The employee's own added tax is that of 10_000_000 alone: 475_000.
+  //   S0=0: employer 3_923; S1=3_923: X 10_003_923, T 789_123, D 475_200,
+  //   employee 475_000, employer 200 -> 4_123; stable at S=4_123 (T 789_123).
+  //   X 10_004_123, T 789_123, W = 475_000 + 310_000 = 785_000, B = 4_123.
+  const january: Spec = {
+    lines: [],
+    benefitIdr: 8_000_000,
+    contract: "gross",
+  };
+  const months: Spec[] = [
+    january,
+    ...Array.from({ length: 10 }, (): Spec => ({
+      lines: [{ amountIdr: 10_000_000, taxScheme: "gross" }],
+    })),
+  ];
+  const december: Month = [{ amountIdr: 10_000_000, taxScheme: "gross" }];
+
+  it("proportional: January the company takes over 119_999; December W 788_011, B 962, no charge back", () => {
+    const all = simulate(months, december, 0, "proportional");
+    const [jan, , , , , , , , , , , dec] = all;
+    if (jan === undefined || dec === undefined) throw new Error("no outcome");
+    for (const o of all) expect(violationsOf(o)).toEqual([]);
+    expect(jan.cap).toBe(0);
+    expect(jan.x).toBe(8_121_827);
+    expect(jan.taxIdr).toBe(121_827);
+    expect(jan.w).toBe(0);
+    expect(jan.allowance).toBe(0);
+    expect(jan.borne).toBe(121_827);
+    expect(jan.capExcess).toBe(119_999);
+    expect(jan.takeHome).toBe(0);
+    expect(dec.x).toBe(10_000_962);
+    expect(dec.taxIdr).toBe(788_973);
+    expect(dec.w).toBe(788_011);
+    expect(dec.borne).toBe(962);
+    expect(dec.allowance).toBe(0);
+    expect(dec.refund).toBe(0);
+    expect(dec.employerRefund).toBe(0);
+    expect(dec.capExcess).toBe(0);
+    expect(dec.deposit).toBe(788_973);
+    expect(dec.takeHome).toBe(10_000_000 - 788_011);
+  });
+
+  it("gross_first: January the company takes over 120_000; December W 785_000, B 4_123, no charge back", () => {
+    const all = simulate(months, december, 0, "gross_first");
+    const [jan, , , , , , , , , , , dec] = all;
+    if (jan === undefined || dec === undefined) throw new Error("no outcome");
+    for (const o of all) expect(violationsOf(o)).toEqual([]);
+    expect(jan.cap).toBe(0);
+    expect(jan.x).toBe(8_121_827);
+    expect(jan.taxIdr).toBe(121_827);
+    expect(jan.w).toBe(0);
+    expect(jan.allowance).toBe(0);
+    expect(jan.borne).toBe(121_827);
+    expect(jan.capExcess).toBe(120_000);
+    expect(jan.takeHome).toBe(0);
+    expect(dec.x).toBe(10_004_123);
+    expect(dec.taxIdr).toBe(789_123);
+    expect(dec.w).toBe(785_000);
+    expect(dec.borne).toBe(4_123);
+    expect(dec.allowance).toBe(0);
+    expect(dec.refund).toBe(0);
+    expect(dec.employerRefund).toBe(0);
+    expect(dec.capExcess).toBe(0);
+    expect(dec.deposit).toBe(789_123);
+    expect(dec.takeHome).toBe(10_000_000 - 785_000);
+  });
 });

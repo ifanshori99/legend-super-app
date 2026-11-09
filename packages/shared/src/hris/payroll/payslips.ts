@@ -98,6 +98,11 @@ export const payslipTaxSchema = z
     pph21RefundIdr: nonNegativeIdr,
     /** Lebih potong that returns to the employer (tax it bore earlier). */
     pph21EmployerRefundIdr: nonNegativeIdr,
+    /**
+     * Part of pph21EmployerBorneIdr that is the employee's own tax above the
+     * pay left, taken over by the employer (bead legend-4ndx). Absent = 0.
+     */
+    pph21CapExcessIdr: nonNegativeIdr.optional(),
     /** Employees without a tax id pay the table surcharge, if any. */
     noTaxIdSurchargeApplied: z.boolean(),
     /**
@@ -114,7 +119,10 @@ export const payslipTaxSchema = z
       tax.grossSchemeBaseIdr + tax.employerSchemeBaseIdr ===
       tax.taxableGrossIdr,
     { message: "scheme bases must sum to taxableGrossIdr" },
-  );
+  )
+  .refine((tax) => (tax.pph21CapExcessIdr ?? 0) <= tax.pph21EmployerBorneIdr, {
+    message: "pph21CapExcessIdr must not exceed pph21EmployerBorneIdr",
+  });
 export type PayslipTax = z.infer<typeof payslipTaxSchema>;
 
 export const payslipPaymentMethodSchema = z.enum(["bank_transfer", "cash"]);
