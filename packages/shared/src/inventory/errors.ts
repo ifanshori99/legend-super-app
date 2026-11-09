@@ -52,6 +52,8 @@ export const INVENTORY_ERROR_CODES = [
   "INSUFFICIENT_STOCK",
   /** Production could not resolve a single kitchen location for the outlet. */
   "PRODUCTION_LOCATION_UNRESOLVED",
+  /** A waste entry points at a photo or media file that does not exist (404). */
+  "WASTE_MEDIA_NOT_FOUND",
 ] as const;
 
 export const inventoryErrorCodeSchema = z.enum(INVENTORY_ERROR_CODES);

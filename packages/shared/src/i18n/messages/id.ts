@@ -3153,6 +3153,55 @@ export const id = {
       invalidAmount: "Isi angka bulat 0 atau lebih, contoh 0.",
       saveFailed: "Perubahan gagal disimpan. Periksa isian lalu coba lagi.",
     },
+
+    // One message per INVENTORY_ERROR_CODES entry, keyed by the code the API
+    // sends (bead legend-tk7i).
+    error: {
+      RECIPE_CYCLE:
+        "Resep saling memanggil dalam putaran. Periksa komponennya.",
+      RECIPE_NOT_FOUND: "Resep tidak ditemukan.",
+      RECIPE_OUTPUT_MISSING:
+        "Resep bertingkat ini belum punya item hasil, jadi biayanya belum bisa dihitung.",
+      RECIPE_COMPONENT_MISSING:
+        "Ada baris resep yang menunjuk item atau resep yang tidak ada.",
+      UNIT_COST_MISSING:
+        "Item ini belum punya harga pokok, HPP belum bisa dihitung.",
+      UOM_CONVERSION_MISSING: "Satuan ini belum punya faktor konversi.",
+      STOCK_COUNT_INVALID_TRANSITION:
+        "Tindakan ini tidak bisa dilakukan pada status stok opname saat ini.",
+      STOCK_COUNT_NOT_PENDING_APPROVAL:
+        "Stok opname belum diajukan, jadi belum bisa disetujui.",
+      STOCK_COUNT_SELF_APPROVAL:
+        "Penghitung dan penyetuju harus orang yang berbeda.",
+      STOCK_COUNT_BLIND_HIDDEN:
+        "Stok sistem dan selisih disembunyikan selama hitung buta.",
+      STOCK_COUNT_BLIND_USE_SHEET:
+        "Hitung buta: isi jumlah lewat lembar hitung.",
+      STOCK_COUNT_LOCATION_BUSY:
+        "Lokasi ini masih punya stok opname yang berjalan.",
+      STOCK_COUNT_LINES_INCOMPLETE:
+        "Semua baris harus dihitung sebelum diajukan.",
+      STOCK_COUNT_APPROVAL_UNROUTED:
+        "Belum ada kebijakan approval yang menentukan penyetuju stok opname ini.",
+      STOCK_COUNT_VERSION_MISMATCH:
+        "Baris berubah setelah permintaan approval dibuka. Ajukan ulang.",
+      STOCK_COUNT_NOT_EDITABLE:
+        "Baris hanya bisa diubah saat stok opname sedang dihitung.",
+      STOCK_COUNT_COST_MISSING:
+        "Selisih lebih belum punya harga pokok untuk dinilai.",
+      STOCK_COUNT_DECIDER_CANNOT_COUNT:
+        "Yang sudah menyetujui atau menolak stok opname ini tidak boleh menghitung.",
+      STOCK_COUNT_VIEWER_CANNOT_COUNT:
+        "Yang sudah melihat stok sistem tidak boleh menghitung.",
+      STOCK_COUNT_APPROVAL_EXPIRED:
+        "Batas waktu approval sudah lewat. Selesaikan dulu sebelum menyetujui.",
+      PRODUCTION_INVALID_TRANSITION:
+        "Tindakan ini tidak bisa dilakukan pada status order produksi saat ini.",
+      INSUFFICIENT_STOCK: "Stok tidak cukup untuk pengeluaran ini.",
+      PRODUCTION_LOCATION_UNRESOLVED:
+        "Lokasi dapur untuk outlet ini belum bisa ditentukan.",
+      WASTE_MEDIA_NOT_FOUND: "Foto atau berkas waste tidak ditemukan.",
+    },
   },
 
   // WS-05 tax & service charge (PRD v1.7 §3.14 F11, D13, R20/R21): versioned
